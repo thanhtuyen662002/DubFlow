@@ -1,26 +1,24 @@
 project: DubFlow
 source_of_truth: github
-phase: foundation_ready
+phase: engineering_control_plane_ready
+product_foundation_implemented: false
 main_health: green_unprotected
 bootstrap_pr: 1
 bootstrap_status: merged
 architecture_baseline: docs/PRODUCT_SYSTEM_DESIGN.md
 risk_baseline: docs/RISK_REGISTER.md
+deep_red_team_audit: docs/DEEP_RED_TEAM_AUDIT.md
 execution_protocol: docs/ENGINEERING_EXECUTION_PROTOCOL.md
+parallel_execution: docs/PARALLEL_EXECUTION.md
 roadmap: docs/ROADMAP.md
+work_graph_source: open_leaf_issues_plus_roadmap
 foundation_epic: 2
 critical_path:
   - 3
   - 4
   - 5
-independent_claimable_lanes:
-  - 3
-  - 4
-  - 6
-  - 7
-  - 8
-  - 9
-  - 10
+first_integration_gate: 14
+first_user_value_gate: 45
 administrative_risks:
   - 11
 ruleset_required: true
