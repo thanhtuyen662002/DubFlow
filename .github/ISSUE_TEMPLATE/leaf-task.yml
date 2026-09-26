@@ -1,0 +1,61 @@
+name: Leaf engineering task
+description: Executable task that an agent may claim
+title: "[TASK] "
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: Observable result, not implementation activity.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: In scope / out of scope
+    validations:
+      required: true
+  - type: input
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Issue numbers or "none".
+    validations:
+      required: true
+  - type: textarea
+    id: paths
+    attributes:
+      label: Expected paths and conflict domains
+      description: Include contracts, migrations, lockfiles, timeline, updater/release when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance tests
+    validations:
+      required: true
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Required CI lane
+      options:
+        - PR Fast
+        - PR Fast + Integration
+        - PR Fast + Integration + AI/GPU benchmark
+        - Release/Soak
+    validations:
+      required: true
+  - type: textarea
+    id: recovery
+    attributes:
+      label: Recovery/decomposition note
+      description: How another agent can resume or how downstream work proceeds if this task stalls.
+    validations:
+      required: true
