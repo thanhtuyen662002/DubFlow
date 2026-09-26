@@ -8,7 +8,8 @@ GitHub is the durable source of truth. Chat state, local worktrees and an indivi
 3. docs/RISK_REGISTER.md
 4. docs/ENGINEERING_EXECUTION_PROTOCOL.md
 5. docs/PROJECT_STATE.yaml
-6. relevant contracts/ and ADRs when they exist
+6. docs/PARALLEL_EXECUTION.md
+7. relevant contracts/ and ADRs when they exist
 
 ## Non-negotiable architecture invariants
 - CapCut is an adapter, never the canonical project format.
@@ -32,7 +33,8 @@ Before claim:
 - inspect all open Issues and PRs;
 - inspect dependencies;
 - inspect expected changed paths/conflict domains;
-- verify no valid live Draft PR already owns the Issue.
+- read the ownership map in docs/PARALLEL_EXECUTION.md;
+- verify no valid live Draft PR already owns the Issue or an incompatible shared namespace.
 
 Claim by creating branch `agent/issue-<n>-<slug>` and immediately opening a Draft PR containing `DUBFLOW_PR_V1`, `Issue: #n`, `Lease-Owner`, `Lease-Heartbeat`, `Conflict-Domains`, and `Expected-Paths`.
 
@@ -50,6 +52,7 @@ Ownership is a renewable lease, not a permanent assignment. A stale lease may be
 - Never merge based on stale CI. Required checks must be green for exact HEAD.
 - Resolve review threads before ready/merge.
 - Shared contracts, migrations, lockfiles and workspace manifests are conflict domains and require extra coordination.
+- A broad root such as `contracts/**`, `crates/job-supervisor/**`, `packaging/**`, `.github/workflows/**`, `fixtures/**`, or `tests/**` is not blanket ownership; use the narrow namespace defined in docs/PARALLEL_EXECUTION.md.
 - Do not mix unrelated dependency upgrades/refactors with feature scope.
 - Generated model weights and large media do not belong in normal Git history.
 
