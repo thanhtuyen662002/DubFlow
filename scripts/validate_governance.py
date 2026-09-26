@@ -45,6 +45,7 @@ for key in [
     "roadmap:",
     "parallel_execution:",
     "direct_main_push_allowed:",
+    "ci_infrastructure_issue:",
 ]:
     if key not in state:
         print("Missing project state key:", key)
@@ -95,4 +96,16 @@ if "STALE_BASE" not in protocol_text or "Tested-Base-SHA" not in protocol_text:
     sys.exit(1)
 if "STALE_BASE" not in agents_text or "Tested-Base-SHA" not in agents_text:
     print("AGENTS.md is missing tested-base merge invariant")
+    sys.exit(1)
+
+
+m = re.search(r"(?m)^ci_infrastructure_issue:\s*(\d+)\s*$", state)
+if not m or int(m.group(1)) != 10:
+    print("PROJECT_STATE must identify Issue #10 as CI infrastructure owner during bootstrap")
+    sys.exit(1)
+if "WAITING_CI_INFRA" not in protocol_text:
+    print("Engineering protocol must define WAITING_CI_INFRA")
+    sys.exit(1)
+if "Required-CI" not in agents_text or "WAITING_CI_INFRA" not in agents_text:
+    print("AGENTS.md must enforce required CI lane availability")
     sys.exit(1)
