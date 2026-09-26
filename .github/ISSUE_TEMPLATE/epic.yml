@@ -1,0 +1,26 @@
+name: Epic
+description: Outcome tracker; agents must not claim epics directly
+title: "[EPIC] "
+body:
+  - type: markdown
+    attributes:
+      value: "Epics are tracking containers. Create executable leaf tasks before implementation."
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Product/engineering outcome
+    validations:
+      required: true
+  - type: textarea
+    id: child_tasks
+    attributes:
+      label: Child tasks
+      description: Link leaf Issues here.
+    validations:
+      required: true
+  - type: textarea
+    id: exit
+    attributes:
+      label: Exit criteria
+    validations:
+      required: true

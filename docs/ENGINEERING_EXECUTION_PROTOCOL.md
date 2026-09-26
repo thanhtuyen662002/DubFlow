@@ -1,0 +1,168 @@
+# Engineering Execution Protocol
+
+## Goal
+Keep development moving even when an agent, PR, CI run, runner, external website or architecture experiment stalls.
+
+## State model
+Leaf Issue states:
+- READY
+- CLAIMED
+- IN_PROGRESS
+- WAITING_CI
+- REVIEW
+- BLOCKED_EXTERNAL
+- BLOCKED_DEPENDENCY
+- STALE_RECLAIMABLE
+- DONE
+
+Epics are tracking containers and are never directly claimed.
+
+## Draft PR lease
+A claim is valid only when an open Draft PR contains:
+```
+DUBFLOW_PR_V1
+Issue: #123
+Lease-Owner: <agent-id>
+Lease-Heartbeat: <ISO-8601 UTC>
+Conflict-Domains: contracts,timeline
+Expected-Paths: contracts/**,crates/media-contracts/**
+```
+
+The branch alone is not a lease. Issue assignment alone is not a lease.
+
+Default stale rules:
+- IN_PROGRESS without checkpoint/heartbeat for 90 minutes: inspect before reclaim.
+- WAITING_CI: not stale while exact-head required CI is legitimately queued/running and within workflow timeout.
+- CI beyond its configured timeout or with no active run: reclaimable/repairable.
+- BLOCKED_EXTERNAL with concrete external blocker remains blocked, but unrelated Issues continue.
+- Any lease with closed/missing PR is invalid.
+
+A reclaiming worker records the previous PR/HEAD and either resumes the branch or opens a superseding PR with explicit lineage.
+
+## Conflict domains
+These are serialized more aggressively than ordinary paths:
+- canonical timeline/time-base contracts;
+- worker/event schemas;
+- SQLite schema/migrations;
+- app/engine/model compatibility manifests;
+- workspace manifests and lockfiles when dependency versions differ;
+- updater/release signing pipeline;
+- shared artifact schema.
+
+Two PRs may run concurrently only when their material changes do not overlap or rely on incompatible versions of a conflict domain.
+
+## Dependency rules
+- Dependencies are directed and must be acyclic.
+- Use the smallest dependency edge necessary.
+- Prefer interface/schema/mock-first tasks to let downstream work proceed.
+- A blocked task does not block its siblings.
+- Critical-path tasks need fallback owners and smaller slices.
+- A dependency becoming stale triggers decomposition/reclaim, not indefinite waiting.
+
+## CI lanes
+
+### Lane A — PR Fast (required)
+Target: deterministic and normally under 15 minutes.
+- repository/governance validation;
+- formatting/lint;
+- type checks;
+- Rust/Python/TypeScript unit tests for changed components;
+- contract/schema compatibility;
+- small media fixtures;
+- build/compile smoke.
+
+Every job has `timeout-minutes`. Matrix uses fail-fast=false so one failure does not hide evidence from other components.
+
+### Lane B — PR Integration (required only when affected)
+Target: under 30–45 minutes.
+- supervisor↔worker protocol;
+- SQLite migrations/recovery;
+- FFmpeg fixture pipeline;
+- installer/package smoke without release signing;
+- cross-language contract tests.
+
+Path/contract changes decide when this lane is required.
+
+### Lane C — AI/GPU Benchmark
+Not a universal merge gate.
+- OCR/ASR/speaker/TTS/inpaint benchmarks;
+- GPU memory/performance;
+- golden-set quality.
+
+Required for PRs changing a model/default/quality-critical algorithm, otherwise scheduled/on-demand.
+
+### Lane D — Live Source Smoke
+Scheduled/on-demand only.
+- Douyin/Bilibili extractor health;
+- session/auth smoke.
+Third-party outage must not block unrelated merges.
+
+### Lane E — Soak/Chaos/Release
+Scheduled or release-gate.
+- long video;
+- 100+ queue;
+- crash/reboot;
+- disk pressure;
+- updater rollback;
+- packaging/signing.
+
+## CI anti-stall rules
+- Same PR + workflow uses a concurrency group; newer HEAD cancels superseded runs.
+- Never accept green status from an older SHA.
+- Every job has a timeout.
+- Self-hosted GPU jobs use dedicated labels/concurrency and do not occupy normal CPU runners.
+- External network/model downloads should be cached or mocked in required CI.
+- Failed test and infrastructure failure are classified separately.
+- Re-run flaky/infra failures selectively; deterministic code failures require a code change.
+- Do not push unrelated commits while waiting for expensive exact-head CI because this invalidates evidence.
+
+## Merge protocol
+1. PR scope matches Issue.
+2. Dependencies merged or explicitly compatible.
+3. Exact HEAD read.
+4. Required exact-head checks green.
+5. Review threads resolved.
+6. Branch updated against current main when shared conflict domains changed.
+7. Merge.
+8. Post-merge main CI is observed.
+9. If main breaks, revert/hotfix immediately; do not stack new feature merges on unknown-red main.
+
+## What happens when one coder/agent stops?
+The project must continue.
+
+- Other independent workstreams continue immediately.
+- Its Draft PR preserves the lease and checkpoint for a bounded time.
+- If heartbeat expires, another agent can recover from GitHub state.
+- If CI is running normally, do not duplicate work.
+- If CI hangs, timeout/watchdog classifies and reruns/cancels as appropriate.
+- If the stalled task is a dependency, first try to split an interface/mock task so downstream work proceeds; otherwise reclaim only that leaf.
+- Never freeze the whole board because one Issue is blocked.
+
+## Watchdog duties
+A watchdog/lead run reconstructs state from GitHub:
+- open leaf Issues;
+- Draft PR leases;
+- PR head SHAs;
+- exact-head CI;
+- unresolved reviews;
+- dependency graph;
+- conflict-domain overlaps;
+- stale heartbeats;
+- red main.
+
+The watchdog owns no implementation by default and keeps no unique hidden state.
+
+## Issue contract
+Every executable Issue must state:
+- Outcome.
+- Why it matters.
+- In scope / out of scope.
+- Dependencies.
+- Expected paths.
+- Conflict domains.
+- Acceptance tests.
+- Required CI lane.
+- Evidence required.
+- Recovery/decomposition note if critical-path.
+
+This prevents an Issue from being "mostly done" while nobody can prove it is mergeable.
