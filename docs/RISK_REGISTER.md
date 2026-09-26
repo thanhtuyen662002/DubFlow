@@ -300,3 +300,198 @@ Mitigation:
 14. Lose the watchdog process entirely and prove another agent can reconstruct state.
 
 A stable release requires product chaos tests and engineering-flow chaos tests. The project is not autonomous if recovery depends on one particular chat, workstation, runner, or agent.
+
+
+## Post-bootstrap contradiction and deep-system risks
+
+### G-026 Heartbeat race and local-only progress — S4
+An agent can claim an Issue locally, work for a long time, then discover another agent already opened the winning Draft PR. Or it can die with useful commits only on a disposable workstation.
+
+Mitigation:
+- Draft PR is opened before material work;
+- immediately re-check all live PRs after claim;
+- earliest valid claim wins;
+- only pushed GitHub-visible checkpoints count as durable progress;
+- repeated heartbeat refresh without durable progress is reclaimable.
+
+### G-027 CI merge-ref mistaken for source-head evidence — S5
+GitHub pull-request workflows may execute a synthetic merge commit. Treating that SHA as identical to the PR source head can make stale-head checks incorrect or create false confidence.
+
+Mitigation:
+- record `pr_head_sha` and `tested_sha` separately;
+- source-head changes invalidate old evidence;
+- merge-ref success proves compatibility only with the base snapshot used by that run;
+- high-risk shared contracts re-test when main moved materially.
+
+### G-028 Runner queue can be infinite despite timeout-minutes — S4
+Job timeout begins after runner allocation. A workflow may remain queued indefinitely when capacity is unavailable.
+
+Mitigation:
+- watchdog has queue-age thresholds;
+- distinguish WAITING_INFRA from RUNNING;
+- do not expire an implementation lease merely because valid CI is queued;
+- repeated saturation creates an infrastructure issue;
+- no cancel/requeue loop that continually loses queue position.
+
+### G-029 Project-state heartbeat without useful progress — S4
+A worker can keep a lease alive forever by editing only timestamps/status.
+
+Mitigation:
+- heartbeat requires durable progress evidence;
+- no-progress threshold is separate from liveness;
+- watchdog can flag active-but-stalled workers.
+
+### A-012 Linear state machine contradicts selective regeneration — S5
+A purely linear implementation forces expensive reprocessing or creates illegal state transitions when a user edits one voice/subtitle after completion.
+
+Mitigation:
+- user-facing stages are presentation order;
+- internal execution is a versioned DAG;
+- artifacts have provenance/config/model/contract hashes;
+- invalidation propagates only through true downstream dependencies.
+
+### A-013 Fixed subtitle-source priority contradicts ASR-primary semantics — S4
+“Soft subtitle first” and “ASR is meaning source” can lead different agents to incompatible transcript engines.
+
+Mitigation:
+- discovery order is not semantic authority;
+- TranscriptCandidateSet stores all candidates/provenance;
+- arbitration uses evidence by content type, timing and confidence;
+- alternatives/conflicts survive into QC.
+
+### A-014 Two app instances mutate one SQLite/project — S5
+User double-launch, updater restart, or orphan process can create simultaneous writers and inconsistent artifact/job state.
+
+Mitigation:
+- single writable project owner lock;
+- second instance read-only/handoff;
+- stale lock verified against live OS process;
+- workers never own/write durable DB independently.
+
+### A-015 Model cleanup breaks resumable jobs — S5
+Auto-update or disk cleanup can remove an old model/runtime needed by a paused job, making resume silently different or impossible.
+
+Mitigation:
+- active/resumable jobs pin exact versions;
+- cleanup computes live references before eviction;
+- exact versions are reacquired or explicit migration/invalidation occurs;
+- behaviorally incompatible substitution is never silent.
+
+### A-016 DAG cache poisoning by incomplete provenance — S5
+If cache keys omit model version, config, prompt/glossary, geometry transform or contract version, an old artifact may look reusable and produce subtly wrong output.
+
+Mitigation:
+- every cacheable artifact includes full producer/input/config/model/contract provenance;
+- schemas define which fields affect identity;
+- artifact reuse is validated, not based only on path/file existence.
+
+### A-017 Multi-instance filesystem race outside SQLite — S5
+Even with SQLite single-writer, two processes can race on temp/output/model directories.
+
+Mitigation:
+- ownership lock covers project artifact namespace;
+- temp files use unique IDs and atomic rename;
+- model pack installation uses package-level locks and staged directories.
+
+### A-018 Malicious/untrusted media path handling — S5
+Downloaded filenames, archive/model manifests, subtitle names or metadata may attempt path traversal, device names, reserved Windows paths or extremely long names.
+
+Mitigation:
+- canonicalize and constrain all writes under owned roots;
+- sanitize platform filenames;
+- reject absolute/parent traversal;
+- defend archive extraction against Zip Slip;
+- never execute downloaded media/subtitle content.
+
+### A-019 FFmpeg/media parser attack surface — S5
+Untrusted video is processed by complex native parsers.
+
+Mitigation:
+- pin patched FFmpeg builds;
+- run media processing as normal user with least filesystem/network access;
+- input/output directories explicitly scoped;
+- process time/memory limits where practical;
+- update path supports rapid security patch rollout.
+
+### A-020 Model/runtime supply-chain compromise — S5
+A remote model/runtime manifest or dependency update can become local code execution.
+
+Mitigation:
+- signed/checksummed manifests;
+- pinned sources and hashes;
+- no arbitrary remote pip install on user machines;
+- staged verification + rollback;
+- separate code-bearing runtime packages from pure model weights.
+
+### A-021 Browser cookie extraction expands trust boundary — S5
+Reading authenticated browser cookies can expose account sessions to local malware/logging or accidental diagnostic bundles.
+
+Mitigation:
+- explicit user action and provider-scoped import;
+- OS-protected secret storage;
+- never put cookies in normal logs/diagnostics;
+- short-lived temp files with restrictive permissions and deletion;
+- downloader subprocess receives only necessary credentials.
+
+### A-022 Disk cleanup deletes currently mapped/in-use artifacts — S4
+Model/cache cleanup can race with active worker mmap/file reads, especially on Windows.
+
+Mitigation:
+- resource registry/refcount + file/package locks;
+- cleanup only at safe checkpoints;
+- failed deletion is deferred, never forced;
+- updater/cleanup honors active worker leases.
+
+### A-023 UI says 100% while QC/export is invalid — S2
+Stage progress can reach 100 even though final validation, atomic rename or export still failed.
+
+Mitigation:
+- distinguish processing progress from terminal success;
+- DONE only after validated final artifact commit;
+- partial files never use final names;
+- UI displays retryable export/QC failures truthfully.
+
+### A-024 Batch scheduler starvation — S4
+One giant/slow video can monopolize GPU/render/resource locks while hundreds of short jobs wait.
+
+Mitigation:
+- scheduler supports fairness/aging;
+- resource locks are granular;
+- long stages chunk at preemption-safe checkpoints where possible;
+- user can prioritize/pause without corrupting checkpoints.
+
+### A-025 Unbounded debug/cache growth — S4
+“Unlimited duration” plus per-frame debug/OCR/inpaint artifacts can fill disks even when output estimate looked safe.
+
+Mitigation:
+- artifact retention classes;
+- rolling free-space guard throughout job;
+- debug artifacts sampled/compressed by default;
+- GC only deletes provenance-safe/reacquirable artifacts.
+
+### A-026 Confidence score calibration drift — S2
+A model upgrade may keep numeric confidence ranges but change their meaning, causing automation to over-trust poor segments.
+
+Mitigation:
+- confidence calibration is versioned per model/profile;
+- thresholds benchmarked on golden sets;
+- confidence provenance stored with model version;
+- updates cannot reuse old calibration blindly.
+
+### A-027 Speaker identity leakage across unrelated videos — S2
+Cross-video Character Registry may incorrectly merge visually/aurally similar people and assign wrong voices.
+
+Mitigation:
+- default identity scope is job/project/channel as configured;
+- cross-video linking needs threshold + evidence and can remain unresolved;
+- user correction creates explicit identity constraints;
+- never promote uncertain global identity silently.
+
+### A-028 Translation/TTS edits create stale QC — S3
+Selective rerun can update audio/subtitles but leave old QC findings/report marked valid.
+
+Mitigation:
+- QC report is downstream in provenance graph;
+- any affected content invalidates relevant QC nodes;
+- final export cannot cite stale QC as PASS.
+
