@@ -141,3 +141,19 @@ Hard dependencies after this decomposition:
 If TTS/mix fails, the job degrades to the already-valid #56 Vietsub output rather than failing the whole localization result.
 
 This staged path is a progress invariant: future work must not re-collapse #56 and #45 into one all-or-nothing mega-gate without an ADR explaining why.
+
+
+## Gate-driven claim order
+
+Autonomous workers should derive claim priority from machine-readable Issue dependencies rather than treating this roadmap as a static queue.
+
+Current intended delivery order:
+1. prove the foundation integration gate;
+2. unlock the Vietsub-only first user-value gate;
+3. upgrade the proven path to baseline dubbing;
+4. add source acquisition, installer/update, advanced subtitle/speaker quality and CapCut capabilities in parallel according to their own gates;
+5. qualify release with soak/chaos evidence.
+
+For each gate, workers should claim only READY root hard-dependencies not already protected by a valid Draft PR lease. Soft dependencies are compatibility relationships, not reasons to wait.
+
+This keeps roadmap text descriptive while GitHub Issues remain the authoritative live dependency graph.
