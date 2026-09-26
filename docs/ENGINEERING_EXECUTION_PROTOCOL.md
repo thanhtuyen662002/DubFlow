@@ -24,6 +24,7 @@ DUBFLOW_PR_V1
 Issue: #123
 Lease-Owner: <agent-id>
 Lease-Heartbeat: <ISO-8601 UTC>
+Tested-Base-SHA: <current-main-sha-used-for-this-evidence>
 Conflict-Domains: contracts,timeline
 Expected-Paths: contracts/**,crates/media-contracts/**
 ```
@@ -119,13 +120,15 @@ Scheduled or release-gate.
 ## Merge protocol
 1. PR scope matches Issue.
 2. Dependencies merged or explicitly compatible.
-3. Exact HEAD read.
-4. Required exact-head checks green.
-5. Review threads resolved.
-6. Branch updated against current main when shared conflict domains changed.
-7. Merge.
-8. Post-merge main CI is observed.
-9. If main breaks, revert/hotfix immediately; do not stack new feature merges on unknown-red main.
+3. Exact PR HEAD read.
+4. Current main/base SHA read.
+5. PR `Tested-Base-SHA` equals current main/base SHA.
+6. Required checks are green for the exact PR HEAD against that tested base snapshot.
+7. Review threads resolved.
+8. If main advanced after evidence was produced, classify `STALE_BASE`, update the branch and rerun required CI.
+9. Merge with expected-head protection only after both head and base freshness are re-proven.
+10. Post-merge main CI is observed.
+11. If main breaks, revert/hotfix immediately; do not stack new feature merges on unknown-red main.
 
 ## What happens when one coder/agent stops?
 The project must continue.
@@ -327,3 +330,29 @@ A large acyclic backlog can still stall product delivery when agents choose loca
 - A research benchmark cannot silently become a hard product gate.
 - Manual administrative work such as branch protection remains visible, but pending human/admin action must not leave product workers idle.
 - Progress is measured by gates unblocked and validated, not commit count.
+
+
+## Tested-base freshness
+
+Exact PR source HEAD is necessary but not sufficient merge evidence.
+
+Example race:
+1. PR A at head `A1` runs green against main `M1`.
+2. PR B merges and main becomes `M2`.
+3. PR A still has head `A1` and may still be file-level mergeable.
+4. The old green run proves only `A1 + M1`, not `A1 + M2`.
+
+Therefore every active PR records:
+
+```text
+Tested-Base-SHA: <sha>
+```
+
+Merge readiness requires:
+- current PR head equals the head for which required CI is green;
+- current main SHA equals `Tested-Base-SHA`;
+- CI evidence was produced after the branch incorporated/tested that base snapshot.
+
+Any mismatch is `STALE_BASE`. A stale-base PR remains a valid lease but is not merge-ready. It must be updated and required CI rerun. Do not bypass this because the diff is small, GitHub says `mergeable=true`, or a prior run is green.
+
+Watchdog/reviewer evidence should preserve `pr_head_sha`, `tested_base_sha`, `current_base_sha`, workflow run id, and conclusion.
