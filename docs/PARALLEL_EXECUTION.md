@@ -245,3 +245,100 @@ Green-before-first-merge is not sufficient evidence for the second PR.
 
 If a worker discovers material overlap not declared at claim time, it must update the lease metadata before editing the overlapping path. If another valid lease already owns it, the worker pauses only that overlapping change and continues non-overlapping work.
 
+
+
+## Extended ownership map — acquisition/runtime/CapCut/release
+
+### #53 Bilibili source adapter
+Primary ownership:
+- `engine/dubflow/download/bilibili/**`
+- `tests/source_bilibili/**`
+
+Shared coordination:
+- any edit to `contracts/source/**`, downloader root exports/indexes, or common auth/session abstractions coordinates with #7 and other live source adapters.
+
+### #59 Douyin source adapter
+Primary ownership:
+- `engine/dubflow/download/douyin/**`
+- `tests/source_douyin/**`
+
+Shared coordination:
+- any edit to `contracts/source/**`, downloader root exports/indexes, browser-session bridge, or common auth/session abstractions coordinates with #7/#53.
+
+Bilibili and Douyin adapters may proceed in parallel only while their changes remain provider-specific.
+
+### #60 Whole-channel / multi-URL acquisition queue
+Primary ownership:
+- `engine/dubflow/download/enumeration/**`
+- `crates/job-supervisor/source_queue/**`
+- `tests/source_queue/**`
+
+Consumes provider adapters through SourceAdapter. It does not own provider-specific scraper/extractor code.
+
+Shared coordination:
+- supervisor root exports coordinate with #5/#20;
+- source contract changes coordinate with #7.
+
+### #61 Windows one-click installer/runtime bootstrap
+Primary ownership:
+- `packaging/windows/**`
+- `packaging/runtime/**`
+- `models/bootstrap/**`
+- installer-specific tests/fixtures.
+
+Does not own:
+- `models/manifests/**` (#9);
+- `packaging/model-manager/**` (#21);
+- update switching/rollback logic (#62).
+
+### #62 App/engine/model update + rollback
+Primary ownership:
+- `crates/updater/**`
+- `packaging/update/**`
+- `tests/update_recovery/**`
+
+Shared coordination:
+- compatibility manifest edits coordinate with #9;
+- model deletion/refcount/retention behavior coordinates with #21;
+- multi-instance/relaunch locking coordinates with #18;
+- database migration sequencing coordinates with #5.
+
+### #63 Stable CapCut import pack
+Primary ownership:
+- `engine/dubflow/capcut/import_pack/**`
+- `contracts/capcut/import_pack/**`
+- `tests/capcut_import/**`
+
+Consumes #44 canonical editable assets. It does not own canonical export format.
+
+### #64 Direct CapCut draft adapter
+Primary ownership:
+- `engine/dubflow/capcut/draft/**`
+- `contracts/capcut/draft/**`
+- `tests/capcut_compat/**`
+
+Consumes #63 fallback and #44 assets. It must not change the stable import-pack contract merely to fit one CapCut version.
+
+### #65 Release chaos / long-form soak qualification
+Primary ownership:
+- `tests/soak/**`
+- `tests/chaos/**`
+- release evidence manifests.
+
+Workflow coordination:
+- `.github/workflows/soak-release.yml` is jointly coordinated with #10 because #10 owns core CI conventions/check names.
+- #65 must not edit PR Fast, universal required checks, or watchdog workflow.
+- soak/release failures block release qualification only, never unrelated PR-fast merges.
+
+## New shared serialization points
+
+The following edits require explicit cross-lease coordination:
+- `engine/dubflow/download/__init__.*` or downloader root registry/index shared by #7/#53/#59/#60;
+- source auth/session abstraction shared by #53/#59;
+- packaging root manifests shared by #9/#21/#61/#62;
+- app/engine/model compatibility schema shared by #9/#21/#62;
+- project/relaunch locks shared by #18/#62;
+- `contracts/capcut/**` root exports shared by #63/#64;
+- release workflow/check names shared by #10/#65.
+
+These are short coordination points, not reasons to serialize entire feature lanes.
