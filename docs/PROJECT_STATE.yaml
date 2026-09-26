@@ -1,0 +1,24 @@
+project: DubFlow
+source_of_truth: github
+phase: bootstrap_control_plane
+main_health: initialized_unprotected
+architecture_baseline: docs/PRODUCT_SYSTEM_DESIGN.md
+risk_baseline: docs/RISK_REGISTER.md
+execution_protocol: docs/ENGINEERING_EXECUTION_PROTOCOL.md
+bootstrap_pr: pending
+critical_path:
+  - governance_and_ci
+  - durable_job_engine
+  - canonical_media_timeline
+  - worker_protocol
+parallel_lanes_after_foundation:
+  - desktop_product
+  - source_download
+  - subtitle_intelligence
+  - speaker_intelligence
+  - translation_tts
+  - audio_render
+  - packaging_update
+  - qa_benchmark
+ruleset_required: true
+direct_main_push_allowed: false
