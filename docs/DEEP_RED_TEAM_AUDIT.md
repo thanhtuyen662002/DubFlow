@@ -701,13 +701,13 @@ Existing Issues:
 - #14 first vertical slice.
 - #15 lease/stuck-CI watchdog.
 
-Recommended next leaf Issues after #16:
-- artifact DAG/provenance/cache invalidation implementation;
-- project/process/resource locking and multi-instance recovery;
-- input/path/archive security boundary;
-- fair batch resource scheduler and rolling disk guard;
-- model/runtime retention + safe GC;
-- semantic QC invalidation and confidence calibration.
+Concrete follow-up leaf Issues created by this audit:
+- #17 — artifact DAG/provenance/cache invalidation implementation;
+- #18 — project/process/resource locking and multi-instance recovery;
+- #19 — input/path/archive/media-processing security boundary;
+- #20 — fair batch resource scheduler and rolling disk guard;
+- #21 — model/runtime retention + safe garbage collection;
+- #22 — semantic QC provenance and confidence calibration.
 
 ---
 
