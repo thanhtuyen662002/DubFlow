@@ -1398,3 +1398,602 @@ Có thể hỗ trợ bằng versioned `CapCutAdapter`.
 
 ```text
 CapCutAdapter
+├─ detect_installation()
+├─ detect_version()
+├─ compatibility()
+├─ create_draft()
+└─ validate_draft()
+```
+
+Không viết trực tiếp logic `draft_content.json` khắp app.
+
+### Compatibility matrix
+
+```text
+capcut_version
+adapter_version
+tested
+read/write
+known_limitations
+```
+
+Nếu version không được xác nhận:
+
+- Không phá job.
+- Xuất `CapCut Import Pack`.
+
+### Lý do
+
+CapCut/JianYing draft format là implementation detail có thể thay đổi. Một vài tool cộng đồng có thể tạo draft, nhưng đây không phải API ổn định chính thức.
+
+---
+
+# 22. UI screens
+
+## 22.1. Home
+
+```text
+[ Dán link video/kênh...                    ]
+[ + Thêm file ] [ + Thêm folder ]
+
+Đầu ra: C:\DubFlow\Output
+
+[x] Vietsub
+[x] Lồng tiếng Việt
+[x] Giữ nhạc và hiệu ứng
+[x] Tạo file CapCut
+
+              [ BẮT ĐẦU ]
+```
+
+## 22.2. Queue
+
+Mỗi video:
+
+```text
+Tên
+thumbnail
+source
+stage
+progress
+ETA nội bộ
+status
+warning
+```
+
+Người dùng có thể:
+
+- pause;
+- resume;
+- cancel;
+- retry;
+- open output.
+
+## 22.3. Job Detail
+
+Hiển thị timeline stage:
+
+```text
+✓ Tải video
+✓ Phân tích
+✓ Nhận diện thoại
+● Phân vai
+○ Dịch
+○ Lồng tiếng
+○ Xử lý phụ đề
+○ Render
+○ Kiểm tra
+```
+
+Không show log kỹ thuật mặc định.
+
+Có nút:
+
+```text
+Xem chi tiết kỹ thuật
+```
+
+## 22.4. Review Center
+
+Chỉ ưu tiên các đoạn:
+
+- speaker confidence thấp;
+- OCR/ASR conflict;
+- translation unusual;
+- inpaint artifact risk;
+- TTS duration khó fit.
+
+Không bắt người dùng review toàn bộ video.
+
+## 22.5. Characters
+
+Card:
+
+```text
+[ảnh nhân vật]
+Nhân vật 01
+Giọng Việt: Voice 07
+[nghe thử]
+```
+
+User có thể đổi voice một lần → regenerate chỉ các segment nhân vật đó.
+
+---
+
+# 23. Batch / whole-channel scheduling
+
+Không chạy mọi video cùng lúc.
+
+Resource Scheduler quản lý:
+
+```text
+CPU slots
+GPU slots
+VRAM budget
+disk IO budget
+render slots
+download slots
+```
+
+Ví dụ:
+
+- Download 3 video song song.
+- OCR 1–2 job.
+- TTS batch.
+- Render 1 job.
+- Không load ASR + TTS + inpaint model lớn cùng lúc nếu VRAM không đủ.
+
+### Model residency manager
+
+```text
+load ASR
+process ASR queue
+unload ASR
+load diarization
+...
+```
+
+Tối ưu theo hardware tier.
+
+---
+
+# 24. Long video architecture
+
+“Không giới hạn thời lượng” = không hard-limit.
+
+Yêu cầu bắt buộc:
+
+- chunked decode;
+- chunked ASR;
+- chunked OCR;
+- chunked inpaint;
+- chunked TTS generation;
+- chunked render khi thích hợp;
+- on-disk artifacts;
+- bounded RAM;
+- resumable stages.
+
+Không lưu toàn bộ frames của video 6 giờ vào RAM.
+
+### Chunk overlap
+
+Các chunk temporal cần overlap để tránh mất:
+
+- subtitle ở boundary;
+- utterance cắt giữa;
+- speaker identity;
+- scene transition.
+
+Sau đó merge bằng canonical timeline.
+
+---
+
+# 25. Persistence
+
+SQLite WAL.
+
+Tables tối thiểu:
+
+```text
+jobs
+job_inputs
+stages
+artifacts
+downloads
+media_info
+scenes
+text_tracks
+utterances
+speaker_clusters
+visual_characters
+speaker_character_edges
+characters
+translations
+tts_segments
+render_outputs
+qc_findings
+model_versions
+app_settings
+```
+
+Không serialize toàn bộ state thành một JSON khổng lồ.
+
+`job_manifest.json` vẫn được xuất để portability/debug.
+
+---
+
+# 26. Worker protocol
+
+Worker nhận JSON line:
+
+```json
+{
+  "type": "run_stage",
+  "job_id": "job_123",
+  "stage": "ocr_tracks",
+  "input_manifest": "..."
+}
+```
+
+Event:
+
+```json
+{
+  "type": "progress",
+  "job_id": "job_123",
+  "stage": "ocr_tracks",
+  "completed": 721,
+  "total": 1200
+}
+```
+
+Checkpoint:
+
+```json
+{
+  "type": "checkpoint",
+  "artifact_id": "artifact_991"
+}
+```
+
+Failure:
+
+```json
+{
+  "type": "failure",
+  "code": "GPU_OOM",
+  "retryable": true,
+  "context": {}
+}
+```
+
+Rust supervisor quyết định retry/fallback, không để Python worker tự loop vô hạn.
+
+---
+
+# 27. Error taxonomy
+
+Không dùng lỗi generic “Something went wrong”.
+
+Ví dụ:
+
+```text
+DOWNLOAD_AUTH_REQUIRED
+DOWNLOAD_SITE_CHANGED
+DOWNLOAD_RATE_LIMIT
+MEDIA_CORRUPT
+MEDIA_CODEC_UNSUPPORTED
+DISK_FULL
+GPU_DRIVER_UNSUPPORTED
+GPU_OOM
+MODEL_LOAD_FAILED
+MODEL_CHECKSUM_FAILED
+ASR_FAILED
+OCR_FAILED
+DIARIZATION_FAILED
+INPAINT_FAILED
+TTS_FAILED
+RENDER_FAILED
+CAPCUT_INCOMPATIBLE
+UPDATE_ROLLBACK
+```
+
+Mỗi error có:
+
+- human_message;
+- technical_message;
+- retry policy;
+- fallback policy;
+- suggested action.
+
+---
+
+# 28. Self-healing rules
+
+Ví dụ GPU OOM:
+
+```text
+Attempt 1: clear model cache
+Attempt 2: reduce batch
+Attempt 3: reduce chunk size
+Attempt 4: unload concurrent model
+Attempt 5: lower-memory model
+Attempt 6: CPU fallback
+```
+
+Không retry cùng một cấu hình 10 lần.
+
+Downloader:
+
+```text
+normal
+→ refresh extractor
+→ refresh session
+→ adapter fallback
+→ mark auth/site-change
+```
+
+Render:
+
+```text
+hardware encode
+→ alternate hw encoder
+→ software encoder
+```
+
+---
+
+# 29. Update safety
+
+Updater tuyệt đối không:
+
+- kill job đang render rồi xóa temp;
+- migrate DB không rollback;
+- update model đang được worker mmap/load;
+- thay engine contract nhưng không thay app.
+
+Mỗi release có compatibility:
+
+```text
+app_version
+engine_api_version
+db_schema_version
+model_manifest_version
+```
+
+Migration phải:
+
+```text
+backup DB
+→ migrate
+→ validate
+→ commit
+```
+
+---
+
+# 30. Security / privacy
+
+Local-first:
+
+- Media không cần upload cloud.
+- Logs mặc định không chứa raw cookies.
+- Cookies/token dùng OS credential storage.
+- Temp auth file xóa sau use.
+- App update phải ký số.
+- Model/download manifest có checksum.
+- Downloader chạy quyền user thường.
+- Không yêu cầu admin trừ installer thực sự cần.
+- Local IPC không expose ra LAN.
+
+---
+
+# 31. Observability
+
+Mỗi job sinh structured logs.
+
+User-facing:
+
+```text
+DubFlow finished 23/24 videos.
+1 video cần đăng nhập lại Douyin.
+```
+
+Developer:
+
+```text
+trace_id
+job_id
+stage_id
+worker_id
+model_id
+model_version
+elapsed
+memory_peak
+vram_peak
+retry_count
+```
+
+Có nút:
+
+```text
+Export Diagnostic Bundle
+```
+
+Bundle loại bỏ cookie/token.
+
+---
+
+# 32. Tech stack đề xuất
+
+## Desktop
+
+- Tauri 2
+- Rust
+- React
+- TypeScript
+- shadcn/ui
+
+## State
+
+- SQLite WAL
+- SQL migrations
+- JSON manifests cho artifact interchange
+
+## Python
+
+- Python runtime app-owned
+- uv lockfile trong development/build pipeline
+- PyTorch / ONNX Runtime tùy module
+
+## Media
+
+- FFmpeg / ffprobe
+
+## Download
+
+- yt-dlp adapter
+- source adapters cho Douyin/Bilibili
+
+## ASR
+
+- faster-whisper / WhisperX-style alignment architecture
+
+## OCR
+
+- PaddleOCR family làm baseline mạnh cho Chinese/multilingual scene text
+- custom temporal text tracker quanh OCR
+
+## Diarization
+
+- pyannote-style offline diarization baseline
+- abstraction để thay engine
+
+## Active speaker
+
+- audio-visual active speaker detector kiểu TalkNet hoặc model tương đương
+
+## TTS
+
+Engine plugin. Candidate cần benchmark thực tế:
+
+- Fish Audio/Fish Speech generation phù hợp multi-speaker/multilingual nếu license/weights phù hợp mục tiêu dự án.
+- F5-TTS là candidate cho voice reference/multi-speaker.
+- Có thể thêm engine khác mà không đổi pipeline.
+
+## Audio separation
+
+- speech/music/effects engine nếu có model phù hợp;
+- Music-Source-Separation-Training / RoFormer-family candidate;
+- Demucs chỉ nên là một backend/fallback, không là abstraction duy nhất.
+
+## Scene
+
+- PySceneDetect hoặc detector nội bộ tương đương.
+
+## Inpaint
+
+- video inpainting engine plugin.
+- Chọn model sau benchmark subtitle-specific dataset, không khóa kiến trúc ở bản thiết kế.
+
+---
+
+# 33. Repo layout đề xuất
+
+```text
+dubflow-local/
+├─ AGENTS.md
+├─ README.md
+├─ apps/
+│  └─ desktop/
+│     ├─ src/
+│     └─ src-tauri/
+├─ crates/
+│  ├─ job-supervisor/
+│  ├─ updater/
+│  ├─ artifact-store/
+│  ├─ media-contracts/
+│  └─ diagnostics/
+├─ engine/
+│  ├─ pyproject.toml
+│  ├─ uv.lock
+│  └─ dubflow/
+│     ├─ worker/
+│     ├─ download/
+│     ├─ media/
+│     ├─ scene/
+│     ├─ asr/
+│     ├─ ocr/
+│     ├─ text_fusion/
+│     ├─ diarization/
+│     ├─ visual_identity/
+│     ├─ active_speaker/
+│     ├─ translation/
+│     ├─ tts/
+│     ├─ separation/
+│     ├─ inpaint/
+│     ├─ subtitle/
+│     ├─ mix/
+│     ├─ render/
+│     ├─ qc/
+│     └─ capcut/
+├─ contracts/
+├─ models/
+├─ fixtures/
+├─ tests/
+├─ packaging/
+├─ scripts/
+└─ docs/
+```
+
+---
+
+# 34. Agent development rules
+
+1. Không code UI gọi AI trực tiếp; mọi module qua contract.
+2. Không merge model mới nếu chưa benchmark.
+3. Mọi stage phải resumable.
+4. External dependency phải nằm sau adapter.
+5. Low confidence là dữ liệu bình thường, không phải exception.
+6. Không chỉ test clip ngắn sạch; phải có long-form và corrupted media.
+
+Benchmark set phải có Douyin portrait, Bilibili landscape, vertical/diagonal subtitles, nhiều speaker, narrator/offscreen, overlap, animation/live-action, text-heavy, music-heavy và source nén xấu.
+
+---
+
+# 35. Test matrix
+
+Phải phủ:
+
+- aspect ratio: 9:16, 16:9, 1:1, 4:3, ultrawide, rotation metadata;
+- resolution: 480p→4K;
+- timing: 23.976/25/29.97/30/60/VFR;
+- subtitle: bottom/top/center/vertical/diagonal/animated/karaoke/multi-text;
+- speaker: 1/2/4+, similar voices, same actor multiple characters, narrator, overlap, crowd;
+- content: live action, anime, 3D animation, gameplay, slideshow, screen recording;
+- audio: clean, music loud, noise, echo, telephone, stereo, mono.
+
+---
+
+# 36. Golden evaluation dataset
+
+Mỗi test clip cần ground truth cho transcript, subtitle polygons/role, speaker segments, character identity, speaker-character mapping, Vietnamese translation và expected TTS voice.
+
+Metrics tối thiểu:
+
+```text
+ASR WER/CER
+OCR CER
+subtitle detection precision/recall
+text-role F1
+speaker DER
+speaker-character association accuracy
+translation human score
+subtitle timing error
+TTS intelligibility
+render A/V sync
+inpaint artifact score
+pipeline success rate
+resume success rate
+```
+
