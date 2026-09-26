@@ -2,7 +2,6 @@ project: DubFlow
 source_of_truth: github
 phase: foundation_ready
 main_health: green_unprotected
-main_sha: af3a4576d43d44207ed8f2e04216fde1a99cc682
 bootstrap_pr: 1
 bootstrap_status: merged
 architecture_baseline: docs/PRODUCT_SYSTEM_DESIGN.md
@@ -10,10 +9,10 @@ risk_baseline: docs/RISK_REGISTER.md
 execution_protocol: docs/ENGINEERING_EXECUTION_PROTOCOL.md
 roadmap: docs/ROADMAP.md
 foundation_epic: 2
-critical_contract_tasks:
+critical_path:
   - 3
   - 4
-durable_job_task: 5
+  - 5
 independent_claimable_lanes:
   - 3
   - 4
