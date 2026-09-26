@@ -9,6 +9,7 @@ Leaf Issue states:
 - CLAIMED
 - IN_PROGRESS
 - WAITING_CI
+- WAITING_CI_INFRA
 - REVIEW
 - BLOCKED_EXTERNAL
 - BLOCKED_DEPENDENCY
@@ -314,14 +315,15 @@ A large acyclic backlog can still stall product delivery when agents choose loca
 6. Remove dependencies already closed as completed.
 7. Any dependency closed not-planned/superseded is a graph inconsistency requiring review, not an automatically satisfied edge.
 8. Candidate READY roots are open leaf tasks with no unresolved hard dependency.
-9. Remove roots already owned by valid live leases.
-10. Rank remaining roots by:
+9. Inspect each root's `Required-CI`. If a required lane is unavailable, keep the root code-claimable but merge-blocked as `WAITING_CI_INFRA`, and add the configured CI infrastructure Issue as an enabling root.
+10. Remove roots already owned by valid live leases.
+11. Rank remaining roots by:
    - downstream unblock fan-out;
    - critical-path relevance;
    - ability to progress independently;
    - lower shared conflict-domain/path contention.
-11. Claim one root using the Draft PR lease protocol.
-12. If no gate root is claimable because all have healthy live leases, use spare capacity on independent risk-reduction or quality work. Do not duplicate healthy leases.
+12. Claim one root using the Draft PR lease protocol.
+13. If no gate root is claimable because all have healthy live leases, use spare capacity on independent risk-reduction or quality work. Do not duplicate healthy leases.
 
 ### Anti-gaming rules
 - Issue number, creation date, model novelty, or expected coding enjoyment is not priority by itself.
@@ -356,3 +358,21 @@ Merge readiness requires:
 Any mismatch is `STALE_BASE`. A stale-base PR remains a valid lease but is not merge-ready. It must be updated and required CI rerun. Do not bypass this because the diff is small, GitHub says `mergeable=true`, or a prior run is green.
 
 Watchdog/reviewer evidence should preserve `pr_head_sha`, `tested_base_sha`, `current_base_sha`, workflow run id, and conclusion.
+
+
+## Required-CI availability
+
+`Required-CI` in `DUBFLOW_TASK_V1` is an evidence contract, not documentation.
+
+Rules:
+- before calling a PR merge-ready, resolve every declared required lane to an actual workflow/check path;
+- a lane that does not exist, is disabled, or is not wired for the affected paths is `WAITING_CI_INFRA`, not PASS;
+- an existing green subset does not satisfy an absent required lane;
+- implementation may continue in Draft using local/fake tests while CI infrastructure is being built;
+- the repository's `docs/PROJECT_STATE.yaml` field `ci_infrastructure_issue` identifies the enabling leaf to prioritize when current gate roots require unavailable CI;
+- optional GPU/live-source/soak lanes do not become global merge gates merely because they exist;
+- if an Issue explicitly declares one of those lanes in `Required-CI`, that Issue must provide its evidence before merge.
+
+Current bootstrap fact: the repository may have only PR Fast while critical roots already declare Integration. Until Integration exists, those roots are code-ready but not merge-ready.
+
+Watchdog/work-selection logic should classify the missing-lane condition separately from test failure and runner outage.

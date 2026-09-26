@@ -50,6 +50,7 @@ Ownership is a renewable lease, not a permanent assignment. A stale lease may be
 - One executable Issue should normally map to one focused PR.
 - Draft while incomplete.
 - Never merge based on stale CI. Required checks must be green for exact HEAD **and** the evidence must correspond to the current base/main SHA. Same HEAD + older tested base is `STALE_BASE`, not merge-ready.
+- Every lane declared in the Issue's `Required-CI` must actually exist and emit applicable evidence. A missing required lane is `WAITING_CI_INFRA`, never an implicit pass.
 - Resolve review threads before ready/merge.
 - Shared contracts, migrations, lockfiles and workspace manifests are conflict domains and require extra coordination.
 - A broad root such as `contracts/**`, `crates/job-supervisor/**`, `packaging/**`, `.github/workflows/**`, `fixtures/**`, or `tests/**` is not blanket ownership; use the narrow namespace defined in docs/PARALLEL_EXECUTION.md.
@@ -74,10 +75,11 @@ Do not select arbitrary open tasks when autonomous capacity becomes available.
 2. Read `docs/PROJECT_STATE.yaml` for the nearest active integration/user-value gate.
 3. Read that Issue's `DUBFLOW_TASK_V1` metadata and traverse only `Hard-Dependencies`.
 4. Prefer unblocked root hard dependencies whose own hard dependencies are satisfied.
-5. Do not treat `Soft-Dependencies`, Epics, prose references, live-site smoke, GPU benchmarks or release-soak work as blockers unless the active gate explicitly makes them hard.
-6. Before claiming a root, inspect Draft PR leases. If another valid lease owns it, take a different independent root.
-7. When several roots are READY, prefer the one that unlocks more downstream gate work with less conflict-domain contention.
-8. Advanced research may proceed in parallel only after available workers cover current gate roots.
+5. For each candidate root, read `Required-CI`. If a required lane does not yet exist or cannot emit evidence for that path, mark merge readiness `WAITING_CI_INFRA` and promote the configured `ci_infrastructure_issue` as an enabling root. Coding may continue in Draft; merge may not.
+6. Do not treat `Soft-Dependencies`, Epics, prose references, live-site smoke, GPU benchmarks or release-soak work as blockers unless the active gate explicitly makes them hard.
+7. Before claiming a root, inspect Draft PR leases. If another valid lease owns it, take a different independent root.
+8. When several roots are READY, prefer the one that unlocks more downstream gate work with less conflict-domain contention.
+9. Advanced research may proceed in parallel only after available workers cover current gate roots.
 
 The goal is not maximum number of open PRs; the goal is shortest safe path to the next user-visible gate.
 
