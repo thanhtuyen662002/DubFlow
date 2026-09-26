@@ -698,3 +698,703 @@ Signals:
 
 - vị trí;
 - duration;
+- repetition;
+- font/stroke;
+- motion;
+- scene persistence;
+- alignment với speech;
+- OCR language;
+- text length;
+- xuất hiện theo nhịp câu nói;
+- similarity với ASR;
+- region history.
+
+Không hard-code “phụ đề luôn ở dưới”.
+
+## 10.5. Vertical/diagonal subtitles
+
+Pipeline phải:
+
+1. detect polygon;
+2. estimate text direction;
+3. rectify crop;
+4. OCR rectified crop;
+5. preserve polygon để removal/inpaint;
+6. render Vietsub theo layout mới do tool quyết định.
+
+Không cố chèn tiếng Việt đúng orientation nguồn nếu gây khó đọc.
+
+Mặc định Vietsub nên ưu tiên readability.
+
+## 10.6. Speech/OCR fusion
+
+Đây là cách giảm việc dịch sai do trên hình có nhiều chữ.
+
+Song song:
+
+```text
+AUDIO → ASR transcript with timestamps
+VIDEO → OCR text tracks with timestamps
+```
+
+Sau đó align:
+
+```text
+ASR utterance
+↔ text tracks cùng thời gian
+↔ language-aware textual similarity
+↔ semantic similarity
+↔ appearance/disappearance timing
+```
+
+Ví dụ:
+
+- Speech nói “我不知道”.
+- OCR phát hiện:
+  - “我不知道” dưới màn hình.
+  - logo “爱奇艺”.
+  - biển “北京站”.
+- “我不知道” có temporal + semantic alignment cao → subtitle.
+- Các vùng còn lại không được coi là dialogue.
+
+### Nguyên tắc
+
+Khi có speech rõ:
+
+**ASR là nguồn nghĩa chính; OCR là nguồn vị trí + đối chiếu + sửa lỗi.**
+
+Khi không có speech:
+
+OCR text mới có thể được dịch như caption/on-screen text tùy class.
+
+## 10.7. OCR consensus
+
+Một subtitle tồn tại nhiều frame.
+
+Không lấy text của một frame.
+
+Dùng:
+
+```text
+frame OCR candidates
+→ normalize
+→ confidence weighted voting
+→ language model correction
+→ final text
+```
+
+---
+
+# 11. Speech / ASR
+
+Output cần word-level timing:
+
+```json
+{
+  "utterance_id": "utt_12",
+  "start": 8.30,
+  "end": 11.21,
+  "language": "zh",
+  "text": "...",
+  "words": [],
+  "asr_confidence": 0.92
+}
+```
+
+Các yêu cầu:
+
+- VAD.
+- word timestamps.
+- long-form chunking.
+- overlap-safe merge.
+- punctuation restoration nếu model cần.
+- language auto detect.
+- confidence.
+- hallucination guards.
+
+ASR phải chạy trên dialogue-enhanced audio nếu separation giúp rõ hơn, nhưng cần so sánh với bản mix gốc để không mất speech.
+
+---
+
+# 12. Speaker Intelligence System
+
+Đây là vấn đề lớn thứ hai.
+
+## 12.1. Phân biệt ba khái niệm
+
+**Voice cluster**
+
+> Giọng A khác giọng B.
+
+**Visible character**
+
+> Nhân vật/khuôn mặt nào đang xuất hiện.
+
+**Speaking character**
+
+> Tại timestamp đó, ai thực sự đang nói.
+
+Ba thứ này không đồng nghĩa.
+
+## 12.2. Audio diarization
+
+Output:
+
+```text
+0.20–2.45  speaker_voice_01
+2.60–4.10  speaker_voice_02
+4.11–5.02  speaker_voice_01
+```
+
+Diarization trả lời “giọng nào nói lúc nào”, nhưng không biết tên nhân vật.
+
+## 12.3. Visual identity tracking
+
+Video pipeline:
+
+```text
+shot detection
+→ face/character detection
+→ visual embedding
+→ multi-object tracking
+→ cross-shot identity linking
+```
+
+Kết quả:
+
+```text
+character_visual_01
+character_visual_02
+character_visual_03
+```
+
+Với animation/anime:
+
+- không phụ thuộc duy nhất face detector người thật;
+- cần visual embedding/object tracker;
+- có thể dùng crop đầu/thân/character embedding;
+- identity linking theo scene.
+
+## 12.4. Active speaker detection
+
+Với người/nhân vật có miệng nhìn thấy:
+
+```text
+face/character track
++ mouth motion
++ audio features
+→ active speaker probability
+```
+
+Ví dụ:
+
+```text
+t=10.0
+char_01 = 0.04
+char_02 = 0.91
+```
+
+## 12.5. Audio–visual association graph
+
+Tạo graph:
+
+```text
+VoiceCluster ↔ VisualCharacter
+```
+
+Edge score dựa trên:
+
+- co-occurrence;
+- active speaker probability;
+- lip motion;
+- temporal continuity;
+- scene continuity;
+- voice similarity;
+- character visibility.
+
+Solve mapping theo toàn clip, không theo từng frame.
+
+## 12.6. Narrator/off-screen voice
+
+Nếu speech tồn tại nhưng không có visible active speaker:
+
+```text
+role = narrator_or_offscreen
+```
+
+Không gán bừa cho nhân vật đang hiện trên màn hình.
+
+## 12.7. Một diễn viên lồng nhiều nhân vật
+
+Audio diarization có thể gom hai nhân vật thành cùng một voice cluster.
+
+Khi active-speaker/visual evidence cho thấy hai visual identity khác nhau, system phải được phép tách:
+
+```text
+voice_cluster_01
+  ├─ character_A
+  └─ character_B
+```
+
+TTS vẫn dùng hai giọng khác nhau nếu mục tiêu là “nhân vật khác nhau → giọng khác nhau”.
+
+## 12.8. Hai nhân vật có giọng rất giống
+
+Không dựa duy nhất voice embedding.
+
+Visual association tăng trọng số.
+
+## 12.9. Overlapping speech
+
+Không flatten thành một speaker.
+
+Data model phải hỗ trợ:
+
+```text
+utterance_1 speaker_A 10.0–12.0
+utterance_2 speaker_B 11.3–12.4
+```
+
+TTS render thành track riêng rồi mix.
+
+---
+
+# 13. Character Registry
+
+Trong một video:
+
+```json
+{
+  "character_id": "char_001",
+  "visual_embeddings": [],
+  "voice_embeddings": [],
+  "gender_style": "auto",
+  "age_style": "auto",
+  "assigned_tts_voice": "vi_voice_07"
+}
+```
+
+Tùy chọn mở rộng cho toàn series/kênh:
+
+- Nhân vật gặp lại ở video sau dùng lại TTS voice.
+- Cho phép người dùng rename:
+  - char_001 → “Tiểu Minh”.
+- Voice mapping được lưu ở project/channel scope.
+
+Quick Mode tự làm hoàn toàn.
+
+Studio Mode cho sửa.
+
+---
+
+# 14. Translation Engine
+
+## 14.1. Không dịch từng subtitle độc lập
+
+Dịch từng dòng mất context, sai:
+
+- đại từ;
+- tên người;
+- giới tính;
+- joke;
+- thuật ngữ;
+- câu nối;
+- chủ thể.
+
+Dịch theo dialogue windows:
+
+```text
+previous context
+current utterances
+next context
+speaker ids
+scene context
+glossary
+```
+
+Sau đó trả output theo `utterance_id`.
+
+## 14.2. Translation source
+
+Dialogue:
+
+```text
+ASR normalized transcript
++ OCR verification
++ optional platform subtitle
+```
+
+Không đưa mọi OCR text vào cùng prompt.
+
+## 14.3. Glossary
+
+Project có:
+
+```text
+glossary.json
+```
+
+Ví dụ:
+
+```text
+character_name
+place_name
+catchphrase
+technical_term
+do_not_translate
+preferred_translation
+```
+
+Có thể học dần từ correction người dùng.
+
+## 14.4. Vietnamese subtitle constraints
+
+Subtitle formatter phải kiểm tra:
+
+- chars/line;
+- lines/cue;
+- reading speed;
+- minimum duration;
+- shot boundary;
+- punctuation;
+- orphan line;
+- safe area.
+
+Không ép câu dài vào 1.2 giây.
+
+Nếu bản dịch dài quá:
+
+1. rewrite ngắn hơn;
+2. chia cue hợp lý;
+3. kéo nhẹ timing nếu khoảng trống cho phép;
+4. không làm lệch speech tùy tiện.
+
+---
+
+# 15. TTS / Dubbing
+
+## 15.1. Voice casting
+
+Mỗi character nhận một `VoiceProfile`.
+
+```json
+{
+  "voice_id": "vi_07",
+  "character_id": "char_001",
+  "timbre": "...",
+  "speaking_rate": 1.0,
+  "pitch_style": "auto",
+  "emotion_mode": "follow_source"
+}
+```
+
+### Auto casting signals
+
+- perceived age range;
+- voice pitch;
+- speaking style;
+- energy;
+- character continuity;
+- source voice embedding;
+- narration vs dialogue.
+
+## 15.2. TTS engines phải pluggable
+
+Interface:
+
+```text
+TtsEngine
+├─ capabilities()
+├─ synthesize()
+├─ clone/reference mode
+├─ multi_speaker()
+├─ languages()
+└─ healthcheck()
+```
+
+Không khóa toàn sản phẩm vào một model.
+
+## 15.3. Duration fitting
+
+Không được chỉ time-stretch cực mạnh.
+
+Quy trình:
+
+1. Generate bản tự nhiên.
+2. So duration với target.
+3. Nếu dài:
+   - rewrite bản dịch ngắn hơn trước;
+   - tăng speaking rate trong khoảng an toàn.
+4. Nếu vẫn dài:
+   - cho phép nhỏ hơn một phần overshoot nếu khoảng lặng kế tiếp cho phép.
+5. Cuối cùng mới dùng high-quality time-stretch nhẹ.
+
+### Guardrail
+
+Không để:
+
+- robot voice do 1.6x;
+- kéo dài âm cuối kỳ quặc;
+- cắt câu đang nói.
+
+## 15.4. Emotion/prosody
+
+Extract source prosody:
+
+- energy;
+- pitch contour;
+- speech rate;
+- pause;
+- emotion class.
+
+TTS nhận style hint nếu engine hỗ trợ.
+
+## 15.5. Voice consistency
+
+Một character phải giữ voice ID xuyên suốt.
+
+Không để model tự random seed làm mỗi câu nghe thành người khác.
+
+---
+
+# 16. Audio Source Separation & Mix
+
+Mục tiêu:
+
+> bỏ/giảm thoại nguồn nhưng giữ nhạc và hiệu ứng.
+
+Không thể giả định mọi video có clean M&E track.
+
+Pipeline:
+
+```text
+original mix
+→ speech/music/effects separation
+→ dialogue attenuation/removal
+→ background repair
+→ Vietnamese dialogue tracks
+→ ducking
+→ loudness normalization
+→ final mix
+```
+
+Nếu separation tạo artifact nặng:
+
+- dùng less-aggressive removal;
+- hoặc giữ voice nguồn ở gain rất thấp;
+- QC đánh dấu.
+
+### Không dùng vocal separator âm nhạc như giải pháp duy nhất
+
+Một số model tách “vocals” được train chủ yếu cho bài hát; dialogue + SFX là bài toán khác.
+
+Engine interface phải cho phép:
+
+- speech/music/effects model;
+- vocal separator;
+- center-channel heuristic;
+- fallback mix strategy.
+
+---
+
+# 17. Xóa sub nguồn
+
+Ba mode:
+
+### Smart Inpaint — mặc định chất lượng
+
+- Dùng text polygons theo thời gian.
+- Expand mask có kiểm soát.
+- Temporal stabilization.
+- Video inpainting.
+- Kiểm tra flicker.
+
+### Adaptive Cover — fallback
+
+Nếu inpaint risk cao:
+
+- overlay box/gradient/background phù hợp.
+- đặt Vietsub che vùng sub nguồn.
+
+### Keep Original
+
+Không xóa, chỉ chèn Vietsub ở vùng khác.
+
+Quick Mode chọn Smart Inpaint nhưng tự fallback khi cần.
+
+## 17.1. Mask lifecycle
+
+Mask không sinh lại độc lập mỗi frame.
+
+```text
+TextTrack polygon
+→ temporal smoothing
+→ motion-aware mask
+→ edge expansion
+→ occlusion handling
+```
+
+Nếu mask rung, video sẽ nhấp nháy rất khó chịu.
+
+## 17.2. Không xóa nhầm chữ quan trọng
+
+Chỉ `dialogue_subtitle` hoặc class được user chọn mới được removal.
+
+Biển hiệu/logo/UI không được xóa chỉ vì OCR thấy chữ.
+
+---
+
+# 18. Render Engine
+
+Render phải tách khỏi AI analysis.
+
+Input:
+
+```text
+source video
+subtitle removal result
+dub mix
+subtitle track
+render profile
+```
+
+Output:
+
+```text
+final container
+```
+
+### Encoder strategy
+
+1. Test hardware encoder.
+2. Nếu pass → dùng.
+3. Nếu fail → software fallback.
+
+Không để NVENC/QSV/AMF lỗi làm fail toàn job.
+
+### Timestamp correctness
+
+Mọi stage phải dùng timeline chuẩn thống nhất.
+
+Không dùng frame index làm nguồn sự thật trên VFR media.
+
+---
+
+# 19. Automated QC
+
+Trước DONE chạy QC tự động.
+
+## 19.1. Video checks
+
+- Output mở được.
+- Duration sai lệch trong tolerance.
+- Không frame đen dài bất thường.
+- Không freeze segment bất thường.
+- Resolution đúng.
+- Aspect ratio đúng.
+- Không crop ngoài ý muốn.
+
+## 19.2. Subtitle checks
+
+- Không overlap vô lý.
+- Không ra ngoài safe area.
+- Không cue duration âm.
+- Không text rỗng.
+- Reading speed.
+- Kiểm tra còn text nguồn trong vùng đã remove.
+- Kiểm tra Vietsub không che mặt quá nhiều.
+
+## 19.3. Audio checks
+
+- Không clipping.
+- Không silence toàn video.
+- Dub segment coverage.
+- Loudness.
+- sync drift.
+- voice continuity.
+- background stem tồn tại.
+
+## 19.4. Semantic checks
+
+Sample theo:
+
+- đầu;
+- giữa;
+- cuối;
+- scene có nhiều người nói;
+- scene confidence thấp.
+
+So:
+
+```text
+source ASR
+→ Vietnamese translation
+→ ASR lại từ TTS Vietnamese
+```
+
+Back-ASR giúp bắt:
+
+- TTS đọc sai tên;
+- bỏ chữ;
+- phát âm số sai;
+- generation hỏng.
+
+---
+
+# 20. Confidence system
+
+Mỗi segment có:
+
+```text
+asr_confidence
+ocr_confidence
+text_role_confidence
+speaker_confidence
+translation_confidence
+tts_confidence
+inpaint_risk
+```
+
+Final:
+
+```text
+segment_risk_score
+```
+
+Quick Mode mặc định:
+
+- Không dừng vì uncertainty thông thường.
+- Chọn phương án tốt nhất.
+- Vẫn xuất video.
+- Đánh dấu các đoạn nghi ngờ trong `qc_report`.
+
+Studio Mode có thể bật:
+
+```text
+pause_on_low_confidence = true
+```
+
+---
+
+# 21. CapCut strategy
+
+CapCut là **adapter**, không phải core data model.
+
+## 21.1. Output ổn định nhất
+
+Luôn xuất:
+
+- video;
+- voice/audio stems;
+- SRT;
+- ASS;
+- timeline.json.
+
+CapCut Desktop hỗ trợ import SRT, nên ít nhất subtitle vẫn editable bằng đường chuẩn.
+
+## 21.2. Direct CapCut Project
+
+Có thể hỗ trợ bằng versioned `CapCutAdapter`.
+
+```text
+CapCutAdapter
