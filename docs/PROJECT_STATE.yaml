@@ -1,24 +1,28 @@
 project: DubFlow
 source_of_truth: github
-phase: bootstrap_control_plane_review
-main_health: initialized_unprotected
+phase: foundation_ready
+main_health: green_unprotected
+main_sha: af3a4576d43d44207ed8f2e04216fde1a99cc682
+bootstrap_pr: 1
+bootstrap_status: merged
 architecture_baseline: docs/PRODUCT_SYSTEM_DESIGN.md
 risk_baseline: docs/RISK_REGISTER.md
 execution_protocol: docs/ENGINEERING_EXECUTION_PROTOCOL.md
-bootstrap_pr: 1
-critical_path:
-  - governance_and_ci
-  - durable_job_engine
-  - canonical_media_timeline
-  - worker_protocol
-parallel_lanes_after_foundation:
-  - desktop_product
-  - source_download
-  - subtitle_intelligence
-  - speaker_intelligence
-  - translation_tts
-  - audio_render
-  - packaging_update
-  - qa_benchmark
+roadmap: docs/ROADMAP.md
+foundation_epic: 2
+critical_contract_tasks:
+  - 3
+  - 4
+durable_job_task: 5
+independent_claimable_lanes:
+  - 3
+  - 4
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+administrative_risks:
+  - 11
 ruleset_required: true
 direct_main_push_allowed: false
