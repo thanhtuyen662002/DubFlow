@@ -75,3 +75,8 @@ if "Immediate parallel lanes" not in roadmap or "Parallel groups" not in paralle
     sys.exit(1)
 
 print("DubFlow governance validation passed.")
+
+
+# Deterministic issue-metadata parser contract must remain executable in PR Fast.
+from issue_graph.task_metadata import run_self_tests
+run_self_tests()

@@ -264,3 +264,31 @@ Closed/missing PR
   -> LEASE_INVALID
 ```
 
+
+
+## Machine-readable Issue dependency contract
+
+Executable leaf Issues use this block near the top of the Issue body:
+
+```text
+DUBFLOW_TASK_V1
+Hard-Dependencies: #3,#4
+Soft-Dependencies: #6
+Conflict-Domains: timeline,worker-protocol
+Expected-Paths: contracts/timeline/**,tests/timeline/**
+Required-CI: PR Fast + Integration
+```
+
+Rules:
+- `Hard-Dependencies` are the only dependency edges that may block claim/merge on dependency completion.
+- `Soft-Dependencies` are compatibility/reconciliation relationships. They must not make a worker idle when a mock/versioned interface can preserve progress.
+- A dependency may not appear in both hard and soft lists.
+- A leaf may not hard-depend on an Epic.
+- The hard graph must remain acyclic.
+- `none` is explicit and preferred over an empty dependency field.
+- References elsewhere in prose are explanatory only; watchdogs/agents must not infer hard edges from arbitrary `#123` mentions.
+- A hard dependency closed as completed satisfies the edge.
+- A hard dependency closed as not-planned/superseded does not silently satisfy the edge; the dependent task must be reviewed/repointed.
+- GitHub Issues remain the authoritative live work graph. Do not copy the complete Issue graph into PROJECT_STATE.yaml.
+
+Critical-path and user-value Issues should be migrated first. During transition, legacy Issues without `DUBFLOW_TASK_V1` remain human-readable, but automation must report them as legacy/unstructured rather than guessing all prose references are hard dependencies.
