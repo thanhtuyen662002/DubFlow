@@ -14,6 +14,7 @@ required = [
     "docs/PROJECT_STATE.yaml",
     "docs/ROADMAP.md",
     "docs/AUDIT_BOOTSTRAP.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
     "docs/adr/ADR-0001-local-first-and-time.md",
 ]
 missing = [p for p in required if not (ROOT / p).is_file()]
@@ -80,3 +81,18 @@ print("DubFlow governance validation passed.")
 # Deterministic issue-metadata parser contract must remain executable in PR Fast.
 from issue_graph.task_metadata import run_self_tests
 run_self_tests()
+
+
+pr_template = (ROOT / ".github/PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
+protocol_text = (ROOT / "docs/ENGINEERING_EXECUTION_PROTOCOL.md").read_text(encoding="utf-8")
+agents_text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+for marker in ["DUBFLOW_PR_V1", "Tested-Base-SHA:"]:
+    if marker not in pr_template:
+        print("Missing PR evidence marker in template:", marker)
+        sys.exit(1)
+if "STALE_BASE" not in protocol_text or "Tested-Base-SHA" not in protocol_text:
+    print("Engineering protocol is missing tested-base freshness rules")
+    sys.exit(1)
+if "STALE_BASE" not in agents_text or "Tested-Base-SHA" not in agents_text:
+    print("AGENTS.md is missing tested-base merge invariant")
+    sys.exit(1)

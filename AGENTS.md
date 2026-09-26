@@ -36,7 +36,7 @@ Before claim:
 - read the ownership map in docs/PARALLEL_EXECUTION.md;
 - verify no valid live Draft PR already owns the Issue or an incompatible shared namespace.
 
-Claim by creating branch `agent/issue-<n>-<slug>` and immediately opening a Draft PR containing `DUBFLOW_PR_V1`, `Issue: #n`, `Lease-Owner`, `Lease-Heartbeat`, `Conflict-Domains`, and `Expected-Paths`.
+Claim by creating branch `agent/issue-<n>-<slug>` and immediately opening a Draft PR containing `DUBFLOW_PR_V1`, `Issue: #n`, `Lease-Owner`, `Lease-Heartbeat`, `Tested-Base-SHA`, `Conflict-Domains`, and `Expected-Paths`. `Tested-Base-SHA` starts as the current `main` SHA the branch was created from and must be refreshed whenever evidence is rerun against a newer base.
 
 Earliest valid Draft PR claim wins. A later racing claim must stop before material changes.
 
@@ -49,7 +49,7 @@ Ownership is a renewable lease, not a permanent assignment. A stale lease may be
 ## Pull requests
 - One executable Issue should normally map to one focused PR.
 - Draft while incomplete.
-- Never merge based on stale CI. Required checks must be green for exact HEAD.
+- Never merge based on stale CI. Required checks must be green for exact HEAD **and** the evidence must correspond to the current base/main SHA. Same HEAD + older tested base is `STALE_BASE`, not merge-ready.
 - Resolve review threads before ready/merge.
 - Shared contracts, migrations, lockfiles and workspace manifests are conflict domains and require extra coordination.
 - A broad root such as `contracts/**`, `crates/job-supervisor/**`, `packaging/**`, `.github/workflows/**`, `fixtures/**`, or `tests/**` is not blanket ownership; use the narrow namespace defined in docs/PARALLEL_EXECUTION.md.
@@ -80,3 +80,15 @@ Do not select arbitrary open tasks when autonomous capacity becomes available.
 8. Advanced research may proceed in parallel only after available workers cover current gate roots.
 
 The goal is not maximum number of open PRs; the goal is shortest safe path to the next user-visible gate.
+
+
+## Tested-base merge invariant
+
+Before autonomous merge:
+- read current PR `head_sha`;
+- read current `main` SHA;
+- read `Tested-Base-SHA` from the PR lease/evidence;
+- require the PR head to match the green required-check evidence;
+- require `Tested-Base-SHA == current main SHA`.
+
+If `main` advanced after the successful CI run, mark the PR `STALE_BASE`. Update/rebase/merge-main into the branch according to repository policy, set the new tested base, and rerun required CI. File-level `mergeable=true` does not waive this rule.
