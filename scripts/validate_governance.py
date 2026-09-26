@@ -15,6 +15,10 @@ required = [
     "docs/ROADMAP.md",
     "docs/AUDIT_BOOTSTRAP.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/workflows/pr-integration.yml",
+    "scripts/ci/component_registry.json",
+    "scripts/ci/component_registry.py",
+    "scripts/ci/run_integration.py",
     "docs/adr/ADR-0001-local-first-and-time.md",
 ]
 missing = [p for p in required if not (ROOT / p).is_file()]
@@ -108,4 +112,23 @@ if "WAITING_CI_INFRA" not in protocol_text:
     sys.exit(1)
 if "Required-CI" not in agents_text or "WAITING_CI_INFRA" not in agents_text:
     print("AGENTS.md must enforce required CI lane availability")
+    sys.exit(1)
+
+
+from ci.component_registry import run_self_tests as run_ci_registry_self_tests
+from ci.component_registry import validate_current_repository
+run_ci_registry_self_tests()
+ci_registry_errors = validate_current_repository(ROOT)
+if ci_registry_errors:
+    print("Integration component registry validation failed:")
+    for error in ci_registry_errors:
+        print(" -", error)
+    sys.exit(1)
+
+integration_workflow = (ROOT / ".github/workflows/pr-integration.yml").read_text(encoding="utf-8")
+if "name: integration" not in integration_workflow:
+    print("PR Integration must emit stable check name: integration")
+    sys.exit(1)
+if "timeout-minutes: 45" not in integration_workflow:
+    print("PR Integration must keep a bounded 45-minute job timeout")
     sys.exit(1)
