@@ -18,7 +18,8 @@ critical_path:
   - 4
   - 5
 first_integration_gate: 14
-first_user_value_gate: 45
+first_user_value_gate: 56
+baseline_dubbing_gate: 45
 administrative_risks:
   - 11
 ruleset_required: true
