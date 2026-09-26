@@ -69,7 +69,8 @@ No live-source credential logic in required PR-fast workflows.
 Primary ownership:
 - `fixtures/catalog/**`
 - `fixtures/generated/**`
-- `models/benchmark/**`
+- `models/benchmark/catalog/**`
+- `models/benchmark/metrics/**`
 - `tests/benchmark_harness/**`
 
 Timeline/source/QC fixtures can be referenced, but ownership of their contract schemas remains with their task.
