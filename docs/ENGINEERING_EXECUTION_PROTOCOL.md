@@ -166,3 +166,101 @@ Every executable Issue must state:
 - Recovery/decomposition note if critical-path.
 
 This prevents an Issue from being "mostly done" while nobody can prove it is mergeable.
+
+
+## Claim-race hardening
+
+Creating a Draft PR is only the first half of a claim.
+
+Immediately after opening the Draft PR, the worker MUST re-read all open PRs and verify:
+- no earlier valid Draft PR already claims the same Issue;
+- no incompatible live PR owns the same conflict domain/material paths;
+- its own PR is still open and points at the expected branch/head.
+
+If two agents race:
+- earliest valid claim wins;
+- loser stops before additional material edits;
+- loser may preserve its branch for forensic/reuse purposes but must not keep advancing it as the active claim.
+
+A claim is not durable until the Draft PR exists on GitHub. Local branches, unpushed commits, terminal notes and chat messages are disposable.
+
+## Durable progress checkpoints
+
+A heartbeat alone is not proof of useful progress.
+
+A valid lease heartbeat must be accompanied by at least one durable GitHub-visible checkpoint when work materially advances:
+- pushed commit;
+- updated PR body/recovery checkpoint;
+- review resolution;
+- CI repair evidence;
+- explicit blocker comment with reproducible details.
+
+An agent that repeatedly refreshes heartbeat without durable progress is considered no-progress and may become reclaimable.
+
+Server-observed GitHub timestamps are authoritative for lease age. Agent-local clocks are advisory only.
+
+## CI source-head versus merge-ref evidence
+
+GitHub `pull_request` workflows commonly check out a synthetic merge ref. Therefore “exact-head CI” must distinguish two different questions:
+
+1. **Source-head evidence:** did the PR source SHA itself receive the expected checks?
+2. **Merge-compatibility evidence:** did GitHub test the source combined with current base/main?
+
+Rules:
+- record the PR source `head_sha` when deciding lease ownership and whether new commits invalidated old evidence;
+- record the workflow run's tested SHA/ref as separate evidence;
+- when a required workflow uses the pull-request merge ref, success proves merge compatibility for the base snapshot used by that run, not that the synthetic merge SHA equals the source SHA;
+- if main advances after a high-risk shared-contract run, re-run/update before merge when policy requires current-base compatibility;
+- never treat a green run whose PR source head no longer matches the current PR head as valid.
+
+CI tooling/watchdog must preserve both `pr_head_sha` and `tested_sha`.
+
+## CI queue-age policy
+
+`timeout-minutes` only limits a job after it starts running; it does not bound time spent queued waiting for a runner.
+
+The watchdog therefore applies a separate queue-age policy:
+- hosted PR-fast queued unusually beyond the repository threshold is classified as runner/platform blockage;
+- self-hosted/GPU queues use a longer explicit threshold based on expected capacity;
+- queued age must not make an implementation lease stale if the worker has valid exact-head evidence that required CI is waiting for infrastructure;
+- a queue blockage cannot freeze unrelated lanes;
+- repeated queue saturation becomes an infrastructure Issue rather than repeated code reruns.
+
+Do not cancel/requeue endlessly because that sends a queued job to the back of the queue.
+
+## External dependency and CI truthfulness
+
+A workflow is deterministic only when its required path does not depend on:
+- live Douyin/Bilibili availability;
+- a user browser session;
+- mutable remote model files without pinned hashes;
+- scarce GPU runners shared with unrelated work;
+- release signing services.
+
+Those belong to isolated lanes. A green PR-fast run means only its declared deterministic contract passed; it must never be presented as proof that live sources/models/CapCut currently work.
+
+## Stale lease decision table
+
+```text
+Draft PR + recent durable checkpoint + CI running within timeout
+  -> ACTIVE / WAIT
+
+Draft PR + valid head + CI queued within queue-age threshold
+  -> WAITING_INFRA
+
+Draft PR + heartbeat but no durable checkpoint beyond threshold
+  -> NO_PROGRESS / INSPECT
+
+Draft PR + failed deterministic CI + owner active
+  -> OWNER_FIX
+
+Draft PR + failed deterministic CI + stale owner
+  -> RECLAIMABLE
+
+Draft PR + no current-head CI and no progress
+  -> RECLAIMABLE / REPAIR
+
+Closed/missing PR
+  -> LEASE_INVALID
+```
+

@@ -2395,3 +2395,117 @@ Nếu hệ thống không chắc chắn, nó phải:
 5. regenerate phần liên quan thay vì chạy lại toàn video.
 
 Đó mới là tiêu chuẩn “1-click” thực tế.
+
+
+---
+
+# 45. Stage graph, provenance, invalidation and selective rerun
+
+The stage list earlier in this document is a **product-facing progress order**, not a mandatory implementation as one irreversible linear state machine.
+
+Internally, DubFlow MUST model job execution as a versioned dependency graph.
+
+```text
+Input
+ ├─> Media Probe ─> Canonical Timeline ─> Proxy
+ │                                 ├─> ASR
+ │                                 ├─> OCR/Text Tracks
+ │                                 ├─> Visual Identity
+ │                                 └─> Audio Separation
+ │
+ ASR + OCR/Text Tracks ─> Transcript Arbitration ─> Translation
+ ASR + Diarization + Visual Identity ─> Speaker/Character Association
+ Translation + Character Mapping ─> TTS
+ Text Tracks ─> Subtitle Removal
+ Separation + TTS ─> Audio Mix
+ Subtitle Removal + Audio Mix + Render Profile ─> Render
+ Render + semantic/audio/video checks ─> QC
+ QC ─> Export
+```
+
+Rules:
+
+1. Every artifact records its producer version, input artifact hashes, configuration hash, model version(s), and contract/schema version.
+2. A stage may reuse an artifact only when all required provenance inputs are still valid.
+3. Changing one subtitle line MUST NOT force ASR/OCR/diarization to rerun.
+4. Changing one character voice SHOULD invalidate only the affected TTS segments, downstream mix, render and QC.
+5. Changing subtitle-removal mode SHOULD invalidate subtitle cleanup, render and QC, not translation or TTS.
+6. Changing the translation model invalidates translations and downstream TTS/mix/render/QC, not source analysis.
+7. Changing canonical timeline logic is a high-impact invalidation that can invalidate all time-dependent downstream artifacts.
+8. A failed optional branch such as direct CapCut draft export cannot invalidate a valid standard export.
+9. Artifact invalidation is explicit and deterministic; deleting folders manually is never the normal rerun mechanism.
+
+The UI may still show a simple ordered progress list, but durable execution state must preserve DAG/provenance semantics.
+
+## 45.1. Transcript-source arbitration
+
+The earlier list of available subtitle/text sources is a discovery order, NOT a fixed semantic priority.
+
+DubFlow does not use one universal rule such as “soft subtitle always wins” or “ASR always wins.”
+
+For spoken dialogue, construct a `TranscriptCandidateSet`:
+
+```text
+platform/soft subtitle
+ASR transcript
+burned-in subtitle OCR
+optional metadata captions
+```
+
+Each candidate keeps provenance, time mapping, language, confidence and normalization history.
+
+Arbitration rules:
+
+- If speech is clear, ASR is normally the primary semantic signal.
+- A high-quality platform/soft subtitle can override or correct ASR when timing/language/consistency evidence is stronger.
+- Burned-in OCR is primarily geometry + corroboration for spoken dialogue, but may become semantic source when audio is unusable and OCR evidence is strong.
+- On-screen captions/narration with no corresponding speech are handled as visual text, not forced into spoken-dialogue arbitration.
+- Conflicts are never silently discarded. The chosen text stores the alternatives and decision confidence.
+- A low-confidence conflict does not block Quick Mode by default; it becomes a QC finding and remains locally editable.
+
+This prevents two implementations from separately following “source priority” and “ASR-primary” rules and producing incompatible transcripts.
+
+## 45.2. Multi-instance ownership
+
+Only one writable DubFlow supervisor may own a given project/job database at a time.
+
+Requirements:
+
+- acquire an OS-visible project lock before writable DB open;
+- lock metadata includes process identity and start timestamp for diagnostics;
+- a second app instance opens the project read-only or offers a safe handoff;
+- stale-lock recovery validates that the previous owner process is gone before taking ownership;
+- never use “lock file exists” as sufficient proof that a live owner exists;
+- background workers do not own the project lock and do not write durable SQLite state directly.
+
+This protects SQLite/job/artifact invariants when the user double-clicks the application, launches after a crash, or an updater restarts the shell.
+
+## 45.3. Pinned model/runtime retention
+
+A resumable job pins the exact model/runtime/contract versions required to interpret or regenerate its artifacts.
+
+Model cleanup/update rules:
+
+- never remove a model/runtime version still referenced by a non-terminal resumable job;
+- terminal jobs may retain provenance without keeping every model binary, but rerunning a stage must either reacquire the exact version or explicitly migrate/invalidate with user-visible evidence;
+- disk cleanup computes a reference graph from active jobs before deleting packs;
+- emergency low-disk cleanup may evict caches, proxies and reacquirable unreferenced packs first;
+- an update cannot silently resume an old job under a behaviorally incompatible model.
+
+## 45.4. Durable artifact commit protocol
+
+For every durable artifact:
+
+```text
+write temp
+→ flush/close
+→ validate
+→ content hash
+→ atomic rename into artifact store
+→ DB transaction recording provenance
+→ emit UI/event notification
+```
+
+If the process dies before DB commit, recovery scans orphan artifacts by manifest/hash.
+If DB references a missing/corrupt artifact, the owning stage becomes invalid and rerunnable.
+
