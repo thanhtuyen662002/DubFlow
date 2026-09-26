@@ -1997,3 +1997,401 @@ pipeline success rate
 resume success rate
 ```
 
+speaker segments
+character identity
+speaker-character mapping
+Vietnamese translation
+expected TTS voice
+```
+
+Metrics:
+
+```text
+ASR WER/CER
+OCR CER
+subtitle detection precision/recall
+text-role F1
+speaker DER
+speaker-character association accuracy
+translation human score
+subtitle timing error
+TTS intelligibility
+render A/V sync
+inpaint artifact score
+pipeline success rate
+resume success rate
+```
+
+---
+
+# 37. Milestone plan
+
+## M0 — Foundation
+
+Deliver:
+
+- Tauri shell.
+- Rust supervisor.
+- SQLite jobs.
+- FFmpeg probe.
+- worker protocol.
+- artifact store.
+- installer skeleton.
+- auto-update skeleton.
+- crash/resume primitive.
+
+Acceptance:
+
+- Kill app giữa stage giả lập → mở lại resume.
+- Không yêu cầu Python hệ thống.
+
+---
+
+## M1 — Download + local files
+
+Deliver:
+
+- URL input.
+- multi URL.
+- folder import.
+- yt-dlp adapter.
+- Bilibili.
+- Douyin adapter boundary.
+- channel enumeration.
+- cookie/session bridge.
+- dedup.
+
+Acceptance:
+
+- 100+ item queue không đóng băng UI.
+- restart không mất queue.
+- failure một video không chặn queue.
+
+---
+
+## M2 — Transcript + subtitle intelligence
+
+Deliver:
+
+- ASR.
+- OCR.
+- text tracking.
+- text role classifier.
+- ASR/OCR fusion.
+- SRT generation.
+
+Acceptance:
+
+- test horizontal/vertical/diagonal.
+- text-heavy scene không dịch nhầm toàn bộ chữ.
+- subtitle timing ổn qua scene cuts.
+
+Đây là milestone khó nhất số 1.
+
+---
+
+## M3 — Multi-speaker intelligence
+
+Deliver:
+
+- diarization.
+- face/character tracking.
+- active speaker.
+- audio-visual association.
+- narrator handling.
+- Character Registry.
+
+Acceptance:
+
+- 2-speaker live action.
+- 4-speaker scene.
+- off-screen narrator.
+- same voice actor / multiple visual character test.
+- overlapping dialogue representation.
+
+Đây là milestone khó nhất số 2.
+
+---
+
+## M4 — Translation + TTS
+
+Deliver:
+
+- context translation.
+- glossary.
+- character voice casting.
+- TTS plugin system.
+- duration fitting.
+- prosody.
+- multi-track TTS.
+
+Acceptance:
+
+- voice consistency xuyên video.
+- không drift thời gian.
+- long sentence không dùng stretch cực đoan.
+
+---
+
+## M5 — Audio + subtitle cleanup + render
+
+Deliver:
+
+- speech/music/effects separation.
+- original dialogue attenuation.
+- subtitle inpaint.
+- fallback cover.
+- Vietnamese subtitle renderer.
+- final audio mix.
+- render profiles.
+
+Acceptance:
+
+- output video pass QC.
+- no obvious clipping.
+- hardware encoder fallback.
+- no hardcoded ratio.
+
+---
+
+## M6 — CapCut bridge
+
+Deliver:
+
+- CapCut detect/version.
+- version compatibility layer.
+- direct draft cho version hỗ trợ.
+- stable import pack fallback.
+- launch/open project flow nếu khả thi.
+
+Acceptance:
+
+- direct generated draft mở được ở tested versions.
+- unknown version không làm mất job.
+- SRT/audio/video assets luôn usable.
+
+---
+
+## M7 — Hardening / one-click
+
+Deliver:
+
+- hardware profiler.
+- model packs.
+- signed updater.
+- update rollback.
+- diagnostic bundle.
+- chaos tests.
+- long-form.
+- whole-channel soak tests.
+
+Acceptance:
+
+- fresh Windows machine → installer → first-run bootstrap → process video không manual dependency setup.
+- crash/mất điện mô phỏng → resume.
+- disk pressure → cảnh báo/fallback.
+- GPU OOM → adaptive fallback.
+- update fail → rollback.
+
+---
+
+# 38. Release gates
+
+Không gọi là v1 production trước khi:
+
+1. 1-click install trên clean Windows VM.
+2. 1-click first run.
+3. Video 9:16 Douyin end-to-end.
+4. Video 16:9 Bilibili end-to-end.
+5. Folder batch.
+6. Channel queue.
+7. Multi-speaker voice stable.
+8. OCR không dịch logo/signage như dialogue ở golden set.
+9. Resume after hard kill.
+10. Resume after machine reboot.
+11. GPU OOM fallback.
+12. Software encode fallback.
+13. CapCut unknown-version fallback.
+14. Model update rollback.
+15. 2–4 giờ video soak test.
+16. 100-video queue soak test.
+17. Output deterministic enough to debug by model/app version.
+
+---
+
+# 39. Những quyết định kiến trúc không nên thay đổi tùy tiện
+
+1. CapCut không được là core format.
+2. OCR không được là nguồn dialogue duy nhất.
+3. Audio diarization không được coi là character identification.
+4. TTS model phải pluggable.
+5. yt-dlp phải nằm sau adapter.
+6. Stage phải checkpoint/resume.
+7. Không dùng system Python.
+8. Không hard-code aspect ratio/resolution.
+9. Không giữ mọi model trong VRAM cùng lúc.
+10. Không update giữa critical stage.
+11. Không để một video fail làm fail batch.
+12. Không dịch text trước khi phân loại vai trò text.
+13. Không xoá text trước khi xác định đó là subtitle.
+14. Không tự gán visible character cho off-screen narration.
+15. Không time-stretch TTS cực đoan để chữa translation dài.
+
+---
+
+# 40. Điểm kỹ thuật cần prototype sớm nhất
+
+Thứ tự prototype nên là:
+
+```text
+A. subtitle intelligence
+B. speaker ↔ character association
+C. dialogue/background separation
+D. duration-aware TTS
+E. CapCut adapter
+```
+
+Không nên bắt đầu bằng làm UI đẹp rồi mới kiểm chứng các điểm trên.
+
+UI foundation làm song song, nhưng các rủi ro AI phải được proof-of-concept sớm.
+
+---
+
+# 41. Suggested engineering epics
+
+```text
+EPIC-001 Desktop Foundation
+EPIC-002 Installer / Runtime / Updater
+EPIC-003 Job Engine / Resume
+EPIC-004 Source Download
+EPIC-005 Media Timeline
+EPIC-006 Subtitle Intelligence
+EPIC-007 Speech Recognition
+EPIC-008 Speaker Intelligence
+EPIC-009 Character Registry
+EPIC-010 Translation
+EPIC-011 TTS / Voice Casting
+EPIC-012 Audio Separation / Mix
+EPIC-013 Subtitle Removal / Inpaint
+EPIC-014 Render / QC
+EPIC-015 CapCut Bridge
+EPIC-016 Batch / Channel Scheduler
+EPIC-017 Model Manager
+EPIC-018 Diagnostics
+EPIC-019 Golden Dataset / Benchmark
+EPIC-020 Chaos / Soak / Release
+```
+
+---
+
+# 42. First coding slice
+
+Agent không nên code toàn pipeline ngay.
+
+Vertical slice đầu tiên:
+
+```text
+select local video
+→ create job
+→ ffprobe
+→ generate proxy
+→ fake analysis stage
+→ FFmpeg render passthrough
+→ output
+→ restart/resume
+```
+
+Sau khi state machine/resume chắc mới đưa AI model vào.
+
+Vertical slice thứ hai:
+
+```text
+video
+→ ASR
+→ OCR tracks
+→ classify subtitle vs non-subtitle
+→ output debug overlay + SRT
+```
+
+Vertical slice thứ ba:
+
+```text
+ASR
+→ diarization
+→ face/character tracks
+→ active speaker
+→ debug video:
+   face boxes + speaker labels
+```
+
+Không làm dubbing trước khi debug overlay này đáng tin.
+
+---
+
+# 43. Current ecosystem notes used for this plan (checked September 2026)
+
+Các thành phần dưới đây chỉ là candidate/reference, không phải cam kết khóa công nghệ:
+
+- yt-dlp hiện có extractor Bilibili rất sâu và hỗ trợ danh sách Bilibili source types; tài liệu của chính yt-dlp cũng cảnh báo site support có thể bị break khi website thay đổi. Douyin đã có các issue 2026 liên quan fresh cookies/site changes, do đó downloader bắt buộc phải có adapter/fallback thay vì xem yt-dlp là contract bất biến.
+- PaddleOCR 3.x/PP-OCRv6 hỗ trợ scene OCR đa ngôn ngữ và coordinate text; phù hợp làm baseline OCR tiếng Trung nhưng vẫn cần temporal tracker và role classifier riêng cho video.
+- faster-whisper có word timestamps và VAD; WhisperX kết hợp word-level alignment và diarization.
+- pyannote.audio có local speaker diarization pipeline; diarization chỉ giải quyết “who spoke when”, không tự giải quyết visual character identity.
+- TalkNet là reference cho audio-visual active speaker detection.
+- Fish Audio S2 và F5-TTS đều có khả năng multi-speaker/reference-voice theo tài liệu repo, nhưng cần benchmark tiếng Việt, tốc độ, VRAM và license trước khi chọn default engine.
+- Tauri 2 có updater hỗ trợ signed update artifacts trên Windows.
+- CapCut Desktop hỗ trợ import SRT; các project generator cộng đồng như pyCapCut chứng minh direct draft generation khả thi nhưng format này không phải public stable API và phải được cô lập sau adapter.
+
+References:
+
+- https://github.com/yt-dlp/yt-dlp
+- https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/bilibili.py
+- https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/tiktok.py
+- https://github.com/PaddlePaddle/PaddleOCR
+- https://github.com/SYSTRAN/faster-whisper
+- https://github.com/m-bain/whisperX
+- https://github.com/pyannote/pyannote-audio
+- https://github.com/TaoRuijie/TalkNet-ASD
+- https://github.com/fishaudio/fish-speech
+- https://github.com/SWivid/F5-TTS
+- https://github.com/ZFTurbo/Music-Source-Separation-Training
+- https://www.scenedetect.com/
+- https://v2.tauri.app/plugin/updater/
+- https://www.capcut.com/help/how-to-import-subtitles
+- https://github.com/GuanYixuan/pyCapCut
+
+---
+
+# 44. Definition of Done cho mục tiêu cuối
+
+DubFlow Local chỉ đạt mục tiêu sản phẩm khi một người dùng mới có thể:
+
+```text
+Install
+→ mở app
+→ dán URL Douyin/Bilibili hoặc chọn folder
+→ bấm Bắt đầu
+→ rời máy
+→ quay lại
+→ nhận video Việt hóa
+```
+
+và không cần:
+
+- terminal;
+- Python;
+- FFmpeg command;
+- sửa JSON;
+- tải model thủ công;
+- gán từng speaker;
+- sửa từng subtitle;
+- recover job bằng tay.
+
+Nếu hệ thống không chắc chắn, nó phải:
+
+1. tự chọn best-effort;
+2. hoàn thành job nếu có thể;
+3. đánh dấu đoạn rủi ro;
+4. cho phép sửa chính xác đoạn đó;
+5. regenerate phần liên quan thay vì chạy lại toàn video.
+
+Đó mới là tiêu chuẩn “1-click” thực tế.
