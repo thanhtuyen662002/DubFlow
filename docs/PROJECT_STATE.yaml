@@ -1,11 +1,11 @@
 project: DubFlow
 source_of_truth: github
-phase: bootstrap_control_plane
+phase: bootstrap_control_plane_review
 main_health: initialized_unprotected
 architecture_baseline: docs/PRODUCT_SYSTEM_DESIGN.md
 risk_baseline: docs/RISK_REGISTER.md
 execution_protocol: docs/ENGINEERING_EXECUTION_PROTOCOL.md
-bootstrap_pr: pending
+bootstrap_pr: 1
 critical_path:
   - governance_and_ci
   - durable_job_engine
