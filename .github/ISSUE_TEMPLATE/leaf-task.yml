@@ -3,6 +3,20 @@ description: Executable task that an agent may claim
 title: "[TASK] "
 body:
   - type: textarea
+    id: machine_metadata
+    attributes:
+      label: Machine-readable task metadata
+      description: Keep the schema marker and fill every field. Use issue numbers such as #3,#4 or "none".
+      value: |
+        DUBFLOW_TASK_V1
+        Hard-Dependencies: none
+        Soft-Dependencies: none
+        Conflict-Domains: none
+        Expected-Paths: none
+        Required-CI: PR Fast
+    validations:
+      required: true
+  - type: textarea
     id: outcome
     attributes:
       label: Outcome
@@ -21,35 +35,17 @@ body:
       label: In scope / out of scope
     validations:
       required: true
-  - type: input
-    id: dependencies
-    attributes:
-      label: Dependencies
-      description: Issue numbers or "none".
-    validations:
-      required: true
   - type: textarea
-    id: paths
+    id: dependency_rationale
     attributes:
-      label: Expected paths and conflict domains
-      description: Include contracts, migrations, lockfiles, timeline, updater/release when relevant.
+      label: Dependency rationale
+      description: Explain why hard dependencies truly block execution and how soft dependencies are mocked or reconciled later.
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
       label: Acceptance tests
-    validations:
-      required: true
-  - type: dropdown
-    id: lane
-    attributes:
-      label: Required CI lane
-      options:
-        - PR Fast
-        - PR Fast + Integration
-        - PR Fast + Integration + AI/GPU benchmark
-        - Release/Soak
     validations:
       required: true
   - type: textarea
