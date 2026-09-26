@@ -116,3 +116,28 @@ For shared-domain PRs:
 - Every critical-path Issue must include recovery/decomposition.
 - A stale worker blocks only its leaf/owned namespace.
 - Live Douyin/Bilibili availability, GPU runners, CapCut direct draft, release signing and watchdog availability never become universal product/PR dependencies.
+
+
+## Staged user-value delivery
+
+The first useful localization result is intentionally split from dubbing so TTS/audio work cannot hold Vietsub hostage.
+
+### #56 — Slice B1 Vietsub-only
+Hard dependencies:
+- #14 foundation local-file/resume;
+- #39 baseline ASR;
+- #40 baseline local translation;
+- #42 subtitle compositor;
+- #44 export/render in subtitle-only mode.
+
+Produces a usable MP4 + SRT/ASS/editable pack while preserving original audio. It does not wait for TTS, audio mixing, speaker intelligence, OCR cleanup, live-source adapters, GPU or CapCut direct draft.
+
+### #45 — Slice B baseline dubbing
+Hard dependencies after this decomposition:
+- #56 proven Vietsub path;
+- #41 baseline single-voice TTS;
+- #43 baseline source-audio ducking/dub mix.
+
+If TTS/mix fails, the job degrades to the already-valid #56 Vietsub output rather than failing the whole localization result.
+
+This staged path is a progress invariant: future work must not re-collapse #56 and #45 into one all-or-nothing mega-gate without an ADR explaining why.
