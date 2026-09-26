@@ -64,3 +64,19 @@ Any change to an invariant, durable schema, worker protocol, canonical timeline,
 
 ## Safety of repository progress
 No single agent, chat, Issue, PR, CI runner, live website, or benchmark is allowed to be the only route for the whole project to progress.
+
+
+## Work selection priority
+
+Do not select arbitrary open tasks when autonomous capacity becomes available.
+
+1. If `main` is red from a repository-wide deterministic failure, repair it before claiming new feature work.
+2. Read `docs/PROJECT_STATE.yaml` for the nearest active integration/user-value gate.
+3. Read that Issue's `DUBFLOW_TASK_V1` metadata and traverse only `Hard-Dependencies`.
+4. Prefer unblocked root hard dependencies whose own hard dependencies are satisfied.
+5. Do not treat `Soft-Dependencies`, Epics, prose references, live-site smoke, GPU benchmarks or release-soak work as blockers unless the active gate explicitly makes them hard.
+6. Before claiming a root, inspect Draft PR leases. If another valid lease owns it, take a different independent root.
+7. When several roots are READY, prefer the one that unlocks more downstream gate work with less conflict-domain contention.
+8. Advanced research may proceed in parallel only after available workers cover current gate roots.
+
+The goal is not maximum number of open PRs; the goal is shortest safe path to the next user-visible gate.
