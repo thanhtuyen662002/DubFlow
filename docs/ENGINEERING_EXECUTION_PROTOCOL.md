@@ -292,3 +292,38 @@ Rules:
 - GitHub Issues remain the authoritative live work graph. Do not copy the complete Issue graph into PROJECT_STATE.yaml.
 
 Critical-path and user-value Issues should be migrated first. During transition, legacy Issues without `DUBFLOW_TASK_V1` remain human-readable, but automation must report them as legacy/unstructured rather than guessing all prose references are hard dependencies.
+
+
+## Gate-driven autonomous work selection
+
+A large acyclic backlog can still stall product delivery when agents choose locally interesting work. Work selection therefore follows the current gate rather than Issue age alone.
+
+### Algorithm
+1. Determine repository health. A deterministic repository-wide red `main` has priority over feature claims.
+2. Read `docs/PROJECT_STATE.yaml`.
+3. Select the nearest unsatisfied gate in order:
+   - current foundation/integration gate;
+   - `first_user_value_gate`;
+   - `baseline_dubbing_gate`;
+   - later release/capability gate when configured.
+4. Read the gate Issue's machine metadata.
+5. Recursively traverse `Hard-Dependencies` only.
+6. Remove dependencies already closed as completed.
+7. Any dependency closed not-planned/superseded is a graph inconsistency requiring review, not an automatically satisfied edge.
+8. Candidate READY roots are open leaf tasks with no unresolved hard dependency.
+9. Remove roots already owned by valid live leases.
+10. Rank remaining roots by:
+   - downstream unblock fan-out;
+   - critical-path relevance;
+   - ability to progress independently;
+   - lower shared conflict-domain/path contention.
+11. Claim one root using the Draft PR lease protocol.
+12. If no gate root is claimable because all have healthy live leases, use spare capacity on independent risk-reduction or quality work. Do not duplicate healthy leases.
+
+### Anti-gaming rules
+- Issue number, creation date, model novelty, or expected coding enjoyment is not priority by itself.
+- Epics are never roots.
+- Soft dependencies cannot make a root BLOCKED.
+- A research benchmark cannot silently become a hard product gate.
+- Manual administrative work such as branch protection remains visible, but pending human/admin action must not leave product workers idle.
+- Progress is measured by gates unblocked and validated, not commit count.
