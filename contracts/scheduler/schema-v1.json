@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/scheduler/v1",
+  "title": "DubFlow scheduler resource policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "resource_classes", "disk_guard", "retention_budget"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "resource_classes": {"type": "array", "minItems": 6, "uniqueItems": true, "items": {"enum": ["CPU", "GPU", "VRAM", "RENDER", "DOWNLOAD", "DISK"]}},
+    "disk_guard": {"type": "object", "additionalProperties": false, "required": ["minimum_free_bytes", "minimum_free_ratio_ppm"], "properties": {"minimum_free_bytes": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20}, "minimum_free_ratio_ppm": {"type": "integer", "minimum": 0, "maximum": 1000000}}},
+    "retention_budget": {"type": "object", "additionalProperties": false, "required": ["debug_bytes", "cache_bytes"], "properties": {"debug_bytes": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20}, "cache_bytes": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20}}}
+  }
+}

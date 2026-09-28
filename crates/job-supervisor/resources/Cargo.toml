@@ -1,0 +1,12 @@
+[package]
+name = "dubflow-job-resources"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+publish = false
+
+[dependencies]
+dubflow-job-scheduler = { path = "../scheduler" }
+
+[lib]
+path = "src/lib.rs"

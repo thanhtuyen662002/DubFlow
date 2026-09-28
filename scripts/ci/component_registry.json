@@ -224,6 +224,40 @@
       ]
     },
     {
+      "id": "fair-scheduler",
+      "roots": [
+        "contracts/scheduler",
+        "crates/job-supervisor/scheduler",
+        "crates/job-supervisor/resources",
+        "docs/adr/ADR-0009-fair-batch-scheduler.md",
+        "tests/scheduler"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/scheduler/Cargo.toml"
+        ],
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/resources/Cargo.toml"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/scheduler",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "local-file-slice",
       "roots": [
         "minimal-integration-wiring",
