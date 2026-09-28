@@ -174,6 +174,8 @@ class TimePoint:
             raise AsrError("INVALID_TIME_POINT", "comparison requires a time point")
         if self.time_base == other.time_base:
             return (self.ticks > other.ticks) - (self.ticks < other.ticks)
+        if self.ticks == 0 and other.ticks == 0:
+            return 0
         if (self.ticks < 0) != (other.ticks < 0):
             return -1 if self.ticks < 0 else 1
         left_num = _checked_product(abs(self.ticks), self.time_base.numerator, "timeline comparison")
@@ -368,7 +370,7 @@ class Provenance:
                 raise AsrError("INVALID_PROVENANCE", f"{name} must be a sha256 digest")
         if self.requested_profile not in {"auto", "cpu", "gpu", "fixture"}:
             raise AsrError("INVALID_PROFILE", "requested profile is unsupported")
-        if self.hardware_profile not in {"cpu", "gpu", "fixture"}:
+        if self.hardware_profile not in {"cpu", "gpu", "fixture", "mixed"}:
             raise AsrError("INVALID_PROFILE", "selected hardware profile is unsupported")
         if self.fallback_reason is not None:
             _text(self.fallback_reason, "provenance.fallback_reason", limit=4096)
@@ -459,7 +461,7 @@ class ChunkPlanner:
                 f"{input_hash}|{self.config.to_hash()}|{audio_ref or ''}|{sample_rate or ''}|"
                 f"{base.numerator}/{base.denominator}|{cursor}:{core_end}"
             )
-            chunk_id = "chunk-" + sha256(raw_id.encode("ascii")).hexdigest()[:24]
+            chunk_id = "chunk-" + sha256(raw_id.encode("utf-8")).hexdigest()[:24]
             chunks.append(AudioChunk(chunk_id, index, core, window, audio_ref, sample_rate))
             index += 1
             if core_end == final:
@@ -737,10 +739,14 @@ def validate_transcript(value: Mapping[str, Any]) -> None:
         if item["status"] not in {"completed", "failed", "skipped"}:
             raise AsrError("INVALID_TRANSCRIPT", f"chunk {chunk_id} has an invalid status")
         if item["status"] in {"completed", "skipped"}:
+            if "error_code" in item:
+                raise AsrError("INVALID_TRANSCRIPT", f"completed chunk {chunk_id} cannot carry an error")
             if "artifact_hash" not in item or "checkpoint_id" not in item:
                 raise AsrError("INVALID_TRANSCRIPT", f"chunk {chunk_id} lacks reusable artifact evidence")
             if not _SHA256.fullmatch(item["artifact_hash"]):
                 raise AsrError("INVALID_TRANSCRIPT", f"chunk {chunk_id} artifact hash is invalid")
+        elif "error_code" not in item:
+            raise AsrError("INVALID_TRANSCRIPT", f"failed chunk {chunk_id} lacks an error code")
         chunks[chunk_id] = item
         previous_core = core
 
@@ -754,6 +760,8 @@ def validate_transcript(value: Mapping[str, Any]) -> None:
         item = _object(item, f"failures[{index}]", {"code", "chunk_id", "retryable", "attempt", "condition", "fallback_used"})
         _text(item["code"], "failure.code", limit=128)
         _text(item["chunk_id"], "failure.chunk_id", limit=128)
+        if item["chunk_id"] != "global" and item["chunk_id"] not in chunks:
+            raise AsrError("INVALID_TRANSCRIPT", "failure references an unknown chunk")
         _text(item["condition"], "failure.condition", limit=4096)
         if type(item["retryable"]) is not bool or type(item["fallback_used"]) is not bool:
             raise AsrError("INVALID_TRANSCRIPT", "failure booleans are invalid")
@@ -807,9 +815,13 @@ def validate_transcript(value: Mapping[str, Any]) -> None:
             _confidence(word["confidence"], f"word[{word_id}].confidence")
             previous_word_end = word_end
 
+    suppressed_ids: set[str] = set()
     for index, item in enumerate(value["suppressed_candidates"]):
         item = _object(item, f"suppressed_candidates[{index}]", {"candidate_id", "chunk_id", "raw_text", "start", "end", "confidence", "reason"})
-        _text(item["candidate_id"], "candidate_id", limit=256)
+        candidate_id = _text(item["candidate_id"], "candidate_id", limit=256)
+        if candidate_id in suppressed_ids:
+            raise AsrError("INVALID_TRANSCRIPT", f"duplicate suppressed candidate id {candidate_id}")
+        suppressed_ids.add(candidate_id)
         if item["chunk_id"] not in chunks:
             raise AsrError("INVALID_TRANSCRIPT", "suppressed candidate references an unknown chunk")
         _text(item["raw_text"], "candidate.raw_text", limit=8192)
@@ -967,10 +979,14 @@ class LocalAsrAdapter:
         chunk_records: list[dict[str, Any]] = []
         warnings: list[str] = []
         suppressed: list[SuppressedCandidate] = []
+        suppressed_ids: set[str] = set()
         successful = 0
         selected_provenance = self.provenance
+        primary_successes = 0
+        fallback_successes = 0
 
         for chunk in chunks:
+            failure_start = len(failures)
             result: BackendResult | None = None
             status = "completed"
             attempts = 0
@@ -991,7 +1007,8 @@ class LocalAsrAdapter:
                     used_fallback = True
                     result, fallback_failures, fallback_attempts = self._invoke_backend(self.fallback_backend, chunk)
                     attempts = max(attempts, fallback_attempts)
-                    failures.extend(fallback_failures)
+                    failures.extend(replace(item, fallback_used=True) for item in fallback_failures)
+                    failures[failure_start:] = [replace(item, fallback_used=True) for item in failures[failure_start:]]
                     if result is not None and backend_failures:
                         selected_provenance = replace(
                             self.fallback_provenance or self.provenance,
@@ -1001,46 +1018,70 @@ class LocalAsrAdapter:
                             hardware_profile=(self.fallback_provenance.hardware_profile if self.fallback_provenance else self.fallback_profile),
                             fallback_reason="primary backend failed; bounded fallback selected",
                         )
-                        failures[-len(fallback_failures) - len(backend_failures) : -len(fallback_failures) if fallback_failures else None] = [
-                            replace(item, fallback_used=True) for item in backend_failures
-                        ]
                 if result is None:
                     status = "failed"
 
+            validation_error = self._validation_error(result, chunk) if result is not None else None
+            if validation_error is not None:
+                failures.append(Failure.from_error(validation_error, chunk_id=chunk.chunk_id, fallback_used=used_fallback))
+                result = None
+                status = "failed"
+
+            # A malformed primary hypothesis can still use the explicitly
+            # configured CPU fallback.  Validate the fallback before accepting
+            # any of its data, and keep both backend failures in the transcript.
+            if result is None and not used_fallback and self.fallback_backend is not None:
+                used_fallback = True
+                fallback_result, fallback_failures, fallback_attempts = self._invoke_backend(self.fallback_backend, chunk)
+                attempts = max(attempts, fallback_attempts)
+                failures.extend(replace(item, fallback_used=True) for item in fallback_failures)
+                failures[failure_start:] = [replace(item, fallback_used=True) for item in failures[failure_start:]]
+                fallback_error = self._validation_error(fallback_result, chunk) if fallback_result is not None else None
+                if fallback_error is not None:
+                    failures.append(Failure.from_error(fallback_error, chunk_id=chunk.chunk_id, fallback_used=True))
+                    fallback_result = None
+                if fallback_result is not None:
+                    result = fallback_result
+                    status = "completed"
+                    selected_provenance = replace(
+                        self.fallback_provenance or self.provenance,
+                        backend_id=(self.fallback_provenance.backend_id if self.fallback_provenance else "fallback-cpu"),
+                        model_id=(self.fallback_provenance.model_id if self.fallback_provenance else "fallback-cpu"),
+                        model_version=(self.fallback_provenance.model_version if self.fallback_provenance else "1"),
+                        hardware_profile=(self.fallback_provenance.hardware_profile if self.fallback_provenance else self.fallback_profile),
+                        fallback_reason="primary backend failed; bounded fallback selected",
+                    )
+
             if result is not None:
-                try:
-                    self._validate_backend_result(result, chunk)
-                    for item in result.utterances:
-                        if not self._intersects_core(item, chunk.core):
-                            continue
-                        reason = self.policy.reason(item)
-                        if reason is not None:
-                            suppressed.append(
-                                SuppressedCandidate(
-                                    item.utterance_id,
-                                    chunk.chunk_id,
-                                    item.text,
-                                    item.start,
-                                    item.end,
-                                    item.confidence,
-                                    reason,
-                                )
+                for item in result.utterances:
+                    if not self._intersects_core(item, chunk.core):
+                        continue
+                    reason = self.policy.reason(item)
+                    if reason is not None:
+                        candidate_id = self._suppressed_candidate_id(item, chunk, suppressed_ids)
+                        suppressed_ids.add(candidate_id)
+                        suppressed.append(
+                            SuppressedCandidate(
+                                candidate_id,
+                                chunk.chunk_id,
+                                item.text,
+                                item.start,
+                                item.end,
+                                item.confidence,
+                                reason,
                             )
-                            warnings.append(f"suppressed {item.utterance_id}: {reason}")
-                            continue
-                        all_candidates.append((item, chunk))
-                    vad.extend(result.vad_segments)
-                    successful += 1
-                except AsrError as error:
-                    failure = Failure.from_error(error, chunk_id=chunk.chunk_id, fallback_used=used_fallback)
-                    failures.append(failure)
-                    status = "failed"
-                    result = None
-                except Exception as error:
-                    failure = AsrError("MALFORMED_BACKEND_RESULT", str(error), chunk_id=chunk.chunk_id)
-                    failures.append(Failure.from_error(failure, chunk_id=chunk.chunk_id, fallback_used=used_fallback))
-                    status = "failed"
-                    result = None
+                        )
+                        warnings.append(f"suppressed {item.utterance_id}: {reason}")
+                        continue
+                    all_candidates.append((item, chunk))
+                vad.extend(result.vad_segments)
+                successful += 1
+                if used_fallback:
+                    fallback_successes += 1
+                else:
+                    primary_successes += 1
+            else:
+                status = "failed"
             chunk_record = chunk.to_dict(
                 status=status,
                 attempt=max(1, attempts),
@@ -1070,6 +1111,15 @@ class LocalAsrAdapter:
         utterances = self._merge_utterances(all_candidates)
         languages = {utterance.language for utterance in utterances}
         language = next(iter(languages)) if len(languages) == 1 else "und"
+        if primary_successes and fallback_successes:
+            selected_provenance = replace(
+                self.provenance,
+                backend_id="composite",
+                model_id="composite",
+                model_version="mixed",
+                hardware_profile="mixed",
+                fallback_reason="transcript contains primary and fallback chunk results; see per-chunk failures",
+            )
         transcript = Transcript(
             language=language,
             utterances=tuple(utterances),
@@ -1188,6 +1238,33 @@ class LocalAsrAdapter:
             "chunk_id": chunk.chunk_id,
             "audio_ref": chunk.audio_ref,
             "sample_rate": chunk.sample_rate,
+            "provenance": {
+                "producer": self.provenance.producer,
+                "producer_version": self.provenance.producer_version,
+                "backend_id": self.provenance.backend_id,
+                "model_id": self.provenance.model_id,
+                "model_version": self.provenance.model_version,
+                "runtime": self.provenance.runtime,
+                "timeline_contract": self.provenance.timeline_contract,
+            },
+            "fallback_provenance": (
+                {
+                    "producer": self.fallback_provenance.producer,
+                    "producer_version": self.fallback_provenance.producer_version,
+                    "backend_id": self.fallback_provenance.backend_id,
+                    "model_id": self.fallback_provenance.model_id,
+                    "model_version": self.fallback_provenance.model_version,
+                    "runtime": self.fallback_provenance.runtime,
+                    "timeline_contract": self.fallback_provenance.timeline_contract,
+                }
+                if self.fallback_provenance is not None
+                else {"profile": self.fallback_profile}
+            ),
+            "fallback_backend": (
+                f"{type(self.fallback_backend).__module__}.{type(self.fallback_backend).__qualname__}"
+                if self.fallback_backend is not None
+                else None
+            ),
             "result": self._backend_result_dict(result),
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1205,6 +1282,47 @@ class LocalAsrAdapter:
         for segment in result.vad_segments:
             if segment.start.time_base != chunk.window.time_base or not chunk.window.contains(segment.start) or not chunk.window.contains(segment.end):
                 raise AsrError("TIMESTAMP_OUT_OF_RANGE", "VAD segment falls outside decode window")
+
+    def _validation_error(self, result: BackendResult, chunk: AudioChunk) -> AsrError | None:
+        """Return a typed validation failure without leaking backend exceptions."""
+
+        try:
+            self._validate_backend_result(result, chunk)
+        except AsrError as error:
+            return error
+        except Exception as error:  # defensive boundary for malformed backend objects
+            condition = str(error) or "backend result validation raised an unknown exception"
+            return AsrError("MALFORMED_BACKEND_RESULT", condition)
+        return None
+
+    @staticmethod
+    def _suppressed_candidate_id(
+        item: RawUtterance,
+        chunk: AudioChunk,
+        existing: set[str],
+    ) -> str:
+        """Create a stable unique evidence ID when overlap repeats a candidate."""
+
+        base = item.utterance_id
+        if base not in existing:
+            return base
+        payload = {
+            "chunk_id": chunk.chunk_id,
+            "utterance_id": item.utterance_id,
+            "raw_text": item.text,
+            "start": item.start.to_dict(),
+            "end": item.end.to_dict(),
+            "confidence": item.confidence,
+        }
+        digest = sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        candidate_id = f"{base}:{chunk.chunk_id}:{digest}"
+        ordinal = 2
+        while candidate_id in existing:
+            candidate_id = f"{base}:{chunk.chunk_id}:{digest}:{ordinal}"
+            ordinal += 1
+        return candidate_id
 
     def _validate_utterance(self, utterance: RawUtterance, chunk: AudioChunk) -> None:
         _text(utterance.utterance_id, "utterance_id", limit=256)
@@ -1238,7 +1356,11 @@ class LocalAsrAdapter:
 
     def _merge_utterances(self, candidates: Sequence[tuple[RawUtterance, AudioChunk]]) -> list[Utterance]:
         groups: list[dict[str, Any]] = []
-        for raw, chunk in candidates:
+        ordered_candidates = sorted(
+            candidates,
+            key=lambda item: (item[0].start.ticks, item[0].end.ticks, item[1].index, item[0].utterance_id),
+        )
+        for raw, chunk in ordered_candidates:
             candidate_words = tuple(raw.words)
             matching: dict[str, Any] | None = None
             for group in groups:
@@ -1249,17 +1371,15 @@ class LocalAsrAdapter:
                 if not group_interval.intersects(raw_interval):
                     continue
                 shared = {_word_key(word) for word in group["raw_words"]} & {_word_key(word) for word in candidate_words}
-                same_text = _normalize_text(group["raw_text"]).casefold() == _normalize_text(raw.text).casefold()
                 matching_word_overlap = any(
                     _normalize_word(left.text).casefold() == _normalize_word(right.text).casefold()
                     and TimeInterval(left.start, left.end).intersects(TimeInterval(right.start, right.end))
                     for left in group["raw_words"]
                     for right in candidate_words
                 )
-                exact_span = group_interval.start.compare(raw.start) == 0 and group_interval.end.compare(raw.end) == 0
                 cross_chunk = chunk.chunk_id not in group["chunks"]
                 windows_overlap = any(window.intersects(chunk.window) for window in group["windows"])
-                if cross_chunk and windows_overlap and (shared or matching_word_overlap or (same_text and exact_span)):
+                if cross_chunk and windows_overlap and (shared or matching_word_overlap):
                     matching = group
                     break
             if matching is None:
@@ -1315,9 +1435,12 @@ class LocalAsrAdapter:
             )
             base_id = min(group["ids"])
             if base_id in used_ids:
-                base_id = "utt-" + sha256(
-                    f"{group['language']}|{group['interval'].start.ticks}|{group['interval'].end.ticks}|{group['raw_text']}".encode("utf-8")
-                ).hexdigest()[:24]
+                seed = f"{group['language']}|{group['interval'].start.ticks}|{group['interval'].end.ticks}|{group['raw_text']}"
+                ordinal = 1
+                base_id = "utt-" + sha256(f"{seed}|{ordinal}".encode("utf-8")).hexdigest()[:24]
+                while base_id in used_ids:
+                    ordinal += 1
+                    base_id = "utt-" + sha256(f"{seed}|{ordinal}".encode("utf-8")).hexdigest()[:24]
             used_ids.add(base_id)
             normalized_text = " ".join(word.text for word in words)
             if not normalized_text:

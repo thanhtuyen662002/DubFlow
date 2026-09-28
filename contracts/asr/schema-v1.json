@@ -144,8 +144,8 @@
         "config_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "input_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "requested_profile": { "enum": ["auto", "cpu", "gpu", "fixture"] },
-        "hardware_profile": { "enum": ["cpu", "gpu", "fixture"] }
-        ,"fallback_reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        "hardware_profile": { "enum": ["cpu", "gpu", "fixture", "mixed"] },
+        "fallback_reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
       }
     },
     "failure": {

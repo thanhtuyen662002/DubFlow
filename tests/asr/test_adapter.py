@@ -91,7 +91,9 @@ class AsrAdapterTests(unittest.TestCase):
         planner = ChunkPlanner(AdapterConfig(2000, 500, requested_profile="fixture"))
         first = planner.plan(duration, input_hash=INPUT_HASH)
         second = planner.plan(duration, input_hash=INPUT_HASH)
+        unicode_ref = planner.plan(duration, input_hash=INPUT_HASH, audio_ref="媒体.wav", sample_rate=48000)
         self.assertEqual([item.chunk_id for item in first], [item.chunk_id for item in second])
+        self.assertNotEqual([item.chunk_id for item in first], [item.chunk_id for item in unicode_ref])
         self.assertEqual([(item.core.start.ticks, item.core.end.ticks) for item in first], [(0, 2000), (2000, 4000), (4000, 4500)])
         self.assertEqual([(item.window.start.ticks, item.window.end.ticks) for item in first], [(0, 2500), (1500, 4500), (3500, 4500)])
 
@@ -139,10 +141,12 @@ class AsrAdapterTests(unittest.TestCase):
     def test_same_chunk_same_text_candidates_remain_distinct(self) -> None:
         first = utterance("same-a", "yes", 200, 500, (word("a", "yes", 200, 500),))
         second = utterance("same-b", "yes", 300, 600, (word("b", "yes", 300, 600),))
-        result = adapter(DeterministicFixtureBackend((first, second))).transcribe(
+        third = utterance("same-a", "yes", 350, 650, (word("c", "yes", 350, 650),))
+        result = adapter(DeterministicFixtureBackend((first, second, third))).transcribe(
             TimeInterval(point(0), point(1000)), input_hash=INPUT_HASH
         )
-        self.assertEqual([item.utterance_id for item in result.utterances], ["same-a", "same-b"])
+        self.assertEqual(len(result.utterances), 3)
+        self.assertEqual(len({item.utterance_id for item in result.utterances}), 3)
 
     def test_boundary_jitter_deduplicates_overlapping_words(self) -> None:
         first = utterance(
@@ -281,7 +285,7 @@ class AsrAdapterTests(unittest.TestCase):
         fallback = DeterministicFixtureBackend((fallback_utterance,))
         result = adapter(primary, fallback=fallback).transcribe(duration, input_hash=INPUT_HASH)
         self.assertTrue(result.failures[0].fallback_used)
-        self.assertEqual(result.provenance.hardware_profile, "cpu")
+        self.assertEqual(result.provenance.hardware_profile, "mixed")
         self.assertIn("fallback", result.provenance.fallback_reason or "")
         self.assertTrue(any(item.utterance_id == "fallback" for item in result.utterances))
         self.assertIn("degraded", " ".join(result.warnings))
@@ -291,6 +295,34 @@ class AsrAdapterTests(unittest.TestCase):
             adapter(all_failed).transcribe(duration, input_hash=INPUT_HASH)
         self.assertEqual(context.exception.code, "ASR_FAILED")
         self.assertEqual(len(context.exception.transcript.failures), len(chunks))
+
+    def test_malformed_primary_result_uses_validated_fallback(self) -> None:
+        source = utterance("fallback-invalid-primary", "ok", 100, 300, (word("fb-w", "ok", 100, 300),))
+
+        class MalformedBackend:
+            def transcribe(self, chunk):
+                # The result type is correct, but the hypothesis is outside
+                # the decode window and must never reach transcript output.
+                invalid = utterance("invalid", "bad", 2000, 2200, (word("bad-w", "bad", 2000, 2200),))
+                return BackendResult((invalid,), ())
+
+        result = adapter(MalformedBackend(), fallback=DeterministicFixtureBackend((source,))).transcribe(
+            TimeInterval(point(0), point(1000)), input_hash=INPUT_HASH
+        )
+        self.assertEqual([item.utterance_id for item in result.utterances], ["fallback-invalid-primary"])
+        self.assertEqual(result.provenance.hardware_profile, "cpu")
+        self.assertTrue(any(item.code == "TIMESTAMP_OUT_OF_RANGE" for item in result.failures))
+        self.assertTrue(all(item.fallback_used for item in result.failures))
+
+    def test_overlapping_suppressed_candidates_have_unique_evidence_ids(self) -> None:
+        repeated_words = tuple(word(f"overlap-r{i}", "echo", 1800 + i * 50, 1810 + i * 50) for i in range(7))
+        hallucination = utterance("overlap-hallucinated", "echo " * 7, 1800, 2160, repeated_words)
+        result = adapter(DeterministicFixtureBackend((hallucination,))).transcribe(
+            TimeInterval(point(0), point(4500)), input_hash=INPUT_HASH
+        )
+        ids = [item.candidate_id for item in result.suppressed_candidates]
+        self.assertGreaterEqual(len(ids), 2)
+        self.assertEqual(len(ids), len(set(ids)))
 
     def test_reusable_chunk_checkpoint_skips_backend_call(self) -> None:
         duration = TimeInterval(point(0), point(4500))
@@ -310,6 +342,7 @@ class AsrAdapterTests(unittest.TestCase):
         self.assertEqual(result.chunks[0]["artifact_hash"], checkpoint.artifact_hash)
 
     def test_timestamp_and_provenance_reject_unsafe_values(self) -> None:
+        self.assertEqual(TimePoint(0, TimeBase(1, 1000)).compare(TimePoint(0, TimeBase(1, 48000))), 0)
         with self.assertRaisesRegex(ValueError, "NON_REDUCED_TIME_BASE"):
             TimeBase(2, 4)
         with self.assertRaisesRegex(ValueError, "INVALID_CONFIDENCE"):
