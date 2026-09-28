@@ -1,0 +1,21 @@
+[package]
+name = "dubflow-local-file-slice"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Deterministic local-file integration harness for DubFlow"
+license = "MIT"
+publish = false
+
+[lib]
+name = "dubflow_local_file_slice"
+path = "src/lib.rs"
+
+[dependencies]
+dubflow-media-contracts = { path = "../crates/media-contracts" }
+dubflow-worker-protocol = { path = "../crates/job-supervisor/protocol" }
+dubflow-job-state = { path = "../crates/job-supervisor/state" }
+
+[[test]]
+name = "local_file_slice"
+path = "../tests/integration/local_file_slice/local_file_slice.rs"
