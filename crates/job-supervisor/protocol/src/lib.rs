@@ -975,7 +975,7 @@ impl<'a> Cursor<'a> {
                     }
                 }
                 byte if byte < 0x20 => return Err(ProtocolError::InvalidJson("control byte in string".into())),
-                byte => {
+                _byte => {
                     let start = self.pos - 1;
                     let tail = str::from_utf8(&self.input[start..])
                         .map_err(|_| ProtocolError::InvalidUtf8)?;
@@ -1215,7 +1215,7 @@ mod tests {
         assert_eq!(parsed.sequence, 1);
         let line = parsed.to_line().unwrap();
         assert_eq!(Envelope::from_line(&line).unwrap(), parsed);
-        let reordered = r#"{"payload":{"args":{},"command":"analyze"},"sequence":1,"stage_id":"stage","job_id":"job","message_id":"m1","message_type":"command","schema_version":1}"#;
+        let reordered = r#"{"payload":{"args":{"chunk":"0"},"command":"analyze"},"sequence":1,"stage_id":"stage","job_id":"job","message_id":"m1","message_type":"command","schema_version":1}"#;
         assert_eq!(Envelope::from_json(reordered).unwrap(), parsed);
     }
 
