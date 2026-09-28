@@ -283,8 +283,8 @@ impl WireTimePoint {
             "{{\"kind\":\"time_point\",\"schema_version\":{},\"ticks\":\"{}\",\"time_base\":{{\"numerator\":\"{}\",\"denominator\":\"{}\"}}}}",
             point.schema_version,
             point.ticks,
-            point.time_base.numerator(),
-            point.time_base.denominator()
+            point.time_base.numerator,
+            point.time_base.denominator
         ))
     }
 
