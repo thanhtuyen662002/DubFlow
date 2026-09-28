@@ -3,6 +3,8 @@
 ## Current phase
 Foundation is ready to be claimed through leaf Issues. Main CI is green. Main is still technically unprotected; Issue #11 remains an S5 administrative risk until a repository ruleset/branch protection is enabled.
 
+Capability tiers, promotion gates, and fallback semantics are defined in [`docs/CAPABILITY_LADDER.md`](CAPABILITY_LADDER.md). This roadmap keeps the delivery gates and dependency order; GitHub Issues remain the authoritative live work graph.
+
 ## Foundation Epic
 - #2 — Foundation: resumable one-click vertical slice. Tracking only; do not claim directly.
 
@@ -139,6 +141,8 @@ Hard dependencies after this decomposition:
 - #43 baseline source-audio ducking/dub mix.
 
 If TTS/mix fails, the job degrades to the already-valid #56 Vietsub output rather than failing the whole localization result.
+
+The capability ladder treats #56 as the first useful localization slice and #45 as its optional dubbing upgrade. Speaker clustering, arbitrary-orientation subtitle intelligence, visual identity, source separation, inpainting, CapCut direct drafts, source acquisition and installer/update work remain additive lanes with their own merge, promotion and release evidence.
 
 This staged path is a progress invariant: future work must not re-collapse #56 and #45 into one all-or-nothing mega-gate without an ADR explaining why.
 

@@ -28,6 +28,17 @@ DubFlow therefore uses a **capability ladder**:
 
 The final product target remains one-click high-quality localization. The ladder is a delivery strategy, not a reduction of that target.
 
+## 1.1. Current staged delivery boundary
+
+The first user-value path is deliberately split into two compatible slices:
+
+- **#56 B1 Vietsub-only** consumes the proven local-file foundation, translates the transcript, renders Vietnamese SRT/ASS subtitles, and produces a standard MP4/editable pack while preserving source audio.
+- **#45 baseline dubbing** is an optional upgrade on that path. It adds approved single-voice TTS and AUD-0 source-audio ducking/mix, with validated dialogue audio and provenance.
+
+The #45 integration is selected explicitly and consumes #56 artifacts. If TTS, mixing, or source audio is unavailable, the result remains the valid #56 Vietsub output and records the downgrade. This keeps the first useful localization result available while the quality track advances through speaker, subtitle-cleanup, separation, and visual-identity experiments.
+
+GitHub Issues remain the authoritative live work graph. This document defines tier semantics and promotion rules; it is not a second inventory of Issue state.
+
 ---
 
 # 2. Three different gates
@@ -576,18 +587,19 @@ Primary Issue:
 
 This slice proves architecture, not localization quality.
 
-## Slice B — Baseline Vietnamese localization
+## Slice B — Staged baseline Vietnamese localization
 
-User can:
+The first useful result is delivered in two compatible steps so audio quality work cannot block subtitles:
+
+### Slice B1 — Vietsub-only (#56)
 
 ```text
 select local video
 → ASR
 → local translate
-→ single Vietnamese TTS voice
 → Vietnamese subtitle
-→ source ducking
-→ final MP4
+→ preserve source audio
+→ final MP4 + editable pack
 ```
 
 Minimum capabilities:
@@ -595,15 +607,27 @@ Minimum capabilities:
 - SRC-0
 - TXT-0
 - TR-0/1
-- DUB-0
-- AUD-0
 - VIS-0
 - RND-0
 - EDT-0
 
-No OCR text-role, character association, inpainting, live websites or CapCut direct project is required.
+### Slice B2 — Baseline dubbing upgrade (#45)
 
-This is the first genuinely useful product slice.
+```text
+validated B1 result
+→ approved single Vietnamese TTS voice
+→ AUD-0 source ducking/mix
+→ final MP4 + editable subtitle/audio assets
+```
+
+Additional capabilities:
+
+- DUB-0
+- AUD-0
+
+B2 is opt-in at the pipeline boundary and records the resolved TTS/mix provenance. If either stage cannot produce a valid artifact, it falls back to the already-valid B1 Vietsub result with an explicit downgrade. Neither OCR text-role intelligence, character association, inpainting, live websites nor a direct CapCut project is required for B1 or B2.
+
+B1 is the first genuinely useful localization slice; B2 is the first dubbing upgrade.
 
 ## Slice C — Multi-speaker localization
 
@@ -811,9 +835,11 @@ Epics are tracking-only.
 ## EPIC A — Baseline Vietnamese Localization
 
 Outcome:
-local file → ASR → translate → subtitle → single-voice TTS → source duck → render → QC.
+local file → ASR → translate → subtitle → validated export, with optional single-voice TTS/source duck upgrade.
 
-This is the first useful product path.
+The product path is staged as #56 B1 Vietsub-only followed by #45 baseline dubbing. The B2 upgrade must preserve the B1 result when its optional audio stages fail.
+
+This is the baseline product path: B1 is the first useful localization output and B2 is the first dubbing upgrade.
 
 ## EPIC B — Source Acquisition
 
@@ -868,15 +894,17 @@ No Epic may be claimed directly.
 
 ## Can block the first useful local localization slice
 
-Only hard correctness dependencies such as:
+Only hard correctness dependencies for the B1 Vietsub result may block it:
 
 - durable job execution;
 - canonical timing;
 - valid worker protocol;
 - baseline ASR;
 - baseline local translation;
-- baseline TTS;
-- valid render/QC.
+- subtitle composition;
+- valid subtitle-only render/QC.
+
+Baseline TTS and source-audio mixing can block promotion or completion of the B2 dubbing upgrade, but they cannot block B1.
 
 ## Cannot block the first useful local localization slice
 
