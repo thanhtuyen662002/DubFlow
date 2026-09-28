@@ -133,6 +133,26 @@
       ]
     },
     {
+      "id": "audio-mix",
+      "roots": [
+        "contracts/audio_mix",
+        "engine/dubflow/mix",
+        "tests/audio_mix"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/audio_mix",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "asr",
       "roots": [
         "contracts/asr",
