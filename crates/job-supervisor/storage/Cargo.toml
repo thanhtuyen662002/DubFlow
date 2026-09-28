@@ -1,0 +1,12 @@
+[package]
+name = "dubflow-job-storage"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Resilient storage topology and recovery policy for the DubFlow supervisor"
+license = "MIT"
+publish = false
+
+[lib]
+name = "dubflow_job_storage"
+path = "src/lib.rs"

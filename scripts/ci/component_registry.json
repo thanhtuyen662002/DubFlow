@@ -79,6 +79,40 @@
       ]
     },
     {
+      "id": "storage-recovery",
+      "roots": [
+        "contracts/storage",
+        "crates/job-supervisor/storage",
+        "crates/artifact-store/storage",
+        "docs/adr/ADR-0005-storage-topology.md",
+        "tests/storage_recovery"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/storage/Cargo.toml"
+        ],
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/artifact-store/storage/Cargo.toml"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/storage_recovery",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "local-file-slice",
       "roots": [
         "minimal-integration-wiring",

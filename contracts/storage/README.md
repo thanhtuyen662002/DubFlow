@@ -17,6 +17,9 @@ to provide local SQLite or atomic-rename semantics.
 
 Artifact identity is `volume_id + root_kind + relative_path + content_hash +
 size_bytes`; an absolute drive letter is only a transient resolution detail.
+Wide byte counts are canonical decimal strings on the wire so a JavaScript
+consumer cannot round a value above 2^53; implementations still bound them to
+the unsigned 64-bit range.
 Moved-folder recovery must verify the supplied volume identity and recompute
 the SHA-256 content hash before rebinding a committed artifact. A stale path
 alone never makes an artifact valid.
