@@ -40,7 +40,11 @@ handled by the next segment (if any); gaps return `NoMappingSegment`.
 Mapping is defined by exact rational interpolation between anchors. Callers
 must choose `Exact`, `Floor`, `Ceil`, `TowardZero`, `AwayFromZero` or
 `NearestTiesToEven` when a target time base cannot represent the result. No
-proxy-seconds float or FPS/frame-index inference is permitted.
+proxy-seconds float or FPS/frame-index inference is permitted. The affine
+parameter is the fraction of the proxy tick span, applied to the source tick
+span; converting both spans to seconds produces the same ratio because their
+time-base factors cancel. This guarantees that both explicit anchors remain
+fixed even when source and proxy time bases differ.
 
 ## Geometry
 

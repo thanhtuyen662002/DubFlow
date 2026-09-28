@@ -60,8 +60,8 @@ pub type Result<T> = std::result::Result<T, TimelineError>;
 /// Values are reduced so semantically identical bases have one representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TimeBase {
-    pub numerator: u64,
-    pub denominator: u64,
+    numerator: u64,
+    denominator: u64,
 }
 
 impl TimeBase {
@@ -74,6 +74,14 @@ impl TimeBase {
             numerator: numerator / divisor,
             denominator: denominator / divisor,
         })
+    }
+
+    pub fn numerator(self) -> u64 {
+        self.numerator
+    }
+
+    pub fn denominator(self) -> u64 {
+        self.denominator
     }
 }
 
@@ -247,8 +255,8 @@ impl From<TimePoint> for WireTimePoint {
             schema_version: SCHEMA_VERSION,
             ticks: point.ticks.to_string(),
             time_base: WireTimeBase {
-                numerator: point.time_base.numerator.to_string(),
-                denominator: point.time_base.denominator.to_string(),
+                numerator: point.time_base.numerator().to_string(),
+                denominator: point.time_base.denominator().to_string(),
             },
         }
     }
@@ -275,53 +283,74 @@ impl WireTimePoint {
             "{{\"kind\":\"time_point\",\"schema_version\":{},\"ticks\":\"{}\",\"time_base\":{{\"numerator\":\"{}\",\"denominator\":\"{}\"}}}}",
             point.schema_version,
             point.ticks,
-            point.time_base.numerator,
-            point.time_base.denominator
+            point.time_base.numerator(),
+            point.time_base.denominator()
         ))
     }
 
-    /// Parse only the canonical v1 object.  This intentionally rejects JSON
-    /// numbers for wide fields, duplicate/reordered fields, escapes in numeric
+    /// Parse a v1 object while accepting JSON member reordering. This rejects
+    /// JSON numbers for wide fields, duplicate fields, escapes in numeric
     /// strings, plus signs, leading zeros, exponents, and unknown members.
     pub fn from_json(input: &str) -> Result<Self> {
         let mut parser = JsonCursor::new(input);
         parser.expect_byte(b'{')?;
-        parser.expect_key("kind")?;
-        if parser.parse_string()? != "time_point" {
-            return Err(TimelineError::InvalidWire("kind must be time_point".into()));
+        let mut kind = None;
+        let mut schema_version = None;
+        let mut ticks = None;
+        let mut time_base = None;
+        if parser.try_byte(b'}')? {
+            return Err(TimelineError::InvalidWire("time point object is empty".into()));
         }
-        parser.expect_comma()?;
-        parser.expect_key("schema_version")?;
-        let version = parser.parse_u64_token()?;
-        if version > u32::MAX as u64 {
-            return Err(TimelineError::Overflow);
+        loop {
+            let key = parser.parse_string()?;
+            parser.expect_byte(b':')?;
+            match key.as_str() {
+                "kind" => {
+                    if kind.is_some() {
+                        return Err(TimelineError::InvalidWire("duplicate kind member".into()));
+                    }
+                    kind = Some(parser.parse_string()?);
+                }
+                "schema_version" => {
+                    if schema_version.is_some() {
+                        return Err(TimelineError::InvalidWire("duplicate schema_version member".into()));
+                    }
+                    let version = parser.parse_u64_token()?;
+                    if version > u32::MAX as u64 {
+                        return Err(TimelineError::Overflow);
+                    }
+                    schema_version = Some(version as u32);
+                }
+                "ticks" => {
+                    if ticks.is_some() {
+                        return Err(TimelineError::InvalidWire("duplicate ticks member".into()));
+                    }
+                    let value = parser.parse_string()?;
+                    parse_i64_decimal(&value)?;
+                    ticks = Some(value);
+                }
+                "time_base" => {
+                    if time_base.is_some() {
+                        return Err(TimelineError::InvalidWire("duplicate time_base member".into()));
+                    }
+                    time_base = Some(parser.parse_wire_time_base()?);
+                }
+                _ => return Err(TimelineError::InvalidWire(format!("unknown time point member: {key}"))),
+            }
+            if parser.try_byte(b'}')? {
+                break;
+            }
+            parser.expect_comma()?;
         }
-        let schema_version = version as u32;
-        if schema_version != SCHEMA_VERSION {
-            return Err(TimelineError::UnsupportedSchema(schema_version));
-        }
-        parser.expect_comma()?;
-        parser.expect_key("ticks")?;
-        let ticks = parser.parse_string()?;
-        parse_i64_decimal(&ticks)?;
-        parser.expect_comma()?;
-        parser.expect_key("time_base")?;
-        parser.expect_byte(b'{')?;
-        parser.expect_key("numerator")?;
-        let numerator = parser.parse_string()?;
-        parse_u64_decimal(&numerator)?;
-        parser.expect_comma()?;
-        parser.expect_key("denominator")?;
-        let denominator = parser.parse_string()?;
-        parse_u64_decimal(&denominator)?;
-        parser.expect_byte(b'}')?;
-        parser.expect_byte(b'}')?;
         parser.finish()?;
         let wire = Self {
-            schema_version,
-            ticks,
-            time_base: WireTimeBase { numerator, denominator },
+            schema_version: schema_version.ok_or_else(|| TimelineError::InvalidWire("missing schema_version".into()))?,
+            ticks: ticks.ok_or_else(|| TimelineError::InvalidWire("missing ticks".into()))?,
+            time_base: time_base.ok_or_else(|| TimelineError::InvalidWire("missing time_base".into()))?,
         };
+        if kind.as_deref() != Some("time_point") {
+            return Err(TimelineError::InvalidWire("kind must be time_point".into()));
+        }
         wire.to_time_point()?;
         Ok(wire)
     }
@@ -329,8 +358,8 @@ impl WireTimePoint {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Dimensions {
-    pub width: u32,
-    pub height: u32,
+    width: u32,
+    height: u32,
 }
 
 impl Dimensions {
@@ -340,12 +369,20 @@ impl Dimensions {
         }
         Ok(Self { width, height })
     }
+
+    pub fn width(self) -> u32 {
+        self.width
+    }
+
+    pub fn height(self) -> u32 {
+        self.height
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AspectRatio {
-    pub numerator: u32,
-    pub denominator: u32,
+    numerator: u32,
+    denominator: u32,
 }
 
 impl AspectRatio {
@@ -358,6 +395,14 @@ impl AspectRatio {
             numerator: numerator / divisor,
             denominator: denominator / divisor,
         })
+    }
+
+    pub fn numerator(self) -> u32 {
+        self.numerator
+    }
+
+    pub fn denominator(self) -> u32 {
+        self.denominator
     }
 }
 
@@ -401,9 +446,9 @@ pub struct PixelPoint {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeometryTransform {
-    pub coded_dimensions: Dimensions,
-    pub rotation: Rotation,
-    pub pixel_aspect_ratio: AspectRatio,
+    coded_dimensions: Dimensions,
+    rotation: Rotation,
+    pixel_aspect_ratio: AspectRatio,
 }
 
 impl GeometryTransform {
@@ -419,20 +464,32 @@ impl GeometryTransform {
         }
     }
 
+    pub fn coded_dimensions(self) -> Dimensions {
+        self.coded_dimensions
+    }
+
+    pub fn rotation(self) -> Rotation {
+        self.rotation
+    }
+
+    pub fn pixel_aspect_ratio(self) -> AspectRatio {
+        self.pixel_aspect_ratio
+    }
+
     pub fn display_dimensions(&self) -> Dimensions {
         match self.rotation {
             Rotation::Deg0 | Rotation::Deg180 => self.coded_dimensions,
             Rotation::Deg90 | Rotation::Deg270 => Dimensions {
-                width: self.coded_dimensions.height,
-                height: self.coded_dimensions.width,
+                width: self.coded_dimensions.height(),
+                height: self.coded_dimensions.width(),
             },
         }
     }
 
     pub fn to_display(&self, point: PixelPoint) -> Result<PixelPoint> {
         self.validate_point(point, self.coded_dimensions)?;
-        let w = self.coded_dimensions.width as i64;
-        let h = self.coded_dimensions.height as i64;
+        let w = self.coded_dimensions.width() as i64;
+        let h = self.coded_dimensions.height() as i64;
         Ok(match self.rotation {
             Rotation::Deg0 => point,
             Rotation::Deg90 => PixelPoint { x: h - point.y, y: point.x },
@@ -443,8 +500,8 @@ impl GeometryTransform {
 
     pub fn from_display(&self, point: PixelPoint) -> Result<PixelPoint> {
         self.validate_point(point, self.display_dimensions())?;
-        let w = self.coded_dimensions.width as i64;
-        let h = self.coded_dimensions.height as i64;
+        let w = self.coded_dimensions.width() as i64;
+        let h = self.coded_dimensions.height() as i64;
         Ok(match self.rotation {
             Rotation::Deg0 => point,
             Rotation::Deg90 => PixelPoint { x: point.y, y: h - point.x },
@@ -456,8 +513,8 @@ impl GeometryTransform {
     fn validate_point(&self, point: PixelPoint, dimensions: Dimensions) -> Result<()> {
         if point.x < 0
             || point.y < 0
-            || point.x > dimensions.width as i64
-            || point.y > dimensions.height as i64
+            || point.x > dimensions.width() as i64
+            || point.y > dimensions.height() as i64
         {
             return Err(TimelineError::InvalidPoint);
         }
@@ -470,10 +527,10 @@ impl GeometryTransform {
 /// discontinuities are represented by separate, non-overlapping segments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MappingSegment {
-    pub source_start: TimePoint,
-    pub source_end: TimePoint,
-    pub proxy_start: TimePoint,
-    pub proxy_end: TimePoint,
+    source_start: TimePoint,
+    source_end: TimePoint,
+    proxy_start: TimePoint,
+    proxy_end: TimePoint,
 }
 
 impl MappingSegment {
@@ -501,11 +558,27 @@ impl MappingSegment {
             proxy_end,
         })
     }
+
+    pub fn source_start(self) -> TimePoint {
+        self.source_start
+    }
+
+    pub fn source_end(self) -> TimePoint {
+        self.source_end
+    }
+
+    pub fn proxy_start(self) -> TimePoint {
+        self.proxy_start
+    }
+
+    pub fn proxy_end(self) -> TimePoint {
+        self.proxy_end
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProxySourceMapping {
-    pub segments: Vec<MappingSegment>,
+    segments: Vec<MappingSegment>,
 }
 
 impl ProxySourceMapping {
@@ -524,13 +597,26 @@ impl ProxySourceMapping {
         Ok(Self { segments })
     }
 
+    pub fn segments(&self) -> &[MappingSegment] {
+        &self.segments
+    }
+
     pub fn map_proxy_to_source(&self, proxy: TimePoint, rounding: RoundingMode) -> Result<TimePoint> {
         for segment in &self.segments {
-            let proxy = proxy.rescale(segment.proxy_start.time_base, rounding)?;
-            if proxy.ticks >= segment.proxy_start.ticks && proxy.ticks < segment.proxy_end.ticks {
+            let after_start = proxy.cmp_exact(segment.proxy_start)? != Ordering::Less;
+            let before_end = proxy.cmp_exact(segment.proxy_end)? == Ordering::Less;
+            if after_start && before_end {
+                let proxy = proxy.rescale(segment.proxy_start.time_base, rounding)?;
                 let offset = proxy.ticks.checked_sub(segment.proxy_start.ticks).ok_or(TimelineError::Overflow)?;
                 let source_delta = segment.delta_ticks(segment.source_start, segment.source_end)?;
                 let proxy_delta = segment.delta_ticks(segment.proxy_start, segment.proxy_end)?;
+                // The interpolation parameter is the fraction of the proxy
+                // anchor span.  Converting both spans to seconds would add
+                // proxy/source time-base factors that cancel, while using
+                // only one side's factors would fail to land on the explicit
+                // source end anchor.  The raw tick-span ratio is therefore
+                // the exact affine map; time bases are used for comparisons
+                // and for converting the caller's point into proxy ticks.
                 let mapped = scale_signed_ratio(offset, source_delta, proxy_delta, rounding)?;
                 let ticks = segment.source_start.ticks.checked_add(mapped).ok_or(TimelineError::Overflow)?;
                 if ticks < segment.source_start.ticks || ticks >= segment.source_end.ticks {
@@ -544,8 +630,10 @@ impl ProxySourceMapping {
 
     pub fn map_source_to_proxy(&self, source: TimePoint, rounding: RoundingMode) -> Result<TimePoint> {
         for segment in &self.segments {
-            let source = source.rescale(segment.source_start.time_base, rounding)?;
-            if source.ticks >= segment.source_start.ticks && source.ticks < segment.source_end.ticks {
+            let after_start = source.cmp_exact(segment.source_start)? != Ordering::Less;
+            let before_end = source.cmp_exact(segment.source_end)? == Ordering::Less;
+            if after_start && before_end {
+                let source = source.rescale(segment.source_start.time_base, rounding)?;
                 let offset = source.ticks.checked_sub(segment.source_start.ticks).ok_or(TimelineError::Overflow)?;
                 let source_delta = segment.delta_ticks(segment.source_start, segment.source_end)?;
                 let proxy_delta = segment.delta_ticks(segment.proxy_start, segment.proxy_end)?;
@@ -592,11 +680,11 @@ fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
 }
 
 fn scale_ratio(from: TimeBase, to: TimeBase) -> Result<(u128, u128)> {
-    let numerator = (from.numerator as u128)
-        .checked_mul(to.denominator as u128)
+    let numerator = (from.numerator() as u128)
+        .checked_mul(to.denominator() as u128)
         .ok_or(TimelineError::Overflow)?;
-    let denominator = (from.denominator as u128)
-        .checked_mul(to.numerator as u128)
+    let denominator = (from.denominator() as u128)
+        .checked_mul(to.numerator() as u128)
         .ok_or(TimelineError::Overflow)?;
     let divisor = gcd_u128(numerator, denominator);
     Ok((numerator / divisor, denominator / divisor))
@@ -736,16 +824,16 @@ fn compare_time_points(left: TimePoint, right: TimePoint) -> Result<Ordering> {
         return Ok(if left_negative { Ordering::Less } else { Ordering::Greater });
     }
     let left_num = magnitude_i64(left.ticks)
-        .checked_mul(left.time_base.numerator as u128)
+        .checked_mul(left.time_base.numerator() as u128)
         .ok_or(TimelineError::Overflow)?;
     let right_num = magnitude_i64(right.ticks)
-        .checked_mul(right.time_base.numerator as u128)
+        .checked_mul(right.time_base.numerator() as u128)
         .ok_or(TimelineError::Overflow)?;
     let ordering = compare_positive_fractions(
         left_num,
-        left.time_base.denominator as u128,
+        left.time_base.denominator() as u128,
         right_num,
-        right.time_base.denominator as u128,
+        right.time_base.denominator() as u128,
     )?;
     Ok(if left_negative { ordering.reverse() } else { ordering })
 }
@@ -820,12 +908,14 @@ impl<'a> JsonCursor<'a> {
         self.expect_byte(b',')
     }
 
-    fn expect_key(&mut self, expected: &str) -> Result<()> {
-        let actual = self.parse_string()?;
-        if actual != expected {
-            return Err(TimelineError::InvalidWire(format!("expected key {expected}")));
+    fn try_byte(&mut self, expected: u8) -> Result<bool> {
+        self.skip_ws();
+        if self.input.get(self.index) == Some(&expected) {
+            self.index += 1;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        self.expect_byte(b':')
     }
 
     fn parse_string(&mut self) -> Result<String> {
@@ -873,6 +963,46 @@ impl<'a> JsonCursor<'a> {
         parse_u64_decimal(value)
     }
 
+    fn parse_wire_time_base(&mut self) -> Result<WireTimeBase> {
+        self.expect_byte(b'{')?;
+        let mut numerator = None;
+        let mut denominator = None;
+        if self.try_byte(b'}')? {
+            return Err(TimelineError::InvalidWire("time base object is empty".into()));
+        }
+        loop {
+            let key = self.parse_string()?;
+            self.expect_byte(b':')?;
+            match key.as_str() {
+                "numerator" => {
+                    if numerator.is_some() {
+                        return Err(TimelineError::InvalidWire("duplicate numerator member".into()));
+                    }
+                    let value = self.parse_string()?;
+                    parse_u64_decimal(&value)?;
+                    numerator = Some(value);
+                }
+                "denominator" => {
+                    if denominator.is_some() {
+                        return Err(TimelineError::InvalidWire("duplicate denominator member".into()));
+                    }
+                    let value = self.parse_string()?;
+                    parse_u64_decimal(&value)?;
+                    denominator = Some(value);
+                }
+                _ => return Err(TimelineError::InvalidWire(format!("unknown time base member: {key}"))),
+            }
+            if self.try_byte(b'}')? {
+                break;
+            }
+            self.expect_comma()?;
+        }
+        Ok(WireTimeBase {
+            numerator: numerator.ok_or_else(|| TimelineError::InvalidWire("missing numerator".into()))?,
+            denominator: denominator.ok_or_else(|| TimelineError::InvalidWire("missing denominator".into()))?,
+        })
+    }
+
     fn finish(&mut self) -> Result<()> {
         self.skip_ws();
         if self.index == self.input.len() {
@@ -893,7 +1023,7 @@ mod tests {
 
     #[test]
     fn time_base_is_reduced_and_rejects_zero() {
-        assert_eq!(TimeBase::new(1000, 2000).unwrap(), TimeBase { numerator: 1, denominator: 2 });
+        assert_eq!(TimeBase::new(1000, 2000).unwrap(), TimeBase::new(1, 2).unwrap());
         assert_eq!(TimeBase::new(0, 1), Err(TimelineError::InvalidTimeBase));
         assert_eq!(TimeBase::new(1, 0), Err(TimelineError::InvalidTimeBase));
     }
@@ -919,6 +1049,10 @@ mod tests {
         assert!(WireTimePoint::from_json(&json.replace("\"ticks\":\"1\"", "\"ticks\":\"01\"")).is_err());
         assert!(WireTimePoint::from_json(&json.replace("\"schema_version\":1", "\"schema_version\":2")).is_err());
         assert!(WireTimePoint::from_json(&json.replace("\"denominator\":\"90000\"", "\"denominator\":\"+90000\"")).is_err());
+        let reordered = r#"{"time_base":{"denominator":"90000","numerator":"1"},"ticks":"1","schema_version":1,"kind":"time_point"}"#;
+        assert_eq!(WireTimePoint::from_json(reordered).unwrap().to_time_point().unwrap(), point);
+        assert!(WireTimePoint::from_json(&json.replace("\"ticks\":\"1\"", "\"ticks\":\"1\",\"ticks\":\"1\"")).is_err());
+        assert!(WireTimePoint::from_json(&json.replace("\"ticks\":\"1\"", "\"extra\":0,\"ticks\":\"1\"")).is_err());
     }
 
     #[test]
@@ -975,13 +1109,18 @@ mod tests {
         );
         assert_eq!(mapping.map_proxy_to_source(TimePoint::new(2_500, proxy_base), RoundingMode::Exact), Err(TimelineError::NoMappingSegment));
         assert_eq!(mapping.map_proxy_to_source(TimePoint::new(5_000, proxy_base), RoundingMode::Exact), Err(TimelineError::NoMappingSegment));
+        let fine_base = TimeBase::new(1, 2_000).unwrap();
+        assert_eq!(
+            mapping.map_proxy_to_source(TimePoint::new(5_999, fine_base), RoundingMode::Ceil),
+            Err(TimelineError::NoMappingSegment)
+        );
     }
 
     #[test]
     fn rotation_transforms_all_corners_and_swap_dimensions() {
         let dimensions = Dimensions::new(1920, 1080).unwrap();
         let aspect = AspectRatio::new(4, 2).unwrap();
-        assert_eq!(aspect, AspectRatio { numerator: 2, denominator: 1 });
+        assert_eq!(aspect, AspectRatio::new(2, 1).unwrap());
         let corners = [
             PixelPoint { x: 0, y: 0 },
             PixelPoint { x: 1920, y: 0 },
@@ -991,7 +1130,7 @@ mod tests {
         for rotation in [Rotation::Deg0, Rotation::Deg90, Rotation::Deg180, Rotation::Deg270] {
             let transform = GeometryTransform::new(dimensions, rotation, aspect);
             if matches!(rotation, Rotation::Deg90 | Rotation::Deg270) {
-                assert_eq!(transform.display_dimensions(), Dimensions { width: 1080, height: 1920 });
+                assert_eq!(transform.display_dimensions(), Dimensions::new(1080, 1920).unwrap());
             }
             for corner in corners {
                 let display = transform.to_display(corner).unwrap();
