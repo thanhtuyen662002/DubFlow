@@ -14,7 +14,8 @@ and a malformed or noisy worker must not exhaust supervisor memory.
 
 1. v1 is line-delimited UTF-8 JSON over supervised stdio. Every envelope has
    `schema_version`, `message_type`, IDs for job/stage/message, and a positive
-   monotonic `sequence`. The maximum encoded line is 64 KiB.
+   monotonic `sequence`. The maximum transport line, including its newline
+   delimiter, is 64 KiB.
 2. The message set is closed: `command`, `progress`, `checkpoint`,
    `heartbeat`, `cancel`, `failure` and `shutdown`. Unknown versions, types,
    members, duplicate members and malformed payloads are typed protocol errors.

@@ -386,20 +386,23 @@ impl StreamValidator {
         if self.terminal {
             return Err(ProtocolError::StreamTerminal);
         }
+        envelope.validate()?;
         if envelope.sequence != self.expected_sequence {
             return Err(ProtocolError::SequenceGap {
                 expected: self.expected_sequence,
                 received: envelope.sequence,
             });
         }
+        if let Payload::Heartbeat { monotonic_ms } = &envelope.payload {
+            if *monotonic_ms < self.last_heartbeat_ms {
+                return Err(ProtocolError::HeartbeatRegression);
+            }
+        }
         if self.expected_sequence == u64::MAX {
             return Err(ProtocolError::SequenceOverflow);
         }
         self.expected_sequence += 1;
         if let Payload::Heartbeat { monotonic_ms } = &envelope.payload {
-            if *monotonic_ms < self.last_heartbeat_ms {
-                return Err(ProtocolError::HeartbeatRegression);
-            }
             self.last_heartbeat_ms = *monotonic_ms;
         }
         if envelope.message_type == MessageType::Shutdown {
@@ -446,8 +449,10 @@ pub struct ProgressBuffer {
 
 impl ProgressBuffer {
     pub fn new(max_items: usize) -> Result<Self> {
-        if max_items == 0 {
-            return Err(ProtocolError::InvalidValue("progress buffer must be non-empty".into()));
+        if max_items == 0 || max_items > MAX_PROGRESS_BUFFER {
+            return Err(ProtocolError::InvalidValue(format!(
+                "progress buffer must contain 1..={MAX_PROGRESS_BUFFER} items"
+            )));
         }
         Ok(Self {
             max_items,
@@ -1234,6 +1239,9 @@ mod tests {
         let shutdown = envelope(MessageType::Shutdown, 2, Payload::Shutdown { status: ShutdownStatus::Completed });
         let mut stream = StreamValidator::new(100, 0).unwrap();
         stream.accept(&heartbeat).unwrap();
+        let regression = envelope(MessageType::Heartbeat, 2, Payload::Heartbeat { monotonic_ms: 9 });
+        assert!(matches!(stream.accept(&regression), Err(ProtocolError::HeartbeatRegression)));
+        assert_eq!(stream.expected_sequence(), 2);
         assert!(stream.check_heartbeat(110).is_ok());
         assert!(matches!(stream.check_heartbeat(111), Err(ProtocolError::HeartbeatTimeout { .. })));
         stream.accept(&shutdown).unwrap();
@@ -1246,6 +1254,7 @@ mod tests {
 
     #[test]
     fn progress_is_bounded_and_coalesced() {
+        assert!(ProgressBuffer::new(MAX_PROGRESS_BUFFER + 1).is_err());
         let mut buffer = ProgressBuffer::new(2).unwrap();
         buffer.push(envelope(MessageType::Progress, 1, Payload::Progress { fraction: 0.1, detail: None, units_done: None, units_total: None })).unwrap();
         buffer.push(Envelope::new(MessageType::Progress, "m2", "job", "other", 2, Payload::Progress { fraction: 0.2, detail: None, units_done: None, units_total: None }).unwrap()).unwrap();
@@ -1288,5 +1297,20 @@ mod tests {
             let value = envelope(kind, (index + 1) as u64, payload);
             assert_eq!(Envelope::from_json(&value.to_json().unwrap()).unwrap(), value);
         }
+    }
+
+    #[test]
+    fn shared_jsonl_fixture_is_accepted_by_rust_reference() {
+        let fixture = include_str!("../../../../tests/worker_protocol/fixtures/valid.jsonl");
+        let mut stream = StreamValidator::new(100, 0).unwrap();
+        let mut count = 0;
+        for line in fixture.lines() {
+            let envelope = Envelope::from_line(line.as_bytes()).unwrap();
+            stream.accept(&envelope).unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 7);
+        assert!(stream.terminal());
+        assert_eq!(stream.expected_sequence(), 8);
     }
 }

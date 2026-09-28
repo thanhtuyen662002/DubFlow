@@ -96,6 +96,12 @@ class WorkerProtocolTests(unittest.TestCase):
         validator.accept(heartbeat)
         validator.check_heartbeat(60)
         with self.assertRaises(ProtocolError) as context:
+            validator.accept(
+                Envelope.create(MessageType.HEARTBEAT, "regress", "j", "s", 2, {"monotonic_ms": 9})
+            )
+        self.assertEqual(context.exception.code, "HEARTBEAT_REGRESSION")
+        self.assertEqual(validator.expected_sequence, 2)
+        with self.assertRaises(ProtocolError) as context:
             validator.check_heartbeat(61)
         self.assertEqual(context.exception.code, "HEARTBEAT_TIMEOUT")
         with self.assertRaises(ProtocolError) as context:
@@ -108,6 +114,8 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(context.exception.code, "SEQUENCE_GAP")
 
     def test_progress_buffer_is_bounded_and_coalesces_latest_stage(self) -> None:
+        with self.assertRaises(ProtocolError):
+            ProgressBuffer(max_items=129)
         buffer = ProgressBuffer(max_items=2)
         first = Envelope.create(MessageType.PROGRESS, "m1", "j", "a", 1, {"fraction": 0.1})
         second = Envelope.create(MessageType.PROGRESS, "m2", "j", "b", 2, {"fraction": 0.2})

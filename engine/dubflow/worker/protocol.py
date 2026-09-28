@@ -256,7 +256,7 @@ class Envelope:
             allow_nan=False,
             separators=(",", ":"),
         ).encode("utf-8")
-        if len(encoded) > MAX_LINE_BYTES:
+        if len(encoded) + 1 > MAX_LINE_BYTES:
             raise ProtocolError("LINE_TOO_LARGE", f"line exceeds {MAX_LINE_BYTES} bytes")
         return encoded + b"\n"
 
@@ -282,13 +282,14 @@ class StreamValidator:
                 "SEQUENCE_GAP",
                 f"expected sequence {self.expected_sequence}, received {envelope.sequence}",
             )
-        if self.expected_sequence == (1 << 64) - 1:
-            raise ProtocolError("SEQUENCE_OVERFLOW", "sequence cannot advance further")
-        self.expected_sequence += 1
         if envelope.message_type is MessageType.HEARTBEAT:
             heartbeat = envelope.payload["monotonic_ms"]
             if heartbeat < self.last_heartbeat_ms:
                 raise ProtocolError("HEARTBEAT_REGRESSION", "worker monotonic time moved backwards")
+        if self.expected_sequence == U64_MAX:
+            raise ProtocolError("SEQUENCE_OVERFLOW", "sequence cannot advance further")
+        self.expected_sequence += 1
+        if envelope.message_type is MessageType.HEARTBEAT:
             self.last_heartbeat_ms = heartbeat
         if envelope.message_type is MessageType.SHUTDOWN:
             self.terminal = True

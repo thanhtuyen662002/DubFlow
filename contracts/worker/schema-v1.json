@@ -42,9 +42,9 @@
       "required": ["fraction"],
       "properties": {
         "fraction": { "type": "number", "minimum": 0, "maximum": 1 },
-        "detail": { "type": "string", "maxLength": 4096 },
-        "units_done": { "type": "integer", "minimum": 0 },
-        "units_total": { "type": "integer", "minimum": 0 }
+        "detail": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "units_done": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "units_total": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
       }
     },
     "checkpoint_payload": {
@@ -53,7 +53,7 @@
       "required": ["checkpoint_id", "reusable"],
       "properties": {
         "checkpoint_id": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "artifact_hash": { "type": "string", "maxLength": 256 },
+        "artifact_hash": { "type": "string", "minLength": 1, "maxLength": 256 },
         "reusable": { "type": "boolean" }
       }
     },
@@ -62,7 +62,7 @@
       "additionalProperties": false,
       "required": ["monotonic_ms"],
       "properties": {
-        "monotonic_ms": { "type": "integer", "minimum": 0 }
+        "monotonic_ms": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
       }
     },
     "cancel_payload": {

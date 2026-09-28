@@ -3,6 +3,7 @@
 This directory owns the versioned local worker wire contract for Issue #4.
 
 The transport is line-delimited UTF-8 JSON over a supervised stdio stream. Each
+transport line, including its terminating newline, is at most 64 KiB. Each
 line is one complete envelope with an explicit `schema_version`, `message_type`,
 `message_id`, `job_id`, `stage_id` and monotonically increasing `sequence`.
 Messages are rejected on malformed JSON, unknown versions/types, duplicate
