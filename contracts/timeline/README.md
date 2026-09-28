@@ -29,6 +29,12 @@ half-open `Interval`. Rescaling and comparison use checked integer arithmetic,
 GCD reduction and an explicit rounding mode. Overflow and non-integral exact
 rescaling are typed errors, never wrapping behavior.
 
+The Rust reference deliberately keeps JSON parsing dependency-free and focused
+on the wide `TimePoint` wire object plus typed mapping/geometry primitives. The
+complete fixture envelope is validated by the dependency-free Python contract
+checker in `tests/timeline`; this keeps the schema executable without adding a
+JSON dependency or a second, divergent Rust document model.
+
 ## Proxy/source mapping
 
 `ProxySourceMapping` is an ordered list of non-overlapping, half-open rational
