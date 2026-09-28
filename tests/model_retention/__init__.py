@@ -1,0 +1,1 @@
+"""Model retention contract fixtures."""

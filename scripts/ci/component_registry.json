@@ -292,6 +292,35 @@
       ]
     },
     {
+      "id": "model-retention",
+      "roots": [
+        "contracts/model_retention",
+        "models/retention",
+        "packaging/model-manager",
+        "crates/job-supervisor/model_refs",
+        "docs/adr/ADR-0011-model-retention.md",
+        "tests/model_retention"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/model_refs/Cargo.toml"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/model_retention",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "local-file-slice",
       "roots": [
         "minimal-integration-wiring",
