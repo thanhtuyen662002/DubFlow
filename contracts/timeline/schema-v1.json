@@ -4,10 +4,11 @@
   "title": "DubFlow canonical timeline v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "kind", "source_pts", "proxy_mapping", "geometry"],
+  "required": ["schema_version", "kind", "timing", "source_pts", "proxy_mapping", "geometry"],
   "properties": {
     "schema_version": { "const": 1 },
     "kind": { "const": "timeline_fixture" },
+    "timing": { "enum": ["cfr", "vfr"] },
     "source_pts": {
       "type": "array",
       "items": { "$ref": "#/$defs/time_point" }

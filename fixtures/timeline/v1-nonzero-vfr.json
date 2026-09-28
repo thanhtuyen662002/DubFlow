@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "kind": "timeline_fixture",
+  "timing": "vfr",
   "source_pts": [
     {
       "kind": "time_point",

@@ -93,18 +93,27 @@ def validate_geometry(geometry: Any) -> None:
 
 def validate_fixture(path: Path) -> None:
     value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=no_duplicate_keys)
-    if not isinstance(value, dict) or value.get("schema_version") != 1 or value.get("kind") != "timeline_fixture":
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != 1
+        or value.get("kind") != "timeline_fixture"
+        or value.get("timing") not in {"cfr", "vfr"}
+    ):
         raise ValueError("fixture discriminator/version mismatch")
+    timing = value["timing"]
     points = value.get("source_pts")
     if not isinstance(points, list) or len(points) < 3:
         raise ValueError("fixture must contain at least three source PTS values")
     point_values = [time_point(point)[0] for point in points]
     if point_values != sorted(point_values) or len(set(point_values)) != len(point_values):
         raise ValueError("source PTS values must be strictly increasing")
-    if not any(time_point(point)[1] != 0 for point in points):
+    if timing == "vfr" and not any(time_point(point)[1] != 0 for point in points):
         raise ValueError("fixture must preserve a non-zero PTS")
-    if all((right - left) == (point_values[1] - point_values[0]) for left, right in zip(point_values, point_values[1:])):
+    intervals = [right - left for left, right in zip(point_values, point_values[1:])]
+    if timing == "vfr" and all(interval == intervals[0] for interval in intervals[1:]):
         raise ValueError("fixture must exercise irregular VFR spacing")
+    if timing == "cfr" and any(interval != intervals[0] for interval in intervals[1:]):
+        raise ValueError("CFR fixture must have regular timestamp spacing")
     validate_mapping(value.get("proxy_mapping"))
     validate_geometry(value.get("geometry"))
 
