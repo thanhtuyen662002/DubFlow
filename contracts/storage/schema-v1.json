@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.dev/contracts/storage/schema-v1.json",
+  "title": "DubFlow resilient storage topology",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "roots", "artifact_identity", "recovery"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "roots": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "path", "required", "health_policy"],
+        "properties": {
+          "kind": {
+            "enum": ["control", "source", "output", "model", "cache", "temp"]
+          },
+          "path": { "type": "string", "minLength": 1 },
+          "required": { "type": "boolean" },
+          "health_policy": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["minimum_free_bytes", "minimum_free_ratio_ppm"],
+            "properties": {
+              "minimum_free_bytes": { "type": "integer", "minimum": 0 },
+              "minimum_free_ratio_ppm": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+            }
+          }
+        }
+      }
+    },
+    "artifact_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "volume_id", "root_kind", "relative_path", "content_hash", "size_bytes"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "volume_id": { "type": "string", "minLength": 1 },
+        "root_kind": { "enum": ["control", "source", "output", "model", "cache", "temp"] },
+        "relative_path": { "type": "string", "minLength": 1 },
+        "content_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "size_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["missing_output", "missing_cache", "rebind", "resume_generation"],
+      "properties": {
+        "missing_output": { "const": "pause_affected_and_quarantine_partial" },
+        "missing_cache": { "const": "discard_rebuildable_cache" },
+        "rebind": { "const": "volume_id_and_content_hash" },
+        "resume_generation": { "const": "reprobe_all_roots_and_resources" }
+      }
+    }
+  }
+}
