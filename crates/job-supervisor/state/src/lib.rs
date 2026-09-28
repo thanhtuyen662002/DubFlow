@@ -626,6 +626,7 @@ fn hash_file(path: &Path) -> io::Result<(String, u64)> {
 mod tests {
     use super::*;
     use std::env;
+    use std::process::Command;
 
     fn temp_path(name: &str, extension: &str) -> PathBuf {
         let mut path = env::temp_dir();
@@ -673,6 +674,35 @@ mod tests {
             store.start_job("job-1", 2).unwrap();
             store.start_stage("job-1", "analysis", 3).unwrap();
         }
+        let store = DurableStore::open(&path).unwrap();
+        assert_eq!(store.recover_after_restart(10).unwrap(), 1);
+        assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Recovering);
+        assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Recovering);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn hard_kill_child_process() {
+        let Some(path) = env::var_os("DUBFLOW_HARD_KILL_DB") else { return; };
+        let store = DurableStore::open(PathBuf::from(path)).unwrap();
+        setup(&store);
+        store.start_job("job-1", 2).unwrap();
+        store.start_stage("job-1", "analysis", 3).unwrap();
+        // Exit without dropping the connection or running recovery hooks.
+        std::process::exit(137);
+    }
+
+    #[test]
+    fn process_kill_recovery_uses_the_wal_record() {
+        let path = temp_path("hard-kill", "sqlite");
+        let status = Command::new(env::current_exe().unwrap())
+            .args(["--exact", "tests::hard_kill_child_process"])
+            .env("DUBFLOW_HARD_KILL_DB", &path)
+            .status()
+            .unwrap();
+        assert!(!status.success());
         let store = DurableStore::open(&path).unwrap();
         assert_eq!(store.recover_after_restart(10).unwrap(), 1);
         assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Recovering);
