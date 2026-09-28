@@ -1,0 +1,7 @@
+{"schema_version":1,"message_type":"command","message_id":"m-1","job_id":"job-1","stage_id":"stage-1","sequence":1,"payload":{"command":"analyze","args":{"chunk":"0"}}}
+{"schema_version":1,"message_type":"heartbeat","message_id":"m-2","job_id":"job-1","stage_id":"stage-1","sequence":2,"payload":{"monotonic_ms":10}}
+{"schema_version":1,"message_type":"progress","message_id":"m-3","job_id":"job-1","stage_id":"stage-1","sequence":3,"payload":{"fraction":0.5,"detail":"halfway","units_done":1,"units_total":2}}
+{"schema_version":1,"message_type":"checkpoint","message_id":"m-4","job_id":"job-1","stage_id":"stage-1","sequence":4,"payload":{"checkpoint_id":"safe-1","reusable":true,"artifact_hash":"sha256:fixture"}}
+{"schema_version":1,"message_type":"cancel","message_id":"m-5","job_id":"job-1","stage_id":"stage-1","sequence":5,"payload":{"reason":"user requested cancellation"}}
+{"schema_version":1,"message_type":"checkpoint","message_id":"m-6","job_id":"job-1","stage_id":"stage-1","sequence":6,"payload":{"checkpoint_id":"safe-cancel","reusable":true}}
+{"schema_version":1,"message_type":"shutdown","message_id":"m-7","job_id":"job-1","stage_id":"stage-1","sequence":7,"payload":{"status":"cancelled"}}
