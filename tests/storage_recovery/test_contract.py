@@ -42,9 +42,9 @@ class StorageContractTests(unittest.TestCase):
             parse_u64_wire("99999999999999999999")
 
     def test_locator_path_pattern_blocks_absolute_and_parent_paths(self) -> None:
-        pattern = re.compile(
-            schema_pattern := json.loads(SCHEMA.read_text(encoding="utf-8"))["properties"]["artifact_identity"]["properties"]["relative_path"]["pattern"]
-        )
+        schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+        schema_pattern = schema["properties"]["artifact_identity"]["properties"]["relative_path"]["pattern"]
+        pattern = re.compile(schema_pattern)
         for value in ("C:\\video.mp4", "\\\\server\\share\\video.mp4", "../video.mp4", "..\\video.mp4"):
             self.assertIsNone(pattern.fullmatch(value), value)
         self.assertIsNotNone(pattern.fullmatch("字幕/片段.mp4"), schema_pattern)
