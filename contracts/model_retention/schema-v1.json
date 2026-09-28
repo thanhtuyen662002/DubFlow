@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/model-retention/v1",
+  "title": "DubFlow model retention reference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "terminal", "required_versions"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "job_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "terminal": {"type": "boolean"},
+    "required_versions": {"type": "array", "items": {"$ref": "#/$defs/version_ref"}},
+    "active_worker": {"type": "boolean"}
+  },
+  "$defs": {
+    "version_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
