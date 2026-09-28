@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/model-manifest/v1",
+  "title": "DubFlow model and runtime catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "catalog_id", "entries"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "catalog_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/entry"}
+    }
+  },
+  "$defs": {
+    "uint64_string": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "maxLength": 20
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["architectures", "min_ram_mb", "min_vram_mb"],
+      "properties": {
+        "architectures": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "min_ram_mb": {"$ref": "#/$defs/uint64_string"},
+        "min_vram_mb": {"$ref": "#/$defs/uint64_string"},
+        "accelerator": {"type": "string", "minLength": 1}
+      }
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spdx", "distribution_decision", "attribution_required"],
+      "properties": {
+        "spdx": {"type": "string", "minLength": 1},
+        "distribution_decision": {"type": "string", "minLength": 1},
+        "attribution_required": {"type": "boolean"},
+        "notice_url": {"type": "string"}
+      }
+    },
+    "update": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "manifest_version", "rollback_version", "signature"],
+      "properties": {
+        "channel": {"type": "string", "enum": ["stable", "experimental", "internal"]},
+        "manifest_version": {"type": "string", "minLength": 1},
+        "rollback_version": {"type": ["string", "null"]},
+        "signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["algorithm", "key_id", "value"],
+          "properties": {
+            "algorithm": {"type": "string", "minLength": 1},
+            "key_id": {"type": "string", "minLength": 1},
+            "value": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signed", "audit_id", "trust_remote_code"],
+      "properties": {
+        "signed": {"type": "boolean"},
+        "audit_id": {"type": ["string", "null"]},
+        "trust_remote_code": {"type": "boolean"}
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "version", "kind", "package_class", "source", "sha256", "size_bytes",
+        "hardware", "license", "redistributable", "requires_credentials", "requires_clickthrough",
+        "fallback", "compatibility", "update", "trust", "default_profile"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "version": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "enum": ["model", "runtime", "ffmpeg"]},
+        "package_class": {"type": "string", "enum": ["weights-only", "code-bearing"]},
+        "source": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"$ref": "#/$defs/uint64_string"},
+        "hardware": {"$ref": "#/$defs/hardware"},
+        "license": {"$ref": "#/$defs/license"},
+        "redistributable": {"type": "boolean"},
+        "requires_credentials": {"type": "boolean"},
+        "requires_clickthrough": {"type": "boolean"},
+        "fallback": {"type": ["string", "null"]},
+        "compatibility": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
+        "update": {"$ref": "#/$defs/update"},
+        "trust": {"$ref": "#/$defs/trust"},
+        "default_profile": {"type": "boolean"}
+      }
+    }
+  }
+}
