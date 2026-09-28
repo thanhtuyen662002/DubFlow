@@ -56,6 +56,7 @@ struct JobState {
     paused: bool,
     poisoned: bool,
     consecutive_slices: u32,
+    fairness_debt: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +113,7 @@ impl Scheduler {
             return Err(SchedulerError::DuplicateJob);
         }
         let id = spec.id.clone();
-        self.jobs.insert(id, JobState { remaining_units: spec.work_units, spec, running: false, paused: false, poisoned: false, consecutive_slices: 0 });
+        self.jobs.insert(id, JobState { remaining_units: spec.work_units, spec, running: false, paused: false, poisoned: false, consecutive_slices: 0, fairness_debt: 0 });
         Ok(())
     }
 
@@ -121,7 +122,9 @@ impl Scheduler {
     pub fn dispatch(&mut self, now_tick: u64) -> Vec<Dispatch> {
         let mut candidates = self.jobs.values().filter(|job| !job.paused && !job.poisoned && !job.running).map(|job| {
             let age = now_tick.saturating_sub(job.spec.enqueued_tick).min(1_000_000);
-            let score = i64::from(job.spec.priority).saturating_mul(1_000_001).saturating_add(age as i64);
+            let score = i64::from(job.spec.priority).saturating_mul(1_000_001)
+                .saturating_add(age as i64)
+                .saturating_sub((job.fairness_debt.min(i64::MAX as u64) as i64).saturating_mul(1_000_001));
             (score, job.spec.enqueued_tick, job.spec.id.clone())
         }).collect::<Vec<_>>();
         candidates.sort_by(|left, right| right.cmp(left));
@@ -152,6 +155,7 @@ impl Scheduler {
             job.running = false;
             let completed = job.remaining_units == 0;
             job.consecutive_slices = 0;
+            if !completed { job.fairness_debt = job.fairness_debt.saturating_add(1); }
             (job.spec.class, job.spec.resource_units, completed)
         };
         self.release_usage(class, resource_units);
@@ -242,7 +246,7 @@ mod tests {
     #[test]
     fn capacities_and_quantum_yield_prevent_giant_job_monopoly() {
         let mut scheduler = Scheduler::new(ResourceLimits { cpu: 1, gpu: 1, vram: 1, render: 1, download: 2, disk: 1 });
-        scheduler.enqueue(job("giant", 0, 0, 100)).unwrap();
+        scheduler.enqueue(job("giant", 1, 0, 100)).unwrap();
         scheduler.enqueue(job("short", 0, 0, 1)).unwrap();
         let first = scheduler.dispatch(0); assert_eq!(first.len(), 1);
         scheduler.complete_slice(&first[0].job_id, 1, &first[0].checkpoint_id).unwrap();
