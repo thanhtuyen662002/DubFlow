@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/audio_mix/schema-v1.json",
+  "title": "DubFlow non-destructive Vietnamese audio mix document v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "source_kind",
+    "target_language",
+    "source_id",
+    "segment_ids",
+    "segments",
+    "source_layout",
+    "source_start",
+    "source_end",
+    "sample_rate",
+    "channels",
+    "original_audio",
+    "dialogue_stem",
+    "final_mix",
+    "duck_windows",
+    "chunks",
+    "provenance",
+    "failures",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "audio_mix_document" },
+    "source_kind": { "const": "source_audio" },
+    "target_language": { "const": "vi" },
+    "source_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "segment_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+      "uniqueItems": true
+    },
+    "segments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/segment" }
+    },
+    "source_layout": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "source_start": { "$ref": "#/$defs/time_point" },
+    "source_end": { "$ref": "#/$defs/time_point" },
+    "sample_rate": { "type": "integer", "minimum": 1 },
+    "channels": { "type": "integer", "minimum": 1, "maximum": 2 },
+    "original_audio": { "$ref": "#/$defs/artifact" },
+    "dialogue_stem": { "$ref": "#/$defs/artifact" },
+    "final_mix": { "$ref": "#/$defs/artifact" },
+    "duck_windows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/duck_window" }
+    },
+    "chunks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/chunk" }
+    },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "failures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/failure" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "denominator": { "type": "string", "pattern": "^[1-9][0-9]*$" }
+      }
+    },
+    "time_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "ticks", "time_base"],
+      "properties": {
+        "kind": { "const": "time_point" },
+        "schema_version": { "const": 1 },
+        "ticks": { "type": "string", "pattern": "^(0|-?[1-9][0-9]*)$" },
+        "time_base": { "$ref": "#/$defs/time_base" }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_threads", "max_memory_mb", "max_batch_items"],
+      "properties": {
+        "max_threads": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "max_memory_mb": { "type": "integer", "minimum": 32, "maximum": 1048576 },
+        "max_batch_items": { "type": "integer", "minimum": 1, "maximum": 256 }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_count", "frame_count", "rms_milli", "peak", "clipped_samples", "content_hash"],
+      "properties": {
+        "sample_count": { "type": "integer", "minimum": 1 },
+        "frame_count": { "type": "integer", "minimum": 1 },
+        "rms_milli": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "peak": { "type": "integer", "minimum": 0, "maximum": 32768 },
+        "clipped_samples": { "type": "integer", "minimum": 0 },
+        "content_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segment_id", "source_utterance_id", "status", "confidence", "fallback_used"],
+      "properties": {
+        "segment_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "source_utterance_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "status": { "enum": ["completed", "failed"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "fallback_used": { "type": "boolean" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "kind", "path", "content_hash", "format", "sample_rate", "channels", "bits_per_sample", "frame_count", "metrics"],
+      "properties": {
+        "artifact_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "kind": { "enum": ["original_audio", "dialogue_stem", "final_mix"] },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "content_hash": { "$ref": "#/$defs/sha256" },
+        "format": { "const": "wav" },
+        "sample_rate": { "type": "integer", "minimum": 1 },
+        "channels": { "type": "integer", "minimum": 1, "maximum": 2 },
+        "bits_per_sample": { "const": 16 },
+        "frame_count": { "type": "integer", "minimum": 1 },
+        "metrics": { "$ref": "#/$defs/metrics" }
+      }
+    },
+    "duck_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segment_id", "start_sample", "end_sample", "attack_samples", "release_samples", "duck_gain_milli"],
+      "properties": {
+        "segment_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "start_sample": { "type": "integer" },
+        "end_sample": { "type": "integer" },
+        "attack_samples": { "type": "integer", "minimum": 0 },
+        "release_samples": { "type": "integer", "minimum": 0 },
+        "duck_gain_milli": { "type": "integer", "minimum": 0, "maximum": 1000 }
+      }
+    },
+    "chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chunk_id", "index", "segment_ids", "status", "attempt"],
+      "properties": {
+        "chunk_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "index": { "type": "integer", "minimum": 0 },
+        "segment_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "uniqueItems": true
+        },
+        "status": { "enum": ["completed", "degraded", "failed", "skipped"] },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "error_code": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "producer_version", "backend_id", "runtime", "timeline_contract", "config_hash", "source_hash", "input_hash", "requested_profile", "hardware_profile", "resource", "non_destructive"],
+      "properties": {
+        "producer": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "producer_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "backend_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "runtime": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "timeline_contract": { "const": "timeline-v1" },
+        "config_hash": { "$ref": "#/$defs/sha256" },
+        "source_hash": { "$ref": "#/$defs/sha256" },
+        "input_hash": { "$ref": "#/$defs/sha256" },
+        "requested_profile": { "enum": ["auto", "cpu", "gpu", "fixture"] },
+        "hardware_profile": { "enum": ["cpu", "gpu", "fixture", "mixed"] },
+        "resource": { "$ref": "#/$defs/resource" },
+        "non_destructive": { "const": true }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "segment_id", "condition", "recoverable", "fallback_used"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "segment_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "condition": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "recoverable": { "type": "boolean" },
+        "fallback_used": { "type": "boolean" }
+      }
+    }
+  }
+}
