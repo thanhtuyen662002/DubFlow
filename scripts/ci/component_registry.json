@@ -162,6 +162,34 @@
       ]
     },
     {
+      "id": "job-liveness",
+      "roots": [
+        "contracts/job_status",
+        "crates/job-supervisor/liveness",
+        "apps/desktop/src/features/job_status",
+        "docs/adr/ADR-0007-job-liveness.md",
+        "tests/job_liveness"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/liveness/Cargo.toml"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/job_liveness",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "local-file-slice",
       "roots": [
         "minimal-integration-wiring",

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/job-status/v1",
+  "title": "DubFlow durable job liveness status",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "state", "reason", "message", "checkpoint_id", "progress", "retry", "resource"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "state": {"type": "string", "enum": ["QUEUED", "RUNNING", "WAITING_RESOURCE", "WAITING_EXTERNAL", "RETRYING", "WORKER_LOST", "RECOVERED", "BLOCKED_NEEDS_ACTION", "COMPLETED", "FAILED"]},
+    "reason": {"type": "string", "minLength": 1},
+    "message": {"type": "string", "minLength": 1},
+    "checkpoint_id": {"type": ["string", "null"]},
+    "progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completed_units", "total_units", "heartbeat_sequence"],
+      "properties": {
+        "completed_units": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "total_units": {"type": ["string", "null"], "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "heartbeat_sequence": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20}
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "max_attempts", "condition_fingerprint"],
+      "properties": {
+        "attempt": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 10},
+        "max_attempts": {"type": "string", "pattern": "^(1|[2-9][0-9]*)$", "maxLength": 10},
+        "condition_fingerprint": {"type": ["string", "null"]}
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "held", "release_requested"],
+      "properties": {
+        "kind": {"type": ["string", "null"], "enum": ["GPU", "CPU", "DISK", "NETWORK", "WORKER_SLOT", null]},
+        "held": {"type": "boolean"},
+        "release_requested": {"type": "boolean"}
+      }
+    }
+  }
+}
