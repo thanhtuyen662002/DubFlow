@@ -16,9 +16,11 @@ no durable state implementation.
    stores jobs, stages, artifacts, checkpoints, retry budgets and migration
    versions. Python workers never receive a database handle or mutate SQLite.
 2. Artifact completion is ordered: write and flush the temporary file, validate
-   and hash it, commit its metadata and stage transition in one SQLite
-   transaction, then publish a UI event. Temporary/partial files are never
-   reported as final artifacts.
+   and hash it, atomically publish it into the artifact store, then commit its
+   metadata and owning stage transition in one SQLite transaction before
+   publishing a UI event. Temporary/partial files are never reported as final
+   artifacts. The state crate also quarantines unregistered temporary files
+   left when a process dies before its row transaction commits.
 3. Recovery treats the database and filesystem as separate durable surfaces.
    A file written before its transaction is an orphan candidate; a committed
    row whose file is gone is a recoverable missing-artifact condition. Hash and
