@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "kind": "timeline_fixture",
+  "timing": "vfr",
+  "source_pts": [
+    {
+      "kind": "time_point",
+      "schema_version": 1,
+      "ticks": "-1",
+      "time_base": { "numerator": "1001", "denominator": "30000" }
+    },
+    {
+      "kind": "time_point",
+      "schema_version": 1,
+      "ticks": "0",
+      "time_base": { "numerator": "1001", "denominator": "30000" }
+    },
+    {
+      "kind": "time_point",
+      "schema_version": 1,
+      "ticks": "2",
+      "time_base": { "numerator": "1001", "denominator": "30000" }
+    }
+  ],
+  "proxy_mapping": {
+    "kind": "proxy_source_mapping",
+    "segments": [
+      {
+        "source_start": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "-1",
+          "time_base": { "numerator": "1001", "denominator": "30000" }
+        },
+        "source_end": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "2",
+          "time_base": { "numerator": "1001", "denominator": "30000" }
+        },
+        "proxy_start": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "100",
+          "time_base": { "numerator": "1", "denominator": "25" }
+        },
+        "proxy_end": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "103",
+          "time_base": { "numerator": "1", "denominator": "25" }
+        }
+      }
+    ]
+  },
+  "geometry": {
+    "kind": "coded_to_display_geometry",
+    "coded_dimensions": { "width": "1080", "height": "1920" },
+    "rotation_degrees": 90,
+    "pixel_aspect_ratio": { "numerator": "4", "denominator": "3" },
+    "coordinate_convention": "pixel_bounds"
+  }
+}

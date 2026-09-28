@@ -1,4 +1,27 @@
 {
   "schema_version": 1,
-  "components": []
+  "components": [
+    {
+      "id": "media-contracts",
+      "roots": [
+        "contracts/timeline",
+        "crates/media-contracts",
+        "tests/timeline",
+        "fixtures/timeline"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/media-contracts/Cargo.toml",
+          "--locked"
+        ],
+        [
+          "python",
+          "tests/timeline/validate_fixtures.py"
+        ]
+      ]
+    }
+  ]
 }
