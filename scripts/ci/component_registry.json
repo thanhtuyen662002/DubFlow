@@ -141,6 +141,27 @@
       ]
     },
     {
+      "id": "model-manifests",
+      "roots": [
+        "models/manifests",
+        "packaging/manifests",
+        "docs/licenses",
+        "tests/manifests"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/manifests",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "local-file-slice",
       "roots": [
         "minimal-integration-wiring",
