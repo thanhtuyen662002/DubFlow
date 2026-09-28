@@ -77,6 +77,21 @@
           "test_*.py"
         ]
       ]
+    },
+    {
+      "id": "local-file-slice",
+      "roots": [
+        "minimal-integration-wiring",
+        "tests/integration/local_file_slice"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "minimal-integration-wiring/Cargo.toml"
+        ]
+      ]
     }
   ]
 }
