@@ -10,6 +10,13 @@ implementation details; they are never durable transcript identity.
 
 The contract is backend-neutral. A local model, a CPU fallback, and a small
 deterministic fixture backend all produce the same validated transcript shape.
+The `AsrBackend` receives a bounded `AudioChunk` carrying the source artifact
+reference, optional sample rate, canonical decode window and non-overlapping
+core interval; it never receives the whole long-form recording in memory.
+Backends that report sample-relative offsets must call the explicit integer
+`map_sample_interval` helper (Floor for starts and Ceil for ends) before
+returning hypotheses, so negative/non-zero anchors and overflow remain typed
+timeline errors.
 Producer/model/config/input provenance is required so a later model change can
 invalidate only the transcript descendants that depend on it. Low confidence
 is retained as data. Structured backend failures carry a stable code,
