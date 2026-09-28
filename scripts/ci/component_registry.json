@@ -112,6 +112,26 @@
           "test_*.py"
         ]
       ]
+    },
+    {
+      "id": "translation",
+      "roots": [
+        "contracts/translation",
+        "engine/dubflow/translation",
+        "tests/translation"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/translation",
+          "-p",
+          "test_*.py"
+        ]
+      ]
     }
   ]
 }
