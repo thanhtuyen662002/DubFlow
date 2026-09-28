@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "kind": "asr_fixture",
+  "time_base": {"numerator": "1", "denominator": "1000"},
+  "utterances": [
+    {
+      "utterance_id": "fixture-utt-1",
+      "start": "900",
+      "end": "1540",
+      "language": "en",
+      "text": "hello world",
+      "confidence": 0.91,
+      "words": [
+        {"word_id": "fixture-word-1", "text": "hello", "start": "900", "end": "1120", "confidence": 0.94},
+        {"word_id": "fixture-word-2", "text": "world", "start": "1210", "end": "1540", "confidence": 0.88}
+      ]
+    }
+  ]
+}
