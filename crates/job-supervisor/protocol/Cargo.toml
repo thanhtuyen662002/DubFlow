@@ -1,0 +1,12 @@
+[package]
+name = "dubflow-worker-protocol"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Standard-library reference implementation for the DubFlow worker protocol"
+license = "MIT"
+publish = false
+
+[lib]
+name = "dubflow_worker_protocol"
+path = "src/lib.rs"

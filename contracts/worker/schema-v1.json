@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/worker/schema-v1.json",
+  "title": "DubFlow supervisor-worker JSONL protocol v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "message_type", "message_id", "job_id", "stage_id", "sequence", "payload"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "message_type": {
+      "enum": ["command", "progress", "checkpoint", "heartbeat", "cancel", "failure", "shutdown"]
+    },
+    "message_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "job_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "stage_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "sequence": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
+    "payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/command_payload" },
+        { "$ref": "#/$defs/progress_payload" },
+        { "$ref": "#/$defs/checkpoint_payload" },
+        { "$ref": "#/$defs/heartbeat_payload" },
+        { "$ref": "#/$defs/cancel_payload" },
+        { "$ref": "#/$defs/failure_payload" },
+        { "$ref": "#/$defs/shutdown_payload" }
+      ]
+    }
+  },
+  "$defs": {
+    "command_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "args"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "args": { "type": "object" }
+      }
+    },
+    "progress_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fraction"],
+      "properties": {
+        "fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "units_done": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "units_total": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
+    "checkpoint_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checkpoint_id", "reusable"],
+      "properties": {
+        "checkpoint_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "artifact_hash": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "reusable": { "type": "boolean" }
+      }
+    },
+    "heartbeat_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["monotonic_ms"],
+      "properties": {
+        "monotonic_ms": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
+    "cancel_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "failure_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "retryable", "attempt", "condition"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "retryable": { "type": "boolean" },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "condition": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "shutdown_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["completed", "cancelled", "failed"] }
+      }
+    }
+  }
+}

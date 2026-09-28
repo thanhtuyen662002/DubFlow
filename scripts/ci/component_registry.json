@@ -22,6 +22,34 @@
           "tests/timeline/validate_fixtures.py"
         ]
       ]
+    },
+    {
+      "id": "worker-protocol",
+      "roots": [
+        "contracts/worker",
+        "crates/job-supervisor/protocol",
+        "engine/dubflow/worker",
+        "tests/worker_protocol"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/protocol/Cargo.toml",
+          "--locked"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/worker_protocol",
+          "-p",
+          "test_*.py"
+        ]
+      ]
     }
   ]
 }
