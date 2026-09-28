@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/subtitles/schema-v1.json",
+  "title": "DubFlow Vietnamese subtitle document v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "source_kind", "target_language", "timeline_offset", "cues", "layout", "srt", "ass", "provenance", "warnings"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "subtitle_document" },
+    "source_kind": { "const": "translation" },
+    "target_language": { "const": "vi" },
+    "timeline_offset": { "$ref": "#/$defs/time_point" },
+    "cues": { "type": "array", "items": { "$ref": "#/$defs/cue" } },
+    "layout": { "$ref": "#/$defs/layout" },
+    "srt": { "type": "string", "minLength": 1 },
+    "ass": { "type": "string", "minLength": 1 },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "warnings": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 4096 } }
+  },
+  "$defs": {
+    "time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "denominator": { "type": "string", "pattern": "^[1-9][0-9]*$" }
+      }
+    },
+    "time_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "ticks", "time_base"],
+      "properties": {
+        "kind": { "const": "time_point" },
+        "schema_version": { "const": 1 },
+        "ticks": { "type": "string", "pattern": "^(0|-?[1-9][0-9]*)$" },
+        "time_base": { "$ref": "#/$defs/time_base" }
+      }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "cue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cue_id", "source_utterance_id", "start", "end", "text", "lines", "confidence"],
+      "properties": {
+        "cue_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "source_utterance_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "start": { "$ref": "#/$defs/time_point" },
+        "end": { "$ref": "#/$defs/time_point" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 8192 },
+        "lines": { "type": "array", "minItems": 1, "maxItems": 4, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "aspect", "position", "margin_left", "margin_right", "margin_top", "margin_bottom", "font_name", "font_fallbacks"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "aspect": { "enum": ["portrait", "landscape", "square"] },
+        "position": { "enum": ["top-center", "middle-center", "bottom-center"] },
+        "margin_left": { "type": "integer", "minimum": 0 },
+        "margin_right": { "type": "integer", "minimum": 0 },
+        "margin_top": { "type": "integer", "minimum": 0 },
+        "margin_bottom": { "type": "integer", "minimum": 0 },
+        "font_name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "font_fallbacks": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1, "maxLength": 128 }, "uniqueItems": true }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "producer_version", "config_hash", "input_hash", "timeline_contract"],
+      "properties": {
+        "producer": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "producer_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "config_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "input_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "timeline_contract": { "const": "timeline-v1" }
+      }
+    }
+  }
+}
