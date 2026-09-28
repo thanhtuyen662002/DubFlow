@@ -353,8 +353,12 @@ class CancellationController:
         self.state = CancellationState.REQUESTED
         self.reason = reason
 
-    def checkpoint(self, checkpoint_id: str) -> None:
+    def checkpoint(self, checkpoint_id: str, *, reusable: bool) -> None:
         _require_string(checkpoint_id, "checkpoint_id", max_length=256)
+        if type(reusable) is not bool:
+            raise ProtocolError("INVALID_BOOLEAN", "checkpoint.reusable must be boolean")
+        if not reusable:
+            raise ProtocolError("UNSAFE_CHECKPOINT", "cancellation requires a reusable safe checkpoint")
         if self.state is not CancellationState.REQUESTED:
             raise ProtocolError("CHECKPOINT_NOT_PENDING", "a cancellation checkpoint was not requested")
         self.state = CancellationState.CHECKPOINTED

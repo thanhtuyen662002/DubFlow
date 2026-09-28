@@ -16,7 +16,7 @@ v1 distinguishes commands, progress, checkpoints, heartbeats, cancellation,
 structured failures and graceful shutdown. Progress is bounded and coalesced;
 heartbeats prove liveness but do not replace durable checkpoint progress. EOF,
 malformed output and a heartbeat timeout become typed worker failures. Cancel
-is cooperative and only becomes complete after a safe checkpoint or an
+is cooperative and only becomes complete after a reusable safe checkpoint or an
 explicit cancellation failure. Retry metadata records a materially changed
 condition and a finite attempt number.
 

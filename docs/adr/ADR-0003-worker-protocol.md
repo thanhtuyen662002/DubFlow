@@ -26,7 +26,7 @@ and a malformed or noisy worker must not exhaust supervisor memory.
    coalesced/dropped with an observable dropped count; checkpoints and failures
    are never silently dropped. Heartbeats prove liveness but are not durable
    progress.
-5. Cancellation is cooperative. A cancel request reaches a safe checkpoint
+5. Cancellation is cooperative. A cancel request reaches a reusable safe checkpoint
    before the worker emits `shutdown: cancelled`; failure to checkpoint is a
    structured cancellation failure. Retry metadata has a finite attempt and a
    materially changed condition.

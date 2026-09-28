@@ -550,9 +550,12 @@ impl CancellationController {
         Ok(())
     }
 
-    pub fn checkpoint(&mut self, checkpoint_id: impl Into<String>) -> Result<()> {
+    pub fn checkpoint(&mut self, checkpoint_id: impl Into<String>, reusable: bool) -> Result<()> {
         let checkpoint_id = checkpoint_id.into();
         validate_string(&checkpoint_id, "checkpoint_id", 256)?;
+        if !reusable {
+            return Err(ProtocolError::UnsafeCancellation);
+        }
         if self.state != CancellationState::Requested {
             return Err(ProtocolError::CheckpointNotPending);
         }
@@ -1271,7 +1274,8 @@ mod tests {
         let mut cancel = CancellationController::default();
         assert!(matches!(cancel.complete(), Err(ProtocolError::UnsafeCancellation)));
         cancel.request("user").unwrap();
-        cancel.checkpoint("safe-1").unwrap();
+        assert!(matches!(cancel.checkpoint("unsafe", false), Err(ProtocolError::UnsafeCancellation)));
+        cancel.checkpoint("safe-1", true).unwrap();
         cancel.complete().unwrap();
         assert_eq!(cancel.state(), CancellationState::Completed);
         assert!(matches!(cancel.request("late"), Err(ProtocolError::CancellationTooLate)));

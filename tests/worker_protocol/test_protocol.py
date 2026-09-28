@@ -136,7 +136,10 @@ class WorkerProtocolTests(unittest.TestCase):
             cancellation.complete()
         self.assertEqual(context.exception.code, "UNSAFE_CANCEL")
         cancellation.request("user")
-        cancellation.checkpoint("safe-cancel")
+        with self.assertRaises(ProtocolError) as context:
+            cancellation.checkpoint("unsafe", reusable=False)
+        self.assertEqual(context.exception.code, "UNSAFE_CHECKPOINT")
+        cancellation.checkpoint("safe-cancel", reusable=True)
         cancellation.complete()
         self.assertEqual(cancellation.state, CancellationState.COMPLETED)
         with self.assertRaises(ProtocolError) as context:
