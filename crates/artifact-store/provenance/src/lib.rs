@@ -62,8 +62,9 @@ impl ArtifactGraph {
         node.provenance.validate()?;
         if self.nodes.contains_key(&node.id) { return Err(GraphError::DuplicateId); }
         if node.inputs.iter().any(|input| !self.nodes.contains_key(input)) { return Err(GraphError::UnknownInput(node.id)); }
-        self.nodes.insert(node.id.clone(), node);
-        if self.has_cycle() { self.nodes.remove(&node.id); return Err(GraphError::Cycle); }
+        let node_id = node.id.clone();
+        self.nodes.insert(node_id.clone(), node);
+        if self.has_cycle() { self.nodes.remove(&node_id); return Err(GraphError::Cycle); }
         Ok(())
     }
 
