@@ -34,14 +34,17 @@
   "$defs": {
     "positive_decimal_string": {
       "type": "string",
+      "$comment": "Values are bounded by the Rust u64 representation; geometry dimensions and aspect factors additionally use u32.",
       "pattern": "^[1-9][0-9]*$"
     },
     "signed_decimal_string": {
       "type": "string",
+      "$comment": "Values are bounded by the Rust i64 representation.",
       "pattern": "^-?(0|[1-9][0-9]*)$"
     },
     "time_base": {
       "type": "object",
+      "$comment": "The two positive decimal strings must be coprime; the dependency-free fixture validator and Rust reference enforce this semantic constraint.",
       "additionalProperties": false,
       "required": ["numerator", "denominator"],
       "properties": {

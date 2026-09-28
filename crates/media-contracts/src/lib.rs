@@ -270,6 +270,9 @@ impl WireTimePoint {
         let ticks = parse_i64_decimal(&self.ticks)?;
         let numerator = parse_u64_decimal(&self.time_base.numerator)?;
         let denominator = parse_u64_decimal(&self.time_base.denominator)?;
+        if gcd_u64(numerator, denominator) != 1 {
+            return Err(TimelineError::InvalidWire("time base must be reduced".into()));
+        }
         Ok(TimePoint::new(ticks, TimeBase::new(numerator, denominator)?))
     }
 
@@ -1049,6 +1052,7 @@ mod tests {
         assert!(WireTimePoint::from_json(&json.replace("\"ticks\":\"1\"", "\"ticks\":\"01\"")).is_err());
         assert!(WireTimePoint::from_json(&json.replace("\"schema_version\":1", "\"schema_version\":2")).is_err());
         assert!(WireTimePoint::from_json(&json.replace("\"denominator\":\"90000\"", "\"denominator\":\"+90000\"")).is_err());
+        assert!(WireTimePoint::from_json(&json.replace("\"numerator\":\"1\",\"denominator\":\"90000\"", "\"numerator\":\"2\",\"denominator\":\"180000\"")).is_err());
         let reordered = r#"{"time_base":{"denominator":"90000","numerator":"1"},"ticks":"1","schema_version":1,"kind":"time_point"}"#;
         assert_eq!(WireTimePoint::from_json(reordered).unwrap().to_time_point().unwrap(), point);
         assert!(WireTimePoint::from_json(&json.replace("\"ticks\":\"1\"", "\"ticks\":\"1\",\"ticks\":\"1\"")).is_err());

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from fractions import Fraction
+from math import gcd
 from pathlib import Path
 import re
 from typing import Any
@@ -63,6 +64,8 @@ def time_point(value: Any) -> tuple[Fraction, int]:
     base = ensure_object(value["time_base"], "time base", {"numerator", "denominator"})
     numerator = decimal(base["numerator"], signed=False)
     denominator = decimal(base["denominator"], signed=False)
+    if gcd(numerator, denominator) != 1:
+        raise ValueError("time base must be reduced")
     rational = Fraction(ticks * numerator, denominator)
     return rational, ticks
 
@@ -109,6 +112,8 @@ def validate_geometry(geometry: Any) -> None:
     aspect = ensure_object(geometry["pixel_aspect_ratio"], "pixel aspect ratio", {"numerator", "denominator"})
     if decimal(aspect["numerator"], signed=False) > 2**32 - 1 or decimal(aspect["denominator"], signed=False) > 2**32 - 1:
         raise ValueError("pixel aspect ratio is outside Rust u32 range")
+    if gcd(int(aspect["numerator"]), int(aspect["denominator"])) != 1:
+        raise ValueError("pixel aspect ratio must be reduced")
     if type(geometry["coordinate_convention"]) is not str or geometry["coordinate_convention"] != "pixel_bounds":
         raise ValueError("coordinate convention must be pixel_bounds")
 
