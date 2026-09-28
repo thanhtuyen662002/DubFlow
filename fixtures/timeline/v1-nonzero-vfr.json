@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "kind": "timeline_fixture",
+  "source_pts": [
+    {
+      "kind": "time_point",
+      "schema_version": 1,
+      "ticks": "90000",
+      "time_base": { "numerator": "1", "denominator": "90000" }
+    },
+    {
+      "kind": "time_point",
+      "schema_version": 1,
+      "ticks": "225000",
+      "time_base": { "numerator": "1", "denominator": "90000" }
+    },
+    {
+      "kind": "time_point",
+      "schema_version": 1,
+      "ticks": "450000",
+      "time_base": { "numerator": "1", "denominator": "90000" }
+    },
+    {
+      "kind": "time_point",
+      "schema_version": 1,
+      "ticks": "9007199254740993",
+      "time_base": { "numerator": "1", "denominator": "90000" }
+    }
+  ],
+  "proxy_mapping": {
+    "kind": "proxy_source_mapping",
+    "segments": [
+      {
+        "source_start": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "90000",
+          "time_base": { "numerator": "1", "denominator": "90000" }
+        },
+        "source_end": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "450000",
+          "time_base": { "numerator": "1", "denominator": "90000" }
+        },
+        "proxy_start": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "0",
+          "time_base": { "numerator": "1", "denominator": "1000" }
+        },
+        "proxy_end": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "4000",
+          "time_base": { "numerator": "1", "denominator": "1000" }
+        }
+      },
+      {
+        "source_start": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "540000",
+          "time_base": { "numerator": "1", "denominator": "90000" }
+        },
+        "source_end": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "720000",
+          "time_base": { "numerator": "1", "denominator": "90000" }
+        },
+        "proxy_start": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "5000",
+          "time_base": { "numerator": "1", "denominator": "1000" }
+        },
+        "proxy_end": {
+          "kind": "time_point",
+          "schema_version": 1,
+          "ticks": "7000",
+          "time_base": { "numerator": "1", "denominator": "1000" }
+        }
+      }
+    ]
+  },
+  "geometry": {
+    "kind": "coded_to_display_geometry",
+    "coded_dimensions": { "width": "1920", "height": "1080" },
+    "rotation_degrees": 0,
+    "pixel_aspect_ratio": { "numerator": "1", "denominator": "1" },
+    "coordinate_convention": "pixel_bounds"
+  }
+}

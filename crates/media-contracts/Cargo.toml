@@ -1,0 +1,12 @@
+[package]
+name = "dubflow-media-contracts"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Standard-library reference implementation for DubFlow media contracts"
+license = "MIT"
+publish = false
+
+[lib]
+name = "dubflow_media_contracts"
+path = "src/lib.rs"

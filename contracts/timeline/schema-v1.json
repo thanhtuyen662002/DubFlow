@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/timeline/schema-v1.json",
+  "title": "DubFlow canonical timeline v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "source_pts", "proxy_mapping", "geometry"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "timeline_fixture" },
+    "source_pts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/time_point" }
+    },
+    "proxy_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "segments"],
+      "properties": {
+        "kind": { "const": "proxy_source_mapping" },
+        "segments": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/mapping_segment" }
+        }
+      }
+    },
+    "geometry": { "$ref": "#/$defs/geometry" }
+  },
+  "$defs": {
+    "positive_decimal_string": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "signed_decimal_string": {
+      "type": "string",
+      "pattern": "^-?(0|[1-9][0-9]*)$"
+    },
+    "time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": { "$ref": "#/$defs/positive_decimal_string" },
+        "denominator": { "$ref": "#/$defs/positive_decimal_string" }
+      }
+    },
+    "time_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "ticks", "time_base"],
+      "properties": {
+        "kind": { "const": "time_point" },
+        "schema_version": { "const": 1 },
+        "ticks": { "$ref": "#/$defs/signed_decimal_string" },
+        "time_base": { "$ref": "#/$defs/time_base" }
+      }
+    },
+    "mapping_segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_start", "source_end", "proxy_start", "proxy_end"],
+      "properties": {
+        "source_start": { "$ref": "#/$defs/time_point" },
+        "source_end": { "$ref": "#/$defs/time_point" },
+        "proxy_start": { "$ref": "#/$defs/time_point" },
+        "proxy_end": { "$ref": "#/$defs/time_point" }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "coded_dimensions", "rotation_degrees", "pixel_aspect_ratio", "coordinate_convention"],
+      "properties": {
+        "kind": { "const": "coded_to_display_geometry" },
+        "coded_dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "$ref": "#/$defs/positive_decimal_string" },
+            "height": { "$ref": "#/$defs/positive_decimal_string" }
+          }
+        },
+        "rotation_degrees": { "enum": [0, 90, 180, 270] },
+        "pixel_aspect_ratio": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["numerator", "denominator"],
+          "properties": {
+            "numerator": { "$ref": "#/$defs/positive_decimal_string" },
+            "denominator": { "$ref": "#/$defs/positive_decimal_string" }
+          }
+        },
+        "coordinate_convention": { "const": "pixel_bounds" }
+      }
+    }
+  }
+}
