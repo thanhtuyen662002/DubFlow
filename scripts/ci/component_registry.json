@@ -153,6 +153,26 @@
           "test_*.py"
         ]
       ]
+    },
+    {
+      "id": "subtitle-render",
+      "roots": [
+        "contracts/subtitles",
+        "engine/dubflow/subtitle",
+        "tests/subtitle_render"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/subtitle_render",
+          "-p",
+          "test_*.py"
+        ]
+      ]
     }
   ]
 }
