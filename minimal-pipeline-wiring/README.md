@@ -1,8 +1,15 @@
 # Minimal B1 pipeline wiring
 
-This directory is the Issue #56 integration boundary. The executable test
-under `tests/integration/slice-b1-vietsub` composes the already versioned ASR,
-translation, subtitle, and export adapters through their public interfaces.
+This directory is the Issue #56 integration boundary. `b1_pipeline.py` and
+the executable test under `tests/integration/slice-b1-vietsub` compose the
+already versioned ASR, translation, subtitle, and export adapters through
+their public interfaces.
+
+The B1 config consumes normalized local-file metadata supplied at the #14
+probe boundary. It owns the supervisor-side checkpoint file and output sidecars, while
+backend workers return only ephemeral results. Checkpoints are content- and
+configuration-bound, written atomically, and safely invalidated when the
+source or producer configuration changes.
 
 It is intentionally an adapter-level harness: canonical contracts remain in
 their owning namespaces, and production media/encoder implementations remain

@@ -94,6 +94,25 @@
       ]
     },
     {
+      "id": "slice-b1-vietsub",
+      "roots": [
+        "minimal-pipeline-wiring",
+        "tests/integration/slice-b1-vietsub"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/integration/slice-b1-vietsub",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "asr",
       "roots": [
         "contracts/asr",
