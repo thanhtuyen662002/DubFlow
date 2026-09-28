@@ -529,7 +529,9 @@ impl ProxySourceMapping {
             let proxy = proxy.rescale(segment.proxy_start.time_base, rounding)?;
             if proxy.ticks >= segment.proxy_start.ticks && proxy.ticks < segment.proxy_end.ticks {
                 let offset = proxy.ticks.checked_sub(segment.proxy_start.ticks).ok_or(TimelineError::Overflow)?;
-                let mapped = scale_signed(offset, segment.proxy_start.time_base, segment.source_start.time_base, rounding)?;
+                let source_delta = segment.delta_ticks(segment.source_start, segment.source_end)?;
+                let proxy_delta = segment.delta_ticks(segment.proxy_start, segment.proxy_end)?;
+                let mapped = scale_signed_ratio(offset, source_delta, proxy_delta, rounding)?;
                 let ticks = segment.source_start.ticks.checked_add(mapped).ok_or(TimelineError::Overflow)?;
                 if ticks < segment.source_start.ticks || ticks >= segment.source_end.ticks {
                     return Err(TimelineError::InvalidMapping("rounded point escaped source segment".into()));
@@ -545,7 +547,9 @@ impl ProxySourceMapping {
             let source = source.rescale(segment.source_start.time_base, rounding)?;
             if source.ticks >= segment.source_start.ticks && source.ticks < segment.source_end.ticks {
                 let offset = source.ticks.checked_sub(segment.source_start.ticks).ok_or(TimelineError::Overflow)?;
-                let mapped = scale_signed(offset, segment.source_start.time_base, segment.proxy_start.time_base, rounding)?;
+                let source_delta = segment.delta_ticks(segment.source_start, segment.source_end)?;
+                let proxy_delta = segment.delta_ticks(segment.proxy_start, segment.proxy_end)?;
+                let mapped = scale_signed_ratio(offset, proxy_delta, source_delta, rounding)?;
                 let ticks = segment.proxy_start.ticks.checked_add(mapped).ok_or(TimelineError::Overflow)?;
                 if ticks < segment.proxy_start.ticks || ticks >= segment.proxy_end.ticks {
                     return Err(TimelineError::InvalidMapping("rounded point escaped proxy segment".into()));
@@ -554,6 +558,18 @@ impl ProxySourceMapping {
             }
         }
         Err(TimelineError::NoMappingSegment)
+    }
+}
+
+impl MappingSegment {
+    fn delta_ticks(&self, start: TimePoint, end: TimePoint) -> Result<u128> {
+        let delta = (end.ticks as i128)
+            .checked_sub(start.ticks as i128)
+            .ok_or(TimelineError::Overflow)?;
+        if delta <= 0 {
+            return Err(TimelineError::InvalidMapping("segment duration must be positive".into()));
+        }
+        Ok(delta as u128)
     }
 }
 
@@ -647,7 +663,17 @@ fn signed_from_magnitude(magnitude: u128, negative: bool) -> Result<i64> {
 }
 
 fn scale_signed(value: i64, from: TimeBase, to: TimeBase, mode: RoundingMode) -> Result<i64> {
-    let (numerator, mut denominator) = scale_ratio(from, to)?;
+    let (numerator, denominator) = scale_ratio(from, to)?;
+    scale_signed_ratio(value, numerator, denominator, mode)
+}
+
+fn scale_signed_ratio(value: i64, mut numerator: u128, mut denominator: u128, mode: RoundingMode) -> Result<i64> {
+    if numerator == 0 || denominator == 0 {
+        return Err(TimelineError::InvalidMapping("mapping scale must be positive".into()));
+    }
+    let divisor = gcd_u128(numerator, denominator);
+    numerator /= divisor;
+    denominator /= divisor;
     let negative = value < 0;
     let mut magnitude = magnitude_i64(value);
     let divisor = gcd_u128(magnitude, denominator);
@@ -939,6 +965,14 @@ mod tests {
         let mapped = mapping.map_proxy_to_source(TimePoint::new(1_000, proxy_base), RoundingMode::Exact).unwrap();
         assert_eq!(mapped, TimePoint::new(180_000, source_base));
         assert_eq!(mapping.map_source_to_proxy(mapped, RoundingMode::Exact).unwrap().ticks, 1_000);
+        let discontinuity_point = mapping
+            .map_proxy_to_source(TimePoint::new(3_500, proxy_base), RoundingMode::Exact)
+            .unwrap();
+        assert_eq!(discontinuity_point, TimePoint::new(405_000, source_base));
+        assert_eq!(
+            mapping.map_source_to_proxy(discontinuity_point, RoundingMode::Exact).unwrap().ticks,
+            3_500
+        );
         assert_eq!(mapping.map_proxy_to_source(TimePoint::new(2_500, proxy_base), RoundingMode::Exact), Err(TimelineError::NoMappingSegment));
         assert_eq!(mapping.map_proxy_to_source(TimePoint::new(5_000, proxy_base), RoundingMode::Exact), Err(TimelineError::NoMappingSegment));
     }
