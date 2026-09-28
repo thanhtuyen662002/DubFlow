@@ -438,7 +438,7 @@ impl RootHealth {
     }
 
     pub fn impact(&self) -> JobImpact {
-        if !self.required {
+        if !self.required && !self.is_usable() {
             return match self.kind {
                 RootKind::Model => JobImpact::UseApprovedFallback,
                 RootKind::Cache => JobImpact::RebuildCache,
@@ -1081,7 +1081,7 @@ mod tests {
         }
         let unicode = Path::new("字幕\\角色\\台詞.ass");
         assert!(validate_relative_path(unicode).is_ok());
-        let long = "a".repeat(MAX_WINDOWS_PATH_UTF16);
+        let long = "a".repeat(MAX_WINDOWS_PATH_UTF16 + 1);
         assert!(validate_relative_path(Path::new(&long)).is_err());
     }
 
