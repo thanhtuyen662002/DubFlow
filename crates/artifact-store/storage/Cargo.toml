@@ -1,0 +1,16 @@
+[package]
+name = "dubflow-artifact-storage"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Volume-independent, hash-verified artifact locators for DubFlow"
+license = "MIT"
+publish = false
+
+[lib]
+name = "dubflow_artifact_storage"
+path = "src/lib.rs"
+
+[dependencies]
+dubflow-job-storage = { path = "../../job-supervisor/storage" }
+sha2 = "=0.10.8"
