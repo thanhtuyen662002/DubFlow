@@ -50,6 +50,33 @@
           "test_*.py"
         ]
       ]
+    },
+    {
+      "id": "job-state",
+      "roots": [
+        "crates/job-supervisor/state",
+        "crates/artifact-store/state",
+        "migrations",
+        "tests/job_state"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/state/Cargo.toml"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/job_state",
+          "-p",
+          "test_*.py"
+        ]
+      ]
     }
   ]
 }

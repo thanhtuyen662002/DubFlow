@@ -1,0 +1,16 @@
+[package]
+name = "dubflow-job-state"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Supervisor-owned durable job state and crash recovery for DubFlow"
+license = "MIT"
+publish = false
+
+[lib]
+name = "dubflow_job_state"
+path = "src/lib.rs"
+
+[dependencies]
+rusqlite = { version = "=0.31.0", features = ["bundled"] }
+sha2 = "=0.10.8"
