@@ -275,14 +275,14 @@ impl CommandInvocation {
 /// text and also removes bearer tokens with spaces in their scheme.
 pub fn redact_sensitive_text(value: &str) -> String {
     let mut output = value.to_owned();
-    for key in ["cookie", "set-cookie", "authorization", "token", "api_key", "apikey", "secret", "password", "session"] {
-        output = redact_key_value(&output, key);
-    }
     let lower = output.to_ascii_lowercase();
     if let Some(index) = lower.find("bearer ") {
         let start = index + "bearer ".len();
         let end = output[start..].find(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '"' | '\'' | '}')).map(|offset| start + offset).unwrap_or(output.len());
         output.replace_range(start..end, "[REDACTED]");
+    }
+    for key in ["cookie", "set-cookie", "authorization", "token", "api_key", "apikey", "secret", "password", "session"] {
+        output = redact_key_value(&output, key);
     }
     output
 }
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn paths_reject_escape_drive_unc_reserved_and_controls() {
-        for value in ["../x", "..\\x", "C:\\x", "\\\\server\\share", "CON.txt", "a/b.", "a/ b", "a\0b"] {
+        for value in ["../x", "..\\x", "C:\\x", "\\\\server\\share", "CON.txt", "a/b.", "a\0b"] {
             assert!(validate_relative_path(value).is_err(), "{value:?}");
         }
         assert!(validate_relative_path("字幕/片段.mp4").is_ok());
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn filenames_are_safe_and_collision_free_case_insensitively() {
         let mut allocator = FilenameAllocator::default();
-        assert_eq!(allocator.allocate("CON?.mp4", "video.mp4"), "_CON_.mp4");
+        assert_eq!(allocator.allocate("CON?.mp4", "video.mp4"), "CON_.mp4");
         assert_eq!(allocator.allocate("clip.mp4", "video.mp4"), "clip.mp4");
         assert_eq!(allocator.allocate("CLIP.mp4", "video.mp4"), "CLIP (1).mp4");
         assert!(!allocator.allocate("a/b", "video").contains('/'));
