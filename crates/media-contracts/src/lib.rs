@@ -228,7 +228,7 @@ impl Interval {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireTimeBase {
     pub numerator: String,
     pub denominator: String,
@@ -647,7 +647,7 @@ fn signed_from_magnitude(magnitude: u128, negative: bool) -> Result<i64> {
 }
 
 fn scale_signed(value: i64, from: TimeBase, to: TimeBase, mode: RoundingMode) -> Result<i64> {
-    let (mut numerator, mut denominator) = scale_ratio(from, to)?;
+    let (numerator, mut denominator) = scale_ratio(from, to)?;
     let negative = value < 0;
     let mut magnitude = magnitude_i64(value);
     let divisor = gcd_u128(magnitude, denominator);
