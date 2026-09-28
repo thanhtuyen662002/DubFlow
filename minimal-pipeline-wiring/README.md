@@ -15,3 +15,10 @@ It is intentionally an adapter-level harness: canonical contracts remain in
 their owning namespaces, and production media/encoder implementations remain
 behind the render boundary. The deterministic path runs offline on CPU for
 PR Fast/Integration evidence.
+
+Slice B enables `B1PipelineConfig(enable_dubbing=True)` to consume the
+validated translation output through the local TTS and AUD-0 mix adapters. The
+original source WAV is published unchanged, and any TTS/mix failure selects the
+existing #56 original-audio Vietsub output while keeping downgrade evidence in
+the report. The default remains the proven B1 Vietsub-only mode for callers
+that have not opted into the new stage.
