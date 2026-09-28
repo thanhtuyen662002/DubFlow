@@ -289,17 +289,24 @@ pub fn redact_sensitive_text(value: &str) -> String {
 
 fn redact_key_value(value: &str, key: &str) -> String {
     let mut output = value.to_owned();
+    let mut search_from = 0usize;
     loop {
         let lower = output.to_ascii_lowercase();
-        let Some(key_start) = lower.find(key) else { break };
+        let Some(relative_start) = lower[search_from..].find(key) else { break };
+        let key_start = search_from + relative_start;
         let mut cursor = key_start + key.len();
         while cursor < output.len() && matches!(output.as_bytes()[cursor], b' ' | b'\t') { cursor += 1; }
         if cursor >= output.len() || !matches!(output.as_bytes()[cursor], b'=' | b':') { break }
         cursor += 1;
         while cursor < output.len() && matches!(output.as_bytes()[cursor], b' ' | b'\t') { cursor += 1; }
+        if output[cursor..].starts_with("[REDACTED]") {
+            search_from = cursor + "[REDACTED]".len();
+            continue;
+        }
         let end = output[cursor..].find(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '"' | '\'' | '}')).map(|offset| cursor + offset).unwrap_or(output.len());
         if end == cursor { break; }
         output.replace_range(cursor..end, "[REDACTED]");
+        search_from = cursor + "[REDACTED]".len();
     }
     output
 }
