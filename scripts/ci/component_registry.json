@@ -258,6 +258,40 @@
       ]
     },
     {
+      "id": "artifact-provenance",
+      "roots": [
+        "contracts/artifacts",
+        "crates/artifact-store/provenance",
+        "crates/job-supervisor/invalidation",
+        "docs/adr/ADR-0010-artifact-provenance.md",
+        "tests/artifact_graph"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/artifact-store/provenance/Cargo.toml"
+        ],
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/invalidation/Cargo.toml"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/artifact_graph",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "local-file-slice",
       "roots": [
         "minimal-integration-wiring",
