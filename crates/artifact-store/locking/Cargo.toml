@@ -1,0 +1,12 @@
+[package]
+name = "dubflow-artifact-locking"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+publish = false
+
+[dependencies]
+dubflow-job-locking = { path = "../../job-supervisor/locking" }
+
+[lib]
+path = "src/lib.rs"

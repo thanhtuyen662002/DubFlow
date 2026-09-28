@@ -190,6 +190,40 @@
       ]
     },
     {
+      "id": "project-lock",
+      "roots": [
+        "contracts/project_lock",
+        "crates/job-supervisor/locking",
+        "crates/artifact-store/locking",
+        "docs/adr/ADR-0008-project-ownership-lock.md",
+        "tests/project_lock"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/locking/Cargo.toml"
+        ],
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/artifact-store/locking/Cargo.toml"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/project_lock",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "local-file-slice",
       "roots": [
         "minimal-integration-wiring",
