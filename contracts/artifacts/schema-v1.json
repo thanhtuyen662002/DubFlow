@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/artifacts/v1",
+  "title": "DubFlow artifact provenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "kind", "scope", "inputs", "provenance", "status"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+    "kind": {"type": "string", "enum": ["INPUT", "TIMELINE", "ASR", "OCR", "DIARIZATION", "TRANSLATION", "TTS", "MIX", "RENDER", "QC"]},
+    "scope": {"type": "string", "minLength": 1, "maxLength": 256},
+    "inputs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_version", "input_hashes", "config_hash", "model_hash", "contract_version"],
+      "properties": {
+        "producer_version": {"type": "string", "minLength": 1},
+        "input_hashes": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+        "config_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "model_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "contract_version": {"type": "string", "minLength": 1}
+      }
+    },
+    "status": {"type": "string", "enum": ["VALID", "STALE", "MISSING", "CORRUPT"]}
+  }
+}
