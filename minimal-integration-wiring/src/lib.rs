@@ -390,7 +390,7 @@ fn parse_elst(bytes: &[u8], header: BoxHeader, track: &mut TrackFields) -> std::
     let version = byte(bytes, header.content)?;
     let count = usize::try_from(read_u32_at(bytes, header.content + 4, header.end)?).map_err(|_| ProbeError::Overflow)?;
     if count == 0 { return Ok(()); }
-    let entry_size = if version == 1 { 20 } else if version == 0 { 12 } else { return Err(ProbeError::Unsupported("elst version".into())); };
+    let entry_size: usize = if version == 1 { 20 } else if version == 0 { 12 } else { return Err(ProbeError::Unsupported("elst version".into())); };
     let offset = header.content.checked_add(8).ok_or(ProbeError::Overflow)?;
     let media_offset = offset.checked_add(if version == 1 { 8 } else { 4 }).ok_or(ProbeError::Overflow)?;
     let media_time = if version == 1 {
@@ -682,8 +682,26 @@ impl LocalFileJob {
             let _ = self.store.fail_stage(&self.job_id, RENDER_STAGE, &error.to_string(), true, now.saturating_add(2));
             return Err(error.into());
         }
-        if matches!(self.store.artifact(&artifact_id), Err(dubflow_job_state::StateError::NotFound { .. })) {
-            self.store.record_artifact_written(&artifact_id, &self.job_id, RENDER_STAGE, &self.output, None, true, now.saturating_add(1))?;
+        match self.store.artifact(&artifact_id) {
+            Ok(record) if matches!(record.state, ArtifactState::Writing | ArtifactState::Validated) => {}
+            Ok(record) => {
+                return Err(SliceError::Invalid(format!(
+                    "render artifact cannot be retried from {:?}",
+                    record.state
+                )));
+            }
+            Err(dubflow_job_state::StateError::NotFound { .. }) => {
+                self.store.record_artifact_written(
+                    &artifact_id,
+                    &self.job_id,
+                    RENDER_STAGE,
+                    &self.output,
+                    None,
+                    true,
+                    now.saturating_add(1),
+                )?;
+            }
+            Err(error) => return Err(error.into()),
         }
         if self.output.exists() { fs::remove_file(&self.output)?; }
         fs::rename(&partial, &self.output)?;
