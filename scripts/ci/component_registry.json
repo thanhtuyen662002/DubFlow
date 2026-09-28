@@ -132,6 +132,27 @@
           "test_*.py"
         ]
       ]
+    },
+    {
+      "id": "render-export",
+      "roots": [
+        "contracts/export",
+        "engine/dubflow/export",
+        "engine/dubflow/render",
+        "tests/render_export"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/render_export",
+          "-p",
+          "test_*.py"
+        ]
+      ]
     }
   ]
 }

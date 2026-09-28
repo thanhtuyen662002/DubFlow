@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/export/schema-v1.json",
+  "title": "DubFlow validated export result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "source_kind", "status", "audio_mode", "output", "editable_pack", "provenance", "warnings", "failures"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "export_result" },
+    "source_kind": { "const": "media" },
+    "status": { "const": "completed" },
+    "audio_mode": { "enum": ["original", "dubbed", "none"] },
+    "output": { "$ref": "#/$defs/output" },
+    "editable_pack": { "$ref": "#/$defs/editable_pack" },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "warnings": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 4096 } },
+    "failures": { "type": "array", "items": { "$ref": "#/$defs/failure" } }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "denominator": { "type": "string", "pattern": "^[1-9][0-9]*$" }
+      }
+    },
+    "time_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "ticks", "time_base"],
+      "properties": {
+        "kind": { "const": "time_point" },
+        "schema_version": { "const": 1 },
+        "ticks": { "type": "string", "pattern": "^(0|-?[1-9][0-9]*)$" },
+        "time_base": { "$ref": "#/$defs/time_base" }
+      }
+    },
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "path", "content_hash", "duration_start", "duration_end", "width", "height", "rotation", "has_audio"],
+      "properties": {
+        "asset_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "content_hash": { "$ref": "#/$defs/hash" },
+        "duration_start": { "$ref": "#/$defs/time_point" },
+        "duration_end": { "$ref": "#/$defs/time_point" },
+        "width": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "rotation": { "type": "integer", "minimum": -360, "maximum": 360 },
+        "has_audio": { "type": "boolean" }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "asset_id", "path", "content_hash"],
+      "properties": {
+        "kind": { "enum": ["subtitle", "dub_audio"] },
+        "asset_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "content_hash": { "$ref": "#/$defs/hash" },
+        "format": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "duration_start": { "$ref": "#/$defs/time_point" },
+        "duration_end": { "$ref": "#/$defs/time_point" }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_hash", "container", "video_codec", "audio_codec", "width", "height", "rotation", "duration_start", "duration_end"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "content_hash": { "$ref": "#/$defs/hash" },
+        "container": { "const": "mp4" },
+        "video_codec": { "const": "h264" },
+        "audio_codec": { "type": ["string", "null"], "enum": ["aac", null] },
+        "width": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "rotation": { "type": "integer", "minimum": -360, "maximum": 360 },
+        "duration_start": { "$ref": "#/$defs/time_point" },
+        "duration_end": { "$ref": "#/$defs/time_point" }
+      }
+    },
+    "editable_pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_hash", "assets"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "content_hash": { "$ref": "#/$defs/hash" },
+        "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "producer_version", "renderer_id", "renderer_version", "runtime", "timeline_contract", "config_hash", "input_hash", "requested_profile", "hardware_profile"],
+      "properties": {
+        "producer": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "producer_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "renderer_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "renderer_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "runtime": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "timeline_contract": { "const": "timeline-v1" },
+        "config_hash": { "$ref": "#/$defs/hash" },
+        "input_hash": { "$ref": "#/$defs/hash" },
+        "requested_profile": { "enum": ["auto", "cpu", "gpu", "fixture"] },
+        "hardware_profile": { "enum": ["cpu", "gpu", "fixture", "mixed"] },
+        "fallback_reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "attempt", "retryable", "condition", "fallback_used"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "retryable": { "type": "boolean" },
+        "condition": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "fallback_used": { "type": "boolean" }
+      }
+    }
+  }
+}
