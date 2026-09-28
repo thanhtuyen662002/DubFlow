@@ -97,7 +97,8 @@
       "id": "slice-b1-vietsub",
       "roots": [
         "minimal-pipeline-wiring",
-        "tests/integration/slice-b1-vietsub"
+        "tests/integration/slice-b1-vietsub",
+        "tests/integration/slice-b-dubbing"
       ],
       "commands": [
         [
@@ -107,6 +108,16 @@
           "discover",
           "-s",
           "tests/integration/slice-b1-vietsub",
+          "-p",
+          "test_*.py"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/integration/slice-b-dubbing",
           "-p",
           "test_*.py"
         ]
