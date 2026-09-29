@@ -1,8 +1,8 @@
 project: DubFlow
 source_of_truth: github
-phase: engineering_control_plane_ready
-product_foundation_implemented: false
-main_health: green_unprotected
+phase: release_qualification_in_progress
+product_foundation_implemented: true
+main_health: green_protected
 bootstrap_pr: 1
 bootstrap_status: merged
 architecture_baseline: docs/PRODUCT_SYSTEM_DESIGN.md
@@ -14,14 +14,20 @@ roadmap: docs/ROADMAP.md
 work_graph_source: open_leaf_issues_plus_roadmap
 foundation_epic: 2
 ci_infrastructure_issue: 10
-critical_path:
-  - 3
-  - 4
-  - 5
+ci_infrastructure_status: delivered
+critical_path: []
 first_integration_gate: 14
 first_user_value_gate: 56
 baseline_dubbing_gate: 45
-administrative_risks:
-  - 11
+administrative_risks: []
 ruleset_required: true
 direct_main_push_allowed: false
+current_main_sha: 893f2ccf9c55a4f4d33733091ae0706044ca7ceb
+last_full_integration_run: 36536585238
+last_full_integration_sha: 893f2ccf9c55a4f4d33733091ae0706044ca7ceb
+last_release_soak_run: 36536508881
+last_release_soak_sha: 893f2ccf9c55a4f4d33733091ae0706044ca7ceb
+release_qualification:
+  deterministic_status: passed
+  clean_machine_status: pending_external_run
+  gpu_hardware_status: pending_external_run
