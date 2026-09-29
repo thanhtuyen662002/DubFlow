@@ -484,6 +484,26 @@
       ]
     },
     {
+      "id": "capcut-import-pack",
+      "roots": [
+        "contracts/capcut/import_pack",
+        "engine/dubflow/capcut",
+        "tests/capcut_import"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/capcut_import",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "benchmark-harness",
       "roots": [
         "fixtures/catalog",

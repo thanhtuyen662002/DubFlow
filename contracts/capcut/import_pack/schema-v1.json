@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/capcut/import-pack/schema-v1.json",
+  "title": "DubFlow CapCut-compatible import pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "pack_id", "assets", "tracks"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "capcut_import_pack"},
+    "pack_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
+    "assets": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/asset"}},
+    "tracks": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/track"}}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "kind", "relative_path", "content_hash", "size_bytes", "format"],
+      "properties": {
+        "asset_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+        "kind": {"enum": ["video", "original_audio", "dub_audio", "subtitle"]},
+        "relative_path": {"type": "string", "pattern": "^(?!/)(?![A-Za-z]:)[^\\\\x00-\\\\x1f]+$"},
+        "content_hash": {"$ref": "#/$defs/hash"},
+        "size_bytes": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "format": {"type": "string", "minLength": 1, "maxLength": 32}
+      }
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["track_id", "kind", "order", "asset_ids"],
+      "properties": {
+        "track_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
+        "kind": {"enum": ["video", "audio", "subtitle"]},
+        "order": {"type": "integer", "minimum": 0, "maximum": 31},
+        "asset_ids": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+        "language": {"type": ["string", "null"], "maxLength": 32}
+      }
+    }
+  }
+}
