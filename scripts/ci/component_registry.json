@@ -605,6 +605,27 @@
       ]
     },
     {
+      "id": "visual-cleanup",
+      "roots": [
+        "engine/dubflow/inpaint",
+        "engine/dubflow/subtitle/cleanup",
+        "models/benchmark/visual_cleanup",
+        "tests/visual_cleanup"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/visual_cleanup",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
