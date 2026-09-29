@@ -544,6 +544,27 @@
       ]
     },
     {
+      "id": "text-intelligence",
+      "roots": [
+        "contracts/text_tracks",
+        "engine/dubflow/ocr",
+        "engine/dubflow/text_fusion",
+        "tests/text_intelligence"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/text_intelligence",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"

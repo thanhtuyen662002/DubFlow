@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/text_tracks/schema-v1.json",
+  "title": "DubFlow temporal OCR text tracks v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "dataset_revision", "tracks", "conflicts", "debug_overlay", "benchmark"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "text_track_document"},
+    "job_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+    "dataset_revision": {"type": "string", "minLength": 1, "maxLength": 128},
+    "tracks": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/track"}},
+    "conflicts": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/conflict"}},
+    "debug_overlay": {"$ref": "#/$defs/debug_overlay"},
+    "benchmark": {"$ref": "#/$defs/benchmark"}
+  },
+  "$defs": {
+    "ticks": {"type": "string", "pattern": "^(0|-?[1-9][0-9]*)$", "maxLength": 20},
+    "confidence": {"type": "string", "pattern": "^(0|0\\.[0-9]+|1(?:\\.0+)?)$"},
+    "bbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {"x": {"type": "integer", "minimum": 0}, "y": {"type": "integer", "minimum": 0}, "width": {"type": "integer", "minimum": 1}, "height": {"type": "integer", "minimum": 1}}
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_id", "start_ticks", "end_ticks", "text", "bbox", "confidence"],
+      "properties": {
+        "observation_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "start_ticks": {"$ref": "#/$defs/ticks"},
+        "end_ticks": {"$ref": "#/$defs/ticks"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "bbox": {"$ref": "#/$defs/bbox"},
+        "confidence": {"$ref": "#/$defs/confidence"}
+      }
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["track_id", "role", "decision", "confidence", "segments"],
+      "properties": {
+        "track_id": {"type": "string", "pattern": "^txt-[0-9a-f]{16}$"},
+        "role": {"enum": ["dialogue", "watermark", "signage", "danmaku", "ui", "unknown"]},
+        "decision": {"enum": ["keep", "remove", "review"]},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "segments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/segment"}}
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["track_id", "observation_id", "asr_utterance_id", "ocr_text", "asr_text", "reason"],
+      "properties": {
+        "track_id": {"type": "string", "pattern": "^txt-[0-9a-f]{16}$"},
+        "observation_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "asr_utterance_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "ocr_text": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "asr_text": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "reason": {"const": "ASR_OCR_CONFLICT"}
+      }
+    },
+    "debug_overlay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_hash", "track_count"],
+      "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 4096}, "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "track_count": {"type": "integer", "minimum": 0}}
+    },
+    "benchmark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataset_revision", "precision", "recall", "f1", "cer", "latency_ms", "peak_memory_bytes", "decision"],
+      "properties": {
+        "dataset_revision": {"type": "string", "minLength": 1, "maxLength": 128},
+        "precision": {"type": "string"}, "recall": {"type": "string"}, "f1": {"type": "string"}, "cer": {"type": "string"},
+        "latency_ms": {"type": "integer", "minimum": 0}, "peak_memory_bytes": {"type": "integer", "minimum": 0},
+        "decision": {"enum": ["PROMOTE", "EXPERIMENTAL", "REJECT", "SPLIT"]}
+      }
+    }
+  }
+}
