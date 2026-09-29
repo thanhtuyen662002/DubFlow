@@ -172,6 +172,11 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertNotIn("requireAdministrator", source)
         self.assertNotIn("7z.sfx", workflow)
         self.assertIn("target-feature=+crt-static", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertIn("contents: write", workflow)
+        self.assertIn("windows-x64.zip.sha256", workflow)
+        self.assertIn('--target "$SOURCE_SHA"', workflow)
+        self.assertIn("resolved_sha", workflow)
 
 
 if __name__ == "__main__":

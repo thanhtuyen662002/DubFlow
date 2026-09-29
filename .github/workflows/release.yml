@@ -25,7 +25,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: windows-release-${{ github.ref }}
@@ -120,6 +120,7 @@ jobs:
           name: DubFlow-${{ env.RELEASE_VERSION }}-windows-x64
           path: |
             dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64.zip
+            dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64.zip.sha256
             dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-setup.exe
             dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-release.sha256
             dist/DubFlow-${{ env.RELEASE_VERSION }}-release-evidence.json
@@ -130,10 +131,14 @@ jobs:
     needs: build
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     environment: release
     timeout-minutes: 15
     env:
       RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_CHANNEL: ${{ inputs.channel }}
+      SOURCE_SHA: ${{ github.sha }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Download build artifact
@@ -146,9 +151,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "$RELEASE_CHANNEL" != "candidate" ]]; then
+            echo "Only unsigned candidate releases may be published by this workflow; stable requires signing integration." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]]; then
+            echo "Release version has an unsafe format: $RELEASE_VERSION" >&2
+            exit 1
+          fi
           tag="v${RELEASE_VERSION#v}"
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" \
-            --title "DubFlow ${RELEASE_VERSION} (release candidate)" \
-            --notes "Unsigned Windows release candidate built from exact source SHA. Production qualification remains pending Issues #36 and #38." \
-            --prerelease
+          release_json=""
+          if release_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag" 2>/dev/null); then
+            is_prerelease=$(jq -r '.prerelease' <<<"$release_json")
+            if [[ "$is_prerelease" != "true" ]]; then
+              echo "Refusing to overwrite an existing non-prerelease release: $tag" >&2
+              exit 1
+            fi
+          else
+            gh release create "$tag" \
+              --target "$SOURCE_SHA" \
+              --title "DubFlow ${RELEASE_VERSION} (release candidate)" \
+              --notes "Unsigned Windows release candidate built from exact source SHA. Production qualification remains pending Issues #36 and #38." \
+              --prerelease
+          fi
+          resolved_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$tag" --jq '.sha')
+          if [[ "$resolved_sha" != "$SOURCE_SHA" ]]; then
+            echo "Release tag $tag resolves to $resolved_sha, expected build SHA $SOURCE_SHA" >&2
+            exit 1
+          fi
           gh release upload "$tag" dist/* --clobber
