@@ -1,0 +1,170 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (for example 0.1.0-rc1)"
+        required: true
+        type: string
+      channel:
+        description: "Release channel; stable requires a future signing integration"
+        required: true
+        default: candidate
+        type: choice
+        options:
+          - candidate
+          - stable
+      publish:
+        description: "Publish a GitHub Release after the build succeeds"
+        required: true
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Windows x64 release bundle
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+      RELEASE_CHANNEL: ${{ inputs.channel || 'candidate' }}
+      SOURCE_SHA: ${{ github.sha }}
+      SOURCE_DATE_EPOCH: "0"
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set deterministic source timestamp
+        shell: pwsh
+        run: |
+          $epoch = [int64](git show -s --format=%ct $env:SOURCE_SHA)
+          "SOURCE_DATE_EPOCH=$epoch" >> $env:GITHUB_ENV
+
+      - name: Install app-owned build runtime
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.10"
+
+      - name: Validate release source and build bundle
+        shell: pwsh
+        run: |
+          python scripts/validate_governance.py
+          python -m unittest discover -s tests/release -p 'test_*.py'
+          $args = @(
+            '-m', 'packaging.release.builder',
+            '--source-root', '.',
+            '--output-dir', 'dist',
+            '--version', $env:RELEASE_VERSION,
+            '--source-sha', $env:SOURCE_SHA,
+            '--runtime-root', $env:pythonLocation,
+            '--runtime-version', '3.12.10',
+            '--package-manifest-version', 'v1',
+            '--release-channel', $env:RELEASE_CHANNEL,
+            '--source-date-epoch', $env:SOURCE_DATE_EPOCH
+          )
+          python @args
+
+      - name: Build one-click self-extracting setup executable
+        shell: pwsh
+        run: |
+          $sevenZip = Get-Command 7z.exe -ErrorAction SilentlyContinue
+          if ($null -eq $sevenZip) { throw '7z.exe is required on the Windows release runner' }
+          $sfx = Join-Path (Split-Path -Parent $sevenZip.Source) '7z.sfx'
+          if (-not (Test-Path -LiteralPath $sfx -PathType Leaf)) { throw "7z.sfx is missing: $sfx" }
+          $staging = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-staging"
+          $payload = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64.7z"
+          Push-Location $staging
+          & $sevenZip.Source a -t7z -mx=9 -mtc=off $payload "*" | Out-Host
+          Pop-Location
+          if ($LASTEXITCODE -ne 0) { throw '7z payload creation failed' }
+          $config = Join-Path $PWD 'dist/sfx-config.txt'
+          $configContent = @'
+;!@Install@!UTF-8!
+Title="DubFlow Setup"
+RunProgram="setup.cmd"
+;!@InstallEnd@!
+'@
+          $configContent | Set-Content -LiteralPath $config -Encoding utf8NoBOM
+          $setup = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-setup.exe"
+          $sfxBytes = [IO.File]::ReadAllBytes($sfx)
+          $configBytes = [IO.File]::ReadAllBytes($config)
+          $payloadBytes = [IO.File]::ReadAllBytes($payload)
+          [IO.File]::WriteAllBytes($setup, [byte[]]($sfxBytes + $configBytes + $payloadBytes))
+          Remove-Item -LiteralPath $config, $payload -Force
+
+      - name: Produce checksums and evidence
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Extension -in '.zip', '.exe', '.sha256' }
+          $lines = foreach ($file in $files | Sort-Object Name) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content -LiteralPath "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-release.sha256" -Encoding utf8NoBOM
+          $evidence = [ordered]@{
+            schema_version = 1
+            source_sha = $env:SOURCE_SHA
+            version = $env:RELEASE_VERSION
+            channel = $env:RELEASE_CHANNEL
+            production_qualified = $false
+            signature = 'unsigned-release-candidate'
+            clean_machine = 'pending_issue_36'
+            gpu_hardware = 'pending_issue_38'
+            artifacts = @($files | Sort-Object Name | ForEach-Object {
+              [ordered]@{ name = $_.Name; size_bytes = $_.Length.ToString([Globalization.CultureInfo]::InvariantCulture); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+            })
+          }
+          $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "dist/DubFlow-$env:RELEASE_VERSION-release-evidence.json" -Encoding utf8NoBOM
+
+      - name: Upload downloadable build artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7.0.1
+        with:
+          name: DubFlow-${{ env.RELEASE_VERSION }}-windows-x64
+          path: |
+            dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64.zip
+            dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-setup.exe
+            dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-release.sha256
+            dist/DubFlow-${{ env.RELEASE_VERSION }}-release-evidence.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish candidate GitHub Release
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 15
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4.2.1
+        with:
+          name: DubFlow-${{ inputs.version }}-windows-x64
+          path: dist
+
+      - name: Create or update GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${RELEASE_VERSION#v}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" \
+            --title "DubFlow ${RELEASE_VERSION} (release candidate)" \
+            --notes "Unsigned Windows release candidate built from exact source SHA. Production qualification remains pending Issues #36 and #38." \
+            --prerelease
+          gh release upload "$tag" dist/* --clobber

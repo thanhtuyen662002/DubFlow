@@ -876,6 +876,27 @@
           "test_*.py"
         ]
       ]
+    },
+    {
+      "id": "release-bundle",
+      "roots": [
+        "packaging/release",
+        "tests/release",
+        "docs/release",
+        ".github/workflows/release.yml"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/release",
+          "-p",
+          "test_*.py"
+        ]
+      ]
     }
   ]
 }
