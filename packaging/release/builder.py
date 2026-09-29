@@ -105,7 +105,10 @@ def _write_setup_scripts(stage: Path) -> None:
     (stage / "setup.cmd").write_text(
         """@echo off
 setlocal
-set \"BUNDLE_ROOT=%~dp0\"
+rem Keep a non-trailing separator in the bundle root.  A quoted Windows path
+rem ending in a backslash can escape the closing quote when Python parses the
+rem command line, which drops the following --install-root argument.
+set \"BUNDLE_ROOT=%~dp0.\"
 if not exist \"%BUNDLE_ROOT%runtime\\python.exe\" (
   echo DubFlow release is missing its app-owned Python runtime. 1>&2
   exit /b 20
