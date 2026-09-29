@@ -74,6 +74,14 @@ class SoakRunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             SoakScenario(job_ids=("C:\\escape",), steps_per_job=1, disk_budget=1)
 
+    def test_state_root_supports_spaces_and_non_ascii(self) -> None:
+        scenario = SoakScenario(job_ids=("unicode-job",), steps_per_job=1, disk_budget=1)
+        with tempfile.TemporaryDirectory(prefix="DubFlow soak ") as directory:
+            root = Path(directory) / "工作区 with spaces"
+            evidence = SoakRunner(root, scenario).run()
+            self.assertTrue((root / "soak-state.json").is_file())
+            self.assertEqual(Path(evidence.state_path), root / "soak-state.json")
+
     def test_release_cli_profile_emits_reproducible_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "nested" / "release-evidence.json"
