@@ -129,6 +129,12 @@ def _actual_files(root: Path) -> set[str]:
         relative = path.relative_to(root).as_posix()
         if _is_link(path):
             raise BootstrapInstallError("SYMLINK_REJECTED", f"symlink is not allowed in release bundle: {relative}")
+        # Python can create bytecode caches while the bundled bootstrapper is
+        # running. They are transient implementation details, never durable
+        # release artifacts, and are intentionally excluded from the manifest.
+        relative_parts = relative.split("/")
+        if "__pycache__" in relative_parts or path.suffix.lower() in {".pyc", ".pyo"}:
+            continue
         if path.is_file():
             files.add(relative)
     return files
@@ -225,7 +231,7 @@ def _write_launcher(install_root: Path, version: str) -> None:
     content = f"""@echo off
 setlocal
 set \"DUBFLOW_ROOT=%~dp0\"
-\"%DUBFLOW_ROOT%versions\\{version}\\runtime\\python.exe\" \"%DUBFLOW_ROOT%versions\\{version}\\app\\packaging\\release\\launcher.py\" %*
+\"%DUBFLOW_ROOT%versions\\{version}\\runtime\\python.exe\" -B \"%DUBFLOW_ROOT%versions\\{version}\\app\\packaging\\release\\launcher.py\" %*
 set \"EXIT_CODE=%errorlevel%\"
 endlocal & exit /b %EXIT_CODE%
 """

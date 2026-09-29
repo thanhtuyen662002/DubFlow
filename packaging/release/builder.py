@@ -113,7 +113,7 @@ if not exist \"%BUNDLE_ROOT%\\runtime\\python.exe\" (
   echo DubFlow release is missing its app-owned Python runtime. 1>&2
   exit /b 20
 )
-\"%BUNDLE_ROOT%\\runtime\\python.exe\" \"%BUNDLE_ROOT%\\app\\packaging\\release\\bootstrap.py\" --bundle-root \"%BUNDLE_ROOT%\" --install-root \"%LOCALAPPDATA%\\DubFlow\"
+\"%BUNDLE_ROOT%\\runtime\\python.exe\" -B \"%BUNDLE_ROOT%\\app\\packaging\\release\\bootstrap.py\" --bundle-root \"%BUNDLE_ROOT%\" --install-root \"%LOCALAPPDATA%\\DubFlow\"
 if errorlevel 1 exit /b %errorlevel%
 echo DubFlow was installed for the current Windows user.
 echo Run \"%LOCALAPPDATA%\\DubFlow\\DubFlow.cmd --self-check\" to verify the installation.
@@ -129,7 +129,7 @@ $runtime = Join-Path $bundleRoot 'runtime\\python.exe'
 if (-not (Test-Path -LiteralPath $runtime -PathType Leaf)) {
     throw 'DubFlow release is missing its app-owned Python runtime.'
 }
-& $runtime (Join-Path $bundleRoot 'app\\packaging\\release\\bootstrap.py') --bundle-root $bundleRoot --install-root (Join-Path $env:LOCALAPPDATA 'DubFlow')
+& $runtime -B (Join-Path $bundleRoot 'app\\packaging\\release\\bootstrap.py') --bundle-root $bundleRoot --install-root (Join-Path $env:LOCALAPPDATA 'DubFlow')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host 'DubFlow was installed for the current Windows user.'
 """,

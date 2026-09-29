@@ -79,6 +79,7 @@ class ReleaseBundleTests(unittest.TestCase):
             setup = (result.staging_dir / "setup.cmd").read_text(encoding="utf-8")
             self.assertIn('set "BUNDLE_ROOT=%~dp0."', setup)
             self.assertIn('"%BUNDLE_ROOT%\\runtime\\python.exe"', setup)
+            self.assertIn('"%BUNDLE_ROOT%\\runtime\\python.exe" -B', setup)
             self.assertIn('"%BUNDLE_ROOT%\\app\\packaging\\release\\bootstrap.py"', setup)
             self.assertIn('--bundle-root "%BUNDLE_ROOT%" --install-root "%LOCALAPPDATA%\\DubFlow"', setup)
             self.assertNotIn('--bundle-root "%~dp0%"', setup)
@@ -228,6 +229,25 @@ class ReleaseBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(BootstrapInstallError, "UNMANIFESTED_ARTIFACT"):
                 install_bundle(result.staging_dir, install_root)
             self.assertFalse((install_root / "current.json").exists())
+
+    def test_runtime_bytecode_cache_is_transient_and_does_not_block_install(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            cache = result.staging_dir / "app" / "packaging" / "__pycache__"
+            cache.mkdir(parents=True)
+            (cache / "generated.cpython-312.pyc").write_bytes(b"transient")
+            report = install_bundle(result.staging_dir, root / "install")
+            self.assertTrue(report["ready"])
 
     def test_install_resumes_deterministic_staging_and_removes_progress(self) -> None:
         with TemporaryDirectory() as directory:
