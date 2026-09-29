@@ -14,7 +14,8 @@ Installation is restart-resumable. Each version is copied into the deterministic
 `versions/.<version>.staging` directory with an atomic per-file replacement and
 an `install-progress-<version>.json` checkpoint; the staged tree is verified
 again before it becomes the active version. The verifier requires the exact
-manifest file set, rejects unmanifested files, symlinks, Windows junctions,
+manifest file set (with transient Python `__pycache__`/`.pyc` files excluded),
+rejects unmanifested files, symlinks, Windows junctions,
 alternate data streams, reserved device names, trailing-dot/space names, and
 case-folded path collisions. The launcher also validates the current pointer and
 release-status schema before reporting the bundle ready. Stable or otherwise
