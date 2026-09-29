@@ -626,6 +626,27 @@
       ]
     },
     {
+      "id": "character-speaker",
+      "roots": [
+        "contracts/characters",
+        "engine/dubflow/visual_identity",
+        "engine/dubflow/active_speaker",
+        "tests/character_speaker"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/character_speaker",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
