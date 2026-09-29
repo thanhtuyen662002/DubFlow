@@ -466,6 +466,24 @@
       ]
     },
     {
+      "id": "source-queue",
+      "roots": [
+        "tests/source_queue"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/source_queue",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "benchmark-harness",
       "roots": [
         "fixtures/catalog",
