@@ -4,7 +4,12 @@ import json
 from pathlib import Path
 import unittest
 
-from catalog_validator import CatalogError, load_catalog, validate_catalog
+try:
+    # Component-scoped discovery puts this directory on sys.path; repository
+    # root discovery imports the test as ``benchmark_harness.test_catalog``.
+    from catalog_validator import CatalogError, load_catalog, validate_catalog
+except ModuleNotFoundError:  # pragma: no cover - exercised by root discovery
+    from .catalog_validator import CatalogError, load_catalog, validate_catalog
 
 
 ROOT = Path(__file__).resolve().parents[2]

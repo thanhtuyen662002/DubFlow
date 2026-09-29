@@ -44,6 +44,13 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(messages[0].payload["args"], {"chunk": "0"})
         self.assertEqual(messages[-1].payload["status"], "cancelled")
 
+        # CRLF is a valid platform line terminator; a bare carriage return is
+        # still rejected so it cannot hide a second record or corrupt JSON.
+        self.assertEqual(Envelope.from_line(lines[0]), messages[0])
+        with self.assertRaises(ProtocolError) as context:
+            Envelope.from_line(lines[0].rstrip(b"\r\n") + b"\r")
+        self.assertEqual(context.exception.code, "INVALID_LINE")
+
     def test_round_trip_preserves_wide_sequence_and_unicode(self) -> None:
         message = Envelope.create(
             MessageType.PROGRESS,
