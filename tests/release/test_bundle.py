@@ -60,6 +60,24 @@ class ReleaseBundleTests(unittest.TestCase):
                 self.assertEqual(sha256(path.read_bytes()).hexdigest(), artifact.sha256)
             self.assertFalse((result_a.staging_dir / "runtime" / "__pycache__").exists())
 
+    def test_generated_cmd_keeps_bundle_root_quote_terminated(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            setup = (result.staging_dir / "setup.cmd").read_text(encoding="utf-8")
+            self.assertIn('set "BUNDLE_ROOT=%~dp0."', setup)
+            self.assertIn('--bundle-root "%BUNDLE_ROOT%" --install-root "%LOCALAPPDATA%\\DubFlow"', setup)
+            self.assertNotIn('--bundle-root "%~dp0%"', setup)
+
     def test_install_verifies_then_activates_versioned_pointer_and_is_idempotent(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
