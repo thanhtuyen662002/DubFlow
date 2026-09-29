@@ -22,11 +22,11 @@ baseline_dubbing_gate: 45
 administrative_risks: []
 ruleset_required: true
 direct_main_push_allowed: false
-current_main_sha: 893f2ccf9c55a4f4d33733091ae0706044ca7ceb
-last_full_integration_run: 36536585238
-last_full_integration_sha: 893f2ccf9c55a4f4d33733091ae0706044ca7ceb
-last_release_soak_run: 36536508881
-last_release_soak_sha: 893f2ccf9c55a4f4d33733091ae0706044ca7ceb
+state_validated_base_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
+last_full_integration_run: 36537083818
+last_full_integration_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
+last_release_soak_run: 36537080299
+last_release_soak_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
 release_qualification:
   deterministic_status: passed
   clean_machine_status: pending_external_run
