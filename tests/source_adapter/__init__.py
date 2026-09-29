@@ -1,0 +1,1 @@
+"""Deterministic SourceAdapter contract tests."""
