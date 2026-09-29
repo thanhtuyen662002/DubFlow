@@ -1,0 +1,12 @@
+{
+  "name": "@dubflow/desktop-shell",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "node --experimental-strip-types test/queue.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.2"
+  }
+}
