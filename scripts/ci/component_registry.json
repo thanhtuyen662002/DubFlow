@@ -585,6 +585,26 @@
       ]
     },
     {
+      "id": "audio-cleanup",
+      "roots": [
+        "engine/dubflow/separation",
+        "models/benchmark/audio_cleanup",
+        "tests/audio_cleanup"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/audio_cleanup",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
