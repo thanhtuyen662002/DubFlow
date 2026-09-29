@@ -75,6 +75,8 @@ class ReleaseBundleTests(unittest.TestCase):
             )
             setup = (result.staging_dir / "setup.cmd").read_text(encoding="utf-8")
             self.assertIn('set "BUNDLE_ROOT=%~dp0."', setup)
+            self.assertIn('"%BUNDLE_ROOT%\\runtime\\python.exe"', setup)
+            self.assertIn('"%BUNDLE_ROOT%\\app\\packaging\\release\\bootstrap.py"', setup)
             self.assertIn('--bundle-root "%BUNDLE_ROOT%" --install-root "%LOCALAPPDATA%\\DubFlow"', setup)
             self.assertNotIn('--bundle-root "%~dp0%"', setup)
 
