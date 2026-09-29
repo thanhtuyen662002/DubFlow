@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/fixtures/catalog/schema-v1.json",
+  "title": "DubFlow deterministic media fixture catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "catalog_id", "fixtures"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "catalog_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "fixtures": {"type": "array", "minItems": 1, "maxItems": 10000, "items": {"$ref": "#/$defs/fixture"}}
+  },
+  "$defs": {
+    "decimal": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_id", "asset", "geometry", "timeline", "annotations"],
+      "properties": {
+        "fixture_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "asset": {"$ref": "#/$defs/asset"},
+        "geometry": {"$ref": "#/$defs/geometry"},
+        "timeline": {"$ref": "#/$defs/timeline"},
+        "annotations": {"$ref": "#/$defs/annotations"}
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "sha256", "size_bytes"],
+      "properties": {
+        "kind": {"enum": ["generated", "external"]},
+        "path": {"type": "string", "pattern": "^[^\\x00-\\x1f]{1,4096}$"},
+        "fetch_uri": {"type": ["string", "null"], "maxLength": 4096},
+        "sha256": {"$ref": "#/$defs/hash"},
+        "size_bytes": {"$ref": "#/$defs/decimal"}
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "rotation_degrees"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "height": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "rotation_degrees": {"enum": [0, 90, 180, 270]}
+      }
+    },
+    "timeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time_base", "duration_ticks", "pts_start_ticks", "variable_frame_rate"],
+      "properties": {
+        "time_base": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["numerator", "denominator"],
+          "properties": {
+            "numerator": {"$ref": "#/$defs/decimal"},
+            "denominator": {"$ref": "#/$defs/decimal"}
+          }
+        },
+        "duration_ticks": {"$ref": "#/$defs/decimal"},
+        "pts_start_ticks": {"type": "string", "pattern": "^-?(0|[1-9][0-9]*)$", "maxLength": 20},
+        "variable_frame_rate": {"type": "boolean"},
+        "frame_durations_ticks": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/decimal"}}
+      }
+    },
+    "annotations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text_cases", "speaker_cases"],
+      "properties": {
+        "text_cases": {"type": "array", "items": {"enum": ["dialogue", "watermark", "signage", "danmaku", "vertical", "diagonal", "multi_text"]}},
+        "speaker_cases": {"type": "array", "items": {"enum": ["offscreen", "overlap", "same_actor_multiple_characters", "narrator"]}}
+      }
+    }
+  }
+}

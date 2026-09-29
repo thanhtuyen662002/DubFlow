@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "catalog_id": "dubflow-benchmark-suites-v1",
+  "suites": [
+    {"suite_id": "timeline-edge-cases", "fixture_ids": ["landscape-cfr-dialogue", "portrait-rotation", "vfr-nonzero-pts"], "metrics": ["timeline_round_trip", "proxy_mapping", "rotation_transform"]},
+    {"suite_id": "text-role-and-geometry", "fixture_ids": ["multi-text-roles", "vertical-diagonal-text"], "metrics": ["ocr_cer", "role_precision", "role_recall", "mask_geometry"]},
+    {"suite_id": "speaker-edge-cases", "fixture_ids": ["offscreen-narrator", "overlapping-speakers", "same-actor-multiple-characters"], "metrics": ["der", "overlap_f1", "active_speaker_accuracy", "identity_switches"]}
+  ]
+}
