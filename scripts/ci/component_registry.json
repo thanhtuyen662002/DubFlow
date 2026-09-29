@@ -485,6 +485,25 @@
       ]
     },
     {
+      "id": "douyin-source",
+      "roots": [
+        "engine/dubflow/download/douyin",
+        "tests/source_douyin"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/source_douyin",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
