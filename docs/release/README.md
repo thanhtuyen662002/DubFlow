@@ -32,8 +32,10 @@ python -m packaging.release.builder \
 ```
 
 The resulting ZIP contains `setup.cmd` and `setup.ps1`. The Windows release
-workflow additionally creates a self-extracting `*-setup.exe` that launches
-`setup.cmd`, then uploads the ZIP, executable, checksums, and release evidence.
-The executable is unsigned while the repository has no configured release
-signing service; stable publication therefore fails closed until signing is
-provided.
+workflow additionally compiles `packaging/release/windows_setup.rs` into a
+self-extracting `*-setup.exe`. The Rust bootstrapper embeds the exact ZIP,
+uses inbox PowerShell only for extraction, launches `setup.cmd` under the
+current user token, and does not request elevation. It uploads the ZIP,
+executable, checksums, and release evidence. The executable is unsigned while
+the repository has no configured release signing service; stable publication
+therefore fails closed until signing is provided.
