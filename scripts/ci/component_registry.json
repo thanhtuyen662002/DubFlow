@@ -446,6 +446,26 @@
       ]
     },
     {
+      "id": "source-adapter",
+      "roots": [
+        "contracts/source",
+        "engine/dubflow/download",
+        "tests/source_adapter"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/source_adapter",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "render-export",
       "roots": [
         "contracts/export",
