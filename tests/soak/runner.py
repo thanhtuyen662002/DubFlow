@@ -229,8 +229,15 @@ class SoakEvidence:
 class SoakRunner:
     """Run or resume a bounded workload rooted at an application-owned path."""
 
-    def __init__(self, root: str | os.PathLike[str], scenario: SoakScenario) -> None:
+    def __init__(
+        self,
+        root: str | os.PathLike[str],
+        scenario: SoakScenario,
+        *,
+        clean_machine_rehearsed: bool = False,
+    ) -> None:
         self.scenario = scenario
+        self.clean_machine_rehearsed = bool(clean_machine_rehearsed)
         raw_root = Path(root)
         if raw_root.exists() and raw_root.is_file():
             raise ValueError("soak root must be a directory")
@@ -513,7 +520,7 @@ class SoakRunner:
             },
             state_path=str(self.state_path),
             scenario=self.scenario.as_dict(),
-            clean_machine_rehearsed=not self.root.exists() or self.root.name.startswith("dubflow-soak-"),
+            clean_machine_rehearsed=self.clean_machine_rehearsed,
             gpu_oom_recovered=bool(
                 self._state.get("gpu_oom_injected")
                 and bool(self._state.get("cpu_fallback_jobs"))
@@ -572,27 +579,35 @@ def run_release_rehearsal(output: Path, root: Path | None = None) -> SoakEvidenc
     """Execute the release scenario, including its simulated reboot/resume."""
 
     temporary: tempfile.TemporaryDirectory[str] | None = None
+    ephemeral_root = root is None
     if root is None:
         temporary = tempfile.TemporaryDirectory(prefix="dubflow-soak-")
         root = Path(temporary.name)
     try:
         scenario = release_scenario()
-        runner = SoakRunner(root, scenario)
+        runner = SoakRunner(root, scenario, clean_machine_rehearsed=ephemeral_root)
         try:
             runner.run()
         except SimulatedCrash:
             # A fresh runner models process restart/reboot and proves state can
             # be reopened from the durable checkpoint.
-            runner = SoakRunner(root, scenario)
+            runner = SoakRunner(root, scenario, clean_machine_rehearsed=ephemeral_root)
             evidence = runner.run()
         else:
             evidence = runner.evidence()
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(
-            json.dumps(evidence.as_dict(), ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
+        temporary_output = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+        try:
+            with temporary_output.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(evidence.as_dict(), ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_output, output)
+        finally:
+            try:
+                temporary_output.unlink()
+            except FileNotFoundError:
+                pass
         return evidence
     finally:
         if temporary is not None:
