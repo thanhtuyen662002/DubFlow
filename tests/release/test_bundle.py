@@ -82,6 +82,9 @@ class ReleaseBundleTests(unittest.TestCase):
             second = install_bundle(result.staging_dir, install_root)
             self.assertEqual(second["manifest_sha256"], report["manifest_sha256"])
             self.assertEqual(json.loads((install_root / "current.json").read_text(encoding="utf-8"))["current_version"], "0.1.0-rc1")
+            (install_root / "versions" / "0.1.0-rc1" / "runtime" / "python.exe").write_bytes(b"tampered")
+            with self.assertRaisesRegex(BootstrapInstallError, "INSTALLED_VERSION_INVALID"):
+                install_bundle(result.staging_dir, install_root)
 
     def test_corruption_is_rejected_before_destination_mutation(self) -> None:
         with TemporaryDirectory() as directory:

@@ -159,6 +159,12 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
         installed_manifest = version_path / "release-manifest.json"
         if not installed_manifest.is_file() or hash_file(installed_manifest) != hash_file(root / "release-manifest.json"):
             raise BootstrapInstallError("VERSION_CONFLICT", f"version {manifest.version} is already installed with different bytes")
+        # An interrupted or tampered version directory must never be silently
+        # promoted just because its manifest has the expected bytes.
+        try:
+            verify_bundle(version_path, manifest)
+        except BootstrapInstallError as exc:
+            raise BootstrapInstallError("INSTALLED_VERSION_INVALID", str(exc)) from exc
     else:
         staging = versions / f".{manifest.version}.{uuid.uuid4().hex}.staging"
         try:
