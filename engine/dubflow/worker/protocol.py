@@ -222,7 +222,12 @@ class Envelope:
             text = line
         else:
             raise ProtocolError("INVALID_TYPE", "line must be bytes or string")
-        if text.endswith("\n"):
+        # Workers on Windows commonly emit CRLF.  Normalize exactly one
+        # record terminator while preserving the strict rejection of embedded
+        # or bare carriage returns inside a JSON object.
+        if text.endswith("\r\n"):
+            text = text[:-2]
+        elif text.endswith("\n"):
             text = text[:-1]
         if not text or "\n" in text or "\r" in text:
             raise ProtocolError("INVALID_LINE", "one JSON object is required per line")
