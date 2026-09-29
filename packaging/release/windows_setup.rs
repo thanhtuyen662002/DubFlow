@@ -40,6 +40,9 @@ fn run() -> Result<i32, Box<dyn Error>> {
         output.write_all(PAYLOAD)?;
         output.flush()?;
         output.sync_all()?;
+        // PowerShell must be able to open the ZIP for reading on Windows.
+        // Explicitly close the writer before starting the extractor.
+        drop(output);
 
         let archive_literal = quote_powershell(&archive);
         let extracted_literal = quote_powershell(&extracted);
