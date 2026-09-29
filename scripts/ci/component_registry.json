@@ -663,6 +663,27 @@
       ]
     },
     {
+      "id": "installer-bootstrap",
+      "roots": [
+        "packaging/windows",
+        "packaging/runtime",
+        "models/bootstrap",
+        "tests/installer"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/installer",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
@@ -675,6 +696,26 @@
           "discover",
           "-s",
           "tests/source_queue",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
+      "id": "release-soak",
+      "roots": [
+        "tests/soak",
+        "tests/chaos",
+        ".github/workflows/soak-release.yml"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/chaos",
           "-p",
           "test_*.py"
         ]
