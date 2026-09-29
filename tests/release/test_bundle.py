@@ -147,6 +147,7 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertIn('include_bytes!(env!("DUBFLOW_PAYLOAD"))', source)
         self.assertIn("Expand-Archive", source)
         self.assertIn("drop(output)", source)
+        self.assertIn('format!("call \\\"{}\\\"", setup.display())', source)
         self.assertNotIn("requireAdministrator", source)
         self.assertNotIn("7z.sfx", workflow)
         self.assertIn("target-feature=+crt-static", workflow)
