@@ -504,6 +504,25 @@
       ]
     },
     {
+      "id": "capcut-direct-draft",
+      "roots": [
+        "contracts/capcut/draft",
+        "tests/capcut_compat"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/capcut_compat",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "benchmark-harness",
       "roots": [
         "fixtures/catalog",
