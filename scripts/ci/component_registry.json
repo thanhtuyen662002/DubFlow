@@ -647,6 +647,22 @@
       ]
     },
     {
+      "id": "updater-recovery",
+      "roots": [
+        "crates/updater",
+        "packaging/update",
+        "tests/update_recovery"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/updater/Cargo.toml"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
