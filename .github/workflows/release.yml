@@ -78,43 +78,17 @@ jobs:
           )
           python @args
 
-      - name: Build one-click self-extracting setup executable
+      - name: Build one-click user-owned setup executable
         shell: pwsh
         run: |
-          $sevenZipPaths = @()
-          $sevenZipCommand = Get-Command 7z.exe -ErrorAction SilentlyContinue
-          if ($null -ne $sevenZipCommand) { $sevenZipPaths += $sevenZipCommand.Source }
-          if ($env:ProgramFiles) { $sevenZipPaths += (Join-Path $env:ProgramFiles '7-Zip\7z.exe') }
-          if (${env:ProgramFiles(x86)}) { $sevenZipPaths += (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe') }
-          $sevenZipPath = $sevenZipPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-          if ($null -eq $sevenZipPath) { throw '7z.exe is required on the Windows release runner' }
-          $sfxPaths = @(
-            (Join-Path (Split-Path -Parent $sevenZipPath) '7z.sfx'),
-            (Join-Path $env:ProgramFiles '7-Zip\7z.sfx')
-          )
-          if (${env:ProgramFiles(x86)}) { $sfxPaths += (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.sfx') }
-          $sfx = $sfxPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-          if ($null -eq $sfx) { throw "7z.sfx is missing; searched: $($sfxPaths -join ', ')" }
-          $staging = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-staging"
-          $payload = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64.7z"
-          Push-Location $staging
-          & $sevenZipPath a -t7z -mx=9 -mtc=off $payload "*" | Out-Host
-          Pop-Location
-          if ($LASTEXITCODE -ne 0) { throw '7z payload creation failed' }
-          $config = Join-Path $PWD 'dist/sfx-config.txt'
-          $configContent = @(
-            ';!@Install@!UTF-8!'
-            'Title="DubFlow Setup"'
-            'RunProgram="setup.cmd"'
-            ';!@InstallEnd@!'
-          ) -join "`r`n"
-          $configContent | Set-Content -LiteralPath $config -Encoding utf8NoBOM
           $setup = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-setup.exe"
-          $sfxBytes = [IO.File]::ReadAllBytes($sfx)
-          $configBytes = [IO.File]::ReadAllBytes($config)
-          $payloadBytes = [IO.File]::ReadAllBytes($payload)
-          [IO.File]::WriteAllBytes($setup, [byte[]]($sfxBytes + $configBytes + $payloadBytes))
-          Remove-Item -LiteralPath $config, $payload -Force
+          $payload = (Resolve-Path (Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64.zip")).Path
+          $rustc = Get-Command rustc.exe -ErrorAction SilentlyContinue
+          if ($null -eq $rustc) { throw 'rustc.exe is required to build the non-elevated Windows setup executable' }
+          $env:DUBFLOW_PAYLOAD = $payload
+          & $rustc.Source --version | Out-Host
+          & $rustc.Source --edition=2021 -O -C target-feature=+crt-static packaging/release/windows_setup.rs -o $setup
+          if ($LASTEXITCODE -ne 0) { throw 'Rust user-owned setup bootstrapper build failed' }
 
       - name: Produce checksums and evidence
         shell: pwsh
