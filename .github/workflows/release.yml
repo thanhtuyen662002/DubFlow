@@ -92,12 +92,12 @@ jobs:
           Pop-Location
           if ($LASTEXITCODE -ne 0) { throw '7z payload creation failed' }
           $config = Join-Path $PWD 'dist/sfx-config.txt'
-          $configContent = @'
-;!@Install@!UTF-8!
-Title="DubFlow Setup"
-RunProgram="setup.cmd"
-;!@InstallEnd@!
-'@
+          $configContent = @(
+            ';!@Install@!UTF-8!'
+            'Title="DubFlow Setup"'
+            'RunProgram="setup.cmd"'
+            ';!@InstallEnd@!'
+          ) -join "`r`n"
           $configContent | Set-Content -LiteralPath $config -Encoding utf8NoBOM
           $setup = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-setup.exe"
           $sfxBytes = [IO.File]::ReadAllBytes($sfx)
