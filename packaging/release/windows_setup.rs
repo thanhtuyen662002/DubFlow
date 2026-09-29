@@ -70,14 +70,13 @@ fn run() -> Result<i32, Box<dyn Error>> {
         if !setup.is_file() {
             return Err(format!("release payload did not contain setup.cmd: {}", setup.display()).into());
         }
-        // `call` is required for a batch file when invoking through `cmd /C`.
-        // Passing the complete command as one argument preserves `%~dp0` and
-        // the setup script's quoted `--install-root` when the temp path has
-        // spaces.
-        let command_line = format!("call \"{}\"", setup.display());
+        // Avoid passing a quoted temporary path through `cmd /C`: Windows
+        // command parsing differs between `Command` and `cmd.exe` for paths
+        // containing spaces. Running from the extracted directory lets the
+        // batch file resolve `%~dp0` itself and keeps the command literal.
         let install = Command::new("cmd.exe")
-            .args(["/D", "/S", "/C"])
-            .arg(command_line)
+            .current_dir(&extracted)
+            .args(["/D", "/S", "/C", "setup.cmd"])
             .status()?;
         Ok(install.code().unwrap_or(1))
     })();
