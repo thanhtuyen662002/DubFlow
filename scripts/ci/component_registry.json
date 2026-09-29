@@ -504,6 +504,26 @@
       ]
     },
     {
+      "id": "speaker-diarization",
+      "roots": [
+        "contracts/speakers",
+        "engine/dubflow/diarization",
+        "tests/diarization"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/diarization",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
