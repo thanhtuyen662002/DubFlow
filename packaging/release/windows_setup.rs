@@ -70,11 +70,14 @@ fn run() -> Result<i32, Box<dyn Error>> {
         if !setup.is_file() {
             return Err(format!("release payload did not contain setup.cmd: {}", setup.display()).into());
         }
-        // Command receives the path as one argument. `std::process::Command`
-        // performs the Windows quoting needed for spaces in the temp path.
+        // `call` is required for a batch file when invoking through `cmd /C`.
+        // Passing the complete command as one argument preserves `%~dp0` and
+        // the setup script's quoted `--install-root` when the temp path has
+        // spaces.
+        let command_line = format!("call \"{}\"", setup.display());
         let install = Command::new("cmd.exe")
             .args(["/D", "/S", "/C"])
-            .arg(&setup)
+            .arg(command_line)
             .status()?;
         Ok(install.code().unwrap_or(1))
     })();
