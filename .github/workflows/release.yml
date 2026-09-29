@@ -168,7 +168,7 @@ jobs:
               exit 1
             fi
           else
-            gh release create "$tag" \
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --target "$SOURCE_SHA" \
               --title "DubFlow ${RELEASE_VERSION} (release candidate)" \
               --notes "Unsigned Windows release candidate built from exact source SHA. Production qualification remains pending Issues #36 and #38." \
@@ -179,4 +179,4 @@ jobs:
             echo "Release tag $tag resolves to $resolved_sha, expected build SHA $SOURCE_SHA" >&2
             exit 1
           fi
-          gh release upload "$tag" dist/* --clobber
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" dist/* --clobber

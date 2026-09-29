@@ -176,6 +176,8 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertIn("contents: write", workflow)
         self.assertIn("windows-x64.zip.sha256", workflow)
         self.assertIn('--target "$SOURCE_SHA"', workflow)
+        self.assertIn('gh release create "$tag" --repo "$GITHUB_REPOSITORY"', workflow)
+        self.assertIn('gh release upload "$tag" --repo "$GITHUB_REPOSITORY"', workflow)
         self.assertIn("resolved_sha", workflow)
 
 
