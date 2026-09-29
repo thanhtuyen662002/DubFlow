@@ -81,14 +81,24 @@ jobs:
       - name: Build one-click self-extracting setup executable
         shell: pwsh
         run: |
-          $sevenZip = Get-Command 7z.exe -ErrorAction SilentlyContinue
-          if ($null -eq $sevenZip) { throw '7z.exe is required on the Windows release runner' }
-          $sfx = Join-Path (Split-Path -Parent $sevenZip.Source) '7z.sfx'
-          if (-not (Test-Path -LiteralPath $sfx -PathType Leaf)) { throw "7z.sfx is missing: $sfx" }
+          $sevenZipPaths = @()
+          $sevenZipCommand = Get-Command 7z.exe -ErrorAction SilentlyContinue
+          if ($null -ne $sevenZipCommand) { $sevenZipPaths += $sevenZipCommand.Source }
+          if ($env:ProgramFiles) { $sevenZipPaths += (Join-Path $env:ProgramFiles '7-Zip\7z.exe') }
+          if (${env:ProgramFiles(x86)}) { $sevenZipPaths += (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe') }
+          $sevenZipPath = $sevenZipPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          if ($null -eq $sevenZipPath) { throw '7z.exe is required on the Windows release runner' }
+          $sfxPaths = @(
+            (Join-Path (Split-Path -Parent $sevenZipPath) '7z.sfx'),
+            (Join-Path $env:ProgramFiles '7-Zip\7z.sfx')
+          )
+          if (${env:ProgramFiles(x86)}) { $sfxPaths += (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.sfx') }
+          $sfx = $sfxPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          if ($null -eq $sfx) { throw "7z.sfx is missing; searched: $($sfxPaths -join ', ')" }
           $staging = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-staging"
           $payload = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64.7z"
           Push-Location $staging
-          & $sevenZip.Source a -t7z -mx=9 -mtc=off $payload "*" | Out-Host
+          & $sevenZipPath a -t7z -mx=9 -mtc=off $payload "*" | Out-Host
           Pop-Location
           if ($LASTEXITCODE -ne 0) { throw '7z payload creation failed' }
           $config = Join-Path $PWD 'dist/sfx-config.txt'
