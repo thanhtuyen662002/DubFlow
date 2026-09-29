@@ -16,7 +16,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 import uuid
 
 
@@ -44,6 +44,31 @@ class BootstrapInstallError(RuntimeError):
         super().__init__(f"{code}: {self.message}")
 
 
+def _is_link(path: Path) -> bool:
+    """Return true for symbolic links and Windows junction/reparse links."""
+
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction is not None and is_junction())
+    except OSError as exc:
+        raise BootstrapInstallError("PATH_CHECK_FAILED", f"unable to inspect release path: {path}") from exc
+
+
+def _reject_link_components(path: Path, label: str) -> None:
+    """Reject links in every existing component without resolving through them."""
+
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor) if absolute.anchor else Path()
+    for part in absolute.parts:
+        if not part or part == absolute.anchor:
+            continue
+        current = current / part
+        if _is_link(current):
+            raise BootstrapInstallError("SYMLINK_REJECTED", f"{label} contains a symlink or junction: {current}")
+
+
 def _atomic_write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
@@ -59,9 +84,16 @@ def _atomic_write(path: Path, payload: bytes) -> None:
 
 
 def _safe_join(root: Path, relative: str) -> Path:
+    _reject_link_components(root, "release path")
+    root = root.resolve()
+    current = root
+    for component in Path(relative).parts:
+        current = current / component
+        if _is_link(current):
+            raise BootstrapInstallError("SYMLINK_REJECTED", f"symlink is not allowed in release path: {relative}")
     candidate = (root / Path(relative)).resolve()
     try:
-        candidate.relative_to(root.resolve())
+        candidate.relative_to(root)
     except ValueError as exc:
         raise BootstrapInstallError("UNSAFE_PATH", f"path escapes bundle root: {relative}") from exc
     return candidate
@@ -70,26 +102,57 @@ def _safe_join(root: Path, relative: str) -> Path:
 def _verify_signature_metadata(manifest: ReleaseManifest) -> None:
     if manifest.release_channel == "stable" and not manifest.signature_required:
         raise BootstrapInstallError("UNSIGNED_STABLE", "stable release metadata must require a signature")
-    if manifest.signature_required and (
-        manifest.signature_algorithm == "none"
-        or not manifest.signature_value
-        or manifest.signature_value == "RELEASE_SIGNING_VALUE_REQUIRED"
-    ):
-        raise BootstrapInstallError("SIGNATURE_INVALID", "required release signature is missing or is a placeholder")
     if manifest.signature_algorithm not in {"none", "ed25519"}:
         raise BootstrapInstallError("SIGNATURE_ALGORITHM", "unsupported release signature algorithm")
+    if manifest.signature_required:
+        # The release bundle currently has no embedded public-key trust store.
+        # Accepting a non-empty algorithm/key/value tuple would make attacker
+        # supplied metadata look signed, so stable installation fails closed
+        # until a real verifier is wired into this boundary.
+        raise BootstrapInstallError(
+            "SIGNATURE_UNSUPPORTED",
+            "cryptographic release signature verification is not configured",
+        )
+
+
+def _expected_paths(manifest: ReleaseManifest) -> set[str]:
+    paths = {artifact.path for artifact in manifest.artifacts}
+    if "release-manifest.json" in paths:
+        raise BootstrapInstallError("MANIFEST_LAYOUT", "release-manifest.json is reserved and cannot be an artifact")
+    paths.add("release-manifest.json")
+    return paths
+
+
+def _actual_files(root: Path) -> set[str]:
+    files: set[str] = set()
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if _is_link(path):
+            raise BootstrapInstallError("SYMLINK_REJECTED", f"symlink is not allowed in release bundle: {relative}")
+        if path.is_file():
+            files.add(relative)
+    return files
 
 
 def verify_bundle(bundle_root: Path | str, manifest: ReleaseManifest) -> None:
     """Verify every manifest file before any destination mutation."""
 
+    _reject_link_components(Path(bundle_root), "bundle root")
     root = Path(bundle_root).resolve()
     if not root.is_dir():
         raise BootstrapInstallError("BUNDLE_MISSING", f"bundle root does not exist: {root}")
     _verify_signature_metadata(manifest)
+    expected = _expected_paths(manifest)
+    actual = _actual_files(root)
+    extra = sorted(actual - expected)
+    missing = sorted(expected - actual)
+    if extra:
+        raise BootstrapInstallError("UNMANIFESTED_ARTIFACT", f"bundle contains files absent from the manifest: {', '.join(extra[:8])}")
+    if missing:
+        raise BootstrapInstallError("ARTIFACT_MISSING", f"bundle is missing manifest files: {', '.join(missing[:8])}")
     for artifact in manifest.artifacts:
         source = _safe_join(root, artifact.path)
-        if source.is_symlink() or not source.is_file():
+        if _is_link(source) or not source.is_file():
             raise BootstrapInstallError("ARTIFACT_MISSING", f"bundle artifact is missing: {artifact.path}")
         actual_size = source.stat().st_size
         if actual_size != artifact.size_bytes:
@@ -105,23 +168,51 @@ def verify_bundle(bundle_root: Path | str, manifest: ReleaseManifest) -> None:
             )
 
     manifest_path = root / "release-manifest.json"
-    if not manifest_path.is_file() or manifest_path.is_symlink():
+    if _is_link(manifest_path) or not manifest_path.is_file():
         raise BootstrapInstallError("MANIFEST_MISSING", "release-manifest.json is missing")
 
 
-def _copy_bundle(bundle_root: Path, destination: Path) -> None:
-    for source in sorted(bundle_root.rglob("*"), key=lambda item: item.as_posix().lower()):
-        relative = source.relative_to(bundle_root)
-        if any(part in {".git", "__pycache__"} for part in relative.parts):
+def _write_progress(path: Path, payload: dict[str, Any]) -> None:
+    _atomic_write(path, (json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"))
+
+
+def _copy_bundle(
+    bundle_root: Path,
+    destination: Path,
+    manifest: ReleaseManifest,
+    manifest_sha256: str,
+    progress: set[str],
+    progress_callback: Callable[[set[str]], None],
+) -> None:
+    expected: dict[str, str] = {artifact.path: artifact.sha256 for artifact in manifest.artifacts}
+    expected["release-manifest.json"] = manifest_sha256
+    for relative in sorted(expected):
+        source = _safe_join(bundle_root, relative)
+        target = _safe_join(destination, relative)
+        if _is_link(source) or not source.is_file():
+            raise BootstrapInstallError("ARTIFACT_MISSING", f"release artifact is not a regular file: {relative}")
+        if _is_link(target):
+            raise BootstrapInstallError("SYMLINK_REJECTED", f"symlink is not allowed in install path: {relative}")
+        if target.is_file() and hash_file(target) == expected[relative]:
+            progress.add(relative)
+            progress_callback(progress)
             continue
-        target = _safe_join(destination, relative.as_posix())
-        if source.is_symlink():
-            raise BootstrapInstallError("SYMLINK_REJECTED", f"symlink is not allowed in release bundle: {relative}")
-        if source.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-        elif source.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+        if target.exists() and not target.is_file():
+            raise BootstrapInstallError("INSTALL_PATH_CONFLICT", f"install path is not a regular file: {relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
+        try:
+            shutil.copy2(source, temporary)
+            if hash_file(temporary) != expected[relative]:
+                raise BootstrapInstallError("STAGED_HASH_MISMATCH", f"copied artifact changed during staging: {relative}")
+            os.replace(temporary, target)
+        except OSError as exc:
+            raise BootstrapInstallError("STAGING_COPY_FAILED", f"unable to stage {relative}: {exc}") from exc
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        progress.add(relative)
+        progress_callback(progress)
 
 
 def _installed_version_path(install_root: Path, version: str) -> Path:
@@ -145,19 +236,40 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
     """Verify and activate one bundle version atomically."""
 
     root = Path(bundle_root).resolve()
-    destination = Path(install_root).expanduser().resolve()
+    requested_destination = Path(install_root).expanduser()
+    _reject_link_components(requested_destination, "install root")
+    destination = requested_destination.resolve()
     try:
         manifest = load_manifest(root / "release-manifest.json")
     except ManifestError as exc:
         raise BootstrapInstallError("MANIFEST_INVALID", str(exc)) from exc
     verify_bundle(root, manifest)
-    destination.mkdir(parents=True, exist_ok=True)
+    source_manifest_hash = hash_file(root / "release-manifest.json")
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise BootstrapInstallError("INSTALL_ROOT_UNAVAILABLE", f"unable to create install root: {destination}") from exc
+    _reject_link_components(destination, "install root")
     versions = destination / "versions"
-    versions.mkdir(parents=True, exist_ok=True)
+    if _is_link(versions):
+        raise BootstrapInstallError("SYMLINK_REJECTED", f"versions directory cannot be a symlink: {versions}")
+    try:
+        versions.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise BootstrapInstallError("INSTALL_PATH_CONFLICT", f"unable to create versions directory: {versions}") from exc
+    if not versions.is_dir():
+        raise BootstrapInstallError("INSTALL_PATH_CONFLICT", f"versions path is not a directory: {versions}")
     version_path = _installed_version_path(destination, manifest.version)
+    if _is_link(version_path):
+        raise BootstrapInstallError("SYMLINK_REJECTED", f"installed version cannot be a symlink: {version_path}")
+    progress_path = destination / f"install-progress-{manifest.version}.json"
+    if _is_link(progress_path):
+        raise BootstrapInstallError("SYMLINK_REJECTED", f"progress state cannot be a symlink: {progress_path}")
     if version_path.exists():
+        if not version_path.is_dir():
+            raise BootstrapInstallError("VERSION_CONFLICT", f"installed version path is not a directory: {version_path}")
         installed_manifest = version_path / "release-manifest.json"
-        if not installed_manifest.is_file() or hash_file(installed_manifest) != hash_file(root / "release-manifest.json"):
+        if not installed_manifest.is_file() or hash_file(installed_manifest) != source_manifest_hash:
             raise BootstrapInstallError("VERSION_CONFLICT", f"version {manifest.version} is already installed with different bytes")
         # An interrupted or tampered version directory must never be silently
         # promoted just because its manifest has the expected bytes.
@@ -165,17 +277,76 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
             verify_bundle(version_path, manifest)
         except BootstrapInstallError as exc:
             raise BootstrapInstallError("INSTALLED_VERSION_INVALID", str(exc)) from exc
+        progress_path.unlink(missing_ok=True)
     else:
-        staging = versions / f".{manifest.version}.{uuid.uuid4().hex}.staging"
+        staging = versions / f".{manifest.version}.staging"
+        if _is_link(staging):
+            raise BootstrapInstallError("SYMLINK_REJECTED", f"staging path cannot be a symlink: {staging}")
+        if staging.exists() and not staging.is_dir():
+            raise BootstrapInstallError("STAGING_CONFLICT", f"staging path is not a directory: {staging}")
         try:
-            staging.mkdir(parents=True)
-            _copy_bundle(root, staging)
-            copied_manifest = staging / "release-manifest.json"
-            if hash_file(copied_manifest) != hash_file(root / "release-manifest.json"):
-                raise BootstrapInstallError("STAGED_HASH_MISMATCH", "staged release manifest changed during copy")
+            staging.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise BootstrapInstallError("STAGING_UNAVAILABLE", f"unable to create staging path: {staging}") from exc
+        completed: set[str] = set()
+        if progress_path.exists() and not progress_path.is_file():
+            raise BootstrapInstallError("RESUME_STATE_INVALID", f"progress state is not a regular file: {progress_path}")
+        if progress_path.is_file():
+            try:
+                progress_payload = json.loads(progress_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise BootstrapInstallError("RESUME_STATE_INVALID", f"unable to read {progress_path}") from exc
+            expected_paths = _expected_paths(manifest)
+            if not isinstance(progress_payload, dict):
+                raise BootstrapInstallError("RESUME_CONFLICT", "existing staging state belongs to a different release manifest")
+            progress_status = progress_payload.get("status")
+            progress_staging = progress_payload.get("staging_path")
+            same_staging = False
+            if isinstance(progress_staging, str):
+                _reject_link_components(Path(progress_staging), "resume staging path")
+                same_staging = os.path.normcase(os.path.realpath(progress_staging)) == os.path.normcase(os.path.realpath(staging))
+            if (
+                progress_payload.get("schema_version") != STATE_SCHEMA_VERSION
+                or progress_status not in {"staging", "failed"}
+                or progress_payload.get("version") != manifest.version
+                or progress_payload.get("manifest_sha256") != source_manifest_hash
+                or not isinstance(progress_payload.get("completed"), list)
+                or not same_staging
+            ):
+                raise BootstrapInstallError("RESUME_CONFLICT", "existing staging state belongs to a different release manifest")
+            completed = {item for item in progress_payload["completed"] if isinstance(item, str)}
+            if not completed.issubset(expected_paths):
+                raise BootstrapInstallError("RESUME_STATE_INVALID", "resume state contains an unrecognized artifact path")
+
+        def save_progress(done: set[str], *, status: str = "staging", error: str | None = None) -> None:
+            payload: dict[str, Any] = {
+                "schema_version": STATE_SCHEMA_VERSION,
+                "status": status,
+                "version": manifest.version,
+                "manifest_sha256": source_manifest_hash,
+                "staging_path": str(staging),
+                "completed": sorted(done),
+            }
+            if error:
+                payload["error"] = error[:4096]
+            _write_progress(progress_path, payload)
+
+        save_progress(completed)
+        try:
+            for partial in staging.rglob("*.partial"):
+                if _is_link(partial):
+                    raise BootstrapInstallError("SYMLINK_REJECTED", f"staging partial cannot be a symlink: {partial}")
+                if partial.is_file():
+                    partial.unlink()
+            _copy_bundle(root, staging, manifest, source_manifest_hash, completed, save_progress)
+            verify_bundle(staging, manifest)
             os.replace(staging, version_path)
-        except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
+            progress_path.unlink(missing_ok=True)
+        except BaseException as exc:
+            try:
+                save_progress(completed, status="failed", error=str(exc))
+            except OSError:
+                pass
             raise
 
     manifest_hash = hash_file(version_path / "release-manifest.json")

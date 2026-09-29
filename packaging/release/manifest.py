@@ -24,6 +24,14 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 
 class ManifestError(ValueError):
@@ -46,11 +54,17 @@ def _safe_relative_path(value: Any, field: str = "path") -> str:
         raise ManifestError(f"{field} must use a non-empty POSIX relative path")
     path = value.replace("/", "/")
     candidate = Path(path)
-    if candidate.is_absolute() or ":" in path.split("/")[0]:
+    if candidate.is_absolute() or ":" in path:
         raise ManifestError(f"{field} must be relative")
     parts = path.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise ManifestError(f"{field} contains an unsafe path component")
+    for part in parts:
+        if part.endswith((".", " ")):
+            raise ManifestError(f"{field} contains a Windows-unsafe trailing character")
+        stem = part.split(".", 1)[0].upper()
+        if stem in _WINDOWS_RESERVED_NAMES:
+            raise ManifestError(f"{field} contains a Windows reserved name")
     return "/".join(parts)
 
 
@@ -166,13 +180,18 @@ class ReleaseManifest:
             raise ManifestError("release artifacts must be non-empty")
         ids: set[str] = set()
         paths: set[str] = set()
+        folded_paths: set[str] = set()
         for artifact in self.artifacts:
             if artifact.artifact_id in ids:
                 raise ManifestError(f"duplicate artifact id: {artifact.artifact_id}")
             if artifact.path in paths:
                 raise ManifestError(f"duplicate artifact path: {artifact.path}")
+            folded = artifact.path.casefold()
+            if folded in folded_paths:
+                raise ManifestError(f"Windows case-folded artifact path collision: {artifact.path}")
             ids.add(artifact.artifact_id)
             paths.add(artifact.path)
+            folded_paths.add(folded)
 
     def to_dict(self) -> dict[str, Any]:
         return {

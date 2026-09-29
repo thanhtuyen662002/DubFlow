@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import importlib.util
 import json
 from pathlib import Path
+import shutil
 from tempfile import TemporaryDirectory
 import unittest
+from unittest import mock
 
 from packaging.release.bootstrap import BootstrapInstallError, install_bundle
 from packaging.release.builder import BuildError, build_bundle
-from packaging.release.manifest import ManifestError, ReleaseArtifact, ReleaseManifest, load_manifest
+from packaging.release.manifest import ManifestError, ReleaseArtifact, ReleaseManifest, hash_file, load_manifest
 
 
 SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -149,8 +152,28 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertEqual(decoded.artifacts[0].size_bytes, 2**53 + 1)
 
     def test_unsafe_paths_and_stable_unsigned_release_fail_closed(self) -> None:
+        for unsafe_path in ("../outside", "app/file:stream", "app/CON.txt", "app/file. ", "app\\file"):
+            with self.assertRaises(ManifestError):
+                ReleaseArtifact("escape", unsafe_path, 1, "a" * 64)
         with self.assertRaises(ManifestError):
-            ReleaseArtifact("escape", "../outside", 1, "a" * 64)
+            ReleaseManifest(
+                "0.1.0-rc1",
+                SOURCE_SHA,
+                "3.12.10",
+                "v1",
+                "windows",
+                "x86_64",
+                "2023-11-14T22:13:20Z",
+                "candidate",
+                False,
+                "none",
+                "unsigned-candidate",
+                "",
+                (
+                    ReleaseArtifact("one", "app/Foo", 0, "a" * 64),
+                    ReleaseArtifact("two", "app/foo", 0, "b" * 64),
+                ),
+            )
         with self.assertRaises(BuildError):
             build_bundle(
                 source_root=".",
@@ -161,12 +184,184 @@ class ReleaseBundleTests(unittest.TestCase):
                 release_channel="stable",
             )
 
+    def test_stable_signature_metadata_fails_closed_even_when_forged(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            manifest_path = result.staging_dir / "release-manifest.json"
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            payload["release_channel"] = "stable"
+            payload["security"] = {
+                "signature_required": True,
+                "algorithm": "ed25519",
+                "key_id": "attacker-key",
+                "value": "forged-signature",
+            }
+            manifest_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(BootstrapInstallError, "SIGNATURE_UNSUPPORTED"):
+                install_bundle(result.staging_dir, root / "install")
+
+    def test_unmanifested_file_is_rejected_before_destination_mutation(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            (result.staging_dir / "evil.bin").write_bytes(b"not in manifest")
+            install_root = root / "install"
+            with self.assertRaisesRegex(BootstrapInstallError, "UNMANIFESTED_ARTIFACT"):
+                install_bundle(result.staging_dir, install_root)
+            self.assertFalse((install_root / "current.json").exists())
+
+    def test_install_resumes_deterministic_staging_and_removes_progress(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            install_root = root / "install"
+            staging = install_root / "versions" / ".0.1.0-rc1.staging"
+            staging.mkdir(parents=True)
+            shutil.copy2(result.staging_dir / "setup.cmd", staging / "setup.cmd")
+            manifest_hash = hash_file(result.staging_dir / "release-manifest.json")
+            (install_root / "install-progress-0.1.0-rc1.json").parent.mkdir(parents=True, exist_ok=True)
+            (install_root / "install-progress-0.1.0-rc1.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "failed",
+                        "version": "0.1.0-rc1",
+                        "manifest_sha256": manifest_hash,
+                        "staging_path": str(staging),
+                        "completed": ["setup.cmd"],
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            report = install_bundle(result.staging_dir, install_root)
+            self.assertTrue(report["ready"])
+            self.assertTrue((install_root / "versions" / "0.1.0-rc1").is_dir())
+            self.assertFalse(staging.exists())
+            self.assertFalse((install_root / "install-progress-0.1.0-rc1.json").exists())
+
+    def test_copy_failure_leaves_actionable_failed_progress_and_staging(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            install_root = root / "install"
+            with mock.patch("packaging.release.bootstrap.shutil.copy2", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(BootstrapInstallError, "STAGING_COPY_FAILED"):
+                    install_bundle(result.staging_dir, install_root)
+            progress = json.loads((install_root / "install-progress-0.1.0-rc1.json").read_text(encoding="utf-8"))
+            self.assertEqual(progress["status"], "failed")
+            self.assertIn("STAGING_COPY_FAILED", progress["error"])
+            self.assertTrue((install_root / "versions" / ".0.1.0-rc1.staging").is_dir())
+            self.assertFalse((install_root / "current.json").exists())
+
+    def test_staged_reverification_rejects_extra_file_and_preserves_failure_state(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            install_root = root / "install"
+            staging = install_root / "versions" / ".0.1.0-rc1.staging"
+            staging.parent.mkdir(parents=True)
+            shutil.copytree(result.staging_dir, staging)
+            (staging / "evil.bin").write_bytes(b"unmanifested")
+            with self.assertRaisesRegex(BootstrapInstallError, "UNMANIFESTED_ARTIFACT"):
+                install_bundle(result.staging_dir, install_root)
+            self.assertFalse((install_root / "current.json").exists())
+            progress = json.loads((install_root / "install-progress-0.1.0-rc1.json").read_text(encoding="utf-8"))
+            self.assertEqual(progress["status"], "failed")
+            self.assertTrue(staging.is_dir())
+
+    def test_launcher_rejects_tampered_pointer_and_candidate_qualification(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            install_root = root / "install"
+            install_bundle(result.staging_dir, install_root)
+            launcher_path = install_root / "versions" / "0.1.0-rc1" / "app" / "packaging" / "release" / "launcher.py"
+            spec = importlib.util.spec_from_file_location("installed_dubflow_launcher", launcher_path)
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            launcher = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(launcher)
+            self.assertTrue(launcher.self_check()["ready"])
+
+            current_path = install_root / "current.json"
+            current = json.loads(current_path.read_text(encoding="utf-8"))
+            current["version_path"] = "versions/other"
+            current_path.write_text(json.dumps(current), encoding="utf-8")
+            self.assertEqual(launcher.self_check()["code"], "CURRENT_POINTER_MISMATCH")
+            current["version_path"] = "versions/0.1.0-rc1"
+            current_path.write_text(json.dumps(current), encoding="utf-8")
+
+            status_path = install_root / "versions" / "0.1.0-rc1" / "release-status.json"
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status["production_qualified"] = True
+            status_path.write_text(json.dumps(status), encoding="utf-8")
+            self.assertEqual(launcher.self_check()["code"], "STATUS_TAMPERED")
+
     def test_setup_bootstrap_is_user_owned_and_embeds_the_release_payload(self) -> None:
         source = Path("packaging/release/windows_setup.rs").read_text(encoding="utf-8")
         workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn('include_bytes!(env!("DUBFLOW_PAYLOAD"))', source)
         self.assertIn("Expand-Archive", source)
         self.assertIn("drop(output)", source)
+        self.assertIn("system_binary", source)
+        self.assertIn('"System32"', source)
+        self.assertIn("fs::create_dir(&root)", source)
         self.assertIn('.current_dir(&extracted)', source)
         self.assertIn('"setup.cmd"', source)
         self.assertNotIn("requireAdministrator", source)

@@ -10,6 +10,17 @@ DubFlow installation root, verifies size, SHA-256, and signature metadata before
 activation, and writes state atomically. It never asks the user to install
 system Python, FFmpeg, CUDA, `pip`, or `conda`.
 
+Installation is restart-resumable. Each version is copied into the deterministic
+`versions/.<version>.staging` directory with an atomic per-file replacement and
+an `install-progress-<version>.json` checkpoint; the staged tree is verified
+again before it becomes the active version. The verifier requires the exact
+manifest file set, rejects unmanifested files, symlinks, Windows junctions,
+alternate data streams, reserved device names, trailing-dot/space names, and
+case-folded path collisions. The launcher also validates the current pointer and
+release-status schema before reporting the bundle ready. Stable or otherwise
+signature-required metadata fails closed until a real cryptographic verifier and
+trusted key store are configured.
+
 Pull requests run unsigned packaging smoke only. Signing and publication are
 restricted to the protected release workflow. A published artifact remains a
 release candidate until the clean-machine and hardware evidence required by

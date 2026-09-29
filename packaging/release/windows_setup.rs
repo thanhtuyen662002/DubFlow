@@ -27,6 +27,18 @@ fn temporary_root() -> PathBuf {
     env::temp_dir().join(format!("DubFlow-setup-{}-{}", std::process::id(), nonce))
 }
 
+fn system_binary(parts: &[&str]) -> Result<PathBuf, Box<dyn Error>> {
+    let system_root = env::var_os("SystemRoot").ok_or("SystemRoot is not set")?;
+    let mut path = PathBuf::from(system_root);
+    for part in parts {
+        path.push(part);
+    }
+    if !path.is_file() || path.is_symlink() {
+        return Err(format!("system binary is missing or unsafe: {}", path.display()).into());
+    }
+    Ok(path)
+}
+
 fn run() -> Result<i32, Box<dyn Error>> {
     if PAYLOAD.is_empty() {
         return Err("embedded release payload is empty".into());
@@ -34,8 +46,11 @@ fn run() -> Result<i32, Box<dyn Error>> {
     let root = temporary_root();
     let archive = root.join("release.zip");
     let extracted = root.join("bundle");
-    fs::create_dir_all(&extracted)?;
+    // A single create_dir call makes a pre-created predictable temp path fail
+    // closed instead of silently reusing an attacker-controlled directory.
+    fs::create_dir(&root)?;
     let result = (|| -> Result<i32, Box<dyn Error>> {
+        fs::create_dir(&extracted)?;
         let mut output = File::create(&archive)?;
         output.write_all(PAYLOAD)?;
         output.flush()?;
@@ -51,7 +66,8 @@ fn run() -> Result<i32, Box<dyn Error>> {
             archive = archive_literal,
             destination = extracted_literal,
         );
-        let unpack = Command::new("powershell.exe")
+        let powershell = system_binary(&["System32", "WindowsPowerShell", "v1.0", "powershell.exe"])?;
+        let unpack = Command::new(powershell)
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -67,14 +83,15 @@ fn run() -> Result<i32, Box<dyn Error>> {
         }
 
         let setup = extracted.join("setup.cmd");
-        if !setup.is_file() {
+        if setup.is_symlink() || !setup.is_file() {
             return Err(format!("release payload did not contain setup.cmd: {}", setup.display()).into());
         }
         // Avoid passing a quoted temporary path through `cmd /C`: Windows
         // command parsing differs between `Command` and `cmd.exe` for paths
         // containing spaces. Running from the extracted directory lets the
         // batch file resolve `%~dp0` itself and keeps the command literal.
-        let install = Command::new("cmd.exe")
+        let command = system_binary(&["System32", "cmd.exe"])?;
+        let install = Command::new(command)
             .current_dir(&extracted)
             .args(["/D", "/S", "/C", "setup.cmd"])
             .status()?;
