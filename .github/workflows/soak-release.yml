@@ -1,0 +1,48 @@
+name: Release / Soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Expected source commit SHA (required for PR evidence)"
+        required: false
+        type: string
+  schedule:
+    - cron: "17 3 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release_soak:
+    name: Release/Soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Verify exact source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$EXPECTED_SHA" ]]; then
+            echo "expected_sha=$EXPECTED_SHA actual_sha=$actual_sha" >&2
+            exit 1
+          fi
+          echo "Release/Soak source SHA: $actual_sha"
+      - name: Run bounded release rehearsal
+        run: python tests/soak/runner.py --release-evidence --output tests/soak/release-evidence.json
+      - name: Run chaos assertions
+        run: python -m unittest discover -s tests/chaos -p 'test_*.py'
