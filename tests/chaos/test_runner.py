@@ -80,7 +80,7 @@ class SoakRunnerTests(unittest.TestCase):
             root = Path(directory) / "工作区 with spaces"
             evidence = SoakRunner(root, scenario).run()
             self.assertTrue((root / "soak-state.json").is_file())
-            self.assertEqual(Path(evidence.state_path), root / "soak-state.json")
+            self.assertTrue(Path(evidence.state_path).samefile(root / "soak-state.json"))
 
     def test_release_cli_profile_emits_reproducible_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
