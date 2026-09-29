@@ -29,6 +29,11 @@ def pr(data: dict, main_sha: str) -> PRSnapshot:
 
 
 class WatchdogTests(unittest.TestCase):
+    def test_watchdog_workflow_uses_an_active_repository_token_expression(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "watchdog.yml").read_text(encoding="utf-8")
+        self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
+        self.assertNotIn(r"GH_TOKEN: \${{ github.token }}", workflow)
+
     def test_healthy_snapshot_has_no_warning(self) -> None:
         data = load("healthy.json")
         self.assertEqual(classify_snapshot(prs=[pr(data["prs"][0], data["main_sha"])], commits=[], main_protected=True, now=NOW), [])
