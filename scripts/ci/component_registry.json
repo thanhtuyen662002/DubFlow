@@ -524,6 +524,26 @@
       ]
     },
     {
+      "id": "tts-multivoice",
+      "roots": [
+        "engine/dubflow/tts/casting",
+        "engine/dubflow/tts/duration",
+        "tests/tts_multivoice"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/tts_multivoice",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
