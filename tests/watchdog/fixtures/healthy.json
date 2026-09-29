@@ -1,0 +1,15 @@
+{
+  "main_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "main_protected": true,
+  "prs": [
+    {
+      "number": 42,
+      "title": "healthy",
+      "body": "DUBFLOW_PR_V1\nIssue: #70\nLease-Owner: agent\nLease-Heartbeat: 2026-09-29T02:59:00+00:00\nTested-Base-SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nConflict-Domains: desktop-review\nExpected-Paths: apps/desktop/src/features/review/**",
+      "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "checks": [{"name": "governance", "status": "completed", "conclusion": "success"}]
+    }
+  ],
+  "commits": []
+}

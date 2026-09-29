@@ -507,6 +507,26 @@
       ]
     },
     {
+      "id": "governance-watchdog",
+      "roots": [
+        ".github/workflows/watchdog.yml",
+        "scripts/watchdog",
+        "tests/watchdog"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/watchdog",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "render-export",
       "roots": [
         "contracts/export",
