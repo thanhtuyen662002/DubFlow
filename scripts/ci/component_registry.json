@@ -523,6 +523,21 @@
       ]
     },
     {
+      "id": "review-center",
+      "roots": [
+        "contracts/review",
+        "apps/desktop/src/features/review",
+        "tests/review"
+      ],
+      "commands": [
+        [
+          "node",
+          "--experimental-strip-types",
+      "tests/review/review.test.mjs"
+        ]
+      ]
+    },
+    {
       "id": "benchmark-harness",
       "roots": [
         "fixtures/catalog",
