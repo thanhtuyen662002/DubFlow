@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/characters/schema-v1.json",
+  "title": "DubFlow visual character and active speaker association v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "tracks", "associations", "benchmark"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "job_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "tracks": {"type": "array", "items": {"$ref": "#/$defs/track"}},
+    "associations": {"type": "array", "items": {"$ref": "#/$defs/association"}},
+    "benchmark": {"type": "object", "additionalProperties": false, "required": ["identity_switches", "active_speaker_accuracy", "offscreen_precision", "association_accuracy", "latency_ms", "peak_memory_bytes"], "properties": {"identity_switches": {"type": "integer", "minimum": 0}, "active_speaker_accuracy": {"type": "string"}, "offscreen_precision": {"type": "string"}, "association_accuracy": {"type": "string"}, "latency_ms": {"type": "integer", "minimum": 0}, "peak_memory_bytes": {"type": "integer", "minimum": 0}}}
+  },
+  "$defs": {
+    "ticks": {"type": "string", "pattern": "^(0|-?[1-9][0-9]*)$", "maxLength": 20},
+    "bbox": {"type": "object", "additionalProperties": false, "required": ["x", "y", "width", "height"], "properties": {"x": {"type": "integer", "minimum": 0}, "y": {"type": "integer", "minimum": 0}, "width": {"type": "integer", "minimum": 1}, "height": {"type": "integer", "minimum": 1}}},
+    "track": {"type": "object", "additionalProperties": false, "required": ["track_id", "scene_id", "actor_group_id", "segments"], "properties": {"track_id": {"type": "string", "pattern": "^char-[0-9a-f]{16}$"}, "scene_id": {"type": "string", "minLength": 1, "maxLength": 128}, "actor_group_id": {"type": ["string", "null"], "maxLength": 128}, "segments": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["frame_index", "start_ticks", "end_ticks", "bbox", "lip_activity", "confidence"], "properties": {"frame_index": {"type": "integer", "minimum": 0}, "start_ticks": {"$ref": "#/$defs/ticks"}, "end_ticks": {"$ref": "#/$defs/ticks"}, "bbox": {"$ref": "#/$defs/bbox"}, "lip_activity": {"type": "string"}, "confidence": {"type": "string"}}}}}},
+    "association": {"type": "object", "additionalProperties": false, "required": ["audio_cluster_id", "start_ticks", "end_ticks", "visual_track_id", "status", "confidence", "fallback_audio_cluster_id", "reason"], "properties": {"audio_cluster_id": {"type": "string", "minLength": 1, "maxLength": 128}, "start_ticks": {"$ref": "#/$defs/ticks"}, "end_ticks": {"$ref": "#/$defs/ticks"}, "visual_track_id": {"type": ["string", "null"]}, "status": {"enum": ["visible", "offscreen", "unresolved"]}, "confidence": {"type": "string"}, "fallback_audio_cluster_id": {"type": ["string", "null"]}, "reason": {"type": "string", "minLength": 1, "maxLength": 256}}}
+  }
+}
