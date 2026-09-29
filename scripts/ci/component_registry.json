@@ -466,6 +466,26 @@
       ]
     },
     {
+      "id": "benchmark-harness",
+      "roots": [
+        "fixtures/catalog",
+        "models/benchmark",
+        "tests/benchmark_harness"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/benchmark_harness",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "render-export",
       "roots": [
         "contracts/export",

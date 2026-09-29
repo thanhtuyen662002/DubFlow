@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "catalog_id": "dubflow-core-media-v1",
+  "fixtures": [
+    {
+      "fixture_id": "landscape-cfr-dialogue",
+      "asset": {
+        "kind": "generated",
+        "path": "fixtures/generated/landscape-cfr-dialogue.json",
+        "sha256": "sha256:af112fc4918c5c8753f58c3abefc8e74abbb8169624f94fc689d8d1abbf16cea",
+        "size_bytes": "60"
+      },
+      "geometry": {
+        "width": 1920,
+        "height": 1080,
+        "rotation_degrees": 0
+      },
+      "timeline": {
+        "time_base": {
+          "numerator": "1",
+          "denominator": "90000"
+        },
+        "duration_ticks": "900000",
+        "pts_start_ticks": "0",
+        "variable_frame_rate": false
+      },
+      "annotations": {
+        "text_cases": [
+          "dialogue"
+        ],
+        "speaker_cases": []
+      }
+    },
+    {
+      "fixture_id": "portrait-rotation",
+      "asset": {
+        "kind": "generated",
+        "path": "fixtures/generated/portrait-rotation.json",
+        "sha256": "sha256:fa3275bba5142090b594023ac1fe54d62f6b3fbe3332f1bea1d9166666849d6c",
+        "size_bytes": "55"
+      },
+      "geometry": {
+        "width": 1080,
+        "height": 1920,
+        "rotation_degrees": 90
+      },
+      "timeline": {
+        "time_base": {
+          "numerator": "1",
+          "denominator": "90000"
+        },
+        "duration_ticks": "810000",
+        "pts_start_ticks": "0",
+        "variable_frame_rate": false
+      },
+      "annotations": {
+        "text_cases": [
+          "dialogue",
+          "multi_text"
+        ],
+        "speaker_cases": []
+      }
+    },
+    {
+      "fixture_id": "vfr-nonzero-pts",
+      "asset": {
+        "kind": "generated",
+        "path": "fixtures/generated/vfr-nonzero-pts.json",
+        "sha256": "sha256:8b93d057168bcd577ee0a076d77df13f4b6cec3b0d63ffce4d1423398af4e876",
+        "size_bytes": "53"
+      },
+      "geometry": {
+        "width": 1920,
+        "height": 1080,
+        "rotation_degrees": 0
+      },
+      "timeline": {
+        "time_base": {
+          "numerator": "1",
+          "denominator": "90000"
+        },
+        "duration_ticks": "270270",
+        "pts_start_ticks": "4500",
+        "variable_frame_rate": true,
+        "frame_durations_ticks": [
+          "3003",
+          "3003",
+          "6006",
+          "3003",
+          "4504"
+        ]
+      },
+      "annotations": {
+        "text_cases": [
+          "dialogue"
+        ],
+        "speaker_cases": []
+      }
+    },
+    {
+      "fixture_id": "multi-text-roles",
+      "asset": {
+        "kind": "generated",
+        "path": "fixtures/generated/multi-text-roles.json",
+        "sha256": "sha256:7b17183d7479adcbc207cdc4f3f96109984a621074eb660612696f22b2c2ca6c",
+        "size_bytes": "54"
+      },
+      "geometry": {
+        "width": 1280,
+        "height": 720,
+        "rotation_degrees": 0
+      },
+      "timeline": {
+        "time_base": {
+          "numerator": "1",
+          "denominator": "1000"
+        },
+        "duration_ticks": "120000",
+        "pts_start_ticks": "0",
+        "variable_frame_rate": false
+      },
+      "annotations": {
+        "text_cases": [
+          "dialogue",
+          "watermark",
+          "signage",
+          "danmaku",
+          "multi_text"
+        ],
+        "speaker_cases": []
+      }
+    },
+    {
+      "fixture_id": "vertical-diagonal-text",
+      "asset": {
+        "kind": "generated",
+        "path": "fixtures/generated/vertical-diagonal-text.json",
+        "sha256": "sha256:63c393356fe1623b8024afb0dd391ade914d7dbd16c6d852473a74fee3deab9a",
+        "size_bytes": "60"
+      },
+      "geometry": {
+        "width": 1080,
+        "height": 1920,
+        "rotation_degrees": 0
+      },
+      "timeline": {
+        "time_base": {
+          "numerator": "1",
+          "denominator": "1000"
+        },
+        "duration_ticks": "60000",
+        "pts_start_ticks": "0",
+        "variable_frame_rate": false
+      },
+      "annotations": {
+        "text_cases": [
+          "dialogue",
+          "vertical",
+          "diagonal"
+        ],
+        "speaker_cases": []
+      }
+    },
+    {
+      "fixture_id": "offscreen-narrator",
+      "asset": {
+        "kind": "generated",
+        "path": "fixtures/generated/offscreen-narrator.json",
+        "sha256": "sha256:b516d89f131f3ce02435382721bafe0abf2f8eedb915439a55a0823ec7adfe35",
+        "size_bytes": "56"
+      },
+      "geometry": {
+        "width": 1920,
+        "height": 1080,
+        "rotation_degrees": 0
+      },
+      "timeline": {
+        "time_base": {
+          "numerator": "1",
+          "denominator": "90000"
+        },
+        "duration_ticks": "450000",
+        "pts_start_ticks": "0",
+        "variable_frame_rate": false
+      },
+      "annotations": {
+        "text_cases": [
+          "dialogue"
+        ],
+        "speaker_cases": [
+          "offscreen",
+          "narrator"
+        ]
+      }
+    },
+    {
+      "fixture_id": "overlapping-speakers",
+      "asset": {
+        "kind": "generated",
+        "path": "fixtures/generated/overlapping-speakers.json",
+        "sha256": "sha256:f9465d8441b9ae4c0bd3e1a0caf9a1420799f5cf78c6444e3287113ac0a4afec",
+        "size_bytes": "58"
+      },
+      "geometry": {
+        "width": 1920,
+        "height": 1080,
+        "rotation_degrees": 0
+      },
+      "timeline": {
+        "time_base": {
+          "numerator": "1",
+          "denominator": "48000"
+        },
+        "duration_ticks": "384000",
+        "pts_start_ticks": "0",
+        "variable_frame_rate": false
+      },
+      "annotations": {
+        "text_cases": [
+          "dialogue"
+        ],
+        "speaker_cases": [
+          "overlap"
+        ]
+      }
+    },
+    {
+      "fixture_id": "same-actor-multiple-characters",
+      "asset": {
+        "kind": "external",
+        "path": "fixtures/external/animation-character-pack.mp4",
+        "fetch_uri": "https://fixtures.invalid/dubflow/animation-character-pack-v1.mp4",
+        "sha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "size_bytes": "734003200"
+      },
+      "geometry": {
+        "width": 3840,
+        "height": 2160,
+        "rotation_degrees": 0
+      },
+      "timeline": {
+        "time_base": {
+          "numerator": "1",
+          "denominator": "90000"
+        },
+        "duration_ticks": "5400000",
+        "pts_start_ticks": "0",
+        "variable_frame_rate": true
+      },
+      "annotations": {
+        "text_cases": [
+          "dialogue",
+          "multi_text"
+        ],
+        "speaker_cases": [
+          "same_actor_multiple_characters"
+        ]
+      }
+    }
+  ]
+}
