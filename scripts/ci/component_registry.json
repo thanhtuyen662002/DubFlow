@@ -665,6 +665,26 @@
       ]
     },
     {
+      "id": "release-soak",
+      "roots": [
+        "tests/soak",
+        "tests/chaos",
+        ".github/workflows/soak-release.yml"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/chaos",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "capcut-import-pack",
       "roots": [
         "contracts/capcut/import_pack",
