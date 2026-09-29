@@ -146,6 +146,7 @@ class ReleaseBundleTests(unittest.TestCase):
         workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn('include_bytes!(env!("DUBFLOW_PAYLOAD"))', source)
         self.assertIn("Expand-Archive", source)
+        self.assertIn("drop(output)", source)
         self.assertNotIn("requireAdministrator", source)
         self.assertNotIn("7z.sfx", workflow)
         self.assertIn("target-feature=+crt-static", workflow)
