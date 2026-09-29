@@ -466,6 +466,25 @@
       ]
     },
     {
+      "id": "bilibili-source",
+      "roots": [
+        "engine/dubflow/download/bilibili",
+        "tests/source_bilibili"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/source_bilibili",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
