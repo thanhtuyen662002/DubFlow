@@ -486,6 +486,27 @@
       ]
     },
     {
+      "id": "qc-provenance",
+      "roots": [
+        "contracts/qc",
+        "engine/dubflow/qc",
+        "models/benchmark/calibration",
+        "tests/qc"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/qc",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "render-export",
       "roots": [
         "contracts/export",

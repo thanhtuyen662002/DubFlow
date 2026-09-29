@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/qc/schema-v1.json",
+  "title": "DubFlow provenance-aware quality report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "report_id", "status", "provenance", "summary", "findings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "report_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+    "status": {"enum": ["PASS", "WARN", "FAIL", "STALE"]},
+    "provenance": {"$ref": "#/$defs/provenance"},
+    "summary": {"$ref": "#/$defs/summary"},
+    "findings": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/finding"}}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_version", "contract_version", "upstream_hashes", "config_hash", "model_id", "model_version", "calibration_id", "threshold_set_hash"],
+      "properties": {
+        "producer_version": {"type": "string", "minLength": 1, "maxLength": 256},
+        "contract_version": {"const": "qc-v1"},
+        "upstream_hashes": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/hash"}},
+        "config_hash": {"$ref": "#/$defs/hash"},
+        "model_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "model_version": {"type": "string", "minLength": 1, "maxLength": 256},
+        "calibration_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "threshold_set_hash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_count", "pass_count", "warn_count", "fail_count", "low_confidence_count"],
+      "properties": {
+        "item_count": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "pass_count": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "warn_count": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "fail_count": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "low_confidence_count": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_id", "scope", "code", "severity", "confidence", "message"],
+      "properties": {
+        "finding_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "scope": {"type": "string", "minLength": 1, "maxLength": 256},
+        "code": {"type": "string", "minLength": 1, "maxLength": 128},
+        "severity": {"enum": ["INFO", "WARN", "FAIL"]},
+        "confidence": {"type": "string", "pattern": "^(0|0\\.[0-9]+|1(?:\\.0+)?)$", "maxLength": 32},
+        "message": {"type": "string", "minLength": 1, "maxLength": 4096}
+      }
+    }
+  }
+}
