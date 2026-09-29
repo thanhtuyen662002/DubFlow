@@ -565,6 +565,26 @@
       ]
     },
     {
+      "id": "text-orientation",
+      "roots": [
+        "engine/dubflow/ocr/orientation",
+        "engine/dubflow/text_fusion/animated",
+        "tests/text_orientation"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/text_orientation",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "tests/source_queue"
