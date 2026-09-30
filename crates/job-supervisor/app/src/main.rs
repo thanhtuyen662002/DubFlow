@@ -5,15 +5,25 @@
 //! connection and the Python child process.  Python emits only the versioned
 //! worker protocol; all durable mutations happen in this process.
 
+use dubflow_job_liveness::{
+    classify as classify_liveness, DurableSnapshot, JobState as LivenessJobState,
+    Observation as LivenessObservation, RetryAction, SchedulerState, WorkerSignal,
+};
 use dubflow_job_state::{ArtifactState, DurableStore, JobStatus, StageStatus, StateError};
+use dubflow_job_storage::{
+    FilesystemProbe, RootConfig, RootKind, RootPolicy, StorageTopology, TopologyConfig,
+};
+use dubflow_updater::{Healthcheck, MigrationHooks, PackageVerifier, UpdateError, Updater};
 use dubflow_worker_protocol::{
     Envelope, MessageType, Payload, ShutdownStatus, StreamValidator, MAX_LINE_BYTES,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -29,6 +39,8 @@ const STAGE_KIND: &str = "production-local-file";
 const MAX_ATTEMPTS: u8 = 3;
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(35);
 const STDERR_LIMIT: usize = 64 * 1024;
+const STORAGE_MIN_FREE_BYTES: u64 = 32 * 1024 * 1024;
+const STORAGE_MIN_FREE_RATIO_PPM: u32 = 10_000;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 type SupervisorResult<T> = Result<T, SupervisorError>;
@@ -94,6 +106,7 @@ struct RuntimePaths {
     ffprobe: PathBuf,
     model_root: PathBuf,
     db: PathBuf,
+    storage_report: Value,
 }
 
 impl RuntimePaths {
@@ -223,6 +236,8 @@ impl RuntimePaths {
         if let Some(parent) = db.parent() {
             fs::create_dir_all(parent)?;
         }
+        let storage_report = inspect_storage(&data_root, &model_candidate)?;
+        recover_update_state(&root)?;
         Ok(Self {
             root,
             app_root,
@@ -232,8 +247,178 @@ impl RuntimePaths {
             ffprobe,
             model_root,
             db,
+            storage_report,
         })
     }
+}
+
+/// Build the six-root topology owned by the supervisor before a job is
+/// admitted. Control/checkpoint state deliberately lives below the app data
+/// root and remains independent from user media/output paths. The report is
+/// emitted in the ready/status envelope so the desktop can explain a paused
+/// root instead of presenting a generic worker failure.
+fn inspect_storage(data_root: &Path, model_root: &Path) -> SupervisorResult<Value> {
+    let roots = [
+        (RootKind::Control, data_root.join("control"), true),
+        (RootKind::Source, data_root.join("source"), true),
+        (RootKind::Output, data_root.join("output"), true),
+        (RootKind::Model, model_root.to_path_buf(), false),
+        (RootKind::Cache, data_root.join("cache"), false),
+        (RootKind::Temp, data_root.join("temp"), false),
+    ];
+    for (_, path, _) in &roots {
+        fs::create_dir_all(path)?;
+    }
+    let mut volume_hasher = DefaultHasher::new();
+    data_root.to_string_lossy().hash(&mut volume_hasher);
+    let volume_id = format!("dubflow-volume-{:016x}", volume_hasher.finish());
+    for (_, path, _) in &roots {
+        let marker = path.join(".dubflow-volume-id");
+        if !marker.exists() {
+            let temporary = marker.with_extension("tmp");
+            fs::write(&temporary, format!("{volume_id}\n"))?;
+            match fs::rename(&temporary, &marker) {
+                Ok(()) => {}
+                Err(_error) if marker.exists() => {
+                    let _ = fs::remove_file(&temporary);
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&temporary);
+                    return Err(SupervisorError::Io(error));
+                }
+            }
+        }
+    }
+    let policy = RootPolicy::new(STORAGE_MIN_FREE_BYTES, STORAGE_MIN_FREE_RATIO_PPM)
+        .map_err(|error| SupervisorError::Invalid(format!("storage policy is invalid: {error}")))?;
+    let configs = roots
+        .iter()
+        .map(|(kind, path, required)| {
+            RootConfig::new(*kind, path, *required, policy).map_err(|error| {
+                SupervisorError::Invalid(format!("storage root is invalid: {error}"))
+            })
+        })
+        .collect::<SupervisorResult<Vec<_>>>()?;
+    let topology = StorageTopology::new(TopologyConfig::new(configs).map_err(|error| {
+        SupervisorError::Invalid(format!("storage topology is invalid: {error}"))
+    })?);
+    let report = topology
+        .inspect(&FilesystemProbe, now_ms())
+        .map_err(|error| {
+            SupervisorError::Invalid(format!("storage health check failed: {error}"))
+        })?;
+    let roots = report
+        .roots()
+        .map(|root| {
+            json!({
+                "kind": root.kind.as_str(),
+                "path": root.path,
+                "state": root.state.as_str(),
+                "usable": root.is_usable(),
+                "impact": root.impact().as_str(),
+                "volume_id": root.volume_id,
+                "volume_identity_source": "app-marker",
+                "available_bytes": root.space.map(|space| space.available_bytes.to_string()),
+                "total_bytes": root.space.map(|space| space.total_bytes.to_string()),
+                "required": root.required,
+                "generation": root.generation,
+                "probe_error": root.probe_error,
+            })
+        })
+        .collect::<Vec<_>>();
+    let blocking = report
+        .roots()
+        .filter(|root| root.required && !root.is_usable())
+        .map(|root| format!("{}:{}", root.kind.as_str(), root.state.as_str()))
+        .collect::<Vec<_>>();
+    if !blocking.is_empty() {
+        return Err(SupervisorError::Invalid(format!(
+            "required storage roots are unavailable: {}",
+            blocking.join(", ")
+        )));
+    }
+    Ok(json!({
+        "schema_version": 1,
+        "generation": report.generation,
+        "roots": roots,
+    }))
+}
+
+struct RecoveryVerifier;
+impl PackageVerifier for RecoveryVerifier {
+    fn verify(&self, _package: &dubflow_updater::UpdatePackage) -> Result<(), UpdateError> {
+        Ok(())
+    }
+}
+
+struct RecoveryHealthcheck;
+impl Healthcheck for RecoveryHealthcheck {
+    fn check(&self, version_root: &Path) -> Result<(), UpdateError> {
+        if version_root.join("app").is_dir() && version_root.join("release-manifest.json").is_file()
+        {
+            Ok(())
+        } else {
+            Err(UpdateError::Healthcheck(
+                "candidate is missing the app payload or release manifest".into(),
+            ))
+        }
+    }
+}
+
+struct RecoveryMigrations;
+impl MigrationHooks for RecoveryMigrations {
+    fn backup(&self, _root: &Path) -> Result<(), UpdateError> {
+        Ok(())
+    }
+    fn prepare(&self, _root: &Path, _from: Option<&str>, _to: &str) -> Result<(), UpdateError> {
+        Ok(())
+    }
+    fn validate(&self, _root: &Path, _to: &str) -> Result<(), UpdateError> {
+        Ok(())
+    }
+    fn commit(&self, _root: &Path, _to: &str) -> Result<(), UpdateError> {
+        Ok(())
+    }
+    fn rollback(&self, _root: &Path, _from: Option<&str>, _to: &str) {}
+}
+
+fn recover_update_state(root: &Path) -> SupervisorResult<()> {
+    let updater = Updater::new(
+        root,
+        RecoveryVerifier,
+        RecoveryHealthcheck,
+        RecoveryMigrations,
+    );
+    updater
+        .recover()
+        .map_err(|error| SupervisorError::Invalid(format!("update recovery failed: {error:?}")))
+}
+
+fn preflight_output_root(path: &Path) -> SupervisorResult<()> {
+    fs::create_dir_all(path)?;
+    let available = fs2::available_space(path).map_err(|error| {
+        SupervisorError::Invalid(format!("unable to inspect output free space: {error}"))
+    })?;
+    if available < STORAGE_MIN_FREE_BYTES {
+        return Err(SupervisorError::Invalid(format!(
+            "output root has only {available} bytes available; at least {STORAGE_MIN_FREE_BYTES} are required"
+        )));
+    }
+    let token = format!(
+        ".dubflow-output-probe-{}",
+        ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let partial = path.join(format!("{token}.partial"));
+    let published = path.join(&token);
+    fs::write(&partial, b"dubflow-output-health")?;
+    fs::rename(&partial, &published).map_err(|error| {
+        let _ = fs::remove_file(&partial);
+        SupervisorError::Invalid(format!(
+            "output root cannot atomically publish files: {error}"
+        ))
+    })?;
+    let _ = fs::remove_file(published);
+    Ok(())
 }
 
 fn first_existing(candidates: &[PathBuf]) -> Option<PathBuf> {
@@ -590,6 +775,7 @@ fn run() -> SupervisorResult<()> {
             "schema_version": 1,
             "runtime_root": runtime.root.display().to_string(),
             "recovered_stages": recovered,
+            "storage": runtime.storage_report,
         }),
     )?;
 
@@ -837,6 +1023,7 @@ fn run_one_shot(
         Some(enable_dubbing),
         Some(burn_in_subtitles),
     )?;
+    preflight_output_root(&spec.output_dir)?;
     let final_status_path = status_path.unwrap_or_else(|| {
         data_root
             .join("control")
@@ -1841,6 +2028,10 @@ fn run_worker_attempt(
     let mut worker_failure = None;
     let started = Instant::now();
     let mut last_message_at = Instant::now();
+    let mut last_checkpoint_id: Option<String> = None;
+    let mut completed_units = 0_u64;
+    let mut total_units = None;
+    let mut heartbeat_sequence = 0_u64;
     loop {
         match line_rx.recv_timeout(Duration::from_millis(250)) {
             Ok(Ok(Some(line))) => {
@@ -1871,6 +2062,9 @@ fn run_worker_attempt(
                         units_done,
                         units_total,
                     } => {
+                        heartbeat_sequence = heartbeat_sequence.saturating_add(1);
+                        completed_units = units_done.unwrap_or(completed_units);
+                        total_units = units_total.or(total_units);
                         let _ = tx.send(InternalMessage::Output(json!({"event":"progress", "job_id":spec.job_id, "stage_id":STAGE_ID, "fraction":fraction, "detail":detail, "units_done":units_done, "units_total":units_total, "attempt":attempt})));
                     }
                     Payload::Checkpoint {
@@ -1878,6 +2072,8 @@ fn run_worker_attempt(
                         reusable,
                         artifact_hash,
                     } => {
+                        heartbeat_sequence = heartbeat_sequence.saturating_add(1);
+                        last_checkpoint_id = Some(checkpoint_id.clone());
                         if let Err(error) = store.record_checkpoint(
                             &spec.job_id,
                             STAGE_ID,
@@ -1938,17 +2134,63 @@ fn run_worker_attempt(
                 if last_message_at.elapsed() < HEARTBEAT_TIMEOUT {
                     continue;
                 }
+                let condition = format!("heartbeat-timeout-attempt-{attempt}");
+                let previous_condition = attempt
+                    .checked_sub(1)
+                    .map(|previous| format!("heartbeat-timeout-attempt-{previous}"));
+                let observation = LivenessObservation {
+                    durable: DurableSnapshot {
+                        checkpoint_id: last_checkpoint_id.clone(),
+                        completed_units,
+                        total_units,
+                        attempt: u32::from(attempt.saturating_sub(1)),
+                        max_attempts: u32::from(MAX_ATTEMPTS),
+                        condition_fingerprint: previous_condition,
+                        previous_state: LivenessJobState::Running,
+                    },
+                    worker: WorkerSignal::NoHeartbeat,
+                    scheduler: SchedulerState::Running,
+                    external_wait: None,
+                    materially_changed_condition: Some(condition.clone()),
+                    resource_held: true,
+                };
+                let decision = classify_liveness(&observation).unwrap_or_else(|_| {
+                    dubflow_job_liveness::LivenessDecision {
+                        state: LivenessJobState::BlockedNeedsAction,
+                        reason: "liveness_observation_invalid",
+                        message: "Worker liveness observation is invalid; action required".into(),
+                        action: RetryAction::UseApprovedFallback,
+                        release_resource: true,
+                        checkpoint_id: last_checkpoint_id.clone(),
+                    }
+                });
+                let _ = tx.send(InternalMessage::Output(json!({
+                    "event": "liveness",
+                    "job_id": spec.job_id,
+                    "stage_id": STAGE_ID,
+                    "state": decision.state.wire_name(),
+                    "reason": decision.reason,
+                    "message": decision.message,
+                    "action": format!("{:?}", decision.action),
+                    "checkpoint_id": decision.checkpoint_id,
+                    "heartbeat_sequence": heartbeat_sequence,
+                })));
                 let _ = control.terminate();
                 let _ = child.lock().map(|mut child_guard| child_guard.wait());
                 control.clear_child();
                 let _ = stderr_thread.join();
                 return Ok(WorkerOutcome::Failed {
-                    code: "WORKER_HEARTBEAT_TIMEOUT".into(),
+                    code: if decision.state == LivenessJobState::BlockedNeedsAction {
+                        "WORKER_LIVENESS_BLOCKED".into()
+                    } else {
+                        "WORKER_HEARTBEAT_TIMEOUT".into()
+                    },
                     condition: format!(
-                        "no worker protocol message for {} seconds",
+                        "{}; no worker protocol message for {} seconds",
+                        decision.message,
                         started.elapsed().as_secs()
                     ),
-                    retryable: true,
+                    retryable: decision.action == RetryAction::RestartFromCheckpoint,
                 });
             }
             Err(RecvTimeoutError::Disconnected) => break,
@@ -2243,6 +2485,24 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written, second);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn startup_storage_report_covers_six_independent_roots_and_free_space() {
+        let root = std::env::temp_dir().join(format!(
+            "dubflow-supervisor-storage-{}-{}",
+            std::process::id(),
+            ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let report = inspect_storage(&root, &root.join("models")).unwrap();
+        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["roots"].as_array().map(Vec::len), Some(6));
+        assert!(report["roots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|root| root["usable"] == true));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
