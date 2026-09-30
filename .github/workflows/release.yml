@@ -133,7 +133,9 @@ jobs:
             '--runtime-root', $env:pythonLocation,
             '--runtime-version', '3.12.10',
             '--package-manifest-version', 'v1',
-            '--release-channel', $env:RELEASE_CHANNEL,
+            # Qualification is an unsigned rehearsal bundle. The final
+            # bundle below is the only artifact allowed to claim stable.
+            '--release-channel', 'candidate',
             '--desktop-binary', (Join-Path $PWD 'apps/desktop/src-tauri/target/release/DubFlow.exe'),
             '--require-desktop-host',
             '--supervisor-binary', (Join-Path $PWD 'crates/job-supervisor/app/target/release/dubflow-supervisor.exe'),
