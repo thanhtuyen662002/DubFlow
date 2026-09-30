@@ -207,7 +207,15 @@ impl RuntimePaths {
             ));
         }
         fs::create_dir_all(&model_candidate)?;
-        let model_root = owned_path_any(&[&root, &data_root], &model_candidate, "model root")?;
+        // Keep the verbatim/canonical path for containment above, but expose
+        // a normal Win32 path to Python model libraries.  SentencePiece and
+        // Argos Translate reject the `\\?\\` prefix even though Rust and
+        // Windows filesystem APIs accept it.
+        let model_root = external_runtime_path(owned_path_any(
+            &[&root, &data_root],
+            &model_candidate,
+            "model root",
+        )?);
         let db = db_override.unwrap_or_else(|| data_root.join("control").join("jobs.sqlite3"));
         if !db.is_absolute() {
             return Err(SupervisorError::Invalid("--db must be absolute".into()));
@@ -281,6 +289,22 @@ fn owned_path_any(roots: &[&Path], path: &Path, label: &str) -> SupervisorResult
         )));
     }
     Ok(path)
+}
+
+fn external_runtime_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        const VERBATIM_UNC_PREFIX: &str = "\\\\?\\UNC\\";
+        const VERBATIM_PREFIX: &str = "\\\\?\\";
+        let value = path.to_string_lossy();
+        if let Some(rest) = value.strip_prefix(VERBATIM_UNC_PREFIX) {
+            return PathBuf::from(format!("\\\\{rest}"));
+        }
+        if let Some(rest) = value.strip_prefix(VERBATIM_PREFIX) {
+            return PathBuf::from(rest);
+        }
+    }
+    path
 }
 
 #[derive(Debug, Deserialize)]
@@ -2208,5 +2232,18 @@ mod tests {
     fn cli_requires_an_explicit_app_root() {
         let error = parse_cli(std::iter::empty::<OsString>()).unwrap_err();
         assert!(error.to_string().contains("--root"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn model_paths_drop_verbatim_prefix_before_python_boundary() {
+        assert_eq!(
+            external_runtime_path(PathBuf::from(r"\\?\C:\DubFlow\models")),
+            PathBuf::from(r"C:\DubFlow\models")
+        );
+        assert_eq!(
+            external_runtime_path(PathBuf::from(r"\\?\UNC\server\share\models")),
+            PathBuf::from(r"\\server\share\models")
+        );
     }
 }
