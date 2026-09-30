@@ -1531,6 +1531,11 @@ fn run_worker_attempt(
         .arg("-B")
         .arg(&runtime.worker_script)
         .current_dir(&runtime.app_root)
+        // Running a script by absolute path changes Python's sys.path[0] to
+        // the worker directory.  Pin the app package root explicitly so the
+        // child cannot accidentally import a user's checkout or a system
+        // package with the same name.
+        .env("PYTHONPATH", &runtime.app_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
