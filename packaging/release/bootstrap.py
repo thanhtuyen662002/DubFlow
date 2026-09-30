@@ -9,6 +9,7 @@ only then exposed through the user launcher.
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timezone
 import json
 import os
@@ -30,6 +31,7 @@ from packaging.release.manifest import (  # noqa: E402
     hash_file,
     load_manifest,
 )
+from packaging.release.trust import RELEASE_KEY_ID, RELEASE_PUBLIC_KEY_B64  # noqa: E402
 
 
 STATE_SCHEMA_VERSION = 1
@@ -105,14 +107,20 @@ def _verify_signature_metadata(manifest: ReleaseManifest) -> None:
     if manifest.signature_algorithm not in {"none", "ed25519"}:
         raise BootstrapInstallError("SIGNATURE_ALGORITHM", "unsupported release signature algorithm")
     if manifest.signature_required:
-        # The release bundle currently has no embedded public-key trust store.
-        # Accepting a non-empty algorithm/key/value tuple would make attacker
-        # supplied metadata look signed, so stable installation fails closed
-        # until a real verifier is wired into this boundary.
-        raise BootstrapInstallError(
-            "SIGNATURE_UNSUPPORTED",
-            "cryptographic release signature verification is not configured",
-        )
+        if manifest.signature_algorithm != "ed25519" or manifest.signature_key_id != RELEASE_KEY_ID:
+            raise BootstrapInstallError("SIGNATURE_TRUST", "release signature key is not trusted")
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+            public_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(RELEASE_PUBLIC_KEY_B64, validate=True))
+            signature = base64.b64decode(manifest.signature_value, validate=True)
+            value = manifest.to_dict()
+            security = dict(value["security"])
+            security["value"] = ""
+            value["security"] = security
+            canonical = (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+            public_key.verify(signature, canonical)
+        except Exception as error:
+            raise BootstrapInstallError("SIGNATURE_INVALID", "release manifest signature verification failed") from error
 
 
 def _expected_paths(manifest: ReleaseManifest) -> set[str]:
@@ -367,12 +375,26 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
         destination / "current.json",
         (json.dumps(pointer, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
     )
+    qualification_path = version_path / "release-status.json"
+    production_qualified = False
+    try:
+        qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
+        production_qualified = bool(
+            isinstance(qualification, dict)
+            and qualification.get("schema_version") == 1
+            and qualification.get("source_sha") == manifest.source_sha
+            and qualification.get("version") == manifest.version
+            and qualification.get("release_channel") == manifest.release_channel
+            and qualification.get("production_qualified") is True
+        )
+    except (OSError, json.JSONDecodeError):
+        raise BootstrapInstallError("STATUS_INVALID", "installed release qualification status is unreadable")
     state = {
         "schema_version": STATE_SCHEMA_VERSION,
         "current_version": manifest.version,
         "manifest_sha256": manifest_hash,
         "release_channel": manifest.release_channel,
-        "production_qualified": False,
+        "production_qualified": production_qualified,
     }
     _atomic_write(
         destination / "install-state.json",
@@ -385,7 +407,7 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
         "install_root": str(destination),
         "manifest_sha256": manifest_hash,
         "release_channel": manifest.release_channel,
-        "production_qualified": False,
+        "production_qualified": production_qualified,
     }
 
 

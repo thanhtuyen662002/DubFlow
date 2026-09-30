@@ -89,6 +89,7 @@ class ReleaseBundleTests(unittest.TestCase):
             self.assertIn('"%BUNDLE_ROOT%\\runtime\\python.exe" -B', setup)
             self.assertIn('"%BUNDLE_ROOT%\\app\\packaging\\release\\bootstrap.py"', setup)
             self.assertIn('--bundle-root "%BUNDLE_ROOT%" --install-root "%LOCALAPPDATA%\\DubFlow"', setup)
+            self.assertIn('start "" /b "%LOCALAPPDATA%\\DubFlow\\DubFlow.cmd"', setup)
             self.assertNotIn('--bundle-root "%~dp0%"', setup)
 
     def test_install_verifies_then_activates_versioned_pointer_and_is_idempotent(self) -> None:
@@ -215,7 +216,7 @@ class ReleaseBundleTests(unittest.TestCase):
                 "value": "forged-signature",
             }
             manifest_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-            with self.assertRaisesRegex(BootstrapInstallError, "SIGNATURE_UNSUPPORTED"):
+            with self.assertRaisesRegex(BootstrapInstallError, "SIGNATURE_TRUST"):
                 install_bundle(result.staging_dir, root / "install")
 
     def test_unmanifested_file_is_rejected_before_destination_mutation(self) -> None:

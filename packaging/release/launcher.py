@@ -82,6 +82,9 @@ def self_check() -> dict[str, object]:
     evidence = status.get("external_evidence")
     if not isinstance(evidence, dict):
         return {"ready": False, "code": "STATUS_INVALID", "message": "release status external evidence is missing"}
+    scope = status.get("qualification_scope")
+    if not isinstance(scope, str) or not scope:
+        return {"ready": False, "code": "STATUS_INVALID", "message": "release qualification scope is missing"}
     return {
         "ready": True,
         "version": manifest.version,
@@ -89,7 +92,12 @@ def self_check() -> dict[str, object]:
         "production_qualified": bool(status.get("production_qualified", False)),
         "clean_machine": evidence.get("clean_machine", "unknown"),
         "gpu_hardware": evidence.get("gpu_hardware", "unknown"),
-        "message": "Release bundle is installed; production qualification remains external to this deterministic self-check.",
+        "qualification_scope": scope,
+        "message": (
+            f"Production-qualified scope: {scope}."
+            if status.get("production_qualified")
+            else "Release bundle is installed; production qualification is not claimed by this build."
+        ),
     }
 
 

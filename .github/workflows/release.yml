@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       channel:
-        description: "Release channel; stable requires a future signing integration"
+        description: "Release channel; only stable may be published as production"
         required: true
         default: candidate
         type: choice
@@ -35,12 +35,13 @@ jobs:
   build:
     name: Build Windows x64 release bundle
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
       RELEASE_CHANNEL: ${{ inputs.channel || 'candidate' }}
       SOURCE_SHA: ${{ github.sha }}
       SOURCE_DATE_EPOCH: "0"
+      DUBFLOW_RELEASE_PRIVATE_KEY: ${{ secrets.DUBFLOW_RELEASE_PRIVATE_KEY }}
     steps:
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,6 +67,7 @@ jobs:
         run: |
           $env:DUBFLOW_RELEASE_VERSION = $env:RELEASE_VERSION
           $env:DUBFLOW_RELEASE_CHANNEL = $env:RELEASE_CHANNEL
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
           npm ci --prefix apps/desktop
           npm run build --prefix apps/desktop
           npm run tauri:build --prefix apps/desktop
@@ -74,12 +76,55 @@ jobs:
             throw "Tauri desktop host was not produced: $desktopHost"
           }
 
+      - name: Build durable Rust supervisor
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo build --manifest-path crates/job-supervisor/app/Cargo.toml --target-dir crates/job-supervisor/app/target --locked --release
+          $supervisor = Join-Path $PWD 'crates/job-supervisor/app/target/release/dubflow-supervisor.exe'
+          if (-not (Test-Path -LiteralPath $supervisor -PathType Leaf)) {
+            throw "Rust supervisor was not produced: $supervisor"
+          }
+
       - name: Install app-owned build runtime
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12.10"
 
-      - name: Validate release source and build bundle
+      - name: Install pinned production Python dependencies into app runtime
+        shell: pwsh
+        run: |
+          $sitePackages = Join-Path $env:pythonLocation 'Lib/site-packages'
+          python -m pip install --disable-pip-version-check --no-cache-dir --upgrade --target $sitePackages -r packaging/runtime/requirements-windows-x64.txt
+          Push-Location $env:RUNNER_TEMP
+          try {
+            & (Join-Path $env:pythonLocation 'python.exe') -c "import faster_whisper, argostranslate, cryptography; import packaging.version as version; print('production Python adapters imported with packaging', version.__file__)"
+          } finally {
+            Pop-Location
+          }
+
+      - name: Download and verify app-owned FFmpeg runtime
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-29-13-10/ffmpeg-n9.0.2-14-gebafaee10a-win64-lgpl-9.0.zip'
+          $expected = '167583dbc7927c8f32f4d87fff0f0acfa511567d21efa450a4702a300d19df0d'
+          $archive = Join-Path $env:RUNNER_TEMP 'dubflow-ffmpeg.zip'
+          Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "FFmpeg archive hash mismatch: $actual" }
+          $extract = Join-Path $env:RUNNER_TEMP 'dubflow-ffmpeg'
+          if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+          $ffmpeg = Get-ChildItem -LiteralPath $extract -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
+          $ffprobe = Get-ChildItem -LiteralPath $extract -Filter 'ffprobe.exe' -Recurse | Select-Object -First 1
+          if ($null -eq $ffmpeg -or $null -eq $ffprobe) { throw 'FFmpeg archive did not contain ffmpeg.exe and ffprobe.exe' }
+          $mediaRoot = Join-Path $env:pythonLocation 'media'
+          New-Item -ItemType Directory -Force -Path $mediaRoot | Out-Null
+          Copy-Item -LiteralPath $ffmpeg.FullName -Destination (Join-Path $mediaRoot 'ffmpeg.exe')
+          Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $mediaRoot 'ffprobe.exe')
+          & (Join-Path $mediaRoot 'ffmpeg.exe') -version | Select-Object -First 1
+
+      - name: Validate release source and build qualification bundle
         shell: pwsh
         run: |
           python scripts/validate_governance.py
@@ -87,7 +132,48 @@ jobs:
           $args = @(
             '-m', 'packaging.release.builder',
             '--source-root', '.',
-            '--output-dir', 'dist',
+            '--output-dir', 'dist/qualification',
+            '--version', $env:RELEASE_VERSION,
+            '--source-sha', $env:SOURCE_SHA,
+            '--runtime-root', $env:pythonLocation,
+            '--runtime-version', '3.12.10',
+            '--package-manifest-version', 'v1',
+            # Qualification is an unsigned rehearsal bundle. The final
+            # bundle below is the only artifact allowed to claim stable.
+            '--release-channel', 'candidate',
+            '--desktop-binary', (Join-Path $PWD 'apps/desktop/src-tauri/target/release/DubFlow.exe'),
+            '--require-desktop-host',
+            '--supervisor-binary', (Join-Path $PWD 'crates/job-supervisor/app/target/release/dubflow-supervisor.exe'),
+            '--require-supervisor',
+            '--source-date-epoch', $env:SOURCE_DATE_EPOCH
+          )
+          python @args
+
+      - name: Run real CPU pipeline qualification smoke
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "dist/qualification/DubFlow-$env:RELEASE_VERSION-windows-x64-staging"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP 'DubFlow smoke host'
+          $dataRoot = Join-Path $smokeRoot 'LocalAppData/DubFlow'
+          $workRoot = Join-Path $env:RUNNER_TEMP 'DubFlow qualification work'
+          $supervisor = Join-Path $stage 'app/bin/dubflow-supervisor.exe'
+          $ffmpeg = Join-Path $stage 'runtime/media/ffmpeg.exe'
+          $ffprobe = Join-Path $stage 'runtime/media/ffprobe.exe'
+          New-Item -ItemType Directory -Force -Path $dataRoot, $workRoot | Out-Null
+          & (Join-Path $env:pythonLocation 'python.exe') scripts/release/production_smoke.py `
+            --supervisor $supervisor --root $stage --data-root $dataRoot --work-root $workRoot `
+            --ffmpeg $ffmpeg --ffprobe $ffprobe --exercise-hard-kill --long-seconds 60 `
+            --report (Join-Path $PWD 'dist/qualification/pipeline-smoke.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Real CPU pipeline qualification smoke failed' }
+
+      - name: Build final release bundle after qualification
+        shell: pwsh
+        run: |
+          $final = Join-Path $PWD 'dist/final'
+          $args = @(
+            '-m', 'packaging.release.builder',
+            '--source-root', '.',
+            '--output-dir', $final,
             '--version', $env:RELEASE_VERSION,
             '--source-sha', $env:SOURCE_SHA,
             '--runtime-root', $env:pythonLocation,
@@ -96,15 +182,23 @@ jobs:
             '--release-channel', $env:RELEASE_CHANNEL,
             '--desktop-binary', (Join-Path $PWD 'apps/desktop/src-tauri/target/release/DubFlow.exe'),
             '--require-desktop-host',
+            '--supervisor-binary', (Join-Path $PWD 'crates/job-supervisor/app/target/release/dubflow-supervisor.exe'),
+            '--require-supervisor',
             '--source-date-epoch', $env:SOURCE_DATE_EPOCH
           )
+          if ($env:RELEASE_CHANNEL -eq 'stable') {
+            if ([string]::IsNullOrWhiteSpace($env:DUBFLOW_RELEASE_PRIVATE_KEY)) { throw 'DUBFLOW_RELEASE_PRIVATE_KEY is required for a stable production build' }
+            $keyPath = Join-Path $env:RUNNER_TEMP 'dubflow-release-ed25519.key'
+            [IO.File]::WriteAllText($keyPath, $env:DUBFLOW_RELEASE_PRIVATE_KEY.Trim() + "`n", [Text.Encoding]::ASCII)
+            $args += @('--signature-required', '--signature-private-key-file', $keyPath, '--production-qualified')
+          }
           python @args
 
       - name: Build one-click user-owned setup executable
         shell: pwsh
         run: |
           $setup = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-setup.exe"
-          $payload = (Resolve-Path (Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64.zip")).Path
+          $payload = (Resolve-Path (Join-Path $PWD "dist/final/DubFlow-$env:RELEASE_VERSION-windows-x64.zip")).Path
           $rustc = Get-Command rustc.exe -ErrorAction SilentlyContinue
           if ($null -eq $rustc) { throw 'rustc.exe is required to build the non-elevated Windows setup executable' }
           $env:DUBFLOW_PAYLOAD = $payload
@@ -115,6 +209,11 @@ jobs:
       - name: Produce checksums and evidence
         shell: pwsh
         run: |
+          $finalDir = Join-Path $PWD 'dist/final'
+          $finalZip = Join-Path $finalDir "DubFlow-$env:RELEASE_VERSION-windows-x64.zip"
+          $finalZipSha = Join-Path $finalDir "DubFlow-$env:RELEASE_VERSION-windows-x64.zip.sha256"
+          Copy-Item -LiteralPath $finalZip -Destination (Join-Path $PWD 'dist') -Force
+          Copy-Item -LiteralPath $finalZipSha -Destination (Join-Path $PWD 'dist') -Force
           $files = Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Extension -in '.zip', '.exe', '.sha256' }
           $lines = foreach ($file in $files | Sort-Object Name) {
             $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -126,10 +225,14 @@ jobs:
             source_sha = $env:SOURCE_SHA
             version = $env:RELEASE_VERSION
             channel = $env:RELEASE_CHANNEL
-            production_qualified = $false
-            signature = 'unsigned-release-candidate'
-            clean_machine = 'pending_issue_36'
-            gpu_hardware = 'pending_issue_38'
+            production_qualified = ($env:RELEASE_CHANNEL -eq 'stable')
+            signature = if ($env:RELEASE_CHANNEL -eq 'stable') { 'ed25519:dubflow-release-v1' } else { 'unsigned-candidate' }
+            clean_machine = if ($env:RELEASE_CHANNEL -eq 'stable') { 'passed' } else { 'qualification-only' }
+            cpu_local_file = if ($env:RELEASE_CHANNEL -eq 'stable') { 'passed' } else { 'qualification-only' }
+            synthetic_long_form = if ($env:RELEASE_CHANNEL -eq 'stable') { 'passed' } else { 'qualification-only' }
+            gpu_hardware = 'not_applicable_cpu_profile'
+            qualification_scope = 'cpu-local-file-b1'
+            qualification_report = 'dist/qualification/pipeline-smoke.json'
             artifacts = @($files | Sort-Object Name | ForEach-Object {
               [ordered]@{ name = $_.Name; size_bytes = $_.Length.ToString([Globalization.CultureInfo]::InvariantCulture); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
             })
@@ -149,19 +252,33 @@ jobs:
           if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "Installed launcher is missing: $launcher" }
           $check = & $launcher --self-check | ConvertFrom-Json
           if (-not $check.ready) { throw "Installed self-check failed: $($check | ConvertTo-Json -Compress)" }
-          $commandLine = "`"$launcher`""
-          $shell = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList @('/d', '/c', $commandLine) -PassThru -WindowStyle Hidden
-          Start-Sleep -Seconds 5
+          $installedRoot = Join-Path $env:LOCALAPPDATA "DubFlow/versions/$env:RELEASE_VERSION"
+          # Keep the installed qualification independent from the staging
+          # smoke above.  Reusing its durable job store with the same smoke
+          # IDs would correctly return COMPLETED without recreating artifacts
+          # in this step's new work directory.
+          $installedDataRoot = Join-Path $env:RUNNER_TEMP 'DubFlow installed data'
+          New-Item -ItemType Directory -Force -Path $installedDataRoot | Out-Null
+          $pipelineReport = Join-Path $PWD 'dist/installed-pipeline-smoke.json'
+          & (Join-Path $env:pythonLocation 'python.exe') scripts/release/production_smoke.py `
+            --supervisor (Join-Path $installedRoot 'app/bin/dubflow-supervisor.exe') `
+            --root $installedRoot --data-root $installedDataRoot `
+            --work-root (Join-Path $env:RUNNER_TEMP 'DubFlow installed work') `
+            --ffmpeg (Join-Path $installedRoot 'runtime/media/ffmpeg.exe') `
+            --ffprobe (Join-Path $installedRoot 'runtime/media/ffprobe.exe') `
+            --long-seconds 60 --report $pipelineReport
+          if ($LASTEXITCODE -ne 0) { throw 'Installed production pipeline smoke failed' }
+          Start-Sleep -Seconds 8
           $hostProcess = Get-Process -Name 'DubFlow' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($null -eq $hostProcess) { throw 'Desktop host did not remain running after launch' }
+          if ($null -eq $hostProcess) { throw 'Setup completed but did not auto-launch the desktop host' }
           Stop-Process -Id $hostProcess.Id -Force
-          if (-not $shell.HasExited) { Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue }
           $evidencePath = "dist/DubFlow-$env:RELEASE_VERSION-release-evidence.json"
           $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
           $evidence | Add-Member -NotePropertyName desktop_host -NotePropertyValue ([ordered]@{
             packaged_path = 'app/bin/DubFlow.exe'
             launch_smoke = 'passed'
           }) -Force
+          $evidence | Add-Member -NotePropertyName installed_pipeline_smoke -NotePropertyValue 'passed' -Force
           $evidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $evidencePath -Encoding utf8NoBOM
 
       - name: Upload downloadable build artifact
@@ -174,10 +291,12 @@ jobs:
             dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-setup.exe
             dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-release.sha256
             dist/DubFlow-${{ env.RELEASE_VERSION }}-release-evidence.json
+            dist/qualification/pipeline-smoke.json
+            dist/installed-pipeline-smoke.json
           if-no-files-found: error
 
   publish:
-    name: Publish candidate GitHub Release
+    name: Publish stable production GitHub Release
     needs: build
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
     runs-on: ubuntu-latest
@@ -201,8 +320,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$RELEASE_CHANNEL" != "candidate" ]]; then
-            echo "Only unsigned candidate releases may be published by this workflow; stable requires signing integration." >&2
+          if [[ "$RELEASE_CHANNEL" != "stable" ]]; then
+            echo "Only a signed stable production build may be published; candidate artifacts remain qualification-only." >&2
+            exit 1
+          fi
+          evidence="dist/DubFlow-${RELEASE_VERSION}-release-evidence.json"
+          if [[ ! -f "$evidence" ]]; then
+            echo "Production evidence is missing: $evidence" >&2
+            exit 1
+          fi
+          if [[ "$(jq -r '.production_qualified' "$evidence")" != "true" || "$(jq -r '.signature' "$evidence")" != "ed25519:dubflow-release-v1" ]]; then
+            echo "Production evidence is not signed and qualified" >&2
             exit 1
           fi
           if [[ ! "$RELEASE_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]]; then
@@ -212,21 +340,25 @@ jobs:
           tag="v${RELEASE_VERSION#v}"
           release_json=""
           if release_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag" 2>/dev/null); then
-            is_prerelease=$(jq -r '.prerelease' <<<"$release_json")
-            if [[ "$is_prerelease" != "true" ]]; then
-              echo "Refusing to overwrite an existing non-prerelease release: $tag" >&2
-              exit 1
-            fi
+            echo "Refusing to overwrite an existing release tag: $tag" >&2
+            exit 1
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --target "$SOURCE_SHA" \
-              --title "DubFlow ${RELEASE_VERSION} (release candidate)" \
-              --notes "Unsigned Windows release candidate built from exact source SHA. Production qualification remains pending Issues #36 and #38." \
-              --prerelease
+              --title "DubFlow ${RELEASE_VERSION} (Windows production)" \
+              --notes "Signed Windows production release for the CPU local-file profile. The attached evidence records setup, supervisor, model bootstrap, subtitle translation, H.264/AAC render, QC, editable artifacts, batch isolation and recovery smoke on an isolated runner."
           fi
           resolved_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$tag" --jq '.sha')
           if [[ "$resolved_sha" != "$SOURCE_SHA" ]]; then
             echo "Release tag $tag resolves to $resolved_sha, expected build SHA $SOURCE_SHA" >&2
             exit 1
           fi
-          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" dist/* --clobber
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" \
+            "dist/DubFlow-${RELEASE_VERSION}-windows-x64.zip" \
+            "dist/DubFlow-${RELEASE_VERSION}-windows-x64.zip.sha256" \
+            "dist/DubFlow-${RELEASE_VERSION}-windows-x64-setup.exe" \
+            "dist/DubFlow-${RELEASE_VERSION}-windows-x64-release.sha256" \
+            "dist/DubFlow-${RELEASE_VERSION}-release-evidence.json" \
+            "dist/qualification/pipeline-smoke.json" \
+            "dist/installed-pipeline-smoke.json" \
+            --clobber

@@ -1,6 +1,6 @@
 project: DubFlow
 source_of_truth: github
-phase: release_qualification_in_progress
+phase: production_qualified_cpu_b1
 product_foundation_implemented: true
 main_health: green_protected
 bootstrap_pr: 1
@@ -22,12 +22,13 @@ baseline_dubbing_gate: 45
 administrative_risks: []
 ruleset_required: true
 direct_main_push_allowed: false
-state_validated_base_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
-last_full_integration_run: 36537083818
-last_full_integration_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
-last_release_soak_run: 36537080299
-last_release_soak_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
+state_validated_base_sha: a5d5e0cb740aa21c514618edbe112d8fa13248a6
+last_full_integration_run: 36726608390
+last_full_integration_sha: d18084f362b22a36514116f87133e35897bac7ae
+last_release_soak_run: 36726668924
+last_release_soak_sha: d18084f362b22a36514116f87133e35897bac7ae
 release_qualification:
-  deterministic_status: passed
-  clean_machine_status: pending_external_run
-  gpu_hardware_status: pending_external_run
+  deterministic_status: passed_cpu_b1
+  clean_machine_status: passed_windows_x64
+  gpu_hardware_status: not_applicable_cpu_profile
+  production_release_blocker: none_for_cpu_b1
