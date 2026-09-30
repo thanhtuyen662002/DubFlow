@@ -354,6 +354,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # GitHub-hosted Windows runners may expose a legacy cp1252 console.  The
+    # qualification report intentionally contains localized diagnostics, so
+    # make both success and failure output UTF-8 before writing anything.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                # Some embedded callers expose a stream whose encoding cannot
+                # be changed; the report file remains UTF-8 in that case.
+                pass
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--supervisor", required=True, type=Path)
     parser.add_argument("--root", required=True, type=Path)
