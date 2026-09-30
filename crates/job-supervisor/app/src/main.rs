@@ -198,7 +198,10 @@ impl RuntimePaths {
         let ffprobe = owned_path(&root, &ffprobe_candidate, "FFprobe")?;
         let worker_script = owned_path(&root, &worker_candidate, "worker script")?;
         let model_candidate = model_override.unwrap_or_else(|| data_root.join("models"));
-        if !model_candidate.starts_with(&data_root) && !model_candidate.starts_with(&root) {
+        let model_for_containment = canonicalize_for_containment(&model_candidate)?;
+        if !model_for_containment.starts_with(&data_root)
+            && !model_for_containment.starts_with(&root)
+        {
             return Err(SupervisorError::Invalid(
                 "--model-root must be below --data-root or --root".into(),
             ));
@@ -235,6 +238,37 @@ fn first_existing_dir(candidates: &[PathBuf]) -> Option<PathBuf> {
 
 fn owned_path(root: &Path, path: &Path, label: &str) -> SupervisorResult<PathBuf> {
     owned_path_any(&[root], path, label)
+}
+
+/// Canonicalize a path before it exists without losing Windows' verbatim
+/// prefix. `Path::canonicalize` returns `\\?\\` paths on Windows; comparing
+/// that result with a raw CLI argument makes a valid child look unrelated.
+/// Resolve the nearest existing ancestor and append the missing components so
+/// containment checks use one representation while still rejecting links that
+/// escape an approved root.
+fn canonicalize_for_containment(path: &Path) -> SupervisorResult<PathBuf> {
+    let mut cursor = path.to_path_buf();
+    let mut missing = Vec::new();
+    loop {
+        if cursor.exists() {
+            let mut resolved = cursor.canonicalize().map_err(|error| {
+                SupervisorError::Invalid(format!(
+                    "model root is unavailable: {error}"
+                ))
+            })?;
+            for component in missing.iter().rev() {
+                resolved.push(component);
+            }
+            return Ok(resolved);
+        }
+        let name = cursor.file_name().ok_or_else(|| {
+            SupervisorError::Invalid("--model-root must name a path below an approved root".into())
+        })?;
+        missing.push(name.to_os_string());
+        cursor = cursor.parent().ok_or_else(|| {
+            SupervisorError::Invalid("--model-root must name a path below an approved root".into())
+        })?.to_path_buf();
+    }
 }
 
 fn owned_path_any(roots: &[&Path], path: &Path, label: &str) -> SupervisorResult<PathBuf> {
