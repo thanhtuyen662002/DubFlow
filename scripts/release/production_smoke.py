@@ -135,6 +135,7 @@ def _run_supervisor(
     *,
     timeout: float,
     kill_after: float | None = None,
+    enable_dubbing: bool = False,
 ) -> tuple[dict[str, Any] | None, bool, str]:
     status_path = data_root / "control" / "jobs" / f"{job_id}.json"
     command = [
@@ -155,6 +156,8 @@ def _run_supervisor(
         "--status-path",
         status_path,
     ]
+    if enable_dubbing:
+        command.append("--enable-dubbing")
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     process = subprocess.Popen(
         [os.fspath(item) for item in command],
@@ -196,7 +199,7 @@ def _require_status(status: dict[str, Any], expected: str, job_id: str) -> dict[
     return value
 
 
-def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int) -> dict[str, Any]:
+def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int, *, expect_dubbing: bool = False) -> dict[str, Any]:
     final = output_dir / "final_vi.mp4"
     required = [
         final,
@@ -209,6 +212,16 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
     for path in required:
         if not path.is_file() or path.stat().st_size <= 0:
             raise SmokeError(f"required production artifact is missing or empty: {path}")
+    manifest = _json(output_dir / "job_manifest.json")
+    if expect_dubbing:
+        editable = output_dir / "editable"
+        for name in ("source_audio.wav", "dialogue_stem.wav", "final_mix.wav"):
+            path = editable / name
+            if not path.is_file() or path.stat().st_size <= 0:
+                raise SmokeError(f"B2 editable audio artifact is missing or empty: {path}")
+        audio = manifest.get("audio")
+        if not isinstance(audio, dict) or audio.get("mode") != "dubbed" or audio.get("backend") != "dubflow-vi-builtin-v1":
+            raise SmokeError(f"B2 manifest does not prove the app-owned voice path: {audio!r}")
     # The JSON is captured directly to avoid relying on a shell redirection.
     result = _run(
         [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", final],
@@ -263,6 +276,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "smoke-resume",
             timeout=args.timeout,
             kill_after=args.kill_after,
+            enable_dubbing=args.enable_dubbing,
         )
         if not killed:
             raise SmokeError(
@@ -276,6 +290,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             kill_output,
             "smoke-resume",
             timeout=args.timeout,
+            enable_dubbing=args.enable_dubbing,
         )
         if was_killed or resumed is None:
             raise SmokeError("resume invocation was unexpectedly killed")
@@ -283,7 +298,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         resume_report = {
             "first_invocation_killed": killed,
             "first_status_present": first is not None,
-            "resume_output": _verify_output(ffprobe, kill_output, 3),
+            "resume_output": _verify_output(ffprobe, kill_output, 3, expect_dubbing=args.enable_dubbing),
             "logs": (kill_log + resume_log)[-4096:],
         }
 
@@ -298,6 +313,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         bad_output,
         "smoke-corrupt",
         timeout=args.timeout,
+        enable_dubbing=args.enable_dubbing,
     )
     if killed or bad_status is None:
         raise SmokeError("corrupt job was unexpectedly killed")
@@ -312,11 +328,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         good_output,
         "smoke-good",
         timeout=args.timeout,
+        enable_dubbing=args.enable_dubbing,
     )
     if killed or good_status is None:
         raise SmokeError("valid job was unexpectedly killed")
     _require_status(good_status, "COMPLETED", "smoke-good")
-    good_output_report = _verify_output(ffprobe, good_output, 3)
+    good_output_report = _verify_output(ffprobe, good_output, 3, expect_dubbing=args.enable_dubbing)
 
     long_output_report: dict[str, Any] | None = None
     if args.long_seconds > 3:
@@ -330,18 +347,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             long_output,
             "smoke-long",
             timeout=args.timeout,
+            enable_dubbing=args.enable_dubbing,
         )
         if killed or long_status is None:
             raise SmokeError("long-form job was unexpectedly killed")
         _require_status(long_status, "COMPLETED", "smoke-long")
-        long_output_report = _verify_output(ffprobe, long_output, args.long_seconds)
+        long_output_report = _verify_output(ffprobe, long_output, args.long_seconds, expect_dubbing=args.enable_dubbing)
     profile_marker = data_root / "models" / ".profile-ready"
     if not profile_marker.is_file() or profile_marker.stat().st_size <= 0:
         raise SmokeError(f"model profile did not become ready: {profile_marker}")
 
     return {
         "schema_version": 1,
-        "profile": "cpu-local-file-b1",
+        "profile": "cpu-local-file-b2" if args.enable_dubbing else "cpu-local-file-b1",
         "batch_failure_isolation": "passed",
         "corrupt_job_state": bad_status["status"],
         "good_job": good_output_report,
@@ -377,6 +395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--kill-after", type=float, default=3.0)
     parser.add_argument("--long-seconds", type=int, default=60)
     parser.add_argument("--exercise-hard-kill", action="store_true")
+    parser.add_argument("--enable-dubbing", action="store_true", help="exercise the app-owned offline B2 TTS and AUD-0 mixer")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     try:
