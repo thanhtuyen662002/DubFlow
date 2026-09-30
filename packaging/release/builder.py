@@ -44,7 +44,7 @@ _SOURCE_DIRS: tuple[str, ...] = (
     "packaging",
 )
 _SOURCE_FILES: tuple[str, ...] = ("README.md",)
-_SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "node_modules"}
+_SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "node_modules", "dist", "target"}
 _SKIP_SUFFIXES = {".pyc", ".pyo", ".partial"}
 
 
@@ -77,6 +77,28 @@ def _copy_runtime(runtime_root: Path, destination: Path) -> None:
     if not executable.is_file():
         raise BuildError("runtime root must contain an app-owned python.exe")
     _copy_tree(runtime_root, destination)
+
+
+def _copy_desktop_host(desktop_binary: Path | None, destination: Path, *, required: bool) -> None:
+    """Copy the already-built native host into the release payload.
+
+    The release builder never compiles the host itself.  That keeps this
+    stdlib-only packaging step deterministic and lets the Windows workflow
+    record the exact compiler output before it is hashed into the manifest.
+    A published release must opt into ``required`` so a source-only desktop
+    tree cannot accidentally be shipped as a launchable application.
+    """
+
+    if desktop_binary is None:
+        if required:
+            raise BuildError("desktop host binary is required for this release")
+        return
+    source = desktop_binary.resolve()
+    if not source.is_file():
+        raise BuildError(f"desktop host binary is missing: {source}")
+    target = destination / "app" / "bin" / "DubFlow.exe"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
 
 
 def _safe_file_id(index: int) -> str:
@@ -230,6 +252,8 @@ def build_bundle(
     package_manifest_version: str = "v1",
     release_channel: str = "candidate",
     signature_required: bool = False,
+    desktop_binary: Path | str | None = None,
+    require_desktop_host: bool = False,
     source_date_epoch: int | None = None,
 ) -> BuildResult:
     """Build and hash a release bundle from an exact source tree."""
@@ -257,6 +281,11 @@ def build_bundle(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source_file, target)
         _copy_runtime(Path(runtime_root).resolve(), stage / "runtime")
+        _copy_desktop_host(
+            None if desktop_binary is None else Path(desktop_binary),
+            stage,
+            required=require_desktop_host,
+        )
         _write_setup_scripts(stage)
         _write_status(stage, version=version, source_sha=source_sha, channel=release_channel)
 
@@ -296,6 +325,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--package-manifest-version", default="v1")
     parser.add_argument("--release-channel", choices=("candidate", "stable"), default="candidate")
     parser.add_argument("--signature-required", action="store_true")
+    parser.add_argument("--desktop-binary", type=Path)
+    parser.add_argument("--require-desktop-host", action="store_true")
     parser.add_argument("--source-date-epoch", type=int)
     return parser
 
@@ -312,6 +343,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         package_manifest_version=args.package_manifest_version,
         release_channel=args.release_channel,
         signature_required=args.signature_required,
+        desktop_binary=args.desktop_binary,
+        require_desktop_host=args.require_desktop_host,
         source_date_epoch=args.source_date_epoch,
     )
     print(json.dumps({

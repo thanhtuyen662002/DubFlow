@@ -3,10 +3,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit",
-    "test": "node --experimental-strip-types test/queue.test.mjs"
+    "build": "tsc --noEmit && node scripts/build.mjs && esbuild src/main.ts --bundle --format=iife --outfile=dist/main.js",
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "test": "node --experimental-strip-types test/queue.test.mjs",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.8.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.2"
+    "@tauri-apps/cli": "2.8.4",
+    "esbuild": "0.28.2",
+    "typescript": "5.5.2",
+    "vite": "8.3.1"
   }
 }

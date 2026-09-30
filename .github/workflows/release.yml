@@ -54,6 +54,26 @@ jobs:
           $epoch = [int64](git show -s --format=%ct $env:SOURCE_SHA)
           "SOURCE_DATE_EPOCH=$epoch" >> $env:GITHUB_ENV
 
+      - name: Install pinned desktop build toolchain
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.14.0"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Build desktop host
+        shell: pwsh
+        run: |
+          $env:DUBFLOW_RELEASE_VERSION = $env:RELEASE_VERSION
+          $env:DUBFLOW_RELEASE_CHANNEL = $env:RELEASE_CHANNEL
+          npm ci --prefix apps/desktop
+          npm run build --prefix apps/desktop
+          npm run tauri:build --prefix apps/desktop -- --no-bundle --ci
+          $desktopHost = Join-Path $PWD "apps/desktop/src-tauri/target/release/DubFlow.exe"
+          if (-not (Test-Path -LiteralPath $desktopHost -PathType Leaf)) {
+            throw "Tauri desktop host was not produced: $desktopHost"
+          }
+
       - name: Install app-owned build runtime
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -74,6 +94,8 @@ jobs:
             '--runtime-version', '3.12.10',
             '--package-manifest-version', 'v1',
             '--release-channel', $env:RELEASE_CHANNEL,
+            '--desktop-binary', (Join-Path $PWD 'apps/desktop/src-tauri/target/release/DubFlow.exe'),
+            '--require-desktop-host',
             '--source-date-epoch', $env:SOURCE_DATE_EPOCH
           )
           python @args
@@ -113,6 +135,34 @@ jobs:
             })
           }
           $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "dist/DubFlow-$env:RELEASE_VERSION-release-evidence.json" -Encoding utf8NoBOM
+
+      - name: Smoke install and launch desktop host
+        shell: pwsh
+        run: |
+          $smokeRoot = Join-Path $env:RUNNER_TEMP 'DubFlow smoke host'
+          $env:LOCALAPPDATA = Join-Path $smokeRoot 'LocalAppData'
+          New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+          $setup = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-setup.exe"
+          & $setup
+          if ($LASTEXITCODE -ne 0) { throw "Windows setup failed with exit code $LASTEXITCODE" }
+          $launcher = Join-Path $env:LOCALAPPDATA 'DubFlow/DubFlow.cmd'
+          if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "Installed launcher is missing: $launcher" }
+          $check = & $launcher --self-check | ConvertFrom-Json
+          if (-not $check.ready) { throw "Installed self-check failed: $($check | ConvertTo-Json -Compress)" }
+          $commandLine = "`"$launcher`""
+          $shell = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList @('/d', '/c', $commandLine) -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 5
+          $hostProcess = Get-Process -Name 'DubFlow' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $hostProcess) { throw 'Desktop host did not remain running after launch' }
+          Stop-Process -Id $hostProcess.Id -Force
+          if (-not $shell.HasExited) { Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue }
+          $evidencePath = "dist/DubFlow-$env:RELEASE_VERSION-release-evidence.json"
+          $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
+          $evidence | Add-Member -NotePropertyName desktop_host -NotePropertyValue ([ordered]@{
+            packaged_path = 'app/bin/DubFlow.exe'
+            launch_smoke = 'passed'
+          }) -Force
+          $evidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $evidencePath -Encoding utf8NoBOM
 
       - name: Upload downloadable build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7.0.1
