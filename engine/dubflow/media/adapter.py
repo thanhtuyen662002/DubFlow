@@ -44,6 +44,11 @@ _RATIONAL = re.compile(r"^(?P<numerator>[0-9]+)\s*/\s*(?P<denominator>[0-9]+)$")
 _STREAM_TYPES = frozenset({"video", "audio", "subtitle", "data", "attachment"})
 _MAX_DIAGNOSTIC = 4096
 _DEFAULT_TIMEOUT_SECONDS = 15 * 60
+# The shipped Windows FFmpeg runtime is the LGPL build, so GPL-only libx264
+# is intentionally unavailable. Media Foundation's H.264 encoder is part of
+# the Windows FFmpeg build and keeps the production bundle license-compatible
+# while preserving the H.264 output contract without requiring a GPU.
+_WINDOWS_H264_ENCODER = "h264_mf"
 
 
 class MediaAdapterError(RuntimeError):
@@ -701,7 +706,7 @@ class FfmpegMediaAdapter:
                 args.extend(("-map", f"{subtitle_input}:0", "-c:s", "mov_text"))
             else:
                 args.append("-sn")
-            args.extend(("-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p"))
+            args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-quality", "90", "-pix_fmt", "yuv420p"))
             if audio is not None or preserve_original_audio:
                 args.extend(("-c:a", "aac", "-b:a", "192k"))
             if audio is not None:

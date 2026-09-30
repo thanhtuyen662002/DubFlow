@@ -182,7 +182,7 @@ class MediaCommandTests(unittest.TestCase):
         self.assertIn(str(self.subtitle.resolve()), render_call)
         self.assertIn(str(extracted.resolve()), render_call)
         self.assertIn("-c:v", render_call)
-        self.assertIn("libx264", render_call)
+        self.assertIn("h264_mf", render_call)
         self.assertIn("-c:a", render_call)
         self.assertNotIn("|", " ".join(render_call))
         self.assertEqual(list(self.root.glob(".*.partial")), [])

@@ -11,7 +11,10 @@ bounded diagnostic output.
 start PTS and integer durations. Its timeline API performs explicit integer
 rescaling with named rounding modes; it never converts durable identity to
 floating seconds. `FfmpegMediaAdapter` provides audio extraction, H.264/AAC
-rendering with optional subtitle/audio inputs, and video/audio muxing. All
+rendering with optional subtitle/audio inputs, and video/audio muxing. The
+Windows production profile selects FFmpeg's `h264_mf` Media Foundation
+encoder because the redistributed LGPL build does not contain GPL-only
+`libx264`; the resulting stream remains H.264 and does not require a GPU. All
 outputs are created as private sibling `.partial` files and atomically
 published only after FFmpeg exits successfully and writes non-empty bytes.
 
