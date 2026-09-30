@@ -794,6 +794,13 @@ fn run_one_shot(
         None => inferred_root()?,
     };
     let runtime = RuntimePaths::from_root_and_data(root, data_root.clone(), None, model_root)?;
+    // One-shot invocations are the desktop's durable execution boundary. A
+    // previous process may have been hard-killed while its stage was running;
+    // reconcile that state before execute_job tries to start the stage again.
+    // Without this hook a valid restart would attempt the illegal
+    // `running -> running` transition.
+    let startup_store = DurableStore::open(&runtime.db)?;
+    startup_store.recover_after_restart(now_ms())?;
     let spec = StartSpec::from_request(
         Some(job_id.unwrap_or_else(new_job_id)),
         source_path,
