@@ -1775,14 +1775,17 @@ fn abort_worker(
 fn read_limited(mut reader: impl Read, limit: usize) -> io::Result<String> {
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 4096];
-    while bytes.len() < limit {
-        let remaining = limit - bytes.len();
-        let chunk_size = remaining.min(buffer.len());
-        let read = reader.read(&mut buffer[..chunk_size])?;
+    loop {
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
-        bytes.extend_from_slice(&buffer[..read]);
+        // Keep a bounded diagnostic prefix, but continue draining the pipe
+        // after the limit so a noisy worker cannot deadlock on stderr.
+        if bytes.len() < limit {
+            let keep = (limit - bytes.len()).min(read);
+            bytes.extend_from_slice(&buffer[..keep]);
+        }
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
