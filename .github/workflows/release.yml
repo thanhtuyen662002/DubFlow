@@ -311,7 +311,7 @@ jobs:
             echo "Only a signed stable production build may be published; candidate artifacts remain qualification-only." >&2
             exit 1
           fi
-          evidence="dist/${RELEASE_VERSION}-release-evidence.json"
+          evidence="dist/DubFlow-${RELEASE_VERSION}-release-evidence.json"
           if [[ ! -f "$evidence" ]]; then
             echo "Production evidence is missing: $evidence" >&2
             exit 1
@@ -340,4 +340,12 @@ jobs:
             echo "Release tag $tag resolves to $resolved_sha, expected build SHA $SOURCE_SHA" >&2
             exit 1
           fi
-          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" dist/* --clobber
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" \
+            "dist/DubFlow-${RELEASE_VERSION}-windows-x64.zip" \
+            "dist/DubFlow-${RELEASE_VERSION}-windows-x64.zip.sha256" \
+            "dist/DubFlow-${RELEASE_VERSION}-windows-x64-setup.exe" \
+            "dist/DubFlow-${RELEASE_VERSION}-windows-x64-release.sha256" \
+            "dist/DubFlow-${RELEASE_VERSION}-release-evidence.json" \
+            "dist/qualification/pipeline-smoke.json" \
+            "dist/installed-pipeline-smoke.json" \
+            --clobber
