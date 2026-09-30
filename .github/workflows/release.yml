@@ -253,10 +253,16 @@ jobs:
           $check = & $launcher --self-check | ConvertFrom-Json
           if (-not $check.ready) { throw "Installed self-check failed: $($check | ConvertTo-Json -Compress)" }
           $installedRoot = Join-Path $env:LOCALAPPDATA "DubFlow/versions/$env:RELEASE_VERSION"
+          # Keep the installed qualification independent from the staging
+          # smoke above.  Reusing its durable job store with the same smoke
+          # IDs would correctly return COMPLETED without recreating artifacts
+          # in this step's new work directory.
+          $installedDataRoot = Join-Path $env:RUNNER_TEMP 'DubFlow installed data'
+          New-Item -ItemType Directory -Force -Path $installedDataRoot | Out-Null
           $pipelineReport = Join-Path $PWD 'dist/installed-pipeline-smoke.json'
           & (Join-Path $env:pythonLocation 'python.exe') scripts/release/production_smoke.py `
             --supervisor (Join-Path $installedRoot 'app/bin/dubflow-supervisor.exe') `
-            --root $installedRoot --data-root (Join-Path $env:LOCALAPPDATA 'DubFlow') `
+            --root $installedRoot --data-root $installedDataRoot `
             --work-root (Join-Path $env:RUNNER_TEMP 'DubFlow installed work') `
             --ffmpeg (Join-Path $installedRoot 'runtime/media/ffmpeg.exe') `
             --ffprobe (Join-Path $installedRoot 'runtime/media/ffprobe.exe') `
