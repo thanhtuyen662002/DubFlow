@@ -32,6 +32,8 @@ def _run(command: Sequence[str], *, timeout: float = 120.0) -> subprocess.Comple
             [os.fspath(item) for item in command],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
         )
@@ -159,6 +161,8 @@ def _run_supervisor(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         creationflags=creationflags,
         start_new_session=os.name != "nt",
     )
