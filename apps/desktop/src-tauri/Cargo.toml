@@ -13,11 +13,11 @@ name = "DubFlow"
 path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "=2.8.4", features = [] }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "2", features = [] }
+tauri = { version = "=2.8.4", features = [] }
 
 [features]
 default = ["custom-protocol"]

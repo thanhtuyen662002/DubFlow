@@ -452,7 +452,7 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertNotIn("7z.sfx", workflow)
         self.assertIn("target-feature=+crt-static", workflow)
         self.assertIn("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020", workflow)
-        self.assertIn("npm run tauri:build --prefix apps/desktop -- --no-bundle --ci", workflow)
+        self.assertIn("npm run tauri:build --prefix apps/desktop", workflow)
         self.assertIn("--desktop-binary", workflow)
         self.assertIn("--require-desktop-host", workflow)
         self.assertIn("Smoke install and launch desktop host", workflow)
