@@ -394,7 +394,17 @@ def parse_ffprobe_json(payload: str | bytes, *, source_path: Path) -> MediaProbe
         raise MediaAdapterError("MEDIA_METADATA_INVALID", "ffprobe streams must be an array")
     format_value = root.get("format", {})
     format_object = _metadata_object(format_value, "ffprobe format")
-    format_tb = Rational.parse(format_object.get("time_base", "1/1"), "format.time_base")
+    # FFprobe's container object commonly omits ``time_base`` even when its
+    # decimal ``duration`` is present.  Keep that fallback in the same
+    # explicit millisecond base used by the worker rather than pretending a
+    # missing base is one-second ticks (which would inflate 40 ms to 1000 ms
+    # after rescaling).
+    format_time_base_value = format_object.get("time_base")
+    format_tb = (
+        CANONICAL_TIME_BASE
+        if format_time_base_value in (None, "N/A")
+        else Rational.parse(format_time_base_value, "format.time_base")
+    )
     streams: list[MediaStream] = []
     for position, item in enumerate(streams_value):
         stream = _metadata_object(item, f"ffprobe streams[{position}]")

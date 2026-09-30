@@ -113,6 +113,21 @@ class MediaProbeParsingTests(unittest.TestCase):
             result = parse_ffprobe_json(json.dumps(document), source_path=(Path(directory) / "x.mp4").resolve())
         self.assertEqual(result.video.duration_ticks, 513)
 
+    def test_format_decimal_duration_without_ffprobe_timebase_uses_canonical_base(self) -> None:
+        document = _probe_document()
+        streams = document["streams"]
+        assert isinstance(streams, list)
+        streams[0].pop("duration_ts")
+        format_document = document["format"]
+        assert isinstance(format_document, dict)
+        format_document.pop("time_base")
+        format_document["duration"] = "0.0400001"
+        with tempfile.TemporaryDirectory() as directory:
+            result = parse_ffprobe_json(json.dumps(document), source_path=(Path(directory) / "x.mp4").resolve())
+        self.assertEqual(result.format_time_base, Rational(1, 1000))
+        self.assertEqual(result.format_duration_ticks, 41)
+        self.assertEqual(result.duration_ticks, 41)
+
     def test_invalid_json_and_missing_video_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = (Path(directory) / "x.mp4").resolve()
