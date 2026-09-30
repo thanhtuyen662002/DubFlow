@@ -400,6 +400,10 @@ impl VolumeProbe for FilesystemProbe {
             Ok(value) => (value, None),
             Err(error) => (None, Some(error.to_string())),
         };
+        let space = match (fs2::available_space(&root.path), fs2::total_space(&root.path)) {
+            (Ok(available_bytes), Ok(total_bytes)) => DiskSpace::new(available_bytes, total_bytes).ok(),
+            _ => None,
+        };
         Ok(VolumeObservation {
             exists: true,
             is_directory,
@@ -408,9 +412,7 @@ impl VolumeProbe for FilesystemProbe {
             network,
             removable: false,
             volume_id,
-            // std does not expose portable free-space statistics. An OS
-            // adapter supplies this field when thresholds are configured.
-            space: None,
+            space,
             probe_error: marker_error,
         })
     }

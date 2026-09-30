@@ -10,3 +10,6 @@ publish = false
 [lib]
 name = "dubflow_job_storage"
 path = "src/lib.rs"
+
+[dependencies]
+fs2 = "0.4.3"
