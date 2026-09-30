@@ -260,6 +260,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             timeout=args.timeout,
             kill_after=args.kill_after,
         )
+        if not killed:
+            raise SmokeError(
+                "hard-kill qualification did not interrupt the first supervisor invocation"
+            )
         resumed, was_killed, resume_log = _run_supervisor(
             supervisor,
             root,
