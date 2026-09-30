@@ -1,6 +1,6 @@
 project: DubFlow
 source_of_truth: github
-phase: release_qualification_in_progress
+phase: production_implementation_in_progress
 product_foundation_implemented: true
 main_health: green_protected
 bootstrap_pr: 1
@@ -15,7 +15,8 @@ work_graph_source: open_leaf_issues_plus_roadmap
 foundation_epic: 2
 ci_infrastructure_issue: 10
 ci_infrastructure_status: delivered
-critical_path: []
+critical_path:
+  - 163
 first_integration_gate: 14
 first_user_value_gate: 56
 baseline_dubbing_gate: 45
@@ -28,6 +29,7 @@ last_full_integration_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
 last_release_soak_run: 36537080299
 last_release_soak_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
 release_qualification:
-  deterministic_status: passed
-  clean_machine_status: pending_external_run
-  gpu_hardware_status: pending_external_run
+  deterministic_status: blocked_fixture_only
+  clean_machine_status: blocked_real_runtime_missing
+  gpu_hardware_status: not_applicable_until_cpu_profile_passes
+  production_release_blocker: issue_163_real_pipeline_and_runtime
