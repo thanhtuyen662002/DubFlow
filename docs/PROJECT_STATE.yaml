@@ -1,6 +1,6 @@
 project: DubFlow
 source_of_truth: github
-phase: production_implementation_in_progress
+phase: production_qualified_cpu_b1
 product_foundation_implemented: true
 main_health: green_protected
 bootstrap_pr: 1
@@ -15,21 +15,20 @@ work_graph_source: open_leaf_issues_plus_roadmap
 foundation_epic: 2
 ci_infrastructure_issue: 10
 ci_infrastructure_status: delivered
-critical_path:
-  - 163
+critical_path: []
 first_integration_gate: 14
 first_user_value_gate: 56
 baseline_dubbing_gate: 45
 administrative_risks: []
 ruleset_required: true
 direct_main_push_allowed: false
-state_validated_base_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
-last_full_integration_run: 36537083818
-last_full_integration_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
-last_release_soak_run: 36537080299
-last_release_soak_sha: d7f5372c1e6bc7c8fd5e6bcaf7eec4e35819b675
+state_validated_base_sha: a5d5e0cb740aa21c514618edbe112d8fa13248a6
+last_full_integration_run: 36726608390
+last_full_integration_sha: d18084f362b22a36514116f87133e35897bac7ae
+last_release_soak_run: 36726668924
+last_release_soak_sha: d18084f362b22a36514116f87133e35897bac7ae
 release_qualification:
-  deterministic_status: blocked_fixture_only
-  clean_machine_status: blocked_real_runtime_missing
-  gpu_hardware_status: not_applicable_until_cpu_profile_passes
-  production_release_blocker: issue_163_real_pipeline_and_runtime
+  deterministic_status: passed_cpu_b1
+  clean_machine_status: passed_windows_x64
+  gpu_hardware_status: not_applicable_cpu_profile
+  production_release_blocker: none_for_cpu_b1
