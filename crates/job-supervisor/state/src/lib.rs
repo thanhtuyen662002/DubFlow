@@ -732,6 +732,28 @@ mod tests {
     }
 
     #[test]
+    fn registering_all_artifacts_before_commit_keeps_stage_running_until_last_commit() {
+        let first = temp_path("artifact-first", "bin");
+        let second = temp_path("artifact-second", "bin");
+        fs::write(&first, b"first output").unwrap();
+        fs::write(&second, b"second output").unwrap();
+        let store = DurableStore::open_in_memory().unwrap();
+        setup(&store);
+        store.start_job("job-1", 2).unwrap();
+        store.start_stage("job-1", "analysis", 3).unwrap();
+        let (first_hash, _) = hash_file(&first).unwrap();
+        let (second_hash, _) = hash_file(&second).unwrap();
+        store.record_artifact_written("first", "job-1", "analysis", &first, Some(&first_hash), true, 4).unwrap();
+        store.record_artifact_written("second", "job-1", "analysis", &second, Some(&second_hash), true, 4).unwrap();
+        store.commit_artifact("first", 5).unwrap();
+        assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Running);
+        store.commit_artifact("second", 6).unwrap();
+        assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Succeeded);
+        let _ = fs::remove_file(first);
+        let _ = fs::remove_file(second);
+    }
+
+    #[test]
     fn missing_and_partial_artifacts_are_recoverable() {
         let missing_path = temp_path("missing", "mp4");
         let partial_path = temp_path("partial", "mp4");

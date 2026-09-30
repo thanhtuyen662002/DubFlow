@@ -260,9 +260,7 @@ fn canonicalize_for_containment(path: &Path) -> SupervisorResult<PathBuf> {
     loop {
         if cursor.exists() {
             let mut resolved = cursor.canonicalize().map_err(|error| {
-                SupervisorError::Invalid(format!(
-                    "model root is unavailable: {error}"
-                ))
+                SupervisorError::Invalid(format!("model root is unavailable: {error}"))
             })?;
             for component in missing.iter().rev() {
                 resolved.push(component);
@@ -273,9 +271,14 @@ fn canonicalize_for_containment(path: &Path) -> SupervisorResult<PathBuf> {
             SupervisorError::Invalid("--model-root must name a path below an approved root".into())
         })?;
         missing.push(name.to_os_string());
-        cursor = cursor.parent().ok_or_else(|| {
-            SupervisorError::Invalid("--model-root must name a path below an approved root".into())
-        })?.to_path_buf();
+        cursor = cursor
+            .parent()
+            .ok_or_else(|| {
+                SupervisorError::Invalid(
+                    "--model-root must name a path below an approved root".into(),
+                )
+            })?
+            .to_path_buf();
     }
 }
 
@@ -1504,6 +1507,10 @@ fn execute_job(
 ) -> SupervisorResult<()> {
     let store = DurableStore::open(&runtime.db)?;
     ensure_job(&store, &spec)?;
+    // A process can die between artifact registration and its final commit.
+    // Reconcile those durable rows before deciding whether the job is already
+    // complete or starting another worker attempt.
+    store.reconcile_job(&spec.job_id, now_ms())?;
     let status = store.job_status(&spec.job_id)?;
     match status {
         JobStatus::Succeeded => {
@@ -2056,7 +2063,12 @@ fn commit_output_artifacts(
         ("job_manifest", PathBuf::from("job_manifest.json")),
         ("editable_timeline", PathBuf::from("editable/timeline.json")),
     ];
-    let mut artifacts = Vec::with_capacity(required.len());
+    // Validate every output and register every artifact before committing any
+    // one of them. `commit_artifact` marks the stage succeeded when its last
+    // registered sibling becomes committed; interleaving registration and
+    // commit would therefore let the first artifact finish a one-artifact
+    // set and reject the next registration as `succeeded -> artifact-written`.
+    let mut pending = Vec::with_capacity(required.len());
     for (name, relative) in required {
         let path = spec.output_dir.join(relative);
         let metadata = fs::metadata(&path).map_err(|error| SupervisorError::Worker {
@@ -2087,8 +2099,13 @@ fn commit_output_artifacts(
             true,
             now_ms(),
         )?;
+        pending.push((artifact_id, name, path, metadata.len()));
+    }
+
+    let mut artifacts = Vec::with_capacity(pending.len());
+    for (artifact_id, name, path, size_bytes) in pending {
         let hash = store.commit_artifact(&artifact_id, now_ms())?;
-        artifacts.push(json!({"id":artifact_id, "name":name, "path":path, "sha256":hash, "size_bytes":metadata.len(), "state":artifact_state_name(ArtifactState::Committed)}));
+        artifacts.push(json!({"id":artifact_id, "name":name, "path":path, "sha256":hash, "size_bytes":size_bytes, "state":artifact_state_name(ArtifactState::Committed)}));
     }
     Ok(artifacts)
 }
