@@ -1733,6 +1733,8 @@ fn run_worker_attempt(
         // child cannot accidentally import a user's checkout or a system
         // package with the same name.
         .env("PYTHONPATH", &runtime.app_root)
+        .env("DUBFLOW_WORKER_PROCESS", "1")
+        .env("PYTHONNOUSERSITE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

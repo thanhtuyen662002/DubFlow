@@ -31,6 +31,43 @@ import uuid
 import wave
 from typing import Any, Iterable, Mapping, Sequence
 
+
+def _prepare_worker_import_path() -> None:
+    """Put app code after the bundled runtime's third-party packages.
+
+    The repository contains a top-level ``packaging`` package for release
+    policy code.  Argos Translate (and other production dependencies) also
+    imports the third-party ``packaging`` distribution.  The supervisor sets
+    ``PYTHONPATH`` to the app root so that this worker can import ``engine``;
+    Python would otherwise let the repository package shadow the bundled
+    distribution and fail at ``packaging.version``.  Keep the app root
+    available, but append it after normal site-packages so the app-owned
+    runtime wins dependency resolution.
+    """
+
+    if os.environ.get("DUBFLOW_WORKER_PROCESS") != "1":
+        return
+    app_root = Path(__file__).resolve().parents[3]
+    try:
+        app_root_key = os.path.normcase(os.path.realpath(os.fspath(app_root)))
+    except OSError:
+        return
+    retained: list[str] = []
+    for entry in sys.path:
+        candidate = entry or os.getcwd()
+        try:
+            candidate_key = os.path.normcase(os.path.realpath(candidate))
+        except OSError:
+            retained.append(entry)
+            continue
+        if candidate_key != app_root_key:
+            retained.append(entry)
+    retained.append(os.fspath(app_root))
+    sys.path[:] = retained
+
+
+_prepare_worker_import_path()
+
 from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError

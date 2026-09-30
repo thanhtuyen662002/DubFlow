@@ -3,6 +3,9 @@
 The Windows release workflow installs the pinned requirements into the
 portable Python runtime copied into `runtime/`.  The shipped worker starts
 only this interpreter and the FFmpeg/FFprobe binaries under `runtime/media/`.
+The worker places the app source after runtime site-packages on `sys.path` so
+the repository's release-policy package cannot shadow Argos Translate's
+third-party `packaging` distribution.
 
 The CPU B1 profile uses Faster-Whisper `small` and Argos Translate
 `en→vi`. Their model bytes are downloaded on first use from

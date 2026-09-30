@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -17,6 +20,30 @@ from engine.dubflow.media import parse_ffprobe_json
 
 
 class ProductionWorkerTests(unittest.TestCase):
+    def test_worker_runtime_keeps_third_party_packaging_ahead_of_app_policy_package(self) -> None:
+        """The bundled Argos dependency must not resolve the repo package."""
+
+        with TemporaryDirectory(prefix="dubflow-worker-site-packages-") as directory:
+            site_packages = Path(directory)
+            external_packaging = site_packages / "packaging"
+            external_packaging.mkdir()
+            (external_packaging / "__init__.py").write_text("__version__ = 'test-runtime'\n", encoding="utf-8")
+            (external_packaging / "version.py").write_text("MARKER = 'bundled-third-party'\n", encoding="utf-8")
+            repo_root = Path(__file__).resolve().parents[3]
+            script = "import engine.dubflow.worker.production_job; import packaging.version as version; assert version.MARKER == 'bundled-third-party'"
+            environment = os.environ.copy()
+            environment["DUBFLOW_WORKER_PROCESS"] = "1"
+            environment["PYTHONPATH"] = os.pathsep.join((str(repo_root), str(site_packages)))
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=repo_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_srt_and_vtt_sidecars_preserve_integer_millisecond_ticks(self) -> None:
         with TemporaryDirectory(prefix="dubflow-worker-sidecar-") as directory:
             root = Path(directory)

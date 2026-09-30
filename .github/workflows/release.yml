@@ -96,7 +96,12 @@ jobs:
         run: |
           $sitePackages = Join-Path $env:pythonLocation 'Lib/site-packages'
           python -m pip install --disable-pip-version-check --no-cache-dir --upgrade --target $sitePackages -r packaging/runtime/requirements-windows-x64.txt
-          & (Join-Path $env:pythonLocation 'python.exe') -c "import faster_whisper, argostranslate, cryptography; print('production Python adapters imported')"
+          Push-Location $env:RUNNER_TEMP
+          try {
+            & (Join-Path $env:pythonLocation 'python.exe') -c "import faster_whisper, argostranslate, cryptography; import packaging.version as version; print('production Python adapters imported with packaging', version.__file__)"
+          } finally {
+            Pop-Location
+          }
 
       - name: Download and verify app-owned FFmpeg runtime
         shell: pwsh
