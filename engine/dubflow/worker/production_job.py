@@ -405,6 +405,18 @@ def _write_subtitles(output_dir: Path, cues: Sequence[TextCue]) -> tuple[Path, P
     return srt, ass
 
 
+def _validate_rendered_audio(source_probe: MediaProbeResult, output_probe: MediaProbeResult) -> None:
+    """Ensure rendering did not silently drop the source audio stream."""
+
+    if source_probe.has_audio and not output_probe.has_audio:
+        raise ProductionJobError("QC_AUDIO_MISSING", "rendered output lost source audio")
+    if output_probe.has_audio and any(
+        stream.codec_name not in {"aac", "mp3", "opus", "vorbis"}
+        for stream in output_probe.audio
+    ):
+        raise ProductionJobError("QC_AUDIO_CODEC", "output audio codec is not a supported playable profile")
+
+
 def _load_sidecar(source: Path) -> tuple[TextCue, ...] | None:
     for suffix in (".srt", ".SRT"):
         candidate = source.with_suffix(suffix)
@@ -612,8 +624,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
     if output_probe.video.codec_name != "h264":
         raise ProductionJobError("QC_VIDEO_CODEC", f"expected H.264 output, received {output_probe.video.codec_name}")
-    if output_probe.has_audio and any(stream.codec_name not in {"aac", "mp3", "opus", "vorbis"} for stream in output_probe.audio):
-        raise ProductionJobError("QC_AUDIO_CODEC", "output audio codec is not a supported playable profile")
+    _validate_rendered_audio(probe, output_probe)
     source_duration = probe.duration_ticks
     output_duration = output_probe.duration_ticks
     if source_duration is not None and output_duration is not None and output_duration + 2_000 < source_duration:

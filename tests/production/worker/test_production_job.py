@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -9,8 +10,10 @@ from engine.dubflow.worker.production_job import (
     TextCue,
     WorkerConfig,
     _load_sidecar,
+    _validate_rendered_audio,
     _write_subtitles,
 )
+from engine.dubflow.media import parse_ffprobe_json
 
 
 class ProductionWorkerTests(unittest.TestCase):
@@ -75,6 +78,53 @@ class ProductionWorkerTests(unittest.TestCase):
                         "ffprobe_path": str(ffprobe),
                     }
                 )
+
+    def test_qc_rejects_render_that_drops_source_audio(self) -> None:
+        with TemporaryDirectory(prefix="dubflow-worker-qc-") as directory:
+            source_path = Path(directory) / "source.mp4"
+            source_path.write_bytes(b"media")
+            source_probe = parse_ffprobe_json(
+                json.dumps({
+                    "streams": [
+                        {
+                            "index": 0,
+                            "codec_type": "video",
+                            "codec_name": "h264",
+                            "time_base": "1/1000",
+                            "start_pts": 0,
+                            "duration_ts": 1000,
+                        },
+                        {
+                            "index": 1,
+                            "codec_type": "audio",
+                            "codec_name": "aac",
+                            "time_base": "1/48000",
+                            "start_pts": 0,
+                            "duration_ts": 48000,
+                        },
+                    ],
+                    "format": {"duration_ts": 1000, "time_base": "1/1000"},
+                }),
+                source_path=source_path,
+            )
+            output_probe = parse_ffprobe_json(
+                json.dumps({
+                    "streams": [
+                        {
+                            "index": 0,
+                            "codec_type": "video",
+                            "codec_name": "h264",
+                            "time_base": "1/1000",
+                            "start_pts": 0,
+                            "duration_ts": 1000,
+                        }
+                    ],
+                    "format": {"duration_ts": 1000, "time_base": "1/1000"},
+                }),
+                source_path=Path(directory) / "output.mp4",
+            )
+            with self.assertRaisesRegex(ProductionJobError, "QC_AUDIO_MISSING"):
+                _validate_rendered_audio(source_probe, output_probe)
 
 
 if __name__ == "__main__":
