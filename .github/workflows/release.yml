@@ -80,7 +80,7 @@ jobs:
         shell: pwsh
         run: |
           $env:RUSTFLAGS = '-C target-feature=+crt-static'
-          cargo build --manifest-path crates/job-supervisor/app/Cargo.toml --locked --release
+          cargo build --manifest-path crates/job-supervisor/app/Cargo.toml --target-dir crates/job-supervisor/app/target --locked --release
           $supervisor = Join-Path $PWD 'crates/job-supervisor/app/target/release/dubflow-supervisor.exe'
           if (-not (Test-Path -LiteralPath $supervisor -PathType Leaf)) {
             throw "Rust supervisor was not produced: $supervisor"
