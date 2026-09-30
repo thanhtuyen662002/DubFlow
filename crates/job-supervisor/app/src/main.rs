@@ -1517,6 +1517,17 @@ fn execute_job(
             Ok(WorkerOutcome::Completed { .. }) if !control.cancelled.load(Ordering::Acquire) => {
                 unreachable!("completed worker was handled before failure dispatch")
             }
+            Ok(WorkerOutcome::Completed { .. }) => {
+                // The cancellation check above normally converts a completed
+                // worker into `Cancelled` before this match. Keep the
+                // unguarded arm explicit so the compiler and future changes
+                // cannot accidentally make a completed job fall through.
+                cancel_durable(&store, &spec.job_id, "user requested cancellation")?;
+                let _ = tx.send(InternalMessage::Output(
+                    json!({"event":"cancelled", "job_id":spec.job_id, "status":"cancelled"}),
+                ));
+                return Ok(());
+            }
             Ok(WorkerOutcome::Cancelled) => {
                 cancel_durable(&store, &spec.job_id, "user requested cancellation")?;
                 let _ = tx.send(InternalMessage::Output(
