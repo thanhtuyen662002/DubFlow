@@ -1195,18 +1195,27 @@ fn replace_atomic(source: &Path, destination: &Path) -> io::Result<()> {
 
         // SAFETY: both buffers are NUL-terminated UTF-16 strings whose
         // pointers remain valid for the duration of the system call.
-        let success = unsafe {
-            MoveFileExW(
-                source_wide.as_ptr(),
-                destination_wide.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if success == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
+        // A desktop status poll can briefly hold the previous file open.  A
+        // bounded retry handles that transient sharing violation without ever
+        // falling back to delete-then-rename (which would expose a gap).
+        for attempt in 0..8 {
+            let success = unsafe {
+                MoveFileExW(
+                    source_wide.as_ptr(),
+                    destination_wide.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            };
+            if success != 0 {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(32) || attempt == 7 {
+                return Err(error);
+            }
+            thread::sleep(Duration::from_millis(15));
         }
+        unreachable!("the bounded MoveFileExW retry loop always returns")
     }
     #[cfg(not(windows))]
     {
