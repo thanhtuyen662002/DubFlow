@@ -28,6 +28,13 @@ def _runtime(root: Path) -> None:
     (root / "__pycache__" / "ignored.pyc").write_bytes(b"ignored")
 
 
+def _desktop_binary(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    binary = root / "DubFlow.exe"
+    binary.write_bytes(b"MZ-dubflow-host-fixture")
+    return binary
+
+
 class ReleaseBundleTests(unittest.TestCase):
     def test_build_is_deterministic_and_manifest_hashes_every_payload_file(self) -> None:
         with TemporaryDirectory() as directory:
@@ -373,6 +380,63 @@ class ReleaseBundleTests(unittest.TestCase):
             status_path.write_text(json.dumps(status), encoding="utf-8")
             self.assertEqual(launcher.self_check()["code"], "STATUS_TAMPERED")
 
+    def test_desktop_host_is_required_for_release_and_verified_before_launch(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            host = _desktop_binary(root / "host")
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                desktop_binary=host,
+                require_desktop_host=True,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            packaged = result.staging_dir / "app" / "bin" / "DubFlow.exe"
+            self.assertEqual(packaged.read_bytes(), host.read_bytes())
+            artifact = next(item for item in result.manifest.artifacts if item.path == "app/bin/DubFlow.exe")
+            self.assertTrue(artifact.executable)
+
+            install_root = root / "install"
+            install_bundle(result.staging_dir, install_root)
+            launcher_path = install_root / "versions" / "0.1.0-rc1" / "app" / "packaging" / "release" / "launcher.py"
+            spec = importlib.util.spec_from_file_location("installed_dubflow_launcher_host", launcher_path)
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            launcher = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(launcher)
+            process = mock.Mock(pid=4242)
+            with mock.patch.object(launcher.subprocess, "Popen", return_value=process) as popen:
+                self.assertEqual(launcher.main([]), 0)
+            popen.assert_called_once()
+            installed_host = install_root / "versions" / "0.1.0-rc1" / "app" / "bin" / "DubFlow.exe"
+            self.assertEqual(Path(popen.call_args.args[0][0]).resolve(), installed_host.resolve())
+
+            installed_host.write_bytes(b"tampered")
+            with mock.patch.object(launcher.subprocess, "Popen") as popen:
+                self.assertEqual(launcher.main([]), 3)
+            popen.assert_not_called()
+
+    def test_required_desktop_host_missing_fails_build(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            with self.assertRaisesRegex(BuildError, "desktop host binary is required"):
+                build_bundle(
+                    source_root=".",
+                    output_dir=root / "out",
+                    version="0.1.0-rc1",
+                    source_sha=SOURCE_SHA,
+                    runtime_root=runtime,
+                    require_desktop_host=True,
+                    source_date_epoch=SOURCE_DATE_EPOCH,
+                )
+
     def test_setup_bootstrap_is_user_owned_and_embeds_the_release_payload(self) -> None:
         source = Path("packaging/release/windows_setup.rs").read_text(encoding="utf-8")
         workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
@@ -387,6 +451,12 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertNotIn("requireAdministrator", source)
         self.assertNotIn("7z.sfx", workflow)
         self.assertIn("target-feature=+crt-static", workflow)
+        self.assertIn("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020", workflow)
+        self.assertIn("npm run tauri:build --prefix apps/desktop", workflow)
+        self.assertIn("--desktop-binary", workflow)
+        self.assertIn("--require-desktop-host", workflow)
+        self.assertIn("Smoke install and launch desktop host", workflow)
+        self.assertIn("launch_smoke = 'passed'", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("contents: write", workflow)
         self.assertIn("windows-x64.zip.sha256", workflow)

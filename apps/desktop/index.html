@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+    />
+    <title>DubFlow Local</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main id="app" aria-live="polite">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">DUBFLOW LOCAL</p>
+          <h1>Video localization workspace</h1>
+          <p class="lede">Chuẩn bị hàng đợi video để xử lý cục bộ.</p>
+        </div>
+        <div class="release-card">
+          <span id="release-version">Đang đọc phiên bản…</span>
+          <span id="release-channel" class="pill">candidate</span>
+        </div>
+      </section>
+
+      <section class="notice" role="status">
+        <strong>Backend processing chưa được đóng gói trong bản này.</strong>
+        <span>Giao diện và hàng đợi đang ở chế độ preview; không có dữ liệu giả nào được đánh dấu là kết quả sản xuất.</span>
+      </section>
+
+      <section class="toolbar" aria-label="Queue actions">
+        <button id="add-files" class="primary" type="button">Thêm video</button>
+        <input id="file-picker" type="file" accept="video/*" multiple hidden />
+        <button id="clear-queue" type="button">Xóa hàng đợi</button>
+        <span id="queue-summary" class="summary">0 video</span>
+      </section>
+
+      <section class="workspace">
+        <div class="queue-panel">
+          <div class="panel-heading">
+            <h2>Hàng đợi</h2>
+            <span id="queue-state" class="muted">Sẵn sàng</span>
+          </div>
+          <ul id="queue-list" class="queue-list">
+            <li class="empty">Chưa có video. Bấm “Thêm video” để bắt đầu.</li>
+          </ul>
+        </div>
+        <aside class="detail-panel">
+          <h2>Chi tiết</h2>
+          <div id="job-detail" class="detail-empty">Chọn một video trong hàng đợi.</div>
+          <button id="start-processing" class="primary full" type="button" disabled>Bắt đầu xử lý</button>
+          <p class="hint">Nút sẽ được bật khi supervisor xử lý thật được tích hợp.</p>
+        </aside>
+      </section>
+    </main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

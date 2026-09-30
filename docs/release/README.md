@@ -5,6 +5,12 @@ builder produces a versioned x64 bundle from one source commit and records the
 source SHA, package manifest version, runtime version, file hashes, and build
 metadata in a machine-readable release manifest.
 
+The Windows release workflow builds the native desktop host before invoking the
+stdlib-only bundle builder. A published bundle must contain the executable at
+`app/bin/DubFlow.exe`; the builder fails closed when `--require-desktop-host`
+is set. The installed `DubFlow.cmd` validates that manifest entry and its hash
+before starting the host. `--self-check` remains a diagnostics-only path.
+
 The bootstrap entrypoint is app-owned. It stages files below the user-owned
 DubFlow installation root, verifies size, SHA-256, and signature metadata before
 activation, and writes state atomically. It never asks the user to install
@@ -44,7 +50,8 @@ python -m packaging.release.builder \
 ```
 
 The resulting ZIP contains `setup.cmd` and `setup.ps1`. The Windows release
-workflow additionally compiles `packaging/release/windows_setup.rs` into a
+workflow first builds the Tauri desktop host, then additionally compiles
+`packaging/release/windows_setup.rs` into a
 self-extracting `*-setup.exe`. The Rust bootstrapper embeds the exact ZIP,
 uses inbox PowerShell only for extraction, launches `setup.cmd` under the
 current user token, and does not request elevation. It uploads the ZIP,
