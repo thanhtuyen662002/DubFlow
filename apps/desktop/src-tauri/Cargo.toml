@@ -6,7 +6,7 @@ authors = ["DubFlow contributors"]
 license = "MIT"
 repository = "https://github.com/thanhtuyen662002/DubFlow"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.90"
 
 [[bin]]
 name = "DubFlow"
@@ -17,7 +17,7 @@ tauri-build = { version = "=2.7.0", features = [] }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "=2.7.0", features = [] }
+tauri = { version = "=2.12.0", features = [] }
 
 [features]
 default = ["custom-protocol"]
