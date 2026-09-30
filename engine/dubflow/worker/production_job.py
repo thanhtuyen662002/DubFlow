@@ -701,7 +701,11 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
 
     final_path = config.output_dir / "final_vi.mp4"
     render_stage = "render-dubbed" if audio_path is not None else "render"
-    if not _stage_ready(checkpoint, render_stage, (final_path,)):
+    # A successful B2 run always re-renders against the newly verified mix.
+    # This prevents a changed voice-pack hash or regenerated mix from being
+    # hidden by a stale final-video checkpoint after a resumable restart.
+    render_ready = audio_path is None and _stage_ready(checkpoint, render_stage, (final_path,))
+    if not render_ready:
         emitter.progress(0.74, "Đang render video H.264/AAC")
         media.render(
             config.source_path,
