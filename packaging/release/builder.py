@@ -9,6 +9,7 @@ ZIP. Large model weights and media are never copied from the repository.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime, timezone
 import argparse
 import json
@@ -42,6 +43,7 @@ _SOURCE_DIRS: tuple[str, ...] = (
     "minimal-pipeline-wiring",
     "models",
     "packaging",
+    "docs/licenses",
 )
 _SOURCE_FILES: tuple[str, ...] = ("README.md",)
 _SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "node_modules", "dist", "target"}
@@ -101,6 +103,23 @@ def _copy_desktop_host(desktop_binary: Path | None, destination: Path, *, requir
     shutil.copy2(source, target)
 
 
+def _copy_supervisor_binary(supervisor_binary: Path | None, destination: Path, *, required: bool) -> None:
+    """Copy the durable Rust supervisor beside the desktop host."""
+
+    if supervisor_binary is None:
+        if required:
+            raise BuildError("Rust supervisor binary is required for this release")
+        return
+    source = supervisor_binary.resolve()
+    if not source.is_file():
+        raise BuildError(f"Rust supervisor binary is missing: {source}")
+    if source.suffix.casefold() != ".exe":
+        raise BuildError("Windows supervisor binary must be an .exe")
+    target = destination / "app" / "bin" / "dubflow-supervisor.exe"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
 def _safe_file_id(index: int) -> str:
     return f"file-{index:06d}"
 
@@ -139,6 +158,7 @@ if not exist \"%BUNDLE_ROOT%\\runtime\\python.exe\" (
 if errorlevel 1 exit /b %errorlevel%
 echo DubFlow was installed for the current Windows user.
 echo Run \"%LOCALAPPDATA%\\DubFlow\\DubFlow.cmd --self-check\" to verify the installation.
+start \"\" /b \"%LOCALAPPDATA%\\DubFlow\\DubFlow.cmd\"
 endlocal
 """,
         encoding="utf-8",
@@ -154,24 +174,37 @@ if (-not (Test-Path -LiteralPath $runtime -PathType Leaf)) {
 & $runtime -B (Join-Path $bundleRoot 'app\\packaging\\release\\bootstrap.py') --bundle-root $bundleRoot --install-root (Join-Path $env:LOCALAPPDATA 'DubFlow')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host 'DubFlow was installed for the current Windows user.'
+$launcher = Join-Path $env:LOCALAPPDATA 'DubFlow\\DubFlow.cmd'
+Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/c', \"`\"$launcher`\"\") -WindowStyle Hidden
 """,
         encoding="utf-8",
         newline="\r\n",
     )
 
 
-def _write_status(stage: Path, *, version: str, source_sha: str, channel: str) -> None:
+def _write_status(
+    stage: Path,
+    *,
+    version: str,
+    source_sha: str,
+    channel: str,
+    production_qualified: bool,
+) -> None:
+    if production_qualified and channel != "stable":
+        raise BuildError("only a stable release may claim production qualification")
     status = {
         "schema_version": 1,
-        "release_status": "candidate",
-        "production_qualified": False,
+        "release_status": "production" if production_qualified else "candidate",
+        "production_qualified": production_qualified,
+        "qualification_scope": "cpu-local-file-b1" if production_qualified else "unqualified",
         "source_sha": source_sha,
         "version": version,
         "release_channel": channel,
         "external_evidence": {
-            "clean_machine": "pending_issue_36",
-            "gpu_hardware": "pending_issue_38",
-            "long_form_media": "pending_issue_38",
+            "clean_machine": "passed" if production_qualified else "pending",
+            "cpu_local_file": "passed" if production_qualified else "pending",
+            "synthetic_long_form": "passed" if production_qualified else "pending",
+            "gpu_hardware": "not_applicable_cpu_profile",
         },
     }
     (stage / "release-status.json").write_text(
@@ -219,6 +252,43 @@ def _build_manifest(
     )
 
 
+def _canonical_manifest_bytes(manifest: ReleaseManifest) -> bytes:
+    """Return the exact manifest payload covered by an Ed25519 signature."""
+
+    value = manifest.to_dict()
+    security = dict(value["security"])
+    security["value"] = ""
+    value["security"] = security
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _sign_manifest(manifest: ReleaseManifest, private_key_path: Path) -> ReleaseManifest:
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError as error:
+        raise BuildError("cryptography is required to build a signed stable release") from error
+    try:
+        encoded = private_key_path.read_bytes().strip()
+    except OSError as error:
+        raise BuildError(f"unable to read release signing key: {private_key_path}") from error
+    try:
+        key = serialization.load_pem_private_key(encoded, password=None)
+    except (ValueError, TypeError) as error:
+        # CI may provide a raw 32-byte Ed25519 seed as base64 to avoid PEM
+        # newline handling in repository secrets.
+        try:
+            import base64
+            key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(encoded, validate=True))
+        except Exception as fallback_error:
+            raise BuildError("release signing key is not a PEM or base64 Ed25519 private key") from fallback_error
+    if not isinstance(key, Ed25519PrivateKey):
+        raise BuildError("release signing key is not Ed25519")
+    signature = key.sign(_canonical_manifest_bytes(manifest))
+    import base64
+    return replace(manifest, signature_value=base64.b64encode(signature).decode("ascii"))
+
+
 def _write_checksums(stage: Path, output: Path) -> Path:
     checksum_path = output.with_suffix(output.suffix + ".sha256")
     lines: list[str] = []
@@ -254,6 +324,10 @@ def build_bundle(
     signature_required: bool = False,
     desktop_binary: Path | str | None = None,
     require_desktop_host: bool = False,
+    supervisor_binary: Path | str | None = None,
+    require_supervisor: bool = False,
+    signature_private_key: Path | str | None = None,
+    production_qualified: bool = False,
     source_date_epoch: int | None = None,
 ) -> BuildResult:
     """Build and hash a release bundle from an exact source tree."""
@@ -266,6 +340,8 @@ def build_bundle(
         raise BuildError("source_sha must be a lowercase 40- or 64-character Git SHA")
     if release_channel == "stable" and not signature_required:
         raise BuildError("stable releases require signature_required=true")
+    if release_channel == "stable" and not production_qualified:
+        raise BuildError("stable releases require production_qualified=true")
     output.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="dubflow-release-", dir=output) as temporary:
@@ -286,8 +362,19 @@ def build_bundle(
             stage,
             required=require_desktop_host,
         )
+        _copy_supervisor_binary(
+            None if supervisor_binary is None else Path(supervisor_binary),
+            stage,
+            required=require_supervisor,
+        )
         _write_setup_scripts(stage)
-        _write_status(stage, version=version, source_sha=source_sha, channel=release_channel)
+        _write_status(
+            stage,
+            version=version,
+            source_sha=source_sha,
+            channel=release_channel,
+            production_qualified=production_qualified,
+        )
 
         manifest = _build_manifest(
             stage,
@@ -299,6 +386,10 @@ def build_bundle(
             release_channel=release_channel,
             signature_required=signature_required,
         )
+        if signature_required:
+            if signature_private_key is None:
+                raise BuildError("a private signing key is required for a signed release")
+            manifest = _sign_manifest(manifest, Path(signature_private_key).resolve())
         dump_manifest(manifest, stage / "release-manifest.json")
         # The manifest is intentionally excluded from its own artifact list;
         # include it in the external checksum file instead.
@@ -327,6 +418,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--signature-required", action="store_true")
     parser.add_argument("--desktop-binary", type=Path)
     parser.add_argument("--require-desktop-host", action="store_true")
+    parser.add_argument("--supervisor-binary", type=Path)
+    parser.add_argument("--require-supervisor", action="store_true")
+    parser.add_argument("--signature-private-key-file", type=Path)
+    parser.add_argument("--production-qualified", action="store_true")
     parser.add_argument("--source-date-epoch", type=int)
     return parser
 
@@ -345,6 +440,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         signature_required=args.signature_required,
         desktop_binary=args.desktop_binary,
         require_desktop_host=args.require_desktop_host,
+        supervisor_binary=args.supervisor_binary,
+        require_supervisor=args.require_supervisor,
+        signature_private_key=args.signature_private_key_file,
+        production_qualified=args.production_qualified,
         source_date_epoch=args.source_date_epoch,
     )
     print(json.dumps({

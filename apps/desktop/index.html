@@ -25,13 +25,12 @@
       </section>
 
       <section class="notice" role="status">
-        <strong>Backend processing chưa được đóng gói trong bản này.</strong>
-        <span>Giao diện và hàng đợi đang ở chế độ preview; không có dữ liệu giả nào được đánh dấu là kết quả sản xuất.</span>
+        <strong>CPU local-file production profile.</strong>
+        <span>Chọn video trên máy, bấm bắt đầu để supervisor xử lý bằng runtime/model đã kiểm chứng; output gồm MP4 H.264/AAC, SRT, ASS và timeline editable.</span>
       </section>
 
       <section class="toolbar" aria-label="Queue actions">
         <button id="add-files" class="primary" type="button">Thêm video</button>
-        <input id="file-picker" type="file" accept="video/*" multiple hidden />
         <button id="clear-queue" type="button">Xóa hàng đợi</button>
         <span id="queue-summary" class="summary">0 video</span>
       </section>
@@ -50,7 +49,8 @@
           <h2>Chi tiết</h2>
           <div id="job-detail" class="detail-empty">Chọn một video trong hàng đợi.</div>
           <button id="start-processing" class="primary full" type="button" disabled>Bắt đầu xử lý</button>
-          <p class="hint">Nút sẽ được bật khi supervisor xử lý thật được tích hợp.</p>
+          <button id="cancel-processing" class="full" type="button" disabled>Hủy job đang chạy</button>
+          <p class="hint">Hỗ trợ bản CPU local-file. Model được tải và kiểm tra hash ở lần chạy đầu.</p>
         </aside>
       </section>
     </main>

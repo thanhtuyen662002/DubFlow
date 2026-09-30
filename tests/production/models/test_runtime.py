@@ -37,7 +37,7 @@ class _FakeResponse:
 
 
 class ModelDownloadResumeTests(unittest.TestCase):
-    def _profile(self, directory: Path, payload: bytes, url: str = "http://models.test/model.bin") -> Path:
+    def _profile(self, directory: Path, payload: bytes, url: str = "https://models.test/model.bin") -> Path:
         profile = directory / "profile.json"
         profile.write_text(
             json.dumps(

@@ -1,7 +1,11 @@
-# FFmpeg distribution decision
+# FFmpeg redistribution
 
-The reference catalog records FFmpeg as a `code-bearing` `ffmpeg` entry with a
-pinned version, SHA-256, signature metadata, and an LGPL distribution decision.
-The eventual shipped build must retain the corresponding license text, notices,
-and source-offer obligations for the exact build. A build with a different
-license or codec configuration requires a new manifest entry and review.
+DubFlow's Windows runtime uses the LGPL build from the pinned BtbN
+FFmpeg-Builds autobuild `autobuild-2026-09-29-13-10`, asset
+`ffmpeg-n9.0.2-14-gebafaee10a-win64-lgpl-9.0.zip`.
+
+The release workflow records and verifies the archive SHA-256 before copying
+`ffmpeg.exe` and `ffprobe.exe` into the app-owned runtime. The corresponding
+FFmpeg source and build instructions are available from the
+[FFmpeg-Builds repository](https://github.com/BtbN/FFmpeg-Builds). This file
+is included in every release bundle with the runtime binaries.

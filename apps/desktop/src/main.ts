@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { connectDesktopShell } from "./shell/desktop_shell.ts";
-import { createMockTransport } from "./shell/mock_transport.ts";
-import { type SnapshotStorage } from "./features/queue/model.ts";
+import { QueueController, type SnapshotStorage } from "./features/queue/model.ts";
+import type { JobStatus } from "./features/job_status/status.ts";
 
 type ReleaseInfo = { version: string; channel: string; backend: string };
 
-const STORAGE_KEY = "dubflow.preview.queue.v1";
+const STORAGE_KEY = "dubflow.queue.v2";
 
 function browserStorage(): SnapshotStorage {
   return {
@@ -26,7 +26,10 @@ function browserStorage(): SnapshotStorage {
   };
 }
 
-const transport = createMockTransport(browserStorage());
+type StatusResponse = { status: JobStatus; output_path: string | null };
+
+const queue = new QueueController(browserStorage());
+const pollers = new Map<string, number>();
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const element = document.querySelector<T>(selector);
@@ -59,7 +62,7 @@ function render(model: Parameters<Parameters<typeof connectDesktopShell>[1]>[0])
       (item.querySelector(".job-title") as HTMLElement).textContent = row.title;
       (item.querySelector(".job-progress") as HTMLElement).textContent = row.progress;
       (item.querySelector(".job-status") as HTMLElement).textContent = row.status;
-      const select = () => transport.queue.selectJob(row.id);
+      const select = () => queue.selectJob(row.id);
       item.addEventListener("click", select);
       item.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") select();
@@ -92,19 +95,107 @@ function render(model: Parameters<Parameters<typeof connectDesktopShell>[1]>[0])
   detail.append(card);
 }
 
-const shell = connectDesktopShell(transport.queue, render);
+const shell = connectDesktopShell(queue, render);
 
-$("#add-files").addEventListener("click", () => $("#file-picker").click());
-$("#file-picker").addEventListener("change", (event) => {
-  const input = event.currentTarget as HTMLInputElement;
-  const paths = Array.from(input.files ?? []).map((file) => file.name);
-  if (paths.length > 0) transport.queue.addPaths(paths);
-  input.value = "";
+async function refreshJob(jobId: string): Promise<void> {
+  try {
+    const response = await invoke<StatusResponse | null>("job_status", { jobId });
+    if (!response) return;
+    const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === jobId);
+    if (!job) return;
+    queue.updateStatus(jobId, response.status, response.output_path);
+    if (response.status.state === "COMPLETED" || response.status.state === "FAILED") {
+      const timer = pollers.get(jobId);
+      if (timer !== undefined) window.clearInterval(timer);
+      pollers.delete(jobId);
+    }
+  } catch (error) {
+    const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === jobId);
+    if (job && job.status.state === "RUNNING") {
+      queue.updateStatus(jobId, {
+        ...job.status,
+        state: "WORKER_LOST",
+        reason: "status_unavailable",
+        message: `Không đọc được trạng thái supervisor: ${String(error).slice(0, 200)}`,
+        resource: { ...job.status.resource, held: false },
+      });
+    }
+  }
+}
+
+function beginPolling(jobId: string): void {
+  if (pollers.has(jobId)) return;
+  void refreshJob(jobId);
+  const timer = window.setInterval(() => void refreshJob(jobId), 1000);
+  pollers.set(jobId, timer);
+}
+
+$("#add-files").addEventListener("click", async () => {
+  try {
+    const paths = await invoke<string[]>("pick_files");
+    queue.addPaths(paths);
+  } catch (error) {
+    $("#queue-state").textContent = `Không mở được hộp thoại file: ${String(error).slice(0, 160)}`;
+  }
+});
+
+$("#start-processing").addEventListener("click", async () => {
+  const selected = queue.getSnapshot().jobs.find((job) => job.id === queue.getSnapshot().selected_job_id);
+  if (!selected) return;
+  const button = $("#start-processing") as HTMLButtonElement;
+  button.disabled = true;
+  try {
+    await invoke("start_job", { jobId: selected.id, sourcePath: selected.sourcePath, outputDir: null });
+    beginPolling(selected.id);
+    await refreshJob(selected.id);
+  } catch (error) {
+    queue.updateStatus(selected.id, {
+      ...selected.status,
+      state: "FAILED",
+      reason: "supervisor_start_failed",
+      message: String(error).slice(0, 400),
+      resource: { ...selected.status.resource, held: false },
+    });
+  } finally {
+    const current = queue.getSnapshot().jobs.find((job) => job.id === selected.id);
+    button.disabled = !current || !["QUEUED", "RECOVERED", "FAILED"].includes(current.status.state);
+  }
+});
+
+const cancelButton = $("#cancel-processing") as HTMLButtonElement;
+cancelButton.addEventListener("click", async () => {
+  const selected = queue.getSnapshot().jobs.find((job) => job.id === queue.getSnapshot().selected_job_id);
+  if (!selected || !["RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) return;
+  cancelButton.disabled = true;
+  try {
+    await invoke("cancel_job", { jobId: selected.id });
+    beginPolling(selected.id);
+  } catch (error) {
+    queue.updateStatus(selected.id, {
+      ...selected.status,
+      reason: "cancel_failed",
+      message: "Không thể hủy job: " + String(error).slice(0, 300),
+    });
+  }
 });
 
 $("#clear-queue").addEventListener("click", () => {
-  for (const job of transport.queue.getSnapshot().jobs) transport.queue.removeJob(job.id);
+  for (const job of queue.getSnapshot().jobs) {
+    const timer = pollers.get(job.id);
+    if (timer !== undefined) window.clearInterval(timer);
+    pollers.delete(job.id);
+    queue.removeJob(job.id);
+  }
 });
+
+const startButton = $("#start-processing") as HTMLButtonElement;
+queue.subscribe((snapshot) => {
+  const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
+  startButton.disabled = !selected || !["QUEUED", "RECOVERED", "FAILED"].includes(selected.status.state);
+  cancelButton.disabled = !selected || !["RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state);
+  if (selected && ["RUNNING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) beginPolling(selected.id);
+});
+for (const job of queue.getSnapshot().jobs) beginPolling(job.id);
 
 void invoke<ReleaseInfo>("release_info")
   .then((info) => {

@@ -62,8 +62,8 @@ class ModelArtifact:
         path = Path(relative_path)
         if path.is_absolute() or "\\" in relative_path or any(part in {"", ".", ".."} for part in path.parts):
             raise ModelBootstrapError("MODEL_MANIFEST_INVALID", f"unsafe artifact path for {artifact_id}")
-        if not (url.startswith("https://") or url.startswith("http://")):
-            raise ModelBootstrapError("MODEL_MANIFEST_INVALID", f"unsupported artifact URL for {artifact_id}")
+        if not url.startswith("https://"):
+            raise ModelBootstrapError("MODEL_MANIFEST_INVALID", f"artifact URL must use HTTPS for {artifact_id}")
         return cls(artifact_id, relative_path.replace("\\", "/"), url, digest, size)
 
 
@@ -108,6 +108,23 @@ def _safe_target(root: Path, relative_path: str) -> Path:
         if parent.exists() and parent.is_symlink():
             raise ModelBootstrapError("MODEL_PATH_UNSAFE", f"symlink in model path: {parent}")
     return target
+
+
+def _reject_link_components(path: Path, label: str) -> None:
+    """Reject symlinks/junctions before resolving a user-owned model root."""
+
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor) if absolute.anchor else Path()
+    for part in absolute.parts:
+        if not part or part == absolute.anchor:
+            continue
+        current = current / part
+        try:
+            is_junction = getattr(current, "is_junction", None)
+            if current.is_symlink() or (is_junction is not None and is_junction()):
+                raise ModelBootstrapError("MODEL_PATH_UNSAFE", f"{label} contains a symlink or junction: {current}")
+        except OSError as error:
+            raise ModelBootstrapError("MODEL_PATH_UNSAFE", f"unable to inspect {label}: {current}") from error
 
 
 def _verified(path: Path, artifact: ModelArtifact) -> bool:
@@ -349,10 +366,11 @@ def _download(artifact: ModelArtifact, target: Path, progress: Progress | None) 
 
 def ensure_model_profile(profile_path: Path | str, model_root: Path | str, *, progress: Progress | None = None) -> dict[str, Any]:
     profile_id, artifacts = load_profile(profile_path)
-    root = Path(model_root).expanduser().resolve()
+    requested_root = Path(model_root).expanduser()
+    _reject_link_components(requested_root, "model root")
+    root = Path(os.path.abspath(os.fspath(requested_root)))
     root.mkdir(parents=True, exist_ok=True)
-    if root.is_symlink():
-        raise ModelBootstrapError("MODEL_PATH_UNSAFE", "model root cannot be a symlink")
+    _reject_link_components(root, "model root")
     downloaded = 0
     for artifact in artifacts:
         target = _safe_target(root, artifact.relative_path)
