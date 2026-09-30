@@ -782,6 +782,7 @@ fn run_one_shot(
     }
     let mut contract_status = default_contract_status();
     let mut output_path: Option<String> = None;
+    let mut terminal_event: Option<String> = None;
     write_status_file(&final_status_path, &spec.job_id, &contract_status, None)?;
     let control = Arc::new(JobControl::new());
     let (tx, rx) = mpsc::channel();
@@ -801,6 +802,11 @@ fn run_one_shot(
         match outcome {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
+                best_effort_fail_job(
+                    &runtime_for_worker,
+                    &spec_for_worker.job_id,
+                    &format!("SUPERVISOR_JOB_ERROR: {error}"),
+                );
                 let _ = tx_for_worker.send(InternalMessage::Output(error_value(
                     Some(&spec_for_worker.job_id),
                     "SUPERVISOR_JOB_ERROR",
@@ -809,6 +815,11 @@ fn run_one_shot(
                 )));
             }
             Err(_) => {
+                best_effort_fail_job(
+                    &runtime_for_worker,
+                    &spec_for_worker.job_id,
+                    "SUPERVISOR_PANIC: supervisor job thread panicked",
+                );
                 let _ = tx_for_worker.send(InternalMessage::Output(error_value(
                     Some(&spec_for_worker.job_id),
                     "SUPERVISOR_PANIC",
@@ -824,6 +835,9 @@ fn run_one_shot(
     loop {
         match rx.recv() {
             Ok(InternalMessage::Output(value)) => {
+                if let Some(event_name) = terminal_event_name(&value) {
+                    terminal_event = Some(event_name.to_owned());
+                }
                 apply_status_event(&mut contract_status, &value, &mut output_path, &spec);
                 write_status_file(
                     &final_status_path,
@@ -844,12 +858,30 @@ fn run_one_shot(
     }
     let store = DurableStore::open(&runtime.db)?;
     let durable_status = store.job_status(&spec.job_id).unwrap_or(JobStatus::Failed);
-    apply_durable_status(
-        &mut contract_status,
+    // A worker-thread error can be observed before its best-effort durable
+    // failure write completes (or when the SQLite file itself is unavailable).
+    // Do not replace that terminal contract with a stale queued/running row.
+    // A terminal durable cancellation/success/failure remains authoritative if
+    // it disagrees with the final event because it records the user's intent
+    // or the committed artifact transaction.
+    let durable_is_terminal = matches!(
         durable_status,
-        &mut output_path,
-        &spec,
+        JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled
     );
+    if terminal_event.is_none() || durable_is_terminal {
+        if !(terminal_event.as_deref() == Some("failed") && durable_status == JobStatus::Failed) {
+            apply_durable_status(
+                &mut contract_status,
+                durable_status,
+                &mut output_path,
+                &spec,
+            );
+        } else {
+            contract_status["resource"]["held"] = Value::Bool(false);
+        }
+    } else {
+        contract_status["resource"]["held"] = Value::Bool(false);
+    }
     write_status_file(
         &final_status_path,
         &spec.job_id,
@@ -870,6 +902,7 @@ fn run_cancel(
     job_id: &str,
     reason: &str,
 ) -> SupervisorResult<()> {
+    validate_job_id(job_id)?;
     if !data_root.is_absolute() {
         return Err(SupervisorError::Invalid(
             "--data-root must be absolute".into(),
@@ -880,10 +913,19 @@ fn run_cancel(
         return Err(SupervisorError::Invalid("--db must be absolute".into()));
     }
     let store = DurableStore::open(&db)?;
+    let previous_status = store.job_status(job_id)?;
     cancel_durable(&store, job_id, reason)?;
+    let status = store.job_status(job_id)?;
     println!(
         "{}",
-        serde_json::to_string(&json!({"status":"cancelled", "job_id":job_id}))?
+        serde_json::to_string(&json!({
+            "status": job_status_name(status),
+            "job_id": job_id,
+            "previous_status": job_status_name(previous_status),
+            "changed": status != previous_status,
+            "reason": reason,
+            "termination": if status == JobStatus::Cancelled && previous_status != JobStatus::Cancelled { "requested" } else { "not_needed" },
+        }))?
     );
     Ok(())
 }
@@ -910,6 +952,26 @@ fn failed_contract_status(code: &str, detail: &str) -> Value {
         detail.chars().take(3800).collect::<String>()
     ));
     status
+}
+
+fn terminal_event_name(value: &Value) -> Option<&'static str> {
+    match value.get("event").and_then(Value::as_str) {
+        Some("completed") => Some("completed"),
+        Some("cancelled") => Some("cancelled"),
+        Some("failed") | Some("error") => Some("failed"),
+        _ => None,
+    }
+}
+
+/// Persist a supervisor-side failure when an unexpected thread error occurs.
+/// The helper intentionally ignores errors: the caller is already handling an
+/// execution failure, and the status JSON event remains the recovery record if
+/// the SQLite database cannot be opened or the transition is no longer legal
+/// (for example, a concurrent cancellation already made the job terminal).
+fn best_effort_fail_job(runtime: &RuntimePaths, job_id: &str, reason: &str) {
+    if let Ok(store) = DurableStore::open(&runtime.db) {
+        let _ = store.fail_job(job_id, reason, now_ms());
+    }
 }
 
 fn write_status_file(
@@ -1088,13 +1150,68 @@ fn atomic_json_file(path: &Path, value: &Value) -> SupervisorResult<()> {
         serde_json::to_writer_pretty(&mut file, value)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
-        fs::rename(&temporary, path)?;
+        replace_atomic(&temporary, path)?;
         Ok::<(), SupervisorError>(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+/// Replace a file without exposing a partially-written status document.
+///
+/// `std::fs::rename` has the desired replacement semantics on Unix, but on
+/// Windows it fails with `ERROR_ALREADY_EXISTS` when the destination exists.
+/// `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` provides the equivalent
+/// single-filesystem replacement on Windows while retaining the portable
+/// implementation everywhere else.
+fn replace_atomic(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn MoveFileExW(
+                existing_file_name: *const u16,
+                new_file_name: *const u16,
+                flags: u32,
+            ) -> i32;
+        }
+
+        const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+        const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+        let source_wide: Vec<u16> = source
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let destination_wide: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // SAFETY: both buffers are NUL-terminated UTF-16 strings whose
+        // pointers remain valid for the duration of the system call.
+        let success = unsafe {
+            MoveFileExW(
+                source_wide.as_ptr(),
+                destination_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if success == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination)
+    }
 }
 
 fn spawn_stdin_reader(tx: Sender<InternalMessage>) {
@@ -1272,6 +1389,11 @@ fn handle_request(
                 match outcome {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => {
+                        best_effort_fail_job(
+                            &runtime,
+                            &job_id,
+                            &format!("SUPERVISOR_JOB_ERROR: {error}"),
+                        );
                         let _ = tx.send(InternalMessage::Output(error_value(
                             Some(&job_id),
                             "SUPERVISOR_JOB_ERROR",
@@ -1280,6 +1402,11 @@ fn handle_request(
                         )));
                     }
                     Err(_) => {
+                        best_effort_fail_job(
+                            &runtime,
+                            &job_id,
+                            "SUPERVISOR_PANIC: supervisor job thread panicked",
+                        );
                         let _ = tx.send(InternalMessage::Output(error_value(
                             Some(&job_id),
                             "SUPERVISOR_PANIC",
@@ -1344,6 +1471,15 @@ fn execute_job(
     loop {
         if control.cancelled.load(Ordering::Acquire) {
             cancel_durable(&store, &spec.job_id, "user requested cancellation")?;
+            let _ = tx.send(InternalMessage::Output(
+                json!({"event":"cancelled", "job_id":spec.job_id, "status":"cancelled"}),
+            ));
+            return Ok(());
+        }
+        // `cancel` may be issued by a separate one-shot supervisor process.
+        // Observe that durable intent before starting another attempt so a
+        // cancelled job cannot be resurrected by a retry loop.
+        if matches!(store.job_status(&spec.job_id)?, JobStatus::Cancelled) {
             let _ = tx.send(InternalMessage::Output(
                 json!({"event":"cancelled", "job_id":spec.job_id, "status":"cancelled"}),
             ));
@@ -1610,8 +1746,9 @@ fn run_worker_attempt(
     let mut terminal_status = None;
     let mut worker_failure = None;
     let started = Instant::now();
+    let mut last_message_at = Instant::now();
     loop {
-        match line_rx.recv_timeout(HEARTBEAT_TIMEOUT) {
+        match line_rx.recv_timeout(Duration::from_millis(250)) {
             Ok(Ok(Some(line))) => {
                 let envelope = match Envelope::from_line(&line) {
                     Ok(envelope) => envelope,
@@ -1632,6 +1769,7 @@ fn run_worker_attempt(
                 if let Err(error) = validator.accept(&envelope) {
                     return abort_worker(control, &child, stderr_thread, error.into());
                 }
+                last_message_at = Instant::now();
                 match envelope.payload {
                     Payload::Progress {
                         fraction,
@@ -1694,6 +1832,18 @@ fn run_worker_attempt(
                 )
             }
             Err(RecvTimeoutError::Timeout) => {
+                if control.cancelled.load(Ordering::Acquire)
+                    || matches!(store.job_status(&spec.job_id), Ok(JobStatus::Cancelled))
+                {
+                    let _ = control.terminate();
+                    let _ = child.lock().map(|mut child_guard| child_guard.wait());
+                    control.clear_child();
+                    let _ = stderr_thread.join();
+                    return Ok(WorkerOutcome::Cancelled);
+                }
+                if last_message_at.elapsed() < HEARTBEAT_TIMEOUT {
+                    continue;
+                }
                 let _ = control.terminate();
                 let _ = child.lock().map(|mut child_guard| child_guard.wait());
                 control.clear_child();
@@ -1721,7 +1871,9 @@ fn run_worker_attempt(
         .join()
         .unwrap_or_else(|_| Ok(String::new()))
         .unwrap_or_default();
-    if control.cancelled.load(Ordering::Acquire) {
+    if control.cancelled.load(Ordering::Acquire)
+        || matches!(store.job_status(&spec.job_id), Ok(JobStatus::Cancelled))
+    {
         return Ok(WorkerOutcome::Cancelled);
     }
     if let Some((code, condition, retryable)) = worker_failure {
@@ -1970,6 +2122,23 @@ mod tests {
         assert_eq!(artifact_state_name(ArtifactState::Committed), "committed");
         let id = format!("{}-{}-{}-a{}", "job", STAGE_ID, "final-video", 2);
         assert!(id.ends_with("-a2"));
+    }
+
+    #[test]
+    fn atomic_json_replaces_an_existing_status_file() {
+        let path = std::env::temp_dir().join(format!(
+            "dubflow-supervisor-status-{}-{}.json",
+            std::process::id(),
+            ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let first = json!({"state":"RUNNING", "heartbeat":1});
+        let second = json!({"state":"COMPLETED", "heartbeat":2});
+        atomic_json_file(&path, &first).unwrap();
+        atomic_json_file(&path, &second).unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written, second);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
