@@ -215,10 +215,13 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
     manifest = _json(output_dir / "job_manifest.json")
     if expect_dubbing:
         editable = output_dir / "editable"
+        manifest = _json(output_dir / "job_manifest.json")
         for name in ("source_audio.wav", "dialogue_stem.wav", "final_mix.wav"):
             path = editable / name
             if not path.is_file() or path.stat().st_size <= 0:
-                raise SmokeError(f"B2 editable audio artifact is missing or empty: {path}")
+                audio = manifest.get("audio")
+                warnings = manifest.get("warnings")
+                raise SmokeError(f"B2 editable audio artifact is missing or empty: {path}; audio={audio!r}; warnings={warnings!r}")
         audio = manifest.get("audio")
         if not isinstance(audio, dict) or audio.get("mode") != "dubbed" or audio.get("backend") != "dubflow-vi-builtin-v1":
             raise SmokeError(f"B2 manifest does not prove the app-owned voice path: {audio!r}")
