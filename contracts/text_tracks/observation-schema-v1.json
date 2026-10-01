@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/text_tracks/observation-schema-v1.json",
+  "title": "DubFlow app-owned OCR observation adapter v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "observations"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source_sha256": {"type": "string", "pattern": "^(sha256:)?[0-9a-f]{64}$"},
+    "frame_count": {"type": "integer", "minimum": 0, "maximum": 10000000},
+    "observations": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {"$ref": "#/$defs/observation"}
+    }
+  },
+  "$defs": {
+    "ticks": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "point": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "integer", "minimum": 0, "maximum": 1000000},
+        {"type": "integer", "minimum": 0, "maximum": 1000000}
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "polygon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["points"],
+      "properties": {"points": {"type": "array", "minItems": 4, "maxItems": 64, "items": {"$ref": "#/$defs/point"}}}
+    },
+    "bbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "y": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "width": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "height": {"type": "integer", "minimum": 1, "maximum": 1000000}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_id", "frame_index", "start_ticks", "end_ticks", "text", "confidence"],
+      "properties": {
+        "observation_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "frame_index": {"type": "integer", "minimum": 0, "maximum": 10000000},
+        "start_ticks": {"$ref": "#/$defs/ticks"},
+        "end_ticks": {"$ref": "#/$defs/ticks"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "bbox": {"$ref": "#/$defs/bbox"},
+        "polygon": {"$ref": "#/$defs/polygon"},
+        "confidence": {"type": ["number", "string"], "minimum": 0, "maximum": 1},
+        "role_hint": {"enum": ["dialogue", "watermark", "signage", "danmaku", "ui", "unknown"]},
+        "asr_text": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "asr_utterance_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "angle_milli_degrees": {"type": "integer", "minimum": -180000, "maximum": 180000},
+        "karaoke_progress_milli": {"type": "integer", "minimum": 0, "maximum": 1000}
+      },
+      "anyOf": [{"required": ["bbox"]}, {"required": ["polygon"]}]
+    }
+  }
+}

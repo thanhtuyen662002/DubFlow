@@ -11,6 +11,8 @@ import re
 import unicodedata
 from typing import Iterable, Mapping, Sequence
 
+from .orientation.tracker import Polygon
+
 
 I64_MAX = (1 << 63) - 1
 ROLES = {"dialogue", "watermark", "signage", "danmaku", "ui", "unknown"}
@@ -92,6 +94,11 @@ class OcrObservation:
     role_hint: str | None = None
     asr_text: str | None = None
     asr_utterance_id: str | None = None
+    # Polygon is optional for backwards compatibility with the original
+    # horizontal-observation contract.  Production OCR observations retain the
+    # detector polygon so cleanup and orientation stages never have to
+    # reconstruct geometry from a lossy axis-aligned box.
+    polygon: Polygon | None = None
 
     def __post_init__(self) -> None:
         _text(self.observation_id, "observation_id", 256)
@@ -111,6 +118,8 @@ class OcrObservation:
                 raise ValueError("asr_utterance_id is required with asr_text")
         if self.asr_utterance_id is not None:
             _text(self.asr_utterance_id, "asr_utterance_id", 256)
+        if self.polygon is not None and not isinstance(self.polygon, Polygon):
+            raise ValueError("polygon must be a Polygon")
 
 
 @dataclass(frozen=True)
@@ -225,7 +234,19 @@ class TextIntelligence:
         for track_id in sorted(tracks):
             values = tracks[track_id]
             role, decision, confidence = self._classify(values)
-            segments = [{"observation_id": value.observation_id, "start_ticks": str(value.start_ticks), "end_ticks": str(value.end_ticks), "text": value.text, "bbox": value.bbox.to_dict(), "confidence": format(value.confidence, "f")} for value in values]
+            segments = []
+            for value in values:
+                segment = {
+                    "observation_id": value.observation_id,
+                    "start_ticks": str(value.start_ticks),
+                    "end_ticks": str(value.end_ticks),
+                    "text": value.text,
+                    "bbox": value.bbox.to_dict(),
+                    "confidence": format(value.confidence, "f"),
+                }
+                if value.polygon is not None:
+                    segment["polygon"] = value.polygon.to_dict()
+                segments.append(segment)
             track_payload.append({"track_id": track_id, "role": role, "decision": decision, "confidence": format(confidence, "f"), "segments": segments})
             for value in values:
                 if value.asr_text is not None and _similarity(value.text, value.asr_text) < 0.5:

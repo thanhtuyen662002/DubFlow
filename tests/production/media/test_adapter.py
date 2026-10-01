@@ -205,6 +205,43 @@ class MediaCommandTests(unittest.TestCase):
         self.assertTrue(filter_value.endswith(".ass"))
         self.assertNotIn(str(self.subtitle.resolve()), call)
 
+    def test_visual_masks_use_bounded_argv_filter_and_preserve_audio(self) -> None:
+        runner = RecordingRunner()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        output = adapter.apply_visual_masks(
+            self.source,
+            self.root / "cleaned.mp4",
+            [{"x": 10, "y": 20, "width": 100, "height": 30, "start_ticks": 0, "end_ticks": 1250}],
+        )
+        self.assertTrue(output.is_file())
+        call = runner.calls[-1]
+        filter_value = call[call.index("-vf") + 1]
+        self.assertIn("delogo=x=10:y=20:w=100:h=30", filter_value)
+        self.assertIn("between(t,0,1.25)", filter_value)
+        self.assertIn("0:a:0?", call)
+        self.assertIn("h264_mf", call)
+
+    def test_visual_masks_reject_malformed_intervals(self) -> None:
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=RecordingRunner())
+        with self.assertRaisesRegex(MediaAdapterError, "MEDIA_MASK_INVALID"):
+            adapter.apply_visual_masks(
+                self.source,
+                self.root / "bad.mp4",
+                [{"x": 0, "y": 0, "width": 10, "height": 10, "start_ticks": 100, "end_ticks": 100}],
+            )
+
+    def test_frame_sampling_publishes_non_empty_atomic_directory(self) -> None:
+        runner = RecordingRunner()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        frame_dir = self.root / "frames"
+        frames = adapter.sample_frames(self.source, frame_dir, interval_ms=1000, max_frames=4)
+        self.assertEqual(len(frames), 1)
+        self.assertTrue(frames[0].is_file())
+        call = runner.calls[-1]
+        self.assertIn("fps=1000/1000", call)
+        self.assertIn("-frames:v", call)
+        self.assertFalse(list(self.root.glob(".frames.*.partial")))
+
     def test_failed_command_removes_partial_and_redacts_diagnostic(self) -> None:
         runner = RecordingRunner(fail=True)
         adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
