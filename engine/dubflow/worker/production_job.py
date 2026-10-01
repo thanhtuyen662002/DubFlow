@@ -70,6 +70,8 @@ _prepare_worker_import_path()
 
 from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
+from engine.dubflow.ocr.production import AppOwnedOcrBackend, ProductionOcrError
+from engine.dubflow.subtitle.cleanup import plan_cleanup, verify_cleaned_media
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
 
 
@@ -141,6 +143,10 @@ class WorkerConfig:
     tts_model: Path | None = None
     tts_config: Path | None = None
     checkpoint_path: Path | None = None
+    enable_text_intelligence: bool = False
+    enable_visual_cleanup: bool = False
+    ocr_model_manifest: Path | None = None
+    ocr_observation_path: Path | None = None
 
     @classmethod
     def from_args(cls, args: Mapping[str, Any]) -> "WorkerConfig":
@@ -180,6 +186,10 @@ class WorkerConfig:
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
             checkpoint_path=optional_path("checkpoint_path"),
+            enable_text_intelligence=optional_bool("enable_text_intelligence", False),
+            enable_visual_cleanup=optional_bool("enable_visual_cleanup", False),
+            ocr_model_manifest=optional_path("ocr_model_manifest"),
+            ocr_observation_path=optional_path("ocr_observation_path"),
         )
         if config.target_language != "vi":
             raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the production baseline currently supports Vietnamese output only")
@@ -530,7 +540,16 @@ def _translate_with_argos(cues: Sequence[TextCue], model_root: Path, source_lang
         raise ProductionJobError("TRANSLATION_FAILED", str(error), retryable=True) from error
 
 
-def _write_manifest(output_dir: Path, config: WorkerConfig, probe: MediaProbeResult, cues: Sequence[TextCue], artifacts: Mapping[str, Path], warnings: Sequence[str]) -> Path:
+def _write_manifest(
+    output_dir: Path,
+    config: WorkerConfig,
+    probe: MediaProbeResult,
+    cues: Sequence[TextCue],
+    artifacts: Mapping[str, Path],
+    warnings: Sequence[str],
+    *,
+    advanced: Mapping[str, object] | None = None,
+) -> Path:
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "kind": "dubflow_localization_job",
@@ -542,6 +561,8 @@ def _write_manifest(output_dir: Path, config: WorkerConfig, probe: MediaProbeRes
         "warnings": list(warnings),
         "production_profile": "cpu-local-file-b1" if not config.enable_dubbing else "cpu-local-file-b1-downgraded-from-b2",
     }
+    if advanced:
+        manifest["advanced"] = dict(advanced)
     path = config.output_dir / "job_manifest.json"
     _atomic_json(path, manifest)
     return path
@@ -635,6 +656,148 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     emitter.checkpoint("subtitles", _sha256(srt_path))
 
     warnings: list[str] = []
+    advanced: dict[str, object] = {}
+    advanced_artifacts: dict[str, Path] = {}
+    render_source = config.source_path
+    text_tracks_path: Path | None = None
+    cleanup_plan_path: Path | None = None
+    cleanup_plan_result: object | None = None
+
+    # OCR/orientation and visual cleanup are explicit optional stages. They
+    # never replace the canonical B1 source or invalidate an already-valid
+    # render. A detector/model failure becomes a machine-readable downgrade.
+    if config.enable_text_intelligence or config.enable_visual_cleanup:
+        emitter.progress(0.675, "Đang phân tích text track và kiểm tra cleanup an toàn")
+        text_tracks_path = config.output_dir / "text_tracks.json"
+        model_manifest = config.ocr_model_manifest or (config.app_root / "models" / "manifests" / "text-intelligence-v1.json")
+        try:
+            frame_dir = work_dir / "ocr-frames"
+            frame_stage = checkpoint.get("stages", {}).get("ocr_frames") if isinstance(checkpoint.get("stages"), Mapping) else None
+            frame_paths = tuple(sorted(frame_dir.glob("frame-*.png"))) if frame_dir.is_dir() else ()
+            if not frame_paths or not isinstance(frame_stage, Mapping) or frame_stage.get("input_sha256") != source_hash:
+                try:
+                    emitter.progress(0.68, "Đang lấy mẫu frame media cho OCR")
+                    frame_paths = media.sample_frames(config.source_path, frame_dir, interval_ms=1000, max_frames=120, overwrite=True)
+                    _write_stage(
+                        checkpoint,
+                        checkpoint_path,
+                        "ocr_frames",
+                        {"path": str(frame_dir), "input_sha256": source_hash, "frame_count": len(frame_paths)},
+                    )
+                except MediaAdapterError as sample_error:
+                    warnings.append(f"OCR_FRAME_SAMPLE_DOWNGRADED: {sample_error.code}")
+                    frame_paths = ()
+            if _stage_ready(checkpoint, "text_intelligence", (text_tracks_path,)):
+                text_payload = json.loads(text_tracks_path.read_text(encoding="utf-8"))
+                if not isinstance(text_payload, Mapping):
+                    raise ProductionOcrError("OCR_CHECKPOINT_INVALID", "text track checkpoint is not an object")
+            else:
+                analysis = AppOwnedOcrBackend(
+                    model_manifest_path=model_manifest,
+                    observation_path=config.ocr_observation_path,
+                ).analyze(
+                    job_id=config.job_id,
+                    source_path=config.source_path,
+                    source_hash=source_hash,
+                    asr_cues=cues,
+                    frame_paths=frame_paths,
+                )
+                text_payload = analysis.to_dict()
+                _atomic_json(text_tracks_path, text_payload)
+                _write_stage(
+                    checkpoint,
+                    checkpoint_path,
+                    "text_intelligence",
+                    {
+                        "path": str(text_tracks_path),
+                        "sha256": _sha256(text_tracks_path),
+                        "status": analysis.status,
+                        "frame_count": analysis.frame_count,
+                        "observation_count": analysis.observation_count,
+                    },
+                )
+            advanced_artifacts["text_tracks"] = text_tracks_path
+            text_status = str(text_payload.get("status", "degraded"))
+            text_warnings = text_payload.get("warnings", [])
+            if isinstance(text_warnings, list):
+                warnings.extend(str(item)[:4096] for item in text_warnings)
+            if text_status != "ready":
+                warnings.append("OCR_DOWNGRADED: retained source text and completed the standard subtitle export")
+            text_affected_ranges: list[dict[str, object]] = []
+            text_tracks = text_payload.get("tracks", [])
+            if isinstance(text_tracks, list):
+                for track in text_tracks:
+                    if not isinstance(track, Mapping) or not isinstance(track.get("segments"), list):
+                        continue
+                    for segment in track["segments"]:
+                        if isinstance(segment, Mapping) and isinstance(segment.get("start_ticks"), str) and isinstance(segment.get("end_ticks"), str):
+                            text_affected_ranges.append({"track_id": track.get("track_id"), "start_ticks": segment["start_ticks"], "end_ticks": segment["end_ticks"]})
+            advanced["text_intelligence"] = {
+                "status": text_status,
+                "path": str(text_tracks_path),
+                "affected_ranges": text_affected_ranges,
+            }
+
+            if config.enable_visual_cleanup:
+                video_width = int(probe.video.width or 1920)
+                video_height = int(probe.video.height or 1080)
+                cleanup_plan_result = plan_cleanup(text_payload, width=video_width, height=video_height)
+                cleanup_plan_path = config.output_dir / "visual_cleanup_plan.json"
+                _atomic_json(cleanup_plan_path, cleanup_plan_result.to_dict())
+                advanced_artifacts["visual_cleanup_plan"] = cleanup_plan_path
+                advanced["visual_cleanup"] = cleanup_plan_result.to_dict()
+                if cleanup_plan_result.selected:
+                    cleaned_path = work_dir / "visual_cleanup_vis1.mp4"
+                    cleanup_stage = checkpoint.get("stages", {}).get("visual_cleanup") if isinstance(checkpoint.get("stages"), Mapping) else None
+                    reused = _stage_ready(checkpoint, "visual_cleanup", (cleaned_path,)) and isinstance(cleanup_stage, Mapping) and cleanup_stage.get("input_sha256") == source_hash
+                    if not reused:
+                        emitter.progress(0.70, "Đang áp dụng VIS-1 adaptive cover an toàn")
+                        media.apply_visual_masks(
+                            config.source_path,
+                            cleaned_path,
+                            [
+                                {
+                                    "x": mask.x,
+                                    "y": mask.y,
+                                    "width": mask.width,
+                                    "height": mask.height,
+                                    "start_ticks": mask.start_ticks,
+                                    "end_ticks": mask.end_ticks,
+                                }
+                                for mask in cleanup_plan_result.masks
+                            ],
+                            preserve_original_audio=True,
+                            overwrite=True,
+                        )
+                        cleaned_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(cleaned_path)
+                        verification = verify_cleaned_media(probe, cleaned_probe)
+                        if verification.get("status") != "passed":
+                            raise ProductionJobError("VISUAL_CLEANUP_QC_FAILED", "; ".join(str(item) for item in verification.get("reasons", [])))
+                        _write_stage(
+                            checkpoint,
+                            checkpoint_path,
+                            "visual_cleanup",
+                            {
+                                "input_sha256": source_hash,
+                                "path": str(cleaned_path),
+                                "sha256": _sha256(cleaned_path),
+                                "verification": verification,
+                            },
+                        )
+                    else:
+                        verification = cleanup_stage.get("verification", {})
+                    render_source = cleaned_path
+                    advanced["visual_cleanup"] = {**cleanup_plan_result.to_dict(), "verification": verification, "output_path": str(cleaned_path)}
+                    advanced_artifacts["visual_cleanup_video"] = cleaned_path
+                else:
+                    warnings.append("VISUAL_CLEANUP_DOWNGRADED: no safe high-confidence dialogue mask was available")
+        except (ProductionOcrError, MediaAdapterError, ProductionJobError, ValueError, OSError) as error:
+            code = getattr(error, "code", "OCR_STAGE_FAILED")
+            warnings.append(f"{code}: preserved source text and skipped optional visual cleanup")
+            advanced["text_intelligence"] = {"status": "degraded", "error": str(code)}
+            if config.enable_visual_cleanup:
+                advanced["visual_cleanup"] = {"backend_id": "vis-0-source", "mode": "keep", "decision": "FALLBACK", "auto_remove": False, "warnings": ["optional cleanup stage failed; source retained"]}
+
     if config.enable_dubbing:
         # TTS is intentionally a separate promotion boundary. Until a
         # verified Vietnamese voice pack exists, preserve the already-valid B1
@@ -644,17 +807,19 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
         emitter.progress(0.70, "Chưa có voice pack; giữ Vietsub và audio gốc")
 
     final_path = config.output_dir / "final_vi.mp4"
-    if not _stage_ready(checkpoint, "render", (final_path,)):
+    render_stage = checkpoint.get("stages", {}).get("render") if isinstance(checkpoint.get("stages"), Mapping) else None
+    render_reusable = _stage_ready(checkpoint, "render", (final_path,)) and isinstance(render_stage, Mapping) and render_stage.get("input_sha256") == _sha256(render_source)
+    if not render_reusable:
         emitter.progress(0.74, "Đang render video H.264/AAC")
         media.render(
-            config.source_path,
+            render_source,
             final_path,
             subtitle_path=ass_path,
             preserve_original_audio=True,
             burn_in_subtitles=config.burn_in_subtitles,
             overwrite=True,
         )
-        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path)})
+        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "input_sha256": _sha256(render_source)})
     emitter.checkpoint("render", _sha256(final_path))
 
     emitter.progress(0.88, "Đang kiểm tra codec, thời lượng và khả năng đọc output")
@@ -667,7 +832,16 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     if source_duration is not None and output_duration is not None and output_duration + 2_000 < source_duration:
         raise ProductionJobError("QC_DURATION_SHORT", "rendered output is materially shorter than the source")
     qc_path = config.output_dir / "qc_report.json"
-    qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    qc = {
+        "schema_version": 1,
+        "status": "passed",
+        "source_probe": probe.to_dict(),
+        "output_probe": output_probe.to_dict(),
+        "warnings": warnings,
+        "downgrade": bool(warnings),
+        "advanced": advanced,
+        "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
     _atomic_json(qc_path, qc)
     editable_dir = config.output_dir / "editable"
     editable_dir.mkdir(parents=True, exist_ok=True)
@@ -676,8 +850,8 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
         target.write_bytes(source.read_bytes())
     timeline_path = editable_dir / "timeline.json"
     _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": [cue.to_dict() for cue in translated]})
-    artifacts = {"final_video": final_path, "captions_srt": srt_path, "captions_ass": ass_path, "qc_report": qc_path, "editable_timeline": timeline_path}
-    manifest_path = _write_manifest(config.output_dir, config, probe, translated, artifacts, warnings)
+    artifacts = {"final_video": final_path, "captions_srt": srt_path, "captions_ass": ass_path, "qc_report": qc_path, "editable_timeline": timeline_path, **advanced_artifacts}
+    manifest_path = _write_manifest(config.output_dir, config, probe, translated, artifacts, warnings, advanced=advanced)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.progress(1.0, "Hoàn tất video Việt hóa")
     emitter.checkpoint("qc", _sha256(qc_path))

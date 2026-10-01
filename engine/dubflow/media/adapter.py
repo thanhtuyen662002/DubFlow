@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import tempfile
 from typing import Any, Callable, Mapping, Sequence
+import uuid
 
 from engine.dubflow.security import SecurityBoundaryError, build_subprocess_plan, redact_diagnostics
 
@@ -568,6 +569,15 @@ def _diagnostic(value: Any) -> str:
     return _safe_text(redact_diagnostics(str(value or "media command failed")), limit=_MAX_DIAGNOSTIC)
 
 
+def _format_filter_seconds(ticks: int) -> str:
+    """Format canonical millisecond ticks without binary floating point."""
+
+    if type(ticks) is not int or ticks < 0:
+        raise MediaAdapterError("MEDIA_MASK_INVALID", "mask timestamps must be non-negative integers")
+    seconds, milliseconds = divmod(ticks, 1000)
+    return f"{seconds}.{milliseconds:03d}".rstrip("0").rstrip(".")
+
+
 class FfmpegMediaAdapter:
     """Execute safe FFmpeg extract, render and audio-mux operations."""
 
@@ -632,6 +642,129 @@ class FfmpegMediaAdapter:
             ),
             output_format="mp4",
         )
+
+    def apply_visual_masks(
+        self,
+        source_path: str | Path,
+        output_path: str | Path,
+        masks: Sequence[Mapping[str, Any]],
+        *,
+        preserve_original_audio: bool = True,
+        overwrite: bool = False,
+    ) -> Path:
+        """Apply bounded VIS-1 delogo masks to a source video.
+
+        The cleanup planner supplies integer pixel bounds and canonical
+        millisecond ranges. This adapter converts those values into an argv-
+        only FFmpeg filter graph; no user path or expression is parsed by a
+        shell. Callers must verify the resulting probe and retain the source
+        on failure because this is an optional cleanup stage.
+        """
+
+        source = _validate_input_file(source_path, "source_path")
+        output = self._prepare_output(output_path, source, overwrite=overwrite)
+        if not isinstance(masks, Sequence) or isinstance(masks, (str, bytes)) or not masks or len(masks) > 1024:
+            raise MediaAdapterError("MEDIA_MASK_INVALID", "visual cleanup requires one to 1024 masks")
+        filters: list[str] = []
+        for index, mask in enumerate(masks):
+            if not isinstance(mask, Mapping):
+                raise MediaAdapterError("MEDIA_MASK_INVALID", f"mask {index} must be an object")
+            values: dict[str, int] = {}
+            for name in ("x", "y", "width", "height", "start_ticks", "end_ticks"):
+                value = mask.get(name)
+                if type(value) is not int:
+                    raise MediaAdapterError("MEDIA_MASK_INVALID", f"mask {index}.{name} must be an integer")
+                values[name] = value
+            if values["x"] < 0 or values["y"] < 0 or values["width"] < 1 or values["height"] < 1 or values["start_ticks"] < 0 or values["end_ticks"] <= values["start_ticks"]:
+                raise MediaAdapterError("MEDIA_MASK_INVALID", f"mask {index} has invalid bounds or interval")
+            start = _format_filter_seconds(values["start_ticks"])
+            end = _format_filter_seconds(values["end_ticks"])
+            filters.append(f"delogo=x={values['x']}:y={values['y']}:w={values['width']}:h={values['height']}:enable='between(t,{start},{end})'")
+        args: list[str] = [
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", os.fspath(source),
+            "-vf", ",".join(filters), "-map", "0:v:0",
+        ]
+        if preserve_original_audio:
+            args.extend(("-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k"))
+        else:
+            args.append("-an")
+        args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-quality", "90", "-pix_fmt", "yuv420p", "-movflags", "+faststart"))
+        return self._write_atomic(output, tuple(args), output_format="mp4")
+
+    def sample_frames(
+        self,
+        source_path: str | Path,
+        output_dir: str | Path,
+        *,
+        interval_ms: int = 1000,
+        max_frames: int = 120,
+        overwrite: bool = False,
+    ) -> tuple[Path, ...]:
+        """Extract a bounded set of real media frames for detector adapters.
+
+        Frame extraction is an optional, checkpointable boundary. It uses a
+        generated numeric FPS filter and an app-owned FFmpeg executable, then
+        atomically publishes a directory of PNG frames. OCR runtimes consume
+        these paths through their adapter and can retain only hashes in the
+        durable text-track document.
+        """
+
+        source = _validate_input_file(source_path, "source_path")
+        try:
+            destination = Path(output_dir).expanduser()
+        except (TypeError, ValueError) as error:
+            raise MediaAdapterError("MEDIA_PATH_INVALID", "frame output directory is invalid") from error
+        if not destination.is_absolute():
+            raise MediaAdapterError("MEDIA_PATH_INVALID", "frame output directory must be absolute")
+        if type(interval_ms) is not int or interval_ms < 100 or interval_ms > 3_600_000:
+            raise MediaAdapterError("MEDIA_FRAME_CONFIG_INVALID", "interval_ms must be between 100 and 3600000")
+        if type(max_frames) is not int or max_frames < 1 or max_frames > 10_000:
+            raise MediaAdapterError("MEDIA_FRAME_CONFIG_INVALID", "max_frames must be between 1 and 10000")
+        destination = destination.resolve()
+        try:
+            requested_destination = Path(output_dir).expanduser()
+            if requested_destination.is_symlink():
+                raise MediaAdapterError("MEDIA_PATH_INVALID", "frame output directory must not be a symlink")
+        except (OSError, TypeError, ValueError) as error:
+            if isinstance(error, MediaAdapterError):
+                raise
+            raise MediaAdapterError("MEDIA_PATH_INVALID", "frame output directory is invalid") from error
+        if destination.exists() and not destination.is_dir():
+            raise MediaAdapterError("MEDIA_PATH_INVALID", "frame output path is not a directory")
+        if destination.exists() and any(destination.iterdir()) and not overwrite:
+            raise MediaAdapterError("OUTPUT_EXISTS", f"frame output directory is not empty: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        staging = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.partial")
+        staging.mkdir(parents=False, exist_ok=False)
+        # ``fps=1000/N`` is exact for integer millisecond sampling and does
+        # not embed a user-provided expression in the filter graph.
+        fps_filter = f"fps=1000/{interval_ms}"
+        pattern = staging / "frame-%08d.png"
+        args = (
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", os.fspath(source),
+            "-vf", fps_filter, "-frames:v", str(max_frames), "-vsync", "vfr", "-an", "-f", "image2", os.fspath(pattern),
+        )
+        try:
+            try:
+                plan = build_subprocess_plan(os.fspath(self.ffmpeg_path), args)
+            except SecurityBoundaryError as error:
+                raise MediaAdapterError("MEDIA_COMMAND_INVALID", str(error)) from error
+            completed = self._run(plan.argv, cwd=staging)
+            if completed.returncode != 0:
+                raise MediaAdapterError("MEDIA_FRAME_SAMPLE_FAILED", _diagnostic(completed.stderr), retryable=True)
+            frames = tuple(sorted(path for path in staging.glob("frame-*.png") if path.is_file() and path.stat().st_size > 0))
+            if not frames:
+                raise MediaAdapterError("MEDIA_FRAME_SAMPLE_EMPTY", "FFmpeg produced no non-empty frame samples")
+            if destination.exists():
+                shutil.rmtree(destination)
+            os.replace(staging, destination)
+            return tuple(destination / path.name for path in frames)
+        except MediaAdapterError:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        except OSError as error:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise MediaAdapterError("MEDIA_FRAME_SAMPLE_FAILED", _diagnostic(str(error)), retryable=True) from error
 
     def render(
         self,

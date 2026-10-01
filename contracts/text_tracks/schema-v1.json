@@ -13,7 +13,13 @@
     "tracks": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/track"}},
     "conflicts": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/conflict"}},
     "debug_overlay": {"$ref": "#/$defs/debug_overlay"},
-    "benchmark": {"$ref": "#/$defs/benchmark"}
+    "benchmark": {"$ref": "#/$defs/benchmark"},
+    "oriented_tracks": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/oriented_track"}},
+    "orientation_benchmark": {"$ref": "#/$defs/orientation_benchmark"},
+    "provenance": {"type": "object", "additionalProperties": true},
+    "warnings": {"type": "array", "items": {"type": "string", "maxLength": 4096}},
+    "status": {"enum": ["ready", "degraded"]},
+    "frame_evidence": {"$ref": "#/$defs/frame_evidence"}
   },
   "$defs": {
     "ticks": {"type": "string", "pattern": "^(0|-?[1-9][0-9]*)$", "maxLength": 20},
@@ -34,6 +40,27 @@
         "end_ticks": {"$ref": "#/$defs/ticks"},
         "text": {"type": "string", "minLength": 1, "maxLength": 8192},
         "bbox": {"$ref": "#/$defs/bbox"},
+        "polygon": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["points"],
+          "properties": {
+            "points": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 64,
+              "items": {
+                "type": "array",
+                "prefixItems": [
+                  {"type": "integer", "minimum": 0},
+                  {"type": "integer", "minimum": 0}
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
         "confidence": {"$ref": "#/$defs/confidence"}
       }
     },
@@ -78,6 +105,29 @@
         "latency_ms": {"type": "integer", "minimum": 0}, "peak_memory_bytes": {"type": "integer", "minimum": 0},
         "decision": {"enum": ["PROMOTE", "EXPERIMENTAL", "REJECT", "SPLIT"]}
       }
+    },
+    "oriented_track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["track_id", "segments", "rectification_quality", "decision"],
+      "properties": {
+        "track_id": {"type": "string", "pattern": "^txt-orient-[0-9a-f]{16}$"},
+        "segments": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["observation_id", "start_ticks", "end_ticks", "text", "polygon", "angle_milli_degrees", "karaoke_progress_milli", "confidence"], "properties": {"observation_id": {"type": "string", "minLength": 1, "maxLength": 256}, "start_ticks": {"$ref": "#/$defs/ticks"}, "end_ticks": {"$ref": "#/$defs/ticks"}, "text": {"type": "string", "minLength": 1, "maxLength": 8192}, "polygon": {"type": "object", "additionalProperties": false, "required": ["points"], "properties": {"points": {"type": "array", "minItems": 4, "maxItems": 64}}}, "angle_milli_degrees": {"type": "integer", "minimum": -180000, "maximum": 180000}, "karaoke_progress_milli": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000}, "confidence": {"$ref": "#/$defs/confidence"}}}},
+        "rectification_quality": {"$ref": "#/$defs/confidence"},
+        "decision": {"enum": ["keep", "review"]}
+      }
+    },
+    "orientation_benchmark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataset_revision", "oriented_recall", "fragmentation_rate", "temporal_consistency", "cer", "latency_ms", "peak_memory_bytes", "decision"],
+      "properties": {"dataset_revision": {"type": "string", "minLength": 1, "maxLength": 128}, "oriented_recall": {"type": "string"}, "fragmentation_rate": {"type": "string"}, "temporal_consistency": {"type": "string"}, "cer": {"type": "string"}, "latency_ms": {"type": "integer", "minimum": 0}, "peak_memory_bytes": {"type": "integer", "minimum": 0}, "decision": {"enum": ["PROMOTE", "EXPERIMENTAL", "REJECT", "SPLIT"]}}
+    },
+    "frame_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_count", "observation_count", "orientation_observation_count", "media_sampled"],
+      "properties": {"frame_count": {"type": "integer", "minimum": 0}, "observation_count": {"type": "integer", "minimum": 0}, "orientation_observation_count": {"type": "integer", "minimum": 0}, "media_sampled": {"type": "boolean"}, "frame_manifest_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
     }
   }
 }

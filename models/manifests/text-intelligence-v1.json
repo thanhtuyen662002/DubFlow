@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-text-intelligence-v1",
+  "description": "Pinned app-owned OCR observation/runtime contract for optional text intelligence.",
+  "runtime": {
+    "id": "app-owned-contrast-ocr-asr-fusion",
+    "version": "1.1.0",
+    "app_owned": true,
+    "entrypoint": "engine.dubflow.ocr.production:AppOwnedOcrBackend",
+    "frame_decoder": "png-s16-safe-stdlib",
+    "recognition_mode": "asr-fused-when-cue-overlaps"
+  },
+  "artifacts": [
+    {
+      "id": "ocr-runtime-code",
+      "path": "engine/dubflow/ocr/production.py",
+      "sha256": "80d69983a57b0247622370d216d7b3f6504b36384b0899d3abd3958878ddf8f1",
+      "size_bytes": 30570
+    }
+  ],
+  "license": {
+    "spdx": "Apache-2.0",
+    "distribution_decision": "redistribute-after-license-review",
+    "attribution_required": true
+  },
+  "compatibility": {
+    "app": ">=0.1.0",
+    "engine": "ocr-observation-v1",
+    "contract": "text-tracks-v1"
+  },
+  "fallback": "vis-0-source",
+  "limitations": [
+    "recognition falls back to overlapping ASR text when a native OCR model is unavailable",
+    "source frames are always hashed and no uncertain text is removed"
+  ]
+}

@@ -25,3 +25,9 @@ through the subtitles filter grammar while retaining shell-free argv.
 The module intentionally has no fixture backend or model selection. ASR,
 translation and TTS workers inject their own app-owned model adapters and use
 these operations for media I/O.
+
+Optional text-intelligence stages use `sample_frames` to publish a bounded,
+atomic directory of real PNG frames for an app-owned detector adapter. Visual
+cleanup uses `apply_visual_masks` with generated integer-tick `delogo` ranges;
+the worker probes and validates that output before it can replace the source
+for rendering, and retains the source on any failure.
