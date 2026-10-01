@@ -946,6 +946,49 @@
           "test_*.py"
         ]
       ]
+    },
+    {
+      "id": "production-b2-dubbing",
+      "roots": [
+        "engine/dubflow/tts",
+        "engine/dubflow/worker",
+        "models/manifests",
+        "models/voices",
+        "tests/production",
+        "tests/integration/production_local_file"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/production/tts",
+          "-p",
+          "test_*.py"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/production/worker",
+          "-p",
+          "test_*.py"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/integration/production_local_file",
+          "-p",
+          "test_*.py"
+        ]
+      ]
     }
   ]
 }
