@@ -63,10 +63,14 @@ function redactUrl(parsed: URL): string {
   const safe = new URL(parsed.toString());
   safe.username = "";
   safe.password = "";
-  // Signed URLs are needed only for the immediate provider request.  The
-  // queue snapshot keeps query names but never values, including known token
-  // names and unknown provider-specific signatures.
-  for (const key of [...safe.searchParams.keys()]) safe.searchParams.set(key, "[redacted]");
+  // Keep public identity parameters such as YouTube's `v` and `list`, while
+  // replacing credential/signature values before the URL crosses into the
+  // durable supervisor queue.
+  for (const key of [...safe.searchParams.keys()]) {
+    if (/token|auth|secret|password|cookie|signature|^sig$|access[_-]?key|credential/i.test(key)) {
+      safe.searchParams.set(key, "[redacted]");
+    }
+  }
   safe.hash = "";
   return safe.toString();
 }
@@ -74,7 +78,12 @@ function redactUrl(parsed: URL): string {
 function canonicalUrl(parsed: URL): string {
   const host = parsed.hostname.toLocaleLowerCase();
   const pathname = parsed.pathname.replace(/\/{2,}/g, "/").replace(/\/$/, "") || "/";
-  return `${parsed.protocol.toLocaleLowerCase()}//${host}${parsed.port ? `:${parsed.port}` : ""}${pathname}`;
+  const safeQuery = [...parsed.searchParams.entries()]
+    .filter(([key]) => !/token|auth|secret|password|cookie|signature|^sig$|access[_-]?key|credential/i.test(key))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join("&");
+  return `${parsed.protocol.toLocaleLowerCase()}//${host}${parsed.port ? `:${parsed.port}` : ""}${pathname}${safeQuery ? `?${safeQuery}` : ""}`;
 }
 
 function parseOne(input: string): SourceItem {
@@ -140,7 +149,7 @@ export function supervisorSourceItems(batch: SourceIntakeBatch): Array<Record<st
     identity_key: item.identity_key,
     source_id: item.source_id,
     provider_id: item.provider,
-    source_url: item.transport_url ?? item.display_ref,
+    source_url: item.url ?? item.display_ref,
     source_ref: item.display_ref,
   }));
 }

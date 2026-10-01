@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { MemorySnapshotStorage, QueueController, parseQueueSnapshot } from "../src/features/queue/model.ts";
 import { toQueueViewModel } from "../src/features/queue/view_model.ts";
+import { parseSourceInput, supervisorSourceItems, sourceIntakeLabel } from "../src/features/source_intake/model.ts";
 
 const clock = () => "2026-09-29T02:30:00.000Z";
 const storage = new MemorySnapshotStorage();
@@ -32,3 +33,22 @@ assert.equal(parseQueueSnapshot(JSON.stringify({ schema_version: 2, selected_job
 assert.equal(parseQueueSnapshot(JSON.stringify(restored.getSnapshot())).jobs.length, 500);
 
 console.log("desktop queue tests passed");
+
+const sources = parseSourceInput([
+  "C:\\Media\\Demo Video.mp4",
+  "https://www.youtube.com/watch?v=video-id&token=secret-token",
+  "https://www.youtube.com/watch?v=video-id&token=secret-token",
+  "https://user:password@example.com/private.mp4",
+  "notaurl",
+].join("\n"));
+assert.equal(sources.items.length, 2);
+assert.equal(sources.items[0].kind, "local");
+assert.equal(sources.items[1].provider, "youtube");
+assert.equal(sources.items[1].url?.includes("secret-token"), false);
+assert.equal(sources.items[1].transport_url?.includes("secret-token"), true);
+assert.equal(sources.rejected.filter((item) => item.code === "DUPLICATE_SOURCE").length, 1);
+assert.equal(sources.rejected.some((item) => item.code === "URL_INVALID"), true);
+assert.equal(supervisorSourceItems(sources)[1].source_url.includes("secret-token"), false);
+assert.equal(sourceIntakeLabel(sources.items[1]), "Youtube");
+
+console.log("desktop source intake tests passed");

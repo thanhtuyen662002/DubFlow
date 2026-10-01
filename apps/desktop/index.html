@@ -31,8 +31,15 @@
 
       <section class="toolbar" aria-label="Queue actions">
         <button id="add-files" class="primary" type="button">Thêm video</button>
+        <button id="add-sources" type="button">Thêm URL / danh sách nguồn</button>
         <button id="clear-queue" type="button">Xóa hàng đợi</button>
         <span id="queue-summary" class="summary">0 video</span>
+      </section>
+
+      <section class="source-intake" aria-label="Source acquisition">
+        <label for="source-input">Nguồn mạng hoặc đường dẫn cục bộ</label>
+        <textarea id="source-input" rows="3" placeholder="Mỗi dòng một URL; tệp cục bộ vẫn dùng nút Thêm video"></textarea>
+        <p id="source-intake-state" class="hint">URL được kiểm tra và che thông tin xác thực trước khi đưa vào hàng đợi.</p>
       </section>
 
       <section class="workspace">
