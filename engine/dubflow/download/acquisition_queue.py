@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Iterable
+from typing import Callable, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 from .source_adapter import SourceAdapter, SourceError, SourceErrorCode, SourceItem
@@ -15,15 +15,22 @@ MAX_FAILURES = 10_000
 
 
 class QueueError(ValueError):
-    pass
+    def __init__(self, message: str, *, code: str = "QUEUE_ERROR", retryable: bool = False) -> None:
+        self.code = code
+        self.retryable = retryable
+        super().__init__(message)
 
 
 def _safe_ref(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "<local-or-invalid-source>"
     try:
         parts = urlsplit(value)
         if parts.scheme and parts.hostname:
-            return urlunsplit((parts.scheme, parts.hostname, parts.path, parts.query, ""))
-    except ValueError:
+            # Signed query strings are credentials in practice; a failure
+            # record retains only the host/path display reference.
+            return urlunsplit((parts.scheme.lower(), parts.hostname.lower(), parts.path, "", ""))
+    except (TypeError, ValueError):
         pass
     return "<local-or-invalid-source>"
 
@@ -53,12 +60,22 @@ class QueueCheckpoint:
     discovered_count: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.provider_id, str) or not self.provider_id or len(self.provider_id) > 64 or any(ord(ch) < 33 for ch in self.provider_id):
+            raise QueueError("checkpoint provider_id is invalid")
+        if not isinstance(self.channel_id, str) or not self.channel_id or len(self.channel_id) > 512 or any(ord(ch) < 33 for ch in self.channel_id):
+            raise QueueError("checkpoint channel_id is invalid")
+        if self.cursor is not None and (not isinstance(self.cursor, str) or not self.cursor or len(self.cursor) > 1024):
+            raise QueueError("checkpoint cursor is invalid")
         if len(self.seen_identity_keys) > MAX_DISCOVERED_ITEMS:
             raise QueueError("checkpoint exceeds the bounded discovery capacity")
+        if any(not isinstance(key, str) or not key or len(key) > 1024 or any(ord(ch) < 33 for ch in key) for key in self.seen_identity_keys):
+            raise QueueError("checkpoint identity key is invalid")
         if len(set(self.seen_identity_keys)) != len(self.seen_identity_keys):
             raise QueueError("checkpoint contains duplicate identity keys")
         if type(self.discovered_count) is not int or not 0 <= self.discovered_count <= MAX_DISCOVERED_ITEMS:
             raise QueueError("checkpoint discovered_count is invalid")
+        if self.discovered_count != len(self.seen_identity_keys):
+            raise QueueError("checkpoint discovered_count does not match identity keys")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -141,10 +158,25 @@ class AcquisitionQueue:
     ) -> tuple[QueueCheckpoint, DiscoveryProgress]:
         if checkpoint is not None and (checkpoint.provider_id != adapter.provider_id or checkpoint.channel_id != channel_id):
             raise QueueError("checkpoint belongs to another provider/channel")
-        page = adapter.enumerate_channel(channel_id, cursor=None if checkpoint is None else checkpoint.cursor, page_size=page_size)
+        try:
+            page = adapter.enumerate_channel(channel_id, cursor=None if checkpoint is None else checkpoint.cursor, page_size=page_size)
+        except SourceError as error:
+            raise QueueError(str(error), code=error.code.value, retryable=error.retryable) from error
         seen = set(() if checkpoint is None else checkpoint.seen_identity_keys)
         discovered = duplicates = failed = 0
+        for page_failure in page.failures:
+            failure = SourceError(
+                page_failure.code,
+                page_failure.condition,
+                provider_id=adapter.provider_id,
+                source_id=page_failure.source_id,
+                retryable=page_failure.retryable,
+            )
+            self._record_failure(page_failure.source_id, failure)
+            failed += 1
         for item in page.items:
+            if item.identity.provider_id != adapter.provider_id:
+                raise QueueError("enumeration item provider does not match adapter", code=SourceErrorCode.SOURCE_CHANGED.value)
             key = item.identity.identity_key
             if key in seen or key in self._items:
                 duplicates += 1
@@ -156,11 +188,35 @@ class AcquisitionQueue:
         next_checkpoint = QueueCheckpoint(adapter.provider_id, channel_id, page.next_cursor, tuple(sorted(seen)), (0 if checkpoint is None else checkpoint.discovered_count) + discovered)
         return next_checkpoint, DiscoveryProgress(discovered, duplicates, failed, page.completed)
 
-    def scan_channel(self, adapter: SourceAdapter, channel_id: str, *, checkpoint: QueueCheckpoint | None = None, page_size: int = 50) -> tuple[QueueCheckpoint, DiscoveryProgress]:
+    def scan_channel(
+        self,
+        adapter: SourceAdapter,
+        channel_id: str,
+        *,
+        checkpoint: QueueCheckpoint | None = None,
+        page_size: int = 50,
+        cancel: Callable[[], bool] | None = None,
+        max_pages: int | None = None,
+    ) -> tuple[QueueCheckpoint, DiscoveryProgress]:
         current = checkpoint
         total = DiscoveryProgress(0, 0, 0, False)
+        page_count = 0
         while not total.completed:
+            if cancel and cancel():
+                if current is None:
+                    raise QueueError("scan cancelled before the first checkpoint", code="CANCELLED")
+                return current, total
+            if max_pages is not None and (type(max_pages) is not int or max_pages < 1):
+                raise QueueError("max_pages must be positive")
+            if max_pages is not None and page_count >= max_pages:
+                if current is None:
+                    raise QueueError("scan did not produce a checkpoint", code="CHECKPOINT_INVALID")
+                return current, total
+            previous_cursor = None if current is None else current.cursor
             current, page_progress = self.resume_channel(adapter, channel_id, checkpoint=current, page_size=page_size)
+            page_count += 1
+            if not page_progress.completed and current.cursor == previous_cursor:
+                raise QueueError("enumeration made no cursor progress", code=SourceErrorCode.CHECKPOINT_INVALID.value)
             total = DiscoveryProgress(total.discovered + page_progress.discovered, total.duplicates + page_progress.duplicates, total.failed + page_progress.failed, page_progress.completed)
         if current is None:
             raise QueueError("channel scan did not produce a checkpoint")
