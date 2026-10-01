@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { connectDesktopShell } from "./shell/desktop_shell.ts";
 import { QueueController, type SnapshotStorage } from "./features/queue/model.ts";
 import type { JobStatus } from "./features/job_status/status.ts";
+import { parseSourceInput, supervisorSourceItems } from "./features/source_intake/model.ts";
 
 type ReleaseInfo = { version: string; channel: string; backend: string };
 
@@ -137,6 +138,30 @@ $("#add-files").addEventListener("click", async () => {
   } catch (error) {
     $("#queue-state").textContent = `Không mở được hộp thoại file: ${String(error).slice(0, 160)}`;
   }
+});
+
+$("#add-sources").addEventListener("click", async () => {
+  const input = $("#source-input") as HTMLTextAreaElement;
+  const state = $("#source-intake-state");
+  const batch = parseSourceInput(input.value);
+  const localPaths = batch.items.filter((item) => item.kind === "local").map((item) => item.local_path as string);
+  if (localPaths.length > 0) queue.addPaths(localPaths);
+  const networkItems = batch.items.filter((item) => item.kind === "url");
+  try {
+    if (networkItems.length > 0) {
+      const response = await invoke<{ event: string; scan?: unknown }>("enqueue_sources", { items: supervisorSourceItems({ ...batch, items: networkItems }) });
+      const scan = response.scan as { scan?: { scan_id?: string; discovered_count?: number } } | undefined;
+      state.textContent = `Đã đưa ${networkItems.length} URL vào hàng đợi nguồn (${scan?.scan?.scan_id ?? "đã ghi nhận"}).`;
+    } else {
+      state.textContent = localPaths.length > 0 ? `Đã thêm ${localPaths.length} đường dẫn cục bộ.` : "Chưa có nguồn hợp lệ.";
+    }
+  } catch (error) {
+    state.textContent = `Không thể ghi hàng đợi nguồn: ${String(error).slice(0, 240)}`;
+  }
+  if (batch.rejected.length > 0) {
+    state.textContent += ` Bỏ qua ${batch.rejected.length} mục không hợp lệ/trùng.`;
+  }
+  input.value = "";
 });
 
 $("#start-processing").addEventListener("click", async () => {

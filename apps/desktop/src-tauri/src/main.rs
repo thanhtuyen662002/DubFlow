@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -171,9 +172,96 @@ fn cancel_job(job_id: String) -> Result<(), String> {
     Ok(())
 }
 
+fn supervisor_server_request(request: Value) -> Result<Value, String> {
+    let root = version_root()?;
+    let control = control_root()?;
+    let supervisor = supervisor_binary(&root)?;
+    let mut command = Command::new(supervisor);
+    command
+        .args([
+            "server",
+            "--root",
+            root.to_string_lossy().as_ref(),
+            "--data-root",
+            control.to_string_lossy().as_ref(),
+            "--model-root",
+            control.join("models").to_string_lossy().as_ref(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().map_err(|error| fail(format!("unable to start supervisor source service: {error}")))?;
+    let mut stdin = child.stdin.take().ok_or_else(|| fail("supervisor source service stdin is unavailable"))?;
+    let mut stdout = BufReader::new(child.stdout.take().ok_or_else(|| fail("supervisor source service stdout is unavailable"))?);
+    let payload = serde_json::to_vec(&request).map_err(|error| fail(format!("source request is invalid: {error}")))?;
+    stdin.write_all(&payload).map_err(|error| fail(format!("unable to send source request: {error}")))?;
+    stdin.write_all(b"\n").map_err(|error| fail(format!("unable to send source request terminator: {error}")))?;
+    stdin.flush().map_err(|error| fail(format!("unable to flush source request: {error}")))?;
+    drop(stdin);
+    let mut line = String::new();
+    let mut response: Option<Value> = None;
+    for _ in 0..32 {
+        line.clear();
+        let read = stdout.read_line(&mut line).map_err(|error| fail(format!("unable to read source response: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        let value: Value = match serde_json::from_str(line.trim()) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if value.get("event").and_then(Value::as_str) == Some("ready") {
+            continue;
+        }
+        response = Some(value);
+        break;
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let response = response.ok_or_else(|| fail("supervisor did not return a source response"))?;
+    if response.get("event").and_then(Value::as_str) == Some("error") {
+        return Err(fail(response.get("condition").and_then(Value::as_str).unwrap_or("source request failed")));
+    }
+    Ok(response)
+}
+
+#[tauri::command]
+fn enqueue_sources(items: Value) -> Result<Value, String> {
+    if !items.is_array() {
+        return Err(fail("source items must be an array"));
+    }
+    supervisor_server_request(json!({"command":"enqueue_sources", "items":items}))
+}
+
+#[tauri::command]
+fn source_scan_status(scan_id: String) -> Result<Value, String> {
+    validate_id(&scan_id)?;
+    supervisor_server_request(json!({"command":"source_status", "scan_id":scan_id}))
+}
+
+#[tauri::command]
+fn pause_source_scan(scan_id: String) -> Result<Value, String> {
+    validate_id(&scan_id)?;
+    supervisor_server_request(json!({"command":"pause_source_scan", "scan_id":scan_id}))
+}
+
+#[tauri::command]
+fn resume_source_scan(scan_id: String) -> Result<Value, String> {
+    validate_id(&scan_id)?;
+    supervisor_server_request(json!({"command":"resume_source_scan", "scan_id":scan_id}))
+}
+
+#[tauri::command]
+fn cancel_source_scan(scan_id: String) -> Result<Value, String> {
+    validate_id(&scan_id)?;
+    supervisor_server_request(json!({"command":"cancel_source_scan", "scan_id":scan_id}))
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![release_info, pick_files, start_job, job_status, cancel_job])
+        .invoke_handler(tauri::generate_handler![release_info, pick_files, start_job, job_status, cancel_job, enqueue_sources, source_scan_status, pause_source_scan, resume_source_scan, cancel_source_scan])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
 }

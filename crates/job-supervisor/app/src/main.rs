@@ -6,6 +6,7 @@
 //! worker protocol; all durable mutations happen in this process.
 
 use dubflow_job_state::{ArtifactState, DurableStore, JobStatus, StageStatus, StateError};
+use dubflow_source_queue::{PageCheckpoint, PageItem, SourceQueue};
 use dubflow_worker_protocol::{
     Envelope, MessageType, Payload, ShutdownStatus, StreamValidator, MAX_LINE_BYTES,
 };
@@ -94,6 +95,7 @@ struct RuntimePaths {
     ffprobe: PathBuf,
     model_root: PathBuf,
     db: PathBuf,
+    source_queue_db: PathBuf,
 }
 
 impl RuntimePaths {
@@ -223,6 +225,7 @@ impl RuntimePaths {
         if let Some(parent) = db.parent() {
             fs::create_dir_all(parent)?;
         }
+        let source_queue_db = data_root.join("control").join("source-queue.sqlite3");
         Ok(Self {
             root,
             app_root,
@@ -232,6 +235,7 @@ impl RuntimePaths {
             ffprobe,
             model_root,
             db,
+            source_queue_db,
         })
     }
 }
@@ -334,8 +338,35 @@ enum UiRequest {
         #[serde(default)]
         reason: Option<String>,
     },
+    EnqueueSources {
+        scan_id: Option<String>,
+        provider_id: Option<String>,
+        source_ref: Option<String>,
+        items: Vec<SourceInput>,
+    },
+    SourceStatus {
+        scan_id: String,
+    },
+    PauseSourceScan {
+        scan_id: String,
+    },
+    ResumeSourceScan {
+        scan_id: String,
+    },
+    CancelSourceScan {
+        scan_id: String,
+    },
     Ping,
     Shutdown,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SourceInput {
+    identity_key: String,
+    source_id: String,
+    provider_id: String,
+    source_url: String,
+    source_ref: String,
 }
 
 #[derive(Clone, Debug)]
@@ -577,6 +608,11 @@ fn run() -> SupervisorResult<()> {
     let runtime = RuntimePaths::from_root_and_data(root, server_data_root, db, model_root)?;
     let startup_store = DurableStore::open(&runtime.db)?;
     let recovered = startup_store.recover_after_restart(now_ms())?;
+    let recovered_source_scans = SourceQueue::open(&runtime.source_queue_db)
+        .and_then(|queue| queue.recover_running(now_ms()))
+        .map_err(|error| {
+            SupervisorError::Invalid(format!("source queue recovery failed: {error}"))
+        })?;
 
     let (tx, rx) = mpsc::channel::<InternalMessage>();
     spawn_stdin_reader(tx.clone());
@@ -590,6 +626,7 @@ fn run() -> SupervisorResult<()> {
             "schema_version": 1,
             "runtime_root": runtime.root.display().to_string(),
             "recovered_stages": recovered,
+            "recovered_source_scans": recovered_source_scans,
         }),
     )?;
 
@@ -1334,6 +1371,172 @@ fn spawn_stdin_reader(tx: Sender<InternalMessage>) {
     });
 }
 
+fn validate_source_text(value: &str, name: &str, max: usize) -> SupervisorResult<()> {
+    if value.is_empty()
+        || value.len() > max
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err(SupervisorError::Invalid(format!(
+            "{name} is empty, too long, or contains control characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_source_input(item: &SourceInput) -> SupervisorResult<()> {
+    validate_source_text(&item.identity_key, "identity_key", 1_024)?;
+    validate_source_text(&item.source_id, "source_id", 512)?;
+    validate_source_text(&item.provider_id, "provider_id", 64)?;
+    validate_source_text(&item.source_url, "source_url", 4_096)?;
+    validate_source_text(&item.source_ref, "source_ref", 4_096)?;
+    if !(item.source_url.starts_with("http://") || item.source_url.starts_with("https://")) {
+        return Err(SupervisorError::Invalid(
+            "source_url must use http or https".into(),
+        ));
+    }
+    // A URL userinfo section is a credential leak.  The desktop sends a
+    // redacted durable URL; a provider adapter may use a protected ephemeral
+    // session value outside this queue database.
+    let authority = item.source_url.split('/').nth(2).unwrap_or_default();
+    if authority.contains('@') || item.source_url.contains('\u{0000}') {
+        return Err(SupervisorError::Invalid(
+            "source_url must not contain credentials".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn source_status_name(status: dubflow_source_queue::ScanStatus) -> &'static str {
+    match status {
+        dubflow_source_queue::ScanStatus::Queued => "queued",
+        dubflow_source_queue::ScanStatus::Running => "running",
+        dubflow_source_queue::ScanStatus::Paused => "paused",
+        dubflow_source_queue::ScanStatus::Completed => "completed",
+        dubflow_source_queue::ScanStatus::Cancelled => "cancelled",
+        dubflow_source_queue::ScanStatus::Failed => "failed",
+    }
+}
+
+fn source_item_status_name(status: dubflow_source_queue::ItemStatus) -> &'static str {
+    match status {
+        dubflow_source_queue::ItemStatus::Discovered => "discovered",
+        dubflow_source_queue::ItemStatus::Downloading => "downloading",
+        dubflow_source_queue::ItemStatus::Downloaded => "downloaded",
+        dubflow_source_queue::ItemStatus::Failed => "failed",
+        dubflow_source_queue::ItemStatus::Skipped => "skipped",
+        dubflow_source_queue::ItemStatus::Cancelled => "cancelled",
+    }
+}
+
+fn source_queue_snapshot(runtime: &RuntimePaths, scan_id: &str) -> SupervisorResult<Value> {
+    let queue = SourceQueue::open(&runtime.source_queue_db)
+        .map_err(|error| SupervisorError::Invalid(format!("source queue unavailable: {error}")))?;
+    let scan = queue
+        .scan(scan_id)
+        .map_err(|error| SupervisorError::Invalid(format!("source scan unavailable: {error}")))?;
+    let items = queue
+        .items(scan_id)
+        .map_err(|error| SupervisorError::Invalid(format!("source items unavailable: {error}")))?;
+    Ok(json!({
+        "schema_version": 1,
+        "scan": {
+            "scan_id": scan.scan_id,
+            "provider_id": scan.provider_id,
+            "source_ref": scan.source_ref,
+            "cursor": scan.cursor,
+            "status": source_status_name(scan.status),
+            "max_items": scan.max_items,
+            "discovered_count": scan.discovered_count,
+            "completed_count": scan.completed_count,
+            "failed_count": scan.failed_count,
+            "created_at_ms": scan.created_at_ms,
+            "updated_at_ms": scan.updated_at_ms,
+        },
+        "items": items.into_iter().map(|item| json!({
+            "identity_key": item.identity_key,
+            "source_id": item.source_id,
+            "source_url": item.source_url,
+            "position": item.position,
+            "status": source_item_status_name(item.status),
+            "retry_count": item.retry_count,
+            "downloaded_bytes": item.downloaded_bytes,
+            "total_bytes": item.total_bytes,
+            "error_code": item.error_code,
+            "error_message": item.error_message,
+            "media_path": item.media_path,
+            "content_hash": item.content_hash,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+fn enqueue_sources(
+    runtime: &RuntimePaths,
+    scan_id: Option<String>,
+    provider_id: Option<String>,
+    source_ref: Option<String>,
+    items: Vec<SourceInput>,
+) -> SupervisorResult<Value> {
+    if items.is_empty() || items.len() > dubflow_source_queue::MAX_ITEMS {
+        return Err(SupervisorError::Invalid(format!(
+            "items must contain 1..{} entries",
+            dubflow_source_queue::MAX_ITEMS
+        )));
+    }
+    for item in &items {
+        validate_source_input(item)?;
+    }
+    let scan_id = scan_id.unwrap_or_else(|| {
+        format!(
+            "scan-{}-{}",
+            now_ms(),
+            ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    validate_source_text(&scan_id, "scan_id", dubflow_source_queue::MAX_SCAN_ID)?;
+    let provider = provider_id.unwrap_or_else(|| "mixed".into());
+    validate_source_text(
+        &provider,
+        "provider_id",
+        dubflow_source_queue::MAX_PROVIDER_ID,
+    )?;
+    let reference = source_ref.unwrap_or_else(|| "desktop-source-intake".into());
+    validate_source_text(
+        &reference,
+        "source_ref",
+        dubflow_source_queue::MAX_SOURCE_REF,
+    )?;
+    let queue = SourceQueue::open(&runtime.source_queue_db)
+        .map_err(|error| SupervisorError::Invalid(format!("source queue unavailable: {error}")))?;
+    queue
+        .create_scan(&scan_id, &provider, &reference, items.len(), now_ms())
+        .map_err(|error| {
+            SupervisorError::Invalid(format!("source scan creation failed: {error}"))
+        })?;
+    let page = PageCheckpoint {
+        next_cursor: None,
+        completed: true,
+        items: items
+            .into_iter()
+            .enumerate()
+            .map(|(position, item)| {
+                PageItem::new(
+                    item.identity_key,
+                    item.source_id,
+                    item.source_url,
+                    position as u64,
+                )
+            })
+            .collect(),
+        failures: Vec::new(),
+    };
+    queue
+        .checkpoint_page(&scan_id, &page, now_ms())
+        .map_err(|error| {
+            SupervisorError::Invalid(format!("source queue checkpoint failed: {error}"))
+        })?;
+    source_queue_snapshot(runtime, &scan_id)
+}
+
 fn handle_request(
     request: UiRequest,
     runtime: &RuntimePaths,
@@ -1405,6 +1608,76 @@ fn handle_request(
                     )?,
                     Err(error) => return Err(error.into()),
                 }
+            }
+        }
+        UiRequest::EnqueueSources {
+            scan_id,
+            provider_id,
+            source_ref,
+            items,
+        } => match enqueue_sources(runtime, scan_id, provider_id, source_ref, items) {
+            Ok(snapshot) => emit_value(
+                stdout,
+                json!({"event":"source_scan_accepted", "scan": snapshot}),
+            )?,
+            Err(error) => emit_value(
+                stdout,
+                json!({"event":"error", "code":"SOURCE_QUEUE_INVALID", "condition": error.to_string()}),
+            )?,
+        },
+        UiRequest::SourceStatus { scan_id } => match source_queue_snapshot(runtime, &scan_id) {
+            Ok(snapshot) => emit_value(
+                stdout,
+                json!({"event":"source_scan_status", "scan": snapshot}),
+            )?,
+            Err(error) => emit_value(
+                stdout,
+                json!({"event":"error", "code":"SOURCE_SCAN_NOT_FOUND", "scan_id": scan_id, "condition": error.to_string()}),
+            )?,
+        },
+        UiRequest::PauseSourceScan { scan_id } => {
+            let queue = SourceQueue::open(&runtime.source_queue_db).map_err(|error| {
+                SupervisorError::Invalid(format!("source queue unavailable: {error}"))
+            })?;
+            match queue.pause_scan(&scan_id, now_ms()) {
+                Ok(_) => emit_value(
+                    stdout,
+                    json!({"event":"source_scan_paused", "scan_id": scan_id}),
+                )?,
+                Err(error) => emit_value(
+                    stdout,
+                    json!({"event":"error", "code":"SOURCE_SCAN_PAUSE_FAILED", "scan_id": scan_id, "condition": error.to_string()}),
+                )?,
+            }
+        }
+        UiRequest::ResumeSourceScan { scan_id } => {
+            let queue = SourceQueue::open(&runtime.source_queue_db).map_err(|error| {
+                SupervisorError::Invalid(format!("source queue unavailable: {error}"))
+            })?;
+            match queue.resume_scan(&scan_id, now_ms()) {
+                Ok(_) => emit_value(
+                    stdout,
+                    json!({"event":"source_scan_resumed", "scan_id": scan_id}),
+                )?,
+                Err(error) => emit_value(
+                    stdout,
+                    json!({"event":"error", "code":"SOURCE_SCAN_RESUME_FAILED", "scan_id": scan_id, "condition": error.to_string()}),
+                )?,
+            }
+        }
+        UiRequest::CancelSourceScan { scan_id } => {
+            let queue = SourceQueue::open(&runtime.source_queue_db).map_err(|error| {
+                SupervisorError::Invalid(format!("source queue unavailable: {error}"))
+            })?;
+            match queue.cancel_scan(&scan_id, now_ms()) {
+                Ok(_) => emit_value(
+                    stdout,
+                    json!({"event":"source_scan_cancelled", "scan_id": scan_id}),
+                )?,
+                Err(error) => emit_value(
+                    stdout,
+                    json!({"event":"error", "code":"SOURCE_SCAN_CANCEL_FAILED", "scan_id": scan_id, "condition": error.to_string()}),
+                )?,
             }
         }
         UiRequest::Start {
