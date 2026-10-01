@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-cpu-audio-hardware-v1",
+  "capability": "AUD-2",
+  "backend_id": "dubflow-cpu-gate-v1",
+  "algorithm": "pcm-energy-gate",
+  "runtime": "python-stdlib",
+  "weights": [],
+  "license_id": "dubflow-cpu-signal-processing-1.0",
+  "hardware_policy": {
+    "gpu_optional": true,
+    "minimum_vram_mb": 4096,
+    "software_encoder_fallback": true
+  },
+  "fallback": "AUD-0-source-ducking",
+  "qualification": "thresholds-must-be-met-per-media-profile"
+}
