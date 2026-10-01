@@ -449,7 +449,7 @@
       "id": "source-adapter",
       "roots": [
         "contracts/source",
-        "engine/dubflow/download",
+        "engine/dubflow/download/source_adapter.py",
         "tests/source_adapter"
       ],
       "commands": [
@@ -498,6 +498,45 @@
           "discover",
           "-s",
           "tests/source_douyin",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
+      "id": "source-materializer",
+      "roots": [
+        "engine/dubflow/download/materializer.py",
+        "engine/dubflow/download/provider_transport.py",
+        "tests/source_materializer"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/source_materializer",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
+      "id": "source-generic",
+      "roots": [
+        "engine/dubflow/download/generic",
+        "tests/source_generic"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/source_generic",
           "-p",
           "test_*.py"
         ]
@@ -686,9 +725,19 @@
     {
       "id": "source-queue",
       "roots": [
+        "engine/dubflow/download/acquisition_queue.py",
+        "engine/dubflow/download/enumeration",
+        "crates/job-supervisor/source_queue",
         "tests/source_queue"
       ],
       "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/source_queue/Cargo.toml",
+          "--locked"
+        ],
         [
           "python",
           "-m",

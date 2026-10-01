@@ -3,5 +3,6 @@ resolver = "2"
 members = [
     "app",
     "protocol",
+    "source_queue",
     "state",
 ]
