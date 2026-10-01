@@ -707,27 +707,70 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     render_ready = audio_path is None and _stage_ready(checkpoint, render_stage, (final_path,))
     if not render_ready:
         emitter.progress(0.74, "Đang render video H.264/AAC")
-        media.render(
-            config.source_path,
-            final_path,
-            subtitle_path=ass_path,
-            audio_path=audio_path,
-            preserve_original_audio=audio_path is None,
-            burn_in_subtitles=config.burn_in_subtitles,
-            overwrite=True,
-        )
+        try:
+            media.render(
+                config.source_path,
+                final_path,
+                subtitle_path=ass_path,
+                audio_path=audio_path,
+                preserve_original_audio=audio_path is None,
+                burn_in_subtitles=config.burn_in_subtitles,
+                overwrite=True,
+            )
+        except MediaAdapterError as error:
+            if audio_path is None:
+                raise ProductionJobError(error.code, error.condition, retryable=error.retryable) from error
+            # A valid B1 render is safer than failing the whole localization
+            # job when a real mix cannot be muxed by the media runtime.
+            warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: render audio failed: {error.code}: {error.condition}")
+            b2_audio = None
+            audio_path = None
+            audio_metadata = {"mode": "original", "backend": "source-audio"}
+            render_stage = "render"
+            media.render(
+                config.source_path,
+                final_path,
+                subtitle_path=ass_path,
+                preserve_original_audio=True,
+                burn_in_subtitles=config.burn_in_subtitles,
+                overwrite=True,
+            )
         _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"]})
     emitter.checkpoint(render_stage, _sha256(final_path))
 
     emitter.progress(0.88, "Đang kiểm tra codec, thời lượng và khả năng đọc output")
     output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
-    if output_probe.video.codec_name != "h264":
-        raise ProductionJobError("QC_VIDEO_CODEC", f"expected H.264 output, received {output_probe.video.codec_name}")
-    _validate_rendered_audio(probe, output_probe)
     source_duration = probe.duration_ticks
+
+    def validate_output(candidate: MediaProbeResult) -> None:
+        if candidate.video.codec_name != "h264":
+            raise ProductionJobError("QC_VIDEO_CODEC", f"expected H.264 output, received {candidate.video.codec_name}")
+        _validate_rendered_audio(probe, candidate)
+        candidate_duration = candidate.duration_ticks
+        if source_duration is not None and candidate_duration is not None and candidate_duration + 2_000 < source_duration:
+            raise ProductionJobError("QC_DURATION_SHORT", "rendered output is materially shorter than the source")
+
+    try:
+        validate_output(output_probe)
+    except ProductionJobError as error:
+        if b2_audio is None:
+            raise
+        warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: output QC failed: {error.code}: {error.condition}")
+        b2_audio = None
+        audio_path = None
+        audio_metadata = {"mode": "original", "backend": "source-audio"}
+        media.render(
+            config.source_path,
+            final_path,
+            subtitle_path=ass_path,
+            preserve_original_audio=True,
+            burn_in_subtitles=config.burn_in_subtitles,
+            overwrite=True,
+        )
+        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original"})
+        output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
+        validate_output(output_probe)
     output_duration = output_probe.duration_ticks
-    if source_duration is not None and output_duration is not None and output_duration + 2_000 < source_duration:
-        raise ProductionJobError("QC_DURATION_SHORT", "rendered output is materially shorter than the source")
     qc_path = config.output_dir / "qc_report.json"
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _atomic_json(qc_path, qc)
