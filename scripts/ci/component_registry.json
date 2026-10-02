@@ -2,6 +2,38 @@
   "schema_version": 1,
   "components": [
     {
+      "id": "supervisor-workspace",
+      "roots": [
+        "crates/job-supervisor/Cargo.toml",
+        "crates/job-supervisor/Cargo.lock",
+        "scripts/ci/component_registry.json",
+        "tests/ci/test_supervisor_workspace.py"
+      ],
+      "commands": [
+        [
+          "python",
+          "tests/ci/test_supervisor_workspace.py"
+        ],
+        [
+          "cargo",
+          "metadata",
+          "--manifest-path",
+          "crates/job-supervisor/Cargo.toml",
+          "--format-version",
+          "1",
+          "--locked"
+        ],
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/Cargo.toml",
+          "--workspace",
+          "--locked"
+        ]
+      ]
+    },
+    {
       "id": "media-contracts",
       "roots": [
         "contracts/timeline",
@@ -820,7 +852,7 @@
         [
           "node",
           "--experimental-strip-types",
-      "tests/review/review.test.mjs"
+          "tests/review/review.test.mjs"
         ]
       ]
     },
