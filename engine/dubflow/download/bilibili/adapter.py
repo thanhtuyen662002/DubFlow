@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
+from pathlib import Path
 from typing import Any, Mapping, Protocol
 from urllib.parse import urlsplit
 
@@ -24,6 +25,8 @@ from engine.dubflow.download.source_adapter import (
     SourceItem,
     SubtitleCandidate,
 )
+from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, DownloadResult, MediaMaterializer
+from engine.dubflow.download.provider_transport import YtDlpProviderTransport
 
 
 TICKS_PER_SECOND = 90_000
@@ -54,6 +57,7 @@ class BilibiliDownloadChoice:
 
     source_id: str
     candidate: MediaCandidate
+    audio_candidate: MediaCandidate | None = None
 
 
 def normalize_source_ref(source_ref: str) -> str:
@@ -115,9 +119,15 @@ def _https_url(value: Any, name: str) -> str:
         raise SourceError(SourceErrorCode.SOURCE_CHANGED, f"Bilibili field {name} is missing", provider_id="bilibili")
     if text.startswith("//"):
         text = "https:" + text
-    parts = urlsplit(text)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError as error:
+        raise SourceError(SourceErrorCode.SOURCE_CHANGED, f"Bilibili field {name} is malformed", provider_id="bilibili") from error
+    if parts.scheme not in {"http", "https"} or not parts.netloc or parts.username is not None or parts.password is not None:
         raise SourceError(SourceErrorCode.SOURCE_CHANGED, f"Bilibili field {name} is not a URL", provider_id="bilibili")
+    if port is not None and not 1 <= port <= 65535:
+        raise SourceError(SourceErrorCode.SOURCE_CHANGED, f"Bilibili field {name} has an invalid port", provider_id="bilibili")
     return text
 
 
@@ -181,6 +191,16 @@ def _media_candidates(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
                 result.append(MediaCandidate(f"progressive-{index}", _https_url(locator, "durl.url"), "progressive", "video/mp4", has_audio=True))
     elif progressive is not None:
         result.append(MediaCandidate("progressive-0", _https_url(progressive, "download_url"), "progressive", "video/mp4", has_audio=True))
+    # App-owned yt-dlp transports may expose normalized formats instead of
+    # Bilibili's API-specific DASH/durl fields.  Keep this mapping here so the
+    # provider adapter remains the only place that interprets format metadata.
+    if not result and isinstance(data.get("formats"), list):
+        for index, raw in enumerate(data["formats"][:256]):
+            if not isinstance(raw, Mapping) or raw.get("url") is None:
+                continue
+            locator = _https_url(raw.get("url"), "format.url")
+            has_audio = raw.get("acodec") not in {None, "none"}
+            result.append(MediaCandidate(f"format-{index}", locator, "progressive", "video/mp4", raw.get("width") if type(raw.get("width")) is int else None, raw.get("height") if type(raw.get("height")) is int else None, bool(has_audio)))
     if not result:
         raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Bilibili response contains no downloadable media", provider_id="bilibili")
     return tuple(result)
@@ -189,8 +209,21 @@ def _media_candidates(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
 class BilibiliSourceAdapter:
     provider_id = "bilibili"
 
-    def __init__(self, transport: BilibiliTransport) -> None:
+    def __init__(self, transport: BilibiliTransport | None = None, *, ytdlp_executable: str | Path | None = None, materializer: MediaMaterializer | None = None) -> None:
+        if transport is None:
+            if ytdlp_executable is None:
+                raise ValueError("a Bilibili transport or app-owned yt-dlp executable is required")
+            transport = YtDlpProviderTransport(self.provider_id, ytdlp_executable)
         self._transport = transport
+        self._materializer = materializer or MediaMaterializer()
+
+    @classmethod
+    def can_handle(cls, source_ref: str) -> bool:
+        try:
+            normalize_source_ref(source_ref)
+            return True
+        except SourceError:
+            return False
 
     def inspect(self, source_ref: str) -> SourceItem:
         source_id = normalize_source_ref(source_ref)
@@ -212,7 +245,9 @@ class BilibiliSourceAdapter:
             raise SourceError(SourceErrorCode.AUTH_REQUIRED, "Bilibili authentication is required", provider_id=self.provider_id, source_id=source_id, action="authenticate")
         if code in {-412, -352}:
             raise SourceError(SourceErrorCode.RATE_LIMITED, "Bilibili request was rate limited or challenged", provider_id=self.provider_id, source_id=source_id, retryable=True, action="retry_later")
-        if code in {-404, -403}:
+        if code == -403:
+            raise SourceError(SourceErrorCode.PRIVATE, "Bilibili video is private or permission-restricted", provider_id=self.provider_id, source_id=source_id, action="authenticate")
+        if code == -404:
             raise SourceError(SourceErrorCode.NOT_FOUND, "Bilibili video is unavailable", provider_id=self.provider_id, source_id=source_id)
         if code not in {0, None}:
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Bilibili API returned an unsupported error", provider_id=self.provider_id, source_id=source_id)
@@ -232,14 +267,33 @@ class BilibiliSourceAdapter:
             subtitle_candidates=_subtitle_candidates(data),
         )
 
+    def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50):
+        raise SourceError(SourceErrorCode.UNSUPPORTED, "Bilibili channel enumeration requires the durable enumeration adapter", provider_id=self.provider_id)
+
     def select_download(self, item: SourceItem, *, prefer_progressive: bool = False) -> BilibiliDownloadChoice:
-        """Choose a video candidate without logging or downloading credentials."""
+        """Choose the highest-resolution video and a matching audio stream."""
 
         candidates = [candidate for candidate in item.media_candidates if candidate.mime_type.startswith("video/")]
         if not candidates:
             raise SourceError(SourceErrorCode.UNSUPPORTED, "Bilibili item has no video download candidate", provider_id=self.provider_id, source_id=item.identity.source_id)
-        candidates.sort(key=lambda candidate: (candidate.kind != ("progressive" if prefer_progressive else "dash"), candidate.candidate_id))
-        return BilibiliDownloadChoice(item.identity.source_id, candidates[0])
+        preferred_kind = "progressive" if prefer_progressive else "dash"
+        candidates.sort(key=lambda candidate: (candidate.kind != preferred_kind, -((candidate.width or 0) * (candidate.height or 0)), -(candidate.height or 0), candidate.candidate_id))
+        audio = next((candidate for candidate in item.media_candidates if candidate.mime_type.startswith("audio/")), None)
+        return BilibiliDownloadChoice(item.identity.source_id, candidates[0], audio)
+
+    def download(self, item: SourceItem, destination: str | Path, *, choice: BilibiliDownloadChoice | None = None, **kwargs: object) -> DownloadResult:
+        selected = choice or self.select_download(item)
+        try:
+            return self._materializer.download(selected.candidate, destination, **kwargs)
+        except DownloadError as error:
+            mapping = {
+                DownloadErrorCode.AUTH_REQUIRED: SourceErrorCode.AUTH_REQUIRED,
+                DownloadErrorCode.RATE_LIMITED: SourceErrorCode.RATE_LIMITED,
+                DownloadErrorCode.SOURCE_CHANGED: SourceErrorCode.SOURCE_CHANGED,
+                DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK,
+                DownloadErrorCode.UNSUPPORTED: SourceErrorCode.UNSUPPORTED,
+            }
+            raise SourceError(mapping.get(error.code, SourceErrorCode.NETWORK), "Bilibili media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
 
 
 __all__ = ["BilibiliDownloadChoice", "BilibiliSourceAdapter", "BilibiliTransportError", "normalize_source_ref"]

@@ -70,6 +70,7 @@ _prepare_worker_import_path()
 
 from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
+from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, run_b2_audio
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
 
 
@@ -530,7 +531,16 @@ def _translate_with_argos(cues: Sequence[TextCue], model_root: Path, source_lang
         raise ProductionJobError("TRANSLATION_FAILED", str(error), retryable=True) from error
 
 
-def _write_manifest(output_dir: Path, config: WorkerConfig, probe: MediaProbeResult, cues: Sequence[TextCue], artifacts: Mapping[str, Path], warnings: Sequence[str]) -> Path:
+def _write_manifest(
+    output_dir: Path,
+    config: WorkerConfig,
+    probe: MediaProbeResult,
+    cues: Sequence[TextCue],
+    artifacts: Mapping[str, Path],
+    warnings: Sequence[str],
+    *,
+    audio: Mapping[str, Any] | None = None,
+) -> Path:
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "kind": "dubflow_localization_job",
@@ -540,8 +550,10 @@ def _write_manifest(output_dir: Path, config: WorkerConfig, probe: MediaProbeRes
         "cues": [cue.to_dict() for cue in cues],
         "artifacts": {name: {"path": str(path), "sha256": _sha256(path), "size_bytes": path.stat().st_size} for name, path in artifacts.items()},
         "warnings": list(warnings),
-        "production_profile": "cpu-local-file-b1" if not config.enable_dubbing else "cpu-local-file-b1-downgraded-from-b2",
+        "production_profile": "cpu-local-file-b2" if audio and audio.get("mode") == "dubbed" else "cpu-local-file-b1" if not config.enable_dubbing else "cpu-local-file-b1-downgraded-from-b2",
     }
+    if audio is not None:
+        manifest["audio"] = dict(audio)
     path = config.output_dir / "job_manifest.json"
     _atomic_json(path, manifest)
     return path
@@ -635,17 +647,118 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     emitter.checkpoint("subtitles", _sha256(srt_path))
 
     warnings: list[str] = []
+    b2_audio: B2AudioResult | None = None
+    audio_path: Path | None = None
+    audio_metadata: dict[str, Any] = {"mode": "original", "backend": "source-audio"}
     if config.enable_dubbing:
-        # TTS is intentionally a separate promotion boundary. Until a
-        # verified Vietnamese voice pack exists, preserve the already-valid B1
-        # result and record an explicit downgrade in every provenance report.
-        # The UI can offer the option without producing a fake or silent dub.
-        warnings.append("TTS_NOT_READY: voice pack is not installed; preserved the valid B1 Vietsub result")
-        emitter.progress(0.70, "Chưa có voice pack; giữ Vietsub và audio gốc")
+        emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
+        try:
+            b2_audio = run_b2_audio(
+                media=media,
+                source_path=config.source_path,
+                source_probe=probe,
+                translated_cues=translated,
+                source_language=config.source_language,
+                app_root=config.app_root,
+                profile_path=profile_path,
+                work_dir=work_dir / "b2-audio",
+            )
+            audio_path = b2_audio.final_mix_path
+            audio_metadata = {
+                "mode": "dubbed",
+                "backend": b2_audio.tts_document.provenance.backend_id,
+                "voice_id": b2_audio.voice.voice_id,
+                "voice_version": b2_audio.voice.voice_version,
+                "voice_hash": b2_audio.voice.content_hash(),
+                "tts_document": str(b2_audio.tts_document_path),
+                "mix_document": str(b2_audio.mix_document_path),
+                "mix_provenance": b2_audio.mix_document.provenance.to_dict(),
+                "tts_failures": len(b2_audio.tts_document.failures),
+                "mix_failures": len(b2_audio.mix_document.failures),
+                "mix_warnings": list(b2_audio.mix_document.warnings),
+            }
+            _write_stage(
+                checkpoint,
+                checkpoint_path,
+                "b2-audio",
+                {
+                    "source_audio": str(b2_audio.source_audio_path),
+                    "tts_document": str(b2_audio.tts_document_path),
+                    "mix_document": str(b2_audio.mix_document_path),
+                    "final_mix": str(b2_audio.final_mix_path),
+                    "dialogue_stem": str(b2_audio.dialogue_stem_path),
+                    "sha256": _sha256(b2_audio.final_mix_path),
+                },
+            )
+            if b2_audio.tts_document.failures or b2_audio.mix_document.failures:
+                warnings.append("B2_AUDIO_DEGRADED: one or more dialogue cues used bounded per-cue fallback; source audio was preserved")
+            emitter.checkpoint("b2-audio", _sha256(b2_audio.final_mix_path))
+        except B2AudioError as error:
+            b2_audio = None
+            audio_path = None
+            warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: {error.code}: {error.condition}")
+            emitter.progress(0.70, "B2 audio không khả dụng; giữ Vietsub và audio gốc")
 
     final_path = config.output_dir / "final_vi.mp4"
-    if not _stage_ready(checkpoint, "render", (final_path,)):
+    render_stage = "render-dubbed" if audio_path is not None else "render"
+    # A successful B2 run always re-renders against the newly verified mix.
+    # This prevents a changed voice-pack hash or regenerated mix from being
+    # hidden by a stale final-video checkpoint after a resumable restart.
+    render_ready = audio_path is None and _stage_ready(checkpoint, render_stage, (final_path,))
+    if not render_ready:
         emitter.progress(0.74, "Đang render video H.264/AAC")
+        try:
+            media.render(
+                config.source_path,
+                final_path,
+                subtitle_path=ass_path,
+                audio_path=audio_path,
+                preserve_original_audio=audio_path is None,
+                burn_in_subtitles=config.burn_in_subtitles,
+                overwrite=True,
+            )
+        except MediaAdapterError as error:
+            if audio_path is None:
+                raise ProductionJobError(error.code, error.condition, retryable=error.retryable) from error
+            # A valid B1 render is safer than failing the whole localization
+            # job when a real mix cannot be muxed by the media runtime.
+            warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: render audio failed: {error.code}: {error.condition}")
+            b2_audio = None
+            audio_path = None
+            audio_metadata = {"mode": "original", "backend": "source-audio"}
+            render_stage = "render"
+            media.render(
+                config.source_path,
+                final_path,
+                subtitle_path=ass_path,
+                preserve_original_audio=True,
+                burn_in_subtitles=config.burn_in_subtitles,
+                overwrite=True,
+            )
+        _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"]})
+    emitter.checkpoint(render_stage, _sha256(final_path))
+
+    emitter.progress(0.88, "Đang kiểm tra codec, thời lượng và khả năng đọc output")
+    output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
+    source_duration = probe.duration_ticks
+
+    def validate_output(candidate: MediaProbeResult) -> None:
+        if candidate.video.codec_name != "h264":
+            raise ProductionJobError("QC_VIDEO_CODEC", f"expected H.264 output, received {candidate.video.codec_name}")
+        _validate_rendered_audio(probe, candidate)
+        candidate_duration = candidate.duration_ticks
+        if source_duration is not None and candidate_duration is not None and candidate_duration + 2_000 < source_duration:
+            raise ProductionJobError("QC_DURATION_SHORT", "rendered output is materially shorter than the source")
+
+    try:
+        validate_output(output_probe)
+    except ProductionJobError as error:
+        if b2_audio is None:
+            raise
+        warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: output QC failed: {error.code}: {error.condition}")
+        b2_audio = None
+        audio_path = None
+        audio_metadata = {"mode": "original", "backend": "source-audio"}
         media.render(
             config.source_path,
             final_path,
@@ -654,30 +767,43 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             burn_in_subtitles=config.burn_in_subtitles,
             overwrite=True,
         )
-        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path)})
-    emitter.checkpoint("render", _sha256(final_path))
-
-    emitter.progress(0.88, "Đang kiểm tra codec, thời lượng và khả năng đọc output")
-    output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
-    if output_probe.video.codec_name != "h264":
-        raise ProductionJobError("QC_VIDEO_CODEC", f"expected H.264 output, received {output_probe.video.codec_name}")
-    _validate_rendered_audio(probe, output_probe)
-    source_duration = probe.duration_ticks
+        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original"})
+        output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
+        validate_output(output_probe)
     output_duration = output_probe.duration_ticks
-    if source_duration is not None and output_duration is not None and output_duration + 2_000 < source_duration:
-        raise ProductionJobError("QC_DURATION_SHORT", "rendered output is materially shorter than the source")
     qc_path = config.output_dir / "qc_report.json"
-    qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _atomic_json(qc_path, qc)
     editable_dir = config.output_dir / "editable"
     editable_dir.mkdir(parents=True, exist_ok=True)
     for source, name in ((srt_path, "captions_vi.srt"), (ass_path, "captions_vi.ass")):
         target = editable_dir / name
         target.write_bytes(source.read_bytes())
+    editable_audio: list[tuple[Path, str]] = []
+    if b2_audio is not None:
+        editable_audio = [
+            (b2_audio.original_audio_path, "source_audio.wav"),
+            (b2_audio.dialogue_stem_path, "dialogue_stem.wav"),
+            (b2_audio.final_mix_path, "final_mix.wav"),
+        ]
+        for source, name in editable_audio:
+            target = editable_dir / name
+            target.write_bytes(source.read_bytes())
     timeline_path = editable_dir / "timeline.json"
     _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": [cue.to_dict() for cue in translated]})
     artifacts = {"final_video": final_path, "captions_srt": srt_path, "captions_ass": ass_path, "qc_report": qc_path, "editable_timeline": timeline_path}
-    manifest_path = _write_manifest(config.output_dir, config, probe, translated, artifacts, warnings)
+    if b2_audio is not None:
+        artifacts.update({
+            "source_audio": b2_audio.original_audio_path,
+            "dialogue_stem": b2_audio.dialogue_stem_path,
+            "final_mix": b2_audio.final_mix_path,
+            "tts_document": b2_audio.tts_document_path,
+            "mix_document": b2_audio.mix_document_path,
+            "editable_source_audio": editable_dir / "source_audio.wav",
+            "editable_dialogue_stem": editable_dir / "dialogue_stem.wav",
+            "editable_final_mix": editable_dir / "final_mix.wav",
+        })
+    manifest_path = _write_manifest(config.output_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.progress(1.0, "Hoàn tất video Việt hóa")
     emitter.checkpoint("qc", _sha256(qc_path))

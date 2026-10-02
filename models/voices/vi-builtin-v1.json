@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "kind": "dubflow_voice_pack",
+  "artifact_id": "vi-builtin-v1",
+  "version": "1.0.0",
+  "language": "vi",
+  "license_id": "dubflow-builtin-voice-1.0",
+  "license_notice": "Original DubFlow additive CPU voice tables; distributed under the DubFlow application license.",
+  "synthesis": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "base_frequency_hz": 145.0,
+    "amplitude": 6200,
+    "harmonic_mix": [0.32, 0.14],
+    "vowel_offsets_hz": {
+      "a": 18.0,
+      "ă": 24.0,
+      "â": 8.0,
+      "e": 32.0,
+      "ê": 40.0,
+      "i": 58.0,
+      "o": -12.0,
+      "ô": 2.0,
+      "ơ": -2.0,
+      "u": -22.0,
+      "ư": -14.0,
+      "y": 50.0
+    },
+    "tone_offsets_hz": {
+      "level": 0.0,
+      "acute": 24.0,
+      "grave": -24.0,
+      "hook": -8.0,
+      "tilde": 16.0,
+      "dot": -34.0
+    }
+  }
+}

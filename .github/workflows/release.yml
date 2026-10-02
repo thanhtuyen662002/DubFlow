@@ -163,6 +163,7 @@ jobs:
           & (Join-Path $env:pythonLocation 'python.exe') scripts/release/production_smoke.py `
             --supervisor $supervisor --root $stage --data-root $dataRoot --work-root $workRoot `
             --ffmpeg $ffmpeg --ffprobe $ffprobe --exercise-hard-kill --long-seconds 60 `
+            --enable-dubbing `
             --report (Join-Path $PWD 'dist/qualification/pipeline-smoke.json')
           if ($LASTEXITCODE -ne 0) { throw 'Real CPU pipeline qualification smoke failed' }
 
@@ -231,7 +232,7 @@ jobs:
             cpu_local_file = if ($env:RELEASE_CHANNEL -eq 'stable') { 'passed' } else { 'qualification-only' }
             synthetic_long_form = if ($env:RELEASE_CHANNEL -eq 'stable') { 'passed' } else { 'qualification-only' }
             gpu_hardware = 'not_applicable_cpu_profile'
-            qualification_scope = 'cpu-local-file-b1'
+            qualification_scope = 'cpu-local-file-b2'
             qualification_report = 'dist/qualification/pipeline-smoke.json'
             artifacts = @($files | Sort-Object Name | ForEach-Object {
               [ordered]@{ name = $_.Name; size_bytes = $_.Length.ToString([Globalization.CultureInfo]::InvariantCulture); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
@@ -266,7 +267,7 @@ jobs:
             --work-root (Join-Path $env:RUNNER_TEMP 'DubFlow installed work') `
             --ffmpeg (Join-Path $installedRoot 'runtime/media/ffmpeg.exe') `
             --ffprobe (Join-Path $installedRoot 'runtime/media/ffprobe.exe') `
-            --long-seconds 60 --report $pipelineReport
+            --long-seconds 60 --enable-dubbing --report $pipelineReport
           if ($LASTEXITCODE -ne 0) { throw 'Installed production pipeline smoke failed' }
           Start-Sleep -Seconds 8
           $hostProcess = Get-Process -Name 'DubFlow' -ErrorAction SilentlyContinue | Select-Object -First 1

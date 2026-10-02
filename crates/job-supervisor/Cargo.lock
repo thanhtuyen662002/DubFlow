@@ -83,6 +83,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dubflow-source-queue"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+]
+
+[[package]]
 name = "dubflow-supervisor"
 version = "0.1.0"
 dependencies = [
