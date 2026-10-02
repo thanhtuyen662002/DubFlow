@@ -15,6 +15,16 @@ from component_registry import (
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = ROOT / "scripts" / "ci" / "component_registry.json"
 
+# Selection logic and its inputs affect every registered deterministic component.
+# Optional GPU/live-source/long-soak workflows remain separate lanes.
+INTEGRATION_CONTROL_ROOTS = (
+    "scripts/ci",
+    "scripts/validate_governance.py",
+    "tests/ci",
+    ".github/workflows/pr-fast.yml",
+    ".github/workflows/pr-integration.yml",
+)
+
 
 def run(argv: list[str]) -> None:
     print("+", " ".join(argv), flush=True)
@@ -25,23 +35,25 @@ def changed_paths(base_sha: str | None) -> set[str] | None:
     if not base_sha or not base_sha.strip("0"):
         return None
     result = subprocess.run(
-        ["git", "diff", "--name-only", f"{base_sha}...HEAD"],
+        ["git", "diff", "--name-only", "-z", "--no-renames", f"{base_sha}...HEAD", "--"],
         cwd=ROOT,
         check=False,
-        text=True,
         capture_output=True,
     )
     if result.returncode != 0:
         print("Could not compute changed paths; running all registered components.")
-        print(result.stderr)
+        print(os.fsdecode(result.stderr))
         return None
-    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    # NUL is the only delimiter that cannot be part of a Git pathname. Keep
+    # bytes until splitting to avoid newline translation; fsdecode preserves
+    # POSIX undecodable names. --no-renames retains both the old and new paths.
+    return {os.fsdecode(path) for path in result.stdout.split(b"\0") if path}
 
 
 def component_affected(component: dict, changed: set[str] | None) -> bool:
     if changed is None:
         return True
-    for root in component["roots"]:
+    for root in (*INTEGRATION_CONTROL_ROOTS, *component["roots"]):
         root = root.rstrip("/")
         if any(path == root or path.startswith(root + "/") for path in changed):
             return True

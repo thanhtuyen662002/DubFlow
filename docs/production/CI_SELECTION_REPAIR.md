@@ -1,17 +1,26 @@
 # Integration selection repair (#186)
 
-## Scope
+## Scope and implementation
 
-Repair the deterministic Integration selector before relying on it to advance the production PR queue. The baseline inspected is `9271c2552331d43686940b939e8b1ad70bdc9863`.
+Baseline: `9271c2552331d43686940b939e8b1ad70bdc9863`. The repair owns only `scripts/ci/run_integration.py`, `tests/ci/test_integration_selection.py`, `.github/workflows/pr-integration.yml` and this note. It does not own product worker/model paths, release signing, or any other active PR branch.
 
-Owned paths are `scripts/ci/run_integration.py`, `tests/ci/test_integration_selection.py`, `.github/workflows/pr-integration.yml` and this note. No product worker, voice/model, release/signing, or other active PR branch is owned by this task.
+The selector now reads NUL-delimited Git paths as bytes and uses filesystem decoding after splitting, preserving Unicode, control characters, whitespace and POSIX undecodable names. Disabling rename compression includes both the source and destination component of a move. Missing, zero or unresolvable bases retain the existing conservative all-component fallback.
 
-## Failure cases
+Changes to Integration control code/registry, selector regression tests, governance validation, or fast/integration workflows select all registered deterministic components. Ordinary unrelated documents retain selective behavior. GPU/live-source/long-soak workflows are not added as universal gates. The Integration workflow runs the selector regressions before the component registry runner, with unchanged permissions and timeout.
 
-Git's quoted line-based filename output can prevent a Unicode or control-character path from matching its component root. Rename detection can omit the former component path. Changes to the selector, registry or Integration workflow must invalidate selection globally rather than select no components.
+## Executed evidence (2026-10-02)
 
-## Validation plan
+The focused source snapshot was read through GitHub and tested on Linux with Python 3.13.5 and Git 2.47.3. This environment could not clone the repository because network/DNS was unavailable, and it had no Cargo. The snapshot is not a full production checkout.
 
-Use temporary local Git repositories and Python unittest to exercise NUL-delimited path handling, both sides of renames, deletions, missing/invalid base fallback, namespace boundaries and CI-control invalidation. Run the selector regression suite explicitly before selective Integration. Preserve unrelated-doc selectivity and keep GPU/live-site/long-soak lanes separate.
+Original source Git blob identities were verified before modification:
+- `scripts/ci/run_integration.py`: `1a0a6a822101f3265d5cc0d417004e22504139ee`.
+- `scripts/ci/component_registry.py` (unchanged): `43fc4cfa6fd4955d336af2cdf92a9b18c552619b`.
+- `.github/workflows/pr-integration.yml`: `f7027f4571d73336fee695f529cb7ce44a15f2fb`.
 
-This is a claim checkpoint, not test or release evidence. Exact-head/base results belong in the linked PR after execution. The PR must remain Draft until acceptance, hosted required CI and review are satisfied.
+`python -m unittest discover -s tests/ci -p 'test_*.py' -v` failed against the original selector and passed all 21 tests after the repair. The baseline emitted 14 failure records including subtests; these are not 14 separate test methods. Tests use real temporary local Git repositories and never access a network or model.
+
+`python scripts/ci/component_registry.py` self-tests and `python -m compileall -q scripts/ci tests/ci` passed. The workflow was parsed and its read-only permissions, 45-minute timeout and regression-before-registry ordering were checked. The runner diff passed the Git whitespace check.
+
+## Remaining gates
+
+Full-repository Integration, hosted Python 3.12 checks, Rust/desktop builds, Windows execution, model/audio quality and release qualification were not run locally. Focused test success does not substitute for these. Record actual hosted run IDs and the final source HEAD/base in PR #187, keep it Draft while required CI/review is pending, and do not bypass inherited failures revealed by broader selection. Re-read live main before any merge; a moved base invalidates prior merge readiness.
