@@ -54,7 +54,7 @@ class HardwareResolver:
     """
 
     def __init__(self, environment: Mapping[str, str] | None = None) -> None:
-        self.environment = dict(environment or os.environ)
+        self.environment = dict(os.environ if environment is None else environment)
 
     def detect(self) -> HardwareSnapshot:
         threads = max(1, int(os.cpu_count() or 1))
