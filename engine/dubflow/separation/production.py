@@ -1,10 +1,9 @@
 """Real-media CPU attenuation backend for the optional AUD-2 stage.
 
-This is a conservative, app-owned spectral/energy gate. It writes independent
-PCM source, dialogue and background stems from the actual input WAV; it never
-claims that a gate is a neural source separator. Benchmark thresholds decide
-whether AUD-2 is admissible. Otherwise callers retain the already-valid AUD-0
-source-duck mix.
+This app-owned energy gate writes independent PCM source, dialogue and
+background stems from the input WAV. Activity and clipping statistics are
+measured signal properties, not speech-separation quality measurements. Until
+reference benchmarks qualify this backend, callers retain the valid AUD-0 mix.
 """
 
 from __future__ import annotations
@@ -60,11 +59,11 @@ class SeparationMetrics:
     channels: int
     frame_count: int
     active_fraction_milli: int
-    residual_speech_millidb: int
-    background_artifact_milli: int
+    residual_speech_millidb: int | None
+    background_artifact_milli: int | None
     clipping_fraction_ppm: int
     decision: str
-    backend_id: str = "dubflow-cpu-gate-v1"
+    backend_id: str = "dubflow-cpu-gate-v2"
 
     def __post_init__(self) -> None:
         for name in ("source_hash", "dialogue_hash", "background_hash"):
@@ -80,10 +79,14 @@ class SeparationMetrics:
             ("background_artifact_milli", self.background_artifact_milli, 1000),
             ("clipping_fraction_ppm", self.clipping_fraction_ppm, 1_000_000),
         ):
+            if value is None and name in {"residual_speech_millidb", "background_artifact_milli"}:
+                continue
             if type(value) is not int or value < 0 or value > high:
                 raise ValueError(f"{name} is outside the metric bound")
         if self.decision not in {"AUD-2", "AUD-0", "REVIEW"}:
             raise ValueError("separation decision is invalid")
+        if self.decision == "AUD-2" and (self.residual_speech_millidb is None or self.background_artifact_milli is None):
+            raise ValueError("AUD-2 requires measured residual speech and background artifacts")
 
     def to_dict(self) -> dict[str, object]:
         return {"backend_id": self.backend_id, "source_hash": self.source_hash, "dialogue_hash": self.dialogue_hash, "background_hash": self.background_hash, "sample_rate": self.sample_rate, "channels": self.channels, "frame_count": self.frame_count, "active_fraction_milli": self.active_fraction_milli, "residual_speech_millidb": self.residual_speech_millidb, "background_artifact_milli": self.background_artifact_milli, "clipping_fraction_ppm": self.clipping_fraction_ppm, "decision": self.decision}
@@ -98,7 +101,7 @@ class SeparationResult:
     warnings: tuple[str, ...]
 
     def to_dict(self) -> dict[str, object]:
-        return {"schema_version": 1, "source_path": str(self.source_path), "dialogue_path": str(self.dialogue_path), "background_path": str(self.background_path), "metrics": self.metrics.to_dict(), "warnings": list(self.warnings), "fallback": self.metrics.decision != "AUD-2"}
+        return {"schema_version": 2, "source_path": str(self.source_path), "dialogue_path": str(self.dialogue_path), "background_path": str(self.background_path), "metrics": self.metrics.to_dict(), "warnings": list(self.warnings), "fallback": self.metrics.decision != "AUD-2"}
 
 
 def _hash(path: Path) -> str:
@@ -171,7 +174,7 @@ def _iter_pcm(path: Path, channels: int, frames: int, *, chunk_frames: int = 409
 class CpuAttenuationBackend:
     """Streaming-safe CPU gate that produces validated independent stems."""
 
-    backend_id = "dubflow-cpu-gate-v1"
+    backend_id = "dubflow-cpu-gate-v2"
 
     def __init__(self, config: SeparationConfig | None = None) -> None:
         self.config = config or SeparationConfig()
@@ -185,13 +188,14 @@ class CpuAttenuationBackend:
         levels: list[float] = []
         analysis_buffer: list[float] = []
         for block in _iter_pcm(source, channels, frame_count):
-            analysis_buffer.extend(sum(frame) / channels for frame in block)
+            # Average channel energies so opposite-phase stereo cannot cancel.
+            analysis_buffer.extend(sum(sample * sample for sample in frame) / channels for frame in block)
             while len(analysis_buffer) >= window:
                 values = analysis_buffer[:window]
-                levels.append(math.sqrt(sum(item * item for item in values) / len(values)))
+                levels.append(math.sqrt(sum(values) / len(values)))
                 del analysis_buffer[:hop]
         if analysis_buffer:
-            levels.append(math.sqrt(sum(item * item for item in analysis_buffer) / len(analysis_buffer)))
+            levels.append(math.sqrt(sum(analysis_buffer) / len(analysis_buffer)))
         positive = sorted(level for level in levels if level > 0)
         noise = positive[min(len(positive) - 1, len(positive) // 5)] if positive else 0
         threshold = max(float(self.config.minimum_rms), noise * 2.4)
@@ -264,15 +268,14 @@ class CpuAttenuationBackend:
                 temporary.unlink(missing_ok=True)
             raise
         active_fraction = (active_samples * 1000 + max(1, frame_count) // 2) // max(1, frame_count)
-        # This conservative gate reports a measurable residual/artifact budget;
-        # it is promoted only when speech is neither nearly absent nor nearly
-        # continuous and clipping remains within the configured limit.
-        residual = max(0, 6000 - active_fraction * 4)
-        artifact = min(1000, max(0, 80 + (1000 - active_fraction) // 5))
+        # Activity does not measure residual speech or background damage.
+        # Do not manufacture quality scores or promote an unqualified backend.
+        residual = None
+        artifact = None
         clipping_fraction = clipped * 1_000_000 // max(1, frame_count * channels)
-        decision = "AUD-2" if 40 <= active_fraction <= 960 and clipping_fraction <= 1000 and residual <= 4000 and artifact <= 250 else "AUD-0"
+        decision = "AUD-0"
         metrics = SeparationMetrics(_hash(source_copy), _hash(dialogue_path), _hash(background_path), rate, channels, frame_count, active_fraction, residual, artifact, clipping_fraction, decision, self.backend_id)
-        warnings = () if decision == "AUD-2" else ("AUD-2 benchmark thresholds were not met; retain conservative AUD-0 source ducking",)
+        warnings = ("Residual speech and background artifacts are not measured; retain AUD-0 source ducking",)
         return SeparationResult(source_copy, dialogue_path, background_path, metrics, warnings)
 
 
