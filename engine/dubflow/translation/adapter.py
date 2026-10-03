@@ -1149,6 +1149,14 @@ class RoutedTranslationAdapter:
                         f"adapter capability {route.supported_source_language}->{TARGET_LANGUAGE}"
                     ),
                 )
+            if route.fallback_backend is not None:
+                raise TranslationError(
+                    "TRANSLATION_ROUTE_FALLBACK_UNSAFE",
+                    (
+                        f"route {source_language}->{TARGET_LANGUAGE} must not use an "
+                        "unfenced fallback backend"
+                    ),
+                )
             if source_language in normalized:
                 raise TranslationError(
                     "TRANSLATION_ROUTE_INVALID",
@@ -1202,6 +1210,19 @@ class RoutedTranslationAdapter:
             raise TranslationError(
                 "TRANSLATION_ROUTE_PROVENANCE_MISMATCH",
                 "selected route returned a document for a different target language",
+            )
+        if document.provenance != route.provenance:
+            raise TranslationError(
+                "TRANSLATION_ROUTE_PROVENANCE_MISMATCH",
+                "selected route returned provenance for a different backend or model",
+            )
+        if any(
+            item.source_language != resolved or item.target_language != TARGET_LANGUAGE
+            for item in document.translations
+        ):
+            raise TranslationError(
+                "TRANSLATION_ROUTE_PROVENANCE_MISMATCH",
+                "selected route returned segment language provenance that does not match the route",
             )
         return document
 

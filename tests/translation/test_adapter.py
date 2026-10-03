@@ -357,6 +357,72 @@ class TranslationAdapterTests(unittest.TestCase):
                 input_hash=INPUT_HASH,
             )
 
+    def test_routed_translation_rejects_unfenced_fallback_backend(self) -> None:
+        config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
+        fallback = DeterministicFixtureBackend({"u-1": "wrong fallback"})
+        route = LocalTranslationAdapter(
+            DeterministicFixtureBackend({"u-1": "primary"}),
+            config=config,
+            provenance=make_provenance(config),
+            supported_source_language="zh-CN",
+            fallback_backend=fallback,
+        )
+
+        with self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_FALLBACK_UNSAFE"):
+            RoutedTranslationAdapter({"zh-CN": route})
+        self.assertEqual(fallback.calls, [])
+
+    def test_routed_translation_rejects_swapped_backend_model_provenance(self) -> None:
+        config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
+
+        class SwappedProvenanceRoute(LocalTranslationAdapter):
+            def translate(self, sources, **kwargs):
+                document = super().translate(sources, **kwargs)
+                return replace(
+                    document,
+                    provenance=replace(document.provenance, backend_id="unexpected-backend"),
+                )
+
+        route = SwappedProvenanceRoute(
+            DeterministicFixtureBackend({"u-1": "xin chào"}),
+            config=config,
+            provenance=make_provenance(config),
+            supported_source_language="zh-CN",
+        )
+        router = RoutedTranslationAdapter({"zh-CN": route})
+
+        with self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_PROVENANCE_MISMATCH"):
+            router.translate(
+                (source("u-1", "你好", 0, 100, language="zh-CN"),),
+                input_hash=INPUT_HASH,
+            )
+
+    def test_routed_translation_rejects_segment_language_provenance_drift(self) -> None:
+        config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
+
+        class SegmentAliasRoute(LocalTranslationAdapter):
+            def translate(self, sources, **kwargs):
+                document = super().translate(sources, **kwargs)
+                aliased = tuple(
+                    replace(item, source_language="zh-cn")
+                    for item in document.translations
+                )
+                return replace(document, translations=aliased)
+
+        route = SegmentAliasRoute(
+            DeterministicFixtureBackend({"u-1": "xin chào"}),
+            config=config,
+            provenance=make_provenance(config),
+            supported_source_language="zh-CN",
+        )
+        router = RoutedTranslationAdapter({"zh-CN": route})
+
+        with self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_PROVENANCE_MISMATCH"):
+            router.translate(
+                (source("u-1", "你好", 0, 100, language="zh-CN"),),
+                input_hash=INPUT_HASH,
+            )
+
     def test_routed_translation_preserves_existing_english_route(self) -> None:
         config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
         backend = DeterministicFixtureBackend({"u-1": "xin chào"})
