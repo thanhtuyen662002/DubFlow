@@ -818,6 +818,7 @@ class LocalTranslationAdapter:
         *,
         config: TranslationConfig,
         provenance: TranslationProvenance,
+        supported_source_language: str | None = None,
         fallback_backend: TranslationBackend | None = None,
         fallback_profile: str = "cpu",
         fallback_provenance: TranslationProvenance | None = None,
@@ -825,6 +826,18 @@ class LocalTranslationAdapter:
         self.backend = backend
         self.config = config
         self.provenance = provenance
+        self.supported_source_language: str | None = None
+        if supported_source_language is not None:
+            capability = _canonical_source_language(
+                supported_source_language,
+                "adapter.supported_source_language",
+            )
+            if capability in {"auto", "und"}:
+                raise TranslationError(
+                    "TRANSLATION_ROUTE_CAPABILITY_INVALID",
+                    "translation route capability must name one concrete source language",
+                )
+            self.supported_source_language = capability
         self.fallback_backend = fallback_backend
         self.fallback_profile = fallback_profile
         if fallback_profile not in {"cpu", "gpu", "fixture"}:
@@ -1123,6 +1136,19 @@ class RoutedTranslationAdapter:
                     "TRANSLATION_ROUTE_INVALID",
                     "route must be a LocalTranslationAdapter",
                 )
+            if route.supported_source_language is None:
+                raise TranslationError(
+                    "TRANSLATION_ROUTE_CAPABILITY_MISSING",
+                    f"route {source_language}->{TARGET_LANGUAGE} does not declare its source capability",
+                )
+            if route.supported_source_language != source_language:
+                raise TranslationError(
+                    "TRANSLATION_ROUTE_CAPABILITY_MISMATCH",
+                    (
+                        f"route key {source_language}->{TARGET_LANGUAGE} does not match "
+                        f"adapter capability {route.supported_source_language}->{TARGET_LANGUAGE}"
+                    ),
+                )
             if source_language in normalized:
                 raise TranslationError(
                     "TRANSLATION_ROUTE_INVALID",
@@ -1157,7 +1183,7 @@ class RoutedTranslationAdapter:
 
         normalized_sources = tuple(
             item
-            if _canonical_source_language(item.source_language) == resolved
+            if item.source_language == resolved
             else replace(item, source_language=resolved)
             for item in source_items
         )
@@ -1167,7 +1193,7 @@ class RoutedTranslationAdapter:
             glossary=glossary,
             checkpoints=checkpoints,
         )
-        if _canonical_source_language(document.source_language) != resolved:
+        if document.source_language != resolved:
             raise TranslationError(
                 "TRANSLATION_ROUTE_PROVENANCE_MISMATCH",
                 "selected route returned a document for a different source language",

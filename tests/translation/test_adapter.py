@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -223,7 +224,7 @@ class TranslationAdapterTests(unittest.TestCase):
     def test_routed_translation_keeps_chinese_variants_distinct_and_provenance_truthful(self) -> None:
         config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
 
-        def route(backend_id: str, translated: str, model_digit: str):
+        def route(source_language: str, backend_id: str, translated: str, model_digit: str):
             backend = DeterministicFixtureBackend({"u-1": translated})
             provenance = TranslationProvenance(
                 "dubflow-translation-test",
@@ -240,11 +241,16 @@ class TranslationAdapterTests(unittest.TestCase):
                 config.requested_profile,
                 "fixture",
             )
-            return backend, LocalTranslationAdapter(backend, config=config, provenance=provenance)
+            return backend, LocalTranslationAdapter(
+                backend,
+                config=config,
+                provenance=provenance,
+                supported_source_language=source_language,
+            )
 
-        zh_backend, zh_route = route("fixture-zh-vi", "zh", "3")
-        cn_backend, cn_route = route("fixture-zh-cn-vi", "giản thể", "4")
-        tw_backend, tw_route = route("fixture-zh-tw-vi", "phồn thể", "5")
+        zh_backend, zh_route = route("zh", "fixture-zh-vi", "zh", "3")
+        cn_backend, cn_route = route("zh-CN", "fixture-zh-cn-vi", "giản thể", "4")
+        tw_backend, tw_route = route("zh-TW", "fixture-zh-tw-vi", "phồn thể", "5")
         router = RoutedTranslationAdapter({"zh": zh_route, "zh-CN": cn_route, "zh-TW": tw_route})
 
         original = source("u-1", "你好", 123, 456, language="zh-CN")
@@ -263,11 +269,104 @@ class TranslationAdapterTests(unittest.TestCase):
         self.assertEqual(zh_backend.calls, [])
         self.assertEqual(tw_backend.calls, [])
 
+    def test_routed_translation_canonicalizes_backend_boundary_and_requires_capability_identity(self) -> None:
+        config = TranslationConfig(
+            max_items_per_chunk=1,
+            context_before=1,
+            context_after=1,
+            requested_profile="fixture",
+        )
+
+        class CapturingBackend:
+            def __init__(self) -> None:
+                self.languages: list[tuple[str, ...]] = []
+
+            def translate(self, request: TranslationRequest) -> TranslationBackendResult:
+                self.languages.append(tuple(item.source_language for item in request.all_segments))
+                return TranslationBackendResult(tuple(
+                    TranslationCandidate(item.utterance_id, f"vi {item.utterance_id}")
+                    for item in request.core
+                ))
+
+        backend = CapturingBackend()
+        zh_cn = LocalTranslationAdapter(
+            backend,
+            config=config,
+            provenance=make_provenance(config),
+            supported_source_language="zh-cn",
+        )
+        router = RoutedTranslationAdapter({"zh-CN": zh_cn})
+        result = router.translate((
+            source("u-1", "一", 0, 50, language="zh-cn"),
+            source("u-2", "二", 100, 150, language="ZH-CN"),
+            source("u-3", "三", 200, 250, language="zh-CN"),
+        ), input_hash=INPUT_HASH)
+
+        self.assertEqual(result.source_language, "zh-CN")
+        self.assertTrue(all(item.source_language == "zh-CN" for item in result.translations))
+        self.assertEqual(backend.languages, [
+            ("zh-CN", "zh-CN"),
+            ("zh-CN", "zh-CN", "zh-CN"),
+            ("zh-CN", "zh-CN"),
+        ])
+
+        missing_capability = LocalTranslationAdapter(
+            DeterministicFixtureBackend({"u-1": "x"}),
+            config=config,
+            provenance=make_provenance(config),
+        )
+        with self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_CAPABILITY_MISSING"):
+            RoutedTranslationAdapter({"zh-CN": missing_capability})
+
+        mismatched_capability = LocalTranslationAdapter(
+            DeterministicFixtureBackend({"u-1": "x"}),
+            config=config,
+            provenance=make_provenance(config),
+            supported_source_language="zh-TW",
+        )
+        with self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_CAPABILITY_MISMATCH"):
+            RoutedTranslationAdapter({"zh-CN": mismatched_capability})
+
+        for invalid_capability in ("auto", "und"):
+            with self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_CAPABILITY_INVALID"):
+                LocalTranslationAdapter(
+                    DeterministicFixtureBackend({"u-1": "x"}),
+                    config=config,
+                    provenance=make_provenance(config),
+                    supported_source_language=invalid_capability,
+                )
+
+    def test_routed_translation_rejects_noncanonical_returned_source_provenance(self) -> None:
+        config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
+
+        class AliasDocumentRoute(LocalTranslationAdapter):
+            def translate(self, sources, **kwargs):
+                document = super().translate(sources, **kwargs)
+                return replace(document, source_language="zh-cn")
+
+        route = AliasDocumentRoute(
+            DeterministicFixtureBackend({"u-1": "xin chào"}),
+            config=config,
+            provenance=make_provenance(config),
+            supported_source_language="zh-CN",
+        )
+        router = RoutedTranslationAdapter({"zh-CN": route})
+        with self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_PROVENANCE_MISMATCH"):
+            router.translate(
+                (source("u-1", "你好", 0, 100, language="zh-CN"),),
+                input_hash=INPUT_HASH,
+            )
+
     def test_routed_translation_preserves_existing_english_route(self) -> None:
         config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
         backend = DeterministicFixtureBackend({"u-1": "xin chào"})
         router = RoutedTranslationAdapter({
-            "en": LocalTranslationAdapter(backend, config=config, provenance=make_provenance(config))
+            "en": LocalTranslationAdapter(
+                backend,
+                config=config,
+                provenance=make_provenance(config),
+                supported_source_language="en",
+            )
         })
         result = router.translate((source("u-1", "hello", 0, 100, language="en"),), input_hash=INPUT_HASH)
         self.assertEqual(result.source_language, "en")
@@ -278,7 +377,12 @@ class TranslationAdapterTests(unittest.TestCase):
         config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
         english_backend = DeterministicFixtureBackend({"u-1": "wrong route"})
         router = RoutedTranslationAdapter({
-            "en": LocalTranslationAdapter(english_backend, config=config, provenance=make_provenance(config))
+            "en": LocalTranslationAdapter(
+                english_backend,
+                config=config,
+                provenance=make_provenance(config),
+                supported_source_language="en",
+            )
         })
         with self.assertRaisesRegex(TranslationError, "SOURCE_LANGUAGE_UNRESOLVED"):
             router.translate((source("u-1", "?", 0, 100, language="und"),), input_hash=INPUT_HASH)
@@ -296,7 +400,12 @@ class TranslationAdapterTests(unittest.TestCase):
             INPUT_HASH, config.requested_profile, "fixture",
         )
         router = RoutedTranslationAdapter({
-            "zh-TW": LocalTranslationAdapter(backend, config=config, provenance=provenance)
+            "zh-TW": LocalTranslationAdapter(
+                backend,
+                config=config,
+                provenance=provenance,
+                supported_source_language="zh-TW",
+            )
         })
         original = source("u-1", "你好", 321, 654, language="und")
         result = router.translate((original,), input_hash=INPUT_HASH, source_language="zh-tw")
