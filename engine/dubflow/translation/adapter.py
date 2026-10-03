@@ -96,6 +96,64 @@ def _language(value: Any, name: str = "language") -> str:
     return value
 
 
+def _canonical_source_language(value: Any, name: str = "source_language") -> str:
+    """Normalize only the source tags whose routing semantics are defined by #190."""
+
+    if value == "auto":
+        return "auto"
+    language = _language(value, name)
+    lowered = language.lower()
+    if lowered == "zh-cn":
+        return "zh-CN"
+    if lowered == "zh-tw":
+        return "zh-TW"
+    if lowered in {"zh", "en", "und"}:
+        return lowered
+    return language
+
+
+def resolve_source_language(
+    sources: Sequence["SourceSegment"],
+    *,
+    requested_source_language: str = "auto",
+) -> str:
+    """Resolve exactly one concrete source language before backend selection."""
+
+    requested = _canonical_source_language(requested_source_language, "requested_source_language")
+    observed = {
+        _canonical_source_language(item.source_language, "source.source_language")
+        for item in sources
+    }
+    if not observed:
+        raise TranslationError("EMPTY_SOURCE", "translation input has no utterances")
+
+    if requested != "auto":
+        if requested == "und":
+            raise TranslationError(
+                "SOURCE_LANGUAGE_UNRESOLVED",
+                "explicit source language must not be undetermined",
+            )
+        conflicts = sorted(item for item in observed if item not in {"und", requested})
+        if conflicts:
+            raise TranslationError(
+                "SOURCE_LANGUAGE_MISMATCH",
+                f"requested source language {requested} conflicts with observed languages {conflicts}",
+            )
+        return requested
+
+    if "und" in observed:
+        raise TranslationError(
+            "SOURCE_LANGUAGE_UNRESOLVED",
+            "automatic source-language routing requires concrete language evidence",
+        )
+    if len(observed) != 1:
+        raise TranslationError(
+            "SOURCE_LANGUAGE_AMBIGUOUS",
+            f"automatic source-language routing observed multiple languages {sorted(observed)}",
+        )
+    return next(iter(observed))
+
+
 def _confidence(value: Any, name: str) -> float:
     if type(value) not in (int, float) or isinstance(value, bool) or not math.isfinite(float(value)):
         raise TranslationError("INVALID_CONFIDENCE", f"{name} must be finite")
@@ -1041,6 +1099,85 @@ class LocalTranslationAdapter:
             "result": self._backend_result_dict(result),
         }
         return _hash_json(payload)
+
+
+class RoutedTranslationAdapter:
+    """Select one installed local source->Vietnamese route before translation."""
+
+    def __init__(self, routes: Mapping[str, LocalTranslationAdapter]) -> None:
+        if not isinstance(routes, Mapping) or not routes:
+            raise TranslationError(
+                "TRANSLATION_ROUTE_INVALID",
+                "at least one installed local translation route is required",
+            )
+        normalized: dict[str, LocalTranslationAdapter] = {}
+        for raw_source_language, route in routes.items():
+            source_language = _canonical_source_language(raw_source_language, "route.source_language")
+            if source_language in {"auto", "und"}:
+                raise TranslationError(
+                    "TRANSLATION_ROUTE_INVALID",
+                    "route source language must be concrete",
+                )
+            if not isinstance(route, LocalTranslationAdapter):
+                raise TranslationError(
+                    "TRANSLATION_ROUTE_INVALID",
+                    "route must be a LocalTranslationAdapter",
+                )
+            if source_language in normalized:
+                raise TranslationError(
+                    "TRANSLATION_ROUTE_INVALID",
+                    f"duplicate route for {source_language}->{TARGET_LANGUAGE}",
+                )
+            normalized[source_language] = route
+        self.routes = normalized
+
+    def translate(
+        self,
+        sources: Sequence[SourceSegment] | Sequence[Any],
+        *,
+        input_hash: str,
+        source_language: str = "auto",
+        glossary: Mapping[str, str] | None = None,
+        checkpoints: Mapping[str, TranslationCheckpoint] | None = None,
+    ) -> TranslationDocument:
+        source_items = tuple(
+            item if isinstance(item, SourceSegment) else SourceSegment.from_asr(item)
+            for item in sources
+        )
+        resolved = resolve_source_language(
+            source_items,
+            requested_source_language=source_language,
+        )
+        route = self.routes.get(resolved)
+        if route is None:
+            raise TranslationError(
+                "TRANSLATION_ROUTE_UNAVAILABLE",
+                f"no installed local {resolved}->{TARGET_LANGUAGE} route is available",
+            )
+
+        normalized_sources = tuple(
+            item
+            if _canonical_source_language(item.source_language) == resolved
+            else replace(item, source_language=resolved)
+            for item in source_items
+        )
+        document = route.translate(
+            normalized_sources,
+            input_hash=input_hash,
+            glossary=glossary,
+            checkpoints=checkpoints,
+        )
+        if _canonical_source_language(document.source_language) != resolved:
+            raise TranslationError(
+                "TRANSLATION_ROUTE_PROVENANCE_MISMATCH",
+                "selected route returned a document for a different source language",
+            )
+        if document.target_language != TARGET_LANGUAGE:
+            raise TranslationError(
+                "TRANSLATION_ROUTE_PROVENANCE_MISMATCH",
+                "selected route returned a document for a different target language",
+            )
+        return document
 
 
 class DeterministicFixtureBackend:
