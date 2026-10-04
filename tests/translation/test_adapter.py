@@ -357,6 +357,63 @@ class TranslationAdapterTests(unittest.TestCase):
                 input_hash=INPUT_HASH,
             )
 
+    def test_routed_checkpoint_cannot_cross_source_route_identity(self) -> None:
+        config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
+
+        def route(source_language: str, backend_id: str, translated: str):
+            backend = DeterministicFixtureBackend({"u-1": translated})
+            provenance = replace(
+                make_provenance(config),
+                backend_id=backend_id,
+                model_id=f"{backend_id}-model",
+            )
+            return backend, LocalTranslationAdapter(
+                backend,
+                config=config,
+                provenance=provenance,
+                supported_source_language=source_language,
+            )
+
+        cn_backend, cn_route = route("zh-CN", "fixture-zh-cn-vi", "giản thể")
+        tw_backend, tw_route = route("zh-TW", "fixture-zh-tw-vi", "phồn thể")
+        original = source("u-1", "你好", 0, 100, language="und")
+        planner = __import__(
+            "engine.dubflow.translation",
+            fromlist=["TranslationPlanner"],
+        ).TranslationPlanner(config)
+        cn_plan = planner.plan(
+            (replace(original, source_language="zh-CN"),),
+            input_hash=INPUT_HASH,
+        )[0]
+        tw_plan = planner.plan(
+            (replace(original, source_language="zh-TW"),),
+            input_hash=INPUT_HASH,
+        )[0]
+        self.assertEqual(cn_plan.chunk_id, tw_plan.chunk_id)
+
+        stale_result = TranslationBackendResult(
+            (TranslationCandidate("u-1", "giản thể"),)
+        )
+        stale_checkpoint = TranslationCheckpoint(
+            cn_plan.chunk_id,
+            cn_route._artifact_hash(cn_plan, INPUT_HASH, (), stale_result),
+            stale_result,
+        )
+
+        router = RoutedTranslationAdapter({"zh-TW": tw_route})
+        result = router.translate(
+            (original,),
+            input_hash=INPUT_HASH,
+            source_language="zh-TW",
+            checkpoints={tw_plan.chunk_id: stale_checkpoint},
+        )
+
+        self.assertEqual(result.source_language, "zh-TW")
+        self.assertEqual(result.translations[0].translated_text, "phồn thể")
+        self.assertEqual(result.chunks[0]["status"], "completed")
+        self.assertEqual(len(tw_backend.calls), 1)
+        self.assertEqual(cn_backend.calls, [])
+
     def test_routed_translation_rejects_unfenced_fallback_backend(self) -> None:
         config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
         fallback = DeterministicFixtureBackend({"u-1": "wrong fallback"})

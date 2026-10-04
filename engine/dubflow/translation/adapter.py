@@ -1111,6 +1111,14 @@ class LocalTranslationAdapter:
             ),
             "result": self._backend_result_dict(result),
         }
+        if self.supported_source_language is not None:
+            payload["route"] = {
+                "source_language": self.supported_source_language,
+                "target_language": TARGET_LANGUAGE,
+                "backend_id": self.provenance.backend_id,
+                "model_id": self.provenance.model_id,
+                "model_version": self.provenance.model_version,
+            }
         return _hash_json(payload)
 
 
