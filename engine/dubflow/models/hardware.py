@@ -91,7 +91,7 @@ class NvidiaHardwareProbe:
             if not name or len(name) > 256 or not name.isprintable() or free_vram <= 0:
                 return fallback("GPU has no usable free VRAM; CPU fallback selected")
             encoder = self._run([str(self.ffmpeg_path), "-hide_banner", "-loglevel", "error", "-nostdin",
-                                 "-f", "lavfi", "-i", "color=size=64x64:rate=1:duration=1",
+                                 "-f", "lavfi", "-i", "color=size=1280x720:rate=1:duration=1",
                                  "-frames:v", "1", "-an", "-c:v", "h264_nvenc", "-gpu", "0", "-f", "null", "-"])
             if encoder.returncode != 0:
                 return fallback("NVENC initialization/encode probe failed; CPU fallback selected")
