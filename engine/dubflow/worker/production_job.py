@@ -70,6 +70,8 @@ _prepare_worker_import_path()
 
 from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
+from engine.dubflow.models.hardware import HardwareResolver, NvidiaHardwareProbe
+from engine.dubflow.media.hardware import HardwareRenderAdapter
 from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, run_b2_audio
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
 
@@ -142,6 +144,7 @@ class WorkerConfig:
     tts_model: Path | None = None
     tts_config: Path | None = None
     checkpoint_path: Path | None = None
+    render_profile: str = "cpu"
 
     @classmethod
     def from_args(cls, args: Mapping[str, Any]) -> "WorkerConfig":
@@ -163,6 +166,10 @@ class WorkerConfig:
                 raise ProductionJobError("COMMAND_INVALID", f"{name} must be a boolean")
             return value
 
+        render_profile = args.get("render_profile", "cpu")
+        if not isinstance(render_profile, str) or render_profile not in {"cpu", "auto", "gpu"}:
+            raise ProductionJobError("COMMAND_INVALID", "render_profile must be cpu, auto or gpu")
+
         config = cls(
             job_id=str(args["job_id"]),
             stage_id=str(args["stage_id"]),
@@ -181,6 +188,7 @@ class WorkerConfig:
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
             checkpoint_path=optional_path("checkpoint_path"),
+            render_profile=render_profile,
         )
         if config.target_language != "vi":
             raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the production baseline currently supports Vietnamese output only")
@@ -578,6 +586,65 @@ def _write_manifest(
     return path
 
 
+def _hardware_renderer(config: WorkerConfig, media: FfmpegMediaAdapter, work_dir: Path,
+                       checkpoint: dict[str, Any], checkpoint_path: Path, source_hash: str,
+                       emitter: _Emitter, warnings: list[str]) -> HardwareRenderAdapter:
+    policy_path = work_dir / "render-policy.json"
+    retired_reason = None
+    policy_stage = checkpoint.get("stages", {}).get("render_policy")
+    if config.render_profile != "cpu" and policy_stage is not None:
+        verified = False
+        try:
+            if isinstance(policy_stage, Mapping) and policy_stage.get("status") == "completed":
+                with policy_path.open("rb") as handle:
+                    data = handle.read(65537)
+                if len(data) <= 65536 and policy_stage.get("sha256") == "sha256:" + sha256(data).hexdigest():
+                    policy = json.loads(data)
+                    verified = (isinstance(policy, dict) and type(policy.get("schema_version")) is int
+                                and policy.get("schema_version") == 1
+                                and policy.get("producer_contract") == "hardware-render-policy-v1"
+                                and policy.get("job_id") == config.job_id
+                                and policy.get("source_hash") == source_hash
+                                and policy.get("selected") == "cpu" and policy.get("encoder") == "software"
+                                and policy.get("failure_code") in {"MEDIA_COMMAND_FAILED", "MEDIA_COMMAND_TIMEOUT", "MEDIA_OUTPUT_INVALID"})
+        except (OSError, ValueError, TypeError, RecursionError):
+            verified = False
+        retired_reason = "GPU encoder retired for this job" if verified else "Render policy is unverified; software encoder selected"
+        if not verified:
+            warnings.append("GPU_POLICY_UNVERIFIED: software encoder selected")
+    resolver = HardwareResolver({})
+    if config.render_profile != "cpu" and retired_reason is None:
+        try:
+            resolver = HardwareResolver({}, probe=NvidiaHardwareProbe.for_system(config.ffmpeg_path))
+        except (OSError, ValueError):
+            warnings.append("GPU_PROBE_UNAVAILABLE: software encoder selected")
+
+    def retire_gpu(code: str) -> None:
+        _atomic_json(policy_path, {"schema_version": 1, "producer_contract": "hardware-render-policy-v1",
+                                  "job_id": config.job_id, "source_hash": source_hash,
+                                  "requested": config.render_profile, "selected": "cpu", "encoder": "software",
+                                  "failure_code": code})
+        digest = _sha256(policy_path)
+        _write_stage(checkpoint, checkpoint_path, "render_policy", {"path": str(policy_path), "sha256": digest})
+        emitter.checkpoint("render_policy", digest)
+
+    return HardwareRenderAdapter(media, resolver=resolver, requested=config.render_profile,
+                                 retired_reason=retired_reason, on_gpu_retired=retire_gpu)
+
+
+def _hardware_render_evidence(config: WorkerConfig, renderer: HardwareRenderAdapter,
+                              checkpoint: Mapping[str, Any], render_stage: str, final_path: Path) -> dict[str, Any]:
+    evidence = renderer.evidence()
+    if evidence["render_attempts"] == 0:
+        stage = checkpoint.get("stages", {}).get(render_stage, {})
+        digest = _sha256(final_path)
+        recorded = stage.get("render_profile") if isinstance(stage, Mapping) and stage.get("sha256") == digest else None
+        evidence = {"requested": config.render_profile, "status": "reused_checkpoint",
+                    "artifact_sha256": digest, "recorded": recorded if isinstance(recorded, Mapping) else None}
+    return {"schema_version": 1, "producer_contract": "hardware-render-evidence-v1",
+            "job_id": config.job_id, "evidence": evidence}
+
+
 def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     work_dir = config.output_dir / ".dubflow-work"
@@ -666,6 +733,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     emitter.checkpoint("subtitles", _sha256(srt_path))
 
     warnings: list[str] = []
+    renderer = _hardware_renderer(config, media, work_dir, checkpoint, checkpoint_path, source_hash, emitter, warnings)
     b2_audio: B2AudioResult | None = None
     audio_path: Path | None = None
     audio_metadata: dict[str, Any] = {"mode": "original", "backend": "source-audio"}
@@ -723,11 +791,12 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     # A successful B2 run always re-renders against the newly verified mix.
     # This prevents a changed voice-pack hash or regenerated mix from being
     # hidden by a stale final-video checkpoint after a resumable restart.
-    render_ready = audio_path is None and _stage_ready(checkpoint, render_stage, (final_path,))
+    render_ready = (audio_path is None and _stage_ready(checkpoint, render_stage, (final_path,))
+                    and checkpoint["stages"][render_stage].get("sha256") == _sha256(final_path))
     if not render_ready:
         emitter.progress(0.74, "Đang render video H.264/AAC")
         try:
-            media.render(
+            renderer.render(
                 config.source_path,
                 final_path,
                 subtitle_path=ass_path,
@@ -746,7 +815,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             audio_path = None
             audio_metadata = {"mode": "original", "backend": "source-audio"}
             render_stage = "render"
-            media.render(
+            renderer.render(
                 config.source_path,
                 final_path,
                 subtitle_path=ass_path,
@@ -754,7 +823,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
                 burn_in_subtitles=config.burn_in_subtitles,
                 overwrite=True,
             )
-        _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"]})
+        _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"], "render_profile": renderer.evidence()})
     emitter.checkpoint(render_stage, _sha256(final_path))
 
     emitter.progress(0.88, "Đang kiểm tra codec, thời lượng và khả năng đọc output")
@@ -778,7 +847,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
         b2_audio = None
         audio_path = None
         audio_metadata = {"mode": "original", "backend": "source-audio"}
-        media.render(
+        renderer.render(
             config.source_path,
             final_path,
             subtitle_path=ass_path,
@@ -786,12 +855,14 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             burn_in_subtitles=config.burn_in_subtitles,
             overwrite=True,
         )
-        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original"})
+        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original", "render_profile": renderer.evidence()})
         output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
         validate_output(output_probe)
     output_duration = output_probe.duration_ticks
     qc_path = config.output_dir / "qc_report.json"
+    warnings.extend(renderer.warnings)
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    qc["hardware_render"] = _hardware_render_evidence(config, renderer, checkpoint, render_stage, final_path)
     _atomic_json(qc_path, qc)
     editable_dir = config.output_dir / "editable"
     editable_dir.mkdir(parents=True, exist_ok=True)
