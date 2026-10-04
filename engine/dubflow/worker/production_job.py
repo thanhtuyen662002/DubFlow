@@ -592,7 +592,13 @@ def _hardware_renderer(config: WorkerConfig, media: FfmpegMediaAdapter, work_dir
     policy_path = work_dir / "render-policy.json"
     retired_reason = None
     policy_stage = checkpoint.get("stages", {}).get("render_policy")
-    if config.render_profile != "cpu" and policy_stage is not None:
+    policy_present = policy_stage is not None
+    if config.render_profile != "cpu" and not policy_present:
+        try:
+            policy_present = policy_path.exists()
+        except OSError:
+            policy_present = True
+    if config.render_profile != "cpu" and policy_present:
         verified = False
         try:
             if isinstance(policy_stage, Mapping) and policy_stage.get("status") == "completed":
