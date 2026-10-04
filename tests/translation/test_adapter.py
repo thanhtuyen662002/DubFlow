@@ -213,6 +213,25 @@ class TranslationAdapterTests(unittest.TestCase):
             ),
             "zh-TW",
         )
+        self.assertEqual(
+            resolve_source_language(
+                (source("u-1", "你好", 0, 100, language="zh"),),
+                requested_source_language="zh-CN",
+            ),
+            "zh-CN",
+        )
+        self.assertEqual(
+            resolve_source_language(
+                (source("u-1", "你好", 0, 100, language="zh"),),
+                requested_source_language="zh-TW",
+            ),
+            "zh-TW",
+        )
+        with self.assertRaisesRegex(TranslationError, "SOURCE_LANGUAGE_MISMATCH"):
+            resolve_source_language(
+                (source("u-1", "你好", 0, 100, language="zh-TW"),),
+                requested_source_language="zh-CN",
+            )
         with self.assertRaisesRegex(TranslationError, "SOURCE_LANGUAGE_UNRESOLVED"):
             resolve_source_language((source("u-1", "?", 0, 100, language="und"),))
         with self.assertRaisesRegex(TranslationError, "SOURCE_LANGUAGE_AMBIGUOUS"):

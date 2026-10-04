@@ -133,7 +133,12 @@ def resolve_source_language(
                 "SOURCE_LANGUAGE_UNRESOLVED",
                 "explicit source language must not be undetermined",
             )
-        conflicts = sorted(item for item in observed if item not in {"und", requested})
+        compatible_observed = {"und", requested}
+        # Generic Chinese evidence may be refined to an explicit regional
+        # route; concrete regional variants still conflict with one another.
+        if requested in {"zh-CN", "zh-TW"}:
+            compatible_observed.add("zh")
+        conflicts = sorted(item for item in observed if item not in compatible_observed)
         if conflicts:
             raise TranslationError(
                 "SOURCE_LANGUAGE_MISMATCH",
