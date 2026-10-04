@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from engine.dubflow.models.hardware import ExecutionProfile, HardwareResolver
 from .adapter import FfmpegMediaAdapter, MediaAdapterError
@@ -12,13 +12,16 @@ from .adapter import FfmpegMediaAdapter, MediaAdapterError
 class HardwareRenderAdapter:
     """Resolve lazily, and retire a failed GPU encoder for this job."""
 
-    def __init__(self, media: FfmpegMediaAdapter, *, resolver: HardwareResolver, requested: str = "cpu") -> None:
+    def __init__(self, media: FfmpegMediaAdapter, *, resolver: HardwareResolver, requested: str = "cpu",
+                 retired_reason: str | None = None, on_gpu_retired: Callable[[str], None] | None = None) -> None:
         if not isinstance(requested, str) or requested not in {"cpu", "auto", "gpu"}:
             raise ValueError("render profile must be cpu, auto or gpu")
         self.media = media
         self.resolver = resolver
         self.requested = requested
-        self._profile: ExecutionProfile | None = None
+        self._profile: ExecutionProfile | None = (ExecutionProfile(requested, "cpu", "software", False, 0, retired_reason, True)
+                                                   if retired_reason is not None else None)
+        self._on_gpu_retired = on_gpu_retired
         self._attempts = 0
         self._succeeded = False
         self.warnings: list[str] = []
@@ -27,7 +30,8 @@ class HardwareRenderAdapter:
         if self._profile is None:
             return {"requested": self.requested, "selected": None, "encoder": None,
                     "status": "not_rendered", "render_attempts": 0}
-        return {**self._profile.to_dict(), "status": "command_succeeded" if self._succeeded else "command_failed",
+        status = "not_rendered" if self._attempts == 0 else ("command_succeeded" if self._succeeded else "command_failed")
+        return {**self._profile.to_dict(), "status": status,
                 "render_attempts": self._attempts}
 
     def render(self, source_path: str | Path, output_path: str | Path, *,
@@ -54,6 +58,8 @@ class HardwareRenderAdapter:
                 self.warnings.append("GPU_RENDER_FALLBACK: " + error.code + "; software encoder selected")
                 self._profile = ExecutionProfile(self.requested, "cpu", "software", False, 0,
                                                  "GPU render failed; software encoder selected", True)
+                if self._on_gpu_retired is not None:
+                    self._on_gpu_retired(error.code)
             else:
                 self._succeeded = True
                 return result
