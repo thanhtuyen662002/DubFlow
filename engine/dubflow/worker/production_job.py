@@ -292,6 +292,25 @@ def _atomic_bytes(path: Path, value: bytes) -> None:
         raise ProductionJobError("CHECKPOINT_WRITE_FAILED", str(error), retryable=True) from error
 
 
+def _atomic_copy(source: Path, path: Path) -> None:
+    """Stream an artifact without exposing an incomplete replacement."""
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with source.open("rb") as reader, temporary.open("wb") as handle:
+            while chunk := reader.read(1024 * 1024):
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError as error:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ProductionJobError("ARTIFACT_COPY_FAILED", str(error), retryable=True) from error
+
+
 def _read_checkpoint(path: Path, source_hash: str) -> dict[str, Any]:
     if not path.is_file():
         return {"schema_version": SCHEMA_VERSION, "source_hash": source_hash, "stages": {}}
@@ -788,7 +807,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
         ]
         for source, name in editable_audio:
             target = editable_dir / name
-            target.write_bytes(source.read_bytes())
+            _atomic_copy(source, target)
     timeline_path = editable_dir / "timeline.json"
     _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": [cue.to_dict() for cue in translated]})
     artifacts = {"final_video": final_path, "captions_srt": srt_path, "captions_ass": ass_path, "qc_report": qc_path, "editable_timeline": timeline_path}
