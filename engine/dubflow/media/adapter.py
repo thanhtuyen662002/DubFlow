@@ -643,7 +643,10 @@ class FfmpegMediaAdapter:
         preserve_original_audio: bool = True,
         burn_in_subtitles: bool = False,
         overwrite: bool = False,
+        video_encoder: str = "software",
     ) -> Path:
+        if not isinstance(video_encoder, str) or video_encoder not in {"software", "h264_nvenc"}:
+            raise MediaAdapterError("MEDIA_ENCODER_INVALID", "unsupported render encoder")
         source = _validate_input_file(source_path, "source_path")
         subtitle = _validate_input_file(subtitle_path, "subtitle_path") if subtitle_path is not None else None
         audio = _validate_input_file(audio_path, "audio_path") if audio_path is not None else None
@@ -706,7 +709,10 @@ class FfmpegMediaAdapter:
                 args.extend(("-map", f"{subtitle_input}:0", "-c:s", "mov_text"))
             else:
                 args.append("-sn")
-            args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-quality", "90", "-pix_fmt", "yuv420p"))
+            if video_encoder == "h264_nvenc":
+                args.extend(("-c:v", "h264_nvenc", "-gpu", "0", "-rc", "vbr", "-cq", "19", "-b:v", "0", "-pix_fmt", "yuv420p"))
+            else:
+                args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-quality", "90", "-pix_fmt", "yuv420p"))
             if audio is not None or preserve_original_audio:
                 args.extend(("-c:a", "aac", "-b:a", "192k"))
             if audio is not None:
