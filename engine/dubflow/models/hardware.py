@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import sys
 from typing import Callable, Mapping
 
 
@@ -66,6 +67,24 @@ class NvidiaHardwareProbe:
             raise ValueError("hardware probe timeout must be finite and within 30 seconds")
         self.timeout_seconds = timeout_seconds
         self.runner = subprocess.run if runner is None else runner
+
+    @classmethod
+    def for_system(cls, ffmpeg_path: Path) -> NvidiaHardwareProbe:
+        """Use an OS driver location, never a job-supplied executable or PATH."""
+        if sys.platform == "win32":
+            import ctypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            get_directory = kernel.GetSystemDirectoryW
+            get_directory.argtypes = (ctypes.c_wchar_p, ctypes.c_uint)
+            get_directory.restype = ctypes.c_uint
+            directory = ctypes.create_unicode_buffer(32768)
+            length = get_directory(directory, len(directory))
+            if length == 0 or length >= len(directory):
+                raise OSError("Windows system directory is unavailable")
+            driver = Path(directory.value) / "nvidia-smi.exe"
+        else:
+            driver = Path("/usr/bin/nvidia-smi")
+        return cls(ffmpeg_path, driver)
 
     def _run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         return self.runner(command, stdin=subprocess.DEVNULL, capture_output=True,
