@@ -75,12 +75,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "dubflow-artifact-provenance"
+version = "0.1.0"
+
+[[package]]
+name = "dubflow-job-invalidation"
+version = "0.1.0"
+dependencies = [
+ "dubflow-artifact-provenance",
+]
+
+[[package]]
+name = "dubflow-job-liveness"
+version = "0.1.0"
+
+[[package]]
+name = "dubflow-job-locking"
+version = "0.1.0"
+
+[[package]]
+name = "dubflow-job-resources"
+version = "0.1.0"
+dependencies = [
+ "dubflow-job-scheduler",
+]
+
+[[package]]
+name = "dubflow-job-scheduler"
+version = "0.1.0"
+
+[[package]]
 name = "dubflow-job-state"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
  "sha2",
 ]
+
+[[package]]
+name = "dubflow-job-storage"
+version = "0.1.0"
+
+[[package]]
+name = "dubflow-model-refs"
+version = "0.1.0"
 
 [[package]]
 name = "dubflow-source-queue"
