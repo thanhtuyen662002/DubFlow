@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import csv
+import io
+import math
 import os
-from typing import Mapping
+from pathlib import Path
+import subprocess
+from typing import Callable, Mapping
 
 
 @dataclass(frozen=True)
@@ -45,51 +50,92 @@ class ExecutionProfile:
         return {"requested": self.requested, "selected": self.selected, "encoder": self.encoder, "gpu": self.gpu, "vram_mb": self.vram_mb, "reason": self.reason, "fallback": self.fallback}
 
 
-class HardwareResolver:
-    """Resolve CPU/GPU/render choices from a launcher-provided snapshot.
+class NvidiaHardwareProbe:
+    """Check device 0 using an explicit driver tool and app-owned FFmpeg.
 
-    No system executable or CUDA library is required. A trusted launcher may
-    provide DUBFLOW_GPU_NAME, DUBFLOW_GPU_VRAM_MB and
-    DUBFLOW_GPU_ENCODER; malformed values are ignored and produce CPU.
+    An encoder smoke test establishes encoder availability only. It is not
+    evidence that a model can run on CUDA or that a long job fits in VRAM.
     """
 
-    def __init__(self, environment: Mapping[str, str] | None = None) -> None:
-        self.environment = dict(os.environ if environment is None else environment)
+    def __init__(self, ffmpeg_path: Path, nvidia_smi_path: Path, *, timeout_seconds: float = 5.0, runner: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> None:
+        self.ffmpeg_path = Path(ffmpeg_path)
+        self.nvidia_smi_path = Path(nvidia_smi_path)
+        if not self.ffmpeg_path.is_absolute() or not self.nvidia_smi_path.is_absolute():
+            raise ValueError("hardware probe executable paths must be absolute")
+        if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30:
+            raise ValueError("hardware probe timeout must be finite and within 30 seconds")
+        self.timeout_seconds = timeout_seconds
+        self.runner = subprocess.run if runner is None else runner
+
+    def _run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        return self.runner(command, stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", shell=False,
+                           timeout=self.timeout_seconds, check=False,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
 
     def detect(self) -> HardwareSnapshot:
         threads = max(1, int(os.cpu_count() or 1))
-        name = self.environment.get("DUBFLOW_GPU_NAME", "").strip() or None
-        raw_vram = self.environment.get("DUBFLOW_GPU_VRAM_MB", "").strip()
-        encoder = self.environment.get("DUBFLOW_GPU_ENCODER", "").strip() or None
-        warnings: list[str] = []
+        def fallback(reason: str) -> HardwareSnapshot:
+            return HardwareSnapshot(threads, False, None, 0, None, "hardware-probe", (reason,))
         try:
-            vram = int(raw_vram) if raw_vram else 0
-        except ValueError:
-            vram = 0
-            warnings.append("GPU VRAM report was malformed; CPU fallback selected")
-        gpu = bool(name and vram > 0)
-        if not gpu and (name or raw_vram or encoder):
-            warnings.append("GPU report was incomplete; CPU fallback selected")
-        if gpu and encoder not in {None, "h264_nvenc", "hevc_nvenc", "av1_nvenc", "h264_amf", "hevc_amf"}:
-            warnings.append("GPU encoder is unknown; software encoder selected")
-            encoder = None
-        return HardwareSnapshot(threads, gpu, name if gpu else None, vram if gpu else 0, encoder if gpu else None, "launcher-environment" if (name or raw_vram or encoder) else "cpu-safe-default", tuple(warnings))
+            inventory = self._run([str(self.nvidia_smi_path), "--id=0", "--query-gpu=name,memory.free", "--format=csv,noheader,nounits"])
+            if inventory.returncode != 0:
+                return fallback("GPU inventory probe failed; CPU fallback selected")
+            if not isinstance(inventory.stdout, str) or len(inventory.stdout) > 65536:
+                return fallback("GPU inventory response is invalid; CPU fallback selected")
+            rows = list(csv.reader(io.StringIO(inventory.stdout.strip())))
+            if len(rows) != 1 or len(rows[0]) != 2:
+                return fallback("GPU inventory response is invalid; CPU fallback selected")
+            name = rows[0][0].strip()
+            free_vram = int(rows[0][1].strip())
+            if not name or len(name) > 256 or not name.isprintable() or free_vram <= 0:
+                return fallback("GPU has no usable free VRAM; CPU fallback selected")
+            encoder = self._run([str(self.ffmpeg_path), "-hide_banner", "-loglevel", "error", "-nostdin",
+                                 "-f", "lavfi", "-i", "color=size=64x64:rate=1:duration=1",
+                                 "-frames:v", "1", "-an", "-c:v", "h264_nvenc", "-gpu", "0", "-f", "null", "-"])
+            if encoder.returncode != 0:
+                return fallback("NVENC initialization/encode probe failed; CPU fallback selected")
+            return HardwareSnapshot(threads, True, name, free_vram, "h264_nvenc", "nvidia-smi+ffmpeg-smoke")
+        except subprocess.TimeoutExpired:
+            return fallback("Hardware probe timed out; CPU fallback selected")
+        except (OSError, ValueError, csv.Error):
+            return fallback("Hardware probe unavailable or malformed; CPU fallback selected")
+
+
+class HardwareResolver:
+    """Resolve render profiles from an actual probe; hints never qualify GPU.
+
+    Explicit CPU/software rendering does not start a GPU process. Accelerator
+    model execution needs its own model/runtime health check.
+    """
+
+    def __init__(self, environment: Mapping[str, str] | None = None, *, probe: NvidiaHardwareProbe | None = None) -> None:
+        self.environment = dict(os.environ if environment is None else environment)
+        self.probe = probe
+
+    def detect(self) -> HardwareSnapshot:
+        if self.probe is not None:
+            return self.probe.detect()
+        hints = any(self.environment.get(key, "").strip() for key in ("DUBFLOW_GPU_NAME", "DUBFLOW_GPU_VRAM_MB", "DUBFLOW_GPU_ENCODER"))
+        warnings = ("GPU environment hints are unverified; CPU fallback selected",) if hints else ()
+        return HardwareSnapshot(max(1, int(os.cpu_count() or 1)), False, None, 0, None, "cpu-safe-default", warnings)
 
     def resolve(self, requested: str = "auto", *, minimum_vram_mb: int = 4096, encoder: str = "software") -> ExecutionProfile:
         if requested not in {"auto", "cpu", "gpu"}:
             raise ValueError("requested profile must be auto, cpu or gpu")
         if type(minimum_vram_mb) is not int or minimum_vram_mb < 0:
             raise ValueError("minimum_vram_mb must be non-negative")
-        snapshot = self.detect()
-        wants_gpu = requested == "gpu" or requested == "auto"
-        usable_gpu = snapshot.gpu_available and snapshot.vram_mb >= minimum_vram_mb and (encoder == "software" or snapshot.encoder == encoder)
-        if wants_gpu and usable_gpu:
-            selected_encoder = snapshot.encoder or encoder
-            return ExecutionProfile(requested, "gpu", selected_encoder, True, snapshot.vram_mb, "reported GPU passed VRAM/encoder policy", False)
-        reason = "GPU unavailable or below the requested resource policy"
+        if encoder not in {"software", "h264_nvenc", "hevc_nvenc", "av1_nvenc", "h264_amf", "hevc_amf"}:
+            raise ValueError("unknown render encoder")
         if requested == "cpu":
-            reason = "CPU explicitly requested"
-        return ExecutionProfile(requested, "cpu", "software", False, 0, reason, requested == "gpu" or bool(snapshot.warnings))
+            return ExecutionProfile(requested, "cpu", "software", False, 0, "CPU explicitly requested", False)
+        if encoder == "software":
+            return ExecutionProfile(requested, "cpu", "software", False, 0, "Software rendering requested; model GPU health is unverified", requested == "gpu")
+        snapshot = self.detect()
+        if snapshot.gpu_available and snapshot.vram_mb >= minimum_vram_mb and snapshot.encoder == encoder:
+            return ExecutionProfile(requested, "gpu", encoder, True, snapshot.vram_mb, "Encoder smoke test and free VRAM policy passed", False)
+        reason = "GPU encoder unavailable or free VRAM below the requested policy"
+        return ExecutionProfile(requested, "cpu", "software", False, 0, reason, True)
 
 
-__all__ = ["ExecutionProfile", "HardwareResolver", "HardwareSnapshot"]
+__all__ = ["ExecutionProfile", "HardwareResolver", "HardwareSnapshot", "NvidiaHardwareProbe"]
