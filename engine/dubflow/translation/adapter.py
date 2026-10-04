@@ -869,6 +869,25 @@ class LocalTranslationAdapter:
         if input_hash != self.provenance.input_hash:
             raise TranslationError("PROVENANCE_INPUT_MISMATCH", "translate input hash differs from provenance")
         source_items = tuple(item if isinstance(item, SourceSegment) else SourceSegment.from_asr(item) for item in sources)
+        if source_items and self.supported_source_language is not None:
+            observed_source_languages = {
+                _canonical_source_language(item.source_language, "source.source_language")
+                for item in source_items
+            }
+            if observed_source_languages != {self.supported_source_language}:
+                raise TranslationError(
+                    "TRANSLATION_ROUTE_SOURCE_MISMATCH",
+                    (
+                        f"adapter capability {self.supported_source_language}->{TARGET_LANGUAGE} "
+                        f"cannot translate observed source languages {sorted(observed_source_languages)}"
+                    ),
+                )
+            source_items = tuple(
+                item
+                if item.source_language == self.supported_source_language
+                else replace(item, source_language=self.supported_source_language)
+                for item in source_items
+            )
         glossary_value = self._validate_glossary(glossary or {})
         glossary_pairs = tuple(sorted(glossary_value.items()))
         if _hash_mapping(glossary_value) != self.provenance.glossary_hash:

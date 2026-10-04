@@ -355,6 +355,31 @@ class TranslationAdapterTests(unittest.TestCase):
                     supported_source_language=invalid_capability,
                 )
 
+    def test_declared_local_route_rejects_direct_source_capability_bypass(self) -> None:
+        config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
+        backend = DeterministicFixtureBackend({"u-1": "wrong route", "u-2": "đúng"})
+        route = LocalTranslationAdapter(
+            backend,
+            config=config,
+            provenance=make_provenance(config),
+            supported_source_language="zh-CN",
+        )
+
+        with self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_SOURCE_MISMATCH"):
+            route.translate(
+                (source("u-1", "hello", 0, 100, language="en"),),
+                input_hash=INPUT_HASH,
+            )
+        self.assertEqual(backend.calls, [])
+
+        result = route.translate(
+            (source("u-2", "你好", 0, 100, language="ZH-CN"),),
+            input_hash=INPUT_HASH,
+        )
+        self.assertEqual(result.source_language, "zh-CN")
+        self.assertEqual(result.translations[0].source_language, "zh-CN")
+        self.assertEqual(result.translations[0].translated_text, "đúng")
+
     def test_routed_translation_rejects_noncanonical_returned_source_provenance(self) -> None:
         config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
 
