@@ -261,6 +261,17 @@ class WorkerRenderPolicyTests(Fixture):
                 factory.assert_not_called()
                 self.assertTrue(self.warnings)
 
+    def test_orphaned_policy_after_hard_kill_keeps_cpu_without_probe(self) -> None:
+        self.install_policy()
+        self.checkpoint["stages"].pop("render_policy")
+        worker._atomic_json(self.checkpoint_path, self.checkpoint)
+        self.checkpoint = worker._read_checkpoint(self.checkpoint_path, self.source_hash)
+        with patch.object(NvidiaHardwareProbe, "for_system") as factory:
+            self.builder().render(self.source, self.output)
+        factory.assert_not_called()
+        self.assertNotIn("video_encoder", self.media.render.call_args.kwargs)
+        self.assertEqual(self.warnings, ["GPU_POLICY_UNVERIFIED: software encoder selected"])
+
     def test_os_probe_lookup_failure_preserves_usable_cpu_path(self) -> None:
         with patch.object(NvidiaHardwareProbe, "for_system", side_effect=OSError("lookup failed")):
             self.builder().render(self.source, self.output)
