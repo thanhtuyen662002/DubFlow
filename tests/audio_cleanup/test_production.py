@@ -103,7 +103,8 @@ class ProductionAudioCleanupTests(unittest.TestCase):
         self.assertEqual(explicit.selected, "cpu")
         self.assertFalse(explicit.gpu)
         self.assertEqual(explicit.vram_mb, 0)
-        self.assertEqual(inherited.selected, "gpu")
+        self.assertEqual(inherited.selected, "cpu")
+        self.assertTrue(inherited.fallback)
 
     def test_malformed_wav_fails_closed(self) -> None:
         with TemporaryDirectory(prefix="dubflow-aud2-") as directory:
@@ -117,9 +118,10 @@ class ProductionAudioCleanupTests(unittest.TestCase):
         self.assertEqual(cpu.selected, "cpu")
         self.assertTrue(cpu.fallback)
         gpu = HardwareResolver({"DUBFLOW_GPU_NAME": "Test GPU", "DUBFLOW_GPU_VRAM_MB": "8192", "DUBFLOW_GPU_ENCODER": "h264_nvenc"}).resolve("auto", encoder="h264_nvenc")
-        self.assertEqual(gpu.selected, "gpu")
-        self.assertEqual(gpu.encoder, "h264_nvenc")
-        malformed = HardwareResolver({"DUBFLOW_GPU_NAME": "Test GPU", "DUBFLOW_GPU_VRAM_MB": "bad"}).resolve("auto")
+        self.assertEqual(gpu.selected, "cpu")
+        self.assertEqual(gpu.encoder, "software")
+        self.assertTrue(gpu.fallback)
+        malformed = HardwareResolver({"DUBFLOW_GPU_NAME": "Test GPU", "DUBFLOW_GPU_VRAM_MB": "bad"}).resolve("auto", encoder="h264_nvenc")
         self.assertEqual(malformed.selected, "cpu")
         self.assertTrue(malformed.fallback)
 
