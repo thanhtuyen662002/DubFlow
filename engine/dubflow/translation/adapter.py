@@ -869,6 +869,14 @@ class LocalTranslationAdapter:
         if input_hash != self.provenance.input_hash:
             raise TranslationError("PROVENANCE_INPUT_MISMATCH", "translate input hash differs from provenance")
         source_items = tuple(item if isinstance(item, SourceSegment) else SourceSegment.from_asr(item) for item in sources)
+        if self.supported_source_language is not None and self.fallback_backend is not None:
+            raise TranslationError(
+                "TRANSLATION_ROUTE_FALLBACK_UNSAFE",
+                (
+                    f"adapter capability {self.supported_source_language}->{TARGET_LANGUAGE} "
+                    "must not use an unfenced fallback backend"
+                ),
+            )
         if source_items and self.supported_source_language is not None:
             observed_source_languages = {
                 _canonical_source_language(item.source_language, "source.source_language")

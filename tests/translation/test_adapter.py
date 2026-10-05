@@ -458,6 +458,26 @@ class TranslationAdapterTests(unittest.TestCase):
         self.assertEqual(len(tw_backend.calls), 1)
         self.assertEqual(cn_backend.calls, [])
 
+    def test_declared_local_route_rejects_unfenced_fallback_backend_before_invocation(self) -> None:
+        config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
+        primary = DeterministicFixtureBackend({"u-1": "primary"})
+        fallback = DeterministicFixtureBackend({"u-1": "unsafe fallback"})
+        route = LocalTranslationAdapter(
+            primary,
+            config=config,
+            provenance=make_provenance(config),
+            supported_source_language="zh-CN",
+            fallback_backend=fallback,
+        )
+
+        with self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_FALLBACK_UNSAFE"):
+            route.translate(
+                (source("u-1", "你好", 0, 100, language="zh-CN"),),
+                input_hash=INPUT_HASH,
+            )
+        self.assertEqual(primary.calls, [])
+        self.assertEqual(fallback.calls, [])
+
     def test_routed_translation_rejects_unfenced_fallback_backend(self) -> None:
         config = TranslationConfig(max_items_per_chunk=1, requested_profile="fixture")
         fallback = DeterministicFixtureBackend({"u-1": "wrong fallback"})
