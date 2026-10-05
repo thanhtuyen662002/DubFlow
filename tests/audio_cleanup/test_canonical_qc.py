@@ -46,10 +46,7 @@ class CanonicalProductionQCTests(unittest.TestCase):
         self.video = self.root / "video.mp4"
         self.video.write_bytes(b"rendered bytes")
         self.subtitle = self.root / "subtitles.srt"
-        self.subtitle.write_text("1
-00:00:00,000 --> 00:00:01,000
-Xin chao
-", encoding="utf-8")
+        self.subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nXin chao\n", encoding="utf-8")
         self.config = WorkerConfig(
             "job-1", "production", self.source, self.root, self.root,
             self.root, self.root, self.root / "ffmpeg.exe", self.root / "ffprobe.exe",
@@ -76,11 +73,12 @@ Xin chao
         schema = json.loads((Path(__file__).resolve().parents[2] / "contracts/qc/schema-v1.json").read_text(encoding="utf-8"))
         self.assertEqual(set(report), set(schema["required"]))
         for name in ("provenance", "summary"):
-            self.assertEqual(set(report[name]), set(schema["properties"][name]["required"]))
-        finding_keys = set(schema["properties"]["findings"]["items"]["required"])
+            self.assertEqual(set(report[name]), set(schema["$defs"][name]["required"]))
+        finding_schema = schema["$defs"]["finding"]
+        finding_keys = set(finding_schema["required"])
         for item in report["findings"]:
             self.assertEqual(set(item), finding_keys)
-            self.assertRegex(item["confidence"], r"^(0(\.[0-9]+)?|1(\.0+)?)$")
+            self.assertRegex(item["confidence"], finding_schema["properties"]["confidence"]["pattern"])
         hashes = report["provenance"]["upstream_hashes"] + [report["provenance"]["config_hash"], report["provenance"]["threshold_set_hash"]]
         self.assertTrue(hashes)
         for value in hashes:

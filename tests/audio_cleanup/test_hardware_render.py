@@ -157,7 +157,7 @@ class MediaEncoderTests(Fixture):
         command = commands[0]
         self.assertEqual(command[command.index("-c:v") + 1], "h264_nvenc")
         self.assertEqual(command[command.index("-gpu") + 1], "0")
-        self.assertIn(str(self.audio), command)
+        self.assertIn(str(self.audio.resolve()), command)
         self.assertIn("1:a:0", command)
         self.assertEqual(command[command.index("-pix_fmt") + 1], "yuv420p")
 
