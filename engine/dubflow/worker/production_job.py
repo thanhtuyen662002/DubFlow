@@ -70,6 +70,9 @@ _prepare_worker_import_path()
 
 from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
+from engine.dubflow.models.hardware import HardwareResolver, NvidiaHardwareProbe
+from engine.dubflow.media.hardware import HardwareRenderAdapter
+from engine.dubflow.qc import CalibrationProfile, Finding, QCReport, ThresholdSet
 from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, run_b2_audio
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
 
@@ -142,6 +145,7 @@ class WorkerConfig:
     tts_model: Path | None = None
     tts_config: Path | None = None
     checkpoint_path: Path | None = None
+    render_profile: str = "cpu"
 
     @classmethod
     def from_args(cls, args: Mapping[str, Any]) -> "WorkerConfig":
@@ -163,6 +167,10 @@ class WorkerConfig:
                 raise ProductionJobError("COMMAND_INVALID", f"{name} must be a boolean")
             return value
 
+        render_profile = args.get("render_profile", "cpu")
+        if not isinstance(render_profile, str) or render_profile not in {"cpu", "auto", "gpu"}:
+            raise ProductionJobError("COMMAND_INVALID", "render_profile must be cpu, auto or gpu")
+
         config = cls(
             job_id=str(args["job_id"]),
             stage_id=str(args["stage_id"]),
@@ -181,6 +189,7 @@ class WorkerConfig:
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
             checkpoint_path=optional_path("checkpoint_path"),
+            render_profile=render_profile,
         )
         if config.target_language != "vi":
             raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the production baseline currently supports Vietnamese output only")
@@ -290,6 +299,25 @@ def _atomic_bytes(path: Path, value: bytes) -> None:
     except OSError as error:
         temporary.unlink(missing_ok=True)
         raise ProductionJobError("CHECKPOINT_WRITE_FAILED", str(error), retryable=True) from error
+
+
+def _atomic_copy(source: Path, path: Path) -> None:
+    """Stream an artifact without exposing an incomplete replacement."""
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with source.open("rb") as reader, temporary.open("wb") as handle:
+            while chunk := reader.read(1024 * 1024):
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError as error:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ProductionJobError("ARTIFACT_COPY_FAILED", str(error), retryable=True) from error
 
 
 def _read_checkpoint(path: Path, source_hash: str) -> dict[str, Any]:
@@ -559,6 +587,143 @@ def _write_manifest(
     return path
 
 
+def _hardware_renderer(config: WorkerConfig, media: FfmpegMediaAdapter, work_dir: Path,
+                       checkpoint: dict[str, Any], checkpoint_path: Path, source_hash: str,
+                       emitter: _Emitter, warnings: list[str]) -> HardwareRenderAdapter:
+    policy_path = work_dir / "render-policy.json"
+    retired_reason = None
+    policy_stage = checkpoint.get("stages", {}).get("render_policy")
+    policy_present = policy_stage is not None
+    if config.render_profile != "cpu" and not policy_present:
+        try:
+            policy_present = policy_path.exists()
+        except OSError:
+            policy_present = True
+    if config.render_profile != "cpu" and policy_present:
+        verified = False
+        try:
+            if isinstance(policy_stage, Mapping) and policy_stage.get("status") == "completed":
+                with policy_path.open("rb") as handle:
+                    data = handle.read(65537)
+                if len(data) <= 65536 and policy_stage.get("sha256") == "sha256:" + sha256(data).hexdigest():
+                    policy = json.loads(data)
+                    verified = (isinstance(policy, dict) and type(policy.get("schema_version")) is int
+                                and policy.get("schema_version") == 1
+                                and policy.get("producer_contract") == "hardware-render-policy-v1"
+                                and policy.get("job_id") == config.job_id
+                                and policy.get("source_hash") == source_hash
+                                and policy.get("selected") == "cpu" and policy.get("encoder") == "software"
+                                and policy.get("failure_code") in {"MEDIA_COMMAND_FAILED", "MEDIA_COMMAND_TIMEOUT", "MEDIA_OUTPUT_INVALID"})
+        except (OSError, ValueError, TypeError, RecursionError):
+            verified = False
+        retired_reason = "GPU encoder retired for this job" if verified else "Render policy is unverified; software encoder selected"
+        if not verified:
+            warnings.append("GPU_POLICY_UNVERIFIED: software encoder selected")
+    resolver = HardwareResolver({})
+    if config.render_profile != "cpu" and retired_reason is None:
+        try:
+            resolver = HardwareResolver({}, probe=NvidiaHardwareProbe.for_system(config.ffmpeg_path))
+        except (OSError, ValueError):
+            warnings.append("GPU_PROBE_UNAVAILABLE: software encoder selected")
+
+    def retire_gpu(code: str) -> None:
+        _atomic_json(policy_path, {"schema_version": 1, "producer_contract": "hardware-render-policy-v1",
+                                  "job_id": config.job_id, "source_hash": source_hash,
+                                  "requested": config.render_profile, "selected": "cpu", "encoder": "software",
+                                  "failure_code": code})
+        digest = _sha256(policy_path)
+        _write_stage(checkpoint, checkpoint_path, "render_policy", {"path": str(policy_path), "sha256": digest})
+        emitter.checkpoint("render_policy", digest)
+
+    return HardwareRenderAdapter(media, resolver=resolver, requested=config.render_profile,
+                                 retired_reason=retired_reason, on_gpu_retired=retire_gpu)
+
+
+def _hardware_render_evidence(config: WorkerConfig, renderer: HardwareRenderAdapter,
+                              checkpoint: Mapping[str, Any], render_stage: str, final_path: Path) -> dict[str, Any]:
+    evidence = renderer.evidence()
+    if evidence["render_attempts"] == 0:
+        stage = checkpoint.get("stages", {}).get(render_stage, {})
+        digest = _sha256(final_path)
+        recorded = stage.get("render_profile") if isinstance(stage, Mapping) and stage.get("sha256") == digest else None
+        evidence = {"requested": config.render_profile, "status": "reused_checkpoint",
+                    "artifact_sha256": digest, "recorded": recorded if isinstance(recorded, Mapping) else None}
+    return {"schema_version": 1, "producer_contract": "hardware-render-evidence-v1",
+            "job_id": config.job_id, "evidence": evidence}
+
+
+def _canonical_qc_report(config: WorkerConfig, source_probe: MediaProbeResult, output_probe: MediaProbeResult,
+                         profile_path: Path, artifacts: Mapping[str, Path], audio: Mapping[str, Any],
+                         warnings: Sequence[str]) -> dict[str, Any]:
+    """Report observed format/integrity facts without qualifying unmeasured quality."""
+    findings: list[Finding] = []
+    upstream: set[str] = set()
+
+    def finding(identifier: str, scope: str, code: str, severity: str, confidence: str, message: str) -> None:
+        findings.append(Finding(identifier, scope, code, severity, confidence, message))
+
+    def hash_json(value: Any) -> str:
+        return sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def bind_file(name: str, path: Path) -> str | None:
+        identifier = "artifact-" + sha256(name.encode("utf-8")).hexdigest()[:24]
+        try:
+            if path.stat().st_size <= 0:
+                finding(identifier, name, "ARTIFACT_EMPTY", "FAIL", "1", "Required artifact is empty")
+                return None
+            digest = _sha256(path).removeprefix("sha256:")
+        except (ProductionJobError, OSError) as error:
+            code = error.code if isinstance(error, ProductionJobError) else "ARTIFACT_READ_FAILED"
+            finding(identifier, name, code, "FAIL", "1", "Required artifact cannot be read for integrity validation")
+            return None
+        upstream.add(digest)
+        finding(identifier, name, "ARTIFACT_HASH_OBSERVED", "INFO", "1", "Artifact bytes were hashed; this is not a perceptual quality score")
+        return digest
+
+    bind_file("source", config.source_path)
+    profile_digest = bind_file("model-profile", profile_path)
+    for name, path in sorted(artifacts.items()):
+        bind_file(name, path)
+    upstream.update((hash_json(source_probe.to_dict()), hash_json(output_probe.to_dict()), hash_json(dict(audio)), hash_json(list(warnings))))
+    settings = {"source_language": config.source_language, "target_language": config.target_language,
+                "enable_dubbing": config.enable_dubbing, "burn_in_subtitles": config.burn_in_subtitles,
+                "render_profile": config.render_profile, "policy_version": "production-qc-rules-v1"}
+    config_digest = hash_json(settings)
+    if output_probe.video.codec_name == "h264":
+        finding("video-codec", "final_video", "VIDEO_CODEC_VALIDATED", "INFO", "1", "The observed output video codec is H.264")
+    else:
+        finding("video-codec", "final_video", "QC_VIDEO_CODEC", "FAIL", "1", "The observed output video codec is not H.264")
+    try:
+        _validate_rendered_audio(source_probe, output_probe)
+    except ProductionJobError as error:
+        finding("audio-streams", "final_video", error.code, "FAIL", "1", "Observed output audio streams violate the media contract")
+    else:
+        finding("audio-streams", "final_video", "AUDIO_STREAMS_VALIDATED", "INFO", "1", "Observed output audio streams satisfy the worker media rules")
+    source_duration, output_duration = source_probe.duration_ticks, output_probe.duration_ticks
+    if source_duration is None or output_duration is None:
+        finding("duration", "final_video", "DURATION_UNMEASURED", "WARN", "0", "Duration comparison is unavailable")
+    elif output_duration + 2000 < source_duration:
+        finding("duration", "final_video", "QC_DURATION_SHORT", "FAIL", "1", "Observed output is materially shorter than the source")
+    else:
+        finding("duration", "final_video", "DURATION_VALIDATED", "INFO", "1", "Observed output duration satisfies the worker tolerance")
+    for index, warning in enumerate(warnings):
+        clean_warning = "".join(character if ord(character) >= 32 else " " for character in str(warning))
+        message = " ".join(clean_warning.split())[:4096] or "Producer warning"
+        finding("producer-warning-" + str(index), "job", "PRODUCER_WARNING", "WARN", "1", message)
+    finding("quality-unmeasured", "job", "PRODUCTION_QUALITY_UNMEASURED", "WARN", "0",
+            "Perceptual/semantic ASR, translation, voice, separation and hardware/soak qualification are not established by format and hash checks")
+    calibration_id = "unmeasured-production-quality-v1"
+    thresholds = ThresholdSet(calibration_id, "0.5", "0.7", "0.9")
+    model_id = "model-profile:" + profile_path.name
+    model_version = profile_digest or "unavailable"
+    calibration = CalibrationProfile(calibration_id, model_id, model_version, "unmeasured",
+                                     "exact-format-and-integrity-rules-only", thresholds)
+    identity = hash_json({"job_id": config.job_id, "upstream": sorted(upstream), "config": config_digest,
+                          "model": model_version, "producer": "production-local-file-qc-v1"})
+    return QCReport("production-" + identity, "production-local-file-qc-v1", tuple(sorted(upstream)),
+                    config_digest, model_id, model_version, calibration, thresholds, tuple(findings)).to_dict()
+
+
 def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     work_dir = config.output_dir / ".dubflow-work"
@@ -647,6 +812,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     emitter.checkpoint("subtitles", _sha256(srt_path))
 
     warnings: list[str] = []
+    renderer = _hardware_renderer(config, media, work_dir, checkpoint, checkpoint_path, source_hash, emitter, warnings)
     b2_audio: B2AudioResult | None = None
     audio_path: Path | None = None
     audio_metadata: dict[str, Any] = {"mode": "original", "backend": "source-audio"}
@@ -704,11 +870,12 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     # A successful B2 run always re-renders against the newly verified mix.
     # This prevents a changed voice-pack hash or regenerated mix from being
     # hidden by a stale final-video checkpoint after a resumable restart.
-    render_ready = audio_path is None and _stage_ready(checkpoint, render_stage, (final_path,))
+    render_ready = (audio_path is None and _stage_ready(checkpoint, render_stage, (final_path,))
+                    and checkpoint["stages"][render_stage].get("sha256") == _sha256(final_path))
     if not render_ready:
         emitter.progress(0.74, "Đang render video H.264/AAC")
         try:
-            media.render(
+            renderer.render(
                 config.source_path,
                 final_path,
                 subtitle_path=ass_path,
@@ -727,7 +894,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             audio_path = None
             audio_metadata = {"mode": "original", "backend": "source-audio"}
             render_stage = "render"
-            media.render(
+            renderer.render(
                 config.source_path,
                 final_path,
                 subtitle_path=ass_path,
@@ -735,7 +902,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
                 burn_in_subtitles=config.burn_in_subtitles,
                 overwrite=True,
             )
-        _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"]})
+        _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"], "render_profile": renderer.evidence()})
     emitter.checkpoint(render_stage, _sha256(final_path))
 
     emitter.progress(0.88, "Đang kiểm tra codec, thời lượng và khả năng đọc output")
@@ -754,12 +921,18 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
         validate_output(output_probe)
     except ProductionJobError as error:
         if b2_audio is None:
+            failed_qc_path = config.output_dir / "qc_canonical.json"
+            failed_qc = _canonical_qc_report(config, probe, output_probe, profile_path,
+                                             {"final_video": final_path, "captions_srt": srt_path, "captions_ass": ass_path},
+                                             audio_metadata, [*warnings, error.code])
+            _atomic_json(failed_qc_path, failed_qc)
+            emitter.checkpoint("qc_failed", _sha256(failed_qc_path))
             raise
         warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: output QC failed: {error.code}: {error.condition}")
         b2_audio = None
         audio_path = None
         audio_metadata = {"mode": "original", "backend": "source-audio"}
-        media.render(
+        renderer.render(
             config.source_path,
             final_path,
             subtitle_path=ass_path,
@@ -767,12 +940,14 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             burn_in_subtitles=config.burn_in_subtitles,
             overwrite=True,
         )
-        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original"})
+        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original", "render_profile": renderer.evidence()})
         output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
         validate_output(output_probe)
     output_duration = output_probe.duration_ticks
     qc_path = config.output_dir / "qc_report.json"
+    warnings.extend(renderer.warnings)
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    qc["hardware_render"] = _hardware_render_evidence(config, renderer, checkpoint, render_stage, final_path)
     _atomic_json(qc_path, qc)
     editable_dir = config.output_dir / "editable"
     editable_dir.mkdir(parents=True, exist_ok=True)
@@ -788,7 +963,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
         ]
         for source, name in editable_audio:
             target = editable_dir / name
-            target.write_bytes(source.read_bytes())
+            _atomic_copy(source, target)
     timeline_path = editable_dir / "timeline.json"
     _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": [cue.to_dict() for cue in translated]})
     artifacts = {"final_video": final_path, "captions_srt": srt_path, "captions_ass": ass_path, "qc_report": qc_path, "editable_timeline": timeline_path}
@@ -803,11 +978,18 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             "editable_dialogue_stem": editable_dir / "dialogue_stem.wav",
             "editable_final_mix": editable_dir / "final_mix.wav",
         })
+    canonical_qc_path = config.output_dir / "qc_canonical.json"
+    canonical_qc = _canonical_qc_report(config, probe, output_probe, profile_path, artifacts, audio_metadata, warnings)
+    _atomic_json(canonical_qc_path, canonical_qc)
+    artifacts["canonical_qc_report"] = canonical_qc_path
+    if canonical_qc["status"] == "FAIL":
+        emitter.checkpoint("qc_failed", _sha256(canonical_qc_path))
+        raise ProductionJobError("QC_CANONICAL_FAILED", "Canonical QC contains observed failures; inspect qc_canonical.json")
     manifest_path = _write_manifest(config.output_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata)
-    _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
+    _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path), "canonical_qc": str(canonical_qc_path), "canonical_qc_sha256": _sha256(canonical_qc_path)})
     emitter.progress(1.0, "Hoàn tất video Việt hóa")
     emitter.checkpoint("qc", _sha256(qc_path))
-    return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "manifest": str(manifest_path)}
+    return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "canonical_qc": str(canonical_qc_path), "manifest": str(manifest_path)}
 
 
 def _read_command() -> Envelope:
