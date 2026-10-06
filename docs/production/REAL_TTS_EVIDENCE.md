@@ -94,3 +94,36 @@ no-sidecar input and truthful translation route, long-media/per-item recovery,
 native-crash isolation, packaged Windows/clean-machine testing, runtime license
 notices/corresponding source, and all Issue-required CI for exact HEAD and
 current main. Do not mark the Draft ready, merge it or release from this report.
+
+## Original-encoder experiment (not selected for production)
+
+An additional native probe used the same immutable ONNX model and the eSpeak
+API exported by the already pinned Sherpa Windows DLL. It reconstructed the
+upstream-hash-verified phoneme inventory, kept `t̪` together, and inserted
+Mimic3 word/token blanks with BOS/EOS. Common-phrase mean back-ASR CER improved
+to **0.150931**; the foreign-name case was **0.279070**. This is a promising
+frontend diagnosis, not a production-quality claim.
+
+The completed temporary probe report has SHA-256
+`6548b2d7074cf603d26ca7293901a7a2c0b00c6af59c2d7dbc4212b497e18422`.
+The prototype source digest was
+`2b696423885e9ca083084a7cdf5606ece6ec5f505ea0ccb781443e4543525464`.
+The portable rerun harness below is derived from that prototype, with explicit
+model/output arguments, runtime checks and bounds. Its own output records its
+source digest, model/profile identity, unknown symbols and every measured case.
+
+```powershell
+python tests/production/tts/qualify_frontend.py --model-root C:/model-cache --output-dir C:/frontend-evidence
+```
+
+This experiment is Windows-only and requires ONNX Runtime 1.30.0 in the
+development environment. It does not add or select a production runtime.
+It approximates clause punctuation and does not yet remove eSpeak language
+switch markers such as `(en)`/`(vi)`. Unknown phonemes are retained in report
+data. These defects must be fixed before this encoding can be promoted.
+The selected production adapter/profile and their prior failed-quality
+measurement remain unchanged.
+
+Primary algorithm references: [Mimic3 voice frontend](https://github.com/MycroftAI/mimic3/blob/master/mimic3_tts/voice.py),
+[MIT phonemes2ids](https://github.com/rhasspy/phonemes2ids), and the pinned
+[Sherpa Piper encoder](https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.8/sherpa-onnx/csrc/piper-phonemize-lexicon.cc).
