@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-vietnamese-neural-tts-v1",
+  "backend": "sherpa-onnx-vits-v1",
+  "runtime_version": "1.13.8",
+  "voice_id": "vi-vais1000-mimic3-v1",
+  "voice_version": "0.1.0",
+  "model_id": "mimic3-vi_VN-vais1000-low",
+  "model_version": "0.1.0-sherpa-conversion",
+  "sample_rate": 22050,
+  "license_id": "CC-BY-4.0",
+  "approved": true,
+  "quality_status": "qualification-pending",
+  "inference": {"noise_scale": 0.0, "noise_scale_w": 0.0},
+  "distribution": "download-on-first-use",
+  "distribution_decision": "Voice weights approved with attribution; runtime GPL notices/source obligations remain a release gate.",
+  "source": "https://github.com/MycroftAI/mimic3/blob/master/mimic3_tts/voices.json",
+  "upstream_license_sha256": "0792914b42cbac29cb2ca5e729be0e7f959786ead4c1c31c027aca9a0a108c02",
+  "attribution": "VAIS1000 Vietnamese Speech Synthesis Corpus; MycroftAI Mimic3 voice conversion by k2-fsa/sherpa-onnx",
+  "archive_root": "vits-mimic3-vi_VN-vais1000_low",
+  "extracted_tree_sha256": "6a2cd9b2de6d07d06a7902c6a1766e060e46922fbbde50da647a1a36bfd86cf5",
+  "artifacts": [
+    {
+      "id": "vietnamese-neural-voice-data",
+      "path": "tts/archives/vits-mimic3-vi_VN-vais1000_low.tar.bz2",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-mimic3-vi_VN-vais1000_low.tar.bz2",
+      "sha256": "8dcad0d5902bea5bd62994eac0275355ce2cc755232e6d1505bedaace49d2a1f",
+      "size_bytes": 66821421
+    }
+  ]
+}

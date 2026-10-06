@@ -2,8 +2,14 @@
 # Keep this file pinned: the release workflow installs it into the bundled
 # app-owned runtime and never resolves packages from the user's system Python.
 faster-whisper==1.2.1
+# Faster-Whisper 1.2.1 requires av.open(metadata_errors=...). PyAV 19 removes it.
+av==16.1.0
 argostranslate==1.11.0
 # Argos imports packaging.version at runtime. Keep this direct and pinned so
 # the app-owned runtime is complete even when pip's resolver changes.
 packaging==25.0
 cryptography==46.0.1
+# Real offline Vietnamese speech; never substitute character tone synthesis.
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8
+numpy==2.2.6

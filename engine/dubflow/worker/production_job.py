@@ -662,6 +662,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
                 app_root=config.app_root,
                 profile_path=profile_path,
                 work_dir=work_dir / "b2-audio",
+                model_root=config.model_root,
             )
             audio_path = b2_audio.final_mix_path
             audio_metadata = {

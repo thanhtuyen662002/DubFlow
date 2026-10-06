@@ -223,7 +223,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
                 warnings = manifest.get("warnings")
                 raise SmokeError(f"B2 editable audio artifact is missing or empty: {path}; audio={audio!r}; warnings={warnings!r}")
         audio = manifest.get("audio")
-        if not isinstance(audio, dict) or audio.get("mode") != "dubbed" or audio.get("backend") != "dubflow-vi-builtin-v1":
+        if not isinstance(audio, dict) or audio.get("mode") != "dubbed" or audio.get("backend") != "sherpa-onnx-vits-v1":
             raise SmokeError(f"B2 manifest does not prove the app-owned voice path: {audio!r}")
     # The JSON is captured directly to avoid relying on a shell redirection.
     result = _run(

@@ -1,10 +1,11 @@
 """B2 production audio stage used by the local-file worker.
 
-This module is intentionally small and deterministic: FFmpeg decodes the
-actual source audio, the verified app-owned Vietnamese CPU voice creates
+FFmpeg decodes the actual source audio, a pinned offline neural CPU voice creates
 per-cue WAV artifacts, and the existing AUD-0 mixer publishes original,
 dialogue-stem and ducked final WAVs.  The worker can catch ``B2AudioError``
 and continue with the already-valid B1 subtitle render.
+
+Native inference is not deterministic or a speech-quality qualification.
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbeResult
 from engine.dubflow.mix import LocalAudioMixer, MixConfig, MixDocument, MixSegment, ResourceProfile as MixResourceProfile, SourceAudio
 from engine.dubflow.tts import (
-    BuiltinVietnameseTtsEngine,
     LocalTtsAdapter,
     ResourceProfile as TtsResourceProfile,
     TtsConfig,
@@ -31,8 +31,8 @@ from engine.dubflow.tts import (
     TtsProvenance,
     TtsStageError,
     VoiceProfile,
-    load_production_voice,
 )
+from engine.dubflow.tts.neural_vits import ENGINE_ID, RUNTIME_VERSION, NeuralVietnameseTtsEngine, load_neural_voice
 
 
 BASE_TIME = TimeBase(1, 1000)
@@ -135,6 +135,7 @@ def run_b2_audio(
     app_root: str | Path,
     profile_path: str | Path,
     work_dir: str | Path,
+    model_root: str | Path | None = None,
 ) -> B2AudioResult:
     """Execute real TTS and AUD-0 mixing for translated production cues."""
 
@@ -144,9 +145,13 @@ def run_b2_audio(
         raise B2AudioError("TTS_INPUT_EMPTY", "translated production cues are empty")
     root = Path(work_dir)
     root.mkdir(parents=True, exist_ok=True)
+    try:
+        pack, voice = load_neural_voice(app_root, model_root or root / "model-cache", profile_path)
+    except Exception as error:
+        raise B2AudioError(getattr(error, "code", "TTS_BOOTSTRAP_FAILED"), str(error), retryable=bool(getattr(error, "retryable", False))) from error
     source_audio_path = root / "source_audio.wav"
     try:
-        media.extract_audio(source_path, source_audio_path, sample_rate=16_000, channels=1, overwrite=True)
+        media.extract_audio(source_path, source_audio_path, sample_rate=pack.sample_rate, channels=1, overwrite=True)
     except MediaAdapterError as error:
         raise B2AudioError(error.code, error.condition, retryable=error.retryable) from error
     source_end_ticks = _wav_duration_ticks(source_audio_path)
@@ -154,12 +159,12 @@ def run_b2_audio(
         raise B2AudioError("SOURCE_AUDIO_INVALID", "decoded source audio has no duration")
 
     try:
-        pack, voice = load_production_voice(app_root, profile_path)
         tts_config = TtsConfig(
             sample_rate=pack.sample_rate,
             channels=pack.channels,
             requested_profile="cpu",
-            max_attempts=2,
+            max_attempts=1,
+            max_text_chars=512,
             max_duration_error_ticks=80,
             min_speed_ratio_milli=800,
             max_speed_ratio_milli=1300,
@@ -169,9 +174,9 @@ def run_b2_audio(
         input_hash = _input_hash(mappings)
         provenance = TtsProvenance(
             "dubflow-production-tts",
-            "1.0.0",
-            "dubflow-vi-builtin-v1",
-            "python-stdlib",
+            "2.0.0",
+            ENGINE_ID,
+            "sherpa-onnx-" + RUNTIME_VERSION,
             "timeline-v1",
             tts_config.content_hash(),
             input_hash,
@@ -199,7 +204,7 @@ def run_b2_audio(
         )
         tts_dir = root / "tts"
         tts_document = LocalTtsAdapter(
-            BuiltinVietnameseTtsEngine(pack),
+            NeuralVietnameseTtsEngine(pack),
             config=tts_config,
             provenance=provenance,
             voice=voice,

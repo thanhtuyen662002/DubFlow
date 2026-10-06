@@ -21,10 +21,31 @@ Windows media, the supervisor launches the app-owned worker, captions are
 obtained from a matching `.srt`/`.vtt` sidecar or CPU ASR, and English text is
 translated locally to Vietnamese. The default B1 result emits a playable
 H.264/AAC MP4 plus Vietnamese SRT/ASS, QC, editable timeline, and provenance
-manifest while preserving source audio. Opt-in B2 additionally loads the
-app-owned `vi-builtin-v1` voice pack selected by the same manifest, synthesizes
-per-cue signed-16 PCM on CPU, and runs the non-destructive AUD-0 mixer. The
-voice pack is pinned by byte count, SHA-256, model/version ID and the approved
-`dubflow-builtin-voice-1.0` license; no network or credential is required.
+manifest while preserving source audio.
+
+## B2 neural speech candidate (not production-qualified)
+
+The former `vi-builtin-v1` implementation generates character tones. It is
+retained for compatibility tests and must not be counted as intelligible
+Vietnamese speech. This Draft change selects Sherpa-ONNX VITS 1.13.8 and the
+Mimic3 VAIS1000 voice through `production-tts-v1.json`. It uses the app-owned
+model root, a resumable first-use download, archive and extracted-tree hashes,
+and 22,050 Hz mono signed-16 PCM. Inference itself is offline. The AUD-0
+mixer publishes original audio, dialogue stem and final mix as before.
+
+PyAV is explicitly pinned to 16.1.0: the tested Faster-Whisper 1.2.1 decoder
+uses `av.open(metadata_errors=...)`, which failed with the unpinned 19.0.1
+wheel. This is a decoder compatibility pin, not evidence of a packaged build.
+
+Local native execution and back-ASR diagnostics are recorded in
+`docs/production/REAL_TTS_EVIDENCE.md`. Common-phrase mean CER was 31.94%; the
+voice remains `qualification-pending`. A working native WAV or green hermetic
+test does not make this candidate release-ready. Before publication, require
+speech-quality evidence, actual packaged Windows runs, required CI lanes and
+the native phonemizer's license/source obligations described in
+`docs/licenses/vietnamese-neural-tts.md`.
+
 If model health, TTS, source decoding or mixing fails, B2 records an actionable
 `B2_AUDIO_FALLBACK_TO_B1` downgrade and emits the already-valid B1 result.
+Native code currently runs inside the worker; process-level crash isolation
+and its B1 recovery evidence remain an unresolved qualification requirement.
