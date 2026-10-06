@@ -127,7 +127,7 @@ class NeuralDurationTests(unittest.TestCase):
     def synthesize(self, native):
         engine = NeuralVietnameseTtsEngine(self.pack)
         engine._tts = native
-        with patch("engine.dubflow.tts.neural_vits.importlib.metadata.version", return_value=RUNTIME_VERSION):
+        with patch("engine.dubflow.tts.neural_vits.importlib.metadata.version", side_effect=lambda name: "1.30.0" if name == "onnxruntime" else RUNTIME_VERSION):
             return engine.synthesize(self.request)
 
     def test_short_natural_speech_is_padded_and_preserved(self) -> None:

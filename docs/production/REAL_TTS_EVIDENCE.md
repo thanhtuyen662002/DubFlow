@@ -9,6 +9,10 @@ remain open. Chinese auto-language/NMT routing is also still unfinished.
 
 ## Reproducible local diagnostic
 
+The initial tables below describe the historical Piper frontend checkpoint.
+The current word-blank frontend measurement is recorded in the final section;
+do not attribute historical source digests/CI to the current implementation.
+
 Run from the repo with a development environment containing the pinned runtime:
 
 ```powershell
@@ -127,3 +131,47 @@ measurement remain unchanged.
 Primary algorithm references: [Mimic3 voice frontend](https://github.com/MycroftAI/mimic3/blob/master/mimic3_tts/voice.py),
 [MIT phonemes2ids](https://github.com/rhasspy/phonemes2ids), and the pinned
 [Sherpa Piper encoder](https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.8/sherpa-onnx/csrc/piper-phonemize-lexicon.cc).
+
+## Isolated word-blank frontend — producer 2.1.0
+
+The production adapter now selects `mimic3-vits-onnx-v1`. Native model/eSpeak
+loading runs in a private child with the same app-owned interpreter, isolated
+imports, bounded JSON/stdout/stderr, verified temporary waveform bytes and a
+120-second generation deadline (initialization capped at 30 seconds). Unit
+faults exercise initialization crash, after-health crash, timeout and oversized
+reply. These demonstrate controlled child failure, not real reboot or installed
+Windows package recovery. Parent-death/process-tree cleanup is still open.
+
+The new frontend preserves `t̪`, word/token blanks, clause punctuation and
+strips native language-switch tags. Unknown symbols produce explicit synthesis
+warnings. It uses one inference per cue; exact original per-clause pauses and
+broader speech-quality validation remain pending.
+
+Actual local CPU report SHA-256:
+`7d60dbdd5a67ab668b9a779cb4fa7906bacda0ee0a1b55168805083d0869d4b6`.
+The report records backend, immutable model tree, voice manifest and individual
+source digests because code was still uncommitted at HEAD `7f9f94c` when measured.
+Native entrypoint digest at measurement:
+`48522fc6510a7115fed21fe93bbaedaaa7af3253b1c5a0dff9b867818f2fbd55`.
+Subsequent bridge retirement/cleanup guards do not alter that inference recipe.
+
+| Set | Cases | Mean CER |
+| --- | ---: | ---: |
+| Common phrases | 7 | 0.119329 |
+| Foreign product name | 1 | 0.209302 |
+
+| Reference | Actual back-ASR | CER | Warning |
+| --- | --- | ---: | --- |
+| Xin chào Việt Nam. | Xin chẳng Việt Nam. | 0.214286 | None |
+| Hôm nay chúng ta cùng xem một video mới. | Hôm nay chúng ta cùng xem một việu mới. | 0.096774 | Unsupported U0064 |
+| Bạn có khỏe không? Tôi rất vui được gặp bạn. | Bạn có khỏe không tôi rất vui được các bạn? | 0.090909 | None |
+| Tôi không biết. Bạn có thể nói lại được không? | Tôi không biết bạn có thể nói lại được không? | 0.000000 | None |
+| Mẹ đang đi chợ, còn bố đang ở nhà. | Nè đang đi trợn, con bố đang ở nhà. | 0.250000 | None |
+| Hãy mở ứng dụng và chọn video cần xử lý. | Hãy mở ứng dụng và chọn veu cần xử lý. | 0.100000 | Unsupported U0064 |
+| Cảm ơn bạn đã theo dõi. Hẹn gặp lại vào ngày mai. | Cảm ơn bạn đã theo dõi hẹn gặp lại vòng ngày mai. | 0.083333 | None |
+| Xin chào, đây là giọng nói tiếng Việt thật của DubFlow. | Xin chào, đây là giọng nói đến việc thật của Dụt Lâu. | 0.209302 | None |
+
+Same eight references, Whisper decoder/normalization and 12-second slots were
+used as before. This improvement is measured, but remaining errors are visible.
+The profile remains `qualification-pending`; no release, Chinese translation,
+long-form, clean-machine or human listening success is claimed by these results.

@@ -32,7 +32,7 @@ from engine.dubflow.tts import (
     TtsStageError,
     VoiceProfile,
 )
-from engine.dubflow.tts.neural_vits import ENGINE_ID, RUNTIME_VERSION, NeuralVietnameseTtsEngine, load_neural_voice
+from engine.dubflow.tts.neural_vits import ENGINE_ID, ONNX_RUNTIME_VERSION, RUNTIME_VERSION, NeuralVietnameseTtsEngine, load_neural_voice
 
 
 BASE_TIME = TimeBase(1, 1000)
@@ -174,9 +174,9 @@ def run_b2_audio(
         input_hash = _input_hash(mappings)
         provenance = TtsProvenance(
             "dubflow-production-tts",
-            "2.0.0",
+            "2.1.0",
             ENGINE_ID,
-            "sherpa-onnx-" + RUNTIME_VERSION,
+            "onnxruntime-" + ONNX_RUNTIME_VERSION + "+espeak-sherpa-" + RUNTIME_VERSION,
             "timeline-v1",
             tts_config.content_hash(),
             input_hash,

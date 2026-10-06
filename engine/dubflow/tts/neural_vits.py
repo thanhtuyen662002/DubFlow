@@ -30,8 +30,10 @@ from engine.dubflow.tts.adapter import (
     TtsError, TtsRequest, VoiceProfile,
 )
 
-ENGINE_ID = "sherpa-onnx-vits-v1"
+ENGINE_ID = "mimic3-vits-onnx-v1"
 RUNTIME_VERSION = "1.13.8"
+ONNX_RUNTIME_VERSION = "1.30.0"
+FRONTEND_ID = "mimic3-word-blanks-v1"
 PROFILE_PATH = "models/manifests/production-tts-v1.json"
 MAX_FILES = 2048
 MAX_EXPANDED_BYTES = 128 * 1024 * 1024
@@ -265,6 +267,9 @@ def load_neural_voice(app_root: str | Path, model_root: str | Path, profile_path
         raise TtsError("VOICE_LICENSE_UNAPPROVED", "neural voice license is not approved")
     if profile.get("runtime_version") != RUNTIME_VERSION or profile.get("sample_rate") != 22050:
         raise TtsError("VOICE_MANIFEST_INVALID", "neural voice runtime/audio profile differs from its pinned version")
+    from .mimic3_native import INVENTORY_SHA256
+    if profile.get("frontend") != FRONTEND_ID or profile.get("onnxruntime_version") != ONNX_RUNTIME_VERSION or profile.get("phoneme_inventory_sha256") != INVENTORY_SHA256:
+        raise TtsError("VOICE_MANIFEST_INVALID", "neural frontend/runtime inventory differs from its pinned version")
     inference = profile.get("inference", {"noise_scale": 0.0, "noise_scale_w": 0.0})
     if type(inference) is not dict:
         raise TtsError("VOICE_MANIFEST_INVALID", "neural inference recipe must be an object")
@@ -315,28 +320,31 @@ class NeuralVietnameseTtsEngine:
         if voice.model_hash != self.pack.model_hash or voice.voice_id != self.pack.voice_id:
             return EngineHealth(False, "VOICE_PACK_ID_MISMATCH", "requested voice differs from the verified neural pack")
         try:
-            if any(importlib.metadata.version(name) != RUNTIME_VERSION for name in ("sherpa-onnx", "sherpa-onnx-core")):
-                return EngineHealth(False, "TTS_RUNTIME_VERSION_MISMATCH", "sherpa-onnx differs from the pinned runtime")
+            versions = (("sherpa-onnx", RUNTIME_VERSION), ("sherpa-onnx-core", RUNTIME_VERSION), ("onnxruntime", ONNX_RUNTIME_VERSION))
+            if any(importlib.metadata.version(name) != expected for name, expected in versions):
+                return EngineHealth(False, "TTS_RUNTIME_VERSION_MISMATCH", "native runtime differs from its pinned version")
             if self._tts is None:
-                import sherpa_onnx
-                config = sherpa_onnx.OfflineTtsConfig(
-                    model=sherpa_onnx.OfflineTtsModelConfig(
-                        vits=sherpa_onnx.OfflineTtsVitsModelConfig(
-                            model=str(self.pack.path / "vi_VN-vais1000_low.onnx"),
-                            tokens=str(self.pack.path / "tokens.txt"),
-                            data_dir=str(self.pack.path / "espeak-ng-data"),
-                            noise_scale=self.pack.noise_scale, noise_scale_w=self.pack.noise_scale_w,
-                        ), provider="cpu", num_threads=1, debug=False,
-                    ), max_num_sentences=1,
-                )
-                if not config.validate():
-                    return EngineHealth(False, "TTS_MODEL_INVALID", "neural model configuration failed validation")
-                self._tts = sherpa_onnx.OfflineTts(config)
+                from .native_process import NativeProcess
+                self._tts = NativeProcess(self.pack)
+            process = getattr(self._tts, "process", None)
+            if process is not None and process.poll() is not None:
+                return EngineHealth(False, "TTS_NATIVE_EXITED", "native speech process is no longer running")
             return EngineHealth(True)
         except (ImportError, importlib.metadata.PackageNotFoundError):
             return EngineHealth(False, "TTS_RUNTIME_MISSING", "app-owned sherpa-onnx runtime is missing")
         except Exception as error:
-            return EngineHealth(False, "TTS_MODEL_LOAD_FAILED", "neural model initialization failed: " + str(error)[:1000])
+            return EngineHealth(False, getattr(error, "code", "TTS_MODEL_LOAD_FAILED"), "neural model initialization failed: " + str(error)[:1000])
+
+    def close(self) -> None:
+        close = getattr(self._tts, "close", None)
+        if close is not None:
+            close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def synthesize(self, request: TtsRequest) -> EngineSynthesis:
         health = self.healthcheck(request.voice)
@@ -385,7 +393,7 @@ class NeuralVietnameseTtsEngine:
                 writer.setframerate(self.pack.sample_rate)
                 writer.writeframes(pcm.tobytes())
             mode = "speed_adjusted" if speed_milli != 1000 else "padded" if len(samples) < target else "native"
-            return EngineSynthesis(output.getvalue(), sample_rate=self.pack.sample_rate, fit_mode=mode, speed_ratio_milli=speed_milli)
+            return EngineSynthesis(output.getvalue(), sample_rate=self.pack.sample_rate, fit_mode=mode, speed_ratio_milli=speed_milli, warnings=tuple(getattr(audio, "warnings", ())))
         except TtsError:
             raise
         except Exception as error:

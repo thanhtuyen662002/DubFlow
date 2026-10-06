@@ -15,8 +15,9 @@ remain open. The project continues to use B1 subtitle export as a usable fallbac
 
 ## Proposed decision
 
-Implement a separate adapter for pinned Sherpa-ONNX VITS 1.13.8 and the
-Mimic3 `vi_VN/vais1000_low` voice. Keep native libraries and model inference
+Implement a separate adapter for the Mimic3 `vi_VN/vais1000_low` VITS voice,
+ONNX Runtime 1.30.0 and eSpeak from pinned Sherpa-ONNX 1.13.8. Keep native
+libraries and model inference
 behind the existing TTS adapter. Workers publish artifacts/events; the
 supervisor retains ownership of durable job state.
 
@@ -36,8 +37,8 @@ never trim audible samples to satisfy a cue. Pad short output with silence,
 reject invalid/non-finite/silent output and preserve original/stem/final assets
 through the existing AUD-0 mixer.
 
-Pin producer version `2.0.0`, backend `sherpa-onnx-vits-v1`, runtime
-`sherpa-onnx-1.13.8`, model/tree hash, full voice manifest digest and inference
+Pin producer version `2.1.0`, backend `mimic3-vits-onnx-v1`, runtime
+`onnxruntime-1.30.0+espeak-sherpa-1.13.8`, model/tree hash, full voice manifest digest and inference
 recipe in provenance. An archive integrity check, runtime health check or PCM
 success is independent of speech-quality approval.
 
@@ -62,17 +63,24 @@ but the shipped native eSpeak-NG runtime has additional GPL/source obligations.
 The license decision is documented separately and does not approve quality.
 Models with noncommercial/research-only or unknown terms were not promoted.
 
-Real local inference produced speech, but the eight-phrase diagnostic found
-common-phrase mean back-ASR CER of 0.3194 with the selected recipe. The candidate
-is not acceptable for stable publication. Its converted frontend drops an
-original multi-codepoint phoneme; original encoding/frontend compatibility
-needs investigation. Merely changing noise or token aliases did not establish
-adequate quality. A different properly licensed voice/frontend is an allowed
-replacement if it satisfies the full acceptance criteria.
+The converted Piper frontend measured common-phrase mean back-ASR CER 0.3194.
+It drops an original compound phoneme and uses different word encoding. The
+new frontend reconstructs the upstream-hash-verified inventory, preserves
+compound IPA symbols, applies original word/token blanks, retains clause
+punctuation and removes native language-switch metadata. Its local diagnostic
+measured 0.1193 common-phrase CER. Unsupported symbols remain explicit warnings.
+This is not human listening approval or a stable publication decision. Original
+per-clause pause/inference parity and unfamiliar words still need validation.
 
-Native code currently executes inside the worker. A native process crash can
-escape Python fallback handling. Isolated native execution/recovery, a human
-listening set, long-video/no-sidecar Chinese dubbing, exact-head CI with the
-current tested base, packaged clean-machine Windows evidence and release/soak
-qualification are unresolved. PR #195 must remain Draft until these gates are
-addressed; this ADR proposes no exception to them.
+Native code now runs behind a private version-1 child protocol using the
+app-owned interpreter with isolated imports. JSON requests/replies, stderr,
+sample files and inference deadlines are bounded. Reply identity, waveform
+digest/size and sample rate are verified before signed-16 conversion. Native
+crash/timeout becomes a typed failure; it cannot terminate the job worker.
+Normal teardown kills/waits for the child and verifies the private staging root
+before cleanup. This changes no public worker protocol or durable schema.
+
+Still unresolved: abrupt parent death/process-tree cleanup, packaged B1 recovery,
+a human listening set, Chinese no-sidecar dubbing, long-form/batch evidence,
+exact-head CI/current base, clean-machine Windows and release/soak qualification.
+PR #195 remains Draft; this ADR proposes no exception to those gates.

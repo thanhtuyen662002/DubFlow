@@ -27,8 +27,9 @@ manifest while preserving source audio.
 
 The former `vi-builtin-v1` implementation generates character tones. It is
 retained for compatibility tests and must not be counted as intelligible
-Vietnamese speech. This Draft change selects Sherpa-ONNX VITS 1.13.8 and the
-Mimic3 VAIS1000 voice through `production-tts-v1.json`. It uses the app-owned
+Vietnamese speech. This Draft change selects the Mimic3 VAIS1000 VITS voice,
+ONNX Runtime 1.30.0 and the eSpeak API from the pinned Sherpa-ONNX 1.13.8
+wheel through `production-tts-v1.json`. It uses the app-owned
 model root, a resumable first-use download, archive and extracted-tree hashes,
 and 22,050 Hz mono signed-16 PCM. Inference itself is offline. The AUD-0
 mixer publishes original audio, dialogue stem and final mix as before.
@@ -38,8 +39,10 @@ uses `av.open(metadata_errors=...)`, which failed with the unpinned 19.0.1
 wheel. This is a decoder compatibility pin, not evidence of a packaged build.
 
 Local native execution and back-ASR diagnostics are recorded in
-`docs/production/REAL_TTS_EVIDENCE.md`. Common-phrase mean CER was 31.94%; the
-voice remains `qualification-pending`. A working native WAV or green hermetic
+`docs/production/REAL_TTS_EVIDENCE.md`. The previous Piper frontend measured
+31.94% common-phrase mean CER; the new word-blank frontend measured 11.93%
+on that small diagnostic set. The voice remains `qualification-pending`.
+A working native WAV or green hermetic
 test does not make this candidate release-ready. Before publication, require
 speech-quality evidence, actual packaged Windows runs, required CI lanes and
 the native phonemizer's license/source obligations described in
@@ -47,5 +50,8 @@ the native phonemizer's license/source obligations described in
 
 If model health, TTS, source decoding or mixing fails, B2 records an actionable
 `B2_AUDIO_FALLBACK_TO_B1` downgrade and emits the already-valid B1 result.
-Native code currently runs inside the worker; process-level crash isolation
-and its B1 recovery evidence remain an unresolved qualification requirement.
+Native initialization/inference now runs in a separate child using the same
+app-owned interpreter in isolated mode. Bounded protocol, inference timeout,
+initialization/after-health crash tests and normal cleanup protect the worker.
+Abrupt parent death/process-tree cleanup and packaged B1 recovery still need
+qualification; process separation is not a security sandbox.
