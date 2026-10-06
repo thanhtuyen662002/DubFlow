@@ -255,7 +255,7 @@ class ArgosRuntime:
         except importlib.metadata.PackageNotFoundError as error:
             raise TranslationError("TRANSLATION_RUNTIME_MISSING", "app-owned translation component is missing") from error
         with install_lock(self.root.parent):
-            ensure_model_profile(self.profile_path, model_root, progress=self.progress)
+            self._bootstrap_packages(model_root)
             if not all(valid_package(self.root, item) for item in self.packages):
                 install_packages(self.root, model_root, self.packages)
             if set(path.name for path in self.root.iterdir()) != {item["zip_root"] for item in self.packages}:
@@ -291,6 +291,17 @@ class ArgosRuntime:
             backend = translate.PackageTranslation(translate.Language(pkg.from_code, pkg.from_code), translate.Language(pkg.to_code, pkg.to_code), pkg)
             backend.sentencizer = CueSentencizer(pkg.tokenizer)
             self._translators.append(backend)
+
+    def _bootstrap_packages(self, model_root: Path) -> None:
+        # The app-owned profile selects the route. Bootstrap only its pinned
+        # packages so an unavailable unrelated language cannot break this job.
+        with tempfile.NamedTemporaryFile(dir=self.root.parent, prefix=".argos-route-", suffix=".json", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps({"schema_version": 1, "profile_id": self.profile["profile_id"], "artifacts": self.packages}, sort_keys=True).encode())
+        try:
+            ensure_model_profile(temporary, model_root, progress=self.progress)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def translate_text(self, text: str) -> str:
         if not self.packages:

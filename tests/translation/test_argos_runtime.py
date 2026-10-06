@@ -41,6 +41,19 @@ class ArgosRuntimeTests(unittest.TestCase):
             self.assertEqual(value.translate_text("Xin chào"), "Xin chào")
         self.assertEqual(value.provenance()["backend"], "vi-identity-v1")
 
+    def test_english_bootstrap_cannot_require_an_unused_chinese_package(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            value = runtime.ArgosRuntime(ROOT, root, "en")
+            observed = []
+            def provision(profile_path, model_root, **kwargs):
+                profile = runtime.read_json(profile_path)
+                observed.append((profile_path, [item["id"] for item in profile["artifacts"]]))
+            with runtime.install_lock(value.root.parent), patch.object(runtime, "ensure_model_profile", side_effect=provision):
+                value._bootstrap_packages(root)
+            self.assertEqual(observed[0][1], ["en-vi"])
+            self.assertFalse(observed[0][0].exists())
+
     def test_unknown_or_auto_source_has_typed_route_failure(self):
         for language in ("auto", "und", "fr"):
             with self.subTest(language=language), self.assertRaisesRegex(TranslationError, "TRANSLATION_ROUTE_UNAVAILABLE"):

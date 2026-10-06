@@ -122,6 +122,18 @@ class LanguageRoutingTests(unittest.TestCase):
             worker._translate_with_argos(self.cues, root, "zh", runtime=resumed, chunks_dir=root)
             self.assertEqual(resumed.calls, ["你好"])
 
+    def test_legacy_list_chunk_is_recomputed_instead_of_failing_the_item(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker._translate_with_argos(self.cues, root, "zh", runtime=RecordingRuntime(), chunks_dir=root)
+            path = next(root.glob("*.json"))
+            value = json.loads(path.read_text(encoding="utf-8"))
+            path.write_text(json.dumps(value["cues"]), encoding="utf-8")
+            resumed = RecordingRuntime()
+            result = worker._translate_with_argos(self.cues, root, "zh", runtime=resumed, chunks_dir=root)
+            self.assertEqual(resumed.calls, ["你好"])
+            self.assertEqual(result[0].start_ms, 1250)
+
 
     def test_worker_invalidates_derived_outputs_on_route_change(self):
         from unittest.mock import Mock
