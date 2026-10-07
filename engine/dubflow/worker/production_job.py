@@ -70,7 +70,11 @@ _prepare_worker_import_path()
 
 from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
+from engine.dubflow.asr import TimeBase, TimePoint
+from engine.dubflow.translation.adapter import SourceSegment, TranslationError, resolve_source_language
+from engine.dubflow.translation.argos_runtime import ArgosRuntime
 from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, run_b2_audio
+from engine.dubflow.worker import export_publication
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
 
 
@@ -313,7 +317,15 @@ def _stage_ready(checkpoint: Mapping[str, Any], name: str, required_paths: Itera
     stage = checkpoint.get("stages", {}).get(name)
     if not isinstance(stage, Mapping) or stage.get("status") != "completed":
         return False
-    return all(path.is_file() and path.stat().st_size > 0 for path in required_paths)
+    paths = tuple(required_paths)
+    try:
+        return bool(paths) and all(
+            path.is_file() and path.stat().st_size > 0
+            and stage.get("sha256" if len(paths) == 1 else f"{path.suffix[1:]}_sha256") == _sha256(path)
+            for path in paths
+        )
+    except OSError:
+        return False
 
 
 def _parse_timestamp(value: str) -> int:
@@ -467,7 +479,32 @@ def _load_sidecar(source: Path) -> tuple[TextCue, ...] | None:
     return None
 
 
-def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_language: str) -> tuple[TextCue, ...]:
+@dataclass(frozen=True)
+class TranscriptResult:
+    cues: tuple[TextCue, ...]
+    source_language: str
+    authority: str
+    probability: float | None = None
+
+    def language_metadata(self) -> dict[str, Any]:
+        return {"source_language": self.source_language, "language_authority": self.authority, "language_probability": self.probability}
+
+
+def _resolved_language(cues: Sequence[TextCue], requested: str, observed: str | None = None) -> str:
+    try:
+        sources = tuple(SourceSegment(cue.cue_id, cue.source_text, TimePoint(cue.start_ms, TimeBase(1, 1000)), TimePoint(cue.end_ms, TimeBase(1, 1000)), observed or "und", cue.confidence) for cue in cues)
+        return resolve_source_language(sources, requested_source_language=requested)
+    except TranslationError as error:
+        raise ProductionJobError(error.code, error.condition) from error
+
+
+def _whisper_language(requested: str) -> str | None:
+    if requested == "auto":
+        return None
+    return "zh" if requested.lower() in {"zh", "zh-cn", "zh-tw"} else requested.lower()
+
+
+def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_language: str) -> TranscriptResult:
     try:
         from faster_whisper import WhisperModel  # type: ignore[import-not-found]
     except ImportError as error:
@@ -477,9 +514,9 @@ def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_l
         raise ProductionJobError("ASR_MODEL_MISSING", f"the pinned ASR model is missing: {model_path}")
     try:
         model = WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=max(1, min(8, os.cpu_count() or 1)))
-        segments, _info = model.transcribe(
+        segments, info = model.transcribe(
             str(audio_path),
-            language=None if source_language == "auto" else source_language,
+            language=_whisper_language(source_language),
             beam_size=5,
             vad_filter=True,
             word_timestamps=False,
@@ -497,38 +534,94 @@ def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_l
         raise ProductionJobError("ASR_FAILED", str(error), retryable=True) from error
     if not cues:
         raise ProductionJobError("ASR_EMPTY", "ASR produced no speech segments")
-    return tuple(cues)
+    resolved = _resolved_language(cues, source_language, getattr(info, "language", None))
+    probability = getattr(info, "language_probability", None) if source_language == "auto" else None
+    if type(probability) not in (int, float) or not 0 <= probability <= 1:
+        probability = None
+    return TranscriptResult(tuple(cues), resolved, "whisper-detected" if source_language == "auto" else "requested", probability)
 
 
-def _translate_with_argos(cues: Sequence[TextCue], model_root: Path, source_language: str) -> tuple[TextCue, ...]:
-    package_dir = model_root / "translation" / "packages"
-    package_files = sorted(package_dir.glob("*.argosmodel")) if package_dir.is_dir() else []
-    if not package_files:
-        raise ProductionJobError("TRANSLATION_MODEL_MISSING", f"translation model package is missing: {package_dir}")
-    if source_language not in {"auto", "en"}:
-        raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the pinned production translation profile supports English source text only")
+def _sidecar_language(cues: tuple[TextCue, ...], config: WorkerConfig, audio_path: Path) -> TranscriptResult:
+    if config.source_language != "auto":
+        return TranscriptResult(cues, _resolved_language(cues, config.source_language), "requested")
+    if not audio_path.is_file():
+        raise ProductionJobError("SOURCE_LANGUAGE_UNRESOLVED", "sidecar-only input requires an explicit source language")
     try:
-        # Argos resolves its package store at import time.  Point it at the
-        # app-owned, user-writable model root before importing the library so
-        # no system or developer account cache can affect a job.
-        os.environ["ARGOS_PACKAGES_DIR"] = os.fspath(model_root / "translation" / "installed")
-        from argostranslate import package  # type: ignore[import-not-found]
-        import argostranslate.translate as translate  # type: ignore[import-not-found]
-        installed = package.get_installed_packages()
-        if not any(getattr(item, "from_code", None) == "en" and getattr(item, "to_code", None) == "vi" for item in installed):
-            package.install_from_path(os.fspath(package_files[0]))
-        source = "en"
-        translated: list[TextCue] = []
-        for cue in cues:
-            text = translate.translate(cue.source_text, source, "vi")
-            if not isinstance(text, str) or not text.strip():
-                raise ProductionJobError("TRANSLATION_EMPTY", f"translation returned no text for {cue.cue_id}")
-            translated.append(TextCue(cue.cue_id, cue.start_ms, cue.end_ms, cue.source_text, text.strip(), cue.confidence))
-        return tuple(translated)
+        import numpy as np
+        import wave
+        from faster_whisper import WhisperModel
+        with wave.open(str(audio_path), "rb") as reader:
+            if reader.getframerate() != 16000 or reader.getnchannels() != 1 or reader.getsampwidth() != 2:
+                raise ProductionJobError("LANGUAGE_AUDIO_INVALID", "language detection needs 16 kHz mono signed-16 analysis audio")
+            audio = np.frombuffer(reader.readframes(60 * 16000), dtype="<i2").astype(np.float32) / 32768
+        model = WhisperModel(str(config.model_root / "asr/faster-whisper-small"), device="cpu", compute_type="int8", cpu_threads=4)
+        observed, probability, _all = model.detect_language(audio=audio, vad_filter=True)
+        resolved = _resolved_language(cues, "auto", observed)
+        probability = float(probability) if 0 <= float(probability) <= 1 else None
+        return TranscriptResult(cues, resolved, "whisper-audio-probe", probability)
     except ProductionJobError:
         raise
     except Exception as error:
-        raise ProductionJobError("TRANSLATION_FAILED", str(error), retryable=True) from error
+        raise ProductionJobError("SOURCE_LANGUAGE_UNRESOLVED", "unable to establish sidecar source language from audio") from error
+
+
+def _language_checkpoint(cues: tuple[TextCue, ...], document: Mapping[str, Any], requested: str) -> TranscriptResult | None:
+    if type(document.get("schema_version")) is not int or document.get("schema_version") != 2 or document.get("requested_source_language") != requested:
+        return None
+    observed = document.get("source_language")
+    authority = document.get("language_authority")
+    if not isinstance(observed, str) or authority not in {"requested", "whisper-detected", "whisper-audio-probe"}:
+        return None
+    if (requested == "auto") == (authority == "requested"):
+        return None
+    resolved = _resolved_language(cues, requested, observed)
+    probability = document.get("language_probability")
+    if probability is not None and (type(probability) not in (int, float) or not 0 <= probability <= 1):
+        return None
+    return TranscriptResult(cues, resolved, authority, probability)
+
+
+def _translation_identity(cues: Sequence[TextCue], language: str, provenance: Mapping[str, Any]) -> str:
+    value = {"cues": [cue.to_dict() for cue in cues], "source_language": language, "route": dict(provenance)}
+    return "sha256:" + sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def _translate_with_argos(cues: Sequence[TextCue], model_root: Path, source_language: str, *, runtime: ArgosRuntime, chunks_dir: Path | None = None) -> tuple[TextCue, ...]:
+    resolved = _resolved_language(cues, source_language, source_language if source_language != "auto" else None)
+    if resolved != runtime.source_language:
+        raise ProductionJobError("SOURCE_LANGUAGE_MISMATCH", "translation route differs from resolved transcript language")
+    try:
+        runtime.prepare(model_root)
+        translated: list[TextCue] = []
+        for cue in cues:
+            identity = _translation_identity((cue,), resolved, runtime.provenance())
+            chunk_path = chunks_dir / (identity.removeprefix("sha256:") + ".json") if chunks_dir else None
+            if chunk_path is not None and chunk_path.is_file():
+                try:
+                    if chunk_path.stat().st_size > 65536:
+                        raise ValueError("oversized translation chunk")
+                    saved = json.loads(chunk_path.read_text(encoding="utf-8"))
+                    candidates = _cues_from_json(chunk_path)
+                    cached = candidates[0]
+                    if len(candidates) == 1 and saved.get("schema_version") == 2 and saved.get("input_hash") == identity and saved.get("output_hash") == _translation_identity(candidates, resolved, runtime.provenance()) and (cached.cue_id, cached.start_ms, cached.end_ms, cached.source_text, cached.confidence) == (cue.cue_id, cue.start_ms, cue.end_ms, cue.source_text, cue.confidence) and isinstance(cached.translated_text, str) and cached.translated_text.strip():
+                        translated.append(cached)
+                        continue
+                except (OSError, ValueError, ProductionJobError, KeyError, IndexError):
+                    pass  # A bad private chunk is recomputed, never trusted.
+            text = runtime.translate_text(cue.source_text)
+            if not isinstance(text, str) or not text.strip():
+                raise ProductionJobError("TRANSLATION_EMPTY", f"translation returned no text for {cue.cue_id}")
+            result = TextCue(cue.cue_id, cue.start_ms, cue.end_ms, cue.source_text, text.strip(), cue.confidence)
+            if chunk_path is not None:
+                _atomic_json(chunk_path, {"schema_version": 2, "input_hash": identity, "output_hash": _translation_identity((result,), resolved, runtime.provenance()), "cues": [result.to_dict()]})
+            translated.append(result)
+        return tuple(translated)
+    except ProductionJobError:
+        raise
+    except (TranslationError, ModelBootstrapError) as error:
+        raise ProductionJobError(error.code, str(error), retryable=getattr(error, "retryable", False)) from error
+    except Exception as error:
+        raise ProductionJobError("TRANSLATION_FAILED", str(error), retryable=False) from error
 
 
 def _write_manifest(
@@ -540,6 +633,8 @@ def _write_manifest(
     warnings: Sequence[str],
     *,
     audio: Mapping[str, Any] | None = None,
+    language: Mapping[str, Any] | None = None,
+    translation: Mapping[str, Any] | None = None,
 ) -> Path:
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -554,12 +649,64 @@ def _write_manifest(
     }
     if audio is not None:
         manifest["audio"] = dict(audio)
-    path = config.output_dir / "job_manifest.json"
+    if language is not None:
+        manifest["language"] = dict(language)
+    if translation is not None:
+        manifest["translation"] = dict(translation)
+    path = output_dir / "job_manifest.json"
     _atomic_json(path, manifest)
     return path
 
 
 def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
+    output = config.output_dir.absolute()
+    source = config.source_path.resolve()
+    for name in (*export_publication.ENTRIES, ".dubflow-work"):
+        controlled = (output / name).resolve()
+        if source == controlled or controlled in source.parents:
+            raise ProductionJobError("OUTPUT_SOURCE_OVERLAP", "source media overlaps export storage")
+    try:
+        pending = export_publication.prepare(output)
+        result = _run_local_file(config, emitter, pending)
+        manifest_path = Path(result["manifest"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for artifact in manifest["artifacts"].values():
+            path = Path(artifact["path"])
+            if path.is_relative_to(pending):
+                artifact["path"] = str(output / path.relative_to(pending))
+        _atomic_json(manifest_path, manifest)
+        export_publication.publish(output)
+        result = {name: str(output / Path(path).relative_to(pending)) if Path(path).is_relative_to(pending) else path for name, path in result.items()}
+    except (export_publication.PublicationError, OSError) as error:
+        raise ProductionJobError("OUTPUT_PUBLICATION_FAILED", str(error)) from error
+    emitter.progress(1.0, "Hoàn tất video Việt hóa")
+    return result
+
+
+def _b2_generation(checkpoint: dict[str, Any], checkpoint_path: Path, work_dir: Path, output_dir: Path, identity: str) -> Path:
+    stage = checkpoint.get("stages", {}).get("b2-generation", {})
+    generation = stage.get("generation", "")
+    reusable = stage.get("input_hash") == identity and isinstance(generation, str) and re.fullmatch(r"[a-f0-9]{32}", generation)
+    directory = work_dir / "b2-audio" / identity / generation if reusable else None
+    manifest_path = output_dir / "job_manifest.json"
+    if reusable and manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # Published private audio is immutable. A failed attempt can resume
+            # its own chunks without modifying the preceding validated export.
+            paths = [Path(item["path"]) for item in manifest["artifacts"].values()]
+            reusable = not any(path.is_relative_to(directory) for path in paths)
+        except (OSError, ValueError, KeyError, TypeError):
+            reusable = False
+    if not reusable:
+        generation = uuid.uuid4().hex
+        directory = work_dir / "b2-audio" / identity / generation
+        _write_stage(checkpoint, checkpoint_path, "b2-generation", {"input_hash": identity, "generation": generation})
+    export_publication.plain(directory.absolute())
+    return directory
+
+
+def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -> dict[str, Any]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     work_dir = config.output_dir / ".dubflow-work"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -600,8 +747,10 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     audio_path = work_dir / "analysis.wav"
     media = FfmpegMediaAdapter(config.ffmpeg_path, trusted_root=config.media_runtime_root)
     sidecar = _load_sidecar(config.source_path)
-    if sidecar is None:
+    if sidecar is None or config.source_language == "auto":
         if not probe.has_audio:
+            if sidecar is not None:
+                raise ProductionJobError("SOURCE_LANGUAGE_UNRESOLVED", "sidecar without audio requires an explicit source language")
             raise ProductionJobError("AUDIO_STREAM_MISSING", "ASR requires an audio stream when no sidecar captions are present")
         if not _stage_ready(checkpoint, "audio", (audio_path,)):
             emitter.progress(0.08, "Đang trích xuất audio")
@@ -610,39 +759,51 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             emitter.checkpoint("audio", _sha256(audio_path))
 
     transcript_path = work_dir / "transcript.json"
+    transcript_input = "sha256:" + sha256(json.dumps({"source_hash": source_hash, "requested_language": config.source_language, "sidecar_cues": [cue.to_dict() for cue in sidecar] if sidecar is not None else None, "asr_profile_hash": _sha256(profile_path), "recipe": "faster-whisper-1.2.1-v1"}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    transcript = None
     if _stage_ready(checkpoint, "transcript", (transcript_path,)):
         transcript_document = json.loads(transcript_path.read_text(encoding="utf-8"))
         cues = _cues_from_json(transcript_path)
         transcript_source = str(transcript_document.get("source", "checkpoint"))
-    else:
+        if transcript_document.get("input_hash") == transcript_input:
+            transcript = _language_checkpoint(cues, transcript_document, config.source_language)
+    if transcript is None:
         if sidecar is not None:
-            cues = sidecar
+            transcript = _sidecar_language(sidecar, config, audio_path)
             transcript_source = "sidecar-srt"
         else:
             emitter.progress(0.18, "Đang nhận dạng lời thoại bằng model CPU")
-            cues = _transcribe_with_faster_whisper(audio_path, config.model_root, config.source_language)
+            transcript = _transcribe_with_faster_whisper(audio_path, config.model_root, config.source_language)
             transcript_source = "faster-whisper"
-        _atomic_json(transcript_path, {"schema_version": 1, "source": transcript_source, "cues": [cue.to_dict() for cue in cues]})
+        cues = transcript.cues
+        _atomic_json(transcript_path, {"schema_version": 2, "input_hash": transcript_input, "source": transcript_source, "requested_source_language": config.source_language, **transcript.language_metadata(), "cues": [cue.to_dict() for cue in cues]})
         _write_stage(checkpoint, checkpoint_path, "transcript", {"source": transcript_source, "path": str(transcript_path), "sha256": _sha256(transcript_path)})
     emitter.progress(0.38, "Đã nhận dạng lời thoại", units_done=len(cues), units_total=len(cues))
     emitter.checkpoint("transcript", _sha256(work_dir / "transcript.json"))
 
     translation_path = work_dir / "translation.json"
+    try:
+        translation_runtime = ArgosRuntime(config.app_root, config.model_root, transcript.source_language)
+        translation_provenance = translation_runtime.provenance()
+    except TranslationError as error:
+        raise ProductionJobError(error.code, error.condition) from error
+    translation_input = _translation_identity(cues, transcript.source_language, translation_provenance)
+    translation_changed = True
     if _stage_ready(checkpoint, "translation", (translation_path,)):
-        translated = _cues_from_json(translation_path)
-    else:
+        previous = json.loads(translation_path.read_text(encoding="utf-8"))
+        if previous.get("schema_version") == 2 and previous.get("input_hash") == translation_input:
+            translated = _cues_from_json(translation_path)
+            translation_changed = False
+    if translation_changed:
         emitter.progress(0.44, "Đang dịch cục bộ sang tiếng Việt")
-        translated = _translate_with_argos(cues, config.model_root, config.source_language)
-        _atomic_json(translation_path, {"schema_version": 1, "source_language": config.source_language, "target_language": "vi", "cues": [cue.to_dict() for cue in translated]})
+        translated = _translate_with_argos(cues, config.model_root, transcript.source_language, runtime=translation_runtime, chunks_dir=work_dir / "translation-chunks")
+        _atomic_json(translation_path, {"schema_version": 2, "source_language": transcript.source_language, "target_language": "vi", "provenance": translation_provenance, "input_hash": translation_input, "cues": [cue.to_dict() for cue in translated]})
         _write_stage(checkpoint, checkpoint_path, "translation", {"path": str(translation_path), "sha256": _sha256(translation_path)})
     emitter.progress(0.58, "Đã dịch lời thoại", units_done=len(translated), units_total=len(translated))
     emitter.checkpoint("translation", _sha256(work_dir / "translation.json"))
 
-    srt_path = config.output_dir / "captions_vi.srt"
-    ass_path = config.output_dir / "captions_vi.ass"
-    if not _stage_ready(checkpoint, "subtitles", (srt_path, ass_path)):
-        srt_path, ass_path = _write_subtitles(config.output_dir, translated)
-        _write_stage(checkpoint, checkpoint_path, "subtitles", {"srt": str(srt_path), "ass": str(ass_path), "srt_sha256": _sha256(srt_path), "ass_sha256": _sha256(ass_path)})
+    srt_path, ass_path = _write_subtitles(export_dir, translated)
+    _write_stage(checkpoint, checkpoint_path, "subtitles", {"srt": str(srt_path), "ass": str(ass_path), "srt_sha256": _sha256(srt_path), "ass_sha256": _sha256(ass_path)})
     emitter.progress(0.66, "Đã tạo subtitle SRT/ASS")
     emitter.checkpoint("subtitles", _sha256(srt_path))
 
@@ -653,15 +814,16 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     if config.enable_dubbing:
         emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
         try:
+            generation_identity = sha256((translation_input + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py"))).encode()).hexdigest()
             b2_audio = run_b2_audio(
                 media=media,
                 source_path=config.source_path,
                 source_probe=probe,
                 translated_cues=translated,
-                source_language=config.source_language,
+                source_language=transcript.source_language,
                 app_root=config.app_root,
                 profile_path=profile_path,
-                work_dir=work_dir / "b2-audio",
+                work_dir=_b2_generation(checkpoint, checkpoint_path, work_dir, config.output_dir.absolute(), generation_identity),
             )
             audio_path = b2_audio.final_mix_path
             audio_metadata = {
@@ -699,12 +861,23 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: {error.code}: {error.condition}")
             emitter.progress(0.70, "B2 audio không khả dụng; giữ Vietsub và audio gốc")
 
-    final_path = config.output_dir / "final_vi.mp4"
+    final_path = export_dir / "final_vi.mp4"
     render_stage = "render-dubbed" if audio_path is not None else "render"
     # A successful B2 run always re-renders against the newly verified mix.
     # This prevents a changed voice-pack hash or regenerated mix from being
     # hidden by a stale final-video checkpoint after a resumable restart.
-    render_ready = audio_path is None and _stage_ready(checkpoint, render_stage, (final_path,))
+    def render_identity() -> str:
+        return sha256(json.dumps({"source": source_hash, "translation": translation_input, "subtitles": _sha256(ass_path), "burn_in": config.burn_in_subtitles, "audio": _sha256(audio_path) if audio_path is not None else "original", "recipe": "h264-aac-v1"}, sort_keys=True).encode()).hexdigest()
+
+    render_input = render_identity()
+    render_ready = False
+    if audio_path is None and checkpoint["stages"].get(render_stage, {}).get("input_hash") == render_input:
+        for candidate in (final_path, config.output_dir.absolute() / "final_vi.mp4"):
+            if _stage_ready(checkpoint, render_stage, (candidate,)):
+                if candidate != final_path:
+                    final_path.unlink(missing_ok=True)
+                final_path, render_ready = candidate, True
+                break
     if not render_ready:
         emitter.progress(0.74, "Đang render video H.264/AAC")
         try:
@@ -727,6 +900,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             audio_path = None
             audio_metadata = {"mode": "original", "backend": "source-audio"}
             render_stage = "render"
+            render_input = render_identity()
             media.render(
                 config.source_path,
                 final_path,
@@ -735,7 +909,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
                 burn_in_subtitles=config.burn_in_subtitles,
                 overwrite=True,
             )
-        _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"]})
+        _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"], "input_hash": render_input})
     emitter.checkpoint(render_stage, _sha256(final_path))
 
     emitter.progress(0.88, "Đang kiểm tra codec, thời lượng và khả năng đọc output")
@@ -754,6 +928,8 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
         validate_output(output_probe)
     except ProductionJobError as error:
         if b2_audio is None:
+            checkpoint["stages"].pop(render_stage, None)
+            _atomic_json(checkpoint_path, checkpoint)
             raise
         warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: output QC failed: {error.code}: {error.condition}")
         b2_audio = None
@@ -767,14 +943,18 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             burn_in_subtitles=config.burn_in_subtitles,
             overwrite=True,
         )
-        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original"})
         output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
         validate_output(output_probe)
+        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original", "input_hash": render_identity()})
     output_duration = output_probe.duration_ticks
-    qc_path = config.output_dir / "qc_report.json"
+    qc_path = export_dir / "qc_report.json"
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _atomic_json(qc_path, qc)
-    editable_dir = config.output_dir / "editable"
+    editable_dir = export_dir / "editable"
+    if editable_dir.exists():
+        for path in editable_dir.iterdir():
+            export_publication.plain(path.absolute())
+            path.unlink()
     editable_dir.mkdir(parents=True, exist_ok=True)
     for source, name in ((srt_path, "captions_vi.srt"), (ass_path, "captions_vi.ass")):
         target = editable_dir / name
@@ -803,9 +983,8 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             "editable_dialogue_stem": editable_dir / "dialogue_stem.wav",
             "editable_final_mix": editable_dir / "final_mix.wav",
         })
-    manifest_path = _write_manifest(config.output_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata)
+    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=translation_provenance)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
-    emitter.progress(1.0, "Hoàn tất video Việt hóa")
     emitter.checkpoint("qc", _sha256(qc_path))
     return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "manifest": str(manifest_path)}
 
