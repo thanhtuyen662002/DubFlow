@@ -1,4 +1,5 @@
 import type { JobStatus, JobStatusState } from "../job_status/status.ts";
+import { isDubbingOptions, type DubbingOptions } from "../voices/model.ts";
 
 export const QUEUE_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_QUEUE_LIMIT = 10_000;
@@ -10,6 +11,7 @@ export type QueueJob = {
   createdAt: string;
   status: JobStatus;
   outputPath: string | null;
+  dubbing: DubbingOptions;
 };
 
 export type QueueSnapshot = {
@@ -148,7 +150,8 @@ function isQueueJob(value: unknown): value is QueueJob {
     typeof job.displayName === "string" && job.displayName.length > 0 &&
     typeof job.createdAt === "string" && !Number.isNaN(Date.parse(job.createdAt)) &&
     isJobStatus(job.status) &&
-    (job.outputPath === null || typeof job.outputPath === "string")
+    (job.outputPath === null || typeof job.outputPath === "string") &&
+    (job.dubbing === undefined || isDubbingOptions(job.dubbing))
   );
 }
 
@@ -170,7 +173,9 @@ export function parseQueueSnapshot(serialized: string | null): QueueSnapshot | n
     const ids = new Set(snapshot.jobs.map((job) => job.id));
     if (snapshot.selected_job_id !== null && !ids.has(snapshot.selected_job_id)) return null;
     if (ids.size !== snapshot.jobs.length) return null;
-    return cloneSnapshot(snapshot as QueueSnapshot);
+    const restored = cloneSnapshot(snapshot as QueueSnapshot);
+    for (const job of restored.jobs) job.dubbing ??= { enabled: false, voiceId: null };
+    return restored;
   } catch {
     return null;
   }
@@ -219,6 +224,7 @@ export function createQueueJob(
     createdAt,
     status: emptyStatus(),
     outputPath: null,
+    dubbing: { enabled: false, voiceId: null },
   };
 }
 
@@ -323,6 +329,14 @@ export class QueueController {
       },
     };
     job.outputPath = null;
+    this.commit();
+  }
+
+  setDubbing(jobId: string, options: DubbingOptions): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Requeue the job before changing its voice");
+    if (!isDubbingOptions(options)) throw new Error("Invalid dubbing options");
+    job.dubbing = { ...options };
     this.commit();
   }
 

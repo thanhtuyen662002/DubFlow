@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import hashlib
 import importlib.metadata
 import os
+import re
 from pathlib import Path
 
 from engine.dubflow.models.runtime import ModelArtifact, ensure_model_profile
@@ -33,7 +34,23 @@ class VieNeuVoicePack(NeuralVoicePack):
     voice_name: str = ""
 
 
-def load_vieneu_voice(app_root, model_root, profile_path):
+def voice_choices(profile):
+    choices = profile.get("voices")
+    if type(choices) is not list or not 1 <= len(choices) <= 64:
+        raise TtsError("VOICE_MANIFEST_INVALID", "bounded preset catalog is missing")
+    seen = set()
+    for item in choices:
+        if type(item) is not dict or type(item.get("voice_id")) is not str or not re.fullmatch(r"[a-z0-9-]{1,96}", item["voice_id"]) or item["voice_id"] in seen or item.get("approved") is not True:
+            raise TtsError("VOICE_MANIFEST_INVALID", "duplicate, invalid or unapproved preset voice")
+        if any(type(item.get(key)) is not str or not 0 < len(item[key]) <= 160 for key in ("name", "gender", "accent", "style", "description", "voice_version")):
+            raise TtsError("VOICE_MANIFEST_INVALID", "invalid preset display metadata")
+        seen.add(item["voice_id"])
+    if profile.get("voice_id") not in seen:
+        raise TtsError("VOICE_MANIFEST_INVALID", "default preset is absent from the catalog")
+    return tuple(choices)
+
+
+def load_vieneu_voice(app_root, model_root, profile_path, *, voice_id=None):
     app = Path(app_root).expanduser().absolute()
     selected = _read_json(Path(profile_path))
     metadata = _child(app, selected.get("tts_neural_profile", ""))
@@ -42,6 +59,11 @@ def load_vieneu_voice(app_root, model_root, profile_path):
         raise TtsError("VOICE_MANIFEST_INVALID", "VieNeu recipe/runtime differs from its pinned version")
     if profile.get("license_id") != "Apache-2.0" or profile.get("approved") is not True:
         raise TtsError("VOICE_LICENSE_UNAPPROVED", "VieNeu voice license is not approved")
+    choices = voice_choices(profile)
+    selected_id = profile["voice_id"] if voice_id is None else voice_id
+    choice = next((item for item in choices if item["voice_id"] == selected_id), None)
+    if choice is None:
+        raise TtsError("VOICE_ID_UNKNOWN", "requested voice is absent from the approved pinned catalog")
     tree = profile.get("model_tree_sha256")
     if type(tree) is not str or len(tree) != 64 or any(c not in "0123456789abcdef" for c in tree):
         raise TtsError("VOICE_MANIFEST_INVALID", "VieNeu requires a model inventory SHA-256")
@@ -82,14 +104,14 @@ def load_vieneu_voice(app_root, model_root, profile_path):
             path = _child(installed, relative)
             if not path.is_file() or path.stat().st_size != record["size_bytes"] or _digest(path) != record["sha256"]:
                 raise TtsError("VOICE_PACK_CHECKSUM_MISMATCH", "VieNeu data differs from its pinned inventory")
-    voice_name = profile.get("voice_name")
+    voice_name = choice["name"]
     voices = _read_json(installed / "voices.json", 256 * 1024)
     if type(voice_name) is not str or voice_name not in voices.get("presets", {}):
         raise TtsError("VOICE_MANIFEST_INVALID", "selected preset is absent from the pinned voice roster")
-    pack = VieNeuVoicePack(installed, 48000, 1, "sha256:" + tree, "sha256:" + _digest(metadata), "Apache-2.0", profile["voice_id"], profile["voice_version"], profile["model_id"], profile["model_version"], voice_name=voice_name)
+    pack = VieNeuVoicePack(installed, 48000, 1, "sha256:" + tree, "sha256:" + _digest(metadata), "Apache-2.0", choice["voice_id"], choice["voice_version"], profile["model_id"], profile["model_version"], voice_name=voice_name)
     voice = VoiceProfile(voice_id=pack.voice_id, voice_version=pack.version, language="vi", display_name=voice_name,
         model_id=pack.model_id, model_version=pack.model_version, model_hash=pack.model_hash, manifest_hash=pack.manifest_hash,
-        license_id=pack.license_id, approved=True, network_required=False, credential_required=False, default=True)
+        license_id=pack.license_id, approved=True, network_required=False, credential_required=False, default=pack.voice_id == profile["voice_id"])
     return pack, voice
 
 

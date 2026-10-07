@@ -3,14 +3,16 @@ from __future__ import annotations
 from hashlib import sha256
 import importlib.util
 import json
+import io
 from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 from packaging.release.bootstrap import BootstrapInstallError, install_bundle
-from packaging.release.builder import BuildError, build_bundle
+from packaging.release.builder import BuildError, build_bundle, main as builder_main
 from packaging.release.manifest import ManifestError, ReleaseArtifact, ReleaseManifest, hash_file, load_manifest
 
 
@@ -36,6 +38,17 @@ def _desktop_binary(root: Path) -> Path:
 
 
 class ReleaseBundleTests(unittest.TestCase):
+    def test_builder_stdout_preserves_vietnamese_on_a_windows_legacy_console(self) -> None:
+        stream = io.BytesIO()
+        console = io.TextIOWrapper(stream, encoding="cp1252", write_through=True)
+        manifest = {"voice": "Ngọc Huyền", "path": "D:/Thư viện/video.mp4"}
+        result = SimpleNamespace(bundle_path=Path("DubFlow.zip"), checksum_path=Path("SHA256.txt"), manifest=SimpleNamespace(to_dict=lambda: manifest))
+        with mock.patch("packaging.release.builder.build_bundle", return_value=result), mock.patch("sys.stdout", console):
+            self.assertEqual(builder_main(["--source-root", ".", "--output-dir", "out", "--version", "test", "--source-sha", SOURCE_SHA, "--runtime-root", "runtime"]), 0)
+        decoded = json.loads(stream.getvalue().decode("cp1252"))
+        self.assertEqual(decoded["manifest"], manifest)
+        console.detach()
+
     def test_build_is_deterministic_and_manifest_hashes_every_payload_file(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

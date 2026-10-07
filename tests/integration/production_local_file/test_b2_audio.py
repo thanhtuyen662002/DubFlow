@@ -65,8 +65,10 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
                 app_root=ROOT,
                 profile_path=ROOT / "models" / "manifests" / "production-cpu-v1.json",
                 work_dir=root / ".dubflow-work" / "b2-audio",
+                tts_voice_id="vi-truc-ly-vieneu3-v1",
             )
             bootstrap.assert_called_once()
+            self.assertEqual(bootstrap.call_args.kwargs["voice_id"], "vi-truc-ly-vieneu3-v1")
             backend.assert_called_once_with(pack, ffmpeg_path=HermeticDecodedAudioAdapter.ffmpeg_path)
             self.assertEqual(result.tts_document.provenance.backend_id, "vieneu-v3-turbo-onnx-v1")
             self.assertEqual(result.tts_document.provenance.producer_version, "3.0.0")
@@ -82,7 +84,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             self.assertEqual(result.mix_document.to_dict()["provenance"]["non_destructive"], True)
 
     def test_missing_or_corrupt_voice_preserves_existing_b1_assets(self) -> None:
-        for code in ("MODEL_DOWNLOAD_FAILED", "VOICE_PACK_CHECKSUM_MISMATCH"):
+        for code in ("MODEL_DOWNLOAD_FAILED", "VOICE_PACK_CHECKSUM_MISMATCH", "VOICE_ID_UNKNOWN"):
             with self.subTest(code=code), TemporaryDirectory() as directory:
                 root = Path(directory)
                 b1 = root / "export.mp4"

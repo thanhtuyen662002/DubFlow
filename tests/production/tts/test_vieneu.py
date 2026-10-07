@@ -16,7 +16,7 @@ import wave
 
 from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.tts.adapter import TtsConfig, TtsInput, TtsRequest, TtsError
-from engine.dubflow.tts.vieneu import load_vieneu_voice, VieNeuVietnameseTtsEngine, FILES
+from engine.dubflow.tts.vieneu import load_vieneu_voice, voice_choices, VieNeuVietnameseTtsEngine, FILES
 from engine.dubflow.tts.vieneu_native import NativeModel, VERSIONS, INFERENCE_RECIPE
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -26,7 +26,7 @@ class VieNeuPackTests(unittest.TestCase):
     def fixture(self, root):
         profile = json.loads((ROOT / "models/manifests/production-vieneu-v1.json").read_text(encoding="utf-8"))
         data = {f: b"fixture-data" for f in FILES}
-        data["voices.json"] = json.dumps({"presets": {profile["voice_name"]: {}}}).encode()
+        data["voices.json"] = json.dumps({"presets": {voice["name"]: {} for voice in profile["voices"]}}).encode()
         records = {k: {"sha256": hashlib.sha256(v).hexdigest(), "size_bytes": len(v)} for k, v in data.items()}
         tree = hashlib.sha256(json.dumps(records, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         profile["model_tree_sha256"] = tree
@@ -52,10 +52,46 @@ class VieNeuPackTests(unittest.TestCase):
             self.assertEqual(pack.sample_rate, 48000)
             self.assertEqual(pack.voice_name, "Ngọc Huyền")
             self.assertEqual(voice.license_id, "Apache-2.0")
-            profile["voice_version"] = "1.0.1"
+            next(item for item in profile["voices"] if item["voice_id"] == profile["voice_id"])["voice_version"] = "1.0.1"
             metadata.write_text(json.dumps(profile), encoding="utf-8")
             _, changed = load_vieneu_voice(app, cache, selected)
             self.assertNotEqual(voice.content_hash(), changed.content_hash())
+
+    def test_presets_share_model_bytes_but_have_distinct_voice_identities(self):
+        with TemporaryDirectory() as directory:
+            app, cache, _, selected, _, profile = self.fixture(Path(directory))
+            identities = set()
+            models = set()
+            for choice in profile["voices"]:
+                with patch("engine.dubflow.models.runtime.urllib.request.urlopen", side_effect=AssertionError("offline")):
+                    pack, voice = load_vieneu_voice(app, cache, selected, voice_id=choice["voice_id"])
+                self.assertEqual(pack.voice_name, choice["name"])
+                self.assertEqual(voice.voice_id, choice["voice_id"])
+                identities.add(voice.content_hash())
+                models.add(voice.model_hash)
+            self.assertEqual(len(identities), 25)
+            self.assertEqual(len(models), 1)
+
+    def test_unknown_or_invalid_voice_cannot_download_or_replace_an_existing_choice(self):
+        with TemporaryDirectory() as directory:
+            app, cache, _, selected, _, _ = self.fixture(Path(directory))
+            with patch("engine.dubflow.tts.vieneu.ensure_model_profile", side_effect=AssertionError("invalid voice must not provision")):
+                for voice_id in ("missing", "../escape", "", 123, True):
+                    with self.subTest(voice_id=voice_id), self.assertRaisesRegex(TtsError, "VOICE_ID_UNKNOWN"):
+                        load_vieneu_voice(app, cache, selected, voice_id=voice_id)
+
+    def test_invalid_catalog_is_rejected_before_provisioning(self):
+        profile = json.loads((ROOT / "models/manifests/production-vieneu-v1.json").read_text(encoding="utf-8"))
+        for kind in ("duplicate", "unapproved", "integer", "empty", "missing_default", "too_many"):
+            invalid = deepcopy(profile)
+            if kind == "duplicate": invalid["voices"].append(invalid["voices"][0])
+            if kind == "unapproved": invalid["voices"][0]["approved"] = False
+            if kind == "integer": invalid["voices"][0]["voice_id"] = 123
+            if kind == "empty": invalid["voices"][0]["name"] = ""
+            if kind == "missing_default": invalid["voice_id"] = "missing"
+            if kind == "too_many": invalid["voices"] = invalid["voices"] * 3
+            with self.subTest(kind=kind), self.assertRaisesRegex(TtsError, "VOICE_MANIFEST_INVALID"):
+                voice_choices(invalid)
 
     def test_unsafe_manifest_rejected_before_download_or_writing_pack(self):
         for kind in ("traversal", "foreign", "duplicate", "hash", "recipe", "runtime", "license"):

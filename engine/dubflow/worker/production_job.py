@@ -141,6 +141,7 @@ class WorkerConfig:
     source_language: str = "auto"
     target_language: str = "vi"
     enable_dubbing: bool = False
+    tts_voice_id: str | None = None
     burn_in_subtitles: bool = True
     translation_package: Path | None = None
     tts_model: Path | None = None
@@ -167,6 +168,10 @@ class WorkerConfig:
                 raise ProductionJobError("COMMAND_INVALID", f"{name} must be a boolean")
             return value
 
+        voice_id = args.get("tts_voice_id")
+        if voice_id is not None and (not isinstance(voice_id, str) or re.fullmatch(r"[a-z0-9-]{1,96}", voice_id) is None):
+            raise ProductionJobError("COMMAND_INVALID", "tts_voice_id must be a bounded preset identifier")
+
         config = cls(
             job_id=str(args["job_id"]),
             stage_id=str(args["stage_id"]),
@@ -180,6 +185,7 @@ class WorkerConfig:
             source_language=str(args.get("source_language") or "auto"),
             target_language=str(args.get("target_language") or "vi"),
             enable_dubbing=optional_bool("enable_dubbing", False),
+            tts_voice_id=voice_id,
             burn_in_subtitles=optional_bool("burn_in_subtitles", True),
             translation_package=optional_path("translation_package"),
             tts_model=optional_path("tts_model"),
@@ -642,6 +648,7 @@ def _write_manifest(
         "job_id": config.job_id,
         "source": {"path": str(config.source_path), "sha256": _sha256(config.source_path), "probe": probe.to_dict()},
         "target_language": config.target_language,
+        "dubbing": {"enabled": config.enable_dubbing, "requested_voice_id": getattr(config, "tts_voice_id", None)},
         "cues": [cue.to_dict() for cue in cues],
         "artifacts": {name: {"path": str(path), "sha256": _sha256(path), "size_bytes": path.stat().st_size} for name, path in artifacts.items()},
         "warnings": list(warnings),
@@ -815,7 +822,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
         try:
             from engine.dubflow.worker.b2_audio import tts_recipe_identity
-            generation_identity = sha256((translation_input + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path)).encode()).hexdigest()
+            selected_voice = getattr(config, "tts_voice_id", None)
+            generation_identity = sha256((translation_input + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + json.dumps(selected_voice)).encode()).hexdigest()
             b2_audio = run_b2_audio(
                 media=media,
                 source_path=config.source_path,
@@ -826,6 +834,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 profile_path=profile_path,
                 work_dir=_b2_generation(checkpoint, checkpoint_path, work_dir, config.output_dir.absolute(), generation_identity),
                 model_root=config.model_root,
+                tts_voice_id=selected_voice,
             )
             audio_path = b2_audio.final_mix_path
             audio_metadata = {

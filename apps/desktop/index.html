@@ -48,9 +48,23 @@
         <aside class="detail-panel">
           <h2>Chi tiết</h2>
           <div id="job-detail" class="detail-empty">Chọn một video trong hàng đợi.</div>
+          <fieldset id="voice-controls" class="voice-controls" disabled>
+            <legend>Lồng tiếng Việt</legend>
+            <label class="dubbing-toggle"><input id="enable-dubbing" type="checkbox" /> Tạo giọng lồng tiếng</label>
+            <div id="voice-picker" hidden>
+              <div class="voice-filters">
+                <label>Giới tính<select id="voice-gender"><option value="">Tất cả</option></select></label>
+                <label>Vùng giọng<select id="voice-accent"><option value="">Tất cả</option></select></label>
+                <label>Phong cách<select id="voice-style"><option value="">Tất cả</option></select></label>
+              </div>
+              <label>Giọng đọc<select id="tts-voice" aria-describedby="voice-description"></select></label>
+              <p id="voice-description" class="hint"></p>
+            </div>
+            <p id="voice-catalog-status" class="hint">Đang đọc danh mục giọng…</p>
+          </fieldset>
           <button id="start-processing" class="primary full" type="button" disabled>Bắt đầu xử lý</button>
           <button id="cancel-processing" class="full" type="button" disabled>Hủy job đang chạy</button>
-          <p class="hint">Hỗ trợ bản CPU local-file. Model được tải và kiểm tra hash ở lần chạy đầu.</p>
+          <p class="hint">Giọng được lưu riêng cho từng video. Dữ liệu giọng được tải ở lần lồng tiếng đầu; các lần sau có thể chạy ngoại tuyến.</p>
         </aside>
       </section>
     </main>

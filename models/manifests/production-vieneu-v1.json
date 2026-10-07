@@ -130,5 +130,257 @@
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
       "size_bytes": 11357
     }
+  ],
+  "voices": [
+    {
+      "voice_id": "vi-adam-bua-vieneu3-v1",
+      "name": "Adam bựa",
+      "gender": "Nam",
+      "accent": "Bắc",
+      "style": "tự nhiên",
+      "description": "Nam · Bắc · Phong cách tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-truc-ly-vieneu3-v1",
+      "name": "Trúc Ly",
+      "gender": "Nữ",
+      "accent": "Bắc",
+      "style": "tự nhiên",
+      "description": "Nữ · Bắc · Phong cách tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-thien-minh-vieneu3-v1",
+      "name": "Thiện Minh",
+      "gender": "Nam",
+      "accent": "Bắc",
+      "style": "kể chuyện",
+      "description": "Nam · Bắc · Phong cách kể chuyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-mai-anh-vieneu3-v1",
+      "name": "Mai Anh",
+      "gender": "Nữ",
+      "accent": "Bắc",
+      "style": "tin tức",
+      "description": "Nữ · Bắc · Phong cách tin tức",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-hai-dang-vieneu3-v1",
+      "name": "Hải Đăng",
+      "gender": "Nam",
+      "accent": "Bắc",
+      "style": "tự nhiên",
+      "description": "Nam · Bắc · Phong cách tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-thuy-dung-vieneu3-v1",
+      "name": "Thùy Dung",
+      "gender": "Nữ",
+      "accent": "Nam",
+      "style": "tin tức",
+      "description": "Nữ · Nam · Phong cách tin tức",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-thien-tam-duc-vieneu3-v1",
+      "name": "Thiền Tâm Đức",
+      "gender": "Nam",
+      "accent": "Bắc",
+      "style": "kể chuyện",
+      "description": "Nam · Bắc · Phong cách kể chuyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-ngoc-huyen-vieneu3-v1",
+      "name": "Ngọc Huyền",
+      "gender": "Nữ",
+      "accent": "Bắc",
+      "style": "tự nhiên",
+      "description": "Nữ · Bắc · Giọng đọc tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-quang-son-vieneu3-v1",
+      "name": "Quang Sơn",
+      "gender": "Nam",
+      "accent": "Trung",
+      "style": "tự nhiên",
+      "description": "Nam · Trung · Phong cách tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-ngoc-tran-vieneu3-v1",
+      "name": "Ngọc Trân",
+      "gender": "Nữ",
+      "accent": "Trung",
+      "style": "tự nhiên",
+      "description": "Nữ · Trung · Phong cách tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-minh-duc-vieneu3-v1",
+      "name": "Minh Đức",
+      "gender": "Nam",
+      "accent": "Bắc",
+      "style": "tin tức",
+      "description": "Nam · Bắc · Phong cách tin tức",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-pham-tuyen-vieneu3-v1",
+      "name": "Phạm Tuyên",
+      "gender": "Nam",
+      "accent": "Bắc",
+      "style": "tự nhiên",
+      "description": "Nam · Bắc · Phong cách tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-thai-son-vieneu3-v1",
+      "name": "Thái Sơn",
+      "gender": "Nam",
+      "accent": "Nam",
+      "style": "kể chuyện",
+      "description": "Nam · Nam · Phong cách kể chuyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-xuan-vinh-vieneu3-v1",
+      "name": "Xuân Vĩnh",
+      "gender": "Nam",
+      "accent": "Bắc",
+      "style": "tự nhiên",
+      "description": "Nam · Bắc · Phong cách tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-thanh-binh-vieneu3-v1",
+      "name": "Thanh Bình",
+      "gender": "Nam",
+      "accent": "Bắc",
+      "style": "kể chuyện",
+      "description": "Nam · Bắc · Phong cách kể chuyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-ngoc-linh-vieneu3-v1",
+      "name": "Ngọc Linh",
+      "gender": "Nữ",
+      "accent": "Bắc",
+      "style": "kể chuyện",
+      "description": "Nữ · Bắc · Phong cách kể chuyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-doan-trang-vieneu3-v1",
+      "name": "Đoan Trang",
+      "gender": "Nữ",
+      "accent": "Bắc",
+      "style": "tự nhiên",
+      "description": "Nữ · Bắc · Phong cách tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-thuc-doan-vieneu3-v1",
+      "name": "Thục Đoan",
+      "gender": "Nữ",
+      "accent": "Nam",
+      "style": "kể chuyện",
+      "description": "Nữ · Nam · Phong cách kể chuyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-minh-triet-vieneu3-v1",
+      "name": "Minh Triết",
+      "gender": "Nam",
+      "accent": "Nam",
+      "style": "tin tức",
+      "description": "Nam · Nam · Phong cách tin tức",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-my-duyen-vieneu3-v1",
+      "name": "Mỹ Duyên",
+      "gender": "Nữ",
+      "accent": "Nam",
+      "style": "đọc truyện",
+      "description": "Nữ · Nam · Phong cách đọc truyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-quynh-anh-vieneu3-v1",
+      "name": "Quỳnh Anh",
+      "gender": "Nữ",
+      "accent": "Bắc",
+      "style": "đọc truyện",
+      "description": "Nữ · Bắc · Phong cách đọc truyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-duc-tri-vieneu3-v1",
+      "name": "Đức Trí",
+      "gender": "Nam",
+      "accent": "Nam",
+      "style": "đọc truyện",
+      "description": "Nam · Nam · Phong cách đọc truyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-kim-thanh-vieneu3-v1",
+      "name": "Kim Thanh",
+      "gender": "Nữ",
+      "accent": "Nam",
+      "style": "đọc truyện",
+      "description": "Nữ · Nam · Phong cách đọc truyện",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-adam-vieneu3-v1",
+      "name": "Adam",
+      "gender": "Nam",
+      "accent": "Nam",
+      "style": "tự nhiên",
+      "description": "Nam · Nam · Giọng đọc tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    },
+    {
+      "voice_id": "vi-quoc-tuan-vieneu3-v1",
+      "name": "Quốc Tuấn",
+      "gender": "Nam",
+      "accent": "Bắc",
+      "style": "tự nhiên",
+      "description": "Nam · Bắc · Phong cách tự nhiên",
+      "voice_version": "1.0.0",
+      "approved": true
+    }
   ]
 }

@@ -157,6 +157,7 @@ def run_b2_audio(
     profile_path: str | Path,
     work_dir: str | Path,
     model_root: str | Path | None = None,
+    tts_voice_id: str | None = None,
 ) -> B2AudioResult:
     """Execute real TTS and AUD-0 mixing for translated production cues."""
 
@@ -170,11 +171,13 @@ def run_b2_audio(
         selection = _read_json(Path(profile_path))
         recipe = _read_json(_child(Path(app_root).absolute(), selection.get("tts_neural_profile", "")))
         if recipe.get("backend") == vieneu.ENGINE_ID:
-            pack, voice = vieneu.load_vieneu_voice(app_root, model_root or root / "model-cache", profile_path)
+            pack, voice = vieneu.load_vieneu_voice(app_root, model_root or root / "model-cache", profile_path, voice_id=tts_voice_id)
             engine = vieneu.VieNeuVietnameseTtsEngine(pack, ffmpeg_path=media.ffmpeg_path)
             backend_id, producer_version, runtime_id = vieneu.ENGINE_ID, vieneu.PRODUCER_VERSION, vieneu.RUNTIME_ID
             resources = TtsResourceProfile(max_threads=2, max_memory_mb=2048, max_batch_items=1)
         elif recipe.get("backend") == ENGINE_ID:
+            if tts_voice_id is not None and tts_voice_id != recipe.get("voice_id"):
+                raise B2AudioError("VOICE_ID_UNKNOWN", "requested voice is not provided by the historical backend")
             pack, voice = load_neural_voice(app_root, model_root or root / "model-cache", profile_path)
             engine = NeuralVietnameseTtsEngine(pack)
             backend_id, producer_version = ENGINE_ID, "2.1.0"

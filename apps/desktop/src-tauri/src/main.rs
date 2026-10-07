@@ -23,6 +23,64 @@ struct StartJobResponse {
     output_dir: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct VoiceChoice {
+    voice_id: String,
+    name: String,
+    gender: String,
+    accent: String,
+    style: String,
+    description: String,
+    voice_version: String,
+    approved: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct VoiceCatalog {
+    default_voice_id: String,
+    voices: Vec<VoiceChoice>,
+}
+
+#[derive(Deserialize)]
+struct VoiceManifest {
+    schema_version: u32,
+    backend: String,
+    voice_id: String,
+    approved: bool,
+    voices: Vec<VoiceChoice>,
+}
+
+fn valid_voice_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 96 &&
+        value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn load_voice_catalog(root: &Path) -> Result<VoiceCatalog, String> {
+    let path = root.join("app/models/manifests/production-vieneu-v1.json");
+    if fs::metadata(&path).map_err(|_| fail("Danh mục giọng chưa được cài đặt"))?.len() > 128 * 1024 {
+        return Err(fail("Danh mục giọng quá lớn"));
+    }
+    let text = fs::read_to_string(path).map_err(|error| fail(format!("Không đọc được danh mục giọng: {error}")))?;
+    let manifest: VoiceManifest = serde_json::from_str(&text).map_err(|_| fail("Danh mục giọng không hợp lệ"))?;
+    let mut ids = std::collections::HashSet::new();
+    if manifest.schema_version != 1 || manifest.backend != "vieneu-v3-turbo-onnx-v1" || !manifest.approved
+        || manifest.voices.is_empty() || manifest.voices.len() > 64
+        || manifest.voices.iter().any(|voice| {
+            !valid_voice_id(&voice.voice_id) || !ids.insert(voice.voice_id.clone()) || !voice.approved ||
+            [&voice.name, &voice.gender, &voice.accent, &voice.style, &voice.description, &voice.voice_version]
+                .iter().any(|value| value.is_empty() || value.chars().count() > 160 || value.chars().any(char::is_control))
+        }) || !ids.contains(&manifest.voice_id)
+    {
+        return Err(fail("Danh mục giọng không hợp lệ"));
+    }
+    Ok(VoiceCatalog { default_voice_id: manifest.voice_id, voices: manifest.voices })
+}
+
+#[tauri::command]
+fn voice_catalog() -> Result<VoiceCatalog, String> {
+    load_voice_catalog(&version_root()?)
+}
+
 #[derive(Debug, Deserialize)]
 struct StatusEnvelope {
     status: Value,
@@ -116,10 +174,20 @@ fn pick_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
+    let selected_voice = if enable_dubbing.unwrap_or(false) {
+        let catalog = load_voice_catalog(&root)?;
+        let selected = tts_voice_id.ok_or_else(|| fail("Hãy chọn giọng trước khi lồng tiếng"))?;
+        if !catalog.voices.iter().any(|voice| voice.voice_id == selected) {
+            return Err(fail("Giọng đã chọn không có trong phiên bản này"));
+        }
+        Some(selected)
+    } else {
+        None
+    };
     let control = control_root()?;
     let status = status_path(&control, &job_id)?;
     let output = output_dir
@@ -132,12 +200,15 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>) ->
     let model_root = control.join("models");
     let supervisor = supervisor_binary(&root)?;
     let mut command = command_with_no_window(&supervisor);
-    let args = [
+    let mut args = vec![
         "run".to_owned(), "--root".to_owned(), root.to_string_lossy().into_owned(), "--job-id".to_owned(), job_id.clone(),
         "--source".to_owned(), source.to_string_lossy().into_owned(), "--output-dir".to_owned(), output.to_string_lossy().into_owned(),
         "--data-root".to_owned(), control.to_string_lossy().into_owned(), "--model-root".to_owned(), model_root.to_string_lossy().into_owned(),
         "--status-path".to_owned(), status.to_string_lossy().into_owned(),
     ];
+    if let Some(voice_id) = selected_voice {
+        args.extend(["--enable-dubbing".into(), "--tts-voice-id".into(), voice_id]);
+    }
     command.args(args);
     command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;
     Ok(StartJobResponse { job_id, status_path: status.to_string_lossy().into_owned(), output_dir: output.to_string_lossy().into_owned() })
@@ -173,7 +244,37 @@ fn cancel_job(job_id: String) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![release_info, pick_files, start_job, job_status, cancel_job])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_reads_the_installed_app_payload_and_rejects_unknown_or_duplicate_ids() {
+        let root = std::env::temp_dir().join(format!("dubflow-voice-catalog-test-{}", std::process::id()));
+        let path = root.join("app/models/manifests/production-vieneu-v1.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = include_str!("../../../../models/manifests/production-vieneu-v1.json");
+        fs::write(&path, source).unwrap();
+        let catalog = load_voice_catalog(&root).unwrap();
+        assert_eq!(catalog.voices.len(), 25);
+        assert!(catalog.voices.iter().any(|voice| voice.voice_id == catalog.default_voice_id));
+        let mut changed: Value = serde_json::from_str(source).unwrap();
+        changed["voice_id"] = json!("missing");
+        fs::write(&path, changed.to_string()).unwrap();
+        assert!(load_voice_catalog(&root).is_err());
+        changed["voice_id"] = json!(catalog.default_voice_id);
+        changed["voices"][1] = changed["voices"][0].clone();
+        fs::write(&path, changed.to_string()).unwrap();
+        assert!(load_voice_catalog(&root).is_err());
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+        fs::remove_dir(root.join("app/models")).unwrap();
+        fs::remove_dir(root.join("app")).unwrap();
+        fs::remove_dir(&root).unwrap();
+    }
 }

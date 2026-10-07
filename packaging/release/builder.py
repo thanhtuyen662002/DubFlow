@@ -450,7 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "bundle": str(result.bundle_path),
         "checksum": str(result.checksum_path),
         "manifest": result.manifest.to_dict(),
-    }, ensure_ascii=False, sort_keys=True))
+    }, ensure_ascii=True, sort_keys=True))
     return 0
 
 

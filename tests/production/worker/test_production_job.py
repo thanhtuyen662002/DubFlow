@@ -20,6 +20,22 @@ from engine.dubflow.media import parse_ffprobe_json
 
 
 class ProductionWorkerTests(unittest.TestCase):
+    def test_start_command_preserves_voice_and_rejects_malformed_ids(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            source.write_bytes(b"fixture")
+            args = {"job_id": "voice-test", "stage_id": "local-file", "source_path": str(source),
+                "output_dir": str(root / "output"), "app_root": str(root), "model_root": str(root / "models"),
+                "media_runtime_root": str(root), "ffmpeg_path": str(root / "ffmpeg.exe"), "ffprobe_path": str(root / "ffprobe.exe"),
+                "enable_dubbing": True, "tts_voice_id": "vi-thuy-dung-vieneu3-v1"}
+            self.assertEqual(WorkerConfig.from_args(args).tts_voice_id, args["tts_voice_id"])
+            for invalid in (True, 123, "", "../escape", "a" * 97):
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
+                    WorkerConfig.from_args({**args, "tts_voice_id": invalid})
+            del args["tts_voice_id"]
+            self.assertIsNone(WorkerConfig.from_args(args).tts_voice_id)
+
     def test_worker_runtime_keeps_third_party_packaging_ahead_of_app_policy_package(self) -> None:
         """The bundled Argos dependency must not resolve the repo package."""
 

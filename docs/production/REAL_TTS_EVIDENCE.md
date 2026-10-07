@@ -261,3 +261,69 @@ Still required: human voice selection/quality, broader material, portrait and
 no-audio cases, long/batch/restart and staging reclamation, packaged/clean-machine
 execution, full distribution notices, all Required-CI for current HEAD/main.
 Issue #166 and #175 remain open; this evidence does not approve a release.
+
+# Built-in preset choices — 2026-10-07
+
+The owner requested many selectable voices. The installed manifest now contains
+25 official licensed presets: 14 male/11 female; 15 northern, 8 southern and
+2 central; natural, news and storytelling/reading styles. IDs are stable ASCII;
+gender/region/description and style mapping are checked against the actual
+checksum-pinned `voices.json`. License approval is separate from listening quality.
+
+## Actual preset and pipeline evidence
+
+- `qualify_presets.py` generated actual offline 48 kHz PCM for **all 25 presets**,
+  using the same phrase and verified shared model/codec. All waveform hashes were
+  distinct. End-to-end initialization/verification/synthesis took 4.62–6.34 seconds
+  per preset on this development machine. One phrase is availability evidence,
+  not a broad pronunciation/quality evaluation.
+- Scratch receipt `dubflow-vieneu-195/preset-catalog/presets.json`, SHA-256
+  `c0e0a84eee219233f651179529976123b1206ff0f8435992e352a3f94412f0fd`.
+  The report records source digests and the dirty working tree before commit.
+- Actual worker/video runs selected Trúc Ly then Thái Sơn using the same source
+  and output directory. Both passed H.264/AAC QC, had zero TTS/mix failures,
+  carried the requested ID in voice provenance and produced different video/audio
+  identities. The earlier private TTS/mix data remained byte-identical. A third
+  run with an unknown ID produced usable B1 and recorded `VOICE_ID_UNKNOWN`.
+- Scratch receipt `dubflow-vieneu-195/voice-pipeline/voice-pipeline.json`, SHA-256
+  `476a607bb05e68f848ec55c074a836eec83cb86850a44ae965b65dcdfe919324`.
+  This probe uses generated color/sine source and an explicit Vietnamese sidecar;
+  it does not test ASR or the installed desktop/supervisor. The first harness
+  comparison omitted the manifest's `sha256:` prefix normalization and was
+  corrected; no production private-audio mutation was found.
+- Earlier clean HEAD `23fe826` also passed actual human-Chinese-audio portrait
+  and a 60-second/14-cue loop, with zero TTS/mix failures. Silent video preserved
+  B1. A poisoned item failed and later cases continued in the development harness.
+  Receipt `media-cases-result.json`, SHA-256
+  `c238cd2e1280a4643643aed2165866ca367a91b5a30fb86ef8596776900b78a5`.
+  Generated frames and repeated human audio do not qualify long-form/batch execution.
+
+## Desktop and transport
+
+Per-video dubbing and voice selection are exposed with gender, region and style
+filters. Filtering never silently changes the saved selection. Queue reload and
+active/recovered-job locking preserve the choice. The native host reads the
+installed `app/models/manifests` catalog and carries the ID through supervisor
+CLI/JSON and worker start arguments to the real adapter. ADR-0019 defines the
+optional-field/legacy-queue compatibility plan and exact component pairing.
+
+Desktop unit tests and TypeScript/bundle build passed. A headless browser exercised
+the built UI with mocked Tauri IPC: enable dubbing, filter, select Thùy Dung,
+reload, switch between independent jobs, start with the exact selected ID and
+lock active controls. No browser errors; screenshot was visually inspected.
+Mocked IPC is not native-host execution. TTS catalog/identity tests, three B2
+wiring/preservation cases, worker command validation and 17 release tests passed.
+Rust sources parsed with rustfmt; the local MSVC linker is unavailable, so native
+host/supervisor compile and new Rust tests require the Windows CI runner.
+
+Windows run `37643703652` failed on HEAD `23fe826` when builder stdout emitted
+Vietnamese into the runner's cp1252 console, after dependency installation and
+16 release tests passed. The builder now uses escaped JSON on stdout; a real
+cp1252 stream regression test round-trips Vietnamese metadata. Release workflow
+adds desktop/catalog/supervisor tests before native qualification. No green
+installed smoke is inferred from that failed run. Fresh exact-HEAD/base CI is
+required for the new selection implementation; keep PR #195 Draft.
+
+Remain open: human listening/quality, native packaged/restart execution, long-form
+and durable batch qualification, private staging reclamation and full distribution
+notices. None of this evidence qualifies the full #175 production capability gate.

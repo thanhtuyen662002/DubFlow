@@ -69,7 +69,11 @@ jobs:
           $env:DUBFLOW_RELEASE_CHANNEL = $env:RELEASE_CHANNEL
           $env:RUSTFLAGS = '-C target-feature=+crt-static'
           npm ci --prefix apps/desktop
+          npm test --prefix apps/desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop queue/voice tests failed' }
           npm run build --prefix apps/desktop
+          cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Installed voice catalog tests failed' }
           npm run tauri:build --prefix apps/desktop
           $desktopHost = Join-Path $PWD "apps/desktop/src-tauri/target/release/DubFlow.exe"
           if (-not (Test-Path -LiteralPath $desktopHost -PathType Leaf)) {
@@ -80,6 +84,8 @@ jobs:
         shell: pwsh
         run: |
           $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo test --manifest-path crates/job-supervisor/app/Cargo.toml --target-dir crates/job-supervisor/app/target --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Supervisor start-option tests failed' }
           cargo build --manifest-path crates/job-supervisor/app/Cargo.toml --target-dir crates/job-supervisor/app/target --locked --release
           $supervisor = Join-Path $PWD 'crates/job-supervisor/app/target/release/dubflow-supervisor.exe'
           if (-not (Test-Path -LiteralPath $supervisor -PathType Leaf)) {
