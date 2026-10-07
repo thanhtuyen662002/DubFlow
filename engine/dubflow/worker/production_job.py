@@ -74,6 +74,7 @@ from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.translation.adapter import SourceSegment, TranslationError, resolve_source_language
 from engine.dubflow.translation.argos_runtime import ArgosRuntime
 from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, run_b2_audio
+from engine.dubflow.worker import export_publication
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
 
 
@@ -316,7 +317,15 @@ def _stage_ready(checkpoint: Mapping[str, Any], name: str, required_paths: Itera
     stage = checkpoint.get("stages", {}).get(name)
     if not isinstance(stage, Mapping) or stage.get("status") != "completed":
         return False
-    return all(path.is_file() and path.stat().st_size > 0 for path in required_paths)
+    paths = tuple(required_paths)
+    try:
+        return bool(paths) and all(
+            path.is_file() and path.stat().st_size > 0
+            and stage.get("sha256" if len(paths) == 1 else f"{path.suffix[1:]}_sha256") == _sha256(path)
+            for path in paths
+        )
+    except OSError:
+        return False
 
 
 def _parse_timestamp(value: str) -> int:
@@ -644,12 +653,60 @@ def _write_manifest(
         manifest["language"] = dict(language)
     if translation is not None:
         manifest["translation"] = dict(translation)
-    path = config.output_dir / "job_manifest.json"
+    path = output_dir / "job_manifest.json"
     _atomic_json(path, manifest)
     return path
 
 
 def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
+    output = config.output_dir.absolute()
+    source = config.source_path.resolve()
+    for name in (*export_publication.ENTRIES, ".dubflow-work"):
+        controlled = (output / name).resolve()
+        if source == controlled or controlled in source.parents:
+            raise ProductionJobError("OUTPUT_SOURCE_OVERLAP", "source media overlaps export storage")
+    try:
+        pending = export_publication.prepare(output)
+        result = _run_local_file(config, emitter, pending)
+        manifest_path = Path(result["manifest"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for artifact in manifest["artifacts"].values():
+            path = Path(artifact["path"])
+            if path.is_relative_to(pending):
+                artifact["path"] = str(output / path.relative_to(pending))
+        _atomic_json(manifest_path, manifest)
+        export_publication.publish(output)
+        result = {name: str(output / Path(path).relative_to(pending)) if Path(path).is_relative_to(pending) else path for name, path in result.items()}
+    except (export_publication.PublicationError, OSError) as error:
+        raise ProductionJobError("OUTPUT_PUBLICATION_FAILED", str(error)) from error
+    emitter.progress(1.0, "Hoàn tất video Việt hóa")
+    return result
+
+
+def _b2_generation(checkpoint: dict[str, Any], checkpoint_path: Path, work_dir: Path, output_dir: Path, identity: str) -> Path:
+    stage = checkpoint.get("stages", {}).get("b2-generation", {})
+    generation = stage.get("generation", "")
+    reusable = stage.get("input_hash") == identity and isinstance(generation, str) and re.fullmatch(r"[a-f0-9]{32}", generation)
+    directory = work_dir / "b2-audio" / identity / generation if reusable else None
+    manifest_path = output_dir / "job_manifest.json"
+    if reusable and manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # Published private audio is immutable. A failed attempt can resume
+            # its own chunks without modifying the preceding validated export.
+            paths = [Path(item["path"]) for item in manifest["artifacts"].values()]
+            reusable = not any(path.is_relative_to(directory) for path in paths)
+        except (OSError, ValueError, KeyError, TypeError):
+            reusable = False
+    if not reusable:
+        generation = uuid.uuid4().hex
+        directory = work_dir / "b2-audio" / identity / generation
+        _write_stage(checkpoint, checkpoint_path, "b2-generation", {"input_hash": identity, "generation": generation})
+    export_publication.plain(directory.absolute())
+    return directory
+
+
+def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -> dict[str, Any]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     work_dir = config.output_dir / ".dubflow-work"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -745,11 +802,8 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     emitter.progress(0.58, "Đã dịch lời thoại", units_done=len(translated), units_total=len(translated))
     emitter.checkpoint("translation", _sha256(work_dir / "translation.json"))
 
-    srt_path = config.output_dir / "captions_vi.srt"
-    ass_path = config.output_dir / "captions_vi.ass"
-    if translation_changed or not _stage_ready(checkpoint, "subtitles", (srt_path, ass_path)):
-        srt_path, ass_path = _write_subtitles(config.output_dir, translated)
-        _write_stage(checkpoint, checkpoint_path, "subtitles", {"srt": str(srt_path), "ass": str(ass_path), "srt_sha256": _sha256(srt_path), "ass_sha256": _sha256(ass_path)})
+    srt_path, ass_path = _write_subtitles(export_dir, translated)
+    _write_stage(checkpoint, checkpoint_path, "subtitles", {"srt": str(srt_path), "ass": str(ass_path), "srt_sha256": _sha256(srt_path), "ass_sha256": _sha256(ass_path)})
     emitter.progress(0.66, "Đã tạo subtitle SRT/ASS")
     emitter.checkpoint("subtitles", _sha256(srt_path))
 
@@ -760,6 +814,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     if config.enable_dubbing:
         emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
         try:
+            generation_identity = sha256((translation_input + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py"))).encode()).hexdigest()
             b2_audio = run_b2_audio(
                 media=media,
                 source_path=config.source_path,
@@ -768,7 +823,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
                 source_language=transcript.source_language,
                 app_root=config.app_root,
                 profile_path=profile_path,
-                work_dir=work_dir / "b2-audio",
+                work_dir=_b2_generation(checkpoint, checkpoint_path, work_dir, config.output_dir.absolute(), generation_identity),
             )
             audio_path = b2_audio.final_mix_path
             audio_metadata = {
@@ -806,12 +861,23 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: {error.code}: {error.condition}")
             emitter.progress(0.70, "B2 audio không khả dụng; giữ Vietsub và audio gốc")
 
-    final_path = config.output_dir / "final_vi.mp4"
+    final_path = export_dir / "final_vi.mp4"
     render_stage = "render-dubbed" if audio_path is not None else "render"
     # A successful B2 run always re-renders against the newly verified mix.
     # This prevents a changed voice-pack hash or regenerated mix from being
     # hidden by a stale final-video checkpoint after a resumable restart.
-    render_ready = not translation_changed and audio_path is None and _stage_ready(checkpoint, render_stage, (final_path,))
+    def render_identity() -> str:
+        return sha256(json.dumps({"source": source_hash, "translation": translation_input, "subtitles": _sha256(ass_path), "burn_in": config.burn_in_subtitles, "audio": _sha256(audio_path) if audio_path is not None else "original", "recipe": "h264-aac-v1"}, sort_keys=True).encode()).hexdigest()
+
+    render_input = render_identity()
+    render_ready = False
+    if audio_path is None and checkpoint["stages"].get(render_stage, {}).get("input_hash") == render_input:
+        for candidate in (final_path, config.output_dir.absolute() / "final_vi.mp4"):
+            if _stage_ready(checkpoint, render_stage, (candidate,)):
+                if candidate != final_path:
+                    final_path.unlink(missing_ok=True)
+                final_path, render_ready = candidate, True
+                break
     if not render_ready:
         emitter.progress(0.74, "Đang render video H.264/AAC")
         try:
@@ -834,6 +900,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             audio_path = None
             audio_metadata = {"mode": "original", "backend": "source-audio"}
             render_stage = "render"
+            render_input = render_identity()
             media.render(
                 config.source_path,
                 final_path,
@@ -842,7 +909,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
                 burn_in_subtitles=config.burn_in_subtitles,
                 overwrite=True,
             )
-        _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"]})
+        _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"], "input_hash": render_input})
     emitter.checkpoint(render_stage, _sha256(final_path))
 
     emitter.progress(0.88, "Đang kiểm tra codec, thời lượng và khả năng đọc output")
@@ -861,6 +928,8 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
         validate_output(output_probe)
     except ProductionJobError as error:
         if b2_audio is None:
+            checkpoint["stages"].pop(render_stage, None)
+            _atomic_json(checkpoint_path, checkpoint)
             raise
         warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: output QC failed: {error.code}: {error.condition}")
         b2_audio = None
@@ -874,14 +943,18 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             burn_in_subtitles=config.burn_in_subtitles,
             overwrite=True,
         )
-        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original"})
         output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
         validate_output(output_probe)
+        _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original", "input_hash": render_identity()})
     output_duration = output_probe.duration_ticks
-    qc_path = config.output_dir / "qc_report.json"
+    qc_path = export_dir / "qc_report.json"
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _atomic_json(qc_path, qc)
-    editable_dir = config.output_dir / "editable"
+    editable_dir = export_dir / "editable"
+    if editable_dir.exists():
+        for path in editable_dir.iterdir():
+            export_publication.plain(path.absolute())
+            path.unlink()
     editable_dir.mkdir(parents=True, exist_ok=True)
     for source, name in ((srt_path, "captions_vi.srt"), (ass_path, "captions_vi.ass")):
         target = editable_dir / name
@@ -910,9 +983,8 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             "editable_dialogue_stem": editable_dir / "dialogue_stem.wav",
             "editable_final_mix": editable_dir / "final_mix.wav",
         })
-    manifest_path = _write_manifest(config.output_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=translation_provenance)
+    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=translation_provenance)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
-    emitter.progress(1.0, "Hoàn tất video Việt hóa")
     emitter.checkpoint("qc", _sha256(qc_path))
     return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "manifest": str(manifest_path)}
 

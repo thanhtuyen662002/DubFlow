@@ -65,6 +65,15 @@ The worker regression executes the worker flow with test media/model adapters:
 same inputs reuse render, changed model or edited sidecar regenerates output.
 Those test outputs are fixtures, not playable video evidence.
 
+The QC preservation regression initially failed: a changed route followed by
+codec QC rejection replaced the previous validated ASS. ADR-0018 now stages
+replacement assets, verifies cached render hashes/settings and publishes only
+after QC. The 25 worker tests include subprocess death at all 12 rename
+boundaries, death after commit, disk-pressure rollback, first-publication
+recovery, unchanged public-path manifest hashes, source overlap, private audio
+generation isolation and successful retry after rejected QC. The 35 translation
+tests pass separately. Fault media/model adapters remain deterministic fixtures.
+
 Run from repo root with bytecode disabled:
 
 ```powershell

@@ -171,12 +171,99 @@ class LanguageRoutingTests(unittest.TestCase):
                 source.with_suffix(".srt").write_text("1\n00:00:01,250 --> 00:00:02,500\n世界\n", encoding="utf-8")
                 worker.run_local_file(config, Mock())
                 self.assertEqual(media.renders, 3)
+                config.burn_in_subtitles = True
+                worker.run_local_file(config, Mock())
+                self.assertEqual(media.renders, 4)
+                (config.output_dir / "final_vi.mp4").write_bytes(b"tampered public render")
+                worker.run_local_file(config, Mock())
+                self.assertEqual(media.renders, 5)
             self.assertIn("version 2", (config.output_dir / "captions_vi.srt").read_text(encoding="utf-8"))
             self.assertIn(b"version 2", (config.output_dir / "final_vi.mp4").read_bytes())
             manifest = json.loads((config.output_dir / "job_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["language"]["source_language"], "zh")
             self.assertEqual(manifest["translation"]["version"], 2)
             self.assertEqual(manifest["cues"][0]["source_text"], "世界")
+            for artifact in manifest["artifacts"].values():
+                self.assertTrue(Path(artifact["path"]).exists())
+                self.assertNotIn("export-pending", artifact["path"])
+                self.assertEqual(worker._sha256(Path(artifact["path"])), artifact["sha256"])
+
+
+    def test_changed_route_failed_qc_preserves_previous_export(self):
+        from unittest.mock import Mock
+        class Media:
+            renders = 0
+            def render(self, source, output, **kwargs):
+                self.renders += 1
+                output.write_bytes(kwargs["subtitle_path"].read_bytes())
+        class Runtime(RecordingRuntime):
+            def translate_text(self, text):
+                return f"Vietnamese output version {self.version}"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "app"
+            profile = app / "models/manifests/production-cpu-v1.json"
+            profile.parent.mkdir(parents=True)
+            profile.write_text("{}", encoding="utf-8")
+            source = root / "video.mp4"
+            source.write_bytes(b"source-media")
+            source.with_suffix(".srt").write_text("1\n00:00:01,250 --> 00:00:02,500\n你好\n", encoding="utf-8")
+            config = SimpleNamespace(job_id="job-1", stage_id="local-file", source_path=source, output_dir=root / "output", app_root=app, model_root=root / "models", ffmpeg_path=root / "ffmpeg", ffprobe_path=root / "ffprobe", media_runtime_root=root, checkpoint_path=None, source_language="zh", target_language="vi", enable_dubbing=False, burn_in_subtitles=False)
+            config.model_root.mkdir()
+            good = SimpleNamespace(has_audio=False, duration_ticks=4000, video=SimpleNamespace(codec_name="h264"), to_dict=lambda: {})
+            bad = SimpleNamespace(has_audio=False, duration_ticks=4000, video=SimpleNamespace(codec_name="vp9"), to_dict=lambda: {})
+            media = Media()
+            runtime = Runtime()
+            reject_qc = [True]
+            def probe(path):
+                return bad if reject_qc[0] and path != source and media.renders > 1 else good
+            with patch.object(worker, "ensure_model_profile"), patch.object(worker, "MediaProbe") as probing, patch.object(worker, "FfmpegMediaAdapter", return_value=media), patch.object(worker, "ArgosRuntime", side_effect=lambda *a, **k: runtime):
+                probing.return_value.probe.side_effect = probe
+                first = worker.run_local_file(config, Mock())
+                manifest = json.loads(Path(first["manifest"]).read_text(encoding="utf-8"))
+                paths = [Path(first["manifest"]), *(Path(value["path"]) for value in manifest["artifacts"].values())]
+                previous = {path: path.read_bytes() for path in paths}
+                runtime.version = 2
+                with self.assertRaisesRegex(worker.ProductionJobError, "QC_VIDEO_CODEC"):
+                    worker.run_local_file(config, Mock())
+                for path, expected in previous.items():
+                    self.assertEqual(path.read_bytes(), expected, f"failed QC replaced validated export: {path.name}")
+                reject_qc[0] = False
+                worker.run_local_file(config, Mock())
+                self.assertEqual(media.renders, 3, "QC-rejected pending render must be regenerated")
+                self.assertIn("version 2", (config.output_dir / "captions_vi.srt").read_text(encoding="utf-8"))
+            self.assertEqual(source.read_bytes(), b"source-media")
+
+    def test_published_private_audio_is_immutable_and_failed_generation_resumes(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            work = output / ".dubflow-work"
+            work.mkdir()
+            checkpoint_path = work / "checkpoint.json"
+            checkpoint = {"stages": {}}
+            first = worker._b2_generation(checkpoint, checkpoint_path, work, output, "a" * 64)
+            self.assertEqual(worker._b2_generation(checkpoint, checkpoint_path, work, output, "a" * 64), first)
+            first.mkdir(parents=True)
+            (first / "tts_document.json").write_bytes(b"validated audio provenance")
+            (output / "job_manifest.json").write_text(json.dumps({"artifacts": {"tts_document": {"path": str(first / "tts_document.json")}}}))
+            second = worker._b2_generation(checkpoint, checkpoint_path, work, output, "a" * 64)
+            self.assertNotEqual(first, second)
+            self.assertEqual(worker._b2_generation(checkpoint, checkpoint_path, work, output, "a" * 64), second)
+            changed = worker._b2_generation(checkpoint, checkpoint_path, work, output, "b" * 64)
+            self.assertNotEqual(second, changed)
+            self.assertEqual((first / "tts_document.json").read_bytes(), b"validated audio provenance")
+
+    def test_source_cannot_be_a_controlled_export_or_private_file(self):
+        from unittest.mock import Mock
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            for source in (output / "final_vi.mp4", output / "editable/source.mp4", output / ".dubflow-work/source.mp4"):
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b"preserve input")
+                config = SimpleNamespace(source_path=source, output_dir=output)
+                with self.assertRaisesRegex(worker.ProductionJobError, "OUTPUT_SOURCE_OVERLAP"):
+                    worker.run_local_file(config, Mock())
+                self.assertEqual(source.read_bytes(), b"preserve input")
 
 
 if __name__ == "__main__":
