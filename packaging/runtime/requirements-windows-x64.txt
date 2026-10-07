@@ -5,6 +5,9 @@ faster-whisper==1.2.1
 # Faster-Whisper 1.2.1 requires av.open(metadata_errors=...). PyAV 19 removes it.
 av==16.1.0
 argostranslate==1.11.0
+# Native translation/tokenization affect cached output and route identity.
+ctranslate2==4.8.2
+sentencepiece==0.2.2
 # Argos imports packaging.version at runtime. Keep this direct and pinned so
 # the app-owned runtime is complete even when pip's resolver changes.
 packaging==25.0
