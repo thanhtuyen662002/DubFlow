@@ -2,15 +2,16 @@
 
 ## Decision: not production-qualified
 
-The candidate executes a real native VITS model. It does not yet provide
-acceptable Vietnamese dubbing. Local inference, non-silent WAVs and hermetic
-tests are not release approval. Issue #166 and the full product gate #175
-remain open. Chinese auto-language/NMT routing is also still unfinished.
+The current selected candidate is VieNeu v3 Turbo fp32 CPU, following the user's
+rejection of the historical VITS voice. Local inference, back-ASR diagnostics
+and a short Chinese-to-Vietnamese native dubbing probe have passed; human
+selection, packaged recovery and full acceptance remain pending. These are
+not release approval. Issue #166 and the full product gate #175 remain open.
 
 ## Reproducible local diagnostic
 
 The initial tables below describe the historical Piper frontend checkpoint.
-The current word-blank frontend measurement is recorded in the final section;
+The subsequent word-blank and VieNeu measurements are recorded below;
 do not attribute historical source digests/CI to the current implementation.
 
 Run from the repo with a development environment containing the pinned runtime:
@@ -200,3 +201,63 @@ They do not qualify native audio accuracy, installed Windows restart, temporary
 staging reclamation, long-form or batch behavior. ADR-0016 records the persistent
 private stdin lease and compatibility limits. Required CI on preceding HEADs
 becomes stale when this correction is pushed; #196 remains a hard dependency.
+# Voice replacement after human rejection — 2026-10-07
+
+The user listened to the two VAIS1000 examples and requested a different voice.
+Its previous quality result remains historical evidence, not listening approval.
+The current Draft default is VieNeu v3 Turbo fp32 CPU, Ngọc Huyền preset,
+pending the user's comparison with Trúc Ly and Đoan Trang. All three actual
+generated examples were presented in chat; no preference reply has yet been
+recorded for these new examples.
+
+## New actual native evidence
+
+- Model inventory: `30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113`.
+- SDK 3.8.3 / sea-g2p 0.9.1 / ORT 1.30.0 / tokenizers 0.23.2 / NumPy 2.2.6.
+- Producer `3.0.0`, backend `vieneu-v3-turbo-onnx-v1`; native 48 kHz mono.
+- Warm local inference blocks network and uses the checksum-verified model,
+  codec and official speaker/reference-code presets. No GPU or model code download.
+- Nine comparative WAVs: three voices × greeting/video/foreign product names.
+  Each generated 4.4–6.0 seconds of audio in 2.19–3.01 seconds on this machine,
+  excluding initialization. These are machine-specific measurements.
+- Same eight-phrase corpus as the rejected model: common mean back-ASR CER
+  `0.0047619047619047615`, previous `0.1193289045823608`; foreign-name case
+  `0.046511627906976744`, previous `0.20930232558139536`.
+  One common phrase changed “và” to “vào” in back-ASR; one foreign-name phrase
+  recognized “giọng” as “dọng”. Neither result is a broad quality benchmark.
+- Diagnostic report: scratch `dubflow-vieneu-195/quality/quality.json`, SHA-256
+  `f8a0bba511ea1bb2b295dff30f80e92bf1a1376125aa9894f7be967989059314`.
+  Report includes actual source digests and dirty working-tree status at execution.
+- Real native speech + app-owned FFmpeg tempo fit passed, including exact
+  target-frame output and a bounded 1.2 tempo comparison. Generation-cap/EOS
+  rejection and model inventory/tamper/offline cache cases have deterministic tests.
+- Windows hard worker-death during initialization and inference executes both
+  actual entrypoints with a busy model seam and real native descendant handles.
+  This is OS containment evidence, not actual long-video installed crash recovery.
+
+## Chinese video probe
+
+Native worker ran without a subtitle sidecar and with network blocked after
+provisioning: AISHELL human audio in generated landscape color frames → Whisper
+language detection (`zh`, probability `0.9922882318496704`) → pinned zh-en-vi
+translation → actual VieNeu speech → AUD-0 source/stem/final mix → H.264/AAC/QC.
+There were zero TTS/mix failures. Video SHA-256:
+`2ed13f1e6cd2990b47aca06f00e14448272ddd7ae0c0e041fce5ba98df5a7d9a`.
+Receipt scratch `dubflow-vieneu-195/chinese-video-result.json`, SHA-256
+`73352c710cef13436d24ffb1bc6742d72f6aa5a70a8468e24f02cf183563ff63`.
+
+This proves the native pipeline wiring on a short human-audio fixture with
+generated frames. The ASR/proper-name translation remains semantically weak;
+the inherited cue confidence 0.85 is not measured speech/translation quality.
+The mixer warns that output RMS is below its configured target. A repeated
+completed B2 run produced identical video bytes on this machine but re-rendered
+into a new immutable private generation; no warm render-reuse claim is made.
+The initial harness mistakenly required B1-style unchanged render mtime;
+the corrected receipt records B2 regeneration explicitly. The first development
+probe omitted `DUBFLOW_WORKER_PROCESS=1` and hit repository `packaging` shadowing;
+the proper worker import mode then completed the real route.
+
+Still required: human voice selection/quality, broader material, portrait and
+no-audio cases, long/batch/restart and staging reclamation, packaged/clean-machine
+execution, full distribution notices, all Required-CI for current HEAD/main.
+Issue #166 and #175 remain open; this evidence does not approve a release.

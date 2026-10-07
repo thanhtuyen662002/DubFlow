@@ -15,6 +15,47 @@ remain open. The project continues to use B1 subtitle export as a usable fallbac
 
 ## Proposed decision
 
+### Voice replacement after human feedback (2026-10-07)
+
+The user rejected the VAIS1000 listening samples. New B2 jobs now select the
+VieNeu v3 Turbo fp32 CPU ONNX candidate through a separate immutable
+`production-vieneu-v1.json` manifest. Initial preset: Ngọc Huyền, subject to
+the user's comparative listening preference. Preserve VAIS1000 as a historical
+adapter/evidence profile; do not call the rejected voice quality-approved.
+
+Producer becomes `3.0.0`, backend `vieneu-v3-turbo-onnx-v1`, native 48 kHz mono.
+The SDK 3.8.3, sea-g2p 0.9.1, ORT 1.30.0, tokenizers 0.23.2 and NumPy 2.2.6
+are pinned. Model/config/tokenizer/heads, codec and preset data each carry
+exact size/hash and immutable upstream revisions. Provision into a separate
+inventory-addressed app-owned root with existing resumable atomic downloads;
+reject foreign, linked or tampered data before inference. No model Python
+implementation is downloaded/executed. Retain upstream licensing evidence.
+
+The private bridge accepts the selected fixed entrypoint/frontend/sample
+rate and reuses bounded requests/replies, deadlines and OS process containment.
+The entrypoint disables network access before SDK inference, forces CPU/fp32
+and two threads, and disables hidden SDK retries. Preset enrollment/denoising
+is unused. A generation that reaches its frame cap without EOS is rejected
+instead of exporting cut speech. Natural PCM is cached only for the current
+cue; one fit attempt changes FFmpeg `atempo` up to 1.3, preserving pitch.
+Speech that still does not fit fails with a B1 downgrade; no audible samples
+are trimmed. This is a conservative fit path; language-aware rewrite remains
+part of broader acceptance.
+
+The private B2 generation identity now includes the selected TTS recipe and
+adapter/bridge source digests. Recipe/model/voice changes generate new audio
+without mutating published private generations. Historical artifacts retain
+their recorded producer and model identities. No public worker/artifact schema
+or durable SQLite migration is introduced. Completed B2 reruns currently
+regenerate/re-render; failed unpublished generations retain per-cue checkpoints.
+This is not a claim of warm completed-B2 reuse or installed restart recovery.
+
+Local back-ASR and actual Chinese-to-Vietnamese dubbed-video diagnostics are
+recorded in `REAL_TTS_EVIDENCE.md`. Full human quality, long/batch/clean-machine,
+all required CI lanes and runtime distribution obligations remain gates.
+
+### Historical Mimic3 candidate
+
 Implement a separate adapter for the Mimic3 `vi_VN/vais1000_low` VITS voice,
 ONNX Runtime 1.30.0 and eSpeak from pinned Sherpa-ONNX 1.13.8. Keep native
 libraries and model inference

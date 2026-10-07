@@ -7,8 +7,8 @@ The worker places the app source after runtime site-packages on `sys.path` so
 the repository's release-policy package cannot shadow Argos Translate's
 third-party `packaging` distribution.
 
-The CPU local-file profile uses Faster-Whisper `small` and Argos Translate
-`en→vi`. Their model bytes are downloaded on first use from
+The CPU local-file profile uses Faster-Whisper `small` and pinned Argos routes
+`en→vi`, `zh→en→vi`, with Vietnamese identity. Their model bytes are downloaded on first use from
 `models/manifests/production-cpu-v1.json`, written to the user-owned model
 root, and accepted only after the manifest's exact byte count and SHA-256
 match. Interrupted downloads retain a private partial file and resume with a
@@ -27,7 +27,7 @@ manifest while preserving source audio.
 
 The former `vi-builtin-v1` implementation generates character tones. It is
 retained for compatibility tests and must not be counted as intelligible
-Vietnamese speech. This Draft change selects the Mimic3 VAIS1000 VITS voice,
+Vietnamese speech. The historical Draft candidate selected the Mimic3 VAIS1000 VITS voice,
 ONNX Runtime 1.30.0 and the eSpeak API from the pinned Sherpa-ONNX 1.13.8
 wheel through `production-tts-v1.json`. It uses the app-owned
 model root, a resumable first-use download, archive and extracted-tree hashes,
@@ -53,5 +53,25 @@ If model health, TTS, source decoding or mixing fails, B2 records an actionable
 Native initialization/inference now runs in a separate child using the same
 app-owned interpreter in isolated mode. Bounded protocol, inference timeout,
 initialization/after-health crash tests and normal cleanup protect the worker.
-Abrupt parent death/process-tree cleanup and packaged B1 recovery still need
-qualification; process separation is not a security sandbox.
+Windows Job Object containment now has hard worker-death tests for initialization
+and inference, including native descendants. Installed B1 recovery and staging
+reclamation still need qualification; process separation is not a security sandbox.
+
+### Current selected candidate: VieNeu v3 Turbo
+
+The user rejected the VAIS1000 listening samples. New B2 jobs select the
+Ngọc Huyền preset in `production-vieneu-v1.json`, subject to comparative
+listening preference. CPU fp32 ONNX uses SDK 3.8.3, sea-g2p 0.9.1, ONNX Runtime
+1.30.0, tokenizers 0.23.2 and NumPy 2.2.6. No GPU, Torch or downloaded model
+Python code is needed for this preset inference path. The complete SDK wheel's
+declared transitive packages are installed by the release requirements and
+must be included in runtime/license qualification.
+
+All model, codec, preset and notice bytes are size/hash verified in a separate
+immutable app-owned inventory. The child blocks network access, verifies the
+reviewed SDK source files, and rejects generation without EOS. One safe fit
+changes app-owned FFmpeg `atempo` within 1.3; remaining overlong speech uses
+the B1 downgrade. Native mono output is 48 kHz. Producer is `3.0.0`, distinct
+from historical `2.1.0` artifacts. The tiny same-corpus back-ASR diagnostic
+measured 0.48% common-phrase mean CER; this is not human or release approval.
+See `docs/licenses/vieneu-turbo.md` and `docs/production/REAL_TTS_EVIDENCE.md`.

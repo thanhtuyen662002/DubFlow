@@ -4,7 +4,7 @@
   "description": "Pinned CPU local-file Vietnamese localization profile.",
   "distribution": "download-on-first-use",
   "license_policy": "upstream-terms-must-be-reviewed-by-distributor",
-  "tts_neural_profile": "models/manifests/production-tts-v1.json",
+  "tts_neural_profile": "models/manifests/production-vieneu-v1.json",
   "tts_voice_pack": {
     "id": "vi-builtin-v1",
     "path": "models/voices/vi-builtin-v1.json",

@@ -33,9 +33,30 @@ from engine.dubflow.tts import (
     VoiceProfile,
 )
 from engine.dubflow.tts.neural_vits import ENGINE_ID, ONNX_RUNTIME_VERSION, RUNTIME_VERSION, NeuralVietnameseTtsEngine, load_neural_voice
+from engine.dubflow.tts.neural_vits import _child, _read_json, _digest
+from engine.dubflow.tts import vieneu
 
 
 BASE_TIME = TimeBase(1, 1000)
+
+
+def tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
+    try:
+        return _tts_recipe_identity(app_root, profile_path)
+    except Exception as error:
+        raise B2AudioError(getattr(error, "code", "TTS_RECIPE_UNAVAILABLE"), "selected TTS recipe cannot be verified") from error
+
+
+def _tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
+    """Private B2 generations pin the selected recipe and native adapter code."""
+    profile = _read_json(profile_path)
+    relative = profile.get("tts_neural_profile")
+    if not relative:
+        return "legacy-profile-without-neural-recipe"
+    metadata = _child(app_root, relative)
+    source = Path(__file__).parents[1] / "tts"
+    paths = (metadata, source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py")
+    return sha256("".join(_digest(path) for path in paths).encode()).hexdigest()
 
 
 class B2AudioError(RuntimeError):
@@ -146,7 +167,21 @@ def run_b2_audio(
     root = Path(work_dir)
     root.mkdir(parents=True, exist_ok=True)
     try:
-        pack, voice = load_neural_voice(app_root, model_root or root / "model-cache", profile_path)
+        selection = _read_json(Path(profile_path))
+        recipe = _read_json(_child(Path(app_root).absolute(), selection.get("tts_neural_profile", "")))
+        if recipe.get("backend") == vieneu.ENGINE_ID:
+            pack, voice = vieneu.load_vieneu_voice(app_root, model_root or root / "model-cache", profile_path)
+            engine = vieneu.VieNeuVietnameseTtsEngine(pack, ffmpeg_path=media.ffmpeg_path)
+            backend_id, producer_version, runtime_id = vieneu.ENGINE_ID, vieneu.PRODUCER_VERSION, vieneu.RUNTIME_ID
+            resources = TtsResourceProfile(max_threads=2, max_memory_mb=2048, max_batch_items=1)
+        elif recipe.get("backend") == ENGINE_ID:
+            pack, voice = load_neural_voice(app_root, model_root or root / "model-cache", profile_path)
+            engine = NeuralVietnameseTtsEngine(pack)
+            backend_id, producer_version = ENGINE_ID, "2.1.0"
+            runtime_id = "onnxruntime-" + ONNX_RUNTIME_VERSION + "+espeak-sherpa-" + RUNTIME_VERSION
+            resources = TtsResourceProfile(max_threads=1, max_memory_mb=512, max_batch_items=8)
+        else:
+            raise B2AudioError("TTS_BACKEND_UNSUPPORTED", "selected production TTS backend is unsupported")
     except Exception as error:
         raise B2AudioError(getattr(error, "code", "TTS_BOOTSTRAP_FAILED"), str(error), retryable=bool(getattr(error, "retryable", False))) from error
     source_audio_path = root / "source_audio.wav"
@@ -168,15 +203,15 @@ def run_b2_audio(
             max_duration_error_ticks=80,
             min_speed_ratio_milli=800,
             max_speed_ratio_milli=1300,
-            resource=TtsResourceProfile(max_threads=1, max_memory_mb=512, max_batch_items=8),
+            resource=resources,
         )
         mappings = tuple(_cue_mapping(cue) for cue in translated_cues)
         input_hash = _input_hash(mappings)
         provenance = TtsProvenance(
             "dubflow-production-tts",
-            "2.1.0",
-            ENGINE_ID,
-            "onnxruntime-" + ONNX_RUNTIME_VERSION + "+espeak-sherpa-" + RUNTIME_VERSION,
+            producer_version,
+            backend_id,
+            runtime_id,
             "timeline-v1",
             tts_config.content_hash(),
             input_hash,
@@ -204,7 +239,7 @@ def run_b2_audio(
         )
         tts_dir = root / "tts"
         tts_document = LocalTtsAdapter(
-            NeuralVietnameseTtsEngine(pack),
+            engine,
             config=tts_config,
             provenance=provenance,
             voice=voice,
@@ -216,6 +251,10 @@ def run_b2_audio(
         code = getattr(error, "code", "TTS_BOOTSTRAP_FAILED")
         condition = getattr(error, "condition", str(error))
         raise B2AudioError(code, condition, retryable=bool(getattr(error, "retryable", False))) from error
+    finally:
+        close = getattr(engine, "close", None)
+        if close is not None:
+            close()
 
     tts_document_path = root / "tts_document.json"
     try:

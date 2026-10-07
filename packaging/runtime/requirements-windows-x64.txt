@@ -17,3 +17,7 @@ sherpa-onnx==1.13.8
 sherpa-onnx-core==1.13.8
 numpy==2.2.6
 onnxruntime==1.30.0
+# CPU fp32 preset synthesis; no remote model code or GPU is required.
+vieneu @ https://files.pythonhosted.org/packages/fc/9c/e7b624412b8a734d6b1cd8ca6209f88a309464b05393c40f2e316ec90885/vieneu-3.8.3-py3-none-any.whl#sha256=7388d166e65746f5bb075bf8094d324f8131a82393680b712260d6f2f983ef06
+sea-g2p==0.9.1
+tokenizers==0.23.2

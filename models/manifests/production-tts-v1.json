@@ -13,7 +13,7 @@
   "sample_rate": 22050,
   "license_id": "CC-BY-4.0",
   "approved": true,
-  "quality_status": "qualification-pending",
+  "quality_status": "human-rejected-2026-10-07-historical-reproduction-only",
   "inference": {"noise_scale": 0.0, "noise_scale_w": 0.0},
   "distribution": "download-on-first-use",
   "distribution_decision": "Voice weights approved with attribution; runtime GPL notices/source obligations remain a release gate.",

@@ -63,6 +63,7 @@ class NativeFailureTests(unittest.TestCase):
 
 
 class NativeLifetimeTests(unittest.TestCase):
+    entrypoint_name = "mimic3_native.py"
     def wait_for_file(self, path, process):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -75,7 +76,7 @@ class NativeLifetimeTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "Windows uses Job Object containment during DLL initialization")
     def test_stdin_lease_loss_stops_busy_initialization_and_inference(self):
-        entrypoint = Path(__file__).resolve().parents[3] / "engine/dubflow/tts/mimic3_native.py"
+        entrypoint = Path(__file__).resolve().parents[3] / "engine/dubflow/tts" / self.entrypoint_name
         script = """
 import json, runpy, sys, time
 from pathlib import Path
@@ -95,7 +96,7 @@ namespace['main']()
         for phase in ("initialization", "inference"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
                 marker = Path(directory) / "busy"
-                process = subprocess.Popen([sys.executable, "-I", "-u", "-c", script, str(entrypoint), str(marker), phase], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                process = subprocess.Popen([sys.executable, "-I", "-B", "-u", "-c", script, str(entrypoint), str(marker), phase], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 try:
                     requests = [{"sequence": 0}] + ([{"sequence": 1}] if phase == "inference" else [])
                     process.stdin.write(b"".join(json.dumps(request).encode() + b"\n" for request in requests))
@@ -154,14 +155,15 @@ from types import SimpleNamespace
 from engine.dubflow.tts.native_process import NativeProcess
 root = Path(sys.argv[1])
 pack = SimpleNamespace(path=root, noise_scale=0.0, noise_scale_w=0.0)
-entrypoint = Path.cwd()/'engine/dubflow/tts/mimic3_native.py'
-bridge = NativeProcess(pack, timeout=10, command=[sys.executable, '-I', '-u', str(root/'child.py'), str(root), sys.argv[2], str(entrypoint)])
+entrypoint = Path.cwd()/'engine/dubflow/tts'/sys.argv[3]
+frontend = 'vieneu-sea-g2p-preset-v1' if sys.argv[3] == 'vieneu_native.py' else 'mimic3-word-blanks-v1'
+bridge = NativeProcess(pack, timeout=10, frontend=frontend, command=[sys.executable, '-I', '-B', '-u', str(root/'child.py'), str(root), sys.argv[2], str(entrypoint)])
 bridge.generate('Xin chao', sid=0, speed=1.0)
 """
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "child.py").write_text(child_script, encoding="utf-8")
-            process = subprocess.Popen([sys.executable, "-c", parent_script, str(root), phase], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            process = subprocess.Popen([sys.executable, "-c", parent_script, str(root), phase, self.entrypoint_name], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             handles = []
             try:
                 self.wait_for_file(root / "busy", process)
@@ -181,6 +183,10 @@ bridge.generate('Xin chao', sid=0, speed=1.0)
                 for handle in handles:
                     api.CloseHandle(handle)
                 process.stderr.close()
+
+
+class VieNeuNativeLifetimeTests(NativeLifetimeTests):
+    entrypoint_name = "vieneu_native.py"
 
 
 if __name__ == "__main__":

@@ -184,7 +184,11 @@ class NeuralDurationTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("DUBFLOW_REAL_TTS_MODEL_ROOT"), "real-model qualification runs separately from hermetic PR checks")
 class RealNeuralVoiceTests(unittest.TestCase):
     def test_pinned_native_vietnamese_model_produces_pcm(self) -> None:
-        pack, voice = load_neural_voice(ROOT, os.environ["DUBFLOW_REAL_TTS_MODEL_ROOT"], ROOT / "models/manifests/production-cpu-v1.json")
+        # Historical model evidence uses its explicitly pinned legacy selector.
+        with TemporaryDirectory() as directory:
+            selector = Path(directory) / "legacy.json"
+            selector.write_text(json.dumps({"tts_neural_profile": "models/manifests/production-tts-v1.json"}))
+            pack, voice = load_neural_voice(ROOT, os.environ["DUBFLOW_REAL_TTS_MODEL_ROOT"], selector)
         engine = NeuralVietnameseTtsEngine(pack)
         self.assertTrue(engine.healthcheck(voice).ready)
         self.assertEqual(engine.capabilities().engine_id, ENGINE_ID)

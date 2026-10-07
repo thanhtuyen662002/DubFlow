@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-vieneu-turbo-fp32-v1",
+  "backend": "vieneu-v3-turbo-onnx-v1",
+  "frontend": "vieneu-sea-g2p-preset-v1",
+  "runtime_versions": {
+    "vieneu": "3.8.3",
+    "sea-g2p": "0.9.1",
+    "onnxruntime": "1.30.0",
+    "numpy": "2.2.6",
+    "tokenizers": "0.23.2"
+  },
+  "voice_id": "vi-ngoc-huyen-vieneu3-v1",
+  "voice_name": "Ngọc Huyền",
+  "voice_version": "1.0.0",
+  "model_id": "vieneu-v3-turbo-fp32",
+  "model_version": "61b85e3-moss-ceff0d0-sdk3.8.3",
+  "sample_rate": 48000,
+  "license_id": "Apache-2.0",
+  "approved": true,
+  "quality_status": "human-listening-and-production-qualification-pending",
+  "distribution": "download-on-first-use",
+  "upstream_revision": "61b85e3d937fbbacb387714180e8182823512523",
+  "codec_revision": "ceff0d0749bfb3fa2d61149794ec6feef0d1e1ae",
+  "preset_revision": "85344322b7258b4e25479b692e8e3396baf9db34",
+  "sdk_wheel_sha256": "7388d166e65746f5bb075bf8094d324f8131a82393680b712260d6f2f983ef06",
+  "model_tree_sha256": "30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113",
+  "inference": {
+    "seed": 20261007,
+    "threads": 2,
+    "max_new_frames": 300,
+    "temperature": 0.8,
+    "top_k": 25,
+    "top_p": 0.95,
+    "repetition_penalty": 1.2,
+    "babble_retries": 0,
+    "precision": "fp32",
+    "duration_fit": "app-owned-ffmpeg-atempo-max1.3"
+  },
+  "attribution": "VieNeu-TTS v3 Turbo by Pham Nguyen Ngoc Bao; OpenMOSS MOSS Audio Tokenizer Nano; pinned official preset speaker/reference codes.",
+  "artifacts": [
+    {
+      "id": "vieneu-0",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/tts/README.md",
+      "url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo/resolve/61b85e3d937fbbacb387714180e8182823512523/README.md",
+      "sha256": "5d5bb2de661fabc0e073b3b844dc131696fac3dddd5ea882d10fd9a849108eb7",
+      "size_bytes": 15458
+    },
+    {
+      "id": "vieneu-1",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/tts/config.json",
+      "url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo/resolve/61b85e3d937fbbacb387714180e8182823512523/onnx_update/config.json",
+      "sha256": "17d89d414ee302a82db7b330bf57b4cdf8541569392119c81f552178cafcb79b",
+      "size_bytes": 2152
+    },
+    {
+      "id": "vieneu-2",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/tts/tokenizer.json",
+      "url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo/resolve/61b85e3d937fbbacb387714180e8182823512523/onnx_update/tokenizer.json",
+      "sha256": "6cc6bcbe380b8c37bd9f2514e37c5dfa3e00e122c6e3125dae5c4afe48e39158",
+      "size_bytes": 22320
+    },
+    {
+      "id": "vieneu-3",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/tts/vieneu_acoustic_cached.onnx",
+      "url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo/resolve/61b85e3d937fbbacb387714180e8182823512523/onnx_update/vieneu_acoustic_cached.onnx",
+      "sha256": "f631e3387c788c3d8b9a5ac5df94952af5bc4c4d1049ff8a751e76a246fff2d4",
+      "size_bytes": 7207223
+    },
+    {
+      "id": "vieneu-4",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/tts/vieneu_backbone_shared.data",
+      "url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo/resolve/61b85e3d937fbbacb387714180e8182823512523/onnx_update/vieneu_backbone_shared.data",
+      "sha256": "c7c072193db33d0542457e2612c7272c44c4279d1cafaf0aa4c379964911db2f",
+      "size_bytes": 415319040
+    },
+    {
+      "id": "vieneu-5",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/tts/vieneu_decode_step.onnx",
+      "url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo/resolve/61b85e3d937fbbacb387714180e8182823512523/onnx_update/vieneu_decode_step.onnx",
+      "sha256": "bedc379cea61ea5d616312750d95ad3924e055856662d19187a889a5edc24ceb",
+      "size_bytes": 306134
+    },
+    {
+      "id": "vieneu-6",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/tts/vieneu_prefill.onnx",
+      "url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo/resolve/61b85e3d937fbbacb387714180e8182823512523/onnx_update/vieneu_prefill.onnx",
+      "sha256": "27f8b064f6b57b5448e95d095f1959588c005d614678045c2b97ecccf3b7a0f7",
+      "size_bytes": 324499
+    },
+    {
+      "id": "vieneu-7",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/tts/vieneu_v3_heads.npz",
+      "url": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo/resolve/61b85e3d937fbbacb387714180e8182823512523/onnx_update/vieneu_v3_heads.npz",
+      "sha256": "fb22484baa424bbb775133a6e5f0d00d6299b2b256fbe3312a864b85b9aed01e",
+      "size_bytes": 52219622
+    },
+    {
+      "id": "vieneu-8",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/codec/README.md",
+      "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/ceff0d0749bfb3fa2d61149794ec6feef0d1e1ae/README.md",
+      "sha256": "3c7b9e9ef1c8c5e5c829a077a1d32c1f7aea1668f2bf17ead318ff04bf1e6fe4",
+      "size_bytes": 4892
+    },
+    {
+      "id": "vieneu-9",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/codec/moss_audio_tokenizer_decode_full.onnx",
+      "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/ceff0d0749bfb3fa2d61149794ec6feef0d1e1ae/moss_audio_tokenizer_decode_full.onnx",
+      "sha256": "0fbbafe3fd4afa2a019af5c5ced204af6e2d1db044fa40f021525d2aee95b4ac",
+      "size_bytes": 681902
+    },
+    {
+      "id": "vieneu-10",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/codec/moss_audio_tokenizer_decode_shared.data",
+      "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/ceff0d0749bfb3fa2d61149794ec6feef0d1e1ae/moss_audio_tokenizer_decode_shared.data",
+      "sha256": "e69d52e0f4e84ca27850557ee54face46632d3a5a16c89bd246c7c408466dcad",
+      "size_bytes": 44198912
+    },
+    {
+      "id": "vieneu-11",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/voices.json",
+      "url": "https://raw.githubusercontent.com/pnnbao97/VieNeu-TTS/85344322b7258b4e25479b692e8e3396baf9db34/src/vieneu/assets/voices_v3_turbo.json",
+      "sha256": "e1f13cd2c2e0d29fdab5e15bfd7a30f3d7b768e6132bb43dd2b853f8efefdce9",
+      "size_bytes": 180332
+    },
+    {
+      "id": "vieneu-12",
+      "path": "tts/packs/vieneu-30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113/LICENSE",
+      "url": "https://raw.githubusercontent.com/pnnbao97/VieNeu-TTS/85344322b7258b4e25479b692e8e3396baf9db34/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "size_bytes": 11357
+    }
+  ]
+}

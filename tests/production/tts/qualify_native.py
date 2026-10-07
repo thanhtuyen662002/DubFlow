@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 import wave
@@ -72,7 +73,11 @@ def main() -> None:
     if importlib.metadata.version("av") != "16.1.0":
         raise RuntimeError("qualification requires the packaged PyAV 16.1.0 decoder")
     model = WhisperModel(str(args.model_root / "asr/faster-whisper-small"), device="cpu", compute_type="int8", cpu_threads=4)
-    pack, voice = load_neural_voice(ROOT, args.model_root, ROOT / "models/manifests/production-cpu-v1.json")
+    # Preserve reproduction of the rejected historic model after the default changes.
+    with tempfile.TemporaryDirectory() as directory:
+        selector = Path(directory) / "legacy.json"
+        selector.write_text(json.dumps({"tts_neural_profile": "models/manifests/production-tts-v1.json"}))
+        pack, voice = load_neural_voice(ROOT, args.model_root, selector)
     recipes = [("configured", pack.noise_scale, pack.noise_scale_w)]
     if args.compare_upstream_recipe:
         recipes.append(("upstream_experiment", 0.667, 0.8))

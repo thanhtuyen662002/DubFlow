@@ -9,7 +9,7 @@ from unittest.mock import patch
 import wave
 from types import SimpleNamespace
 
-from engine.dubflow.worker.b2_audio import B2AudioError, run_b2_audio
+from engine.dubflow.worker.b2_audio import B2AudioError, run_b2_audio, tts_recipe_identity
 from engine.dubflow.tts.adapter import TtsError
 from engine.dubflow.tts import DeterministicFixtureEngine, approved_default_voice
 from engine.dubflow.worker.production_job import TextCue
@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 class HermeticDecodedAudioAdapter:
     """Hermetic decoded PCM seam; this is wiring evidence, not media quality."""
+    ffmpeg_path = Path("unused-fixture-ffmpeg")
 
     def extract_audio(self, _source: Path, output: Path, **_options: object) -> Path:
         stream = io.BytesIO()
@@ -33,12 +34,23 @@ class HermeticDecodedAudioAdapter:
 
 
 class ProductionLocalFileB2Tests(unittest.TestCase):
+    def test_missing_or_invalid_recipe_remains_a_typed_b1_downgrade(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            selector = root / "cpu.json"
+            selector.write_text('{"tts_neural_profile":"missing.json"}')
+            with self.assertRaises(B2AudioError):
+                tts_recipe_identity(root, selector)
+            selector.write_text('invalid JSON')
+            with self.assertRaises(B2AudioError):
+                tts_recipe_identity(root, selector)
+
     def test_selected_neural_backend_wires_aud0_editable_assets(self) -> None:
         pack = SimpleNamespace(sample_rate=16000, channels=1)
         with TemporaryDirectory(prefix="dubflow-production-b2-") as directory, patch(
-            "engine.dubflow.worker.b2_audio.load_neural_voice", return_value=(pack, approved_default_voice())
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice", return_value=(pack, approved_default_voice())
         ) as bootstrap, patch(
-            "engine.dubflow.worker.b2_audio.NeuralVietnameseTtsEngine", return_value=DeterministicFixtureEngine()
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", return_value=DeterministicFixtureEngine()
         ) as backend:
             root = Path(directory)
             result = run_b2_audio(
@@ -55,9 +67,9 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
                 work_dir=root / ".dubflow-work" / "b2-audio",
             )
             bootstrap.assert_called_once()
-            backend.assert_called_once_with(pack)
-            self.assertEqual(result.tts_document.provenance.backend_id, "mimic3-vits-onnx-v1")
-            self.assertEqual(result.tts_document.provenance.producer_version, "2.1.0")
+            backend.assert_called_once_with(pack, ffmpeg_path=HermeticDecodedAudioAdapter.ffmpeg_path)
+            self.assertEqual(result.tts_document.provenance.backend_id, "vieneu-v3-turbo-onnx-v1")
+            self.assertEqual(result.tts_document.provenance.producer_version, "3.0.0")
             self.assertEqual(result.tts_document.provenance.model_id, "dubflow-fixture-vi")
             self.assertEqual(result.mix_document.provenance.backend_id, "pcm-duck-v1")
             self.assertEqual(len(result.tts_document.artifacts), 2)
@@ -77,7 +89,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
                 subtitles = root / "translation.vi.srt"
                 b1.write_bytes(b"already-validated-B1")
                 subtitles.write_bytes(b"already-validated-subtitles")
-                with patch("engine.dubflow.worker.b2_audio.load_neural_voice", side_effect=TtsError(code, "voice unavailable")):
+                with patch("engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice", side_effect=TtsError(code, "voice unavailable")):
                     with self.assertRaises(B2AudioError) as raised:
                         run_b2_audio(
                             media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",

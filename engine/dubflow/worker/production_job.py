@@ -814,7 +814,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     if config.enable_dubbing:
         emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
         try:
-            generation_identity = sha256((translation_input + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py"))).encode()).hexdigest()
+            from engine.dubflow.worker.b2_audio import tts_recipe_identity
+            generation_identity = sha256((translation_input + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path)).encode()).hexdigest()
             b2_audio = run_b2_audio(
                 media=media,
                 source_path=config.source_path,

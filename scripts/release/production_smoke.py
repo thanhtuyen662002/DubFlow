@@ -223,8 +223,12 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
                 warnings = manifest.get("warnings")
                 raise SmokeError(f"B2 editable audio artifact is missing or empty: {path}; audio={audio!r}; warnings={warnings!r}")
         audio = manifest.get("audio")
-        if not isinstance(audio, dict) or audio.get("mode") != "dubbed" or audio.get("backend") != "mimic3-vits-onnx-v1":
+        if not isinstance(audio, dict) or audio.get("mode") != "dubbed" or audio.get("backend") != "vieneu-v3-turbo-onnx-v1":
             raise SmokeError(f"B2 manifest does not prove the app-owned voice path: {audio!r}")
+        tts_document = _json(Path(audio["tts_document"]))
+        provenance = tts_document.get("provenance", {})
+        if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.0.0":
+            raise SmokeError(f"B2 TTS receipt differs from the selected native producer: {provenance!r}")
     # The JSON is captured directly to avoid relying on a shell redirection.
     result = _run(
         [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", final],

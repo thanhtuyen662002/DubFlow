@@ -19,8 +19,11 @@ from .windows_job import WindowsJob
 
 
 class NativeProcess:
-    def __init__(self, pack, *, timeout: float = 120.0, command: list[str] | None = None) -> None:
+    def __init__(self, pack, *, timeout: float = 120.0, command: list[str] | None = None,
+                 entrypoint: Path | None = None, frontend: str = FRONTEND_ID,
+                 sample_rate: int = 22050, initialization: dict | None = None) -> None:
         self.timeout = timeout
+        self.sample_rate = sample_rate
         self.sequence = 0
         self.lock = Lock()
         self.responses = Queue(maxsize=8)
@@ -31,7 +34,7 @@ class NativeProcess:
         self.job = None
         try:
             self.process = subprocess.Popen(
-                command or [sys.executable, "-I", "-u", str(Path(__file__).with_name("mimic3_native.py"))],
+                command or [sys.executable, "-I", "-B", "-u", str(entrypoint or Path(__file__).with_name("mimic3_native.py"))],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
@@ -40,8 +43,10 @@ class NativeProcess:
             self.job = WindowsJob(self.process)
             Thread(target=self._read_output, daemon=True).start()
             Thread(target=self._read_errors, daemon=True).start()
-            ready = self._request({"sequence": 0, "pack_path": str(pack.path), "output_root": str(self.root), "noise_scale": pack.noise_scale, "noise_scale_w": pack.noise_scale_w, "windows_job_name": self.job.name}, timeout=min(timeout, 30.0))
-            if ready.get("frontend") != FRONTEND_ID:
+            request = dict(initialization or {})
+            request.update({"sequence": 0, "pack_path": str(pack.path), "output_root": str(self.root), "noise_scale": pack.noise_scale, "noise_scale_w": pack.noise_scale_w, "windows_job_name": self.job.name})
+            ready = self._request(request, timeout=min(timeout, 120.0 if entrypoint else 30.0))
+            if ready.get("frontend") != frontend:
                 raise TtsBackendError("TTS_NATIVE_PROTOCOL_INVALID", "native frontend identity differs")
         except BaseException:
             self.close()
@@ -106,7 +111,7 @@ class NativeProcess:
             path = self.root / name
             try:
                 frames = reply.get("frames")
-                if reply.get("file") != name or type(frames) is not int or not 0 < frames <= MAX_FRAMES or reply.get("sample_rate") != 22050 or path.is_symlink():
+                if reply.get("file") != name or type(frames) is not int or not 0 < frames <= MAX_FRAMES or reply.get("sample_rate") != self.sample_rate or path.is_symlink() or getattr(path, "is_junction", lambda: False)():
                     raise TtsBackendError("TTS_NATIVE_PROTOCOL_INVALID", "native waveform metadata differs")
                 with path.open("rb") as stream:
                     payload = stream.read(frames * 4 + 1)
@@ -119,7 +124,7 @@ class NativeProcess:
                 unknown = reply.get("unknown", [])
                 if type(unknown) is not list or len(unknown) > 512 or any(type(value) is not str or len(value) > 128 for value in unknown):
                     raise TtsBackendError("TTS_NATIVE_PROTOCOL_INVALID", "native phoneme warnings differ")
-                return SimpleNamespace(samples=samples, sample_rate=22050, warnings=("UNSUPPORTED_PHONEMES: " + ",".join(unknown),) if unknown else ())
+                return SimpleNamespace(samples=samples, sample_rate=self.sample_rate, warnings=("UNSUPPORTED_PHONEMES: " + ",".join(unknown),) if unknown else ())
             except TtsBackendError:
                 self.close()
                 raise
