@@ -80,7 +80,31 @@ crash/timeout becomes a typed failure; it cannot terminate the job worker.
 Normal teardown kills/waits for the child and verifies the private staging root
 before cleanup. This changes no public worker protocol or durable schema.
 
-Still unresolved: abrupt parent death/process-tree cleanup, packaged B1 recovery,
+Before sending initialization, the bridge assigns the child to a non-inherited
+Windows Job Object with `KILL_ON_JOB_CLOSE`. Closing the bridge or abruptly
+killing its worker closes the last job handle and terminates native descendants.
+The actual interpreter verifies/joins that randomly named job before model
+imports, covering a Windows venv redirector that may have spawned the interpreter
+before the launcher was assigned. Its temporary query/assignment handle closes
+immediately; only the worker retains an ownership handle. Parent and child must
+ship together; the new containment field is private initialization metadata.
+Containment failure is typed and aborts initialization so B1 fallback remains
+available. On POSIX, an independent bounded stdin reader in the native entrypoint
+treats EOF as lease loss and exits while the main thread is busy. Windows uses
+the Job Object without a concurrent stdin reader: both buffered and raw pipe
+reader prototypes reproduced a NumPy DLL initialization hang. The private
+bridge keeps stdin open for its complete lifetime.
+Subprocess tests use the actual entrypoint/containment with a deliberate busy
+model fixture and a real descendant under hard
+worker death on Windows, and EOF during both initialization and inference on
+POSIX. These are development fault tests, separate from installed media recovery.
+
+The waveform recipe and producer/model identities remain unchanged by this
+process lifetime correction. Abrupt termination can leave the bounded private
+temporary directory behind; supervisor storage reclamation and packaged
+restart evidence remain qualification work. No worker SQLite mutation is added.
+
+Still unresolved: packaged parent-death/restart and staging reclamation, B1 recovery,
 a human listening set, Chinese no-sidecar dubbing, long-form/batch evidence,
 exact-head CI/current base, clean-machine Windows and release/soak qualification.
 PR #195 remains Draft; this ADR proposes no exception to those gates.

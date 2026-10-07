@@ -11,9 +11,12 @@ import ctypes
 import hashlib
 import importlib.metadata
 import json
+import os
 from pathlib import Path
+from queue import Queue
 import re
 import sys
+from threading import Thread
 import unicodedata
 
 INVENTORY_SHA256 = "1070c88fd8459f584d3cc41a5d3d9bdf6161d545cfb532615fa64ab78b8869c0"
@@ -145,9 +148,69 @@ class NativeModel:
         return {"file": name, "frames": len(audio), "sample_rate": 22050, "sha256": hashlib.sha256(payload).hexdigest(), "unknown": unknown}
 
 
+def _join_windows_job(request: dict) -> None:
+    if os.name != "nt":
+        return
+    name = request.get("windows_job_name")
+    if not isinstance(name, str) or not re.fullmatch(r"DubFlowNativeTts-[0-9a-f]{32}", name):
+        raise ValueError("native Windows containment identity is missing")
+    from ctypes import wintypes
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    api.OpenJobObjectW.restype = wintypes.HANDLE
+    api.GetCurrentProcess.restype = wintypes.HANDLE
+    api.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    api.IsProcessInJob.restype = wintypes.BOOL
+    api.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    api.AssignProcessToJobObject.restype = wintypes.BOOL
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+    job = api.OpenJobObjectW(0x0001 | 0x0004, False, name)  # ASSIGN_PROCESS | QUERY
+    if not job:
+        raise ValueError("native worker containment is unavailable")
+    try:
+        member = wintypes.BOOL()
+        process = api.GetCurrentProcess()
+        if not api.IsProcessInJob(process, job, ctypes.byref(member)) or (not member.value and not api.AssignProcessToJobObject(job, process)):
+            raise ValueError("native interpreter cannot join worker containment")
+    finally:
+        api.CloseHandle(job)
+    # Only the parent retains a job handle. Keeping one here would defeat
+    # kill-on-close when the worker dies. Redirector-launched interpreters
+    # must join before importing native model libraries.
+
+
+def _read_requests(requests: Queue) -> None:
+    """Stdin stays open for the bridge lifetime, including busy inference."""
+    try:
+        pending = b""
+        while chunk := os.read(sys.stdin.fileno(), 8193):
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                if len(line) >= 8192:
+                    raise ValueError("native request exceeds protocol bound")
+                requests.put(line + b"\n", timeout=1)
+            if len(pending) > 8192:
+                raise ValueError("native request exceeds protocol bound")
+    except Exception:
+        os._exit(2)
+    # The parent closes its pipe or dies. A daemon reader can terminate native
+    # initialization/inference even while the main thread is inside ONNX.
+    os._exit(0)
+
+
 def main() -> None:
+    if os.name == "nt":
+        # Windows Job containment owns lifetime. A concurrent pipe reader
+        # during NumPy DLL loading caused a reproduced initialization hang.
+        lines = iter(lambda: sys.stdin.buffer.readline(8193), b"")
+    else:
+        requests = Queue(maxsize=2)
+        Thread(target=_read_requests, args=(requests,), daemon=True).start()
+        lines = iter(requests.get, None)
     model = None
-    for line in iter(lambda: sys.stdin.buffer.readline(8193), b""):
+    for line in lines:
         sequence = -1
         try:
             if len(line) > 8192 or not line.endswith(b"\n"):
@@ -157,6 +220,7 @@ def main() -> None:
             if model is None:
                 if sequence != 0:
                     raise ValueError("native initialization must be first")
+                _join_windows_job(request)
                 model = NativeModel(request)
                 result = {"frontend": FRONTEND_ID}
             else:

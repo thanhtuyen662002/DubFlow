@@ -102,7 +102,7 @@ def main() -> None:
         for group in ("common", "foreign_name"):
             values = [row["cer"] for row in rows if row["recipe"] == name and row["group"] == group]
             summaries.append({"recipe": name, "group": group, "cases": len(values), "mean_cer": sum(values) / len(values)})
-    source_paths = ("engine/dubflow/tts/neural_vits.py", "engine/dubflow/tts/mimic3_native.py", "engine/dubflow/tts/native_process.py", "models/manifests/production-tts-v1.json", "packaging/runtime/requirements-windows-x64.txt", "tests/production/tts/qualify_native.py")
+    source_paths = ("engine/dubflow/tts/neural_vits.py", "engine/dubflow/tts/mimic3_native.py", "engine/dubflow/tts/native_process.py", "engine/dubflow/tts/windows_job.py", "models/manifests/production-tts-v1.json", "packaging/runtime/requirements-windows-x64.txt", "tests/production/tts/qualify_native.py")
     report = {"schema_version": 1, "scope": "local native CPU diagnostics; not packaged Windows or release approval", "production_qualified": False, "completed_at_utc": datetime.now(timezone.utc).isoformat(), "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(), "source_sha256": {path: digest(ROOT / path) for path in source_paths}, "backend": ENGINE_ID, "model_hash": pack.model_hash, "manifest_hash": pack.manifest_hash, "decoder": "av-16.1.0", "asr": "faster-whisper-small-int8", "summaries": summaries, "cases": rows}
     path = output / "native-tts-quality.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

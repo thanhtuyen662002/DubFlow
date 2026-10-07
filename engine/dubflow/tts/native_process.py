@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 from .adapter import TtsBackendError
 from .mimic3_native import FRONTEND_ID, MAX_FRAMES
+from .windows_job import WindowsJob
 
 
 class NativeProcess:
@@ -27,15 +28,19 @@ class NativeProcess:
         self.directory = tempfile.TemporaryDirectory(prefix="dubflow-native-tts-")
         self.root = Path(self.directory.name)
         self.process = None
+        self.job = None
         try:
             self.process = subprocess.Popen(
                 command or [sys.executable, "-I", "-u", str(Path(__file__).with_name("mimic3_native.py"))],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
+            # No native initialization request is sent before containment. If
+            # assignment fails, close the child and return a typed B1 fallback.
+            self.job = WindowsJob(self.process)
             Thread(target=self._read_output, daemon=True).start()
             Thread(target=self._read_errors, daemon=True).start()
-            ready = self._request({"sequence": 0, "pack_path": str(pack.path), "output_root": str(self.root), "noise_scale": pack.noise_scale, "noise_scale_w": pack.noise_scale_w}, timeout=min(timeout, 30.0))
+            ready = self._request({"sequence": 0, "pack_path": str(pack.path), "output_root": str(self.root), "noise_scale": pack.noise_scale, "noise_scale_w": pack.noise_scale_w, "windows_job_name": self.job.name}, timeout=min(timeout, 30.0))
             if ready.get("frontend") != FRONTEND_ID:
                 raise TtsBackendError("TTS_NATIVE_PROTOCOL_INVALID", "native frontend identity differs")
         except BaseException:
@@ -126,6 +131,9 @@ class NativeProcess:
 
     def close(self) -> None:
         process = self.process
+        if self.job is not None:
+            job, self.job = self.job, None
+            job.close()
         if process is not None:
             if process.poll() is None:
                 process.kill()

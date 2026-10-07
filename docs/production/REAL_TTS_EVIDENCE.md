@@ -175,3 +175,28 @@ Same eight references, Whisper decoder/normalization and 12-second slots were
 used as before. This improvement is measured, but remaining errors are visible.
 The profile remains `qualification-pending`; no release, Chinese translation,
 long-form, clean-machine or human listening success is claimed by these results.
+
+## Native process lifetime correction
+
+The Windows development fault suite now kills a parent worker while native
+inference is deliberately busy and checks OS process handles for both the
+native child and its descendant. Both terminate after the parent's hard kill.
+A real kill-on-close Windows Job Object is assigned before initialization;
+the test does not replace that API with a mock. Separate subprocess cases
+confirm stdin EOF stops busy initialization and inference in the actual
+entrypoint on POSIX. Windows uses Job containment without a concurrent stdin
+reader; the first reader prototypes hung while importing NumPy and failed the
+real-model health test. A control run using the preceding entrypoint with the
+new Job Object initialized successfully, isolating the regression to the reader.
+The corrected Windows hermetic command has 27 cases: 25 passed, the POSIX lease
+case and optional real-model case skipped. Two B2 integration tests passed.
+The separate native voice suite then passed all 14 cases, including actual
+verified ONNX/eSpeak initialization and non-silent Vietnamese PCM with Job
+containment enabled. The hard-death fixtures execute the actual entrypoint and
+its job-join logic, replacing only the expensive model with a busy test model.
+
+These observations address process lifetime under development fault fixtures.
+They do not qualify native audio accuracy, installed Windows restart, temporary
+staging reclamation, long-form or batch behavior. ADR-0016 records the persistent
+private stdin lease and compatibility limits. Required CI on preceding HEADs
+becomes stale when this correction is pushed; #196 remains a hard dependency.
