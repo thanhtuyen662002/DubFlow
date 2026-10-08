@@ -27,6 +27,7 @@ from engine.dubflow.download.source_adapter import (
 )
 from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, DownloadResult, MediaMaterializer
 from engine.dubflow.download.provider_transport import YtDlpProviderTransport
+from engine.dubflow.download.sessions import ProtectedSessionBridge
 from engine.dubflow.download.stream_materializer import StreamMaterializer
 
 
@@ -214,7 +215,8 @@ class BilibiliSourceAdapter:
 
     def __init__(self, transport: BilibiliTransport | None = None, *, ytdlp_executable: str | Path | None = None,
                  ytdlp_root: str | Path | None = None, ytdlp_sha256: str | None = None,
-                 materializer: MediaMaterializer | None = None, stream_materializer: StreamMaterializer | None = None) -> None:
+                 materializer: MediaMaterializer | None = None, stream_materializer: StreamMaterializer | None = None,
+                 session_bridge: ProtectedSessionBridge | None = None) -> None:
         if transport is None:
             if ytdlp_executable is None:
                 raise ValueError("a Bilibili transport or app-owned yt-dlp executable is required")
@@ -222,6 +224,7 @@ class BilibiliSourceAdapter:
         self._transport = transport
         self._materializer = materializer or MediaMaterializer()
         self._stream_materializer = stream_materializer
+        self._session_bridge = session_bridge
 
     @classmethod
     def can_handle(cls, source_ref: str) -> bool:
@@ -234,7 +237,11 @@ class BilibiliSourceAdapter:
     def inspect(self, source_ref: str) -> SourceItem:
         source_id = normalize_source_ref(source_ref)
         try:
-            payload = self._transport.fetch_video(source_id)
+            if self._session_bridge is None:
+                payload = self._transport.fetch_video(source_id)
+            else:
+                headers = self._session_bridge.get_opaque_headers(self.provider_id)
+                payload = self._transport.fetch_video(source_id, headers)
         except BilibiliTransportError as exc:
             status = exc.status
             if status in {401, 403}:

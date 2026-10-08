@@ -12,27 +12,31 @@ from typing import Any, Mapping
 
 from .generic import YtDlpRunner, YtDlpTransport
 from .source_adapter import SourceError, SourceErrorCode
+from .authenticated import AuthenticatedYtDlpTransport
 
 
 class YtDlpProviderTransport:
-    def __init__(self, provider_id: str, executable: str | Path, *, trusted_root: str | Path | None = None,
-                 expected_sha256: str | None = None, runner: YtDlpRunner | None = None) -> None:
+    def __init__(self, provider_id: str, executable: str | Path | None = None, *, trusted_root: str | Path | None = None,
+                 expected_sha256: str | None = None, runner: YtDlpRunner | None = None,
+                 authenticated_transport: AuthenticatedYtDlpTransport | None = None) -> None:
         if provider_id not in {"bilibili", "douyin"}:
             raise ValueError("provider_id must be bilibili or douyin")
         self.provider_id = provider_id
-        self._transport = YtDlpTransport(executable, trusted_root=trusted_root, expected_sha256=expected_sha256, runner=runner)
+        self._transport = YtDlpTransport(executable, trusted_root=trusted_root, expected_sha256=expected_sha256, runner=runner) if executable is not None else None
+        self._authenticated = authenticated_transport
+        if self._transport is None and self._authenticated is None:
+            raise ValueError("a pinned extractor transport is required")
 
     def fetch_video(self, source_ref: str, session: Mapping[str, str] | None = None) -> Mapping[str, Any]:
-        # Session headers are intentionally not passed as command-line
-        # arguments.  A future credential bridge may provide a short-lived
-        # cookie file through the app-owned process boundary.
-        if session:
-            raise SourceError(SourceErrorCode.AUTH_REQUIRED, "yt-dlp session bridge is not configured for this transport", provider_id=self.provider_id, action="authenticate")
         url = self._url(source_ref)
-        raw = self._transport.inspect_url(url)
+        if session and self._authenticated is None:
+            raise SourceError(SourceErrorCode.AUTH_REQUIRED, "yt-dlp session bridge is not configured for this transport", provider_id=self.provider_id, action="authenticate")
+        raw = self._authenticated.inspect_url(url, provider_id=self.provider_id, headers=session) if self._authenticated is not None else self._transport.inspect_url(url)
         if not isinstance(raw, Mapping):
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "yt-dlp provider metadata is malformed", provider_id=self.provider_id)
-        return _map_payload(self.provider_id, raw, source_ref)
+        payload = _map_payload(self.provider_id, raw, source_ref)
+        # The Bilibili adapter consumes the API's code/data envelope.
+        return {"code": 0, "data": payload} if self.provider_id == "bilibili" else payload
 
     def _url(self, source_ref: str) -> str:
         if self.provider_id == "bilibili":

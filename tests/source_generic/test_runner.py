@@ -14,6 +14,15 @@ from engine.dubflow.download.source_adapter import SourceError, SourceErrorCode
 
 
 class NativeExtractorBoundaryTests(unittest.TestCase):
+    def test_private_stdin_reaches_child_without_credentials_in_argv(self):
+        runner = SubprocessYtDlpRunner()
+        argv = [sys.executable, "-c", "import sys,json;data=json.loads(sys.stdin.buffer.read());sys.stdout.write(json.dumps({'length':len(data['cookie'])}))"]
+        code, stdout, stderr = runner.run_with_input(argv, timeout_s=10, stdin_bytes=b'{"cookie":"synthetic-secret"}')
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout), {"length": 16})
+        self.assertNotIn("synthetic-secret", " ".join(argv))
+        self.assertEqual(stderr, "")
+
     def test_actual_process_reads_utf8_metadata_and_preserves_exit_code(self):
         runner = SubprocessYtDlpRunner()
         argv = [sys.executable, "-c", "import sys;sys.stdout.buffer.write('{\"title\":\"Giọng Việt\"}'.encode('utf-8'));sys.stderr.buffer.write(b'error-tail\\xff');sys.exit(7)"]
@@ -23,7 +32,7 @@ class NativeExtractorBoundaryTests(unittest.TestCase):
         self.assertIn("error-tail", stderr)
         self.assertIn("\ufffd", stderr)
 
-    def _tracked_run(self, source, timeout_s):
+    def _tracked_run(self, source, timeout_s, private_input=None):
         processes = []
         handles = []
         actual_popen = subprocess.Popen
@@ -36,11 +45,21 @@ class NativeExtractorBoundaryTests(unittest.TestCase):
 
         with patch("engine.dubflow.download.generic.adapter.subprocess.Popen", side_effect=start):
             with self.assertRaises(SourceError) as context:
-                SubprocessYtDlpRunner().run([sys.executable, "-c", source], timeout_s=timeout_s)
+                runner = SubprocessYtDlpRunner()
+                if private_input is None:
+                    runner.run([sys.executable, "-c", source], timeout_s=timeout_s)
+                else:
+                    runner.run_with_input([sys.executable, "-c", source], timeout_s=timeout_s, stdin_bytes=private_input)
         self.assertEqual(len(processes), 1)
         self.assertIsNotNone(processes[0].poll(), "native process must be reaped")
         self.assertTrue(all(handle.closed for handle in handles))
+        if private_input is not None:
+            self.assertTrue(processes[0].stdin.closed)
         return context.exception
+
+    def test_private_request_to_child_that_never_reads_stdin_is_deadline_bounded(self):
+        error = self._tracked_run("import time;time.sleep(30)", 0.2, b"x" * 4096)
+        self.assertEqual(error.code, SourceErrorCode.NETWORK)
 
     def test_actual_timeout_reaps_the_running_process(self):
         error = self._tracked_run("import time;time.sleep(30)", 0.2)

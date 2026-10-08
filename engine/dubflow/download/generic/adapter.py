@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Any, Mapping, Protocol, Sequence
 from urllib.parse import unquote, urlsplit
@@ -44,15 +45,38 @@ class YtDlpRunner(Protocol):
 
 class SubprocessYtDlpRunner:
     def run(self, argv: Sequence[str], *, timeout_s: float) -> tuple[int, str, str]:
+        return self._run(argv, timeout_s=timeout_s)
+
+    def run_with_input(self, argv: Sequence[str], *, timeout_s: float, stdin_bytes: bytes) -> tuple[int, str, str]:
+        if not isinstance(stdin_bytes, bytes) or not 0 < len(stdin_bytes) <= 4096:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "extractor private request exceeds its input budget")
+        return self._run(argv, timeout_s=timeout_s, stdin_bytes=stdin_bytes)
+
+    def _run(self, argv: Sequence[str], *, timeout_s: float, stdin_bytes: bytes | None = None) -> tuple[int, str, str]:
         if not 0 < timeout_s <= 1800:
             raise ValueError("timeout_s must be in (0, 1800]")
         process = None
+        writer = None
         try:
             # Disk-backed private handles avoid unbounded communicate() buffers.
             # Nothing from these raw metadata/diagnostic files is logged.
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-                process = subprocess.Popen(list(argv), stdin=subprocess.DEVNULL, stdout=stdout,
+                process = subprocess.Popen(list(argv), stdin=subprocess.PIPE if stdin_bytes else subprocess.DEVNULL, stdout=stdout,
                     stderr=stderr, shell=False, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                if stdin_bytes:
+                    def write_request():
+                        try:
+                            process.stdin.write(stdin_bytes)
+                            process.stdin.flush()
+                        except (OSError, ValueError):
+                            pass  # Early exit/timeout still returns a bounded process result.
+                        finally:
+                            try:
+                                process.stdin.close()
+                            except OSError:
+                                pass
+                    writer = threading.Thread(target=write_request, daemon=True)
+                    writer.start()
                 deadline = time.monotonic() + timeout_s
                 while process.poll() is None:
                     self._check_output(stdout, stderr)
@@ -70,6 +94,8 @@ class SubprocessYtDlpRunner:
                 if process.poll() is None:
                     process.kill()
                 process.wait(timeout=5)
+            if writer is not None:
+                writer.join(timeout=5)
 
     @staticmethod
     def _check_output(stdout, stderr) -> None:

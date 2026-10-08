@@ -482,6 +482,9 @@
       "roots": [
         "contracts/source",
         "engine/dubflow/download/source_adapter.py",
+        "engine/dubflow/download/sessions.py",
+        "engine/dubflow/download/authenticated.py",
+        "engine/dubflow/download/authenticated_native.py",
         "tests/source_adapter"
       ],
       "commands": [

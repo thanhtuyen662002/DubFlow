@@ -136,3 +136,47 @@ These options follow the [upstream CLI contract](https://github.com/yt-dlp/yt-dl
 Real development-runtime child probes cover UTF-8/exit status, timeout and
 stdout/stderr floods with process reaping; they do not qualify an installed
 yt-dlp binary, live website, parent-crash containment or authenticated session.
+
+## Protected provider sessions and isolated SDK inspection — #167 follow-up
+
+The Windows bridge stores only a bounded DPAPI ciphertext envelope, using
+current-user protection with UI forbidden and provider-specific entropy. The
+encrypted payload binds schema, provider, expiry (at most 24 hours) and one
+validated Cookie header. Unknown providers, malformed/header-injection input,
+changed scope, expired/tampered/overlarge records and foreign provider ciphertext
+fail as `AUTH_REQUIRED`; plaintext credentials are never added to job state.
+Replacing a saved session is atomic. Clearing/re-authentication changes a
+condition explicitly; there is no automatic plaintext migration/fallback.
+Schema 1 is a new optional private auth store; older apps may ignore it. Windows
+user accounts or machines cannot share this store as a browser sync format.
+
+Authenticated inspection uses a separately approved runtime/helper/SDK archive
+with explicit SHA-256 pins and a bounded private stdin request. The helper runs
+under the owned Python with `-I -S -B`; an in-memory cookie jar restricts cookies
+to `.bilibili.com` or `.douyin.com` and HTTPS. Global Cookie/Authorization flags,
+plaintext cookie files, system/user config/plugins, default JS runtimes and
+remote helper downloads are not used. Provider adapters forward the immediate
+bridge capability only to this boundary. The helper strips credential jar and
+HTTP-header fields from returned metadata, suppresses raw diagnostics and
+returns bounded typed failures. A cleared/expired session prevents the provider
+call, leaving independent local jobs available. Public SDK calls use an empty
+jar. The Bilibili transport preserves the adapter's required `code/data` envelope.
+
+Authorization headers, browser capture/consent UI, per-cookie browser domain
+import beyond these provider scopes, and installed SDK provisioning remain
+separate integration work. Caller-provided checksum pins must come from the
+approved release inventory; observing a file hash does not approve that file.
+The portable runtime integrity/signature boundary must cover its DLL/standard
+library dependencies too; the three helper pins are not a complete installer
+integrity claim. This does not qualify parent-crash containment or live sites.
+
+Deterministic tests use recorded transport/SDK capabilities; native Windows
+tests exercise actual DPAPI, reload, tamper/provider binding and child stdio.
+The Soak lane retains its existing Release/Soak job and adds an isolated Windows
+session boundary job without model/GPU/site dependencies. Actual SDK wheel
+2026.8.19 (SHA-256 `1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf`)
+was probed locally: its cookie jar sends the synthetic session to the provider
+HTTPS API and omits it for HTTP, unrelated CDN and lookalike domains. This is
+development SDK semantics evidence, not authenticated video acquisition.
+SDK API/options were checked against [upstream source](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py)
+and the [official wheel inventory](https://pypi.org/project/yt-dlp/2026.8.19/).
