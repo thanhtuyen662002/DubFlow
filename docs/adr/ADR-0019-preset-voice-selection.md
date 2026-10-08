@@ -55,6 +55,17 @@ The original row, status and export path remain unchanged. Terminal failed jobs
 cannot use Start with the old ID. A new version does not imply that a failed
 source/model condition has been repaired; normal admission still applies.
 
+The native desktop's default output namespace also includes the complete
+execution ID. IDs are encoded as lowercase hexadecimal bytes in bounded path
+components so Windows case folding and reserved filenames cannot alias two
+versions. The same ID deterministically resumes the same directory; distinct
+IDs keep separate MP4, subtitle, editable audio and private checkpoint trees.
+An explicitly supplied output directory remains an explicit caller choice.
+Historic source-only directories are preserved without moving or overwriting
+their exports. A prerelease job pinned to that historic directory must retain
+its compatible runtime/start options or create a fresh execution; the supervisor
+does not silently rewrite its immutable start binding (see ADR-0020).
+
 ## Evidence and remaining qualification
 
 Deterministic checks cover the actual catalog, independent per-job persistence,
@@ -69,6 +80,14 @@ The built desktop has also been exercised through a headless browser with
 mocked native IPC: finish a selected voice, create a new version, select another
 voice, reload and start with that exact new ID/voice. This proves the frontend
 flow only; native installed execution is checked separately in Windows Release.
+
+Native host tests cover distinct default directories, same-ID recovery, case
+distinction, reserved names and bounded components. The Windows B2 smoke also
+runs a second selected voice with a fresh supervisor job and separate output,
+checks both durable completed statuses, hashes every original output file to
+detect changes, and requires different dialogue waveforms. This combines native
+path and actual backend evidence; a full installed GUI click-through remains a
+separate qualification requirement.
 
 No full-release claim follows from catalog availability or a short waveform.
 Human listening, packaged Windows execution/recovery and all exact-HEAD/current

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from contextlib import closing
 import importlib.util
 import json
 import io
 from pathlib import Path
 import shutil
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
@@ -14,6 +16,7 @@ from types import SimpleNamespace
 from packaging.release.bootstrap import BootstrapInstallError, install_bundle
 from packaging.release.builder import BuildError, build_bundle, main as builder_main
 from packaging.release.manifest import ManifestError, ReleaseArtifact, ReleaseManifest, hash_file, load_manifest
+from scripts.release import production_smoke
 
 
 SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -478,6 +481,46 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertIn('gh release create "$tag" --repo "$GITHUB_REPOSITORY"', workflow)
         self.assertIn('gh release upload "$tag" --repo "$GITHUB_REPOSITORY"', workflow)
         self.assertIn("resolved_sha", workflow)
+
+
+class VoiceVersionQualificationTests(unittest.TestCase):
+    def test_voice_version_evidence_rejects_export_mutation_and_reused_audio(self) -> None:
+        for defect in (None, "original_export_mutated", "identical_dialogue"):
+            with self.subTest(defect=defect), TemporaryDirectory() as directory:
+                root = Path(directory)
+                original = root / "original"
+                (original / "editable").mkdir(parents=True)
+                (original / "editable/dialogue_stem.wav").write_bytes(b"original voice")
+                (original / "captions_vi.srt").write_bytes(b"original subtitles")
+                (root / "control/jobs").mkdir(parents=True)
+                (root / "control/jobs/smoke-good.json").write_bytes(b"original status")
+                with closing(sqlite3.connect(root / "control/jobs.sqlite3")) as connection, connection:
+                    connection.execute("CREATE TABLE jobs(job_id TEXT PRIMARY KEY, status TEXT)")
+                    connection.execute("INSERT INTO jobs VALUES('smoke-good','succeeded')")
+
+                def complete_variant(supervisor, app, data, source, output, job_id, **options):
+                    self.assertEqual(options["tts_voice_id"], "vi-thai-son-vieneu3-v1")
+                    (output / "editable").mkdir(parents=True)
+                    (output / "editable/dialogue_stem.wav").write_bytes(
+                        b"original voice" if defect == "identical_dialogue" else b"different voice")
+                    if defect == "original_export_mutated":
+                        (original / "captions_vi.srt").write_bytes(b"overwritten subtitles")
+                    with closing(sqlite3.connect(data / "control/jobs.sqlite3")) as connection, connection:
+                        connection.execute("INSERT INTO jobs VALUES(?, 'succeeded')", (job_id,))
+                    return {"job_id": job_id, "status": {"state": "COMPLETED"}}, False, ""
+
+                with mock.patch.object(production_smoke, "_run_supervisor", side_effect=complete_variant), \
+                        mock.patch.object(production_smoke, "_verify_output", return_value={"fixture_only": True}):
+                    if defect is None:
+                        report = production_smoke._verify_voice_version(root / "supervisor", root, root, root / "source.mp4",
+                            original, root / "ffprobe", voice_id="vi-truc-ly-vieneu3-v1", timeout=10)
+                        self.assertEqual(report["original_exports_and_status"], "preserved")
+                        self.assertNotEqual(report["original_dialogue_sha256"], report["new_dialogue_sha256"])
+                    else:
+                        message = "original export" if defect == "original_export_mutated" else "identical dialogue"
+                        with self.assertRaisesRegex(production_smoke.SmokeError, message):
+                            production_smoke._verify_voice_version(root / "supervisor", root, root, root / "source.mp4",
+                                original, root / "ffprobe", voice_id="vi-truc-ly-vieneu3-v1", timeout=10)
 
 
 if __name__ == "__main__":

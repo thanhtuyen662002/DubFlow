@@ -92,7 +92,7 @@ fn fail(message: impl Into<String>) -> String {
 }
 
 fn validate_id(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > 128 || value.chars().any(|character| character.is_control()) || value.bytes().any(|byte| byte == b'/' || byte == b'\\') {
+    if value.is_empty() || value.len() > 128 || value == "." || value == ".." || value.chars().any(|character| character.is_control()) || value.bytes().any(|byte| byte == b'/' || byte == b'\\') {
         return Err(fail("job_id is invalid"));
     }
     Ok(())
@@ -151,6 +151,19 @@ fn status_path(root: &Path, job_id: &str) -> Result<PathBuf, String> {
     Ok(root.join("control").join("jobs").join(format!("{job_id}.json")))
 }
 
+fn default_job_output(source: &Path, job_id: &str) -> Result<PathBuf, String> {
+    validate_id(job_id)?;
+    // Encode the complete ID: Windows folds path case and reserves some names.
+    // Chunk at 64 bytes so even a maximum-length ID fits each path component.
+    let mut output = source.parent().unwrap_or(Path::new(".")).join("DubFlow Output")
+        .join(format!("{} - vi", source.file_stem().and_then(|name| name.to_str()).unwrap_or("video")));
+    for (index, chunk) in job_id.as_bytes().chunks(64).enumerate() {
+        let encoded: String = chunk.iter().map(|byte| format!("{byte:02x}")).collect();
+        output = output.join(if index == 0 { format!("run-{encoded}") } else { encoded });
+    }
+    Ok(output)
+}
+
 #[tauri::command]
 fn release_info() -> ReleaseInfo {
     ReleaseInfo {
@@ -190,9 +203,10 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     };
     let control = control_root()?;
     let status = status_path(&control, &job_id)?;
-    let output = output_dir
-        .map(|value| PathBuf::from(value))
-        .unwrap_or_else(|| source.parent().unwrap_or(Path::new(".")).join("DubFlow Output").join(format!("{} - vi", source.file_stem().and_then(|name| name.to_str()).unwrap_or("video"))));
+    let output = match output_dir {
+        Some(value) => PathBuf::from(value),
+        None => default_job_output(&source, &job_id)?,
+    };
     if !output.is_absolute() {
         return Err(fail("output_dir must be an absolute path"));
     }
@@ -252,6 +266,26 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_versions_keep_separate_outputs_and_resume_the_same_directory() {
+        let source = std::env::temp_dir().join("video [spaces].mp4");
+        let original = default_job_output(&source, "job-original").unwrap();
+        let variant = default_job_output(&source, "job-variant").unwrap();
+        assert_ne!(original, variant);
+        assert_eq!(original, default_job_output(&source, "job-original").unwrap());
+        let upper = default_job_output(&source, "JOB-original").unwrap();
+        assert_ne!(original.to_string_lossy().to_lowercase(), upper.to_string_lossy().to_lowercase());
+        assert_ne!(original, source.parent().unwrap().join("DubFlow Output/video [spaces] - vi"));
+        for id in ["", ".", "..", "../escape", "job\\escape"] {
+            assert!(default_job_output(&source, id).is_err());
+        }
+        for id in ["CON".to_owned(), "x".repeat(128)] {
+            let output = default_job_output(&source, &id).unwrap();
+            assert!(output.starts_with(source.parent().unwrap().join("DubFlow Output")));
+            assert!(output.components().all(|part| part.as_os_str().to_string_lossy().len() <= 132));
+        }
+    }
 
     #[test]
     fn catalog_reads_the_installed_app_payload_and_rejects_unknown_or_duplicate_ids() {

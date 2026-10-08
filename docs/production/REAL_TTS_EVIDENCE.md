@@ -327,3 +327,37 @@ required for the new selection implementation; keep PR #195 Draft.
 Remain open: human listening/quality, native packaged/restart execution, long-form
 and durable batch qualification, private staging reclamation and full distribution
 notices. None of this evidence qualifies the full #175 production capability gate.
+
+# Real acquired Chinese video — 2026-10-08
+
+Development production worker at source HEAD
+`162a933b290f4a6823b8faf88fbd3f355368f363` processed the complete public Bilibili
+`BV13x41117TL` acquired by #167's verified owned SDK/default transport. Source
+MP4 SHA-256 `3f9a8f575443caca835c559a2890869f6d64d8e25b9fda5c2ed58bffe5917177`;
+38,026,136 bytes, about 554 seconds, H.264/AAC at 640x360. There was no SRT/VTT
+sidecar or generated speech input. This is actual acquired media, beyond the
+earlier generated frames and repeated human-audio cases.
+
+The CPU run completed in 906.687 seconds and emitted 272 cues. Whisper detected
+Chinese (`zh`, probability 0.996829); pinned Argos routes `zh -> en -> vi`
+translated the cues. Requested preset `vi-thuy-dung-vieneu3-v1` reached actual
+VieNeu synthesis and AUD-0 mixing. The final 27,525,975-byte MP4 passed codec QC
+(H.264/AAC, 553.921 seconds), with SHA-256
+`f0967db92c908e5267bc0550ffe6cb84566d6e8dde891f6d2262a9cc3d9b65f2`.
+Scratch receipt `dubflow-vieneu-195/live-bilibili-worker/report.json`, SHA-256
+`bef7276b97f756769df78cb799abd70364df82dedae1d03fab45dab3eb442be8`.
+
+**Quality gaps remain.** All 46 TTS failures were `DURATION_FIT_REQUIRED`:
+natural speech exceeded the safe rate, or the tempo-adjusted output still
+exceeded the slot. Original source audio was retained for these cues, and the
+manifest/QC explicitly recorded `B2_AUDIO_DEGRADED` / downgrade. The 226 emitted
+dialogue cues and playable output do not establish complete Vietnamese dubbing.
+Reading the translated cues also exposes incorrect name/meaning preservation
+(for example, a band name became a literal generic phrase). No human listening,
+translation approval or broad intelligibility claim follows from codec success.
+
+This used the development worker/model cache, not the native durable supervisor,
+a new installer or an end-user GUI flow. It does not qualify installed live-source
+intake, authenticated websites, long-form 2–6-hour video, durable large batches,
+updater compatibility or #166/#175 release acceptance. Preserve this run while
+improving duration fitting, translation review and native execution.

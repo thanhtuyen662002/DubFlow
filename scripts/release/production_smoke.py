@@ -12,6 +12,7 @@ supervisor tree, and reissues the same job ID to exercise checkpoint recovery.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -294,11 +295,47 @@ def _verify_replay_isolation(supervisor: Path, root: Path, data_root: Path, sour
         with final.open("rb") as stream:
             if hashlib.file_digest(stream, "sha256").hexdigest() != original_digest:
                 raise SmokeError(f"{kind} replay changed the original video")
-        with sqlite3.connect(data_root / "control/jobs.sqlite3") as connection:
+        with closing(sqlite3.connect(data_root / "control/jobs.sqlite3")) as connection:
             if connection.execute("SELECT status FROM jobs WHERE job_id='smoke-good'").fetchone() != ("succeeded",):
                 raise SmokeError(f"{kind} replay changed original durable status")
         outcomes.append({"changed": kind, "code": "JOB_ID_CONFLICT", "original_status_and_video": "preserved"})
     return {"status": "passed", "cases": outcomes}
+
+
+def _file_digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _verify_voice_version(supervisor: Path, root: Path, data_root: Path, source: Path,
+                          original: Path, ffprobe: Path, *, voice_id: str, timeout: float) -> dict[str, Any]:
+    original_files = {str(path.relative_to(original)): _file_digest(path)
+                      for path in original.rglob("*") if path.is_file()}
+    original_status = (data_root / "control/jobs/smoke-good.json").read_bytes()
+    next_voice = "vi-thai-son-vieneu3-v1" if voice_id != "vi-thai-son-vieneu3-v1" else "vi-thuy-dung-vieneu3-v1"
+    output = original.with_name("new voice version [spaces]")
+    status, killed, _ = _run_supervisor(supervisor, root, data_root, source, output, "smoke-voice-version",
+                                        timeout=timeout, enable_dubbing=True, tts_voice_id=next_voice)
+    if killed or status is None:
+        raise SmokeError("new voice version was unexpectedly killed")
+    _require_status(status, "COMPLETED", "smoke-voice-version")
+    result = _verify_output(ffprobe, output, 3, expect_dubbing=True, expect_voice_id=next_voice)
+    current_files = {str(path.relative_to(original)): _file_digest(path)
+                     for path in original.rglob("*") if path.is_file()}
+    if current_files != original_files or (data_root / "control/jobs/smoke-good.json").read_bytes() != original_status:
+        raise SmokeError("new voice version changed the original export or status")
+    with closing(sqlite3.connect(data_root / "control/jobs.sqlite3")) as connection:
+        rows = dict(connection.execute("SELECT job_id, status FROM jobs WHERE job_id IN ('smoke-good','smoke-voice-version')"))
+    if rows != {"smoke-good": "succeeded", "smoke-voice-version": "succeeded"}:
+        raise SmokeError("new voice version did not preserve both durable completed jobs")
+    old_dialogue = _file_digest(original / "editable/dialogue_stem.wav")
+    new_dialogue = _file_digest(output / "editable/dialogue_stem.wav")
+    if old_dialogue == new_dialogue:
+        raise SmokeError("different selected voices reused identical dialogue audio")
+    return {"status": "passed", "original_voice_id": voice_id, "new_voice_id": next_voice,
+            "original_exports_and_status": "preserved", "original_file_count": len(original_files),
+            "original_dialogue_sha256": old_dialogue, "new_dialogue_sha256": new_dialogue, "new_job": result,
+            "scope": "native supervisor with separate output directories; desktop default path is tested by native host tests"}
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -391,6 +428,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     _require_status(good_status, "COMPLETED", "smoke-good")
     good_output_report = _verify_output(ffprobe, good_output, 3, expect_dubbing=args.enable_dubbing, expect_voice_id=selected_voice)
     replay_isolation = _verify_replay_isolation(supervisor, root, data_root, short_source, good_output, voice_id=selected_voice)
+    voice_version = _verify_voice_version(supervisor, root, data_root, short_source, good_output, ffprobe,
+                                          voice_id=selected_voice, timeout=args.timeout) if args.enable_dubbing else None
 
     long_output_report: dict[str, Any] | None = None
     if args.long_seconds > 3:
@@ -420,6 +459,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "profile": "cpu-local-file-b2" if args.enable_dubbing else "cpu-local-file-b1",
         "batch_failure_isolation": "passed",
         "immutable_job_replay": replay_isolation,
+        "voice_version_isolation": voice_version,
         "corrupt_job_state": bad_status["status"],
         "good_job": good_output_report,
         "resume": resume_report,
