@@ -230,3 +230,26 @@ actual FFmpeg mux/probe/decode into H.264/AAC. Report SHA-256:
 This is a constructed build-stage runtime, not a newly installed/signed release.
 Media is synthetic; provider metadata is recorded; no live source, credentials,
 browser capture, channel enumeration or durable desktop intake is qualified.
+
+## Windows source process lifetime
+
+The source runner assigns an anonymous, non-inherited Windows kill-on-close
+Job Object before the private request writer starts. The isolated SDK helper
+cannot import the SDK before it receives a valid complete request. Parent death
+before assignment closes stdin, causing the actual helper to exit without loading
+the archive. After assignment, closing the parent's job handle terminates the
+helper and descendants; cleanup closes it after normal exit, timeout and failure.
+An assignment/configuration failure prevents the writer from sending credentials
+and yields a typed runtime-repair outcome. The source-owned helper follows the
+same OS design as native TTS without requiring an unmerged TTS version.
+
+Actual Windows tests retain process handles to rule out PID reuse. They hard-kill
+the parent while assignment is deliberately paused and observe the real SDK
+entrypoint exiting on EOF; a second case waits for a real initialized helper and
+descendant, kills the parent and observes both handles signaled. They use recorded
+code/development Python, not a new packaged/live provider qualification. The
+existing Windows Soak source job executes these regressions. POSIX retains bounded
+direct-child cleanup; its complete parent-death/tree behavior is not qualified.
+The legacy standalone CLI has no private request handshake, so this evidence
+does not close its initial-launch handoff race. The approved bundle factory uses
+the SDK helper path; a future standalone profile needs separate startup evidence.

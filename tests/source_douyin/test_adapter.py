@@ -111,6 +111,17 @@ class DouyinAdapterTests(unittest.TestCase):
             adapter.download(item, "recorded.mp4")
         self.assertEqual(error.exception.code, SourceErrorCode.UNSUPPORTED)
 
+    def test_sdk_media_url_cannot_bypass_provider_validation(self) -> None:
+        for url in ("https://user:synthetic-secret@cdn.example.test/video.mp4", "https://cdn.example.test:invalid/video.mp4"):
+            with self.subTest(url=url):
+                raw = {"id": "7345678901234567890", "title": "recorded invalid SDK URL",
+                       "formats": [{"url": url, "vcodec": "h264", "acodec": "aac"}]}
+                adapter = DouyinSourceAdapter(RecordedTransport(_map_payload("douyin", raw, raw["id"])))
+                with self.assertRaises(SourceError) as error:
+                    adapter.inspect(raw["id"])
+                self.assertEqual(error.exception.code, SourceErrorCode.SOURCE_CHANGED)
+                self.assertNotIn("synthetic-secret", str(error.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

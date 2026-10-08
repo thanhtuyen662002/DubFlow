@@ -174,7 +174,7 @@ def _media(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
         if not isinstance(values, list) or not 1 <= len(values) <= 256:
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Douyin SDK media formats are malformed", provider_id="douyin")
         try:
-            return tuple(MediaCandidate(**value) for value in values)
+            return tuple(MediaCandidate(**{**value, "locator": _url(value.get("locator"), "SDK media URL")}) for value in values)
         except (TypeError, SourceError):
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Douyin SDK media formats are malformed", provider_id="douyin") from None
     video = _mapping(data.get("video"), "video")

@@ -25,6 +25,7 @@ from urllib.parse import unquote, urlsplit
 from ..materializer import DownloadError, DownloadErrorCode, DownloadResult, HttpTransport, MediaMaterializer, UrllibHttpTransport, _reject_links, validate_http_url
 from ..source_adapter import MediaCandidate, PageCursor, SourceAdapter, SourceError, SourceErrorCode, SourceIdentity, SourceItem, SourcePage, SubtitleCandidate, canonicalize_url
 from ..stream_materializer import StreamMaterializer
+from .windows_job import WindowsSourceJob
 
 
 TICKS_PER_SECOND = 90_000
@@ -57,12 +58,14 @@ class SubprocessYtDlpRunner:
             raise ValueError("timeout_s must be in (0, 1800]")
         process = None
         writer = None
+        owner = None
         try:
             # Disk-backed private handles avoid unbounded communicate() buffers.
             # Nothing from these raw metadata/diagnostic files is logged.
             with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
                 process = subprocess.Popen(list(argv), stdin=subprocess.PIPE if stdin_bytes else subprocess.DEVNULL, stdout=stdout,
                     stderr=stderr, shell=False, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                owner = WindowsSourceJob(process)
                 if stdin_bytes:
                     def write_request():
                         try:
@@ -90,12 +93,16 @@ class SubprocessYtDlpRunner:
         except OSError as error:
             raise SourceError(SourceErrorCode.NETWORK, "yt-dlp process could not be started", retryable=True, action="retry") from error
         finally:
-            if process is not None:
-                if process.poll() is None:
-                    process.kill()
-                process.wait(timeout=5)
-            if writer is not None:
-                writer.join(timeout=5)
+            try:
+                if process is not None:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+            finally:
+                if owner is not None:
+                    owner.close()
+                if writer is not None:
+                    writer.join(timeout=5)
 
     @staticmethod
     def _check_output(stdout, stderr) -> None:
