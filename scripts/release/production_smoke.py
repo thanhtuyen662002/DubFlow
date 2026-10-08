@@ -12,10 +12,12 @@ supervisor tree, and reissues the same job ID to exercise checkpoint recovery.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -136,6 +138,7 @@ def _run_supervisor(
     timeout: float,
     kill_after: float | None = None,
     enable_dubbing: bool = False,
+    tts_voice_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, bool, str]:
     status_path = data_root / "control" / "jobs" / f"{job_id}.json"
     command = [
@@ -158,6 +161,8 @@ def _run_supervisor(
     ]
     if enable_dubbing:
         command.append("--enable-dubbing")
+    if tts_voice_id is not None:
+        command.extend(("--tts-voice-id", tts_voice_id))
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     process = subprocess.Popen(
         [os.fspath(item) for item in command],
@@ -199,7 +204,7 @@ def _require_status(status: dict[str, Any], expected: str, job_id: str) -> dict[
     return value
 
 
-def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int, *, expect_dubbing: bool = False) -> dict[str, Any]:
+def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int, *, expect_dubbing: bool = False, expect_voice_id: str | None = None) -> dict[str, Any]:
     final = output_dir / "final_vi.mp4"
     required = [
         final,
@@ -229,6 +234,8 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         provenance = tts_document.get("provenance", {})
         if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.0.0":
             raise SmokeError(f"B2 TTS receipt differs from the selected native producer: {provenance!r}")
+        if expect_voice_id is not None and provenance.get("voice_id") != expect_voice_id:
+            raise SmokeError("packaged TTS did not preserve the explicitly selected preset")
     # The JSON is captured directly to avoid relying on a shell redirection.
     result = _run(
         [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", final],
@@ -254,7 +261,44 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         "video_codec": videos[0].get("codec_name"),
         "audio_codec": audios[0].get("codec_name"),
         "artifacts": [str(path.relative_to(output_dir)) for path in required],
+        "selected_voice_id": expect_voice_id,
     }
+
+
+def _verify_replay_isolation(supervisor: Path, root: Path, data_root: Path, source: Path,
+                             output: Path, *, voice_id: str | None) -> dict[str, Any]:
+    status_path = data_root / "control/jobs/smoke-good.json"
+    original_status = status_path.read_bytes()
+    final = output / "final_vi.mp4"
+    with final.open("rb") as stream:
+        original_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    cases = [("output", source, output.with_name("foreign output"), voice_id),
+             ("source", source.with_name("foreign source.mp4"), output, voice_id)]
+    cases[1][1].write_bytes(b"different media")
+    if voice_id is not None:
+        cases.append(("voice", source, output, "vi-thai-son-vieneu3-v1"))
+    outcomes = []
+    for kind, candidate_source, candidate_output, candidate_voice in cases:
+        command = [str(supervisor), "run", "--root", str(root), "--data-root", str(data_root),
+            "--model-root", str(data_root / "models"), "--job-id", "smoke-good", "--source", str(candidate_source),
+            "--output-dir", str(candidate_output), "--status-path", str(status_path)]
+        if voice_id is not None:
+            command.append("--enable-dubbing")
+        if candidate_voice is not None:
+            command.extend(("--tts-voice-id", candidate_voice))
+        completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+        if completed.returncode == 0 or "JOB_ID_CONFLICT" not in completed.stderr or '"event":"completed"' in completed.stdout:
+            raise SmokeError(f"{kind} replay incorrectly accepted another job's identity")
+        if status_path.read_bytes() != original_status:
+            raise SmokeError(f"{kind} replay overwrote the original completed status")
+        with final.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != original_digest:
+                raise SmokeError(f"{kind} replay changed the original video")
+        with sqlite3.connect(data_root / "control/jobs.sqlite3") as connection:
+            if connection.execute("SELECT status FROM jobs WHERE job_id='smoke-good'").fetchone() != ("succeeded",):
+                raise SmokeError(f"{kind} replay changed original durable status")
+        outcomes.append({"changed": kind, "code": "JOB_ID_CONFLICT", "original_status_and_video": "preserved"})
+    return {"status": "passed", "cases": outcomes}
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -271,6 +315,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     data_root.mkdir(parents=True, exist_ok=True)
 
     short_source = _make_source(ffmpeg, work_root / "short input [spaces]", seconds=3, stem="sample video [spaces]")
+    selected_voice = "vi-truc-ly-vieneu3-v1" if args.enable_dubbing else None
     resume_report: dict[str, Any] | None = None
     if args.exercise_hard_kill:
         kill_output = work_root / "resume output"
@@ -284,6 +329,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             timeout=args.timeout,
             kill_after=args.kill_after,
             enable_dubbing=args.enable_dubbing,
+            tts_voice_id=selected_voice,
         )
         if not killed:
             raise SmokeError(
@@ -298,6 +344,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "smoke-resume",
             timeout=args.timeout,
             enable_dubbing=args.enable_dubbing,
+            tts_voice_id=selected_voice,
         )
         if was_killed or resumed is None:
             raise SmokeError("resume invocation was unexpectedly killed")
@@ -305,7 +352,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         resume_report = {
             "first_invocation_killed": killed,
             "first_status_present": first is not None,
-            "resume_output": _verify_output(ffprobe, kill_output, 3, expect_dubbing=args.enable_dubbing),
+            "resume_output": _verify_output(ffprobe, kill_output, 3, expect_dubbing=args.enable_dubbing, expect_voice_id=selected_voice),
             "logs": (kill_log + resume_log)[-4096:],
         }
 
@@ -321,6 +368,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "smoke-corrupt",
         timeout=args.timeout,
         enable_dubbing=args.enable_dubbing,
+        tts_voice_id=selected_voice,
     )
     if killed or bad_status is None:
         raise SmokeError("corrupt job was unexpectedly killed")
@@ -336,11 +384,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "smoke-good",
         timeout=args.timeout,
         enable_dubbing=args.enable_dubbing,
+        tts_voice_id=selected_voice,
     )
     if killed or good_status is None:
         raise SmokeError("valid job was unexpectedly killed")
     _require_status(good_status, "COMPLETED", "smoke-good")
-    good_output_report = _verify_output(ffprobe, good_output, 3, expect_dubbing=args.enable_dubbing)
+    good_output_report = _verify_output(ffprobe, good_output, 3, expect_dubbing=args.enable_dubbing, expect_voice_id=selected_voice)
+    replay_isolation = _verify_replay_isolation(supervisor, root, data_root, short_source, good_output, voice_id=selected_voice)
 
     long_output_report: dict[str, Any] | None = None
     if args.long_seconds > 3:
@@ -355,11 +405,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "smoke-long",
             timeout=args.timeout,
             enable_dubbing=args.enable_dubbing,
+            tts_voice_id=selected_voice,
         )
         if killed or long_status is None:
             raise SmokeError("long-form job was unexpectedly killed")
         _require_status(long_status, "COMPLETED", "smoke-long")
-        long_output_report = _verify_output(ffprobe, long_output, args.long_seconds, expect_dubbing=args.enable_dubbing)
+        long_output_report = _verify_output(ffprobe, long_output, args.long_seconds, expect_dubbing=args.enable_dubbing, expect_voice_id=selected_voice)
     profile_marker = data_root / "models" / ".profile-ready"
     if not profile_marker.is_file() or profile_marker.stat().st_size <= 0:
         raise SmokeError(f"model profile did not become ready: {profile_marker}")
@@ -368,6 +419,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "schema_version": 1,
         "profile": "cpu-local-file-b2" if args.enable_dubbing else "cpu-local-file-b1",
         "batch_failure_isolation": "passed",
+        "immutable_job_replay": replay_isolation,
         "corrupt_job_state": bad_status["status"],
         "good_job": good_output_report,
         "resume": resume_report,

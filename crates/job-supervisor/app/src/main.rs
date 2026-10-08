@@ -5,7 +5,7 @@
 //! connection and the Python child process.  Python emits only the versioned
 //! worker protocol; all durable mutations happen in this process.
 
-use dubflow_job_state::{ArtifactState, DurableStore, JobStatus, StageStatus, StateError};
+use dubflow_job_state::{hash_file, ArtifactState, DurableStore, JobStatus, StageStatus, StateError};
 use dubflow_worker_protocol::{
     Envelope, MessageType, Payload, ShutdownStatus, StreamValidator, MAX_LINE_BYTES,
 };
@@ -409,6 +409,58 @@ impl StartSpec {
         self.tts_voice_id = voice_id;
         Ok(self)
     }
+
+    fn durable_request(&self, runtime: &RuntimePaths) -> SupervisorResult<String> {
+        let source = input_fingerprint(&self.source_path)?;
+        // Mirror the accepted sidecar priority; adding/removing/changing the
+        // selected subtitle cannot reuse a completed transcript or dub.
+        let sidecar = ["srt", "SRT", "vtt", "VTT"].into_iter()
+            .map(|suffix| self.source_path.with_extension(suffix))
+            .find(|path| path.is_file())
+            .map(|path| input_fingerprint(&path)).transpose()?;
+        let manifest_root = runtime.app_root.join("models").join("manifests");
+        let mut manifests = Vec::new();
+        if manifest_root.is_dir() {
+            for entry in fs::read_dir(&manifest_root)? {
+                let path = entry?.path();
+                if path.is_file() && path.extension().and_then(|value| value.to_str()) == Some("json") {
+                    if manifests.len() >= 64 {
+                        return Err(SupervisorError::Invalid("model manifest inventory exceeds the bounded limit".into()));
+                    }
+                    manifests.push((path.file_name().unwrap().to_string_lossy().into_owned(), input_fingerprint(&path)?));
+                }
+            }
+            manifests.sort_by(|left, right| left.0.cmp(&right.0));
+        }
+        let release_manifest = runtime.root.join("release-manifest.json");
+        Ok(serde_json::to_string(&json!({
+            "schema_version": 1, "source_path": self.source_path, "source": source,
+            "sidecar": sidecar, "output_dir": self.output_dir,
+            "source_language": self.source_language, "target_language": self.target_language,
+            "enable_dubbing": self.enable_dubbing, "tts_voice_id": self.tts_voice_id,
+            "burn_in_subtitles": self.burn_in_subtitles,
+            "producer": {"runtime_root": runtime.root, "model_root": runtime.model_root,
+                "worker": input_fingerprint(&runtime.worker_script)?,
+                "python": input_fingerprint(&runtime.python)?,
+                "ffmpeg": input_fingerprint(&runtime.ffmpeg)?,
+                "ffprobe": input_fingerprint(&runtime.ffprobe)?,
+                "release_manifest": if release_manifest.is_file() { Some(input_fingerprint(&release_manifest)?) } else { None },
+                "model_manifests": manifests}
+        }))?)
+    }
+}
+
+fn input_fingerprint(path: &Path) -> SupervisorResult<Value> {
+    let before = fs::metadata(path)?;
+    if !before.is_file() {
+        return Err(SupervisorError::Invalid("job input is not a regular file".into()));
+    }
+    let (hash, size) = hash_file(path)?;
+    let after = fs::metadata(path)?;
+    if before.len() != size || before.len() != after.len() || before.modified()? != after.modified()? {
+        return Err(SupervisorError::Worker { code:"JOB_INPUT_CHANGED".into(), condition:"job input changed while computing its identity".into(), retryable:false });
+    }
+    Ok(json!({"sha256":hash, "size_bytes":size}))
 }
 
 fn absolute_path(value: &str, name: &str) -> SupervisorResult<PathBuf> {
@@ -849,7 +901,6 @@ fn run_one_shot(
     // Without this hook a valid restart would attempt the illegal
     // `running -> running` transition.
     let startup_store = DurableStore::open(&runtime.db)?;
-    startup_store.recover_after_restart(now_ms())?;
     let spec = StartSpec::from_request(
         Some(job_id.unwrap_or_else(new_job_id)),
         source_path,
@@ -859,6 +910,10 @@ fn run_one_shot(
         Some(enable_dubbing),
         Some(burn_in_subtitles),
     )?.with_voice_id(tts_voice_id)?;
+    // Verify/admit before changing status files or restart state. A conflicting
+    // caller has no authority to fail or relabel the original durable job.
+    ensure_job(&startup_store, &spec, &runtime)?;
+    startup_store.recover_after_restart(now_ms())?;
     let final_status_path = status_path.unwrap_or_else(|| {
         data_root
             .join("control")
@@ -892,14 +947,12 @@ fn run_one_shot(
         match outcome {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                best_effort_fail_job(
-                    &runtime_for_worker,
-                    &spec_for_worker.job_id,
-                    &format!("SUPERVISOR_JOB_ERROR: {error}"),
-                );
+                if !preserve_existing_job(&error) {
+                    best_effort_fail_job(&runtime_for_worker, &spec_for_worker.job_id, &format!("SUPERVISOR_JOB_ERROR: {error}"));
+                }
                 let _ = tx_for_worker.send(InternalMessage::Output(error_value(
                     Some(&spec_for_worker.job_id),
-                    "SUPERVISOR_JOB_ERROR",
+                    supervisor_error_code(&error),
                     &error.to_string(),
                     false,
                 )));
@@ -1472,6 +1525,11 @@ fn handle_request(
                 )?;
                 return Ok(false);
             }
+            let store = DurableStore::open(&runtime.db)?;
+            if let Err(error) = ensure_job(&store, &spec, runtime) {
+                emit_value(stdout, error_value(Some(&spec.job_id), supervisor_error_code(&error), &error.to_string(), false))?;
+                return Ok(false);
+            }
             let control = Arc::new(JobControl::new());
             active.insert(spec.job_id.clone(), control.clone());
             drop(active);
@@ -1489,14 +1547,12 @@ fn handle_request(
                 match outcome {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => {
-                        best_effort_fail_job(
-                            &runtime,
-                            &job_id,
-                            &format!("SUPERVISOR_JOB_ERROR: {error}"),
-                        );
+                        if !preserve_existing_job(&error) {
+                            best_effort_fail_job(&runtime, &job_id, &format!("SUPERVISOR_JOB_ERROR: {error}"));
+                        }
                         let _ = tx.send(InternalMessage::Output(error_value(
                             Some(&job_id),
-                            "SUPERVISOR_JOB_ERROR",
+                            supervisor_error_code(&error),
                             &error.to_string(),
                             false,
                         )));
@@ -1529,7 +1585,7 @@ fn execute_job(
     tx: Sender<InternalMessage>,
 ) -> SupervisorResult<()> {
     let store = DurableStore::open(&runtime.db)?;
-    ensure_job(&store, &spec)?;
+    ensure_job(&store, &spec, runtime)?;
     // A process can die between artifact registration and its final commit.
     // Reconcile those durable rows before deciding whether the job is already
     // complete or starting another worker attempt.
@@ -1687,19 +1743,38 @@ fn execute_job(
     }
 }
 
-fn ensure_job(store: &DurableStore, spec: &StartSpec) -> SupervisorResult<()> {
+fn ensure_job(store: &DurableStore, spec: &StartSpec, runtime: &RuntimePaths) -> SupervisorResult<()> {
+    let request = spec.durable_request(runtime)?;
     match store.job_status(&spec.job_id) {
-        Ok(_) => match store.stage_status(&spec.job_id, STAGE_ID) {
-            Ok(_) => Ok(()),
-            Err(StateError::NotFound { .. }) => Err(SupervisorError::Invalid(
-                "existing job has no production stage".into(),
-            )),
-            Err(error) => Err(error.into()),
+        Ok(status) => {
+            match store.job_start_request(&spec.job_id)? {
+                Some(saved) if saved == request => {},
+                Some(_) => return Err(SupervisorError::Worker {
+                    code:"JOB_ID_CONFLICT".into(),
+                    condition:"job ID belongs to different input, voice, output options or producer; create a new job ID".into(),
+                    retryable:false,
+                }),
+                None => return Err(SupervisorError::Worker {
+                    code:"JOB_START_UNVERIFIED".into(),
+                    condition:"historical job has no verified start options; keep its artifacts and create a new job ID".into(),
+                    retryable:false,
+                }),
+            }
+            match store.stage_status(&spec.job_id, STAGE_ID) {
+                Ok(_) => Ok(()),
+                Err(StateError::NotFound { .. }) if status == JobStatus::Queued => {
+                    // Recover a crash after admission but before stage creation.
+                    store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS)?;
+                    Ok(())
+                },
+                Err(error) => Err(error.into()),
+            }
         },
         Err(StateError::NotFound { .. }) => {
-            store.create_job(
+            store.create_job_with_start_request(
                 &spec.job_id,
                 &format!("file://{}", spec.source_path.display()),
+                &request,
                 now_ms(),
             )?;
             store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS)?;
@@ -1707,6 +1782,17 @@ fn ensure_job(store: &DurableStore, spec: &StartSpec) -> SupervisorResult<()> {
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn supervisor_error_code(error: &SupervisorError) -> &str {
+    match error {
+        SupervisorError::Worker { code, .. } => code,
+        _ => "SUPERVISOR_JOB_ERROR",
+    }
+}
+
+fn preserve_existing_job(error: &SupervisorError) -> bool {
+    matches!(error, SupervisorError::Worker { code, .. } if matches!(code.as_str(), "JOB_ID_CONFLICT" | "JOB_START_UNVERIFIED" | "JOB_INPUT_CHANGED"))
 }
 
 fn cancel_durable(store: &DurableStore, job_id: &str, reason: &str) -> SupervisorResult<()> {
@@ -2204,6 +2290,75 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn identity_fixture() -> (PathBuf, RuntimePaths, StartSpec) {
+        let root = std::env::temp_dir().join(format!("dubflow-start-identity-{}-{}", std::process::id(), ID_COUNTER.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(root.join("app/models/manifests")).unwrap();
+        for (name, bytes) in [("source.mp4", "original media"), ("worker.py", "worker"), ("python.exe", "runtime"), ("ffmpeg.exe", "ffmpeg"), ("ffprobe.exe", "ffprobe"), ("app/models/manifests/tts.json", "{\"version\":1}")] {
+            fs::write(root.join(name), bytes).unwrap();
+        }
+        let runtime = RuntimePaths { root:root.clone(), app_root:root.join("app"), python:root.join("python.exe"), worker_script:root.join("worker.py"),
+            ffmpeg:root.join("ffmpeg.exe"), ffprobe:root.join("ffprobe.exe"), model_root:root.join("models"), db:root.join("state.sqlite") };
+        let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
+            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true };
+        (root, runtime, spec)
+    }
+
+    #[test]
+    fn replay_rejects_changed_source_voice_options_before_completed_shortcut() {
+        let (root, runtime, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        store.start_job(&spec.job_id, 1).unwrap();
+        store.start_stage(&spec.job_id, STAGE_ID, 2).unwrap();
+        store.complete_stage(&spec.job_id, STAGE_ID, 3).unwrap();
+        store.complete_job(&spec.job_id, 4).unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        let mut changed = spec.clone();
+        changed.tts_voice_id = Some("vi-thai-son-vieneu3-v1".into());
+        assert!(matches!(ensure_job(&store, &changed, &runtime), Err(SupervisorError::Worker { code, .. }) if code == "JOB_ID_CONFLICT"));
+        changed = spec.clone(); changed.output_dir = root.join("other-output");
+        assert!(ensure_job(&store, &changed, &runtime).is_err());
+        changed = spec.clone(); changed.enable_dubbing = false;
+        assert!(ensure_job(&store, &changed, &runtime).is_err());
+        changed = spec.clone(); changed.source_language = "zh".into();
+        assert!(ensure_job(&store, &changed, &runtime).is_err());
+        changed = spec.clone(); changed.burn_in_subtitles = false;
+        assert!(ensure_job(&store, &changed, &runtime).is_err());
+        fs::write(&spec.source_path, b"different media").unwrap();
+        assert!(ensure_job(&store, &spec, &runtime).is_err());
+        assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Succeeded);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bound_job_recovers_missing_stage_but_legacy_job_is_not_rebound() {
+        let (root, runtime, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        store.create_job_with_start_request(&spec.job_id, "file:///source", &spec.durable_request(&runtime).unwrap(), 1).unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        assert_eq!(store.stage_status(&spec.job_id, STAGE_ID).unwrap(), StageStatus::Pending);
+        let mut legacy = spec.clone(); legacy.job_id = "legacy".into();
+        store.create_job(&legacy.job_id, "file:///original", 2).unwrap();
+        assert!(matches!(ensure_job(&store, &legacy, &runtime), Err(SupervisorError::Worker { code, .. }) if code == "JOB_START_UNVERIFIED"));
+        assert_eq!(store.job_start_request(&legacy.job_id).unwrap(), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_sidecar_and_model_manifest_cannot_change_a_bound_job() {
+        let (root, runtime, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        fs::write(spec.source_path.with_extension("srt"), "original subtitles").unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        fs::write(spec.source_path.with_extension("srt"), "changed subtitles").unwrap();
+        assert!(ensure_job(&store, &spec, &runtime).is_err());
+        fs::write(spec.source_path.with_extension("srt"), "original subtitles").unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        fs::write(runtime.app_root.join("models/manifests/tts.json"), "{\"version\":2}").unwrap();
+        assert!(ensure_job(&store, &spec, &runtime).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn cli_and_json_start_preserve_the_selected_voice() {

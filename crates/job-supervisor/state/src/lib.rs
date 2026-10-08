@@ -12,12 +12,13 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const MIGRATION_VERSION: i64 = 1;
+const MIGRATION_VERSION: i64 = 2;
 const MAX_ID_CHARS: usize = 128;
 const MAX_KIND_CHARS: usize = 128;
 const MAX_ERROR_CHARS: usize = 4096;
 const MAX_RETRY_ATTEMPTS: u8 = 255;
 const MIGRATION_SQL: &str = include_str!("../../../../migrations/0001_job_state.sql");
+const START_REQUEST_MIGRATION_SQL: &str = include_str!("../../../../migrations/0002_job_start_requests.sql");
 
 #[derive(Debug)]
 pub enum StateError {
@@ -166,10 +167,11 @@ impl DurableStore {
         let current: Option<i64> = self.connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))?;
         let current = current.unwrap_or(0);
         if current > MIGRATION_VERSION { return Err(StateError::UnsupportedMigration(current)); }
-        if current < MIGRATION_VERSION {
+        for (version, sql) in [(1, MIGRATION_SQL), (2, START_REQUEST_MIGRATION_SQL)] {
+            if current >= version { continue; }
             let tx = self.connection.unchecked_transaction()?;
-            tx.execute_batch(MIGRATION_SQL)?;
-            tx.execute("INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?1, 0)", params![MIGRATION_VERSION])?;
+            tx.execute_batch(sql)?;
+            tx.execute("INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?1, 0)", params![version])?;
             tx.commit()?;
         }
         Ok(())
@@ -195,6 +197,25 @@ impl DurableStore {
         self.require_job(job_id)?;
         self.connection.execute("INSERT INTO stages(job_id, stage_id, kind, status, max_attempts) VALUES (?1, ?2, ?3, 'pending', ?4)", params![job_id, stage_id, kind, i64::from(max_attempts)])?;
         Ok(())
+    }
+
+    /// Admit the immutable start request in the same transaction as its job.
+    /// There is intentionally no update/upsert API for a caller to rebind it.
+    pub fn create_job_with_start_request(&self, job_id: &str, source_uri: &str, request_json: &str, now_ms: u64) -> Result<()> {
+        validate_id(job_id, "job_id", MAX_ID_CHARS)?;
+        validate_non_empty(source_uri, "source_uri", 4096)?;
+        validate_non_empty(request_json, "start request", 16384)?;
+        let now = to_i64(now_ms, "now_ms")?;
+        let tx = self.connection.unchecked_transaction()?;
+        tx.execute("INSERT INTO jobs(job_id, source_uri, status, created_at_ms, updated_at_ms) VALUES (?1, ?2, 'queued', ?3, ?3)", params![job_id, source_uri, now])?;
+        tx.execute("INSERT INTO job_start_requests(job_id, request_json, created_at_ms) VALUES (?1, ?2, ?3)", params![job_id, request_json, now])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn job_start_request(&self, job_id: &str) -> Result<Option<String>> {
+        self.require_job(job_id)?;
+        Ok(self.connection.query_row("SELECT request_json FROM job_start_requests WHERE job_id = ?1", params![job_id], |row| row.get(0)).optional()?)
     }
 
     pub fn job_status(&self, job_id: &str) -> Result<JobStatus> {
@@ -605,7 +626,8 @@ fn quarantine_path(path: &Path, artifact_id: &str) -> PathBuf {
     let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("artifact");
     path.with_file_name(format!("{file_name}.{artifact_id}.quarantine"))
 }
-fn hash_file(path: &Path) -> io::Result<(String, u64)> {
+/// Bounded streaming content identity for supervisor-owned inputs/artifacts.
+pub fn hash_file(path: &Path) -> io::Result<(String, u64)> {
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -642,10 +664,44 @@ mod tests {
     #[test]
     fn migration_creates_state() {
         let store = DurableStore::open_in_memory().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(store.schema_version().unwrap(), 2);
         setup(&store);
         assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Queued);
         assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Pending);
+    }
+
+    #[test]
+    fn migration_two_preserves_historical_jobs_without_inventing_options() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATION_SQL).unwrap();
+        connection.execute("INSERT INTO schema_migrations(version, applied_at_ms) VALUES (1, 0)", []).unwrap();
+        connection.execute("INSERT INTO jobs(job_id, source_uri, status, created_at_ms, updated_at_ms) VALUES ('legacy', 'file:///original.mp4', 'paused', 1, 1)", []).unwrap();
+        let store = DurableStore::from_connection(connection).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 2);
+        assert_eq!(store.job_status("legacy").unwrap(), JobStatus::Paused);
+        assert_eq!(store.job_start_request("legacy").unwrap(), None);
+        store.apply_migrations().unwrap();
+        assert_eq!(store.schema_version().unwrap(), 2);
+    }
+
+    #[test]
+    fn start_request_is_atomic_immutable_and_survives_restart() {
+        let path = temp_path("start-request", "sqlite");
+        {
+            let store = DurableStore::open(&path).unwrap();
+            store.create_job_with_start_request("voice-job", "file:///source.mp4", "{\"voice\":\"original\"}", 1).unwrap();
+            assert!(store.create_job_with_start_request("voice-job", "file:///different.mp4", "{\"voice\":\"different\"}", 2).is_err());
+            assert!(store.create_job_with_start_request("oversized", "file:///source.mp4", &"x".repeat(16385), 3).is_err());
+            assert!(matches!(store.job_status("oversized"), Err(StateError::NotFound { .. })));
+        }
+        {
+            let store = DurableStore::open(&path).unwrap();
+            assert_eq!(store.job_start_request("voice-job").unwrap().as_deref(), Some("{\"voice\":\"original\"}"));
+            assert_eq!(store.job_status("voice-job").unwrap(), JobStatus::Queued);
+        }
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
     }
 
     #[test]

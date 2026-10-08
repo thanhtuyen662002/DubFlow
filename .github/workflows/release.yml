@@ -86,6 +86,8 @@ jobs:
           $env:RUSTFLAGS = '-C target-feature=+crt-static'
           cargo test --manifest-path crates/job-supervisor/app/Cargo.toml --target-dir crates/job-supervisor/app/target --locked
           if ($LASTEXITCODE -ne 0) { throw 'Supervisor start-option tests failed' }
+          cargo test --manifest-path crates/job-supervisor/state/Cargo.toml --target-dir crates/job-supervisor/app/target --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Durable start binding and migration tests failed' }
           cargo build --manifest-path crates/job-supervisor/app/Cargo.toml --target-dir crates/job-supervisor/app/target --locked --release
           $supervisor = Join-Path $PWD 'crates/job-supervisor/app/target/release/dubflow-supervisor.exe'
           if (-not (Test-Path -LiteralPath $supervisor -PathType Leaf)) {
