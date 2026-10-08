@@ -113,11 +113,25 @@ def _map_payload(provider_id: str, raw: Mapping[str, Any], source_ref: str) -> d
             "subtitle": {"list": _subtitles(raw)},
         }
     best_url = _format_url(best)
+    streams = []
+    for role, values in (("video", videos), ("audio", audios)):
+        for index, value in enumerate(values):
+            has_audio = value.get("acodec") not in {None, "none"}
+            protocol = value.get("protocol", "https")
+            kind = ("hls" if protocol in {"m3u8", "m3u8_native"} else
+                    "dash" if protocol == "http_dash_segments" or not has_audio else "progressive")
+            streams.append({"candidate_id": f"sdk-{role}-{index}", "locator": _format_url(value),
+                "kind": kind, "mime_type": role + ("/webm" if value.get("ext") == "webm" else "/mp4"),
+                "width": value.get("width") if role == "video" else None,
+                "height": value.get("height") if role == "video" else None, "has_audio": has_audio})
+    if len(streams) > 256:
+        raise SourceError(SourceErrorCode.SOURCE_CHANGED, "yt-dlp returned too many media formats", provider_id=provider_id)
     return {
         "aweme_id": raw.get("id") if isinstance(raw.get("id"), str) else source_ref,
         "desc": raw.get("title") or source_ref,
         "duration": (float(raw.get("duration")) * 1000) if isinstance(raw.get("duration"), (int, float)) else raw.get("duration"),
         "video": {"width": best.get("width"), "height": best.get("height"), "play_addr": {"url_list": [best_url]}, "download_addr": {"url_list": [best_url]}},
+        "source_streams": streams,
         "subtitle_infos": [{"language": item["lan"], "url": item["subtitle_url"], "format": item["format"]} for item in _subtitles(raw)],
     }
 

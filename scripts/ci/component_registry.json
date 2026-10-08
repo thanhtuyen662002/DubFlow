@@ -484,7 +484,9 @@
         "engine/dubflow/download/source_adapter.py",
         "engine/dubflow/download/sessions.py",
         "engine/dubflow/download/authenticated.py",
-        "engine/dubflow/download/authenticated_native.py",
+          "engine/dubflow/download/authenticated_native.py",
+          "engine/dubflow/download/runtime.py",
+          "engine/dubflow/download/assets",
         "tests/source_adapter"
       ],
       "commands": [

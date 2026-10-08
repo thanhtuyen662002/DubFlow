@@ -23,6 +23,7 @@ from engine.dubflow.download.source_adapter import (
 )
 from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, DownloadResult, MediaMaterializer
 from engine.dubflow.download.provider_transport import YtDlpProviderTransport
+from engine.dubflow.download.stream_materializer import StreamMaterializer
 
 
 TICKS_PER_SECOND = 90_000
@@ -166,6 +167,16 @@ def _subtitles(data: Mapping[str, Any]) -> tuple[SubtitleCandidate, ...]:
 
 
 def _media(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
+    # SDK mapping supplies actual codec/protocol roles. Do not treat a
+    # video-only format as the provider's historical combined play_addr.
+    if "source_streams" in data:
+        values = data["source_streams"]
+        if not isinstance(values, list) or not 1 <= len(values) <= 256:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Douyin SDK media formats are malformed", provider_id="douyin")
+        try:
+            return tuple(MediaCandidate(**value) for value in values)
+        except (TypeError, SourceError):
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Douyin SDK media formats are malformed", provider_id="douyin") from None
     video = _mapping(data.get("video"), "video")
     # play_addr is preferred because it represents the playable rendition;
     # download_addr is retained as a fallback candidate.
@@ -200,7 +211,8 @@ class DouyinSourceAdapter:
     provider_id = "douyin"
 
     def __init__(self, transport: DouyinTransport | None = None, session_bridge: BrowserSessionBridge | None = None, *, ytdlp_executable: str | Path | None = None,
-                 ytdlp_root: str | Path | None = None, ytdlp_sha256: str | None = None, materializer: MediaMaterializer | None = None) -> None:
+                 ytdlp_root: str | Path | None = None, ytdlp_sha256: str | None = None, materializer: MediaMaterializer | None = None,
+                 stream_materializer: StreamMaterializer | None = None) -> None:
         if transport is None:
             if ytdlp_executable is None:
                 raise ValueError("a Douyin transport or app-owned yt-dlp executable is required")
@@ -208,6 +220,7 @@ class DouyinSourceAdapter:
         self._transport = transport
         self._session_bridge = session_bridge
         self._materializer = materializer or MediaMaterializer()
+        self._stream_materializer = stream_materializer
 
     @classmethod
     def can_handle(cls, source_ref: str) -> bool:
@@ -292,7 +305,14 @@ class DouyinSourceAdapter:
 
     def download(self, item: SourceItem, destination: str | Path, *, candidate: MediaCandidate | None = None, **kwargs: object) -> DownloadResult:
         selected = candidate or self.select_download(item)
+        if selected not in item.media_candidates:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "download candidate belongs to another source", provider_id=self.provider_id)
         try:
+            audio = None if selected.has_audio else next((value for value in item.media_candidates if value.mime_type.startswith("audio/")), None)
+            if self._stream_materializer is not None:
+                return self._stream_materializer.download(selected, destination, audio=audio, **kwargs)
+            if not selected.has_audio or selected.kind not in {"local", "progressive"}:
+                raise DownloadError(DownloadErrorCode.UNSUPPORTED, "selected streams require the app-owned source muxer")
             return self._materializer.download(selected, destination, **kwargs)
         except DownloadError as error:
             mapping = {

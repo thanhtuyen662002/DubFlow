@@ -55,12 +55,27 @@ class AuthenticatedYtDlpTransport:
             raise SourceError(SourceErrorCode.UNSUPPORTED, "authenticated extractor runtime verification failed", action="repair_runtime") from error
 
     def inspect_url(self, url: str, *, provider_id: str, headers: Mapping[str, str] | None = None):
+        request = {"schema_version": 1, "provider_id": provider_id, "url": url,
+                   "headers": validated_session_headers(headers, provider=provider_id) if headers else {}}
+        return self._invoke(request, provider_id=provider_id)
+
+    def health_check(self, *, expected_sdk_version: str):
+        result = self._invoke({"schema_version": 1, "operation": "health_check"})
+        try:
+            if (result.get("schema_version") != 1 or result.get("sdk_version") != expected_sdk_version
+                or result.get("isolated") is not True or result.get("no_site") is not True
+                or Path(result["python_executable"]).resolve() != self.python.resolve()):
+                raise ValueError("native producer health mismatch")
+        except (KeyError, TypeError, ValueError):
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "source runtime health identity mismatch", action="repair_runtime") from None
+        return result
+
+    def _invoke(self, request: dict, *, provider_id: str | None = None):
         self._verify()
-        request = json.dumps({"schema_version": 1, "provider_id": provider_id, "url": url,
-                              "headers": validated_session_headers(headers, provider=provider_id) if headers else {}}, ensure_ascii=True).encode("utf-8")
+        payload = json.dumps(request, ensure_ascii=True).encode("utf-8")
         code, stdout, stderr = self.runner.run_with_input(
             [str(self.python), "-I", "-S", "-B", str(self.helper), str(self.sdk_archive)],
-            timeout_s=self.timeout_s, stdin_bytes=request,
+            timeout_s=self.timeout_s, stdin_bytes=payload,
         )
         if code:
             codes = {2: SourceErrorCode.AUTH_REQUIRED, 3: SourceErrorCode.RATE_LIMITED,

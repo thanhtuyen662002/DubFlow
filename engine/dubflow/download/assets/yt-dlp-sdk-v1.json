@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "producer_id": "yt-dlp-sdk-2026.08.19-v1",
+  "version": "2026.08.19",
+  "filename": "yt_dlp-2026.8.19-py3-none-any.whl",
+  "url": "https://files.pythonhosted.org/packages/69/b2/8cd1613f56eed7ceb64fbd4df3f1c01246bfb098e6f398228bafda22b80b/yt_dlp-2026.8.19-py3-none-any.whl",
+  "size_bytes": "3185533",
+  "sha256": "1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf",
+  "license": {
+    "spdx": "Unlicense",
+    "redistributable": true,
+    "approved": true,
+    "archive_path": "yt_dlp-2026.8.19.dist-info/licenses/LICENSE",
+    "size_bytes": "1211",
+    "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c",
+    "source": "https://github.com/yt-dlp/yt-dlp/tree/2026.08.19",
+    "decision": "Redistribute the exact PyPI wheel with its embedded license; no bundled executable, plugins, EJS or optional third-party dependencies."
+  }
+}

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import Mock
 
 from engine.dubflow.download.douyin import DouyinSourceAdapter, DouyinTransportError, normalize_source_ref
 from engine.dubflow.download.source_adapter import SourceError, SourceErrorCode
+from engine.dubflow.download.provider_transport import _map_payload
 
 
 PAYLOAD = {
@@ -80,6 +82,34 @@ class DouyinAdapterTests(unittest.TestCase):
             DouyinSourceAdapter(transport).inspect("https://example.test/video/7345678901234567890")
         self.assertEqual(context.exception.code, SourceErrorCode.INVALID_INPUT)
         self.assertEqual(transport.calls, [])
+
+    def test_sdk_split_roles_select_real_audio_companion(self) -> None:
+        raw = {"id": "7345678901234567890", "title": "recorded split SDK", "duration": 3,
+               "formats": [{"url": "https://cdn.example.test/video.mp4", "vcodec": "h264", "acodec": "none", "height": 1080},
+                           {"url": "https://cdn.example.test/audio.m4a", "vcodec": "none", "acodec": "aac"}]}
+        muxer = Mock()
+        adapter = DouyinSourceAdapter(RecordedTransport(_map_payload("douyin", raw, raw["id"])), stream_materializer=muxer)
+        item = adapter.inspect(raw["id"])
+        self.assertFalse(item.media_candidates[0].has_audio)
+        self.assertEqual(item.media_candidates[1].mime_type, "audio/mp4")
+        adapter.download(item, "recorded.mp4")
+        args, kwargs = muxer.download.call_args
+        self.assertEqual(args[0], item.media_candidates[0])
+        self.assertEqual(kwargs["audio"], item.media_candidates[1])
+        without_mux = DouyinSourceAdapter(RecordedTransport({}))
+        with self.assertRaises(SourceError) as error:
+            without_mux.download(item, "recorded.mp4")
+        self.assertEqual(error.exception.code, SourceErrorCode.UNSUPPORTED)
+
+    def test_sdk_playlist_is_not_relabelled_as_progressive(self) -> None:
+        raw = {"id": "7345678901234567890", "title": "recorded HLS",
+               "formats": [{"url": "https://cdn.example.test/index.m3u8", "vcodec": "h264", "acodec": "aac", "protocol": "m3u8_native"}]}
+        adapter = DouyinSourceAdapter(RecordedTransport(_map_payload("douyin", raw, raw["id"])))
+        item = adapter.inspect(raw["id"])
+        self.assertEqual(item.media_candidates[0].kind, "hls")
+        with self.assertRaises(SourceError) as error:
+            adapter.download(item, "recorded.mp4")
+        self.assertEqual(error.exception.code, SourceErrorCode.UNSUPPORTED)
 
 
 if __name__ == "__main__":

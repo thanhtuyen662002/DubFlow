@@ -45,11 +45,18 @@ class YoutubeDL:
             with zipfile.ZipFile(archive, "w") as zipped:
                 zipped.writestr("yt_dlp/__init__.py", source)
                 zipped.writestr("yt_dlp/globals.py", "class Value: value = ['default']\nplugin_dirs=Value()\n")
+                zipped.writestr("yt_dlp/version.py", "__version__ = 'recorded-sdk'\n")
             # Deliberately uses the development test interpreter; not clean-machine evidence.
             root = Path(os.path.commonpath([str(python), str(helper)]))
             pins = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in
                     {"python": python, "helper": helper, "sdk_archive": archive}.items()}
             transport = AuthenticatedYtDlpTransport(runtime_root=root, python=python, helper=helper, sdk_archive=archive, pins=pins, timeout_s=10)
+            health = transport.health_check(expected_sdk_version="recorded-sdk")
+            self.assertTrue(health["isolated"])
+            self.assertTrue(health["no_site"])
+            with self.assertRaises(SourceError) as wrong_version:
+                transport.health_check(expected_sdk_version="different-sdk")
+            self.assertEqual(wrong_version.exception.code, SourceErrorCode.UNSUPPORTED)
             result = transport.inspect_url("https://www.bilibili.com/video/recorded", provider_id="bilibili", headers={"Cookie": "SESSDATA=synthetic-secret"})
             self.assertEqual(result["id"], "recorded")
             self.assertNotIn("synthetic-secret", json.dumps(result))

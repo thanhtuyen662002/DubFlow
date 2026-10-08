@@ -180,3 +180,53 @@ HTTPS API and omits it for HTTP, unrelated CDN and lookalike domains. This is
 development SDK semantics evidence, not authenticated video acquisition.
 SDK API/options were checked against [upstream source](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/YoutubeDL.py)
 and the [official wheel inventory](https://pypi.org/project/yt-dlp/2026.8.19/).
+
+## Reviewed SDK provisioning and bundle factory — #167 follow-up
+
+`download/assets/yt-dlp-sdk-v1.json` pins the exact reviewed PyPI wheel, size,
+SHA-256 and embedded Unlicense notice. The build command
+`python -m engine.dubflow.download.runtime --runtime-root <owned-build-runtime>`
+uses the bounded resumable HTTP materializer to place it in `runtime/source`.
+A correct existing archive is reused offline; a changed archive is rejected
+without automatically replacing code. Nothing is extracted or installed with
+pip, and no system interpreter is discovered. The existing bundle builder can
+copy/inventory this optional runtime directory. Older releases without the SDK
+keep local files usable and report source runtime unavailable.
+
+`provider_from_verified_bundle` consumes the release bootstrap/manager's already
+verified artifact inventory. It verifies the reviewed descriptor, exact SDK and
+notice, owned Python, helper and FFmpeg/FFprobe against those approved pins;
+it never approves their currently observed hashes. Complete bundle integrity
+and signature verification, including the Python DLL/stdlib dependencies, is
+the caller's precondition. The private helper request gains an additive
+`health_check` operation that loads the actual SDK under isolated/no-site Python,
+constructs an empty-cookie downloader without network acquisition and returns
+its producer/runtime identity. Missing/mismatched health evidence fails explicitly.
+The default version-1 inspect request remains compatible.
+
+Both provider adapters receive the pinned helper and local mux boundary. Douyin
+SDK mapping now preserves each format's actual audio/video codec and protocol
+instead of pretending the best video is a combined play URL. Split streams use
+the selected companion; HLS/segment-manifest candidates remain explicit
+unsupported cases until bounded segment acquisition is implemented. Historical
+recorded provider response mappings remain compatible. SourceItem schema 1 and
+canonical integer ticks are unchanged. The optional source runtime directory is
+release-owned code and follows paired updates/retained-runtime policy; it is not
+a mutable model cache or an automatically updating downloader.
+
+The build preparation and provider factory are not yet wired into the release
+workflow or desktop intake. Installed production acquisition, browser capture/
+consent, durable enumeration and parent-crash containment remain open. Native
+SDK/runtime/media probes are distinct from deterministic recorded fixtures.
+
+Native build-stage probe on 2026-10-08: 2,449 isolated Python runtime files were
+copied from historical candidate rc13 after matching its anchored manifest and
+each original file checksum. The exact upstream wheel was acquired through the
+new provisioner and then reused offline. The actual helper reported SDK
+2026.08.19, Python 3.12.10, its owned executable/prefix and isolated/no-site flags.
+Both factories processed recorded split metadata with real local HTTP media and
+actual FFmpeg mux/probe/decode into H.264/AAC. Report SHA-256:
+`b62dd669d59efeac500686340971a76337a878e77778bf9ab53f53e6c07dc58f`.
+This is a constructed build-stage runtime, not a newly installed/signed release.
+Media is synthetic; provider metadata is recorded; no live source, credentials,
+browser capture, channel enumeration or durable desktop intake is qualified.

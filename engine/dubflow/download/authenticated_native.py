@@ -30,6 +30,19 @@ def scoped_cookies(provider, headers):
     return cookies
 
 
+def downloader_options():
+    class QuietLogger:
+        def debug(self, message): pass
+        def warning(self, message): pass
+        def error(self, message): pass
+
+    # Programmatic options never load CLI config. No generic custom headers,
+    # disk cookie file, system JS runtime or mutable helper downloads.
+    return {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
+            "cachedir": False, "js_runtimes": {}, "remote_components": [], "logger": QuietLogger(),
+            "socket_timeout": 30, "retries": 0, "extractor_retries": 0}
+
+
 def inspect(request, youtube_dl):
     provider = request.get("provider_id")
     if provider not in {"bilibili", "douyin"}:
@@ -43,17 +56,7 @@ def inspect(request, youtube_dl):
     if parts.scheme != "https" or parts.username is not None or parts.password is not None or parts.port not in {None, 443} or not (parts.hostname == domain or (parts.hostname or "").endswith("." + domain)):
         raise ValueError("foreign provider URL")
 
-    class QuietLogger:
-        def debug(self, message): pass
-        def warning(self, message): pass
-        def error(self, message): pass
-
-    # Programmatic options never load CLI config. No generic custom headers,
-    # disk cookie file, system JS runtime or mutable helper downloads.
-    options = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
-               "cachedir": False, "js_runtimes": {}, "remote_components": [], "logger": QuietLogger(),
-               "socket_timeout": 30, "retries": 0, "extractor_retries": 0}
-    with youtube_dl(options) as downloader:
+    with youtube_dl(downloader_options()) as downloader:
         for cookie in cookies:
             downloader.cookiejar.set_cookie(cookie)
         raw = downloader.extract_info(url, download=False)
@@ -97,11 +100,26 @@ def main():
         request = json.loads(payload)
         if not isinstance(request, dict) or request.get("schema_version") != 1 or len(sys.argv) != 2:
             return 2
+        operation = request.get("operation", "inspect")
+        if operation not in {"inspect", "health_check"}:
+            return 2
+        if operation == "health_check" and set(request) != {"schema_version", "operation"}:
+            return 2
         sys.path.insert(0, sys.argv[1])  # Parent verified the whole SDK archive hash.
         import yt_dlp
         from yt_dlp.globals import plugin_dirs
         plugin_dirs.value = []
-        result = inspect(request, yt_dlp.YoutubeDL)
+        if operation == "health_check":
+            from yt_dlp.version import __version__
+            with yt_dlp.YoutubeDL(downloader_options()) as downloader:
+                if list(downloader.cookiejar):
+                    raise ValueError("unexpected health check cookies")
+                result = {"schema_version": 1, "sdk_version": __version__,
+                          "python_version": ".".join(map(str, sys.version_info[:3])),
+                          "python_executable": sys.executable, "python_prefix": sys.prefix,
+                          "isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site)}
+        else:
+            result = inspect(request, yt_dlp.YoutubeDL)
         sys.stdout.write(json.dumps(result, ensure_ascii=True))
         return 0
     except Exception as error:
