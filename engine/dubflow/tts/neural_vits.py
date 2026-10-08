@@ -359,13 +359,7 @@ class NeuralVietnameseTtsEngine:
         if target < 1 or target > max_frames:
             raise TtsBackendError("TTS_AUDIO_TOO_LARGE", "requested cue exceeds the waveform memory bound")
         try:
-            audio = self._tts.generate(request.segment.text, sid=0, speed=1.0)
-            speed_milli = 1000
-            if len(audio.samples) > target:
-                speed_milli = math.ceil(len(audio.samples) * 1000 / target)
-                if speed_milli > request.config.max_speed_ratio_milli:
-                    raise TtsBackendError("DURATION_FIT_REQUIRED", "natural speech cannot fit this cue within the safe speaking rate")
-                audio = self._tts.generate(request.segment.text, sid=0, speed=speed_milli / 1000)
+            audio, speed_milli = self._duration_fit(request, target)
             samples = audio.samples
             if audio.sample_rate != self.pack.sample_rate or not 0 < len(samples) <= max_frames:
                 raise TtsBackendError("TTS_AUDIO_INVALID", "neural inference produced invalid waveform metadata")
@@ -398,3 +392,14 @@ class NeuralVietnameseTtsEngine:
             raise
         except Exception as error:
             raise TtsBackendError("TTS_INFERENCE_FAILED", str(error)[:1000], retryable=False) from error
+
+    def _duration_fit(self, request: TtsRequest, target: int, *, max_speed_milli: int | None = None):
+        audio = self._tts.generate(request.segment.text, sid=0, speed=1.0)
+        speed_milli = 1000
+        if len(audio.samples) > target:
+            speed_milli = math.ceil(len(audio.samples) * 1000 / target)
+            maximum = request.config.max_speed_ratio_milli if max_speed_milli is None else min(max_speed_milli, request.config.max_speed_ratio_milli)
+            if speed_milli > maximum:
+                raise TtsBackendError("DURATION_FIT_REQUIRED", "natural speech cannot fit this cue within the safe speaking rate")
+            audio = self._tts.generate(request.segment.text, sid=0, speed=speed_milli / 1000)
+        return audio, speed_milli

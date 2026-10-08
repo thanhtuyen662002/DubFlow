@@ -35,7 +35,7 @@
     "repetition_penalty": 1.2,
     "babble_retries": 0,
     "precision": "fp32",
-    "duration_fit": "app-owned-ffmpeg-atempo-max1.3"
+    "duration_fit": "app-owned-ffmpeg-atempo-max1.3-measured3-pad5ms"
   },
   "attribution": "VieNeu-TTS v3 Turbo by Pham Nguyen Ngoc Bao; OpenMOSS MOSS Audio Tokenizer Nano; pinned official preset speaker/reference codes.",
   "artifacts": [

@@ -149,3 +149,33 @@ Still unresolved: packaged parent-death/restart and staging reclamation, B1 reco
 a human listening set, Chinese no-sidecar dubbing, long-form/batch evidence,
 exact-head CI/current base, clean-machine Windows and release/soak qualification.
 PR #195 remains Draft; this ADR proposes no exception to those gates.
+
+## Measured VieNeu duration fitting — producer 3.1.0
+
+Actual acquired media exposed residual frame-count overshoot after FFmpeg
+`atempo`, even when the natural waveform/rate calculation predicts a fit.
+VieNeu now measures that output and may make at most two additional tempo
+passes on the same cached natural waveform (three total tempo passes). Each
+pass strictly increases the speed using measured frame count plus a 5 ms
+margin. Both the requested configuration and the engine cap of 1.3 times
+normal speech bound every pass. Natural output that already requires more
+than that rate, or residual spoken samples after the final bounded pass,
+remains `DURATION_FIT_REQUIRED`; preserve source/B1 instead of cutting speech.
+The historic Mimic3 adapter keeps its original single-fit behavior.
+
+This changes the VieNeu producer to `3.1.0` and the checksum-pinned profile's
+duration recipe to `app-owned-ffmpeg-atempo-max1.3-measured3-pad5ms`. Model
+weights, presets, public TTS/artifact schemas and source timeline are unchanged.
+The new manifest/producer/source digests invalidate private B2 generation
+reuse. Historic jobs and exports retain their recorded 3.0.0 recipe and runtime;
+updated components must not be bound to those executable IDs. Create a new
+execution or retain the compatible installed runtime as required by ADR-0020.
+No migration relabels or overwrites historic audio. Required lanes must rerun
+on the new complete source before readiness.
+
+The development diagnostic fits all 24 residual-overshoot cues from the
+9-minute real Chinese video without cutting samples, while 22 initially
+over-rate cues still need fallback. That diagnostic precedes this production
+implementation and is independent of listening/translation approval. Tests
+must cover actual selected code, bounded/nonrepeating rates, source preservation
+and the packaged producer identity; this is not a full-release exception.

@@ -71,7 +71,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             self.assertEqual(bootstrap.call_args.kwargs["voice_id"], "vi-truc-ly-vieneu3-v1")
             backend.assert_called_once_with(pack, ffmpeg_path=HermeticDecodedAudioAdapter.ffmpeg_path)
             self.assertEqual(result.tts_document.provenance.backend_id, "vieneu-v3-turbo-onnx-v1")
-            self.assertEqual(result.tts_document.provenance.producer_version, "3.0.0")
+            self.assertEqual(result.tts_document.provenance.producer_version, "3.1.0")
             self.assertEqual(result.tts_document.provenance.model_id, "dubflow-fixture-vi")
             self.assertEqual(result.mix_document.provenance.backend_id, "pcm-duck-v1")
             self.assertEqual(len(result.tts_document.artifacts), 2)

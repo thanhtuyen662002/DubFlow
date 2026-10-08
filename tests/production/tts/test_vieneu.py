@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from array import array
 from dataclasses import replace
 import hashlib
 import json
@@ -15,7 +16,7 @@ from unittest.mock import patch
 import wave
 
 from engine.dubflow.asr import TimeBase, TimePoint
-from engine.dubflow.tts.adapter import TtsConfig, TtsInput, TtsRequest, TtsError
+from engine.dubflow.tts.adapter import TtsConfig, TtsInput, TtsRequest, TtsError, EngineHealth, approved_default_voice
 from engine.dubflow.tts.vieneu import load_vieneu_voice, voice_choices, VieNeuVietnameseTtsEngine, FILES
 from engine.dubflow.tts.vieneu_native import NativeModel, VERSIONS, INFERENCE_RECIPE
 
@@ -155,6 +156,55 @@ class VieNeuBoundsTests(unittest.TestCase):
         for text, speed in (("", 1.), ("x" * 513, 1.), ("xin chào", float("nan")), ("xin chào", 1.31), ("xin chào", True)):
             with self.subTest(text=text[:20], speed=speed), self.assertRaises(ValueError):
                 model.generate({"text": text, "speed": speed, "sequence": 1})
+
+
+class MeasuredVieNeuFitTests(unittest.TestCase):
+    def synthesize(self, frames, *, maximum=1300):
+        speeds = []
+
+        def generate(text, sid=0, speed=1.0):
+            speeds.append(speed)
+            return SimpleNamespace(samples=array("f", [0.1]) * frames.pop(0), sample_rate=48000, warnings=())
+
+        engine = VieNeuVietnameseTtsEngine(SimpleNamespace(sample_rate=48000))
+        engine._tts = SimpleNamespace(generate=generate)
+        base = TimeBase(1, 48000)
+        segment = TtsInput("fit", "fit", "Xin chào Việt Nam.", TimePoint(0, base), TimePoint(48000, base))
+        request = TtsRequest("fit", segment, approved_default_voice(),
+            TtsConfig(sample_rate=48000, max_speed_ratio_milli=maximum), "sha256:" + "a" * 64, 0, 48000)
+        with patch.object(engine, "healthcheck", return_value=EngineHealth(True)):
+            try:
+                result = engine.synthesize(request)
+            except TtsError as error:
+                return error, speeds
+        return result, speeds
+
+    def test_measured_residual_changes_rate_and_keeps_complete_speech(self):
+        result, speeds = self.synthesize([57600, 48120, 47900])
+        self.assertEqual(speeds, [1.0, 1.2, 1.209])
+        self.assertEqual(result.speed_ratio_milli, 1209)
+        self.assertEqual(result.fit_mode, "speed_adjusted")
+        import io
+        with wave.open(io.BytesIO(result.audio_bytes)) as reader:
+            self.assertEqual(reader.getnframes(), 48000)
+            self.assertNotEqual(reader.readframes(47900), b"\0" * 95800)
+            self.assertEqual(reader.readframes(100), b"\0" * 200)
+
+    def test_rate_cap_rejects_residual_instead_of_cutting_or_sending_unsafe_speed(self):
+        error, speeds = self.synthesize([62400, 48500], maximum=2000)
+        self.assertEqual(speeds, [1.0, 1.3])
+        self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
+        self.assertIn("spoken samples will not be cut", error.condition)
+        error, speeds = self.synthesize([96000], maximum=2000)
+        self.assertEqual(speeds, [1.0])
+        self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
+
+    def test_residual_retries_are_bounded_and_each_rate_changes(self):
+        error, speeds = self.synthesize([57600, 48500, 48200, 48100])
+        self.assertEqual(len(speeds), 4)  # natural + at most three tempo passes
+        self.assertEqual(speeds, sorted(set(speeds)))
+        self.assertLessEqual(max(speeds), 1.3)
+        self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
 
 
 @unittest.skipUnless(os.environ.get("DUBFLOW_REAL_VIENEU_MODEL_ROOT"), "real pinned VieNeu data not supplied")

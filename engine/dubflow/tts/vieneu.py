@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import importlib.metadata
+import math
 import os
 import re
 from pathlib import Path
@@ -17,7 +18,7 @@ from .neural_vits import (
 from .vieneu_native import FRONTEND_ID, VERSIONS, INFERENCE_RECIPE
 
 ENGINE_ID = "vieneu-v3-turbo-onnx-v1"
-PRODUCER_VERSION = "3.0.0"
+PRODUCER_VERSION = "3.1.0"
 RUNTIME_ID = "vieneu-3.8.3+sea-g2p-0.9.1+onnxruntime-1.30.0+tokenizers-0.23.2+numpy-2.2.6"
 PROFILE_PATH = "models/manifests/production-vieneu-v1.json"
 FILES = frozenset({
@@ -122,6 +123,22 @@ class VieNeuVietnameseTtsEngine(NeuralVietnameseTtsEngine):
 
     def capabilities(self):
         return EngineCapabilities(ENGINE_ID, sample_rates=(48000,), deterministic=False)
+
+    def _duration_fit(self, request, target):
+        audio, speed_milli = super()._duration_fit(request, target, max_speed_milli=1300)
+        # FFmpeg atempo is not an exact frame-count division. Measure residual
+        # overshoot and change the rate, using the child's cached natural speech.
+        # Natural speech that already exceeds the safe rate remains a failure.
+        margin = max(1, self.pack.sample_rate * 5 // 1000)
+        for _ in range(2):
+            if speed_milli == 1000 or len(audio.samples) <= target:
+                break
+            next_speed = math.ceil(speed_milli * (len(audio.samples) + margin) / target)
+            if not speed_milli < next_speed <= min(1300, request.config.max_speed_ratio_milli):
+                break
+            speed_milli = next_speed
+            audio = self._tts.generate(request.segment.text, sid=0, speed=speed_milli / 1000)
+        return audio, speed_milli
 
     def healthcheck(self, voice):
         if voice.model_hash != self.pack.model_hash or voice.voice_id != self.pack.voice_id:

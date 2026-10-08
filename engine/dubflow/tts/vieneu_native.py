@@ -17,7 +17,7 @@ import sys
 
 FRONTEND_ID = "vieneu-sea-g2p-preset-v1"
 VERSIONS = {"vieneu": "3.8.3", "sea-g2p": "0.9.1", "onnxruntime": "1.30.0", "numpy": "2.2.6", "tokenizers": "0.23.2"}
-INFERENCE_RECIPE = {"seed": 20261007, "threads": 2, "max_new_frames": 300, "temperature": 0.8, "top_k": 25, "top_p": 0.95, "repetition_penalty": 1.2, "babble_retries": 0, "precision": "fp32", "duration_fit": "app-owned-ffmpeg-atempo-max1.3"}
+INFERENCE_RECIPE = {"seed": 20261007, "threads": 2, "max_new_frames": 300, "temperature": 0.8, "top_k": 25, "top_p": 0.95, "repetition_penalty": 1.2, "babble_retries": 0, "precision": "fp32", "duration_fit": "app-owned-ffmpeg-atempo-max1.3-measured3-pad5ms"}
 SOURCE_FILES = {
     "vieneu/_v3_turbo_engine/onnx_runtime_lite.py": "7747ac18fb5b660a810a434461bd8386ba40b0b46d559c07907db0c19414084e",
     "vieneu/_v3_turbo_engine/rep_history.py": "2cfc52f9a860fb53450e5b3b364fa5955fba03acf558195c423b476535104a2b",
