@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from engine.dubflow.download.generic import GenericUrlAdapter, YtDlpTransport
 from engine.dubflow.download.materializer import HttpResponse, MediaMaterializer
@@ -78,6 +79,31 @@ class GenericAdapterTests(unittest.TestCase):
         with self.assertRaises(SourceError) as context:
             adapter.enumerate_channel("playlist")
         self.assertEqual(context.exception.code, SourceErrorCode.UNSUPPORTED)
+
+    def test_audio_first_metadata_selects_video_and_preserves_companion(self) -> None:
+        payload = {"id": "split", "formats": [
+            {"format_id": "audio", "url": "https://cdn.example.test/a.m4a", "vcodec": "none", "acodec": "aac"},
+            {"format_id": "small", "url": "https://cdn.example.test/small.mp4", "vcodec": "h264", "acodec": "aac", "height": 360, "width": 640},
+            {"format_id": "large", "url": "https://cdn.example.test/large.mp4", "vcodec": "h264", "acodec": "none", "height": 1080, "width": 1920},
+        ]}
+        muxer = Mock()
+        adapter = GenericUrlAdapter(MetadataTransport(payload), stream_materializer=muxer)
+        item = adapter.inspect("https://video.example.test/watch/split")
+        self.assertEqual(item.media_candidates[0].mime_type, "audio/mp4")
+        adapter.download(item, Path("/unused/final.mp4"))
+        self.assertEqual(muxer.download.call_args.args[0].candidate_id, "large")
+        self.assertEqual(muxer.download.call_args.kwargs["audio"].candidate_id, "audio")
+        adapter.download(item, Path("/unused/final.mp4"), candidate_id="small")
+        self.assertEqual(muxer.download.call_args.args[0].candidate_id, "small")
+        self.assertIsNone(muxer.download.call_args.kwargs["audio"])
+
+    def test_video_only_without_runtime_is_explicitly_unsupported(self) -> None:
+        materializer = Mock()
+        adapter = GenericUrlAdapter(MetadataTransport({"id": "x", "url": "https://cdn.example.test/v.mp4", "vcodec": "h264", "acodec": "none"}), materializer=materializer)
+        with self.assertRaises(SourceError) as context:
+            adapter.download(adapter.inspect("https://video.example.test/x"), Path("/unused/final.mp4"))
+        self.assertEqual(context.exception.code, SourceErrorCode.UNSUPPORTED)
+        materializer.download.assert_not_called()
 
 
 if __name__ == "__main__":

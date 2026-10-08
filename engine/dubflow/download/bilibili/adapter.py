@@ -27,6 +27,7 @@ from engine.dubflow.download.source_adapter import (
 )
 from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, DownloadResult, MediaMaterializer
 from engine.dubflow.download.provider_transport import YtDlpProviderTransport
+from engine.dubflow.download.stream_materializer import StreamMaterializer
 
 
 TICKS_PER_SECOND = 90_000
@@ -168,8 +169,8 @@ def _media_candidates(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
                 MediaCandidate(
                     f"dash-video-{index}",
                     _https_url(locator, "dash.video.url"),
-                    "dash",
-                    "video/mp4",
+                    item.get("kind", "dash"),
+                    item.get("mime_type", "video/mp4"),
                     int(item["width"]) if isinstance(item.get("width"), int) else None,
                     int(item["height"]) if isinstance(item.get("height"), int) else None,
                     False,
@@ -181,14 +182,16 @@ def _media_candidates(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
                 item = _mapping(raw, f"dash.audio[{index}]")
                 locator = item.get("baseUrl", item.get("base_url", item.get("url")))
                 if locator is not None:
-                    result.append(MediaCandidate(f"dash-audio-{index}", _https_url(locator, "dash.audio.url"), "dash", "audio/mp4", has_audio=True))
+                    result.append(MediaCandidate(f"dash-audio-{index}", _https_url(locator, "dash.audio.url"), item.get("kind", "dash"), item.get("mime_type", "audio/mp4"), has_audio=True))
     progressive = data.get("durl", data.get("download_url"))
     if isinstance(progressive, list):
         for index, raw in enumerate(progressive[:256]):
             item = _mapping(raw, f"durl[{index}]")
             locator = item.get("url", item.get("baseUrl"))
             if locator is not None:
-                result.append(MediaCandidate(f"progressive-{index}", _https_url(locator, "durl.url"), "progressive", "video/mp4", has_audio=True))
+                result.append(MediaCandidate(f"progressive-{index}", _https_url(locator, "durl.url"), "progressive", "video/mp4",
+                    item.get("width") if type(item.get("width")) is int and item["width"] > 0 else None,
+                    item.get("height") if type(item.get("height")) is int and item["height"] > 0 else None, has_audio=True))
     elif progressive is not None:
         result.append(MediaCandidate("progressive-0", _https_url(progressive, "download_url"), "progressive", "video/mp4", has_audio=True))
     # App-owned yt-dlp transports may expose normalized formats instead of
@@ -209,13 +212,14 @@ def _media_candidates(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
 class BilibiliSourceAdapter:
     provider_id = "bilibili"
 
-    def __init__(self, transport: BilibiliTransport | None = None, *, ytdlp_executable: str | Path | None = None, materializer: MediaMaterializer | None = None) -> None:
+    def __init__(self, transport: BilibiliTransport | None = None, *, ytdlp_executable: str | Path | None = None, materializer: MediaMaterializer | None = None, stream_materializer: StreamMaterializer | None = None) -> None:
         if transport is None:
             if ytdlp_executable is None:
                 raise ValueError("a Bilibili transport or app-owned yt-dlp executable is required")
             transport = YtDlpProviderTransport(self.provider_id, ytdlp_executable)
         self._transport = transport
         self._materializer = materializer or MediaMaterializer()
+        self._stream_materializer = stream_materializer
 
     @classmethod
     def can_handle(cls, source_ref: str) -> bool:
@@ -279,11 +283,19 @@ class BilibiliSourceAdapter:
         preferred_kind = "progressive" if prefer_progressive else "dash"
         candidates.sort(key=lambda candidate: (candidate.kind != preferred_kind, -((candidate.width or 0) * (candidate.height or 0)), -(candidate.height or 0), candidate.candidate_id))
         audio = next((candidate for candidate in item.media_candidates if candidate.mime_type.startswith("audio/")), None)
-        return BilibiliDownloadChoice(item.identity.source_id, candidates[0], audio)
+        selected = candidates[0]
+        return BilibiliDownloadChoice(item.identity.source_id, selected, None if selected.has_audio else audio)
 
     def download(self, item: SourceItem, destination: str | Path, *, choice: BilibiliDownloadChoice | None = None, **kwargs: object) -> DownloadResult:
         selected = choice or self.select_download(item)
+        if (selected.source_id != item.identity.source_id or selected.candidate not in item.media_candidates
+            or (selected.audio_candidate is not None and selected.audio_candidate not in item.media_candidates)):
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "download choice belongs to another source", provider_id=self.provider_id, source_id=item.identity.source_id)
         try:
+            if self._stream_materializer is not None:
+                return self._stream_materializer.download(selected.candidate, destination, audio=selected.audio_candidate, **kwargs)
+            if not selected.candidate.has_audio:
+                raise DownloadError(DownloadErrorCode.UNSUPPORTED, "selected streams require the app-owned source muxer")
             return self._materializer.download(selected.candidate, destination, **kwargs)
         except DownloadError as error:
             mapping = {

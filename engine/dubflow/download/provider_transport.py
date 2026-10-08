@@ -84,9 +84,19 @@ def _map_payload(provider_id: str, raw: Mapping[str, Any], source_ref: str) -> d
     audios.sort(key=lambda value: float(value.get("abr", 0)) if isinstance(value.get("abr"), (int, float)) else 0, reverse=True)
     best = videos[0]
     if provider_id == "bilibili":
-        dash_video = [{"id": value.get("format_id", index), "baseUrl": _format_url(value), "width": value.get("width"), "height": value.get("height")} for index, value in enumerate(videos[:256])]
+        # A video-only format is never a progressive audio/video fallback.
+        # Preserve protocol/container hints so playlists cannot masquerade as
+        # complete MP4 objects at the local mux boundary.
+        split = [value for value in videos if value.get("acodec") in {None, "none"}]
+        combined = [value for value in videos if value.get("acodec") not in {None, "none"}
+                    and value.get("protocol", "https") in {"http", "https"}]
+        dash_video = [{"id": value.get("format_id", index), "baseUrl": _format_url(value), "width": value.get("width"), "height": value.get("height"),
+                       "kind": "hls" if value.get("protocol") in {"m3u8", "m3u8_native"} else "dash",
+                       "mime_type": "video/webm" if value.get("ext") == "webm" else "video/mp4"} for index, value in enumerate(split[:256])]
         dash_video = [value for value in dash_video if value["baseUrl"]]
-        dash_audio = [{"id": value.get("format_id", index), "baseUrl": _format_url(value)} for index, value in enumerate(audios[:256])]
+        dash_audio = [{"id": value.get("format_id", index), "baseUrl": _format_url(value),
+                       "kind": "hls" if value.get("protocol") in {"m3u8", "m3u8_native"} else "dash",
+                       "mime_type": "audio/webm" if value.get("ext") == "webm" else "audio/mp4"} for index, value in enumerate(audios[:256])]
         dash_audio = [value for value in dash_audio if value["baseUrl"]]
         return {
             "bvid": raw.get("id") if isinstance(raw.get("id"), str) and str(raw.get("id")).startswith("BV") else None,
@@ -94,7 +104,7 @@ def _map_payload(provider_id: str, raw: Mapping[str, Any], source_ref: str) -> d
             "desc": raw.get("description"),
             "duration": raw.get("duration"),
             "dash": {"video": dash_video, "audio": dash_audio},
-            "durl": [{"url": _format_url(best)}],
+            "durl": [{"url": _format_url(value), "width": value.get("width"), "height": value.get("height")} for value in combined[:256]],
             "subtitle": {"list": _subtitles(raw)},
         }
     best_url = _format_url(best)

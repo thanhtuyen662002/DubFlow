@@ -46,3 +46,5 @@ jobs:
         run: python tests/soak/runner.py --release-evidence --output tests/soak/release-evidence.json
       - name: Run chaos assertions
         run: python -m unittest discover -s tests/chaos -p 'test_*.py'
+      - name: Verify interrupted source acquisition and atomic publication
+        run: python -m unittest discover -s tests/source_materializer -p 'test_*.py' -v

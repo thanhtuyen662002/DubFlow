@@ -539,6 +539,7 @@
       "id": "source-materializer",
       "roots": [
         "engine/dubflow/download/materializer.py",
+        "engine/dubflow/download/stream_materializer.py",
         "engine/dubflow/download/provider_transport.py",
         "tests/source_materializer"
       ],

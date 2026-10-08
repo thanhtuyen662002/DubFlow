@@ -19,6 +19,7 @@ from urllib.parse import unquote, urlsplit
 
 from ..materializer import DownloadError, DownloadErrorCode, DownloadResult, HttpTransport, MediaMaterializer, UrllibHttpTransport, validate_http_url
 from ..source_adapter import MediaCandidate, PageCursor, SourceAdapter, SourceError, SourceErrorCode, SourceIdentity, SourceItem, SourcePage, SubtitleCandidate, canonicalize_url
+from ..stream_materializer import StreamMaterializer
 
 
 TICKS_PER_SECOND = 90_000
@@ -216,12 +217,14 @@ def _candidate(raw: Mapping[str, Any], index: int) -> MediaCandidate | None:
         locator = validate_http_url(locator)
     except DownloadError as error:
         raise SourceError(SourceErrorCode.SOURCE_CHANGED, "generic media candidate URL is malformed", provider_id="generic") from error
-    mime = str(raw.get("mime_type", raw.get("vcodec", "video/mp4")))[:128]
+    audio_only = raw.get("vcodec") == "none" and raw.get("acodec") not in {None, "none"}
+    container = "webm" if raw.get("ext") == "webm" else "mp4"
+    mime = str(raw.get("mime_type", ("audio/" if audio_only else "video/") + container))[:128]
     protocol = str(raw.get("protocol", "https"))
     kind = "hls" if protocol in {"m3u8", "m3u8_native"} or "m3u8" in locator.lower() else ("dash" if protocol == "http_dash_segments" or ".mpd" in locator.lower() else "progressive")
     width = raw.get("width") if type(raw.get("width")) is int and raw.get("width") > 0 else None
     height = raw.get("height") if type(raw.get("height")) is int and raw.get("height") > 0 else None
-    has_audio = raw.get("acodec") not in {None, "none"}
+    has_audio = "acodec" not in raw or raw.get("acodec") not in {None, "none"}
     return MediaCandidate(str(raw.get("format_id", f"format-{index}")), locator, kind, mime if "/" in mime else "video/mp4", width, height, bool(has_audio))
 
 
@@ -250,9 +253,10 @@ def _subtitles(raw: Mapping[str, Any]) -> tuple[SubtitleCandidate, ...]:
 class GenericUrlAdapter:
     provider_id = "generic"
 
-    def __init__(self, transport: GenericTransport | None = None, *, materializer: MediaMaterializer | None = None) -> None:
+    def __init__(self, transport: GenericTransport | None = None, *, materializer: MediaMaterializer | None = None, stream_materializer: StreamMaterializer | None = None) -> None:
         self._transport = transport or DirectUrlTransport()
         self._materializer = materializer or MediaMaterializer()
+        self._stream_materializer = stream_materializer
 
     @classmethod
     def can_handle(cls, source_ref: str) -> bool:
@@ -314,11 +318,18 @@ class GenericUrlAdapter:
         raise SourceError(SourceErrorCode.UNSUPPORTED, "generic URL enumeration requires a playlist-capable extractor", provider_id=self.provider_id)
 
     def download(self, item: SourceItem, destination: str | Path, *, candidate_id: str | None = None, **kwargs: object) -> DownloadResult:
-        candidates = [candidate for candidate in item.media_candidates if candidate_id is None or candidate.candidate_id == candidate_id]
+        candidates = [candidate for candidate in item.media_candidates if candidate.mime_type.startswith("video/") and (candidate_id is None or candidate.candidate_id == candidate_id)]
         if not candidates:
             raise SourceError(SourceErrorCode.UNSUPPORTED, "requested generic media candidate was not found", provider_id=self.provider_id, source_id=item.identity.source_id)
         try:
-            return self._materializer.download(candidates[0], destination, **kwargs)
+            candidates.sort(key=lambda candidate: (-((candidate.width or 0) * (candidate.height or 0)), -(candidate.height or 0), not candidate.has_audio, candidate.candidate_id))
+            selected = candidates[0]
+            audio = None if selected.has_audio else next((candidate for candidate in item.media_candidates if candidate.mime_type.startswith("audio/") and candidate.has_audio), None)
+            if self._stream_materializer is not None:
+                return self._stream_materializer.download(selected, destination, audio=audio, **kwargs)
+            if not selected.has_audio:
+                raise DownloadError(DownloadErrorCode.UNSUPPORTED, "selected streams require the app-owned source muxer")
+            return self._materializer.download(selected, destination, **kwargs)
         except DownloadError as error:
             mapping = {
                 DownloadErrorCode.AUTH_REQUIRED: SourceErrorCode.AUTH_REQUIRED,
