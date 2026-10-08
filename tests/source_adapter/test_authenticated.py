@@ -17,7 +17,8 @@ class AuthenticatedTransportTests(unittest.TestCase):
     def test_actual_isolated_helper_stdin_cookie_and_metadata_boundary(self):
         # CI's Python and default TEMP may be on different Windows drives.
         # This owned scratch stays beside the development interpreter.
-        with tempfile.TemporaryDirectory(dir=Path(sys.executable).parent) as temp:
+        python = Path(sys.executable).resolve()
+        with tempfile.TemporaryDirectory(dir=python.parent) as temp:
             helper = Path(temp) / "authenticated_native.py"
             helper.write_bytes((Path(__file__).resolve().parents[2] / "engine/dubflow/download/authenticated_native.py").read_bytes())
             archive = Path(temp) / "recorded-sdk.zip"
@@ -44,7 +45,6 @@ class YoutubeDL:
             with zipfile.ZipFile(archive, "w") as zipped:
                 zipped.writestr("yt_dlp/__init__.py", source)
                 zipped.writestr("yt_dlp/globals.py", "class Value: value = ['default']\nplugin_dirs=Value()\n")
-            python = Path(sys.executable)
             # Deliberately uses the development test interpreter; not clean-machine evidence.
             root = Path(os.path.commonpath([str(python), str(helper)]))
             pins = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in
