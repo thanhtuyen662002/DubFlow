@@ -12,3 +12,6 @@ sentencepiece==0.2.2
 # the app-owned runtime is complete even when pip's resolver changes.
 packaging==25.0
 cryptography==46.0.1
+# Streaming PCM mixer uses bounded native integer arrays. Same pin as the
+# separately qualified real-voice runtime; no system Python at product runtime.
+numpy==2.2.6
