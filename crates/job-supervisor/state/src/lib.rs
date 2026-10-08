@@ -673,6 +673,7 @@ mod tests {
     #[test]
     fn migration_two_preserves_historical_jobs_without_inventing_options() {
         let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, applied_at_ms INTEGER NOT NULL);").unwrap();
         connection.execute_batch(MIGRATION_SQL).unwrap();
         connection.execute("INSERT INTO schema_migrations(version, applied_at_ms) VALUES (1, 0)", []).unwrap();
         connection.execute("INSERT INTO jobs(job_id, source_uri, status, created_at_ms, updated_at_ms) VALUES ('legacy', 'file:///original.mp4', 'paused', 1, 1)", []).unwrap();
