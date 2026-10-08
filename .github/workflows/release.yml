@@ -124,6 +124,12 @@ jobs:
           Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $mediaRoot 'ffprobe.exe')
           & (Join-Path $mediaRoot 'ffmpeg.exe') -version | Select-Object -First 1
 
+      - name: Provision reviewed source SDK into owned runtime
+        shell: pwsh
+        run: |
+          & (Join-Path $env:pythonLocation 'python.exe') -B -m engine.dubflow.download.runtime --runtime-root $env:pythonLocation
+          if ($LASTEXITCODE -ne 0) { throw 'Reviewed source SDK provisioning failed' }
+
       - name: Validate release source and build qualification bundle
         shell: pwsh
         run: |
@@ -148,6 +154,14 @@ jobs:
             '--source-date-epoch', $env:SOURCE_DATE_EPOCH
           )
           python @args
+
+      - name: Verify staged source SDK with owned Python
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "dist/qualification/DubFlow-$env:RELEASE_VERSION-windows-x64-staging"
+          & (Join-Path $stage 'runtime/python.exe') -I -S -B scripts/release/source_runtime_smoke.py `
+            --root $stage --expected-source-sha $env:SOURCE_SHA --report dist/qualification/source-sdk-smoke.json
+          if ($LASTEXITCODE -ne 0) { throw 'Staged source SDK/runtime qualification failed' }
 
       - name: Run real CPU pipeline qualification smoke
         shell: pwsh
@@ -254,6 +268,9 @@ jobs:
           $check = & $launcher --self-check | ConvertFrom-Json
           if (-not $check.ready) { throw "Installed self-check failed: $($check | ConvertTo-Json -Compress)" }
           $installedRoot = Join-Path $env:LOCALAPPDATA "DubFlow/versions/$env:RELEASE_VERSION"
+          & (Join-Path $installedRoot 'runtime/python.exe') -I -S -B scripts/release/source_runtime_smoke.py `
+            --root $installedRoot --expected-source-sha $env:SOURCE_SHA --report dist/installed-source-sdk-smoke.json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed source SDK/runtime qualification failed' }
           # Keep the installed qualification independent from the staging
           # smoke above.  Reusing its durable job store with the same smoke
           # IDs would correctly return COMPLETED without recreating artifacts
@@ -280,6 +297,16 @@ jobs:
             launch_smoke = 'passed'
           }) -Force
           $evidence | Add-Member -NotePropertyName installed_pipeline_smoke -NotePropertyValue 'passed' -Force
+          $evidence | Add-Member -NotePropertyName source_sdk_runtime -NotePropertyValue ([ordered]@{
+            scope = 'source-sdk-runtime-health'
+            staged_report = 'dist/qualification/source-sdk-smoke.json'
+            installed_report = 'dist/installed-source-sdk-smoke.json'
+            staged = 'passed'
+            installed = 'passed'
+            live_source_acquisition = 'not_run'
+            browser_session = 'not_run'
+            durable_intake_enumeration = 'not_run'
+          }) -Force
           $evidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $evidencePath -Encoding utf8NoBOM
 
       - name: Upload downloadable build artifact
@@ -293,7 +320,9 @@ jobs:
             dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-release.sha256
             dist/DubFlow-${{ env.RELEASE_VERSION }}-release-evidence.json
             dist/qualification/pipeline-smoke.json
+            dist/qualification/source-sdk-smoke.json
             dist/installed-pipeline-smoke.json
+            dist/installed-source-sdk-smoke.json
           if-no-files-found: error
 
   publish:

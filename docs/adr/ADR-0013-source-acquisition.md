@@ -284,3 +284,12 @@ existing HTTP redirect boundary and hashed stream receipts remain unchanged.
 No source/artifact schema change or credential metadata field is introduced.
 Providers requiring cookies on their media endpoints still fail explicitly;
 this public wrapper does not grant authenticated media support by inference.
+
+Release integration now provisions the exact reviewed SDK before building either
+bundle. It executes the source runtime smoke with staged and installed owned
+Python using `-I -S -B`, requires the workflow source SHA and uploads both reports.
+This checks the complete inventory and actual SDK imports without calling live
+providers in a required lane. Source SDK health remains a narrow evidence scope;
+the release evidence explicitly leaves live source, browser session and durable
+intake/enumeration NOT_RUN. Windows Release must pass at the new source HEAD
+before this packaging path has hosted staging/installation evidence.
