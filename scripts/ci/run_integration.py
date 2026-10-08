@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 from component_registry import (
     coverage_errors,
@@ -28,7 +29,30 @@ INTEGRATION_CONTROL_ROOTS = (
 
 def run(argv: list[str]) -> None:
     print("+", " ".join(argv), flush=True)
+    if argv[:2] == ["cargo", "metadata"]:
+        run_metadata(argv)
+        return
     subprocess.run(argv, cwd=ROOT, check=True)
+
+
+def run_metadata(argv: list[str]) -> None:
+    """Keep Cargo's machine JSON off the log; preserve bounded failure detail.
+
+    Large single-line metadata is not a useful CI diagnostic. Capturing it to
+    disk also leaves an explicit exit/result after that command, rather than a
+    workflow log ending at its invocation without explaining the failure.
+    """
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        result = subprocess.run(argv, cwd=ROOT, stdout=stdout, stderr=stderr, check=False)
+        stdout_size = stdout.tell()
+        stderr_size = stderr.tell()
+        print(f"Cargo metadata exit={result.returncode} stdout_bytes={stdout_size} stderr_bytes={stderr_size}", flush=True)
+        if result.returncode != 0:
+            for name, stream, size, limit in (("stderr", stderr, stderr_size, 16384), ("stdout", stdout, stdout_size, 2048)):
+                stream.seek(max(0, size - limit))
+                detail = stream.read(limit).decode("utf-8", errors="replace")
+                print(f"Cargo metadata {name} tail: {detail}", flush=True)
+            result.check_returncode()
 
 
 def changed_paths(base_sha: str | None) -> set[str] | None:
