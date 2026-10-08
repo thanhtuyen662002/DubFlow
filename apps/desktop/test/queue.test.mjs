@@ -60,6 +60,19 @@ assert.deepEqual(fresh.getSnapshot().jobs[1].dubbing, { enabled: true, voiceId: 
 assert.equal(fresh.getSnapshot().jobs[1].status.state, "QUEUED");
 assert.equal(fresh.getSnapshot().jobs[1].outputPath, null);
 
+// A finished export can be voiced again without modifying its existing row.
+fresh.updateStatus(retryId, { ...fresh.getSnapshot().jobs[1].status, state: "COMPLETED" }, "C:/outputs/truc-ly.mp4");
+const completed = structuredClone(fresh.getSnapshot().jobs[1]);
+const variantId = fresh.retryJob(retryId);
+fresh.setDubbing(variantId, { enabled: true, voiceId: "vi-thai-son-vieneu3-v1" });
+assert.deepEqual(fresh.getSnapshot().jobs[1], completed);
+const loadedVariants = new QueueController(emptyStorage, clock).getSnapshot();
+assert.deepEqual(loadedVariants.jobs[1], completed);
+assert.equal(loadedVariants.jobs[2].dubbing.voiceId, "vi-thai-son-vieneu3-v1");
+assert.equal(loadedVariants.selected_job_id, variantId);
+assert.equal(loadedVariants.jobs[2].sourcePath, completed.sourcePath);
+assert.equal(loadedVariants.jobs[2].outputPath, null);
+
 const colliding = new QueueController(new MemorySnapshotStorage(), clock, 100, () => "collision");
 colliding.addPaths(["one"]);
 assert.throws(() => colliding.addPaths(["two"]), /independent job ID/);

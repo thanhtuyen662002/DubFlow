@@ -48,6 +48,13 @@ The current production supervisor treats completed/failed jobs as terminal;
 regeneration after an explicit choice change requires a new executable job ID.
 Worker-level targeted regeneration continues to use distinct B2 generations.
 
+The desktop exposes this as `Tạo bản xử lý mới` on completed, failed and
+action-blocked jobs. It creates and selects a new queued row with the original
+source and saved dubbing choice, then allows the user to change that choice.
+The original row, status and export path remain unchanged. Terminal failed jobs
+cannot use Start with the old ID. A new version does not imply that a failed
+source/model condition has been repaired; normal admission still applies.
+
 ## Evidence and remaining qualification
 
 Deterministic checks cover the actual catalog, independent per-job persistence,
@@ -55,6 +62,13 @@ legacy queue loading, locked recovered choices, unknown IDs, CLI/JSON transport,
 distinct voice provenance and B1 preservation. Actual CPU waveform generation
 is verified separately from fixture tests. Accent/style labels describe upstream
 preset metadata and are not speaker/character identity or a quality score.
+
+Queue regression checks cover a completed Trúc Ly export followed by a new
+Thái Sơn job, persistence of both rows, distinct IDs and an empty new output.
+The built desktop has also been exercised through a headless browser with
+mocked native IPC: finish a selected voice, create a new version, select another
+voice, reload and start with that exact new ID/voice. This proves the frontend
+flow only; native installed execution is checked separately in Windows Release.
 
 No full-release claim follows from catalog availability or a short waveform.
 Human listening, packaged Windows execution/recovery and all exact-HEAD/current

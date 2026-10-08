@@ -318,7 +318,7 @@ export class QueueController {
   retryJob(jobId: string): string {
     const job = this.requireJob(jobId);
     if (!TERMINAL_STATES.has(job.status.state) && job.status.state !== "BLOCKED_NEEDS_ACTION") {
-      throw new Error("Only failed or blocked jobs can be retried");
+      throw new Error("Only terminal or blocked jobs can be retried");
     }
     if (this.snapshot.jobs.length >= this.queueLimit) throw new Error(`Queue limit of ${this.queueLimit} jobs reached`);
     // The durable original remains terminal with its original options/artifacts.
@@ -328,7 +328,7 @@ export class QueueController {
     retry.status = {
       ...emptyStatus(),
       reason: "manual_retry",
-      message: "Queued for retry",
+      message: "Đang chờ xử lý bản mới",
     };
     this.snapshot.jobs.push(retry);
     this.snapshot.selected_job_id = retry.id;

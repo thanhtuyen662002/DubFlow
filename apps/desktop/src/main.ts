@@ -58,8 +58,12 @@ function selectedJob(): QueueJob | undefined {
 }
 
 function canStart(job: QueueJob | undefined): boolean {
-  return !!job && ["QUEUED", "RECOVERED", "FAILED"].includes(job.status.state) &&
+  return !!job && ["QUEUED", "RECOVERED"].includes(job.status.state) &&
     (!job.dubbing.enabled || !!voiceCatalog?.voices.some((voice) => voice.voice_id === job.dubbing.voiceId));
+}
+
+function canCreateNewVersion(job: QueueJob | undefined): boolean {
+  return !!job && ["COMPLETED", "FAILED", "BLOCKED_NEEDS_ACTION"].includes(job.status.state);
 }
 
 function renderVoiceControls(job: QueueJob | undefined): void {
@@ -242,6 +246,17 @@ cancelButton.addEventListener("click", async () => {
   }
 });
 
+const newVersionButton = $("#new-processing-version") as HTMLButtonElement;
+newVersionButton.addEventListener("click", () => {
+  const selected = selectedJob();
+  if (!canCreateNewVersion(selected) || !selected) return;
+  try {
+    queue.retryJob(selected.id);
+  } catch (error) {
+    $("#queue-state").textContent = `Không tạo được bản xử lý mới: ${String(error).slice(0, 180)}`;
+  }
+});
+
 $("#clear-queue").addEventListener("click", () => {
   for (const job of queue.getSnapshot().jobs) {
     const timer = pollers.get(job.id);
@@ -255,6 +270,8 @@ const startButton = $("#start-processing") as HTMLButtonElement;
 queue.subscribe((snapshot) => {
   const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
   startButton.disabled = !canStart(selected);
+  newVersionButton.disabled = !canCreateNewVersion(selected);
+  newVersionButton.hidden = !canCreateNewVersion(selected);
   cancelButton.disabled = !selected || !["RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state);
   if (selected && ["RUNNING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) beginPolling(selected.id);
 });
