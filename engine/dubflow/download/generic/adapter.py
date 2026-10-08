@@ -12,17 +12,24 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
+import tempfile
+import time
 from typing import Any, Mapping, Protocol, Sequence
 from urllib.parse import unquote, urlsplit
 
-from ..materializer import DownloadError, DownloadErrorCode, DownloadResult, HttpTransport, MediaMaterializer, UrllibHttpTransport, validate_http_url
+from ..materializer import DownloadError, DownloadErrorCode, DownloadResult, HttpTransport, MediaMaterializer, UrllibHttpTransport, _reject_links, validate_http_url
 from ..source_adapter import MediaCandidate, PageCursor, SourceAdapter, SourceError, SourceErrorCode, SourceIdentity, SourceItem, SourcePage, SubtitleCandidate, canonicalize_url
 from ..stream_materializer import StreamMaterializer
 
 
 TICKS_PER_SECOND = 90_000
+MAX_METADATA_BYTES = 4 * 1024 * 1024
+MAX_DIAGNOSTIC_BYTES = 64 * 1024
+MAX_EXTRACTOR_BYTES = 256 * 1024 * 1024
 
 
 class GenericTransport(Protocol):
@@ -37,30 +44,95 @@ class YtDlpRunner(Protocol):
 
 class SubprocessYtDlpRunner:
     def run(self, argv: Sequence[str], *, timeout_s: float) -> tuple[int, str, str]:
+        if not 0 < timeout_s <= 1800:
+            raise ValueError("timeout_s must be in (0, 1800]")
+        process = None
         try:
-            completed = subprocess.run(list(argv), capture_output=True, text=True, timeout=timeout_s, check=False, shell=False)
-        except (OSError, subprocess.SubprocessError) as error:
+            # Disk-backed private handles avoid unbounded communicate() buffers.
+            # Nothing from these raw metadata/diagnostic files is logged.
+            with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                process = subprocess.Popen(list(argv), stdin=subprocess.DEVNULL, stdout=stdout,
+                    stderr=stderr, shell=False, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                deadline = time.monotonic() + timeout_s
+                while process.poll() is None:
+                    self._check_output(stdout, stderr)
+                    if time.monotonic() >= deadline:
+                        raise SourceError(SourceErrorCode.NETWORK, "yt-dlp inspection timed out", retryable=True, action="retry_with_changed_conditions")
+                    time.sleep(0.05)
+                self._check_output(stdout, stderr)
+                stdout.seek(0)
+                stderr.seek(max(0, os.fstat(stderr.fileno()).st_size - 4096))
+                return process.returncode, stdout.read(MAX_METADATA_BYTES + 1).decode("utf-8", errors="replace"), stderr.read(4096).decode("utf-8", errors="replace")
+        except OSError as error:
             raise SourceError(SourceErrorCode.NETWORK, "yt-dlp process could not be started", retryable=True, action="retry") from error
-        return completed.returncode, completed.stdout[:4 * 1024 * 1024], completed.stderr[:4096]
+        finally:
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+
+    @staticmethod
+    def _check_output(stdout, stderr) -> None:
+        if os.fstat(stdout.fileno()).st_size > MAX_METADATA_BYTES or os.fstat(stderr.fileno()).st_size > MAX_DIAGNOSTIC_BYTES:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "yt-dlp output exceeded its bounded inspection budget", action="update_extractor")
 
 
 class YtDlpTransport:
     """App-owned yt-dlp JSON boundary.  It never invokes a shell."""
 
-    def __init__(self, executable: str | Path, *, runner: YtDlpRunner | None = None, timeout_s: float = 180.0) -> None:
+    def __init__(self, executable: str | Path, *, trusted_root: str | Path | None = None,
+                 expected_sha256: str | None = None, runner: YtDlpRunner | None = None, timeout_s: float = 180.0) -> None:
         path = Path(executable)
-        if not path.is_absolute() or not path.is_file() or path.is_symlink():
-            raise SourceError(SourceErrorCode.UNSUPPORTED, "yt-dlp executable is not an app-owned regular file", provider_id="generic")
+        root = None if trusted_root is None else Path(trusted_root)
+        if root is None or not root.is_absolute() or not root.is_dir() or not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "yt-dlp requires an approved runtime root and checksum pin", provider_id="generic", action="repair_runtime")
+        try:
+            _reject_links(root)
+            _reject_links(path)
+            if not path.is_absolute() or not path.is_file():
+                raise ValueError("not a regular absolute executable")
+            path.resolve().relative_to(root.resolve())
+        except (DownloadError, ValueError, OSError) as error:
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "yt-dlp executable is outside its trusted runtime", provider_id="generic", action="repair_runtime") from error
         if not 0 < timeout_s <= 1800:
             raise ValueError("timeout_s must be in (0, 1800]")
         self.executable = path
+        self.trusted_root = root
+        self.expected_sha256 = expected_sha256
         self.runner = runner or SubprocessYtDlpRunner()
         self.timeout_s = timeout_s
+        self._verify_extractor()
+
+    def _verify_extractor(self) -> None:
+        try:
+            _reject_links(self.trusted_root)
+            _reject_links(self.executable)
+            self.executable.resolve().relative_to(self.trusted_root.resolve())
+            before = self.executable.stat()
+            if not 0 < before.st_size <= MAX_EXTRACTOR_BYTES:
+                raise ValueError("extractor size out of range")
+            digest = hashlib.sha256()
+            read_bytes = 0
+            with self.executable.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(64 * 1024), b""):
+                    read_bytes += len(chunk)
+                    if read_bytes > MAX_EXTRACTOR_BYTES:
+                        raise ValueError("extractor grew beyond its size budget")
+                    digest.update(chunk)
+            after = self.executable.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or digest.hexdigest() != self.expected_sha256:
+                raise ValueError("extractor checksum mismatch")
+        except (OSError, ValueError, DownloadError) as error:
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "app-owned extractor checksum verification failed", provider_id="generic", action="repair_runtime") from error
 
     def inspect_url(self, source_url: str) -> Mapping[str, Any]:
         url = validate_http_url(source_url)
-        argv = (str(self.executable), "--dump-single-json", "--no-warnings", "--skip-download", "--no-playlist", url)
+        self._verify_extractor()
+        argv = (str(self.executable), "--dump-single-json", "--no-warnings", "--skip-download", "--no-playlist",
+                "--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-js-runtimes", "--no-remote-components", "--", url)
         return_code, stdout, stderr = self.runner.run(argv, timeout_s=self.timeout_s)
+        if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > MAX_METADATA_BYTES or not isinstance(stderr, str) or len(stderr.encode("utf-8")) > MAX_DIAGNOSTIC_BYTES:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "yt-dlp output exceeded its bounded inspection budget", provider_id="generic", action="update_extractor")
         if return_code != 0:
             raw_message = stderr if isinstance(stderr, str) else ""
             message = _safe_process_error(raw_message)

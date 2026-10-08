@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 from pathlib import Path
 import tempfile
@@ -62,13 +63,15 @@ class GenericAdapterTests(unittest.TestCase):
             executable = Path(temp) / "yt-dlp.exe"
             executable.write_bytes(b"fixture")
             runner = Runner(payload='{"id":"x","title":"X"}')
-            payload = YtDlpTransport(executable, runner=runner).inspect_url("https://video.example.test/watch/1")
+            pin = hashlib.sha256(b"fixture").hexdigest()
+            payload = YtDlpTransport(executable, trusted_root=Path(temp), expected_sha256=pin, runner=runner).inspect_url("https://video.example.test/watch/1")
             self.assertEqual(payload["id"], "x")
             self.assertEqual(runner.argv[1:5], ("--dump-single-json", "--no-warnings", "--skip-download", "--no-playlist"))
             self.assertEqual(runner.argv[-1], "https://video.example.test/watch/1")
+            self.assertEqual(runner.argv[5:-1], ("--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-js-runtimes", "--no-remote-components", "--"))
 
             failing = Runner(code=1, error="Cookie: secret-token private video")
-            transport = YtDlpTransport(executable, runner=failing)
+            transport = YtDlpTransport(executable, trusted_root=Path(temp), expected_sha256=pin, runner=failing)
             with self.assertRaises(SourceError) as context:
                 transport.inspect_url("https://video.example.test/watch/1")
             self.assertEqual(context.exception.code, SourceErrorCode.AUTH_REQUIRED)

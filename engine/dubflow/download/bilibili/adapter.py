@@ -212,11 +212,13 @@ def _media_candidates(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
 class BilibiliSourceAdapter:
     provider_id = "bilibili"
 
-    def __init__(self, transport: BilibiliTransport | None = None, *, ytdlp_executable: str | Path | None = None, materializer: MediaMaterializer | None = None, stream_materializer: StreamMaterializer | None = None) -> None:
+    def __init__(self, transport: BilibiliTransport | None = None, *, ytdlp_executable: str | Path | None = None,
+                 ytdlp_root: str | Path | None = None, ytdlp_sha256: str | None = None,
+                 materializer: MediaMaterializer | None = None, stream_materializer: StreamMaterializer | None = None) -> None:
         if transport is None:
             if ytdlp_executable is None:
                 raise ValueError("a Bilibili transport or app-owned yt-dlp executable is required")
-            transport = YtDlpProviderTransport(self.provider_id, ytdlp_executable)
+            transport = YtDlpProviderTransport(self.provider_id, ytdlp_executable, trusted_root=ytdlp_root, expected_sha256=ytdlp_sha256)
         self._transport = transport
         self._materializer = materializer or MediaMaterializer()
         self._stream_materializer = stream_materializer

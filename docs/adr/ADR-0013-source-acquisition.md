@@ -107,3 +107,32 @@ local HTTP interruption and native H.264/AAC copy/decode. Generated media and
 runtime binaries stay outside Git. Neither this bounded probe nor the generic
 soak rehearsal proves live provider authentication, durable channel integration,
 or full installed intake; all remaining #167/#175 acceptance stays open.
+
+## Native extractor verification and bounded process — #167 follow-up
+
+An absolute file name alone does not prove an app-owned approved producer.
+Native yt-dlp construction requires an explicit trusted runtime root and the
+approved manifest's SHA-256. Link/junction paths, files outside that root,
+missing pins and changed binaries fail before launch. Each invocation rechecks
+the pin with bounded reads; it does not learn/trust a hash from a downloaded
+binary. Provider constructors forward the same fields. Existing injected
+recorded transports remain independent of native runtime availability.
+
+This tightens constructor compatibility: callers that supplied only an
+executable must supply the verified manifest pin/root. Otherwise they receive
+an actionable `UNSUPPORTED`/`repair_runtime`; no PATH fallback is permitted.
+The API accepts caller-owned pins; installing and license-verifying the actual
+extractor release and wiring these pins into desktop intake remain required
+production work, not evidence supplied by an injected runner.
+
+Native metadata inspection uses private temporary file handles rather than
+unbounded pipe capture, a deadline, 4 MiB metadata/64 KiB diagnostic budgets,
+bounded UTF-8 decoding and kill/wait on failure. Raw metadata/errors are not
+logged. Per-invocation flags ignore system/user config and plugins, disable
+cache writes and unconfigured JS runtimes/remote components. A site requiring
+an external JS helper still needs a separately approved app-owned helper;
+system Deno/Node and mutable helper downloads are not a production substitute.
+These options follow the [upstream CLI contract](https://github.com/yt-dlp/yt-dlp#usage-and-options).
+Real development-runtime child probes cover UTF-8/exit status, timeout and
+stdout/stderr floods with process reaping; they do not qualify an installed
+yt-dlp binary, live website, parent-crash containment or authenticated session.

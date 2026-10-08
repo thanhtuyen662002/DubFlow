@@ -15,11 +15,12 @@ from .source_adapter import SourceError, SourceErrorCode
 
 
 class YtDlpProviderTransport:
-    def __init__(self, provider_id: str, executable: str | Path, *, runner: YtDlpRunner | None = None) -> None:
+    def __init__(self, provider_id: str, executable: str | Path, *, trusted_root: str | Path | None = None,
+                 expected_sha256: str | None = None, runner: YtDlpRunner | None = None) -> None:
         if provider_id not in {"bilibili", "douyin"}:
             raise ValueError("provider_id must be bilibili or douyin")
         self.provider_id = provider_id
-        self._transport = YtDlpTransport(executable, runner=runner)
+        self._transport = YtDlpTransport(executable, trusted_root=trusted_root, expected_sha256=expected_sha256, runner=runner)
 
     def fetch_video(self, source_ref: str, session: Mapping[str, str] | None = None) -> Mapping[str, Any]:
         # Session headers are intentionally not passed as command-line
