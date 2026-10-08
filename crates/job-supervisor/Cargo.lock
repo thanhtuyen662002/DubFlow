@@ -132,6 +132,7 @@ name = "dubflow-supervisor"
 version = "0.1.0"
 dependencies = [
  "dubflow-job-state",
+ "dubflow-source-queue",
  "dubflow-worker-protocol",
  "serde",
  "serde_json",
