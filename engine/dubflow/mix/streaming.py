@@ -6,7 +6,7 @@ serialize a generation and use a verified app-owned Python/NumPy runtime.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256, file_digest
 import importlib.metadata
 import json
@@ -25,7 +25,7 @@ from .adapter import (AudioMetrics, DuckWindow, MixArtifact, MixConfig, MixDocum
     _canonical_interval, _duration_ticks_to_samples, _ensure_hash, _hash_json,
     _integer, _text, _parse_point, _parse_artifact, validate_mix_document)
 
-PRODUCER_VERSION = "2.0.0"
+PRODUCER_VERSION = "2.0.1"
 BACKEND_ID = "pcm-stream-duck-v1"
 NUMPY_VERSION = "2.2.6"
 _HEADER = struct.Struct("<4sI4s4sIHHIIHH4sI")
@@ -345,6 +345,7 @@ class StreamingAudioMixer:
                 raise MixError("MIX_CHECKPOINT_INVALID", "completed mix document cannot be validated") from error
             if (document.provenance.config_hash != config_hash or document.provenance.input_hash != input_hash
                 or document.provenance.source_hash != audio.digest or document.source_id != source.source_id
+                or document.original_audio.content_hash != audio.digest
                 or document.source_layout != source.layout or document.source_start != source.start or document.source_end != source.end
                 or document.provenance.producer_version != PRODUCER_VERSION or document.provenance.backend_id != BACKEND_ID
                 or document.provenance.runtime != "owned-python/numpy-" + NUMPY_VERSION
@@ -464,14 +465,33 @@ class StreamingAudioMixer:
         # caller input selects a different generation; it never rewrites this one.
         if file_hash(audio.path) != audio.digest or any(file_hash(path) != digest for path, digest in references):
             raise MixError("AUDIO_INPUT_CHANGED", "source/TTS changed before publication")
-        for path in (stem, final):
-            self._promote(path.with_name(path.name + ".part"), path)
+        # Successful write/fsync does not prove the private file still contains
+        # those bytes at publication. Verify all committed prefixes against the
+        # original journal, including the spools used to produce output. Merely
+        # hashing whatever is now on disk would bless silent changed content.
+        def no_compute(_index):
+            raise MixError("MIX_CHECKPOINT_INVALID", "publication requires every committed stage complete")
+        for phase, paths, headers, sizes, private in (
+            ("copy", [original], [b""], lambda index: [min(block_bytes, source_bytes - index * block_bytes)], False),
+            ("dialogue", [raw_dialogue], [b""], lambda index: [frame_count(index) * audio.channels * 2], True),
+            ("combined", [raw_combined], [b""], lambda index: [frame_count(index) * audio.channels * 4], True),
+            ("output", [stem, final], [header, header], lambda index: [frame_count(index) * audio.channels * 2] * 2, False),
+        ):
+            if len(state["stages"][phase]) != state["counts"][phase]:
+                raise MixError("MIX_CHECKPOINT_INVALID", "publication requires every committed stage complete")
+            self._pass(root, state, phase, paths, headers, sizes, no_compute, private=private)
+        candidates = [original, *[path if path.exists() else path.with_name(path.name + ".part") for path in (stem, final)]]
         artifacts = [self._artifact(path, kind, audio, np) for path, kind in
-                     ((original, "original_audio"), (stem, "dialogue_stem"), (final, "final_mix"))]
+                     zip(candidates, ("original_audio", "dialogue_stem", "final_mix"))]
+        if artifacts[0].content_hash != audio.digest:
+            raise MixError("MIX_CHECKPOINT_INVALID", "original snapshot differs from pinned source hash")
         for artifact in artifacts[1:]:
             metrics = artifact.metrics
             if metrics.clipped_samples * 1_000_000 > metrics.sample_count * self.config.max_clip_fraction_ppm:
                 raise MixError("AUDIO_CLIPPING", "mix clipping exceeds configured fraction")
+        for candidate, path in zip(candidates[1:], (stem, final)):
+            self._promote(candidate, path)
+        artifacts = [replace(artifact, path=str(path)) for artifact, path in zip(artifacts, (original, stem, final))]
         warnings = [*dialogue_warnings, *final_warnings]
         if artifacts[0].metrics.clipped_samples: warnings.append("original source contains clipped samples; it was preserved as supplied")
         if artifacts[2].metrics.rms_milli == 0: warnings.append("final mix is silent because no usable source or TTS energy was available")

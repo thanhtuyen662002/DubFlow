@@ -39,6 +39,24 @@ sparse files or synthetic counts. Its intended receipt is
 
 ## Required evidence pending
 
+Author review rejected the premerge2.0.0 candidate on bb7275f: active mutation of
+original.wav or final.wav.part could still publish a completion document despite
+divergence from recorded block hashes. Fault-injection receipt
+`TEMP/dubflow-streaming-203/active-corruption-review-bb7275f.json`, SHA256
+`97fb39334eedb372ee2e39daed51269eb67eb6a618cd83ae77b05cdb14dae972`.
+
+The repair uses producer2.0.1, verifies all four committed stage prefixes before
+promotion, requires the original artifact hash equal the source pin, and checks
+QC on candidate files before rename. Active mutations of source/dialogue/combined/
+final bytes must fail without a completion sentinel or final/stem promotion.
+Interrupted rename after the first validated WAV can resume without recompute.
+The expanded22-test native suite passed in30.939seconds on the isolated Windows
+development checkout, including all four active-mutation cases, interrupted
+rename recovery without recompute and previous-producer cache separation.
+Old2.0.0 private generations are not reused or relabeled. Historical run receipts
+above remain diagnostics; repaired exact-head required CI and6-hour capacity
+evidence are pending. Source/TTS/native GUI integration still belongs to #166.
+
 Current-head/current-main Fast, Integration, Windows Release and Release/Soak
 must all pass. The Windows lane must execute the actual new adapter in both
 verified staging and installed runtime; baseline B2 smoke is insufficient.

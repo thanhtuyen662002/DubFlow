@@ -92,7 +92,7 @@ class StreamingTests(unittest.TestCase):
                         self.assertEqual(before.metrics, after.metrics)
                     self.assertEqual(old.duck_windows, new.duck_windows)
                     self.assertEqual(old.warnings, new.warnings)
-                    self.assertEqual(new.provenance.producer_version, "2.0.0")
+                    self.assertEqual(new.provenance.producer_version, "2.0.1")
                     self.assertEqual(new.provenance.backend_id, "pcm-stream-duck-v1")
 
     def test_resume_every_phase_verifies_prefix_and_discards_only_private_tail(self):
@@ -203,6 +203,66 @@ class StreamingTests(unittest.TestCase):
             with Path(result.final_mix.path).open("r+b") as handle: handle.seek(44); handle.write(b"XX")
             with self.assertRaises(MixError) as raised: mixer.mix(source, segments, input_hash=INPUT)
             self.assertEqual(raised.exception.code, "MIX_CHECKPOINT_INVALID")
+
+    def test_active_private_mutation_is_rejected_before_promotion(self):
+        for name, phase in (("original.wav", "dialogue"), ("dialogue.pcm", "combined"),
+                            ("combined.pcm", "output"), ("final.wav.part", "output")):
+            with self.subTest(name=name), TemporaryDirectory() as folder:
+                root = Path(folder); source, segments, _, _ = fixture(root)
+                source_pin = file_hash(source.path)
+                def mutate(current, done, *args):
+                    if current == phase and done == 1:
+                        generation = next((root / "new").glob("stream-*"))
+                        with (generation / name).open("r+b") as handle:
+                            handle.seek(44 if name.endswith((".wav", ".part")) else 0)
+                            handle.write(b"XX"); handle.flush(); os.fsync(handle.fileno())
+                with self.assertRaises(MixError) as raised:
+                    StreamingAudioMixer(output_dir=root / "new", config=CONFIG, limits=LIMITS, checkpoint=mutate).mix(source, segments, input_hash=INPUT)
+                self.assertEqual(raised.exception.code, "MIX_CHECKPOINT_INVALID")
+                generation = next((root / "new").glob("stream-*"))
+                self.assertFalse((generation / "mix_document.json").exists())
+                self.assertFalse((generation / "dialogue.wav").exists())
+                self.assertFalse((generation / "final.wav").exists())
+                self.assertEqual(file_hash(source.path), source_pin)
+
+    def test_interrupted_rename_after_verified_qc_recovers_without_recompute(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder); source, segments, _, _ = fixture(root)
+            actual_replace = os.replace
+            def fail_final(candidate, destination):
+                if Path(destination).name == "final.wav": raise OSError("interrupted promotion")
+                return actual_replace(candidate, destination)
+            with patch("engine.dubflow.mix.streaming.os.replace", side_effect=fail_final):
+                with self.assertRaises(MixError) as raised:
+                    StreamingAudioMixer(output_dir=root / "new", config=CONFIG, limits=LIMITS).mix(source, segments, input_hash=INPUT)
+            self.assertEqual(raised.exception.code, "MIX_IO_FAILED")
+            generation = next((root / "new").glob("stream-*"))
+            self.assertTrue((generation / "dialogue.wav").is_file())
+            self.assertTrue((generation / "final.wav.part").is_file())
+            self.assertFalse((generation / "mix_document.json").exists())
+            before = file_hash(generation / "dialogue.wav")
+            events = []
+            result = StreamingAudioMixer(output_dir=root / "new", config=CONFIG, limits=LIMITS,
+                checkpoint=lambda *args: events.append(args)).mix(source, segments, input_hash=INPUT)
+            self.assertEqual(result.dialogue_stem.content_hash, before)
+            self.assertEqual(events, [])
+            self.assertTrue((generation / "mix_document.json").is_file())
+
+    def test_unqualified_previous_producer_is_not_reused_or_relabeled(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder); source, segments, _, _ = fixture(root)
+            mixer = StreamingAudioMixer(output_dir=root / "new", config=CONFIG, limits=LIMITS)
+            with patch("engine.dubflow.mix.streaming.PRODUCER_VERSION", "2.0.0"):
+                old = mixer.mix(source, segments, input_hash=INPUT)
+            files = [Path(item.path) for item in (old.original_audio, old.dialogue_stem, old.final_mix)]
+            files.append(Path(old.final_mix.path).parent / "mix_document.json")
+            pins = {path: file_hash(path) for path in files}
+            current = mixer.mix(source, segments, input_hash=INPUT)
+            self.assertNotEqual(current.final_mix.path, old.final_mix.path)
+            self.assertEqual(current.provenance.producer_version, "2.0.1")
+            self.assertEqual(old.provenance.producer_version, "2.0.0")
+            self.assertEqual(current.final_mix.content_hash, old.final_mix.content_hash)
+            self.assertTrue(all(file_hash(path) == digest for path, digest in pins.items()))
 
     def test_runtime_and_memory_and_path_bounds(self):
         with TemporaryDirectory() as folder:

@@ -14,7 +14,7 @@ Its 128MiB source limit also excluded six-hour PCM. Increasing that limit alone
 does not address resource or restart requirements.
 
 Keep the historical byte/fixture `LocalAudioMixer` unchanged. Add a separate
-file-reference `StreamingAudioMixer` with producer `dubflow-aud-0/2.0.0`, backend
+file-reference `StreamingAudioMixer` with producer `dubflow-aud-0/2.0.1`, backend
 `pcm-stream-duck-v1`, and recipe runtime `owned-python/numpy-2.2.6`. Production
 callers select it explicitly. Pin NumPy2.2.6 in the owned runtime, matching the
 voice lane's existing pin. File hashes, ordered cue identities, confidence,
@@ -63,7 +63,10 @@ Missing ownership journal cannot authorize reuse or overwriting existing data.
 Copy preserves original WAV bytes including metadata. Artifact promotion can
 resume after any rename. Source/TTS inputs are rehashed before final publication;
 all final metrics/header/hash evidence is recomputed in bounded passes. The
-schema-validated document is the completion sentinel and is atomically written
+four complete journal prefixes are verified again before promotion, including
+the source snapshot, intermediate spools and output WAVs. Original artifact hash
+must equal the pinned source hash. QC is measured on candidates before rename.
+The schema-validated document is the completion sentinel and is atomically written
 last. Existing complete documents are reused only after current identity and
 actual artifact metadata/metrics/hashes match. New inputs/configuration produce
 a distinct generation; previous valid outputs are not overwritten.
@@ -78,7 +81,13 @@ the complete release manifest before the installed qualification executes them.
 ## Compatibility and qualification
 
 Historical producer1.0.0 artifacts/readers remain usable and are never relabeled
-as2.0.0. No public migration is required. Private journal version1 is specific
+as2.0.1. The premerge2.0.0 candidate failed review: active private-file mutation
+could be blessed by recomputed artifact metrics/hash without comparing committed
+block hashes. Producer2.0.1 creates a distinct generation even for identical
+input/DSP settings;2.0.0 caches/journals are never automatically promoted or
+relabeled under the repaired producer. Existing candidate bytes are retained,
+and readers can still inspect/export their schema-v1 documents. They cannot
+serve as qualified2.0.1 evidence. No public migration is required. Private journal version1 is specific
 to this backend; future incompatible layouts require a new recipe/version and
 generation. Rolling back uses the older producer's existing artifacts; an older
 mixer is not asked to consume this private journal. #166 must pin/select the new
