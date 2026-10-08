@@ -125,10 +125,16 @@ class UrllibHttpTransport:
                     if hop >= self.max_redirects:
                         raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "redirect limit exceeded") from error
                     redirected = validate_http_url(urljoin(current, location))
-                    if urlsplit(redirected).hostname != urlsplit(current).hostname:
+                    if _origin(redirected) != _origin(current):
                         request_headers = {key: value for key, value in request_headers.items() if key.lower() not in {"authorization", "cookie", "proxy-authorization"}}
                     current = redirected
                     continue
+                if error.code == 416:
+                    # urllib raises for a range refusal. Return the live
+                    # response so the materializer can close it and make its
+                    # single, condition-changing retry without Range.
+                    return HttpResponse(416, _headers(error.headers), error, current)
+                error.close()
                 if error.code in {401, 403}:
                     raise DownloadError(DownloadErrorCode.AUTH_REQUIRED, "media endpoint requires authentication", action="authenticate") from error
                 if error.code == 429:
@@ -147,12 +153,18 @@ class UrllibHttpTransport:
                 if hop >= self.max_redirects:
                     raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "redirect limit exceeded")
                 redirected = validate_http_url(urljoin(current, location))
-                if urlsplit(redirected).hostname != urlsplit(current).hostname:
+                if _origin(redirected) != _origin(current):
                     request_headers = {key: value for key, value in request_headers.items() if key.lower() not in {"authorization", "cookie", "proxy-authorization"}}
                 current = redirected
                 continue
             return HttpResponse(status, _headers(response.headers), response, current)
         raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "redirect limit exceeded")
+
+
+def _origin(url: str) -> tuple[str, str | None, int]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, parts.hostname, parts.port or (443 if scheme == "https" else 80)
 
 
 def _headers(headers: object) -> dict[str, str]:
