@@ -19,7 +19,7 @@ from .authenticated import AuthenticatedYtDlpTransport
 from .bilibili import BilibiliSourceAdapter
 from .douyin import DouyinSourceAdapter
 from .materializer import DownloadError, HttpTransport, MediaMaterializer, _reject_links
-from .provider_transport import YtDlpProviderTransport
+from .provider_transport import PublicProviderHttpTransport, YtDlpProviderTransport
 from .sessions import ProtectedSessionBridge
 from .source_adapter import MediaCandidate, SourceError, SourceErrorCode
 from .stream_materializer import FfmpegStreamMuxer, StreamMaterializer
@@ -67,6 +67,7 @@ def _read_profile(path: Path) -> dict:
         raise ValueError("invalid producer")
     if not isinstance(profile.get("version"), str) or not re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}", profile["version"]):
         raise ValueError("invalid SDK version")
+    PublicProviderHttpTransport("bilibili", profile.get("public_http_headers"))
     return profile
 
 
@@ -182,8 +183,10 @@ def provider_from_verified_bundle(bundle_root: str | Path, *, artifacts: Sequenc
             sdk_archive=sdk, pins={"python": python_sha, "helper": helper_sha, "sdk_archive": sdk_sha})
         muxer = FfmpegStreamMuxer(ffmpeg, ffprobe, trusted_root=root,
             ffmpeg_sha256=ffmpeg_sha, ffprobe_sha256=ffprobe_sha)
+        materializer = MediaMaterializer(PublicProviderHttpTransport(provider_id, profile["public_http_headers"]))
         kwargs = {"transport": YtDlpProviderTransport(provider_id, authenticated_transport=transport),
-                  "session_bridge": session_bridge, "stream_materializer": StreamMaterializer(muxer)}
+                  "session_bridge": session_bridge, "materializer": materializer,
+                  "stream_materializer": StreamMaterializer(muxer, materializer=materializer)}
         return BilibiliSourceAdapter(**kwargs) if provider_id == "bilibili" else DouyinSourceAdapter(**kwargs)
     except Exception:
         raise _unavailable() from None

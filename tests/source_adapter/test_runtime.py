@@ -33,6 +33,7 @@ def recorded_profile(root):
         archive.writestr(license_path, notice)
     data = buffer.getvalue()
     profile = {"schema_version": 1, "producer_id": "recorded-sdk", "version": "2026.08.19", "filename": name,
+               "public_http_headers": {"User-Agent": "Recorded SDK UA", "Accept": "*/*", "Accept-Language": "en"},
                "url": "https://files.pythonhosted.org/recorded/" + name,
                "size_bytes": str(len(data)), "sha256": hashlib.sha256(data).hexdigest(),
                "license": {"spdx": "Unlicense", "approved": True, "redistributable": True,
@@ -110,6 +111,7 @@ class SourceRuntimeTests(unittest.TestCase):
                 self.assertEqual(transport.python, root / "runtime/python.exe")
                 self.assertEqual(transport.pins["python"], inventory[2]["sha256"])
                 self.assertIsNotNone(adapter._stream_materializer)
+                self.assertIs(adapter._materializer, adapter._stream_materializer.materializer)
 
     def test_mutation_of_each_required_file_blocks_factory_without_repinning(self):
         with tempfile.TemporaryDirectory() as temp:

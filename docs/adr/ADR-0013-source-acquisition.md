@@ -263,3 +263,24 @@ Its report is written outside the bundle and declares SDK/runtime health only,
 with website/session/intake/enumeration NOT_RUN and production qualification false.
 It is ready for staged/installed workflow integration; mocked orchestration tests
 do not qualify a complete release or replace actual native execution evidence.
+
+## Public media CDN headers
+
+An actual public Bilibili probe at 10aa6c8 retrieved metadata but the default
+materializer's generic Python headers were refused by the CDN. Fixed public
+Referer alone did not change the result. A separate diagnostic transport using
+the pinned SDK's public User-Agent/Accept/Accept-Language plus video Referer
+downloaded and decoded a 38,026,136-byte, 640x360 H.264/AAC MP4 of roughly nine
+minutes without credentials. Report SHA-256:
+`0de88d3439aeb6f89e0ade9a33d90408ee131c39ad00c5a895052210aec7533a`.
+That injected diagnostic is historical evidence, not proof for the default path.
+
+The reviewed descriptor now pins these three public SDK defaults. The bundle
+factory uses a provider HTTP wrapper for direct and split materializers, with a
+fixed public provider-root Referer. Only bounded Range/If-Range/Accept-Encoding
+request overrides are allowed. Cookies, authorization, custom SDK headers,
+header injection and overridden public defaults are rejected before HTTP. The
+existing HTTP redirect boundary and hashed stream receipts remain unchanged.
+No source/artifact schema change or credential metadata field is introduced.
+Providers requiring cookies on their media endpoints still fail explicitly;
+this public wrapper does not grant authenticated media support by inference.

@@ -13,6 +13,38 @@ from typing import Any, Mapping
 from .generic import YtDlpRunner, YtDlpTransport
 from .source_adapter import SourceError, SourceErrorCode
 from .authenticated import AuthenticatedYtDlpTransport
+from .materializer import DownloadError, DownloadErrorCode, HttpTransport, UrllibHttpTransport
+
+
+class PublicProviderHttpTransport:
+    """Approved public SDK defaults, never a provider credential capability."""
+
+    def __init__(self, provider_id: str, public_headers: Mapping[str, str], *, transport: HttpTransport | None = None):
+        if provider_id not in {"bilibili", "douyin"}:
+            raise ValueError("unsupported public media provider")
+        if not isinstance(public_headers, Mapping) or set(public_headers) != {"User-Agent", "Accept", "Accept-Language"}:
+            raise ValueError("approved public SDK header defaults are required")
+        if any(not isinstance(value, str) or not 1 <= len(value) <= 512
+               or any(ord(ch) < 32 or ord(ch) > 126 for ch in value) for value in public_headers.values()):
+            raise ValueError("invalid public SDK headers")
+        self._headers = {**public_headers, "Referer": "https://www." + provider_id + ".com/"}
+        self._transport = transport or UrllibHttpTransport()
+
+    def open(self, url: str, *, headers: Mapping[str, str] | None = None):
+        overrides = headers or {}
+        # The materializer owns range validators only. Do not forward cookies,
+        # authorization or mutable generic headers to a media CDN.
+        allowed = {"range": "Range", "if-range": "If-Range", "accept-encoding": "Accept-Encoding"}
+        safe = {}
+        if not isinstance(overrides, Mapping) or len(overrides) > len(allowed):
+            raise DownloadError(DownloadErrorCode.INVALID_SOURCE, "invalid public media request headers")
+        for name, value in overrides.items():
+            key = allowed.get(name.lower()) if isinstance(name, str) else None
+            if (key is None or key in safe or not isinstance(value, str) or not 1 <= len(value) <= 1024
+                or any(ord(ch) < 32 or ord(ch) > 126 for ch in value)):
+                raise DownloadError(DownloadErrorCode.INVALID_SOURCE, "invalid public media request headers")
+            safe[key] = value
+        return self._transport.open(url, headers={**self._headers, **safe})
 
 
 class YtDlpProviderTransport:
