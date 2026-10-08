@@ -253,3 +253,13 @@ direct-child cleanup; its complete parent-death/tree behavior is not qualified.
 The legacy standalone CLI has no private request handshake, so this evidence
 does not close its initial-launch handoff race. The approved bundle factory uses
 the SDK helper path; a future standalone profile needs separate startup evidence.
+
+The release smoke entrypoint `scripts/release/source_runtime_smoke.py` requires
+the expected source SHA and calls the existing complete release tree/signature
+verifier before native execution. SDK health additionally requires both Python
+prefixes and every isolated import search root to remain inside the bundle;
+an external installed interpreter/stdlib cannot silently complete this check.
+Its report is written outside the bundle and declares SDK/runtime health only,
+with website/session/intake/enumeration NOT_RUN and production qualification false.
+It is ready for staged/installed workflow integration; mocked orchestration tests
+do not qualify a complete release or replace actual native execution evidence.

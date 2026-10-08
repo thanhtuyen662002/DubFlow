@@ -65,6 +65,8 @@ def _read_profile(path: Path) -> dict:
     _byte_count(license.get("size_bytes"), MAX_PROFILE_BYTES)
     if not isinstance(profile.get("producer_id"), str) or not re.fullmatch(r"[a-zA-Z0-9._-]{1,128}", profile["producer_id"]):
         raise ValueError("invalid producer")
+    if not isinstance(profile.get("version"), str) or not re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}", profile["version"]):
+        raise ValueError("invalid SDK version")
     return profile
 
 
@@ -184,6 +186,28 @@ def provider_from_verified_bundle(bundle_root: str | Path, *, artifacts: Sequenc
                   "session_bridge": session_bridge, "stream_materializer": StreamMaterializer(muxer)}
         return BilibiliSourceAdapter(**kwargs) if provider_id == "bilibili" else DouyinSourceAdapter(**kwargs)
     except Exception:
+        raise _unavailable() from None
+
+
+def source_runtime_health(bundle_root: str | Path, *, artifacts: Sequence[Mapping]) -> dict:
+    """Check the actual owned interpreter/SDK without contacting a provider."""
+    root = Path(bundle_root)
+    adapter = provider_from_verified_bundle(root, artifacts=artifacts, provider_id="bilibili")
+    profile = _read_profile(root / BUNDLE_PROFILE)
+    health = adapter._transport._authenticated.health_check(expected_sdk_version=profile["version"])
+    try:
+        runtime = (root / "runtime").resolve()
+        if Path(health["python_prefix"]).resolve() != runtime or Path(health["python_base_prefix"]).resolve() != runtime:
+            raise ValueError("Python found an external installation")
+        paths = health["import_roots"]
+        if not isinstance(paths, list) or not 1 <= len(paths) <= 16:
+            raise ValueError("invalid native import roots")
+        for value in paths:
+            if not isinstance(value, str) or not Path(value).is_absolute():
+                raise ValueError("unowned native import root")
+            Path(value).resolve().relative_to(root.resolve())
+        return {"producer_id": profile["producer_id"], "sdk_sha256": profile["sha256"], "native": health}
+    except (KeyError, TypeError, ValueError):
         raise _unavailable() from None
 
 

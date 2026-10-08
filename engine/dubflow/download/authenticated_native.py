@@ -117,6 +117,7 @@ def main():
                 result = {"schema_version": 1, "sdk_version": __version__,
                           "python_version": ".".join(map(str, sys.version_info[:3])),
                           "python_executable": sys.executable, "python_prefix": sys.prefix,
+                          "python_base_prefix": sys.base_prefix, "import_roots": list(sys.path),
                           "isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site)}
         else:
             result = inspect(request, yt_dlp.YoutubeDL)

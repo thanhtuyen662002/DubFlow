@@ -32,7 +32,7 @@ def recorded_profile(root):
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr(license_path, notice)
     data = buffer.getvalue()
-    profile = {"schema_version": 1, "producer_id": "recorded-sdk", "filename": name,
+    profile = {"schema_version": 1, "producer_id": "recorded-sdk", "version": "2026.08.19", "filename": name,
                "url": "https://files.pythonhosted.org/recorded/" + name,
                "size_bytes": str(len(data)), "sha256": hashlib.sha256(data).hexdigest(),
                "license": {"spdx": "Unlicense", "approved": True, "redistributable": True,
@@ -146,6 +146,23 @@ class SourceRuntimeTests(unittest.TestCase):
         with self.assertRaises(SourceError) as error:
             runtime.provider_from_verified_bundle(Path.cwd(), artifacts=[], provider_id="generic")
         self.assertEqual(error.exception.code, SourceErrorCode.INVALID_INPUT)
+
+    def test_health_rejects_external_prefix_or_import_search_roots(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            inventory = bundle(root)
+            health = {"python_prefix": str(root / "runtime"), "python_base_prefix": str(root / "runtime"),
+                      "import_roots": [str(root / "runtime/Lib"), str(root / "runtime/source/sdk.whl")]}
+            native = unittest.mock.Mock()
+            native._transport._authenticated.health_check.return_value = health
+            with patch.object(runtime, "provider_from_verified_bundle", return_value=native):
+                self.assertEqual(runtime.source_runtime_health(root, artifacts=inventory)["native"], health)
+                for changes in ({"python_prefix": str(root.parent)}, {"python_base_prefix": str(root.parent)},
+                                {"import_roots": [str(root.parent / "external/Lib")]},
+                                {"import_roots": [""]}, {"import_roots": []}):
+                    native._transport._authenticated.health_check.return_value = {**health, **changes}
+                    with self.assertRaises(SourceError):
+                        runtime.source_runtime_health(root, artifacts=inventory)
 
 
 if __name__ == "__main__":
