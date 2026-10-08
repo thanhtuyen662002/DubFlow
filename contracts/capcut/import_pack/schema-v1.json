@@ -4,13 +4,14 @@
   "title": "DubFlow CapCut-compatible import pack v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "kind", "pack_id", "assets", "tracks"],
+  "required": ["schema_version", "kind", "pack_id", "assets", "tracks", "timeline"],
   "properties": {
     "schema_version": {"const": 1},
     "kind": {"const": "capcut_import_pack"},
     "pack_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
     "assets": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/asset"}},
-    "tracks": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/track"}}
+    "tracks": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/track"}},
+    "timeline": {"$ref": "#/$defs/timeline"}
   },
   "$defs": {
     "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
@@ -37,6 +38,41 @@
         "order": {"type": "integer", "minimum": 0, "maximum": 31},
         "asset_ids": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
         "language": {"type": ["string", "null"], "maxLength": 32}
+      }
+    },
+    "timeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time_base", "duration_ticks", "cues"],
+      "properties": {
+        "time_base": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["numerator", "denominator"],
+          "properties": {
+            "numerator": {"type": "integer", "minimum": 1},
+            "denominator": {"type": "integer", "minimum": 1}
+          }
+        },
+        "duration_ticks": {"type": ["integer", "null"], "minimum": 0},
+        "cues": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cue_id", "start_ticks", "end_ticks"],
+            "properties": {
+              "cue_id": {"type": "string", "minLength": 1, "maxLength": 256},
+              "start_ticks": {"type": "integer", "minimum": 0},
+              "end_ticks": {"type": "integer", "minimum": 1},
+              "asset_ids": {"type": "array", "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+              "track_id": {"type": "string", "maxLength": 128},
+              "speaker_id": {"type": "string", "maxLength": 128},
+              "voice_id": {"type": "string", "maxLength": 128}
+            }
+          }
+        }
       }
     }
   }
