@@ -4,6 +4,30 @@
 - Date: 2026-10-07
 - Scope: B2 TTS adapter, model provisioning and provenance. No durable schema change.
 
+## Installer progress observer compatibility — 2026-10-09
+
+Actual local setup840 failed with Windows error5 when a PowerShell diagnostic
+reader held the progress JSON without DELETE sharing. Source unpacking and
+inventory validation had completed; no version pointer was activated. This is
+concurrent observer evidence, not an unattended-install failure claim.
+
+Installer progress remains schema1 and advisory. The copy loop rehashes every
+existing staged file, independently of the last completed-path snapshot, and
+verifies the complete final tree before activation. Ordinary Windows permission
+errors5/32/33 on progress snapshot replacement/cleanup are tolerated; other
+errors and authoritative current/install-state/launcher writes remain fatal.
+There is no lock retry loop. The next progress attempt describes new copy work,
+after64 files or one second; initial/final/failure snapshots are forced. This
+bounds whole-set serialization/fsync overhead on the measured35,782-file runtime.
+
+If an observer holds a snapshot through activation, it can remain stale until
+the next installation/self-recovery cleans it. Consumers must use the verified
+current pointer and install state as activation authority. Existing interrupted
+schema1 snapshots remain readable; staged artifact reuse still requires exact
+hashes. No durable job/schema/model/timeline migration is introduced. Real
+Windows deny-delete handle tests cover advisory contention and retained pointer
+failure. Full new-candidate installation/GUI and #166 acceptance remain required.
+
 ## Private native cue rejection compatibility — 2026-10-09
 
 A reviewed VieNeu context/frame bound can refuse one cue while its native model
