@@ -24,3 +24,8 @@ jobs:
           python-version: "3.12"
       - name: Validate repository control plane
         run: python scripts/validate_governance.py
+      - name: Install pinned numerical dependency for PCM checks
+        run: |
+          python -m pip install --only-binary=:all: --no-deps --require-hashes -r tests/audio_mix/requirements-ci.txt
+      - name: Check actual streaming PCM compatibility and restart
+        run: python -m unittest discover -s tests/audio_mix -p 'test_streaming.py'

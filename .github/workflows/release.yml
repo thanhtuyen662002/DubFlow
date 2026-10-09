@@ -181,6 +181,15 @@ jobs:
             --report (Join-Path $PWD 'dist/qualification/pipeline-smoke.json')
           if ($LASTEXITCODE -ne 0) { throw 'Real CPU pipeline qualification smoke failed' }
 
+      - name: Qualify streaming PCM in verified staged owned runtime
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "dist/qualification/DubFlow-$env:RELEASE_VERSION-windows-x64-staging"
+          python tests/audio_mix/qualify_streaming.py --root $stage --expected-source-sha $env:SOURCE_SHA `
+            --work (Join-Path $env:RUNNER_TEMP 'DubFlow staged streaming PCM') `
+            --report (Join-Path $PWD 'dist/qualification/streaming-pcm.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Staged owned streaming PCM qualification failed' }
+
       - name: Build final release bundle after qualification
         shell: pwsh
         run: |
@@ -286,6 +295,10 @@ jobs:
             --ffprobe (Join-Path $installedRoot 'runtime/media/ffprobe.exe') `
             --long-seconds 60 --enable-dubbing --report $pipelineReport
           if ($LASTEXITCODE -ne 0) { throw 'Installed production pipeline smoke failed' }
+          python tests/audio_mix/qualify_streaming.py --root $installedRoot --expected-source-sha $env:SOURCE_SHA `
+            --work (Join-Path $env:RUNNER_TEMP 'DubFlow installed streaming PCM') `
+            --report (Join-Path $PWD 'dist/installed-streaming-pcm.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Installed owned streaming PCM qualification failed' }
           Start-Sleep -Seconds 8
           $hostProcess = Get-Process -Name 'DubFlow' -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($null -eq $hostProcess) { throw 'Setup completed but did not auto-launch the desktop host' }
@@ -323,6 +336,8 @@ jobs:
             dist/qualification/source-sdk-smoke.json
             dist/installed-pipeline-smoke.json
             dist/installed-source-sdk-smoke.json
+            dist/qualification/streaming-pcm.json
+            dist/installed-streaming-pcm.json
           if-no-files-found: error
 
   publish:
