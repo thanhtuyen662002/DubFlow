@@ -919,7 +919,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             b2_audio = None
             audio_path = None
             warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: {error.code}: {error.condition}")
-            emitter.progress(0.70, "B2 audio không khả dụng; giữ Vietsub và audio gốc")
+            emitter.progress(0.70, "B2 audio không khả dụng; giữ Vietsub và audio gốc" if probe.has_audio
+                             else "Video nguồn không có audio; tiếp tục xuất Vietsub")
 
     final_path = export_dir / "final_vi.mp4"
     render_stage = "render-dubbed" if audio_path is not None else "render"

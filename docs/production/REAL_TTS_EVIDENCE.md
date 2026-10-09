@@ -550,3 +550,16 @@ the fixture was corrected and the full focused suite rerun successfully.
 Four supervisor tests await native execution; local MSVC remains unavailable.
 These additions do not change the production worker's media/QC behavior or
 qualify real ASR/translation, GUI use or human film quality.
+
+Source-bound development worker receipt at `1f05c30` additionally passes actual
+180x320 partial dubbing, 320x180 all-refused B1/audio fallback and a 320x180
+source with no audio. All three18-second MP4s fully decode; portrait dimensions
+and partial editable hashes match, and the no-audio output remains without an
+audio stream. Elapsed17.359 seconds; report SHA256
+`c7d1115e6a9ff3733f70f715db8a165cda083aeabd7622b5a4f49fe4272fe600`.
+Runtime/source/expected-status limits are identical to the preceding `cf60026`
+diagnostic. Native completion status/Rust/GUI remain unqualified by this receipt.
+That run exposed a misleading transient worker progress message claiming
+original audio on a no-audio source; it now explicitly reports no source audio
+while continuing the usable Vietsub export. This message change requires fresh
+worker/native source evidence and does not alter B1 media/QC behavior.
