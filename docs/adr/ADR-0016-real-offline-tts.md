@@ -179,3 +179,31 @@ over-rate cues still need fallback. That diagnostic precedes this production
 implementation and is independent of listening/translation approval. Tests
 must cover actual selected code, bounded/nonrepeating rates, source preservation
 and the packaged producer identity; this is not a full-release exception.
+
+## Accepted streaming mixer selected by B2
+
+After #203 / PR #204 was accepted at main `404a429`, B2 explicitly selects
+`FileSource`, `FileSegment` and `StreamingAudioMixer` instead of reading whole
+source/TTS WAVs into Python frame objects. AUD-0 producer `2.0.1`, backend
+`pcm-stream-duck-v1` and NumPy `2.2.6` follow ADR-0021. The selected adapter's
+code digest and producer/backend/numeric recipe join the B2 generation identity,
+alongside source/translation/TTS/voice pins. A recipe change creates separate
+generations; historical outputs retain their recorded producer and bytes.
+Immutable supervisor admission still requires the original installed runtime
+for existing job IDs or an explicit new execution (ADR-0020).
+
+The public timeline, TTS/mix documents, worker envelope and durable schema do
+not change. All 25 preset choices and B1 preservation remain available. A mixer
+recipe that cannot be verified is a typed B1 downgrade. Media adapter failures
+retain their code/retryability at the worker boundary; an unexpected exception
+requires action instead of authorizing unchanged-input retries. This fixes the
+observed corrupt-container retry without changing the supervisor retry policy.
+
+Applicable production Integration installs the same hash-pinned native NumPy
+dependency as the mixer lane. Native qualification must prove real selected TTS
+and streaming mix provenance plus actual source/stem/final WAV hashes, and a
+corrupt source must report `MEDIA_PROBE_FAILED`, retryable false, attempt 1.
+The #203 synthetic six-hour resource result is enabling evidence only; updated
+#166 full-worker/native/media/recovery/batch and all declared CI still need fresh
+qualification on this combined source/current main. No stable promotion follows
+from selecting the adapter.

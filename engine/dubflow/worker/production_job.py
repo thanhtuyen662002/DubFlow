@@ -821,9 +821,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     if config.enable_dubbing:
         emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
         try:
-            from engine.dubflow.worker.b2_audio import tts_recipe_identity
+            from engine.dubflow.worker.b2_audio import tts_recipe_identity, mix_recipe_identity
             selected_voice = getattr(config, "tts_voice_id", None)
-            generation_identity = sha256((translation_input + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + json.dumps(selected_voice)).encode()).hexdigest()
+            generation_identity = sha256((translation_input + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice)).encode()).hexdigest()
             b2_audio = run_b2_audio(
                 media=media,
                 source_path=config.source_path,
@@ -1032,7 +1032,7 @@ def main() -> int:
         result = run_local_file(config, emitter)
         emitter.send(MessageType.SHUTDOWN, {"status": "completed"})
         return 0
-    except ProductionJobError as error:
+    except (ProductionJobError, MediaAdapterError) as error:
         if emitter is not None:
             try:
                 emitter.send(MessageType.FAILURE, {"code": error.code, "retryable": error.retryable, "attempt": 1, "condition": error.condition})
@@ -1046,7 +1046,7 @@ def main() -> int:
         detail = " ".join(str(error).replace("\x00", " ").split())[:4096]
         if emitter is not None:
             try:
-                emitter.send(MessageType.FAILURE, {"code": "WORKER_UNHANDLED", "retryable": True, "attempt": 1, "condition": detail or "unhandled worker error"})
+                emitter.send(MessageType.FAILURE, {"code": "WORKER_UNHANDLED", "retryable": False, "attempt": 1, "condition": detail or "unhandled worker error"})
                 emitter.send(MessageType.SHUTDOWN, {"status": "failed"})
             except (BrokenPipeError, OSError, ProtocolError):
                 pass

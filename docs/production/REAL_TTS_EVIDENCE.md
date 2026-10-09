@@ -361,3 +361,41 @@ a new installer or an end-user GUI flow. It does not qualify installed live-sour
 intake, authenticated websites, long-form 2–6-hour video, durable large batches,
 updater compatibility or #166/#175 release acceptance. Preserve this run while
 improving duration fitting, translation review and native execution.
+
+# Streaming mixer integration — 2026-10-09
+
+#203 / PR #204 was accepted at main `404a429` after four exact-source CI lanes,
+verified staged/installed producer2.0.1 execution and a complete six-hour PCM
+capacity/restart rehearsal. Its actual cached272-cue/250-speech-file replay
+matched historical PCM hashes/metrics while using63,328,256 bytes peak RSS.
+These adapter-specific results are linked in PR204; they do not qualify the
+combined B2 worker or the full product.
+
+The #166 worker now selects that file-based producer and pins its code/native
+recipe in generation identity. Local B2 wiring tests pass4 cases using actual
+NumPy; they prove producer2.0.1 selection and preserve prior output when a
+different producer creates a separate generation. Worker tests pass27 cases,
+including an actual protocol failure envelope retaining MEDIA_PROBE_FAILED and
+retryable false. Desktop voice/queue tests and build pass. CI selection passes26
+cases with3 existing platform/tool skips. Three focused release qualification
+guard tests pass: reject legacy mixer provenance, changed PCM bytes and repeated
+or untyped corrupt-media failures. An earlier complete release suite had one
+new-test import error; that missing import was fixed and the affected class
+rerun. Current-source hosted full release evidence is still required.
+
+Windows qualification now requires actual streaming mix provenance and WAV
+hashes/headers in the real TTS worker output, plus exactly one typed corrupt
+container failure. Previous a92b2e4 Windows evidence tested the older mixer and
+older main2f1fb; it cannot qualify this integration. Keep Draft until current
+source/current main required lanes and full #166 acceptance are proven.
+
+The 25 existing real preset WAVs were also checked against the current catalog
+and original receipt:14 male/11 female;15 North/8 South/2 Central;11 natural,
+6 storytelling,4 news,4 story-reading. A local listening/filtering library lives
+outside Git at `TEMP/dubflow-vieneu-195/preset-catalog/listen.html`; receipt
+`voice-library-review.json` SHA256
+`31dded9877ebd97059dbe1c4015c6aa5c3f87191b4651c7dcff943702a64aabc`.
+This reuses recorded precommit samples for human comparison; it is not fresh
+current-source synthesis or an installed preview feature. Voice quality,
+translation meaning, full installed GUI/recovery and long-form/batch qualification
+remain open.

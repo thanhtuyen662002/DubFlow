@@ -1,7 +1,7 @@
 """B2 production audio stage used by the local-file worker.
 
 FFmpeg decodes the actual source audio, a pinned offline neural CPU voice creates
-per-cue WAV artifacts, and the existing AUD-0 mixer publishes original,
+per-cue WAV artifacts, and the bounded file-based AUD-0 mixer publishes original,
 dialogue-stem and ducked final WAVs.  The worker can catch ``B2AudioError``
 and continue with the already-valid B1 subtitle render.
 
@@ -21,7 +21,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbeResult
-from engine.dubflow.mix import LocalAudioMixer, MixConfig, MixDocument, MixSegment, ResourceProfile as MixResourceProfile, SourceAudio
+from engine.dubflow.mix import FileSegment, FileSource, StreamingAudioMixer, MixConfig, MixDocument, ResourceProfile as MixResourceProfile
+from engine.dubflow.mix import streaming
 from engine.dubflow.tts import (
     LocalTtsAdapter,
     ResourceProfile as TtsResourceProfile,
@@ -57,6 +58,16 @@ def _tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
     source = Path(__file__).parents[1] / "tts"
     paths = (metadata, source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py")
     return sha256("".join(_digest(path) for path in paths).encode()).hexdigest()
+
+
+def mix_recipe_identity() -> str:
+    """Pin the selected PCM producer and code before reusing a B2 generation."""
+    try:
+        recipe = {"producer": streaming.PRODUCER_VERSION, "backend": streaming.BACKEND_ID,
+                  "numpy": streaming.NUMPY_VERSION, "adapter": _digest(Path(streaming.__file__))}
+        return sha256(json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    except (OSError, TypeError, ValueError) as error:
+        raise B2AudioError("MIX_RECIPE_UNAVAILABLE", "selected mixer recipe cannot be verified") from error
 
 
 class B2AudioError(RuntimeError):
@@ -165,7 +176,7 @@ def run_b2_audio(
         raise B2AudioError("AUDIO_STREAM_MISSING", "source media has no audio stream")
     if not translated_cues:
         raise B2AudioError("TTS_INPUT_EMPTY", "translated production cues are empty")
-    root = Path(work_dir)
+    root = Path(work_dir).absolute()
     root.mkdir(parents=True, exist_ok=True)
     try:
         selection = _read_json(Path(profile_path))
@@ -264,43 +275,38 @@ def run_b2_audio(
         _atomic_bytes(tts_document_path, tts_document.to_bytes())
     except OSError as error:
         raise B2AudioError("TTS_ARTIFACT_WRITE_FAILED", str(error), retryable=True) from error
-    artifacts_by_id = {artifact.segment_id: artifact for artifact in tts_document.artifacts}
-    segments_for_mix: list[MixSegment] = []
-    for item in mappings:
-        identifier = item["cue_id"]
-        if identifier in artifacts_by_id:
-            segments_for_mix.append(MixSegment.from_tts_artifact(artifacts_by_id[identifier]))
-        else:
-            segments_for_mix.append(
-                MixSegment(
-                    identifier,
-                    identifier,
-                    TimePoint(item["start_ms"], BASE_TIME),
-                    TimePoint(item["end_ms"], BASE_TIME),
-                    status="failed",
-                    condition="TTS segment did not produce a usable WAV artifact",
-                    confidence=item["confidence"],
-                )
-            )
     try:
-        source = SourceAudio.from_path(
+        artifacts_by_id = {artifact.segment_id: artifact for artifact in tts_document.artifacts}
+        segments_for_mix: list[FileSegment] = []
+        for item in mappings:
+            identifier = item["cue_id"]
+            if identifier in artifacts_by_id:
+                segments_for_mix.append(FileSegment.from_tts_artifact(artifacts_by_id[identifier]))
+            else:
+                segments_for_mix.append(
+                    FileSegment(
+                        identifier,
+                        identifier,
+                        TimePoint(item["start_ms"], BASE_TIME),
+                        TimePoint(item["end_ms"], BASE_TIME),
+                        status="failed",
+                        condition="TTS segment did not produce a usable WAV artifact",
+                        confidence=item["confidence"],
+                    )
+                )
+        source = FileSource(
             source_audio_path,
             start=TimePoint(0, BASE_TIME),
             end=TimePoint(source_end_ticks, BASE_TIME),
             source_id=Path(source_path).name,
             layout="mono-source",
         )
-        mixer = LocalAudioMixer(
+        mixer = StreamingAudioMixer(
             config=MixConfig(
                 requested_profile="cpu",
                 resource=MixResourceProfile(max_threads=1, max_memory_mb=512, max_batch_items=8),
             ),
             output_dir=root / "mix",
-            producer="dubflow-production-audio",
-            producer_version="1.0.0",
-            backend_id="pcm-duck-v1",
-            runtime="python-stdlib",
-            hardware_profile="cpu",
         )
         mix_document = mixer.mix(
             source,
@@ -323,4 +329,4 @@ def run_b2_audio(
     return B2AudioResult(source_audio_path, tts_document_path, mix_document_path, tts_document, mix_document, voice)
 
 
-__all__ = ["B2AudioError", "B2AudioResult", "BASE_TIME", "run_b2_audio"]
+__all__ = ["B2AudioError", "B2AudioResult", "BASE_TIME", "run_b2_audio", "mix_recipe_identity"]

@@ -4,6 +4,7 @@ from hashlib import sha256
 from contextlib import closing
 import importlib.util
 import json
+import hashlib
 import io
 from pathlib import Path
 import shutil
@@ -484,6 +485,66 @@ class ReleaseBundleTests(unittest.TestCase):
 
 
 class VoiceVersionQualificationTests(unittest.TestCase):
+    def test_corrupt_media_qualification_rejects_untyped_or_repeated_failure(self):
+        failure = {"event": "failed", "job_id": "smoke-corrupt", "code": "MEDIA_PROBE_FAILED",
+                   "attempt": 1, "retryable": False}
+        self.assertEqual(production_smoke._verify_corrupt_failure(json.dumps(failure), "smoke-corrupt")["attempt"], 1)
+        invalid = ({**failure, "code": "WORKER_UNHANDLED"}, {**failure, "attempt": 3},
+                   {**failure, "retryable": True})
+        for event in invalid:
+            with self.subTest(event=event), self.assertRaises(production_smoke.SmokeError):
+                production_smoke._verify_corrupt_failure(json.dumps(event), "smoke-corrupt")
+        retry = {"event": "retrying", "job_id": "smoke-corrupt", "attempt": 1}
+        with self.assertRaises(production_smoke.SmokeError):
+            production_smoke._verify_corrupt_failure(json.dumps(retry) + "\n" + json.dumps(failure), "smoke-corrupt")
+
+    def test_output_qualification_requires_streaming_producer_and_actual_pcm_hashes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            editable = root / "editable"
+            editable.mkdir()
+            for relative in ("final_vi.mp4", "captions_vi.srt", "captions_vi.ass", "qc_report.json", "editable/timeline.json"):
+                (root / relative).write_bytes(b"qualification-fixture")
+            artifacts = {}
+            for key, name in (("original_audio", "source_audio.wav"), ("dialogue_stem", "dialogue_stem.wav"),
+                              ("final_mix", "final_mix.wav")):
+                path = editable / name
+                with production_smoke.wave.open(str(path), "wb") as writer:
+                    writer.setparams((1, 2, 16000, 16000, "NONE", "not compressed"))
+                    writer.writeframes(b"\x00\x01" * 16000)
+                digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                artifacts[key] = {"path": str(path), "content_hash": digest, "frame_count": 16000, "channels": 1,
+                                  "sample_rate": 16000, "metrics": {"content_hash": digest, "clipped_samples": 0}}
+            provenance = {"backend_id": "pcm-stream-duck-v1", "producer_version": "2.0.1",
+                          "runtime": "owned-python/numpy-2.2.6", "non_destructive": True,
+                          "source_hash": artifacts["original_audio"]["content_hash"]}
+            mix_path = root / "mix_document.json"
+            tts_path = root / "tts_document.json"
+            mix = {**artifacts, "provenance": provenance}
+            mix_path.write_text(json.dumps(mix))
+            tts_path.write_text(json.dumps({"provenance": {"backend_id": "vieneu-v3-turbo-onnx-v1", "producer_version": "3.1.0",
+                                                         "voice_id": "vi-truc-ly-vieneu3-v1"}}))
+            manifest = {"audio": {"mode": "dubbed", "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
+                                   "mix_document": str(mix_path), "mix_provenance": provenance}}
+            (root / "job_manifest.json").write_text(json.dumps(manifest))
+            probe = {"streams": [{"codec_type": "video", "codec_name": "h264"}, {"codec_type": "audio", "codec_name": "aac"}],
+                     "format": {"duration": "3"}}
+            with mock.patch.object(production_smoke, "_run", return_value=SimpleNamespace(stdout=json.dumps(probe))):
+                report = production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True,
+                                                        expect_voice_id="vi-truc-ly-vieneu3-v1")
+                self.assertEqual(report["streaming_mix"]["producer_version"], "2.0.1")
+                mix["provenance"] = {**provenance, "producer_version": "1.0.0"}
+                mix_path.write_text(json.dumps(mix))
+                with self.assertRaisesRegex(production_smoke.SmokeError, "pinned streaming"):
+                    production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True)
+                mix["provenance"] = provenance
+                mix_path.write_text(json.dumps(mix))
+                with Path(artifacts["final_mix"]["path"]).open("r+b") as handle:
+                    handle.seek(-2, 2)
+                    handle.write(b"\x02\x01")
+                with self.assertRaisesRegex(production_smoke.SmokeError, "hash differs"):
+                    production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True)
+
     def test_voice_version_evidence_rejects_export_mutation_and_reused_audio(self) -> None:
         for defect in (None, "original_export_mutated", "identical_dialogue"):
             with self.subTest(defect=defect), TemporaryDirectory() as directory:

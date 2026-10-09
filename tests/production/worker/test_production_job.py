@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from engine.dubflow.worker.production_job import (
     ProductionJobError,
@@ -16,10 +19,33 @@ from engine.dubflow.worker.production_job import (
     _validate_rendered_audio,
     _write_subtitles,
 )
-from engine.dubflow.media import parse_ffprobe_json
+from engine.dubflow.media import parse_ffprobe_json, MediaAdapterError
+from engine.dubflow.worker import production_job as worker
+from engine.dubflow.worker.protocol import Envelope, MessageType
 
 
 class ProductionWorkerTests(unittest.TestCase):
+    def test_worker_boundary_preserves_media_failure_and_requires_action_for_unknown_errors(self):
+        cases = ((MediaAdapterError("MEDIA_PROBE_FAILED", "moov atom not found", retryable=False),
+                  "MEDIA_PROBE_FAILED", 2),
+                 (RuntimeError("unexpected probe failure"), "WORKER_UNHANDLED", 3))
+        for error, code, expected in cases:
+            with self.subTest(code=code):
+                output = io.BytesIO()
+                command = SimpleNamespace(payload={"args": {}}, job_id="corrupt-media", stage_id="local-file")
+                with patch.object(worker, "_read_command", return_value=command), \
+                     patch.object(worker.WorkerConfig, "from_args", return_value=SimpleNamespace()), \
+                     patch.object(worker, "run_local_file", side_effect=error), \
+                     patch.object(worker.sys, "stdout", SimpleNamespace(buffer=output)):
+                    self.assertEqual(worker.main(), expected)
+                messages = [Envelope.from_line(line) for line in output.getvalue().splitlines(keepends=True)]
+                failures = [message for message in messages if message.message_type is MessageType.FAILURE]
+                self.assertEqual(len(failures), 1)
+                self.assertEqual(failures[0].payload["code"], code)
+                self.assertFalse(failures[0].payload["retryable"])
+                self.assertEqual(failures[0].payload["condition"], getattr(error, "condition", str(error)))
+                self.assertEqual(messages[-1].payload["status"], "failed")
+
     def test_start_command_preserves_voice_and_rejects_malformed_ids(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

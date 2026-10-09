@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import wave
 from typing import Any, Sequence
 
 
@@ -205,6 +206,24 @@ def _require_status(status: dict[str, Any], expected: str, job_id: str) -> dict[
     return value
 
 
+def _verify_corrupt_failure(log: str, job_id: str) -> dict[str, Any]:
+    events = []
+    for line in log.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("job_id") == job_id:
+            events.append(event)
+    failures = [event for event in events if event.get("event") == "failed"]
+    if len(failures) != 1 or any(event.get("event") == "retrying" for event in events):
+        raise SmokeError("corrupt media did not fail once without repeating unchanged input")
+    failure = failures[0]
+    if failure.get("code") != "MEDIA_PROBE_FAILED" or failure.get("retryable") is not False or failure.get("attempt") != 1:
+        raise SmokeError(f"corrupt media lost its typed single-attempt failure: {failure!r}")
+    return {key: failure[key] for key in ("code", "attempt", "retryable")}
+
+
 def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int, *, expect_dubbing: bool = False, expect_voice_id: str | None = None) -> dict[str, Any]:
     final = output_dir / "final_vi.mp4"
     required = [
@@ -219,6 +238,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         if not path.is_file() or path.stat().st_size <= 0:
             raise SmokeError(f"required production artifact is missing or empty: {path}")
     manifest = _json(output_dir / "job_manifest.json")
+    streaming_mix = None
     if expect_dubbing:
         editable = output_dir / "editable"
         manifest = _json(output_dir / "job_manifest.json")
@@ -237,6 +257,31 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
             raise SmokeError(f"B2 TTS receipt differs from the selected native producer: {provenance!r}")
         if expect_voice_id is not None and provenance.get("voice_id") != expect_voice_id:
             raise SmokeError("packaged TTS did not preserve the explicitly selected preset")
+        mix_document = _json(Path(audio["mix_document"]))
+        mix_provenance = mix_document.get("provenance", {})
+        if (mix_provenance.get("backend_id") != "pcm-stream-duck-v1" or
+                mix_provenance.get("producer_version") != "2.0.1" or
+                mix_provenance.get("runtime") != "owned-python/numpy-2.2.6" or
+                mix_provenance.get("non_destructive") is not True or
+                mix_provenance != audio.get("mix_provenance")):
+            raise SmokeError("packaged B2 did not use the pinned streaming mixer")
+        for key in ("original_audio", "dialogue_stem", "final_mix"):
+            artifact = mix_document[key]
+            path = Path(artifact["path"])
+            with path.open("rb") as stream:
+                actual_hash = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+            if actual_hash != artifact["content_hash"] or actual_hash != artifact["metrics"]["content_hash"]:
+                raise SmokeError(f"packaged B2 mix artifact hash differs: {key}")
+            with wave.open(str(path), "rb") as reader:
+                if (reader.getnframes() != artifact["frame_count"] or reader.getnchannels() != artifact["channels"] or
+                        reader.getframerate() != artifact["sample_rate"] or reader.getsampwidth() != 2):
+                    raise SmokeError(f"packaged B2 mix artifact PCM differs: {key}")
+        if (mix_document["original_audio"]["content_hash"] != mix_provenance["source_hash"] or
+                mix_document["final_mix"]["metrics"]["clipped_samples"] != 0):
+            raise SmokeError("packaged B2 did not preserve source or safe final normalization")
+        streaming_mix = {"backend": mix_provenance["backend_id"], "producer_version": mix_provenance["producer_version"],
+                         "runtime": mix_provenance["runtime"], "frames": mix_document["final_mix"]["frame_count"],
+                         "source_preserved": True, "artifact_hashes_verified": True}
     # The JSON is captured directly to avoid relying on a shell redirection.
     result = _run(
         [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", final],
@@ -263,6 +308,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         "audio_codec": audios[0].get("codec_name"),
         "artifacts": [str(path.relative_to(output_dir)) for path in required],
         "selected_voice_id": expect_voice_id,
+        "streaming_mix": streaming_mix,
     }
 
 
@@ -410,6 +456,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if killed or bad_status is None:
         raise SmokeError("corrupt job was unexpectedly killed")
     _require_status(bad_status, "FAILED", "smoke-corrupt")
+    corrupt_failure = _verify_corrupt_failure(bad_log, "smoke-corrupt")
 
     good_output = work_root / "good output [spaces]"
     good_status, killed, good_log = _run_supervisor(
@@ -461,6 +508,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "immutable_job_replay": replay_isolation,
         "voice_version_isolation": voice_version,
         "corrupt_job_state": bad_status["status"],
+        "corrupt_media_failure": corrupt_failure,
         "good_job": good_output_report,
         "resume": resume_report,
         "synthetic_long_form": long_output_report,
