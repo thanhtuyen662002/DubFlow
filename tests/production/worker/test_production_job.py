@@ -26,7 +26,7 @@ from engine.dubflow.worker.protocol import Envelope, MessageType
 
 class ProductionWorkerTests(unittest.TestCase):
     def test_worker_boundary_preserves_media_failure_and_requires_action_for_unknown_errors(self):
-        cases = ((MediaAdapterError("MEDIA_PROBE_FAILED", "moov atom not found", retryable=False),
+        cases = ((MediaAdapterError("MEDIA_PROBE_FAILED", "moov atom not found", retryable=True),
                   "MEDIA_PROBE_FAILED", 2),
                  (RuntimeError("unexpected probe failure"), "WORKER_UNHANDLED", 3))
         for error, code, expected in cases:

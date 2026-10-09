@@ -399,3 +399,37 @@ This reuses recorded precommit samples for human comparison; it is not fresh
 current-source synthesis or an installed preview feature. Voice quality,
 translation meaning, full installed GUI/recovery and long-form/batch qualification
 remain open.
+
+## Fresh real-media worker and native retry rejection
+
+Source `ac35465` completed the full production worker on the same acquired
+554-second Bilibili video with no sidecar: fresh Whisper detected Chinese,
+pinned Argos translated272 cues, VieNeu3.1 emitted250 speech artifacts and
+streaming AUD-0 producer2.0.1 mixed/rendered a553.921-second H.264/AAC MP4.
+Elapsed589.234seconds; measured parent worker peak916,459,520 bytes, explicitly
+excluding native TTS children. This is not a full application memory bound.
+All519 historical output files were preserved. Complete output decode passed.
+MP4 SHA256 `df3e4d2d7f502a03f24fa641eee76d6d03ca31edc8814cb889d71d349645bfac`;
+receipt `TEMP/dubflow-vieneu-195/live-bilibili-worker-stream-ac35465/report.json`
+SHA256 `8d241a6f460181ebb197d8e7952fdf263a7a113a6b64adfb1e4f6ee84ee93eba`.
+Twenty-two `DURATION_FIT_REQUIRED` cues still preserve source audio, with a
+visible downgrade; complete/intelligible Vietnamese speech and translation
+quality are not established by successful decode.
+
+Windows37874749115 failed at its real CPU pipeline qualification guard:
+the corrupt-media input repeated unchanged. The worker correctly retained
+`MEDIA_PROBE_FAILED`, but the actual media adapter marks a nonzero ffprobe exit
+retryable true. The earlier mocked boundary case used false and missed this.
+The worker now overrides only that code to nonretryable at its protocol boundary,
+retaining the exact condition. Its regression supplies the actual adapter's true
+retryability; unknown errors remain nonretryable. There is no supervisor retry
+policy or shared media-adapter change. All native predicates remain required.
+
+An actual worker subprocess and real ffprobe against a corrupt container emitted
+one `MEDIA_PROBE_FAILED`/retryable-false/attempt1 envelope, exit2 and failed shutdown,
+without published output. Precommit repair receipt:
+`TEMP/dubflow-vieneu-195/corrupt-probe-fixed-ac35465/report.json`, loaded worker
+SHA256 `ac0c30eb21dba5cd477da9b17cf0172f44f02a71414b1da4db0fb2c7908e3740`.
+Seven applicable worker tests passed after this correction. Failed native logs
+and old success receipts are historical evidence; fresh exact repair-head lanes
+must run before readiness. Full #166/#175 acceptance remains open.

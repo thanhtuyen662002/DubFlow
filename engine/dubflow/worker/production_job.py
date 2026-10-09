@@ -1033,9 +1033,13 @@ def main() -> int:
         emitter.send(MessageType.SHUTDOWN, {"status": "completed"})
         return 0
     except (ProductionJobError, MediaAdapterError) as error:
+        # A failed probe of the same immutable media has no changed condition.
+        # MediaAdapterError predates that admission rule and marks process
+        # rejection retryable; preserve its code but require a new input/action.
+        retryable = error.retryable and error.code != "MEDIA_PROBE_FAILED"
         if emitter is not None:
             try:
-                emitter.send(MessageType.FAILURE, {"code": error.code, "retryable": error.retryable, "attempt": 1, "condition": error.condition})
+                emitter.send(MessageType.FAILURE, {"code": error.code, "retryable": retryable, "attempt": 1, "condition": error.condition})
                 emitter.send(MessageType.SHUTDOWN, {"status": "failed"})
             except (BrokenPipeError, OSError, ProtocolError):
                 pass
