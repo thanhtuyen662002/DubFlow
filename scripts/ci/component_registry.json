@@ -6,6 +6,8 @@
       "roots": [
         "crates/job-supervisor/Cargo.toml",
         "crates/job-supervisor/Cargo.lock",
+        "crates/job-supervisor/app",
+        "contracts/job_status",
         "scripts/ci/component_registry.json",
         "tests/ci/test_supervisor_workspace.py"
       ],
@@ -973,6 +975,7 @@
       "id": "release-bundle",
       "roots": [
         "packaging/release",
+        "scripts/release/production_smoke.py",
         "tests/release",
         "docs/release",
         ".github/workflows/release.yml"

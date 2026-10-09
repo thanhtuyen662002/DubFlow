@@ -159,7 +159,9 @@ class VisibleDowngradeTests(unittest.TestCase):
         (output / "qc_report.json").write_text(json.dumps(qc))
         status = {"job_id": job_id, "status": {"state": "COMPLETED",
             "reason": "completed_partial_dubbing" if partial else "completed_b1_fallback",
-            "message": "lồng tiếng chưa đầy đủ" if partial else "lồng tiếng không khả dụng"}}
+            "message": "lồng tiếng chưa đầy đủ" if partial else "lồng tiếng không khả dụng",
+            "checkpoint_id": "qc", "retry": {"attempt": "1", "max_attempts": "3", "condition_fingerprint": None},
+            "progress": {"completed_units": "1000", "total_units": "1000", "heartbeat_sequence": "23"}}}
         return status, tts, mix
 
     def test_downgrade_validator_rejects_hidden_retry_poisoning_and_bad_source_ducking(self):
@@ -201,7 +203,7 @@ class VisibleDowngradeTests(unittest.TestCase):
                         smoke._verify_downgrade_receipt(output, status, "smoke-all-cues-refused", partial=False)
 
     def test_native_guard_rejects_regenerated_completed_replay(self):
-        for defect in ("changed_output", "missing_resume"):
+        for defect in ("changed_output", "missing_resume", "lost_checkpoint", "reset_attempt", "changed_attempt", "lost_total"):
             with self.subTest(defect=defect), TemporaryDirectory() as directory:
                 work = Path(directory)
                 source = work / "source.mp4"
@@ -216,7 +218,11 @@ class VisibleDowngradeTests(unittest.TestCase):
                         status, _, _ = self.receipt(output)
                         return status, False, ""
                     status = {"job_id": "smoke-cue-refusal", "status": {"state": "COMPLETED",
-                        "reason": "completed_partial_dubbing", "message": "lồng tiếng chưa đầy đủ"}}
+                        "reason": "completed_partial_dubbing", "message": "lồng tiếng chưa đầy đủ",
+                        "checkpoint_id": None if defect == "lost_checkpoint" else "qc",
+                        "retry": {"attempt": "0" if defect == "reset_attempt" else "2" if defect == "changed_attempt" else "1",
+                            "max_attempts": "3", "condition_fingerprint": None},
+                        "progress": {"completed_units": "1000", "total_units": None if defect == "lost_total" else "1000"}}}
                     if defect == "changed_output": (output / "regenerated.wav").write_bytes(b"unwanted new speech")
                     return status, False, json.dumps({"event": "completed", "resumed": defect != "missing_resume"})
 
@@ -227,6 +233,15 @@ class VisibleDowngradeTests(unittest.TestCase):
                     with self.assertRaisesRegex(smoke.SmokeError, "completed degraded replay"):
                         smoke._verify_visible_downgrades(work / "supervisor", work, work / "data", work,
                             work / "ffmpeg", work / "ffprobe", voice_id="fixture", timeout=10)
+
+    def test_completed_replay_history_ignores_only_invocation_counter(self):
+        with TemporaryDirectory() as directory:
+            status, _, _ = self.receipt(Path(directory))
+            before = smoke._completed_replay_history(status)
+            status["status"]["progress"]["heartbeat_sequence"] = "0"
+            self.assertEqual(smoke._completed_replay_history(status), before)
+            status["status"]["retry"]["condition_fingerprint"] = "different retry"
+            self.assertNotEqual(smoke._completed_replay_history(status), before)
 
 
     def test_explicit_no_audio_evidence_keeps_default_aac_requirement(self):

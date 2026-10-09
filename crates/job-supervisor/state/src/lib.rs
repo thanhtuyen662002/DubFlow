@@ -130,6 +130,15 @@ pub struct ArtifactRecord {
     pub reusable: bool,
 }
 
+/// Durable history for status projection, read without advancing an attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StageHistory {
+    pub attempt: u8,
+    pub max_attempts: u8,
+    pub retry_condition: Option<String>,
+    pub checkpoint_id: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryEvent {
     RecoveredArtifact { artifact_id: String, hash: String },
@@ -226,6 +235,15 @@ impl DurableStore {
     pub fn stage_status(&self, job_id: &str, stage_id: &str) -> Result<StageStatus> {
         self.connection.query_row("SELECT status FROM stages WHERE job_id = ?1 AND stage_id = ?2", params![job_id, stage_id], |row| row.get::<_, String>(0))
             .optional()?.ok_or_else(|| StateError::NotFound { entity: "stage", id: format!("{job_id}/{stage_id}") }).and_then(StageStatus::parse)
+    }
+
+    pub fn stage_history(&self, job_id: &str, stage_id: &str) -> Result<StageHistory> {
+        self.connection.query_row(
+            "SELECT attempt, max_attempts, retry_condition, checkpoint_id FROM stages WHERE job_id = ?1 AND stage_id = ?2",
+            params![job_id, stage_id],
+            |row| Ok(StageHistory { attempt: row.get(0)?, max_attempts: row.get(1)?,
+                retry_condition: row.get(2)?, checkpoint_id: row.get(3)? }),
+        ).optional()?.ok_or_else(|| StateError::NotFound { entity: "stage", id: format!("{job_id}/{stage_id}") })
     }
 
     pub fn artifact(&self, artifact_id: &str) -> Result<ArtifactRecord> {
@@ -881,6 +899,46 @@ mod tests {
         {
             let store = DurableStore::open(&path).unwrap();
             assert_eq!(store.start_stage("job-1", "analysis", 6).unwrap(), 2);
+        }
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn stage_history_survives_restart_failure_retry_and_completion() {
+        let path = temp_path("stage-history", "sqlite");
+        {
+            let store = DurableStore::open(&path).unwrap();
+            setup(&store);
+            assert_eq!(store.stage_history("job-1", "analysis").unwrap(), StageHistory {
+                attempt: 0, max_attempts: 3, retry_condition: None, checkpoint_id: None });
+            store.start_job("job-1", 2).unwrap();
+            store.start_stage("job-1", "analysis", 3).unwrap();
+            store.record_checkpoint("job-1", "analysis", "transcript", None, true, 4).unwrap();
+        }
+        {
+            let store = DurableStore::open(&path).unwrap();
+            store.recover_after_restart(5).unwrap();
+            let saved = store.stage_history("job-1", "analysis").unwrap();
+            assert_eq!(saved.attempt, 1);
+            assert_eq!(saved.checkpoint_id.as_deref(), Some("transcript"));
+            assert_eq!(store.stage_history("job-1", "analysis").unwrap(), saved);
+            store.start_stage("job-1", "analysis", 6).unwrap();
+            store.fail_stage("job-1", "analysis", "timeout", true, 7).unwrap();
+            store.retry_stage("job-1", "analysis", "smaller chunk", 8).unwrap();
+            assert_eq!(store.stage_history("job-1", "analysis").unwrap().attempt, 2);
+            store.start_stage("job-1", "analysis", 9).unwrap();
+            store.record_checkpoint("job-1", "analysis", "qc", None, true, 10).unwrap();
+            store.complete_stage("job-1", "analysis", 11).unwrap();
+            store.complete_job("job-1", 12).unwrap();
+        }
+        {
+            let store = DurableStore::open(&path).unwrap();
+            assert_eq!(store.stage_history("job-1", "analysis").unwrap(), StageHistory {
+                attempt: 3, max_attempts: 3, retry_condition: Some("smaller chunk".into()), checkpoint_id: Some("qc".into()) });
+            assert!(matches!(store.stage_history("job-1", "missing"), Err(StateError::NotFound { .. })));
+            assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Succeeded);
         }
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));

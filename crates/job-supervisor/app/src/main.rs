@@ -931,7 +931,12 @@ fn run_one_shot(
     let mut contract_status = default_contract_status();
     let mut output_path: Option<String> = None;
     let mut terminal_event: Option<String> = None;
-    write_status_file(&final_status_path, &spec.job_id, &contract_status, None)?;
+    // Reconstruct from the reconciled supervisor-owned state before publishing
+    // anything. A completed replay must never briefly erase its saved history.
+    store.reconcile_job(&spec.job_id, now_ms())?;
+    apply_durable_status(&mut contract_status, store.job_status(&spec.job_id)?,
+        &mut output_path, &spec, &store);
+    write_status_file(&final_status_path, &spec.job_id, &contract_status, output_path.as_deref())?;
     let control = Arc::new(JobControl::new());
     let (tx, rx) = mpsc::channel();
     let runtime_for_worker = runtime.clone();
@@ -1286,14 +1291,13 @@ fn apply_status_event(
             if let Some(detail) = event.get("detail").and_then(Value::as_str) {
                 status["message"] = Value::String(detail.chars().take(4096).collect());
             }
-            if let Some(done) = event.get("units_done").and_then(Value::as_u64) {
-                status["progress"]["completed_units"] = Value::String(done.to_string());
-            } else if let Some(fraction) = event.get("fraction").and_then(Value::as_f64) {
+            // `fraction` describes the whole local-file pipeline. Cue counts
+            // describe only the current stage and stay in the raw event.
+            if let Some(fraction) = event.get("fraction").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+                let done = ((fraction.clamp(0.0, 1.0) * 1000.0).round() as u64).min(999);
                 status["progress"]["completed_units"] =
-                    Value::String((fraction.clamp(0.0, 1.0) * 1000.0).round().to_string());
-            }
-            if let Some(total) = event.get("units_total").and_then(Value::as_u64) {
-                status["progress"]["total_units"] = Value::String(total.to_string());
+                    Value::String(done.to_string());
+                status["progress"]["total_units"] = Value::String("1000".into());
             }
         }
         "checkpoint" => {
@@ -1345,9 +1349,29 @@ fn apply_status_event(
                 .get("condition")
                 .and_then(Value::as_str)
                 .unwrap_or("job failed");
-            *status = failed_contract_status(code, condition);
+            set_status_failure(status, code, condition);
         }
         _ => {}
+    }
+    restore_stage_history(status, spec, store);
+}
+
+fn set_status_failure(status: &mut Value, code: &str, detail: &str) {
+    let failed = failed_contract_status(code, detail);
+    for key in ["state", "reason", "message"] {
+        status[key] = failed[key].clone();
+    }
+    status["resource"]["held"] = Value::Bool(false);
+}
+
+fn restore_stage_history(status: &mut Value, spec: &StartSpec, store: &DurableStore) {
+    // Do not use a previous status JSON as authority. If SQLite is unavailable,
+    // retain history already observed in this process instead of resetting it.
+    if let Ok(history) = store.stage_history(&spec.job_id, STAGE_ID) {
+        status["checkpoint_id"] = history.checkpoint_id.map(Value::String).unwrap_or(Value::Null);
+        status["retry"]["attempt"] = Value::String(history.attempt.to_string());
+        status["retry"]["max_attempts"] = Value::String(history.max_attempts.to_string());
+        status["retry"]["condition_fingerprint"] = history.retry_condition.map(Value::String).unwrap_or(Value::Null);
     }
 }
 
@@ -1358,6 +1382,7 @@ fn apply_durable_status(
     spec: &StartSpec,
     store: &DurableStore,
 ) {
+    let heartbeat = status["progress"]["heartbeat_sequence"].clone();
     match durable {
         JobStatus::Succeeded => {
             apply_status_event(status, &json!({"event":"completed"}), output_path, spec, store)
@@ -1368,8 +1393,7 @@ fn apply_durable_status(
                 .and_then(Value::as_str)
                 .unwrap_or("job failed")
                 .to_owned();
-            *status = failed_contract_status("JOB_FAILED", &current);
-            status["resource"]["held"] = Value::Bool(false);
+            set_status_failure(status, "JOB_FAILED", &current);
         }
         JobStatus::Cancelled => {
             apply_status_event(status, &json!({"event":"cancelled"}), output_path, spec, store);
@@ -1388,6 +1412,9 @@ fn apply_durable_status(
         }
         JobStatus::Queued => {}
     }
+    // Reconciliation is a read, not a newly observed worker/status event.
+    status["progress"]["heartbeat_sequence"] = heartbeat;
+    restore_stage_history(status, spec, store);
 }
 
 fn atomic_json_file(path: &Path, value: &Value) -> SupervisorResult<()> {
@@ -2424,6 +2451,7 @@ mod tests {
         store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS).unwrap();
         store.start_job(&spec.job_id, 3).unwrap();
         store.start_stage(&spec.job_id, STAGE_ID, 4).unwrap();
+        store.record_checkpoint(&spec.job_id, STAGE_ID, "qc", None, true, 5).unwrap();
         let id = format!("{}-{}-qc-report-a1", spec.job_id, STAGE_ID);
         store.record_artifact_written(&id, &spec.job_id, STAGE_ID, path, None, true, 5).unwrap();
         store.commit_artifact(&id, 6).unwrap();
@@ -2463,8 +2491,82 @@ mod tests {
             apply_durable_status(&mut replay, JobStatus::Succeeded, &mut output, &spec, &store);
             assert_eq!(replay["message"], completed_message);
             assert_eq!(replay["reason"], reason);
+            assert_eq!(replay["checkpoint_id"], "qc");
+            assert_eq!(replay["retry"]["attempt"], "1");
+            assert_eq!(replay["retry"]["max_attempts"], MAX_ATTEMPTS.to_string());
+            assert_eq!(replay["progress"]["completed_units"], "1000");
+            assert_eq!(replay["progress"]["total_units"], "1000");
+            assert_eq!(replay["progress"]["heartbeat_sequence"], "0");
+            let first = replay.clone();
+            apply_durable_status(&mut replay, JobStatus::Succeeded, &mut output, &spec, &store);
+            assert_eq!(replay, first);
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn pipeline_progress_never_reuses_stage_cue_count_as_its_denominator() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        let mut status = default_contract_status();
+        let mut output = None;
+        // Actual nine-minute ASR/translation sequence: 272 cues, then an
+        // overall fractional event without any new stage-unit denominator.
+        for (event, expected) in [
+            (json!({"event":"progress", "fraction":0.38, "units_done":272, "units_total":272}), "380"),
+            (json!({"event":"progress", "fraction":0.44}), "440"),
+            (json!({"event":"progress", "fraction":0.58, "units_done":272, "units_total":272}), "580"),
+            (json!({"event":"progress", "fraction":0.9999}), "999"),
+            (json!({"event":"progress", "fraction":1.0}), "999"),
+        ] {
+            apply_status_event(&mut status, &event, &mut output, &spec, &store);
+            assert_eq!(status["state"], "RUNNING");
+            assert_eq!(status["progress"]["completed_units"], expected);
+            assert_eq!(status["progress"]["total_units"], "1000");
+            assert!(output.is_none());
+        }
+        apply_status_event(&mut status, &json!({"event":"progress", "units_done":7, "units_total":7}),
+            &mut output, &spec, &store);
+        assert_eq!(status["progress"]["completed_units"], "999");
+        assert_eq!(status["progress"]["total_units"], "1000");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restart_and_failure_status_preserve_actual_start_count_and_checkpoint() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        store.create_job(&spec.job_id, "file:///source", 1).unwrap();
+        store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS).unwrap();
+        store.start_job(&spec.job_id, 2).unwrap();
+        store.start_stage(&spec.job_id, STAGE_ID, 3).unwrap();
+        store.record_checkpoint(&spec.job_id, STAGE_ID, "transcript", None, true, 4).unwrap();
+        store.recover_after_restart(5).unwrap();
+        let mut status = default_contract_status();
+        let mut output = None;
+        apply_durable_status(&mut status, store.job_status(&spec.job_id).unwrap(), &mut output, &spec, &store);
+        assert_eq!(status["state"], "RECOVERED");
+        assert_eq!(status["checkpoint_id"], "transcript");
+        assert_eq!(status["retry"]["attempt"], "1");
+        store.start_stage(&spec.job_id, STAGE_ID, 6).unwrap();
+        store.fail_stage(&spec.job_id, STAGE_ID, "timeout", true, 7).unwrap();
+        store.retry_stage(&spec.job_id, STAGE_ID, "smaller chunk", 8).unwrap();
+        apply_status_event(&mut status, &json!({"event":"retrying", "next_attempt":3, "code":"TIMEOUT"}),
+            &mut output, &spec, &store);
+        assert_eq!(status["retry"]["attempt"], "2");
+        assert_eq!(status["retry"]["condition_fingerprint"], "smaller chunk");
+        store.fail_job(&spec.job_id, "retry stopped", 9).unwrap();
+        apply_status_event(&mut status, &json!({"event":"error", "code":"TEST_FAILURE", "condition":"retry stopped"}),
+            &mut output, &spec, &store);
+        let heartbeat = status["progress"]["heartbeat_sequence"].clone();
+        apply_durable_status(&mut status, JobStatus::Failed, &mut output, &spec, &store);
+        assert_eq!(status["state"], "FAILED");
+        assert_eq!(status["checkpoint_id"], "transcript");
+        assert_eq!(status["retry"]["attempt"], "2");
+        assert_eq!(status["retry"]["condition_fingerprint"], "smaller chunk");
+        assert_eq!(status["progress"]["heartbeat_sequence"], heartbeat);
+        assert_eq!(status["resource"]["held"], false);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

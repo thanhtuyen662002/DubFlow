@@ -451,6 +451,22 @@ def _verify_downgrade_receipt(output: Path, status: dict[str, Any], job_id: str,
             "following_cue_generated": partial, "b1_fallback": not partial}
 
 
+def _completed_replay_history(status: dict[str, Any]) -> dict[str, Any]:
+    value = status.get("status", {})
+    checkpoint, retry, progress = value.get("checkpoint_id"), value.get("retry", {}), value.get("progress", {})
+    attempt, maximum = retry.get("attempt"), retry.get("max_attempts")
+    if (not isinstance(checkpoint, str) or not checkpoint or
+            not isinstance(attempt, str) or re.fullmatch(r"[1-9][0-9]{0,2}", attempt) is None or
+            not isinstance(maximum, str) or re.fullmatch(r"[1-9][0-9]{0,2}", maximum) is None or
+            not 1 <= int(attempt) <= int(maximum) <= 255 or
+            progress.get("completed_units") != "1000" or progress.get("total_units") != "1000"):
+        raise SmokeError("completed degraded replay lost durable checkpoint, actual attempts or completion progress")
+    # The current invocation's event/heartbeat counter is not durable history.
+    return {"checkpoint_id": checkpoint, "retry": dict(retry),
+            "completed_units": progress["completed_units"], "total_units": progress["total_units"],
+            "output_path": status.get("output_path")}
+
+
 def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, work: Path,
                                ffmpeg: Path, ffprobe: Path, *, voice_id: str, timeout: float) -> dict[str, Any]:
     if any((work / name).exists() for name in ("cue refusal output", "all refused output", "no audio output")):
@@ -470,6 +486,7 @@ def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, wo
     if killed or status is None:
         raise SmokeError("cue refusal qualification was unexpectedly interrupted")
     partial = _verify_downgrade_receipt(output, status, job_id, partial=True)
+    original_history = _completed_replay_history(status)
     partial["output"] = _verify_output(ffprobe, output, 18, expect_dubbing=True, expect_voice_id=voice_id)
     if (partial["output"]["width"], partial["output"]["height"]) != (180, 320):
         raise SmokeError("portrait dubbing changed the source video dimensions")
@@ -490,9 +507,11 @@ def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, wo
         except json.JSONDecodeError:
             continue
     if (current != original or replay_summary != {key: partial[key] for key in replay_summary} or
+            _completed_replay_history(replay) != original_history or
             not any(isinstance(event, dict) and event.get("event") == "completed" and event.get("resumed") is True for event in events)):
         raise SmokeError("completed degraded replay changed outputs, regenerated speech or lost its visible limitation")
     partial["completed_replay_preserved"] = True
+    partial["completed_replay_history"] = original_history
 
     fallback_source = _make_source(ffmpeg, work / "all refused input", seconds=18, stem="all speech refused")
     fallback_source.with_suffix(".srt").write_text(first_cue, encoding="utf-8")

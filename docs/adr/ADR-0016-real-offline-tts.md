@@ -368,3 +368,38 @@ claims to preserve nonexistent original audio. No synthetic speech/audio is
 inserted to hide this limitation. The qualification helper permits absent AAC
 only for this explicitly declared no-audio case; all existing dubbed/audio
 cases retain the AAC gate. Standard worker media/QC behavior is unchanged.
+
+## Local-file status reconstruction and coherent pipeline progress
+
+An installed real nine-minute no-sidecar run reproduced 440 completed units
+over a stale 272-cue denominator during translation. Its completed replay
+preserved all 789 output files but reset durable checkpoint `qc` to null and
+actual start count 1 to 0. These are status defects, not media regeneration.
+
+The supervisor now reads the existing stage columns through a bounded read-only
+state accessor. Reconciliation precedes its initial projection; completion and
+failure preserve the latest durable checkpoint, actual starts, maximum attempts
+and retry condition. A scheduled replacement does not count before it starts.
+No previous status file or worker-owned SQLite writes establish this history.
+If a later read fails, observed history is retained rather than erased.
+
+Overall worker fractions project onto paired 1000-unit progress. Stage cue counts
+remain in the raw event. Running progress caps at 999, including rounding near
+one; completed progress requires validated durable success. The current one-shot
+projected event/heartbeat sequence restarts per invocation and is not recoverable
+cumulative history; synthetic durable reconciliation does not advance it.
+
+Status schema 1, SQLite migration 2, worker protocol, artifact/model versions and
+producer recipes are unchanged. Old readers accept the existing fields. Older
+supervisors retain their original status behavior; rollback must use their
+coherent retained runtime/database as in ADR-0020. Immutable producer pins forbid
+replaying an existing ID under this changed supervisor. Historic outputs and
+their failure receipts are not rewritten. No migration is needed for the
+read-only projection repair.
+
+Reopen/progress/failure regressions and native staged/installed completed-replay
+guards must prove checkpoint/actual-start/progress equivalence alongside all
+output hashes and mtimes. Only the invocation counter may differ. Prior f3 CI
+and real-video receipts remain historical for that source; required exact new
+HEAD/current-base lanes and real-media evidence must rerun. These repairs do not
+qualify film acting, bounded semantic rewrite or the full #166/#175 release.
