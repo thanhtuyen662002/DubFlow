@@ -17,6 +17,8 @@ from .adapter import TtsBackendError
 from .mimic3_native import FRONTEND_ID, MAX_FRAMES
 from .windows_job import WindowsJob
 
+CUE_REJECTION_CODES = {"TTS_SPEECH_INCOMPLETE", "TTS_TEXT_UNSUPPORTED"}
+
 
 class NativeProcess:
     def __init__(self, pack, *, timeout: float = 120.0, command: list[str] | None = None,
@@ -76,6 +78,7 @@ class NativeProcess:
             pass
 
     def _request(self, request: dict, *, timeout: float | None = None) -> dict:
+        cue_rejected = False
         try:
             if self.process is None or self.process.poll() is not None:
                 raise TtsBackendError("TTS_NATIVE_EXITED", "native process is no longer running")
@@ -94,10 +97,21 @@ class NativeProcess:
             if type(reply) is not dict or type(reply.get("schema_version")) is not int or reply["schema_version"] != 1 or type(reply.get("sequence")) is not int or reply["sequence"] != request["sequence"] or type(reply.get("ok")) is not bool:
                 raise TtsBackendError("TTS_NATIVE_PROTOCOL_INVALID", "native reply identity differs")
             if not reply["ok"]:
+                if (request["sequence"] > 0 and reply.get("scope") == "cue" and
+                        type(reply.get("code")) is str and
+                        reply.get("code") in CUE_REJECTION_CODES and
+                        type(reply.get("condition")) is str and 0 < len(reply["condition"]) <= 1024):
+                    # The reviewed model resets decoding for each text. A cue
+                    # that hit its content bound is refused once; retain this
+                    # healthy child for the next cue. Crashes, initialization,
+                    # timeout, malformed replies and all other errors close it.
+                    cue_rejected = True
+                    raise TtsBackendError(reply["code"], reply["condition"], retryable=False)
                 raise TtsBackendError("TTS_NATIVE_INFERENCE_FAILED", str(reply.get("condition", "native inference failed"))[:1024])
             return reply
         except TtsBackendError:
-            self.close()
+            if not cue_rejected:
+                self.close()
             raise
         except (OSError, ValueError) as error:
             self.close()

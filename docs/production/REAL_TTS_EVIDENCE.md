@@ -496,3 +496,20 @@ must execute this guard on its exact next source/current base before acceptance.
 The existing `1c16aaa` Windows run is preserved while it legitimately runs; it
 does not contain or qualify this newly prepared test guard. No runtime/model,
 public contract or supervisor durable mutation is introduced by this preparation.
+
+## Bounded cue refusal isolation preparation
+
+An actual child-process regression reproduced that a bounded native refusal
+returned generic `TTS_NATIVE_INFERENCE_FAILED` and closed the child, poisoning
+following cues. The prepared bridge now accepts only reviewed, sequence-bound
+`TTS_TEXT_UNSUPPORTED`/`TTS_SPEECH_INCOMPLETE` cue errors and continues with the
+next input. No failed cue is regenerated or its incomplete speech published.
+All untyped/malformed/initialization/fatal failures retain containment and close.
+
+Deterministic tests exercise both actual private entrypoints with a model fixture,
+the same child PID across refusal/next cue, no implicit request repeat, and fatal
+unknown/list-valued/missing-scope/invalid-condition/initialization replies. Direct
+VieNeu bound tests require typed rejection before waveform publication. Existing
+hard-worker-death tests still verify native process and descendant termination.
+Actual model continuity and exact current-source native qualification remain
+separate required evidence; these fixtures do not approve speech or film acting.

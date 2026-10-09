@@ -18,7 +18,7 @@ import wave
 from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.tts.adapter import TtsConfig, TtsInput, TtsRequest, TtsError, EngineHealth, approved_default_voice
 from engine.dubflow.tts.vieneu import load_vieneu_voice, voice_choices, VieNeuVietnameseTtsEngine, FILES
-from engine.dubflow.tts.vieneu_native import NativeModel, VERSIONS, INFERENCE_RECIPE
+from engine.dubflow.tts.vieneu_native import NativeModel, NativeCueRejected, VERSIONS, INFERENCE_RECIPE
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -146,10 +146,23 @@ class VieNeuBoundsTests(unittest.TestCase):
         model.codes, model.speaker = None, None
         calls = []
         model.engine = SimpleNamespace(ended=False, tokenizer=SimpleNamespace(encode=lambda _: SimpleNamespace(ids=[1])), infer=lambda **kw: calls.append(kw) or [0.1])
-        with self.assertRaisesRegex(ValueError, "before end-of-speech"):
+        with self.assertRaisesRegex(NativeCueRejected, "before end-of-speech") as rejected:
             model.generate({"text": "Xin chào", "speed": 1.0, "sequence": 1})
+        self.assertEqual(rejected.exception.code, "TTS_SPEECH_INCOMPLETE")
         self.assertEqual(len(calls), 1)
         self.assertIsNone(model.last_samples)
+
+    def test_unsupported_phoneme_context_is_a_cue_refusal_before_inference(self):
+        for phones, token_count in (("x" * 4097, 1), ("phones", 1025)):
+            with self.subTest(token_count=token_count):
+                model = NativeModel.__new__(NativeModel)
+                model.last_text, model.last_samples = None, None
+                model.phonemize = lambda _: phones
+                model.engine = SimpleNamespace(tokenizer=SimpleNamespace(encode=lambda _: SimpleNamespace(ids=[1] * token_count)))
+                with self.assertRaises(NativeCueRejected) as refused:
+                    model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+                self.assertEqual(refused.exception.code, "TTS_TEXT_UNSUPPORTED")
+                self.assertIsNone(model.last_samples)
 
     def test_invalid_text_and_speed_fail_before_sdk_inference(self):
         model = NativeModel.__new__(NativeModel)

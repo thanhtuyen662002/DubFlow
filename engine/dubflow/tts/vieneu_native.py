@@ -27,6 +27,15 @@ SOURCE_FILES = {
 MAX_FRAMES = 48_000 * 32
 
 
+class NativeCueRejected(ValueError):
+    """A bounded content failure, independent of the next cue's fresh decode."""
+    def __init__(self, code: str, condition: str):
+        if code not in {"TTS_SPEECH_INCOMPLETE", "TTS_TEXT_UNSUPPORTED"}:
+            raise ValueError("unknown native cue refusal")
+        self.code = code
+        super().__init__(condition)
+
+
 def _offline_environment():
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -95,15 +104,15 @@ class NativeModel:
         if text != self.last_text:
             phones = self.phonemize(text)
             if not phones or len(phones) > 4096:
-                raise ValueError("phoneme sequence exceeds its bound")
+                raise NativeCueRejected("TTS_TEXT_UNSUPPORTED", "phoneme sequence exceeds its bound")
             if len(self.engine.tokenizer.encode(phones).ids) > 1024:
-                raise ValueError("phoneme token count exceeds the bounded model context")
+                raise NativeCueRejected("TTS_TEXT_UNSUPPORTED", "phoneme token count exceeds the bounded model context")
             # Fixed seed is a reproducible recipe, not a cross-platform bit-exact claim.
             self.np.random.seed(20261007)
             self.engine.ended = False
             samples = self.engine.infer(phonemes=phones, ref_codes=self.codes, speaker_emb=self.speaker, max_new_frames=300, frame_cap=True)
             if not self.engine.ended:
-                raise ValueError("speech reached its generation bound before end-of-speech; output rejected")
+                raise NativeCueRejected("TTS_SPEECH_INCOMPLETE", "speech reached its generation bound before end-of-speech; output rejected")
             samples = self.np.asarray(samples, dtype=self.np.float32).reshape(-1)
             if not 0 < len(samples) <= MAX_FRAMES or not self.np.isfinite(samples).all():
                 raise ValueError("native waveform exceeds its finite size bound")
@@ -133,6 +142,7 @@ def main():
     protocol = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(protocol)
     protocol.NativeModel = NativeModel
+    protocol.NativeCueRejected = NativeCueRejected
     protocol.FRONTEND_ID = FRONTEND_ID
     protocol.main()
 

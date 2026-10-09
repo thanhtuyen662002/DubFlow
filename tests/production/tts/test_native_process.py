@@ -61,6 +61,97 @@ class NativeFailureTests(unittest.TestCase):
         finally:
             bridge.close()
 
+    def test_typed_cue_rejection_preserves_child_for_changed_next_cue(self):
+        code = """
+import hashlib, json, sys
+from pathlib import Path
+spec = json.loads(sys.stdin.readline())
+root = Path(spec['output_root'])
+print(json.dumps({'schema_version':1,'sequence':0,'ok':True,'frontend':'mimic3-word-blanks-v1'}), flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    sequence = request['sequence']
+    if request['text'] == 'bounded rejection':
+        reply = {'ok':False,'scope':'cue','code':'TTS_SPEECH_INCOMPLETE','condition':'no EOS within frame bound'}
+    else:
+        payload = b'\\x00\\x00\\x80\\x3e' * 10
+        name = 'samples-' + str(sequence) + '.f32'
+        (root / name).write_bytes(payload)
+        reply = {'ok':True,'file':name,'frames':10,'sample_rate':22050,'sha256':hashlib.sha256(payload).hexdigest(),'unknown':[]}
+    print(json.dumps({'schema_version':1,'sequence':sequence,**reply}), flush=True)
+"""
+        bridge = self.start(code)
+        try:
+            with self.assertRaises(TtsError) as rejected:
+                bridge.generate("bounded rejection", sid=0, speed=1.)
+            self.assertEqual(rejected.exception.code, "TTS_SPEECH_INCOMPLETE")
+            self.assertFalse(rejected.exception.retryable)
+            self.assertIsNone(bridge.process.poll(), "cue refusal must not kill a healthy child")
+            speech = bridge.generate("changed next cue", sid=0, speed=1.)
+            self.assertEqual(len(speech.samples), 10)
+            self.assertEqual(bridge.sequence, 2, "rejected cue must not be retried implicitly")
+        finally:
+            bridge.close()
+
+    def test_unknown_or_malformed_cue_refusal_and_initialization_remain_fatal(self):
+        for fields in ({"scope":"cue", "code":"unreviewed"},
+                       {"scope":"cue", "code":["TTS_SPEECH_INCOMPLETE"]},
+                       {"scope":"cue", "code":"TTS_SPEECH_INCOMPLETE", "condition":None},
+                       {"scope":True, "code":"TTS_SPEECH_INCOMPLETE"},
+                       {"code":"TTS_SPEECH_INCOMPLETE"}):
+            with self.subTest(fields=fields):
+                reply = {"ok":False, "condition":"refused", **fields}
+                code = "import json,sys\nsys.stdin.readline()\nprint(json.dumps({'schema_version':1,'sequence':0,'ok':True,'frontend':'mimic3-word-blanks-v1'}),flush=True)\nsys.stdin.readline()\nprint(json.dumps({'schema_version':1,'sequence':1,**" + repr(reply) + "}),flush=True)\nsys.stdin.read()\n"
+                bridge = self.start(code)
+                try:
+                    with self.assertRaises(TtsError):
+                        bridge.generate("next", sid=0, speed=1.)
+                    self.assertIsNotNone(bridge.process.poll(), "unreviewed refusal must terminate child")
+                finally:
+                    bridge.close()
+        code = "import json,sys\nsys.stdin.readline()\nprint(json.dumps({'schema_version':1,'sequence':0,'ok':False,'scope':'cue','code':'TTS_SPEECH_INCOMPLETE','condition':'initialization failed'}),flush=True)\n"
+        with self.assertRaises(TtsError) as failure:
+            self.start(code)
+        self.assertEqual(failure.exception.code, "TTS_NATIVE_INFERENCE_FAILED")
+
+    def test_reviewed_entrypoints_emit_cue_scope_and_serve_next_input(self):
+        child = """
+import hashlib, runpy, sys
+from pathlib import Path
+namespace = runpy.run_path(sys.argv[1])
+class Model:
+    def __init__(self, request):
+        self.root = Path(request['output_root'])
+    def generate(self, request):
+        if request['text'] == 'bounded rejection':
+            raise namespace['NativeCueRejected']('TTS_SPEECH_INCOMPLETE', 'frame bound before EOS')
+        payload = b'\\x00\\x00\\x80\\x3e' * 10
+        name = 'samples-' + str(request['sequence']) + '.f32'
+        (self.root / name).write_bytes(payload)
+        return {'file':name,'frames':10,'sample_rate':22050,'sha256':hashlib.sha256(payload).hexdigest(),'unknown':[]}
+namespace['main'].__globals__['NativeModel'] = Model
+namespace['main']()
+"""
+        for name in ("mimic3_native.py", "vieneu_native.py"):
+            with self.subTest(entrypoint=name), tempfile.TemporaryDirectory() as directory:
+                script = Path(directory) / "child.py"
+                script.write_text(child, encoding="utf-8")
+                entrypoint = Path(__file__).resolve().parents[3] / "engine/dubflow/tts" / name
+                frontend = "vieneu-sea-g2p-preset-v1" if name == "vieneu_native.py" else "mimic3-word-blanks-v1"
+                pack = SimpleNamespace(path=Path(directory), noise_scale=0., noise_scale_w=0.)
+                bridge = NativeProcess(pack, timeout=3, frontend=frontend,
+                    command=[sys.executable, "-I", "-B", "-u", str(script), str(entrypoint)])
+                try:
+                    original_pid = bridge.process.pid
+                    with self.assertRaises(TtsError) as refusal:
+                        bridge.generate("bounded rejection", 0, 1.)
+                    self.assertEqual(refusal.exception.code, "TTS_SPEECH_INCOMPLETE")
+                    self.assertEqual(len(bridge.generate("changed next cue", 0, 1.).samples), 10)
+                    self.assertEqual(bridge.process.pid, original_pid)
+                    self.assertIsNone(bridge.process.poll())
+                finally:
+                    bridge.close()
+
 
 class NativeLifetimeTests(unittest.TestCase):
     entrypoint_name = "mimic3_native.py"

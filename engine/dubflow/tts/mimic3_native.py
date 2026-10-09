@@ -26,6 +26,15 @@ MAX_FRAMES = 8 * 1024 * 1024
 LANGUAGE_MARKER = re.compile(r"\([a-z]{2,3}(?:-[a-z0-9]+)*\)")
 
 
+class NativeCueRejected(ValueError):
+    """Reviewed content refusal; inference state can serve a different cue."""
+    def __init__(self, code: str, condition: str):
+        if code not in {"TTS_SPEECH_INCOMPLETE", "TTS_TEXT_UNSUPPORTED"}:
+            raise ValueError("unknown native cue refusal")
+        self.code = code
+        super().__init__(condition)
+
+
 def original_inventory(path: Path) -> dict[str, int]:
     with path.open("r", encoding="utf-8") as stream:
         payload = stream.read(4097)
@@ -226,6 +235,13 @@ def main() -> None:
             else:
                 result = model.generate(request)
             reply = {"schema_version": 1, "sequence": sequence, "ok": True, **result}
+        except NativeCueRejected as error:
+            if model is not None and type(sequence) is int and sequence > 0:
+                reply = {"schema_version": 1, "sequence": sequence, "ok": False,
+                         "scope": "cue", "code": error.code, "condition": str(error)[:1024]}
+            else:
+                reply = {"schema_version": 1, "sequence": sequence, "ok": False,
+                         "condition": str(error)[:1024]}
         except Exception as error:
             reply = {"schema_version": 1, "sequence": sequence, "ok": False, "condition": str(error)[:1024]}
         sys.stdout.write(json.dumps(reply, ensure_ascii=True, allow_nan=False) + "\n")

@@ -4,6 +4,35 @@
 - Date: 2026-10-07
 - Scope: B2 TTS adapter, model provisioning and provenance. No durable schema change.
 
+## Private native cue rejection compatibility — 2026-10-09
+
+A reviewed VieNeu context/frame bound can refuse one cue while its native model
+remains healthy. The former bridge treated every `ok:false` as process failure,
+closed the child, and caused later independent cues to fail `TTS_NATIVE_EXITED`.
+The private v1 reply now optionally includes `scope:cue` and one of two bounded
+codes: `TTS_TEXT_UNSUPPORTED` or `TTS_SPEECH_INCOMPLETE`. Only the reviewed typed
+exception for phoneme/context bounds or missing EOS emits this marker. It never
+publishes the incomplete waveform. The pinned SDK creates fresh decode caches
+and repetition history for each text; the next cue can use the same model safely.
+
+The bridge accepts that marker only after initialization, for the exact sequence,
+with a known string code and a non-empty bounded string condition. It raises a
+nonretryable cue error, keeping the healthy child for the next changed input.
+There is no hidden regeneration, frame-cap relaxation or changed voice/model.
+Initialization, crashes, timeout, malformed/unknown replies, invalid PCM,
+runtime/FFmpeg errors and all untyped failures still close the contained child.
+The existing adapter records the failed cue and source-audio fallback.
+
+This is an additive private bridge field, not a change to the supervisor/worker
+public protocol, canonical timeline, SQLite schema or published TTS document.
+An old bridge conservatively closes a child on the new refusal; a new bridge
+conservatively closes on an old untyped refusal. A job pins its owned runtime;
+adapter/entrypoint source digests already create a separate B2 generation when
+this recipe changes. Old jobs, WAVs and exports remain immutable and unrelabelled.
+No public migration or existing-artifact rewrite is needed. Production
+qualification requires actual speech after a refusal and fresh native checks;
+fixture subprocess continuity alone does not satisfy #166/#175 quality gates.
+
 ## Context
 
 The existing `BuiltinVietnameseTtsEngine` produces character-dependent sine
