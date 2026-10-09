@@ -15,6 +15,7 @@ cryptography==46.0.1
 # Real offline Vietnamese speech; never substitute character tone synthesis.
 sherpa-onnx==1.13.8
 sherpa-onnx-core==1.13.8
+# Shared pin for preset speech and bounded streaming PCM arrays.
 numpy==2.2.6
 onnxruntime==1.30.0
 # CPU fp32 preset synthesis; no remote model code or GPU is required.
