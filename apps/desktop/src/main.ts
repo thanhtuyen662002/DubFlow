@@ -68,7 +68,8 @@ function canCreateNewVersion(job: QueueJob | undefined): boolean {
 
 function renderVoiceControls(job: QueueJob | undefined): void {
   if (voiceJobId !== (job?.id ?? null)) {
-    genderFilter.value = accentFilter.value = styleFilter.value = "";
+    genderFilter.value = accentFilter.value = "";
+    styleFilter.value = voiceCatalog?.voices.some((voice) => voice.style === "tự nhiên") ? "tự nhiên" : "";
     voiceJobId = job?.id ?? null;
   }
   voiceControls.disabled = !job || job.status.state !== "QUEUED" || !voiceCatalog;
@@ -294,10 +295,12 @@ void invoke<unknown>("voice_catalog").then((data) => {
     for (const value of new Set(voiceCatalog.voices.map((voice) => voice[key]))) {
       const option = document.createElement("option");
       option.value = value;
-      option.textContent = key === "accent" ? `Miền ${value}` : value;
+      option.textContent = key === "accent" ? `Miền ${value}`
+        : key === "style" && value === "tự nhiên" ? "Đối thoại phim · tự nhiên" : value;
       select.append(option);
     }
   }
+  styleFilter.value = voiceCatalog.voices.some((voice) => voice.style === "tự nhiên") ? "tự nhiên" : "";
   renderVoiceControls(selectedJob());
   startButton.disabled = !canStart(selectedJob());
 }).catch((error) => {

@@ -52,12 +52,13 @@
             <legend>Lồng tiếng Việt</legend>
             <label class="dubbing-toggle"><input id="enable-dubbing" type="checkbox" /> Tạo giọng lồng tiếng</label>
             <div id="voice-picker" hidden>
+              <p class="hint">Ưu tiên giọng tự nhiên cho đối thoại phim.</p>
               <div class="voice-filters">
                 <label>Giới tính<select id="voice-gender"><option value="">Tất cả</option></select></label>
                 <label>Vùng giọng<select id="voice-accent"><option value="">Tất cả</option></select></label>
-                <label>Phong cách<select id="voice-style"><option value="">Tất cả</option></select></label>
+                <label>Phong cách<select id="voice-style"><option value="">Tất cả phong cách</option></select></label>
               </div>
-              <label>Giọng đọc<select id="tts-voice" aria-describedby="voice-description"></select></label>
+              <label>Giọng lồng tiếng<select id="tts-voice" aria-describedby="voice-description"></select></label>
               <p id="voice-description" class="hint"></p>
             </div>
             <p id="voice-catalog-status" class="hint">Đang đọc danh mục giọng…</p>

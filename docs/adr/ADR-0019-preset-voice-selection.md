@@ -92,3 +92,21 @@ separate qualification requirement.
 No full-release claim follows from catalog availability or a short waveform.
 Human listening, packaged Windows execution/recovery and all exact-HEAD/current
 base CI requirements remain part of #166 and the full #175 integration gate.
+
+## Owner preference: film dialogue
+
+The owner requested voices suitable for film dubbing. The desktop initially
+browses the 11 upstream `tự nhiên` presets and labels that filter
+`Đối thoại phim · tự nhiên`; gender and region filters remain available.
+`Tất cả phong cách` exposes the complete 25-preset catalog. Filtering retains
+the saved selected voice even when it falls outside the visible style group,
+and never alters an admitted/recovered job. Ngọc Huyền remains the manifest's
+natural default until a user explicitly selects another preset.
+
+This is a browsing preference over existing metadata. Model/preset identity,
+producer/runtime pins, public contracts and synthesis parameters are unchanged;
+it does not add emotion control or associate a voice with a visual character.
+Short original film-dialogue samples from all 11 natural presets are generated
+and compared separately, with exact source/producer/waveform receipts. Their
+listening library and back-ASR diagnostics cannot replace native installed
+execution, human quality assessment or complete #166/#175 qualification.
