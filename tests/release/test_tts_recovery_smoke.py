@@ -222,11 +222,31 @@ class VisibleDowngradeTests(unittest.TestCase):
 
                 with mock.patch.object(smoke, "_make_source", return_value=source), \
                         mock.patch.object(smoke, "_run_supervisor", side_effect=run_supervisor), \
-                        mock.patch.object(smoke, "_verify_output", return_value={"fixture_only": True}), \
+                        mock.patch.object(smoke, "_verify_output", return_value={"fixture_only": True, "width": 180, "height": 320}), \
                         mock.patch.object(smoke, "_run"):
                     with self.assertRaisesRegex(smoke.SmokeError, "completed degraded replay"):
                         smoke._verify_visible_downgrades(work / "supervisor", work, work / "data", work,
                             work / "ffmpeg", work / "ffprobe", voice_id="fixture", timeout=10)
+
+
+    def test_explicit_no_audio_evidence_keeps_default_aac_requirement(self):
+        for expect_audio, has_audio in ((True, True), (True, False), (False, True), (False, False)):
+            with self.subTest(expect_audio=expect_audio, has_audio=has_audio), TemporaryDirectory() as directory:
+                output = Path(directory)
+                (output / "editable").mkdir()
+                for name in ("final_vi.mp4", "captions_vi.srt", "captions_vi.ass", "qc_report.json", "editable/timeline.json"):
+                    (output / name).write_text("fixture only")
+                (output / "job_manifest.json").write_text("{}")
+                streams = [{"codec_type": "video", "codec_name": "h264", "width": 320, "height": 180}]
+                if has_audio: streams.append({"codec_type": "audio", "codec_name": "aac"})
+                probe = {"format": {"duration": "18"}, "streams": streams}
+                with mock.patch.object(smoke, "_run", return_value=SimpleNamespace(stdout=json.dumps(probe))):
+                    if expect_audio == has_audio:
+                        report = smoke._verify_output(output / "ffprobe", output, 18, expect_audio=expect_audio)
+                        self.assertEqual(report["audio_codec"], "aac" if has_audio else None)
+                    else:
+                        with self.assertRaises(smoke.SmokeError):
+                            smoke._verify_output(output / "ffprobe", output, 18, expect_audio=expect_audio)
 
 
 if __name__ == "__main__":

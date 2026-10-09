@@ -539,3 +539,14 @@ status and completed replay with unchanged hashes/mtimes. The currently active
 b9 native lane predates these changes; its eventual results cannot qualify this
 prepared child. Full #166/#175, human listening, native GUI and release gates
 remain open. No stable release or merge readiness is inferred here.
+
+The prepared qualification additionally checks actual portrait dimensions and
+a no-audio source with explicit VI sidecar. No-audio B1 completion states that
+the source has no audio and must not claim original audio; absent AAC is allowed
+only for that explicitly declared evidence. Seven focused release tests now
+pass, including retained default AAC admission. An initial fixture-only replay
+test lacked the new width/height fields and failed before its intended check;
+the fixture was corrected and the full focused suite rerun successfully.
+Four supervisor tests await native execution; local MSVC remains unavailable.
+These additions do not change the production worker's media/QC behavior or
+qualify real ASR/translation, GUI use or human film quality.

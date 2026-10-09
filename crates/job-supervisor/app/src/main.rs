@@ -1216,7 +1216,11 @@ fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, 
     match audio.get("mode").and_then(Value::as_str) {
         Some("original") if spec.enable_dubbing => return (
             "completed_b1_fallback",
-            "Đã xuất video có Vietsub và audio gốc; lồng tiếng không khả dụng.".into(),
+            match qc.get("source_probe").and_then(|probe| probe.get("has_audio")).and_then(Value::as_bool) {
+                Some(true) => "Đã xuất video có Vietsub và audio gốc; lồng tiếng không khả dụng.",
+                Some(false) => "Video nguồn không có audio; đã xuất Vietsub, lồng tiếng không khả dụng.",
+                None => "Đã xuất video có Vietsub; lồng tiếng không khả dụng.",
+            }.into(),
         ),
         Some("dubbed") if spec.enable_dubbing => {
             let tts_failures = match audio.get("tts_failures").and_then(Value::as_u64) {
@@ -2427,7 +2431,7 @@ mod tests {
     }
 
     fn test_qc(audio: Value) -> Value {
-        json!({"schema_version":1, "status":"passed", "audio":audio, "warnings":[], "downgrade":false})
+        json!({"schema_version":1, "status":"passed", "source_probe":{"has_audio":true}, "audio":audio, "warnings":[], "downgrade":false})
     }
 
     #[test]
@@ -2500,6 +2504,20 @@ mod tests {
         qc["downgrade"] = json!(true);
         commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
         assert_eq!(completion_summary(&store, &spec).0, "completed_with_warnings");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_audio_source_does_not_claim_original_audio_in_fallback() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        let mut qc = test_qc(json!({"mode":"original"}));
+        qc["source_probe"]["has_audio"] = json!(false);
+        commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+        let (reason, message) = completion_summary(&store, &spec);
+        assert_eq!(reason, "completed_b1_fallback");
+        assert!(message.contains("không có audio"));
+        assert!(!message.contains("audio gốc"));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -94,7 +94,7 @@ def _write_sidecar(source: Path, *, seconds: int) -> Path:
     return sidecar
 
 
-def _make_source(ffmpeg: Path, root: Path, *, seconds: int, stem: str) -> Path:
+def _make_source(ffmpeg: Path, root: Path, *, seconds: int, stem: str, size: str = "320x180") -> Path:
     root.mkdir(parents=True, exist_ok=True)
     source = root / f"{stem}.mp4"
     _run(
@@ -107,7 +107,7 @@ def _make_source(ffmpeg: Path, root: Path, *, seconds: int, stem: str) -> Path:
             "-f",
             "lavfi",
             "-i",
-            f"color=c=0x18324a:s=320x180:r=25:d={seconds}",
+            f"color=c=0x18324a:s={size}:r=25:d={seconds}",
             "-f",
             "lavfi",
             "-i",
@@ -248,7 +248,7 @@ def _verify_corrupt_failure(log: str, job_id: str) -> dict[str, Any]:
     return {key: failure[key] for key in ("code", "attempt", "retryable")}
 
 
-def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int, *, expect_dubbing: bool = False, expect_voice_id: str | None = None) -> dict[str, Any]:
+def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int, *, expect_dubbing: bool = False, expect_voice_id: str | None = None, expect_audio: bool = True) -> dict[str, Any]:
     final = output_dir / "final_vi.mp4"
     required = [
         final,
@@ -352,8 +352,10 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
     audios = [stream for stream in streams if stream.get("codec_type") == "audio"]
     if not videos or videos[0].get("codec_name") != "h264":
         raise SmokeError(f"output video is not H.264: {videos}")
-    if not audios or audios[0].get("codec_name") != "aac":
+    if expect_audio and (not audios or audios[0].get("codec_name") != "aac"):
         raise SmokeError(f"output audio is not AAC: {audios}")
+    if not expect_audio and audios:
+        raise SmokeError(f"no-audio source unexpectedly gained an audio stream: {audios}")
     duration = float((probe.get("format") or {}).get("duration", "0"))
     if duration <= 0 or duration + 2 < source_duration_seconds:
         raise SmokeError(f"output duration is invalid: {duration}")
@@ -361,7 +363,9 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         "output": str(final),
         "duration_seconds": duration,
         "video_codec": videos[0].get("codec_name"),
-        "audio_codec": audios[0].get("codec_name"),
+        "audio_codec": audios[0].get("codec_name") if audios else None,
+        "width": videos[0].get("width"),
+        "height": videos[0].get("height"),
         "artifacts": [str(path.relative_to(output_dir)) for path in required],
         "selected_voice_id": expect_voice_id,
         "streaming_mix": streaming_mix,
@@ -410,7 +414,7 @@ def _file_digest(path: Path) -> str:
 
 
 def _verify_downgrade_receipt(output: Path, status: dict[str, Any], job_id: str,
-                              *, partial: bool) -> dict[str, Any]:
+                              *, partial: bool, fallback_code: str = "TTS_FAILED") -> dict[str, Any]:
     value = _require_status(status, "COMPLETED", job_id)
     expected_reason = "completed_partial_dubbing" if partial else "completed_b1_fallback"
     if value.get("reason") != expected_reason or not isinstance(value.get("message"), str):
@@ -440,7 +444,7 @@ def _verify_downgrade_receipt(output: Path, status: dict[str, Any], job_id: str,
                 [item["segment_id"] for item in mix.get("duck_windows", [])] != [artifacts[0]["segment_id"]]):
             raise SmokeError("failed speech changed source ducking or lost the following valid cue")
     elif (audio.get("mode") != "original" or manifest.get("production_profile") != "cpu-local-file-b1-downgraded-from-b2" or
-          not any(item.startswith("B2_AUDIO_FALLBACK_TO_B1: TTS_FAILED:") for item in manifest.get("warnings", []))):
+          not any(item.startswith(f"B2_AUDIO_FALLBACK_TO_B1: {fallback_code}:") for item in manifest.get("warnings", []))):
         raise SmokeError("total speech refusal did not preserve the explicit B1/audio fallback")
     return {"reason": value["reason"], "message": value["message"],
             "qc_sha256": _file_digest(output / "qc_report.json"),
@@ -449,9 +453,9 @@ def _verify_downgrade_receipt(output: Path, status: dict[str, Any], job_id: str,
 
 def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, work: Path,
                                ffmpeg: Path, ffprobe: Path, *, voice_id: str, timeout: float) -> dict[str, Any]:
-    if any((work / name).exists() for name in ("cue refusal output", "all refused output")):
+    if any((work / name).exists() for name in ("cue refusal output", "all refused output", "no audio output")):
         raise SmokeError("visible downgrade qualification requires fresh outputs and job evidence")
-    source = _make_source(ffmpeg, work / "cue refusal input", seconds=18, stem="bounded cue refusal")
+    source = _make_source(ffmpeg, work / "cue refusal input", seconds=18, stem="bounded cue refusal", size="180x320")
     # Authored extreme numeric input exercises the real pinned phonemizer's
     # content guard. Explicit Vietnamese makes this a TTS/fallback qualification;
     # generated sine audio cannot establish ASR language or translation quality.
@@ -467,6 +471,8 @@ def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, wo
         raise SmokeError("cue refusal qualification was unexpectedly interrupted")
     partial = _verify_downgrade_receipt(output, status, job_id, partial=True)
     partial["output"] = _verify_output(ffprobe, output, 18, expect_dubbing=True, expect_voice_id=voice_id)
+    if (partial["output"]["width"], partial["output"]["height"]) != (180, 320):
+        raise SmokeError("portrait dubbing changed the source video dimensions")
     _run([ffmpeg, "-v", "error", "-i", output / "final_vi.mp4", "-f", "null", "-"], timeout=timeout)
     original = {str(path.relative_to(output)): (_file_digest(path), path.stat().st_mtime_ns)
                 for path in output.rglob("*") if path.is_file()}
@@ -499,7 +505,24 @@ def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, wo
     fallback_summary = _verify_downgrade_receipt(fallback_output, fallback, fallback_id, partial=False)
     fallback_summary["output"] = _verify_output(ffprobe, fallback_output, 18)
     _run([ffmpeg, "-v", "error", "-i", fallback_output / "final_vi.mp4", "-f", "null", "-"], timeout=timeout)
-    return {"partial_dubbing": partial, "all_cues_refused": fallback_summary,
+    no_audio_source = work / "no audio input.mp4"
+    _run([ffmpeg, "-v", "error", "-y", "-i", fallback_source, "-map", "0:v:0", "-c:v", "copy", "-an", no_audio_source], timeout=timeout)
+    no_audio_source.with_suffix(".srt").write_text(
+        "1\n00:00:00,000 --> 00:00:08,500\nĐừng đi. Tôi còn điều muốn nói với anh.\n\n", encoding="utf-8")
+    no_audio_output = work / "no audio output"
+    no_audio_id = "smoke-no-audio"
+    no_audio_status, killed, _ = _run_supervisor(supervisor, root, data_root, no_audio_source, no_audio_output, no_audio_id,
+        timeout=timeout, enable_dubbing=True, tts_voice_id=voice_id, source_language="vi")
+    if killed or no_audio_status is None:
+        raise SmokeError("no-audio qualification was unexpectedly interrupted")
+    no_audio_summary = _verify_downgrade_receipt(no_audio_output, no_audio_status, no_audio_id,
+        partial=False, fallback_code="AUDIO_STREAM_MISSING")
+    if (_json(no_audio_output / "qc_report.json").get("source_probe", {}).get("has_audio") is not False or
+            "không có audio" not in no_audio_summary["message"] or "audio gốc" in no_audio_summary["message"]):
+        raise SmokeError("no-audio source lost its explicit limitation or claimed nonexistent original audio")
+    no_audio_summary["output"] = _verify_output(ffprobe, no_audio_output, 18, expect_audio=False)
+    _run([ffmpeg, "-v", "error", "-i", no_audio_output / "final_vi.mp4", "-f", "null", "-"], timeout=timeout)
+    return {"partial_dubbing": partial, "all_cues_refused": fallback_summary, "no_audio_source": no_audio_summary,
             "scope": "actual pinned TTS/content refusal, native status and source-preserving export; authored VI sidecars and generated media"}
 
 

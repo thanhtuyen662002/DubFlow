@@ -335,3 +335,12 @@ with original audio and a visible fallback. Authored Vietnamese sidecars and
 generated source media qualify these failure paths; they do not establish real
 ASR/translation, native GUI or human film-dialogue quality. All required lanes
 and the complete #166/#175 acceptance remain required before promotion.
+
+The partial-dub native case also preserves a 180x320 portrait source. A separate
+source with no audio stream and an explicitly authored VI sidecar must retain
+its playable video and subtitles with `AUDIO_STREAM_MISSING` B1 fallback. The
+completion message uses verified source-probe audio availability and never
+claims to preserve nonexistent original audio. No synthetic speech/audio is
+inserted to hide this limitation. The qualification helper permits absent AAC
+only for this explicitly declared no-audio case; all existing dubbed/audio
+cases retain the AAC gate. Standard worker media/QC behavior is unchanged.
