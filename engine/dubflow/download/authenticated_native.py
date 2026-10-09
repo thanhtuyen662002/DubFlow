@@ -6,6 +6,7 @@ from http.cookies import SimpleCookie
 import json
 import sys
 import time
+from itertools import islice
 from urllib.parse import urlsplit
 
 
@@ -43,7 +44,7 @@ def downloader_options():
             "socket_timeout": 30, "retries": 0, "extractor_retries": 0}
 
 
-def inspect(request, youtube_dl):
+def provider_request(request):
     provider = request.get("provider_id")
     if provider not in {"bilibili", "douyin"}:
         raise ValueError("invalid provider")
@@ -56,6 +57,11 @@ def inspect(request, youtube_dl):
     if parts.scheme != "https" or parts.username is not None or parts.password is not None or parts.port not in {None, 443} or not (parts.hostname == domain or (parts.hostname or "").endswith("." + domain)):
         raise ValueError("foreign provider URL")
 
+    return provider, url, cookies
+
+
+def inspect(request, youtube_dl):
+    provider, url, cookies = provider_request(request)
     with youtube_dl(downloader_options()) as downloader:
         for cookie in cookies:
             downloader.cookiejar.set_cookie(cookie)
@@ -63,6 +69,58 @@ def inspect(request, youtube_dl):
         if not isinstance(raw, dict) or raw.get("_type") in {"playlist", "multi_video"}:
             raise ValueError("unexpected provider metadata")
         return public_metadata(raw)
+
+
+def enumerate_page(request, youtube_dl):
+    provider, url, cookies = provider_request(request)
+    offset, page_size = request.get("offset"), request.get("page_size")
+    if type(offset) is not int or not 0 <= offset < 10000 or type(page_size) is not int or not 1 <= page_size <= 100:
+        raise ValueError("invalid enumeration bounds")
+    # This pinned SDK has no Douyin creator extractor. Do not allow GenericIE
+    # to scrape a login page and present it as an empty completed channel.
+    if provider == "douyin":
+        raise NotImplementedError("unsupported creator extractor")
+    parts = urlsplit(url)
+    if parts.hostname != "space.bilibili.com" or parts.query or parts.fragment:
+        raise ValueError("invalid creator URL")
+    path = parts.path.strip("/").split("/")
+    if len(path) != 2 or not path[0].isascii() or not path[0].isdigit() or path[1] != "video":
+        raise ValueError("invalid creator URL")
+    size = min(page_size, 10000 - offset)
+    options = downloader_options()
+    options.update(noplaylist=False, extract_flat="in_playlist", lazy_playlist=True,
+                   playlist_items=f"{offset + 1}:{offset + size + 1}")
+    with youtube_dl(options) as downloader:
+        for cookie in cookies:
+            downloader.cookiejar.set_cookie(cookie)
+        raw = downloader.extract_info(url, download=False)
+        if not isinstance(raw, dict) or raw.get("_type") != "playlist":
+            raise ValueError("unexpected creator metadata")
+        values = raw.get("entries")
+        if not hasattr(values, "__iter__") or isinstance(values, (dict, str, bytes)):
+            raise ValueError("invalid creator entries")
+        # SDK is explicitly lazy. Consume only the selected page + lookahead,
+        # even if a changed provider yields an unbounded iterable.
+        entries = list(islice(iter(values), size + 1))
+        public = []
+        for entry in entries[:size]:
+            if entry is None:
+                public.append(None)
+                continue
+            if not isinstance(entry, dict):
+                public.append({"invalid": True})
+                continue
+            item = {}
+            for key, bound in (("id", 512), ("title", 1024), ("availability", 64)):
+                value = entry.get(key)
+                if value is not None:
+                    if not isinstance(value, str) or not value or len(value) > bound or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+                        item = {"invalid": True}
+                        break
+                    item[key] = value
+            public.append(item)
+        return {"schema_version": 1, "offset": offset, "entries": public,
+                "has_more": len(entries) > size}
 
 
 def public_metadata(raw):
@@ -101,7 +159,7 @@ def main():
         if not isinstance(request, dict) or request.get("schema_version") != 1 or len(sys.argv) != 2:
             return 2
         operation = request.get("operation", "inspect")
-        if operation not in {"inspect", "health_check"}:
+        if operation not in {"inspect", "health_check", "enumerate"}:
             return 2
         if operation == "health_check" and set(request) != {"schema_version", "operation"}:
             return 2
@@ -119,6 +177,8 @@ def main():
                           "python_executable": sys.executable, "python_prefix": sys.prefix,
                           "python_base_prefix": sys.base_prefix, "import_roots": list(sys.path),
                           "isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site)}
+        elif operation == "enumerate":
+            result = enumerate_page(request, yt_dlp.YoutubeDL)
         else:
             result = inspect(request, yt_dlp.YoutubeDL)
         sys.stdout.write(json.dumps(result, ensure_ascii=True))
@@ -126,6 +186,8 @@ def main():
     except Exception as error:
         # Classification is bounded; raw errors can contain cookie/token URLs.
         text = str(error)[:4096].lower()
+        if isinstance(error, NotImplementedError):
+            return 7
         if any(value in text for value in ("login", "private", "cookie", "auth", "challenge")):
             return 2
         if "429" in text or "too many" in text:

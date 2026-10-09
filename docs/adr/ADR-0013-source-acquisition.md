@@ -293,3 +293,45 @@ providers in a required lane. Source SDK health remains a narrow evidence scope;
 the release evidence explicitly leaves live source, browser session and durable
 intake/enumeration NOT_RUN. Windows Release must pass at the new source HEAD
 before this packaging path has hosted staging/installation evidence.
+
+## Bounded SDK channel pages — #167 follow-up
+
+The private isolated helper adds `enumerate` beside the compatible version-1
+inspect/health operations. It requests only a bounded flat SDK playlist window
+(up to 100 entries plus one lookahead) with retries disabled, strips all media
+locators/headers, preserves deleted slots and reports malformed item fields as
+individual failures. Public SourcePage/SourceItem schema 1 remains unchanged.
+Bilibili's pinned creator extractor uses provider pages; opaque cursors bind the
+canonical channel, provider, absolute offset and all Python/helper/SDK producer
+pins. A changed producer or foreign channel cannot reuse a cursor. Page offsets
+are bounded below 10,000. A scan exceeding this limit fails explicitly and keeps
+the previous checkpoint rather than declaring a truncated channel complete.
+
+The existing EnumerationCoordinator/supervisor owns atomic page persistence,
+deduplication and item status. Adapters do not write SQLite. Flat items contain
+only stable identity/metadata. Selecting one for download reinspects its metadata
+immediately and rejects an unexpected identity change before materialization;
+expiring signed URLs are not stored in page records. Protected sessions still
+cross only the scoped private stdin/cookie-jar boundary. Existing native process
+lifetime, media resume and publication rules are preserved.
+
+This pin has a Bilibili creator extractor and only a Douyin single-video
+extractor. Douyin creator requests therefore return typed UNSUPPORTED before
+network access, instead of falling through to generic HTML discovery and
+claiming an empty channel succeeded. A supported Douyin creator implementation,
+generic playlists, browser capture/authenticated media and durable desktop
+scheduling remain acceptance work. Offset pagination describes a changing
+provider listing, not an immutable snapshot; deduplication handles repeats, and
+no consistency guarantee for videos added/deleted during a scan is inferred.
+
+Deterministic tests exercise actual isolated child stdio using a recorded SDK,
+cross-producer cursor rejection, page-N recovery, duplicates, poisoned/private/
+deleted entries, capacity and fresh media inspection. The separate reproducible
+`tests/source_adapter/qualify_sdk_pages.py` runs with explicitly selected isolated
+Python and the exact reviewed upstream wheel. Its recorded paged extractor uses
+real YoutubeDL/OnDemandPagedList to verify selected absolute IDs, bounded provider
+page callbacks, deleted-slot preservation, lookahead and capacity. This is SDK
+semantics evidence; it does not qualify live websites or installed desktop scans.
+Existing jobs/artifacts need no migration. A paired runtime update retains old
+producer pins; an old cursor remains resumable only with its original producer,
+or the user starts an explicit new scan with identity deduplication.

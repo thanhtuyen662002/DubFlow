@@ -77,6 +77,12 @@ class YtDlpProviderTransport:
             return f"https://v.douyin.com/{str(source_ref)[6:]}"
         return f"https://www.douyin.com/video/{source_ref}"
 
+    def fetch_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50, session=None):
+        if self._authenticated is None:
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "channel enumeration requires the pinned SDK runtime", provider_id=self.provider_id)
+        from .enumeration.sdk import sdk_page
+        return sdk_page(self._authenticated, self.provider_id, channel_id, cursor=cursor, page_size=page_size, session=session)
+
 
 def _format_url(value: Mapping[str, Any]) -> str | None:
     url = value.get("url")

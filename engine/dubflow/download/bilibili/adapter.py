@@ -23,6 +23,7 @@ from engine.dubflow.download.source_adapter import (
     SourceErrorCode,
     SourceIdentity,
     SourceItem,
+    SourcePage,
     SubtitleCandidate,
 )
 from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, DownloadResult, MediaMaterializer
@@ -280,8 +281,12 @@ class BilibiliSourceAdapter:
             subtitle_candidates=_subtitle_candidates(data),
         )
 
-    def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50):
-        raise SourceError(SourceErrorCode.UNSUPPORTED, "Bilibili channel enumeration requires the durable enumeration adapter", provider_id=self.provider_id)
+    def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50) -> SourcePage:
+        fetch = getattr(self._transport, "fetch_channel", None)
+        if not callable(fetch):
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "Bilibili channel enumeration requires the pinned SDK runtime", provider_id=self.provider_id)
+        session = self._session_bridge.get_opaque_headers(self.provider_id) if self._session_bridge is not None else None
+        return fetch(channel_id, cursor=cursor, page_size=page_size, session=session)
 
     def select_download(self, item: SourceItem, *, prefer_progressive: bool = False) -> BilibiliDownloadChoice:
         """Choose the highest-resolution video and a matching audio stream."""
@@ -296,6 +301,15 @@ class BilibiliSourceAdapter:
         return BilibiliDownloadChoice(item.identity.source_id, selected, None if selected.has_audio else audio)
 
     def download(self, item: SourceItem, destination: str | Path, *, choice: BilibiliDownloadChoice | None = None, **kwargs: object) -> DownloadResult:
+        if item.identity.provider_id != self.provider_id:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "download item belongs to another provider", provider_id=self.provider_id)
+        # Enumeration deliberately returns identities without expiring signed
+        # media URLs. Inspect only the selected item immediately before download.
+        if not item.media_candidates and choice is None:
+            inspected = self.inspect(item.identity.source_id)
+            if inspected.identity.identity_key != item.identity.identity_key:
+                raise SourceError(SourceErrorCode.SOURCE_CHANGED, "enumerated video identity changed before download", provider_id=self.provider_id)
+            item = inspected
         selected = choice or self.select_download(item)
         if (selected.source_id != item.identity.source_id or selected.candidate not in item.media_candidates
             or (selected.audio_candidate is not None and selected.audio_candidate not in item.media_candidates)):

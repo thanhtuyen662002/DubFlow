@@ -19,6 +19,7 @@ from engine.dubflow.download.source_adapter import (
     SourceErrorCode,
     SourceIdentity,
     SourceItem,
+    SourcePage,
     SubtitleCandidate,
 )
 from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, DownloadResult, MediaMaterializer
@@ -294,8 +295,11 @@ class DouyinSourceAdapter:
             subtitle_candidates=_subtitles(data),
         )
 
-    def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50):
-        raise SourceError(SourceErrorCode.UNSUPPORTED, "Douyin channel enumeration requires the durable enumeration adapter", provider_id=self.provider_id)
+    def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50) -> SourcePage:
+        fetch = getattr(self._transport, "fetch_channel", None)
+        if not callable(fetch):
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "Douyin channel enumeration requires a supported pinned provider runtime", provider_id=self.provider_id)
+        return fetch(channel_id, cursor=cursor, page_size=page_size, session=self._session())
 
     def select_download(self, item: SourceItem) -> MediaCandidate:
         candidates = [candidate for candidate in item.media_candidates if candidate.mime_type.startswith("video/")]
@@ -304,6 +308,13 @@ class DouyinSourceAdapter:
         return max(candidates, key=lambda candidate: ((candidate.width or 0) * (candidate.height or 0), candidate.height or 0, candidate.candidate_id))
 
     def download(self, item: SourceItem, destination: str | Path, *, candidate: MediaCandidate | None = None, **kwargs: object) -> DownloadResult:
+        if item.identity.provider_id != self.provider_id:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "download item belongs to another provider", provider_id=self.provider_id)
+        if not item.media_candidates and candidate is None:
+            inspected = self.inspect(item.identity.source_id)
+            if inspected.identity.identity_key != item.identity.identity_key:
+                raise SourceError(SourceErrorCode.SOURCE_CHANGED, "enumerated video identity changed before download", provider_id=self.provider_id)
+            item = inspected
         selected = candidate or self.select_download(item)
         if selected not in item.media_candidates:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "download candidate belongs to another source", provider_id=self.provider_id)

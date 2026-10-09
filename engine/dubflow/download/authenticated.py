@@ -70,6 +70,14 @@ class AuthenticatedYtDlpTransport:
             raise SourceError(SourceErrorCode.UNSUPPORTED, "source runtime health identity mismatch", action="repair_runtime") from None
         return result
 
+    def enumerate_url(self, url: str, *, provider_id: str, offset: int, page_size: int,
+                      headers: Mapping[str, str] | None = None):
+        if type(offset) is not int or not 0 <= offset < 10000 or type(page_size) is not int or not 1 <= page_size <= 100:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "invalid channel page bounds", provider_id=provider_id)
+        return self._invoke({"schema_version": 1, "operation": "enumerate", "provider_id": provider_id,
+            "url": url, "offset": offset, "page_size": page_size,
+            "headers": validated_session_headers(headers, provider=provider_id) if headers else {}}, provider_id=provider_id)
+
     def _invoke(self, request: dict, *, provider_id: str | None = None):
         self._verify()
         payload = json.dumps(request, ensure_ascii=True).encode("utf-8")
@@ -79,7 +87,7 @@ class AuthenticatedYtDlpTransport:
         )
         if code:
             codes = {2: SourceErrorCode.AUTH_REQUIRED, 3: SourceErrorCode.RATE_LIMITED,
-                     4: SourceErrorCode.NOT_FOUND, 5: SourceErrorCode.SOURCE_CHANGED}
+                     4: SourceErrorCode.NOT_FOUND, 5: SourceErrorCode.SOURCE_CHANGED, 7: SourceErrorCode.UNSUPPORTED}
             error_code = codes.get(code, SourceErrorCode.NETWORK)
             raise SourceError(error_code, "authenticated provider inspection failed", provider_id=provider_id,
                 retryable=code in {3, 6}, action="authenticate" if code == 2 else "retry_with_changed_conditions" if code in {3, 6} else None)
