@@ -64,6 +64,24 @@ class ComponentSelectionTests(unittest.TestCase):
     def test_unrelated_component_remains_unselected(self) -> None:
         self.assertFalse(selector.component_affected(self.component, {"engine/dubflow/asr/adapter.py"}))
 
+    def test_sdk_page_changes_select_their_source_adapter_regressions(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        components = {component["id"]: component for component in registry["components"]}
+        source = components["source-adapter"]
+        self.assertIn(
+            ["python", "-m", "unittest", "discover", "-s", "tests/source_adapter", "-p", "test_*.py"],
+            source["commands"],
+        )
+        for path in (
+            "engine/dubflow/download/enumeration/sdk.py",
+            "engine/dubflow/download/generic/provider_transport.py",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(selector.component_affected(source, {path}))
+        self.assertTrue(selector.component_affected(
+            components["source-queue"], {"engine/dubflow/download/enumeration/sdk.py"},
+        ))
+
     def test_main_executes_registered_commands_after_control_change(self) -> None:
         component = {**self.component, "commands": [["example-test-command"]]}
         data = {"schema_version": 1, "components": [component]}
