@@ -513,3 +513,29 @@ VieNeu bound tests require typed rejection before waveform publication. Existing
 hard-worker-death tests still verify native process and descendant termination.
 Actual model continuity and exact current-source native qualification remain
 separate required evidence; these fixtures do not approve speech or film acting.
+
+## Prepared visible dubbing downgrade qualification — 2026-10-09
+
+The supervisor now derives the completion message from a bounded, exact-hash
+committed QC snapshot, including durable reconciliation and completed replay.
+Partial speech and total B1 fallback are visible through the existing desktop
+status display. Changed/missing/invalid evidence yields an unverified message.
+Private diagnostics, public schemas, models/voice pins and durable SQLite are
+unchanged. The direct SHA dependency reuses locked 0.10.8 without an upgrade.
+
+Six focused release qualification tests passed locally, covering native guard
+rejection of hidden downgrade, repeated/retryable bad input, poisoned following
+speech, ducking a failed cue, inconsistent QC, regenerated completed replay and
+missing replay evidence. These use fixtures and do not qualify native speech.
+Three supervisor tests cover exact committed bytes, bounded/corrupt/foreign QC,
+partial/full/B1 status and durable replay; their execution is pending native CI.
+Local `cargo check --locked -p dubflow-supervisor --tests` could not reach the
+crate because the Windows MSVC linker `link.exe` is absent. Syntax parsing and
+whitespace checks succeeded; no Rust compile/test pass is inferred.
+
+The strengthened staged/installed smoke will require actual pinned content
+refusal followed by valid speech, source-preserving partial/B1 exports, honest
+status and completed replay with unchanged hashes/mtimes. The currently active
+b9 native lane predates these changes; its eventual results cannot qualify this
+prepared child. Full #166/#175, human listening, native GUI and release gates
+remain open. No stable release or merge readiness is inferred here.

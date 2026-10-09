@@ -296,3 +296,42 @@ is not relabeled with the new recipe. Public timelines, artifact schemas,
 worker envelopes, models and durable schema do not change. This fixes source
 video preservation, with no hardware-profile or speaker-identity changes.
 Required native CI and long-media evidence must rerun against this source.
+
+## Visible completion after speech degradation
+
+The desktop already presents the supervisor's `status.message`. The supervisor
+now distinguishes a complete dub, partial speech/source fallback and a B1
+Vietsub/original-audio export using the existing QC audio metadata. It reads at
+most 1 MiB plus one byte from the latest committed QC artifact for the exact
+job/stage/attempt/path. SHA-256 covers the same snapshot that is parsed, and
+must match the supervisor-owned artifact record and size. A missing, modified,
+oversized, incompatible or invalid report yields an explicit unverified-quality
+message, while retaining the committed job's successful export state.
+
+Both completion events and final durable reconciliation derive that summary.
+An already completed job replay therefore retains its downgrade without
+regenerating speech or mutating outputs. Generic warnings remain visible and
+are not relabeled as missing speech. A full dub message requires valid zero
+TTS/mix failure counts; source-only output requested with dubbing receives the
+explicit B1 fallback message. No private model diagnostic is shown in that
+product message.
+
+Public worker/status/artifact schemas, SQLite, TTS/mix producer versions and
+timeline identity are unchanged. `reason` and `message` already permit strings;
+older readers continue showing the message, and older QC can conservatively
+remain unverified. The supervisor directly reuses the existing locked
+`sha2 = 0.10.8` to hash bounded parsed bytes; no dependency version is upgraded.
+ADR-0020 runtime fingerprints still prevent rebinding historic executable job
+IDs to a changed supervisor. Previous installed runtimes and exports retain
+their original bytes; no data migration rewrites past completion evidence.
+
+Native staged and installed qualification now additionally sends one genuinely
+unsupported numeric cue through the pinned phonemizer followed by a normal
+Vietnamese line. It requires one nonretryable refusal, actual following speech,
+no ducking of the failed cue, verified playable/editable outputs and an honest
+partial-dub status. Replaying that completed job must retain every output hash
+and mtime and the same limitation. A separate all-refused job must export B1
+with original audio and a visible fallback. Authored Vietnamese sidecars and
+generated source media qualify these failure paths; they do not establish real
+ASR/translation, native GUI or human film-dialogue quality. All required lanes
+and the complete #166/#175 acceptance remain required before promotion.

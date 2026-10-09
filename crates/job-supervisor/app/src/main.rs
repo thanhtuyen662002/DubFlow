@@ -11,6 +11,7 @@ use dubflow_worker_protocol::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -29,6 +30,7 @@ const STAGE_KIND: &str = "production-local-file";
 const MAX_ATTEMPTS: u8 = 3;
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(35);
 const STDERR_LIMIT: usize = 64 * 1024;
+const QC_SUMMARY_LIMIT: u64 = 1024 * 1024;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 type SupervisorResult<T> = Result<T, SupervisorError>;
@@ -925,6 +927,7 @@ fn run_one_shot(
             "--status-path must be absolute".into(),
         ));
     }
+    let store = DurableStore::open(&runtime.db)?;
     let mut contract_status = default_contract_status();
     let mut output_path: Option<String> = None;
     let mut terminal_event: Option<String> = None;
@@ -981,7 +984,7 @@ fn run_one_shot(
                 if let Some(event_name) = terminal_event_name(&value) {
                     terminal_event = Some(event_name.to_owned());
                 }
-                apply_status_event(&mut contract_status, &value, &mut output_path, &spec);
+                apply_status_event(&mut contract_status, &value, &mut output_path, &spec, &store);
                 write_status_file(
                     &final_status_path,
                     &spec.job_id,
@@ -999,7 +1002,6 @@ fn run_one_shot(
             Ok(InternalMessage::Request(_)) => {}
         }
     }
-    let store = DurableStore::open(&runtime.db)?;
     let durable_status = store.job_status(&spec.job_id).unwrap_or(JobStatus::Failed);
     // A worker-thread error can be observed before its best-effort durable
     // failure write completes (or when the SQLite file itself is unavailable).
@@ -1018,6 +1020,7 @@ fn run_one_shot(
                 durable_status,
                 &mut output_path,
                 &spec,
+                &store,
             );
         } else {
             contract_status["resource"]["held"] = Value::Bool(false);
@@ -1146,11 +1149,115 @@ fn contract_counter(status: &Value, path: &[&str]) -> u64 {
         .unwrap_or(0)
 }
 
+/// Read only the latest supervisor-committed QC snapshot for this execution.
+/// Hash exactly the bounded bytes we parse, never a separately reopened file.
+/// Missing, modified or legacy reports cannot authorize a full-dub claim.
+fn committed_qc_summary(store: &DurableStore, spec: &StartSpec) -> Option<Value> {
+    let expected_path = spec.output_dir.join("qc_report.json");
+    for attempt in (1..=MAX_ATTEMPTS).rev() {
+        let id = format!("{}-{}-qc-report-a{}", spec.job_id, STAGE_ID, attempt);
+        let artifact = match store.artifact(&id) {
+            Ok(artifact) => artifact,
+            Err(StateError::NotFound { .. }) => continue,
+            Err(_) => return None,
+        };
+        let size = artifact.size_bytes?;
+        if artifact.job_id != spec.job_id || artifact.stage_id != STAGE_ID
+            || artifact.state != ArtifactState::Committed
+            || Path::new(&artifact.path) != expected_path
+            || size == 0 || size > QC_SUMMARY_LIMIT
+            || !fs::symlink_metadata(&expected_path).ok()?.file_type().is_file()
+        {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(&expected_path).ok()?.take(QC_SUMMARY_LIMIT + 1)
+            .read_to_end(&mut bytes).ok()?;
+        if bytes.len() as u64 != size {
+            return None;
+        }
+        let hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        if artifact.content_hash.as_deref() != Some(hash.as_str()) {
+            return None;
+        }
+        let qc: Value = serde_json::from_slice(&bytes).ok()?;
+        if qc.get("schema_version").and_then(Value::as_u64) != Some(1)
+            || qc.get("status").and_then(Value::as_str) != Some("passed")
+        {
+            return None;
+        }
+        return Some(qc);
+    }
+    None
+}
+
+fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, String) {
+    let unverified = || ("completed_quality_unverified", if spec.enable_dubbing {
+        "Đã xuất video; chưa xác minh được mức độ hoàn tất lồng tiếng. Hãy kiểm tra báo cáo chất lượng."
+    } else {
+        "Đã xuất video; chưa đọc được báo cáo chất lượng."
+    }.into());
+    let qc = match committed_qc_summary(store, spec) {
+        Some(qc) => qc,
+        None => return unverified(),
+    };
+    let warnings = match qc.get("warnings").and_then(Value::as_array) {
+        Some(warnings) if warnings.iter().all(Value::is_string) => warnings,
+        _ => return unverified(),
+    };
+    let downgraded = match qc.get("downgrade").and_then(Value::as_bool) {
+        Some(value) => value,
+        None => return unverified(),
+    };
+    let audio = match qc.get("audio").and_then(Value::as_object) {
+        Some(audio) => audio,
+        None => return unverified(),
+    };
+    match audio.get("mode").and_then(Value::as_str) {
+        Some("original") if spec.enable_dubbing => return (
+            "completed_b1_fallback",
+            "Đã xuất video có Vietsub và audio gốc; lồng tiếng không khả dụng.".into(),
+        ),
+        Some("dubbed") if spec.enable_dubbing => {
+            let tts_failures = match audio.get("tts_failures").and_then(Value::as_u64) {
+                Some(value) => value,
+                None => return unverified(),
+            };
+            let mix_failures = match audio.get("mix_failures").and_then(Value::as_u64) {
+                Some(value) => value,
+                None => return unverified(),
+            };
+            if tts_failures > 0 || mix_failures > 0 {
+                return ("completed_partial_dubbing", if mix_failures == 0 {
+                    format!("Đã xuất video; {tts_failures} câu chưa lồng tiếng được. Audio gốc được giữ ở các câu này.")
+                } else {
+                    "Đã xuất video; lồng tiếng chưa đầy đủ. Audio gốc được giữ ở các đoạn lỗi.".into()
+                });
+            }
+            if !matches!(audio.get("mix_warnings").and_then(Value::as_array), Some(values) if values.iter().all(Value::is_string)) {
+                return unverified();
+            }
+        }
+        Some("original") if !spec.enable_dubbing => {}
+        _ => return unverified(),
+    }
+    if downgraded || !warnings.is_empty()
+        || audio.get("mix_warnings").and_then(Value::as_array).map_or(false, |values| !values.is_empty())
+    {
+        ("completed_with_warnings", "Đã xuất video; có lưu ý trong báo cáo chất lượng. Hãy kiểm tra trước khi sử dụng.".into())
+    } else if spec.enable_dubbing {
+        ("completed", "Đã xuất video lồng tiếng Việt.".into())
+    } else {
+        ("completed", "Đã xuất video có Vietsub.".into())
+    }
+}
+
 fn apply_status_event(
     status: &mut Value,
     event: &Value,
     output_path: &mut Option<String>,
     spec: &StartSpec,
+    store: &DurableStore,
 ) {
     let event_name = event
         .get("event")
@@ -1205,9 +1312,10 @@ fn apply_status_event(
             }
         }
         "completed" => {
+            let (reason, message) = completion_summary(store, spec);
             status["state"] = Value::String("COMPLETED".into());
-            status["reason"] = Value::String("completed".into());
-            status["message"] = Value::String("Đã kiểm tra và xuất video H.264/AAC".into());
+            status["reason"] = Value::String(reason.into());
+            status["message"] = Value::String(message);
             status["progress"]["completed_units"] = Value::String("1000".into());
             status["progress"]["total_units"] = Value::String("1000".into());
             status["resource"]["held"] = Value::Bool(false);
@@ -1244,10 +1352,11 @@ fn apply_durable_status(
     durable: JobStatus,
     output_path: &mut Option<String>,
     spec: &StartSpec,
+    store: &DurableStore,
 ) {
     match durable {
         JobStatus::Succeeded => {
-            apply_status_event(status, &json!({"event":"completed"}), output_path, spec)
+            apply_status_event(status, &json!({"event":"completed"}), output_path, spec, store)
         }
         JobStatus::Failed => {
             let current = status
@@ -1259,7 +1368,7 @@ fn apply_durable_status(
             status["resource"]["held"] = Value::Bool(false);
         }
         JobStatus::Cancelled => {
-            apply_status_event(status, &json!({"event":"cancelled"}), output_path, spec);
+            apply_status_event(status, &json!({"event":"cancelled"}), output_path, spec, store);
         }
         JobStatus::Recovering => {
             status["state"] = Value::String("RECOVERED".into());
@@ -2302,6 +2411,96 @@ mod tests {
         let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
             enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true };
         (root, runtime, spec)
+    }
+
+    fn commit_test_qc(store: &DurableStore, spec: &StartSpec, path: &Path, bytes: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+        store.create_job(&spec.job_id, "file:///source", 1).unwrap();
+        store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS).unwrap();
+        store.start_job(&spec.job_id, 3).unwrap();
+        store.start_stage(&spec.job_id, STAGE_ID, 4).unwrap();
+        let id = format!("{}-{}-qc-report-a1", spec.job_id, STAGE_ID);
+        store.record_artifact_written(&id, &spec.job_id, STAGE_ID, path, None, true, 5).unwrap();
+        store.commit_artifact(&id, 6).unwrap();
+        store.complete_job(&spec.job_id, 7).unwrap();
+    }
+
+    fn test_qc(audio: Value) -> Value {
+        json!({"schema_version":1, "status":"passed", "audio":audio, "warnings":[], "downgrade":false})
+    }
+
+    #[test]
+    fn completed_dub_reports_partial_or_b1_fallback_after_durable_replay() {
+        let cases = [
+            (json!({"mode":"dubbed", "tts_failures":0, "mix_failures":0, "mix_warnings":[]}), "completed", "lồng tiếng Việt"),
+            (json!({"mode":"dubbed", "tts_failures":22, "mix_failures":0, "mix_warnings":[]}), "completed_partial_dubbing", "22 câu"),
+            (json!({"mode":"dubbed", "tts_failures":0, "mix_failures":1, "mix_warnings":[]}), "completed_partial_dubbing", "các đoạn lỗi"),
+            (json!({"mode":"original", "backend":"source-audio"}), "completed_b1_fallback", "lồng tiếng không khả dụng"),
+        ];
+        for (audio, reason, text) in cases {
+            let (root, _, spec) = identity_fixture();
+            let store = DurableStore::open_in_memory().unwrap();
+            let qc = test_qc(audio);
+            commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+            let mut status = default_contract_status();
+            let mut output = None;
+            apply_status_event(&mut status, &json!({"event":"completed"}), &mut output, &spec, &store);
+            assert_eq!(status["state"], "COMPLETED");
+            assert_eq!(status["reason"], reason);
+            assert!(status["message"].as_str().unwrap().contains(text));
+            assert_eq!(output, Some(spec.output_dir.join("final_vi.mp4").to_string_lossy().into_owned()));
+            let completed_message = status["message"].clone();
+            // The final durable reconciliation must not overwrite a downgrade.
+            apply_durable_status(&mut status, store.job_status(&spec.job_id).unwrap(), &mut output, &spec, &store);
+            assert_eq!(status["message"], completed_message);
+            // An already completed job with no worker event recovers the same truth.
+            let mut replay = default_contract_status();
+            apply_durable_status(&mut replay, JobStatus::Succeeded, &mut output, &spec, &store);
+            assert_eq!(replay["message"], completed_message);
+            assert_eq!(replay["reason"], reason);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn completed_quality_requires_exact_committed_bounded_qc_bytes() {
+        for defect in ["missing", "tampered", "foreign_path", "oversized", "bad_json", "bad_version", "failed_qc", "invalid_counts"] {
+            let (root, _, spec) = identity_fixture();
+            let store = DurableStore::open_in_memory().unwrap();
+            let mut qc = test_qc(json!({"mode":"dubbed", "tts_failures":1, "mix_failures":0, "mix_warnings":[]}));
+            if defect == "bad_version" { qc["schema_version"] = json!(2); }
+            if defect == "failed_qc" { qc["status"] = json!("failed"); }
+            if defect == "invalid_counts" { qc["audio"]["tts_failures"] = json!("0"); }
+            let path = spec.output_dir.join(if defect == "foreign_path" { "foreign.json" } else { "qc_report.json" });
+            let bytes = if defect == "oversized" { vec![b' '; (QC_SUMMARY_LIMIT + 1) as usize] }
+                else if defect == "bad_json" { b"not JSON".to_vec() }
+                else { serde_json::to_vec(&qc).unwrap() };
+            commit_test_qc(&store, &spec, &path, &bytes);
+            if defect == "missing" { fs::remove_file(&path).unwrap(); }
+            if defect == "tampered" {
+                qc["audio"]["tts_failures"] = json!(0);
+                let replacement = serde_json::to_vec(&qc).unwrap();
+                assert_eq!(replacement.len(), bytes.len());
+                fs::write(&path, replacement).unwrap();
+            }
+            assert_eq!(completion_summary(&store, &spec).0, "completed_quality_unverified", "{defect}");
+            assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Succeeded);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn b1_completion_and_verified_warnings_remain_visible_without_dub_claim() {
+        let (root, _, mut spec) = identity_fixture();
+        spec.enable_dubbing = false;
+        let store = DurableStore::open_in_memory().unwrap();
+        let mut qc = test_qc(json!({"mode":"original"}));
+        qc["warnings"] = json!(["source audio not present"]);
+        qc["downgrade"] = json!(true);
+        commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+        assert_eq!(completion_summary(&store, &spec).0, "completed_with_warnings");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

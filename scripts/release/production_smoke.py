@@ -409,6 +409,100 @@ def _file_digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _verify_downgrade_receipt(output: Path, status: dict[str, Any], job_id: str,
+                              *, partial: bool) -> dict[str, Any]:
+    value = _require_status(status, "COMPLETED", job_id)
+    expected_reason = "completed_partial_dubbing" if partial else "completed_b1_fallback"
+    if value.get("reason") != expected_reason or not isinstance(value.get("message"), str):
+        raise SmokeError("native completion hid the actual dubbing downgrade")
+    phrase = "lồng tiếng chưa đầy đủ" if partial else "lồng tiếng không khả dụng"
+    if phrase not in value["message"]:
+        raise SmokeError("native completion omitted the user-visible dubbing limitation")
+    manifest = _json(output / "job_manifest.json")
+    qc = _json(output / "qc_report.json")
+    if (manifest.get("job_id") != job_id or manifest.get("dubbing", {}).get("enabled") is not True or
+            qc.get("status") != "passed" or qc.get("downgrade") is not True or
+            qc.get("audio") != manifest.get("audio")):
+        raise SmokeError("downgrade completion differs from the validated job/QC receipt")
+    audio = manifest["audio"]
+    if partial:
+        tts = _json(Path(audio["tts_document"]))
+        mix = _json(Path(audio["mix_document"]))
+        failures, artifacts = tts.get("failures", []), tts.get("artifacts", [])
+        if (audio.get("mode") != "dubbed" or audio.get("tts_failures") != 1 or audio.get("mix_failures") != 1 or
+                len(failures) != 1 or len(artifacts) != 1 or failures[0].get("code") != "TTS_TEXT_UNSUPPORTED" or
+                failures[0].get("retryable") is not False or failures[0].get("attempt") != 1 or
+                failures[0].get("segment_id") == artifacts[0].get("segment_id")):
+            raise SmokeError("native per-cue refusal poisoned following speech or retried bad input")
+        states = {item["segment_id"]: item["status"] for item in mix.get("segments", [])}
+        if (states.get(failures[0]["segment_id"]) != "failed" or
+                states.get(artifacts[0]["segment_id"]) != "completed" or
+                [item["segment_id"] for item in mix.get("duck_windows", [])] != [artifacts[0]["segment_id"]]):
+            raise SmokeError("failed speech changed source ducking or lost the following valid cue")
+    elif (audio.get("mode") != "original" or manifest.get("production_profile") != "cpu-local-file-b1-downgraded-from-b2" or
+          not any(item.startswith("B2_AUDIO_FALLBACK_TO_B1: TTS_FAILED:") for item in manifest.get("warnings", []))):
+        raise SmokeError("total speech refusal did not preserve the explicit B1/audio fallback")
+    return {"reason": value["reason"], "message": value["message"],
+            "qc_sha256": _file_digest(output / "qc_report.json"),
+            "following_cue_generated": partial, "b1_fallback": not partial}
+
+
+def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, work: Path,
+                               ffmpeg: Path, ffprobe: Path, *, voice_id: str, timeout: float) -> dict[str, Any]:
+    if any((work / name).exists() for name in ("cue refusal output", "all refused output")):
+        raise SmokeError("visible downgrade qualification requires fresh outputs and job evidence")
+    source = _make_source(ffmpeg, work / "cue refusal input", seconds=18, stem="bounded cue refusal")
+    # Authored extreme numeric input exercises the real pinned phonemizer's
+    # content guard. Explicit Vietnamese makes this a TTS/fallback qualification;
+    # generated sine audio cannot establish ASR language or translation quality.
+    rejected_text = "12345678901234567890123456789012345678901234567890" * 10
+    first_cue = f"1\n00:00:00,000 --> 00:00:09,000\n{rejected_text}\n\n"
+    source.with_suffix(".srt").write_text(first_cue +
+        "2\n00:00:09,000 --> 00:00:17,500\nĐừng đi. Tôi còn điều muốn nói với anh.\n\n", encoding="utf-8")
+    output = work / "cue refusal output"
+    job_id = "smoke-cue-refusal"
+    status, killed, _ = _run_supervisor(supervisor, root, data_root, source, output, job_id,
+        timeout=timeout, enable_dubbing=True, tts_voice_id=voice_id, source_language="vi")
+    if killed or status is None:
+        raise SmokeError("cue refusal qualification was unexpectedly interrupted")
+    partial = _verify_downgrade_receipt(output, status, job_id, partial=True)
+    partial["output"] = _verify_output(ffprobe, output, 18, expect_dubbing=True, expect_voice_id=voice_id)
+    _run([ffmpeg, "-v", "error", "-i", output / "final_vi.mp4", "-f", "null", "-"], timeout=timeout)
+    original = {str(path.relative_to(output)): (_file_digest(path), path.stat().st_mtime_ns)
+                for path in output.rglob("*") if path.is_file()}
+    replay, killed, log = _run_supervisor(supervisor, root, data_root, source, output, job_id,
+        timeout=timeout, enable_dubbing=True, tts_voice_id=voice_id, source_language="vi")
+    if killed or replay is None:
+        raise SmokeError("completed degraded replay was unexpectedly interrupted")
+    replay_summary = _verify_downgrade_receipt(output, replay, job_id, partial=True)
+    current = {str(path.relative_to(output)): (_file_digest(path), path.stat().st_mtime_ns)
+               for path in output.rglob("*") if path.is_file()}
+    events = []
+    for line in log.splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    if (current != original or replay_summary != {key: partial[key] for key in replay_summary} or
+            not any(isinstance(event, dict) and event.get("event") == "completed" and event.get("resumed") is True for event in events)):
+        raise SmokeError("completed degraded replay changed outputs, regenerated speech or lost its visible limitation")
+    partial["completed_replay_preserved"] = True
+
+    fallback_source = _make_source(ffmpeg, work / "all refused input", seconds=18, stem="all speech refused")
+    fallback_source.with_suffix(".srt").write_text(first_cue, encoding="utf-8")
+    fallback_output = work / "all refused output"
+    fallback_id = "smoke-all-cues-refused"
+    fallback, killed, _ = _run_supervisor(supervisor, root, data_root, fallback_source, fallback_output, fallback_id,
+        timeout=timeout, enable_dubbing=True, tts_voice_id=voice_id, source_language="vi")
+    if killed or fallback is None:
+        raise SmokeError("B1 fallback qualification was unexpectedly interrupted")
+    fallback_summary = _verify_downgrade_receipt(fallback_output, fallback, fallback_id, partial=False)
+    fallback_summary["output"] = _verify_output(ffprobe, fallback_output, 18)
+    _run([ffmpeg, "-v", "error", "-i", fallback_output / "final_vi.mp4", "-f", "null", "-"], timeout=timeout)
+    return {"partial_dubbing": partial, "all_cues_refused": fallback_summary,
+            "scope": "actual pinned TTS/content refusal, native status and source-preserving export; authored VI sidecars and generated media"}
+
+
 def _tts_checkpoint_snapshot(output: Path) -> dict[str, Any] | None:
     records = list(output.glob(".dubflow-work/b2-audio/*/*/tts/checkpoints/*.json"))
     if not records:
@@ -676,6 +770,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         long_output_report = _verify_output(ffprobe, long_output, args.long_seconds, expect_dubbing=args.enable_dubbing, expect_voice_id=selected_voice)
     tts_recovery = _verify_tts_recovery(supervisor, root, data_root, work_root, ffmpeg, ffprobe,
         voice_id=selected_voice, timeout=args.timeout) if selected_voice is not None else None
+    visible_downgrades = _verify_visible_downgrades(supervisor, root, data_root, work_root, ffmpeg, ffprobe,
+        voice_id=selected_voice, timeout=args.timeout) if selected_voice is not None else None
     profile_marker = data_root / "models" / ".profile-ready"
     if not profile_marker.is_file() or profile_marker.stat().st_size <= 0:
         raise SmokeError(f"model profile did not become ready: {profile_marker}")
@@ -687,6 +783,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "immutable_job_replay": replay_isolation,
         "voice_version_isolation": voice_version,
         "tts_checkpoint_recovery": tts_recovery,
+        "visible_dubbing_downgrades": visible_downgrades,
         "corrupt_job_state": bad_status["status"],
         "corrupt_media_failure": corrupt_failure,
         "good_job": good_output_report,

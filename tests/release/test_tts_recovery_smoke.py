@@ -138,5 +138,96 @@ class RecoveryEvidenceTests(unittest.TestCase):
                                 root / "ffmpeg", root / "ffprobe", voice_id="test-voice", timeout=10)
 
 
+class VisibleDowngradeTests(unittest.TestCase):
+    def receipt(self, output, *, partial=True):
+        output.mkdir(parents=True, exist_ok=True)
+        tts_path, mix_path = output / "tts.json", output / "mix.json"
+        tts = {"artifacts": [{"segment_id": "cue-2"}], "failures": [
+            {"segment_id": "cue-1", "code": "TTS_TEXT_UNSUPPORTED", "attempt": 1, "retryable": False}]}
+        mix = {"segments": [{"segment_id": "cue-1", "status": "failed"},
+            {"segment_id": "cue-2", "status": "completed"}], "duck_windows": [{"segment_id": "cue-2"}]}
+        tts_path.write_text(json.dumps(tts))
+        mix_path.write_text(json.dumps(mix))
+        audio = {"mode": "dubbed", "tts_failures": 1, "mix_failures": 1,
+                 "tts_document": str(tts_path), "mix_document": str(mix_path)} if partial else {"mode": "original"}
+        job_id = "smoke-cue-refusal" if partial else "smoke-all-cues-refused"
+        manifest = {"job_id": job_id, "dubbing": {"enabled": True}, "audio": audio,
+                    "warnings": ["B2_AUDIO_FALLBACK_TO_B1: TTS_FAILED: no speech"] if not partial else [],
+                    "production_profile": "cpu-local-file-b1-downgraded-from-b2"}
+        qc = {"status": "passed", "downgrade": True, "audio": audio}
+        (output / "job_manifest.json").write_text(json.dumps(manifest))
+        (output / "qc_report.json").write_text(json.dumps(qc))
+        status = {"job_id": job_id, "status": {"state": "COMPLETED",
+            "reason": "completed_partial_dubbing" if partial else "completed_b1_fallback",
+            "message": "lồng tiếng chưa đầy đủ" if partial else "lồng tiếng không khả dụng"}}
+        return status, tts, mix
+
+    def test_downgrade_validator_rejects_hidden_retry_poisoning_and_bad_source_ducking(self):
+        for defect in (None, "hidden", "retry", "repeat", "missing_next", "same_id", "duck_failed", "qc_diff"):
+            with self.subTest(defect=defect), TemporaryDirectory() as directory:
+                output = Path(directory)
+                status, tts, mix = self.receipt(output)
+                if defect == "hidden": status["status"]["reason"] = "completed"
+                if defect == "retry": tts["failures"][0]["retryable"] = True
+                if defect == "repeat": tts["failures"][0]["attempt"] = 2
+                if defect == "missing_next": tts["artifacts"] = []
+                if defect == "same_id": tts["artifacts"][0]["segment_id"] = "cue-1"
+                if defect == "duck_failed": mix["duck_windows"].append({"segment_id": "cue-1"})
+                if defect == "qc_diff": (output / "qc_report.json").write_text(json.dumps({"status": "passed", "downgrade": False}))
+                (output / "tts.json").write_text(json.dumps(tts))
+                (output / "mix.json").write_text(json.dumps(mix))
+                if defect is None:
+                    receipt = smoke._verify_downgrade_receipt(output, status, "smoke-cue-refusal", partial=True)
+                    self.assertTrue(receipt["following_cue_generated"])
+                else:
+                    with self.assertRaises(smoke.SmokeError):
+                        smoke._verify_downgrade_receipt(output, status, "smoke-cue-refusal", partial=True)
+
+    def test_all_refused_requires_visible_b1_and_original_audio(self):
+        for defect in (None, "audio", "profile", "warning", "message"):
+            with self.subTest(defect=defect), TemporaryDirectory() as directory:
+                output = Path(directory)
+                status, _, _ = self.receipt(output, partial=False)
+                manifest = smoke._json(output / "job_manifest.json")
+                if defect == "audio": manifest["audio"]["mode"] = "dubbed"
+                if defect == "profile": manifest["production_profile"] = "cpu-local-file-b2"
+                if defect == "warning": manifest["warnings"] = []
+                if defect == "message": status["status"]["message"] = "Đã xuất video"
+                (output / "job_manifest.json").write_text(json.dumps(manifest))
+                if defect is None:
+                    self.assertTrue(smoke._verify_downgrade_receipt(output, status, "smoke-all-cues-refused", partial=False)["b1_fallback"])
+                else:
+                    with self.assertRaises(smoke.SmokeError):
+                        smoke._verify_downgrade_receipt(output, status, "smoke-all-cues-refused", partial=False)
+
+    def test_native_guard_rejects_regenerated_completed_replay(self):
+        for defect in ("changed_output", "missing_resume"):
+            with self.subTest(defect=defect), TemporaryDirectory() as directory:
+                work = Path(directory)
+                source = work / "source.mp4"
+                source.write_bytes(b"fixture media, no native inference")
+                count = 0
+
+                def run_supervisor(*args, **kwargs):
+                    nonlocal count
+                    count += 1
+                    output = args[4]
+                    if count == 1:
+                        status, _, _ = self.receipt(output)
+                        return status, False, ""
+                    status = {"job_id": "smoke-cue-refusal", "status": {"state": "COMPLETED",
+                        "reason": "completed_partial_dubbing", "message": "lồng tiếng chưa đầy đủ"}}
+                    if defect == "changed_output": (output / "regenerated.wav").write_bytes(b"unwanted new speech")
+                    return status, False, json.dumps({"event": "completed", "resumed": defect != "missing_resume"})
+
+                with mock.patch.object(smoke, "_make_source", return_value=source), \
+                        mock.patch.object(smoke, "_run_supervisor", side_effect=run_supervisor), \
+                        mock.patch.object(smoke, "_verify_output", return_value={"fixture_only": True}), \
+                        mock.patch.object(smoke, "_run"):
+                    with self.assertRaisesRegex(smoke.SmokeError, "completed degraded replay"):
+                        smoke._verify_visible_downgrades(work / "supervisor", work, work / "data", work,
+                            work / "ffmpeg", work / "ffprobe", voice_id="fixture", timeout=10)
+
+
 if __name__ == "__main__":
     unittest.main()
