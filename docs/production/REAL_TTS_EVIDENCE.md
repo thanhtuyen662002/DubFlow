@@ -433,3 +433,66 @@ SHA256 `ac0c30eb21dba5cd477da9b17cf0172f44f02a71414b1da4db0fb2c7908e3740`.
 Seven applicable worker tests passed after this correction. Failed native logs
 and old success receipts are historical evidence; fresh exact repair-head lanes
 must run before readiness. Full #166/#175 acceptance remains open.
+
+## Film-dialogue choices and two-hour mux correction
+
+The owner requested voices suitable for film dubbing. Source `17dbd82` prioritizes
+the11 natural presets when browsing a new job; all25 presets remain selectable,
+and a saved choice survives filtering/reload without being changed implicitly.
+The compiled desktop UI passed a headless Edge exercise of browsing, persistence,
+locked active controls and a separate processing version preserving old output.
+That exercise uses mocked IPC; it is not native GUI execution.
+
+At `9ed2ff9`, all11 natural presets generated two actual Vietnamese dialogue
+lines each through the selected VieNeu3.1 CPU adapter. Receipt
+`TEMP/dubflow-vieneu-195/preset-catalog/movie-dialogue-9ed2ff9/report.json`
+SHA256 `818b46d05b1016bafdf3c964acea4f680186024a9fcd393c9365715e6e5a820e`.
+The22 WAVs form a local human comparison library. Their optional back-ASR
+diagnostic is not a judgment of acting, emotion, accent quality or human approval.
+No default preset is changed from these two-line scores.
+
+The first actual two-hour worker at `9ed2ff9` successfully synthesized120 Adam
+cues, but B2 QC rejected a truncated render and safely preserved B1. Its receipt
+remains failed, SHA256
+`8fcda539640c79d90a39903345cd053e6e7b9e65a4ef5d0f0ca43e65b062794b`.
+An actual minimal FFmpeg reproduction showed that `-shortest` treats an early
+embedded subtitle ending as the output end. Source `1c16aaa` uses the original
+video stream's integer duration/time base for a bounded mux instead. Four actual
+small embedded/burn-in cases passed full decode after the correction.
+
+The rerun at exact `1c16aaaea238c5081b5ac279808f6f5550e901f3`/main `404a429`
+completed120 real Adam speech artifacts, zero failed cues and no final warnings.
+The H.264/AAC output retains7200.093seconds although its embedded subtitle ends
+at7146seconds. Full FFmpeg output decode and all three editable WAV hash parity
+checks passed. Receipt
+`TEMP/dubflow-vieneu-195/two-hour-worker-1c16aaa/report.json`, SHA256
+`7f35eeb1ae3269508745a8230a2414ac12940d6e55deecc3f39443719d7fb9c6`.
+Elapsed887.812seconds includes verification/decode. Parent peak71,311,360bytes
+excludes native TTS and FFmpeg children; it is not whole-app memory qualification.
+
+This is a two-hour loop of the retained real Bilibili video/audio with an authored
+Vietnamese120-cue sidecar and four repeated phrases, using cached owned models.
+Speech inference caching may reuse a repeated phrase. It does not establish a
+unique two-hour film, fresh long-form ASR/translation, human listening quality,
+installed GUI recovery, VFR/100–500-item batch or full #175 qualification.
+Old outputs, code-bound receipts and failed evidence remain preserved.
+
+## Native per-cue recovery qualification preparation
+
+The Windows stage and installed production smoke now additionally prepares a
+27-second/three-cue case with explicit English sidecar language and real local
+translation/TTS. It observes a bounded, verified committed TTS record and WAV,
+hard-kills the native supervisor tree before all three cues complete, and restarts
+the exact same immutable job. Success requires the original record and WAV hash
+and mtime to remain unchanged, an explicit same-cue reuse warning, three real
+speech artifacts, durable SQLite completion, verified editable audio and full MP4
+decode. A timed kill during model download does not satisfy this separate check.
+
+Focused deterministic tests reject corrupted PCM/metadata, foreign paths,
+oversized records, an already completed synthesis window, regenerated speech,
+rewritten records, missing reuse evidence and incomplete durable state. Their
+passing fixtures are not actual installed recovery evidence. Native qualification
+must execute this guard on its exact next source/current base before acceptance.
+The existing `1c16aaa` Windows run is preserved while it legitimately runs; it
+does not contain or qualify this newly prepared test guard. No runtime/model,
+public contract or supervisor durable mutation is introduced by this preparation.

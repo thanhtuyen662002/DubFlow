@@ -22,6 +22,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import wave
 from typing import Any, Sequence
@@ -130,7 +131,7 @@ def _make_source(ffmpeg: Path, root: Path, *, seconds: int, stem: str) -> Path:
     return source
 
 
-def _run_supervisor(
+def _supervisor_command(
     supervisor: Path,
     root: Path,
     data_root: Path,
@@ -138,11 +139,10 @@ def _run_supervisor(
     output_dir: Path,
     job_id: str,
     *,
-    timeout: float,
-    kill_after: float | None = None,
     enable_dubbing: bool = False,
     tts_voice_id: str | None = None,
-) -> tuple[dict[str, Any] | None, bool, str]:
+    source_language: str | None = None,
+) -> list[str]:
     status_path = data_root / "control" / "jobs" / f"{job_id}.json"
     command = [
         supervisor,
@@ -166,6 +166,29 @@ def _run_supervisor(
         command.append("--enable-dubbing")
     if tts_voice_id is not None:
         command.extend(("--tts-voice-id", tts_voice_id))
+    if source_language is not None:
+        command.extend(("--source-language", source_language))
+    return [os.fspath(item) for item in command]
+
+
+def _run_supervisor(
+    supervisor: Path,
+    root: Path,
+    data_root: Path,
+    source: Path,
+    output_dir: Path,
+    job_id: str,
+    *,
+    timeout: float,
+    kill_after: float | None = None,
+    enable_dubbing: bool = False,
+    tts_voice_id: str | None = None,
+    source_language: str | None = None,
+) -> tuple[dict[str, Any] | None, bool, str]:
+    status_path = data_root / "control" / "jobs" / f"{job_id}.json"
+    command = _supervisor_command(supervisor, root, data_root, source, output_dir, job_id,
+                                  enable_dubbing=enable_dubbing, tts_voice_id=tts_voice_id,
+                                  source_language=source_language)
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     process = subprocess.Popen(
         [os.fspath(item) for item in command],
@@ -386,6 +409,127 @@ def _file_digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _tts_checkpoint_snapshot(output: Path) -> dict[str, Any] | None:
+    records = list(output.glob(".dubflow-work/b2-audio/*/*/tts/checkpoints/*.json"))
+    if not records:
+        return None
+    if len(records) >= 3:
+        raise SmokeError("TTS recovery missed the partial-synthesis interruption window")
+    record = sorted(records)[0]
+    with record.open("rb") as stream:
+        payload = stream.read(65537)
+    if len(payload) > 65536:
+        raise SmokeError("TTS recovery checkpoint exceeds its bound")
+    try:
+        value = json.loads(payload)
+        artifact = value["artifact"]
+        encoded = json.dumps(artifact, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if (type(value["schema_version"]) is not int or value["schema_version"] != 1 or
+                re.fullmatch(r"[a-f0-9]{64}", value["identity"]) is None or
+                value["artifact_record_hash"] != hashlib.sha256(encoded).hexdigest()):
+            raise ValueError("invalid checkpoint identity or metadata")
+        audio = Path(artifact["path"])
+        if (not audio.is_absolute() or audio.parent != record.parent.parent or
+                re.fullmatch(r"tts-[a-f0-9]{32}\.wav", audio.name) is None):
+            raise ValueError("checkpoint audio escapes its generation")
+        for path in (record, audio, *record.parents):
+            if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+                raise ValueError("checkpoint uses a linked path")
+        before = audio.stat()
+        digest = _file_digest(audio)
+        after = audio.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise ValueError("checkpoint audio changed during verification")
+        if artifact["content_hash"] != "sha256:" + digest:
+            raise ValueError("checkpoint audio checksum differs")
+        with wave.open(str(audio), "rb") as reader:
+            if (reader.getnframes() <= 0 or reader.getnframes() != artifact["frame_count"] or
+                    reader.getframerate() != artifact["sample_rate"] or
+                    reader.getnchannels() != artifact["channels"] or reader.getsampwidth() != 2):
+                raise ValueError("checkpoint audio has invalid PCM")
+        return {"segment_id": artifact["segment_id"], "audio": str(audio), "sha256": digest,
+                "mtime_ns": after.st_mtime_ns, "record": str(record),
+                "record_sha256": hashlib.sha256(payload).hexdigest(), "committed_cues": len(records)}
+    except (ValueError, TypeError, KeyError, OSError, wave.Error, EOFError) as error:
+        raise SmokeError(f"TTS recovery checkpoint is invalid: {error}") from error
+
+
+def _verify_tts_recovery(supervisor: Path, root: Path, data_root: Path, work_root: Path,
+                         ffmpeg: Path, ffprobe: Path, *, voice_id: str, timeout: float) -> dict[str, Any]:
+    """Interrupt actual packaged synthesis after a committed cue, then recover it."""
+    source = _make_source(ffmpeg, work_root / "tts recovery input", seconds=27, stem="dialogue")
+    source.with_suffix(".srt").write_text(
+        "1\n00:00:00,000 --> 00:00:09,000\nPlease wait. I have something to tell you.\n\n"
+        "2\n00:00:09,000 --> 00:00:18,000\nBe careful. Someone is behind the door.\n\n"
+        "3\n00:00:18,000 --> 00:00:27,000\nThank you. I am glad you came back.\n",
+        encoding="utf-8")
+    output = work_root / "tts recovery output"
+    if output.exists():
+        raise SmokeError("TTS recovery requires a fresh output directory")
+    job_id = "smoke-tts-recovery"
+    command = _supervisor_command(supervisor, root, data_root, source, output, job_id,
+                                  enable_dubbing=True, tts_voice_id=voice_id, source_language="en")
+    snapshot = None
+    # File-backed logs keep child pipes draining while the controller observes
+    # the actual fsynced record; elapsed time alone cannot prove a TTS restart.
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        process = subprocess.Popen(command, stdout=stdout, stderr=stderr,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            start_new_session=os.name != "nt")
+        deadline = time.monotonic() + timeout
+        try:
+            while process.poll() is None:
+                snapshot = _tts_checkpoint_snapshot(output)
+                if snapshot is not None:
+                    if (output / "job_manifest.json").exists():
+                        raise SmokeError("TTS recovery reached publication before interruption")
+                    _terminate_tree(process)
+                    break
+                if time.monotonic() >= deadline:
+                    raise SmokeError("TTS recovery timed out waiting for a committed speech cue")
+                time.sleep(0.05)
+            if snapshot is None or process.poll() is None or process.returncode == 0:
+                detail = []
+                for stream in (stdout, stderr):
+                    stream.seek(0, os.SEEK_END)
+                    stream.seek(max(0, stream.tell() - 4096))
+                    detail.append(stream.read().decode("utf-8", errors="replace"))
+                raise SmokeError("TTS recovery did not hard-kill an active native supervisor: " + "\n".join(detail))
+            if (output / "job_manifest.json").exists():
+                raise SmokeError("interrupted TTS unexpectedly published its output")
+        finally:
+            _terminate_tree(process)
+    status_path = data_root / "control/jobs" / f"{job_id}.json"
+    _require_status(_json(status_path), "RUNNING", job_id)
+    resumed, killed, _ = _run_supervisor(supervisor, root, data_root, source, output, job_id,
+        timeout=timeout, enable_dubbing=True, tts_voice_id=voice_id, source_language="en")
+    if killed or resumed is None:
+        raise SmokeError("TTS recovery restart was interrupted")
+    _require_status(resumed, "COMPLETED", job_id)
+    result = _verify_output(ffprobe, output, 27, expect_dubbing=True, expect_voice_id=voice_id)
+    audio = Path(snapshot["audio"])
+    if (_file_digest(audio) != snapshot["sha256"] or audio.stat().st_mtime_ns != snapshot["mtime_ns"] or
+            _file_digest(Path(snapshot["record"])) != snapshot["record_sha256"]):
+        raise SmokeError("TTS recovery regenerated or modified previously committed speech")
+    manifest = _json(output / "job_manifest.json")
+    tts = _json(Path(manifest["audio"]["tts_document"]))
+    if (len(tts["artifacts"]) != 3 or tts.get("failures") or
+            "reused TTS checkpoint for " + snapshot["segment_id"] not in tts.get("warnings", ()) or
+            not any(item["segment_id"] == snapshot["segment_id"] and item["path"] == snapshot["audio"]
+                    and item["content_hash"] == "sha256:" + snapshot["sha256"] for item in tts["artifacts"])):
+        raise SmokeError("TTS recovery did not report actual same-cue checkpoint reuse")
+    with closing(sqlite3.connect(data_root / "control/jobs.sqlite3")) as connection:
+        if connection.execute("SELECT status FROM jobs WHERE job_id=?", (job_id,)).fetchone() != ("succeeded",):
+            raise SmokeError("TTS recovery did not durably complete the original job")
+    _run([ffmpeg, "-nostdin", "-v", "error", "-i", output / "final_vi.mp4", "-f", "null", "-"], timeout=120)
+    return {"status": "passed", "first_supervisor_hard_killed": True,
+            "interrupted_after_committed_cues": snapshot["committed_cues"], "reused_cue": snapshot,
+            "wave_and_record_unchanged": True, "durable_same_job_completed": True,
+            "full_output_decode": True, "output": result,
+            "scope": "packaged supervisor/owned runtime; synthetic media with real translation and selected speech"}
+
+
 def _verify_voice_version(supervisor: Path, root: Path, data_root: Path, source: Path,
                           original: Path, ffprobe: Path, *, voice_id: str, timeout: float) -> dict[str, Any]:
     original_files = {str(path.relative_to(original)): _file_digest(path)
@@ -530,6 +674,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise SmokeError("long-form job was unexpectedly killed")
         _require_status(long_status, "COMPLETED", "smoke-long")
         long_output_report = _verify_output(ffprobe, long_output, args.long_seconds, expect_dubbing=args.enable_dubbing, expect_voice_id=selected_voice)
+    tts_recovery = _verify_tts_recovery(supervisor, root, data_root, work_root, ffmpeg, ffprobe,
+        voice_id=selected_voice, timeout=args.timeout) if selected_voice is not None else None
     profile_marker = data_root / "models" / ".profile-ready"
     if not profile_marker.is_file() or profile_marker.stat().st_size <= 0:
         raise SmokeError(f"model profile did not become ready: {profile_marker}")
@@ -540,6 +686,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "batch_failure_isolation": "passed",
         "immutable_job_replay": replay_isolation,
         "voice_version_isolation": voice_version,
+        "tts_checkpoint_recovery": tts_recovery,
         "corrupt_job_state": bad_status["status"],
         "corrupt_media_failure": corrupt_failure,
         "good_job": good_output_report,
