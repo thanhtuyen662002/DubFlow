@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import sqlite3
 import subprocess
@@ -257,6 +258,32 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
             raise SmokeError(f"B2 TTS receipt differs from the selected native producer: {provenance!r}")
         if expect_voice_id is not None and provenance.get("voice_id") != expect_voice_id:
             raise SmokeError("packaged TTS did not preserve the explicitly selected preset")
+        tts_artifacts = tts_document.get("artifacts")
+        if not isinstance(tts_artifacts, list) or not tts_artifacts:
+            raise SmokeError("packaged TTS has no committed per-cue artifacts")
+        tts_root = Path(audio["tts_document"]).parent / "tts"
+        for artifact in tts_artifacts:
+            path = Path(artifact["path"])
+            if path.parent != tts_root or not re.fullmatch(r"tts-[a-f0-9]{32}\.wav", path.name):
+                raise SmokeError("packaged TTS checkpoint audio escapes its private generation")
+            record = tts_root / "checkpoints" / (hashlib.sha256(artifact["segment_id"].encode()).hexdigest() + ".json")
+            try:
+                with record.open("rb") as stream:
+                    payload = stream.read(65537)
+                if len(payload) > 65536:
+                    raise ValueError("record exceeds bounds")
+                checkpoint = json.loads(payload)
+                metadata_hash = hashlib.sha256(json.dumps(artifact, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+                if (type(checkpoint.get("schema_version")) is not int or checkpoint["schema_version"] != 1 or
+                        not re.fullmatch(r"[a-f0-9]{64}", checkpoint.get("identity", "")) or
+                        checkpoint.get("artifact") != artifact or checkpoint.get("artifact_record_hash") != metadata_hash):
+                    raise ValueError("record differs from TTS artifact")
+                with path.open("rb") as stream:
+                    if "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest() != artifact["content_hash"]:
+                        raise ValueError("checkpoint waveform hash differs")
+            except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+                raise SmokeError("packaged TTS per-cue checkpoint verification failed") from error
         mix_document = _json(Path(audio["mix_document"]))
         mix_provenance = mix_document.get("provenance", {})
         if (mix_provenance.get("backend_id") != "pcm-stream-duck-v1" or
@@ -272,6 +299,11 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
                 actual_hash = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
             if actual_hash != artifact["content_hash"] or actual_hash != artifact["metrics"]["content_hash"]:
                 raise SmokeError(f"packaged B2 mix artifact hash differs: {key}")
+            editable_name = {"original_audio": "source_audio.wav", "dialogue_stem": "dialogue_stem.wav",
+                             "final_mix": "final_mix.wav"}[key]
+            with (editable / editable_name).open("rb") as stream:
+                if "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest() != actual_hash:
+                    raise SmokeError(f"packaged B2 editable audio hash differs: {key}")
             with wave.open(str(path), "rb") as reader:
                 if (reader.getnframes() != artifact["frame_count"] or reader.getnchannels() != artifact["channels"] or
                         reader.getframerate() != artifact["sample_rate"] or reader.getsampwidth() != 2):
@@ -281,7 +313,8 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
             raise SmokeError("packaged B2 did not preserve source or safe final normalization")
         streaming_mix = {"backend": mix_provenance["backend_id"], "producer_version": mix_provenance["producer_version"],
                          "runtime": mix_provenance["runtime"], "frames": mix_document["final_mix"]["frame_count"],
-                         "source_preserved": True, "artifact_hashes_verified": True}
+                         "source_preserved": True, "artifact_hashes_verified": True,
+                         "editable_hashes_verified": True, "tts_checkpoint_records_verified": len(tts_artifacts)}
     # The JSON is captured directly to avoid relying on a shell redirection.
     result = _run(
         [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", final],

@@ -24,6 +24,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import threading
 import time
@@ -300,6 +301,46 @@ def _atomic_bytes(path: Path, value: bytes) -> None:
     except OSError as error:
         temporary.unlink(missing_ok=True)
         raise ProductionJobError("CHECKPOINT_WRITE_FAILED", str(error), retryable=True) from error
+
+
+def _copy_editable_artifact(source: Path, target: Path, *, expected_hash: str) -> None:
+    """Publish one verified asset with bounded memory and preserve its prior file.
+
+    Completed assets can be reused after interruption; an incomplete file never
+    replaces the destination. The enclosing export transaction preserves the
+    preceding validated video and editable directory until all assets pass QC.
+    """
+    export_publication.plain(source.absolute())
+    export_publication.plain(target.absolute())
+    if target.is_file() and _sha256(target) == expected_hash:
+        if _sha256(source) != expected_hash:
+            raise ProductionJobError("EDITABLE_ARTIFACT_CHANGED", "editable source differs from validated provenance")
+        return
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
+    try:
+        size = source.stat().st_size
+        if shutil.disk_usage(target.parent).free < size + 16 * 1024 * 1024:
+            raise ProductionJobError("EDITABLE_STORAGE_INSUFFICIENT", "not enough storage for the next editable asset")
+        digest = sha256()
+        copied = 0
+        with source.open("rb") as reader, temporary.open("xb") as writer:
+            before = os.fstat(reader.fileno())
+            for block in iter(lambda: reader.read(1024 * 1024), b""):
+                writer.write(block)
+                digest.update(block)
+                copied += len(block)
+                if copied > size:
+                    raise ProductionJobError("EDITABLE_ARTIFACT_CHANGED", "editable source grew during copying")
+            after = os.fstat(reader.fileno())
+            writer.flush()
+            os.fsync(writer.fileno())
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or copied != size or "sha256:" + digest.hexdigest() != expected_hash or _sha256(temporary) != expected_hash:
+            raise ProductionJobError("EDITABLE_ARTIFACT_CHANGED", "editable asset bytes differ from validated provenance")
+        os.replace(temporary, target)
+    except OSError as error:
+        raise ProductionJobError("EDITABLE_COPY_FAILED", str(error), retryable=True) from error
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _read_checkpoint(path: Path, source_hash: str) -> dict[str, Any]:
@@ -962,24 +1003,28 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _atomic_json(qc_path, qc)
     editable_dir = export_dir / "editable"
+    editable_names = {"captions_vi.srt", "captions_vi.ass", "timeline.json"}
+    if b2_audio is not None:
+        editable_names.update({"source_audio.wav", "dialogue_stem.wav", "final_mix.wav"})
     if editable_dir.exists():
         for path in editable_dir.iterdir():
             export_publication.plain(path.absolute())
-            path.unlink()
+            if path.name not in editable_names:
+                path.unlink()
     editable_dir.mkdir(parents=True, exist_ok=True)
     for source, name in ((srt_path, "captions_vi.srt"), (ass_path, "captions_vi.ass")):
         target = editable_dir / name
-        target.write_bytes(source.read_bytes())
-    editable_audio: list[tuple[Path, str]] = []
+        _copy_editable_artifact(source, target, expected_hash=_sha256(source))
+    editable_audio: list[tuple[Path, str, str]] = []
     if b2_audio is not None:
         editable_audio = [
-            (b2_audio.original_audio_path, "source_audio.wav"),
-            (b2_audio.dialogue_stem_path, "dialogue_stem.wav"),
-            (b2_audio.final_mix_path, "final_mix.wav"),
+            (b2_audio.original_audio_path, "source_audio.wav", b2_audio.mix_document.original_audio.content_hash),
+            (b2_audio.dialogue_stem_path, "dialogue_stem.wav", b2_audio.mix_document.dialogue_stem.content_hash),
+            (b2_audio.final_mix_path, "final_mix.wav", b2_audio.mix_document.final_mix.content_hash),
         ]
-        for source, name in editable_audio:
+        for source, name, expected_hash in editable_audio:
             target = editable_dir / name
-            target.write_bytes(source.read_bytes())
+            _copy_editable_artifact(source, target, expected_hash=expected_hash)
     timeline_path = editable_dir / "timeline.json"
     _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": [cue.to_dict() for cue in translated]})
     artifacts = {"final_video": final_path, "captions_srt": srt_path, "captions_ass": ass_path, "qc_report": qc_path, "editable_timeline": timeline_path}

@@ -35,6 +35,40 @@ class HermeticDecodedAudioAdapter:
 
 
 class ProductionLocalFileB2Tests(unittest.TestCase):
+    def test_interrupted_production_synthesis_loads_per_cue_checkpoints(self):
+        class InterruptedEngine(DeterministicFixtureEngine):
+            interrupted = True
+
+            def synthesize(self, request):
+                if self.interrupted and request.segment.segment_id == "cue-2":
+                    raise KeyboardInterrupt("worker interrupted after first committed cue")
+                return super().synthesize(request)
+
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",
+            return_value=(SimpleNamespace(sample_rate=16000, channels=1), approved_default_voice())):
+            root = Path(directory)
+            options = dict(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                source_probe=SimpleNamespace(has_audio=True), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2",
+                translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),
+                                 TextCue("cue-2", 1200, 2200, "World", "Thế giới", 0.9)))
+            with patch("engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", return_value=InterruptedEngine()):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_b2_audio(**options)
+            wav = next((root / "b2/tts").glob("tts-*.wav"))
+            original = (wav.read_bytes(), wav.stat().st_mtime_ns)
+            self.assertEqual(len(list((root / "b2/tts/checkpoints").glob("*.json"))), 1)
+            self.assertFalse((root / "b2/tts_document.json").exists())
+            engine = InterruptedEngine()
+            engine.interrupted = False
+            with patch("engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", return_value=engine):
+                result = run_b2_audio(**options)
+            self.assertEqual(engine.calls, [Path(result.tts_document.artifacts[1].path).stem])
+            self.assertEqual((wav.read_bytes(), wav.stat().st_mtime_ns), original)
+            self.assertEqual(len(result.tts_document.artifacts), 2)
+            self.assertTrue(result.final_mix_path.is_file())
+
     def test_missing_or_invalid_recipe_remains_a_typed_b1_downgrade(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

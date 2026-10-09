@@ -207,3 +207,38 @@ The #203 synthetic six-hour resource result is enabling evidence only; updated
 #166 full-worker/native/media/recovery/batch and all declared CI still need fresh
 qualification on this combined source/current main. No stable promotion follows
 from selecting the adapter.
+
+## Per-cue TTS recovery and bounded editable publication
+
+Production now passes verified per-cue checkpoints into `LocalTtsAdapter` and
+commits a worker-private JSON record immediately after each successful, fsynced
+WAV. Records are limited to 64 KiB, atomically replaced, and bind exact input,
+configuration, voice, producer/model/runtime provenance and adapter recipe.
+Their metadata checksum and private generation paths are validated before the
+adapter independently checks waveform hash, PCM metrics and canonical timing.
+Fitted audio retains its original fit mode/rate when checked; padded and safely
+speed-adjusted cues can be reused without silently rewriting completed speech.
+An incomplete record reprocesses its cue; corruption is visible as a warning.
+Failure to commit a checkpoint requires action and preserves the B1 path.
+
+The recipe digest now includes the common TTS adapter and checkpoint store.
+Public TTS/timeline/worker formats, model weights and VieNeu producer `3.1.0`
+remain unchanged. The new private record format is version 1, with no SQLite
+mutation or durable schema migration. Older private generations without these
+records are never relabeled as resumed: changed generation identity selects a
+new directory, and immutable existing job IDs still require their pinned
+runtime under ADR-0020. Published generations and prior outputs stay immutable.
+
+Editable source/stem/final WAVs are copied in 1 MiB blocks, with space admission,
+source-size/change checks, expected mixer hashes, fsync and destination hash
+verification before atomic replacement. Completed verified copies can be reused
+after interruption. The enclosing recoverable export transaction protects the
+preceding validated export. This removes the remaining whole-WAV allocation in
+the production publication path; it is separate from mixer resource evidence.
+
+Native qualification additionally requires each successful real TTS cue's
+committed record and actual WAV hash, and byte parity between editable WAVs and
+the mixer receipts. Deterministic tests cover abrupt process exit, fitted cue
+reuse, corrupt/oversized/foreign records and copy/promotion/storage failures.
+Real full-worker hard-kill recovery and large-file memory evidence still need
+source-bound receipts; this decision alone does not qualify #166 or #175.

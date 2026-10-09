@@ -10,7 +10,7 @@ Native inference is not deterministic or a speech-quality qualification.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 import os
@@ -36,6 +36,7 @@ from engine.dubflow.tts import (
 from engine.dubflow.tts.neural_vits import ENGINE_ID, ONNX_RUNTIME_VERSION, RUNTIME_VERSION, NeuralVietnameseTtsEngine, load_neural_voice
 from engine.dubflow.tts.neural_vits import _child, _read_json, _digest
 from engine.dubflow.tts import vieneu
+from .tts_checkpoints import TtsCheckpointStore
 
 
 BASE_TIME = TimeBase(1, 1000)
@@ -56,7 +57,7 @@ def _tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
         return "legacy-profile-without-neural-recipe"
     metadata = _child(app_root, relative)
     source = Path(__file__).parents[1] / "tts"
-    paths = (metadata, source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py")
+    paths = (metadata, source / "adapter.py", source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py", Path(__file__).with_name("tts_checkpoints.py"))
     return sha256("".join(_digest(path) for path in paths).encode()).hexdigest()
 
 
@@ -252,13 +253,20 @@ def run_b2_audio(
             for item in mappings
         )
         tts_dir = root / "tts"
+        checkpoint_identity = sha256(json.dumps({"provenance": provenance.to_dict(),
+            "recipe": tts_recipe_identity(Path(app_root), Path(profile_path))},
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        checkpoints = TtsCheckpointStore(tts_dir, identity=checkpoint_identity)
         tts_document = LocalTtsAdapter(
             engine,
             config=tts_config,
             provenance=provenance,
             voice=voice,
             output_dir=tts_dir,
-        ).synthesize(segments, input_hash=input_hash)
+        ).synthesize(segments, input_hash=input_hash, checkpoints=checkpoints.load(segments),
+                     on_checkpoint=checkpoints.commit)
+        if checkpoints.warnings:
+            tts_document = replace(tts_document, warnings=tts_document.warnings + tuple(checkpoints.warnings))
     except TtsStageError as error:
         raise B2AudioError("TTS_FAILED", str(error), retryable=error.retryable) from error
     except Exception as error:

@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from hashlib import sha256
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -25,6 +26,74 @@ from engine.dubflow.worker.protocol import Envelope, MessageType
 
 
 class ProductionWorkerTests(unittest.TestCase):
+    def test_editable_copy_has_bounded_reads_and_reuses_verified_completed_asset(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, target = root / "source.wav", root / "editable.wav"
+            digest = sha256()
+            block = bytes(range(256)) * 4096
+            with source.open("wb") as writer:
+                for _ in range(32):
+                    writer.write(block)
+                    digest.update(block)
+            expected = "sha256:" + digest.hexdigest()
+            original_open = Path.open
+
+            class BoundedReader:
+                def __init__(self, handle):
+                    self.handle = handle
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    return self.handle.__exit__(*args)
+                def fileno(self):
+                    return self.handle.fileno()
+                def read(self, size=-1):
+                    if not 0 < size <= 1024 * 1024:
+                        raise AssertionError("editable publication made an unbounded read")
+                    return self.handle.read(size)
+
+            def guarded(path, mode="r", *args, **kwargs):
+                handle = original_open(path, mode, *args, **kwargs)
+                return BoundedReader(handle) if mode == "rb" else handle
+
+            with patch.object(Path, "open", guarded), patch.object(Path, "read_bytes", side_effect=AssertionError("whole payload read")):
+                worker._copy_editable_artifact(source, target, expected_hash=expected)
+            self.assertEqual(worker._sha256(target), expected)
+            modified = target.stat().st_mtime_ns
+            with patch.object(worker.os, "replace", side_effect=AssertionError("completed copy was repeated")):
+                worker._copy_editable_artifact(source, target, expected_hash=expected)
+            self.assertEqual(target.stat().st_mtime_ns, modified)
+            with source.open("r+b") as stream:
+                stream.write(b"changed")
+            with self.assertRaisesRegex(ProductionJobError, "EDITABLE_ARTIFACT_CHANGED"):
+                worker._copy_editable_artifact(source, target, expected_hash=expected)
+            self.assertEqual(worker._sha256(target), expected)
+
+    def test_editable_corruption_storage_or_promotion_failure_preserves_prior_asset(self):
+        for failure in ("checksum", "disk", "rename"):
+            with self.subTest(failure=failure), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, target = root / "source.wav", root / "editable.wav"
+                source.write_bytes(b"new validated data")
+                target.write_bytes(b"previous valid artifact")
+                expected = worker._sha256(source)
+                if failure == "checksum":
+                    expected = "sha256:" + "0" * 64
+                    context = patch.object(worker.shutil, "disk_usage", return_value=SimpleNamespace(free=10**9))
+                    code = "EDITABLE_ARTIFACT_CHANGED"
+                elif failure == "disk":
+                    context = patch.object(worker.shutil, "disk_usage", return_value=SimpleNamespace(free=0))
+                    code = "EDITABLE_STORAGE_INSUFFICIENT"
+                else:
+                    context = patch.object(worker.os, "replace", side_effect=OSError("injected promotion failure"))
+                    code = "EDITABLE_COPY_FAILED"
+                with context, self.assertRaises(ProductionJobError) as error:
+                    worker._copy_editable_artifact(source, target, expected_hash=expected)
+                self.assertEqual(error.exception.code, code)
+                self.assertEqual(target.read_bytes(), b"previous valid artifact")
+                self.assertEqual(list(root.glob("*.partial")), [])
+
     def test_worker_boundary_preserves_media_failure_and_requires_action_for_unknown_errors(self):
         cases = ((MediaAdapterError("MEDIA_PROBE_FAILED", "moov atom not found", retryable=True),
                   "MEDIA_PROBE_FAILED", 2),

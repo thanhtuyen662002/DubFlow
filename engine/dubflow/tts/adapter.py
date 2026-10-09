@@ -20,7 +20,7 @@ from pathlib import Path
 import re
 import struct
 import tempfile
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 import unicodedata
 import wave
 
@@ -1154,6 +1154,7 @@ class LocalTtsAdapter:
         *,
         input_hash: str,
         checkpoints: Mapping[str, TtsCheckpoint] | None = None,
+        on_checkpoint: Callable[[TtsCheckpoint], None] | None = None,
     ) -> TtsDocument:
         if input_hash != self.provenance.input_hash:
             raise TtsError("PROVENANCE_INPUT_MISMATCH", "TTS input hash differs from provenance")
@@ -1210,6 +1211,12 @@ class LocalTtsAdapter:
                     chunk_failed = True
                     chunk_reused = False
                     continue
+                if on_checkpoint is not None and not reused:
+                    try:
+                        on_checkpoint(TtsCheckpoint(segment.segment_id, segment_artifact.artifact_hash, segment_artifact))
+                    except Exception as error:
+                        raise TtsError("TTS_CHECKPOINT_WRITE_FAILED", _safe_condition(error),
+                                       segment_id=segment.segment_id, retryable=False) from error
                 chunk_artifacts.append(segment_artifact)
                 artifacts.append(segment_artifact)
                 successful += 1
@@ -1275,10 +1282,14 @@ class LocalTtsAdapter:
             return None, [TtsFailure.from_error(failure, segment_id=segment.segment_id)], False, False, 1, ()
         if checkpoint is not None and checkpoint.segment_id == segment.segment_id and checkpoint.artifact_hash == self._artifact_hash(segment, checkpoint.artifact.content_hash, request_id=request_id):
             try:
-                audio_bytes = Path(checkpoint.artifact.path).read_bytes()
+                with Path(checkpoint.artifact.path).open("rb") as handle:
+                    audio_bytes = handle.read(self.config.max_wave_bytes + 1)
                 checked_synthesis, checked_metrics, checked_rate, checked_channels = self._validate_audio(
                     segment,
-                    EngineSynthesis(audio_bytes, sample_rate=checkpoint.artifact.sample_rate, channels=checkpoint.artifact.channels),
+                    EngineSynthesis(audio_bytes, sample_rate=checkpoint.artifact.sample_rate,
+                                    channels=checkpoint.artifact.channels, bits_per_sample=checkpoint.artifact.bits_per_sample,
+                                    fit_mode=checkpoint.artifact.fit_mode, speed_ratio_milli=checkpoint.artifact.speed_ratio_milli,
+                                    warnings=checkpoint.artifact.warnings),
                     request,
                 )
                 checked_end = self._actual_end(segment, checked_metrics.frame_count, checked_rate)

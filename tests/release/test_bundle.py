@@ -522,8 +522,19 @@ class VoiceVersionQualificationTests(unittest.TestCase):
             tts_path = root / "tts_document.json"
             mix = {**artifacts, "provenance": provenance}
             mix_path.write_text(json.dumps(mix))
+            tts_root = root / "tts"
+            (tts_root / "checkpoints").mkdir(parents=True)
+            tts_wav = tts_root / ("tts-" + "1" * 32 + ".wav")
+            tts_wav.write_bytes((editable / "dialogue_stem.wav").read_bytes())
+            tts_artifact = {"segment_id": "cue-1", "path": str(tts_wav),
+                            "content_hash": artifacts["dialogue_stem"]["content_hash"]}
+            record = tts_root / "checkpoints" / (hashlib.sha256(b"cue-1").hexdigest() + ".json")
+            metadata_hash = hashlib.sha256(json.dumps(tts_artifact, ensure_ascii=False,
+                sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            record.write_text(json.dumps({"schema_version": 1, "identity": "2" * 64,
+                "artifact": tts_artifact, "artifact_record_hash": metadata_hash}))
             tts_path.write_text(json.dumps({"provenance": {"backend_id": "vieneu-v3-turbo-onnx-v1", "producer_version": "3.1.0",
-                                                         "voice_id": "vi-truc-ly-vieneu3-v1"}}))
+                "voice_id": "vi-truc-ly-vieneu3-v1"}, "artifacts": [tts_artifact]}))
             manifest = {"audio": {"mode": "dubbed", "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
                                    "mix_document": str(mix_path), "mix_provenance": provenance}}
             (root / "job_manifest.json").write_text(json.dumps(manifest))
@@ -533,6 +544,12 @@ class VoiceVersionQualificationTests(unittest.TestCase):
                 report = production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True,
                                                         expect_voice_id="vi-truc-ly-vieneu3-v1")
                 self.assertEqual(report["streaming_mix"]["producer_version"], "2.0.1")
+                self.assertEqual(report["streaming_mix"]["tts_checkpoint_records_verified"], 1)
+                saved_record = record.read_bytes()
+                record.write_bytes(b"{")
+                with self.assertRaisesRegex(production_smoke.SmokeError, "per-cue checkpoint"):
+                    production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True)
+                record.write_bytes(saved_record)
                 mix["provenance"] = {**provenance, "producer_version": "1.0.0"}
                 mix_path.write_text(json.dumps(mix))
                 with self.assertRaisesRegex(production_smoke.SmokeError, "pinned streaming"):
