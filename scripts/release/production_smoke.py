@@ -615,7 +615,7 @@ def _verify_live_job_ownership(supervisor: Path, root: Path, data_root: Path, wo
 
             # The idle server receives actual start/cancel requests for a job
             # owned by the other process. EOF exits only this idle QA server.
-            server_command = [str(supervisor), "serve", "--root", str(root), "--data-root", str(data_root),
+            server_command = [str(supervisor), "--root", str(root), "--data-root", str(data_root),
                               "--model-root", str(data_root / "models")]
             requests = [{"command": "start", "job_id": job_id, "source_path": str(source),
                          "output_dir": str(output), "source_language": "vi", "enable_dubbing": True,
@@ -629,7 +629,8 @@ def _verify_live_job_ownership(supervisor: Path, root: Path, data_root: Path, wo
                     len(refusals) != 2 or any(event.get("event") != "error" or
                     event.get("code") != "JOB_ALREADY_RUNNING" or event.get("retryable") is not False
                     for event in refusals)):
-                raise SmokeError("idle server recovered or accepted another process's live job")
+                raise SmokeError("idle server recovered or accepted another process's live job; "
+                    f"exit={server.returncode}; events={events!r}; stderr={server.stderr[-2048:]}")
             after_server = _job_execution_snapshot(data_root, job_id)
             if healthy.poll() is not None:
                 raise SmokeError("execution qualification missed idle-server overlap")

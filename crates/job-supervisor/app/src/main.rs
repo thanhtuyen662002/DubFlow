@@ -1488,6 +1488,10 @@ fn replace_atomic(source: &Path, destination: &Path) -> io::Result<()> {
         // A desktop status poll can briefly hold the previous file open.  A
         // bounded retry handles that transient sharing violation without ever
         // falling back to delete-then-rename (which would expose a gap).
+        // Actual Windows readers also produce ERROR_ACCESS_DENIED (5),
+        // including handles with FILE_SHARE_DELETE. Retry it only for an
+        // existing ordinary writable target; persistent/readonly errors stay
+        // fatal and never grant permission or consume another worker attempt.
         for attempt in 0..8 {
             let success = unsafe {
                 MoveFileExW(
@@ -1500,7 +1504,14 @@ fn replace_atomic(source: &Path, destination: &Path) -> io::Result<()> {
                 return Ok(());
             }
             let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(32) || attempt == 7 {
+            let transient = match error.raw_os_error() {
+                Some(32) => true,
+                Some(5) => fs::symlink_metadata(destination)
+                    .map(|metadata| metadata.file_type().is_file() && !metadata.permissions().readonly())
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if !transient || attempt == 7 {
                 return Err(error);
             }
             thread::sleep(Duration::from_millis(15));
@@ -2479,6 +2490,60 @@ mod tests {
         let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
             enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true };
         (root, runtime, spec)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_status_publication_waits_for_actual_windows_reader_release() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (root, _, _) = identity_fixture();
+        let target = root.join("reader-release.json");
+        atomic_json_file(&target, &json!({"checkpoint":"old"})).unwrap();
+        let replacement = root.join("reader-release.partial");
+        fs::write(&replacement, b"{\"checkpoint\":\"new\"}\n").unwrap();
+        let reader = fs::OpenOptions::new().read(true).share_mode(3).open(&target).unwrap();
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(45));
+            drop(reader);
+        });
+        let result = replace_atomic(&replacement, &target);
+        thread.join().unwrap();
+        result.unwrap();
+        assert!(!replacement.exists());
+        assert_eq!(serde_json::from_slice::<Value>(&fs::read(&target).unwrap()).unwrap(), json!({"checkpoint":"new"}));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_status_persistent_reader_preserves_bytes_then_recovers_after_release() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (root, _, _) = identity_fixture();
+        let target = root.join("persistent-reader.json");
+        atomic_json_file(&target, &json!({"checkpoint":"original"})).unwrap();
+        let original = fs::read(&target).unwrap();
+        let reader = fs::OpenOptions::new().read(true).share_mode(3).open(&target).unwrap();
+        assert!(atomic_json_file(&target, &json!({"checkpoint":"new"})).is_err());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        drop(reader);
+        atomic_json_file(&target, &json!({"checkpoint":"new"})).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&fs::read(&target).unwrap()).unwrap(), json!({"checkpoint":"new"}));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_status_readonly_target_refuses_and_preserves_original() {
+        let (root, _, _) = identity_fixture();
+        let target = root.join("readonly-status.json");
+        atomic_json_file(&target, &json!({"checkpoint":"original"})).unwrap();
+        let original = fs::read(&target).unwrap();
+        let writable = fs::metadata(&target).unwrap().permissions();
+        let mut readonly = writable.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&target, readonly).unwrap();
+        let result = atomic_json_file(&target, &json!({"checkpoint":"new"}));
+        fs::set_permissions(&target, writable).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read(&target).unwrap(), original);
     }
 
     fn commit_test_qc(store: &DurableStore, spec: &StartSpec, path: &Path, bytes: &[u8]) {

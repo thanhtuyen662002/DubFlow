@@ -423,7 +423,7 @@ worker execution and failure/panic handling. A server without the owning
 in-process worker also requires this lock before cancellation.
 
 Live duplicates return existing nonretryable `JOB_ALREADY_RUNNING` without
-changing the original job, status or artifacts. Startup of `serve` performs no
+changing the original job, status or artifacts. Long-lived server startup performs no
 global recovery; `ready.recovered_stages` remains zero. After immutable
 admission, recovery touches only the locked requested job, preserves checkpoint
 and attempt history, and never revives a cancelled job. The legacy global state
@@ -445,3 +445,28 @@ running state and start count, typed refusal, committed speech, playable export
 and durable completion. Generated media/authored VI cues exercise execution
 isolation; they do not qualify real ASR/translation, GUI, film acting or the
 full #166/#175 gates. All new source/base required lanes must rerun.
+
+## Windows status reader contention
+
+The installed f2 NgocHuyen real-media run reached 272 actual ASR cues, then
+status publication failed with Windows error 5. Controlled actual Win32 and
+installed-supervisor tests reproduce this for a live reader of an ordinary
+target, including FILE_SHARE_DELETE and Python readers. Releasing the handle
+allows replacement without deleting the target. The producer previously
+retried only error 32, so the observed reader condition bypassed that bound.
+
+The existing eight-attempt/15 ms filesystem wait now also permits error 5 only
+when the destination remains an ordinary writable file. Readonly, invalid,
+unavailable and persistent errors remain failures. Atomic replacement and
+previous bytes are preserved; there is no delete gap, permission change or
+worker retry. Required Windows Rust tests exercise reader release, a persistent
+reader and readonly refusal. Older f2 receipts remain historical, including
+the failed real run; no completed voice/export approval is inferred.
+
+Native qualification uses the existing flag-only server CLI. Its erroneous
+literal `serve` argument caused 16cb5cf Windows smoke failure before the server
+could exercise execution exclusion. Correcting this harness is not evidence
+that the previously unexecuted path passed. Required exact successor/head/base
+lanes and staged/installed actual process overlap must rerun. Public schemas,
+SQLite, models and artifact formats remain unchanged; immutable job/runtime
+pins and coherent rollback apply to this changed supervisor as above.

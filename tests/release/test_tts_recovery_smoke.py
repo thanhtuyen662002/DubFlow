@@ -91,7 +91,8 @@ class LiveOwnershipEvidenceTests(unittest.TestCase):
                     return {"job_id": bad_id, "status": {"state": "FAILED"}}, False, log
 
                 def secondary(command, **kwargs):
-                    if command[1] == "serve":
+                    if command[1] == "--root":
+                        self.assertNotIn("serve", command)
                         events = [{"event": "ready", "recovered_stages": 1 if defect == "server_recovered" else 0}]
                         events.extend({"event": "accepted" if defect == "server_accepted" else "error", "job_id": job_id,
                                        "code": "JOB_ALREADY_RUNNING", "retryable": False} for _ in range(2))

@@ -32,3 +32,10 @@ recovery, worker start or status-file publication. An idle server cannot cancel
 a different process's live job; its cancel request receives the same refusal.
 Server `ready.recovered_stages` is zero because recovery is request-bound.
 The owning one-shot process retains its lock through the final status write.
+
+Status publication remains an atomic replacement without a delete gap. On
+Windows an ordinary reader can produce error 5 as well as error 32. The existing
+bounded filesystem retry permits error 5 only for an existing ordinary writable
+target; readonly, invalid or persistent failures still refuse publication and
+preserve previous bytes. Waiting for the reader to release is not a worker
+retry and does not consume the durable stage's attempt budget.
