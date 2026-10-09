@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
 from pathlib import Path
 from typing import Any, Mapping, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from engine.dubflow.download.source_adapter import (
     MediaCandidate,
@@ -35,6 +35,7 @@ from engine.dubflow.download.stream_materializer import StreamMaterializer
 TICKS_PER_SECOND = 90_000
 _BVID = re.compile(r"^BV[0-9A-Za-z]{6,32}$")
 _AVID = re.compile(r"^(?:av)?[0-9]{1,20}$", re.IGNORECASE)
+_PART_REF = re.compile(r"^(BV[0-9A-Za-z]{6,32}|av[0-9]{1,20})_p([0-9]{1,5})$", re.IGNORECASE)
 _VIDEO_PATH = re.compile(r"/(?:video/)?(BV[0-9A-Za-z]{6,32}|av[0-9]{1,20})(?:/|$)", re.IGNORECASE)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv", "www.b23.tv"}
@@ -64,11 +65,16 @@ class BilibiliDownloadChoice:
 
 
 def normalize_source_ref(source_ref: str) -> str:
-    """Return a stable BVID/AV source id from a URL or provider id."""
+    """Return a stable video/part id; explicit later parts never become part 1."""
 
     if not isinstance(source_ref, str) or not source_ref.strip() or len(source_ref) > 4096:
         raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili source reference is invalid", provider_id="bilibili")
     value = source_ref.strip()
+    part_ref = _PART_REF.fullmatch(value)
+    if part_ref:
+        base = part_ref[1]
+        base = "BV" + base[2:] if base.upper().startswith("BV") else base.lower()
+        return _with_part(base, _part_number(part_ref[2]))
     if _BVID.fullmatch(value):
         return value
     if _AVID.fullmatch(value):
@@ -84,7 +90,38 @@ def normalize_source_ref(source_ref: str) -> str:
     if match is None:
         raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili URL does not contain a video id", provider_id="bilibili")
     value = match.group(1)
-    return value if value.upper().startswith("BV") else "av" + value.lower().removeprefix("av")
+    base = "BV" + value[2:] if value.upper().startswith("BV") else "av" + value.lower().removeprefix("av")
+    try:
+        selectors = [item for key, item in parse_qsl(parts.query, keep_blank_values=True,
+                     errors="strict", max_num_fields=64) if key == "p"]
+    except ValueError:
+        raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili part query is invalid", provider_id="bilibili") from None
+    if len(selectors) > 1:
+        raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili part query is ambiguous", provider_id="bilibili")
+    return _with_part(base, _part_number(selectors[0]) if selectors else 1)
+
+
+def _part_number(value: str) -> int:
+    if not re.fullmatch(r"[0-9]{1,5}", value) or not 1 <= int(value) <= 10_000:
+        raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili part must be between 1 and 10000", provider_id="bilibili")
+    return int(value)
+
+
+def _with_part(base: str, part: int) -> str:
+    return base if part == 1 else f"{base}_p{part}"
+
+
+def source_parts(source_ref: str) -> tuple[str, int]:
+    value = normalize_source_ref(source_ref)
+    if "_p" in value:
+        base, part = value.rsplit("_p", 1)
+        return base, int(part)
+    return value, 1
+
+
+def canonical_source_url(source_ref: str) -> str:
+    base, part = source_parts(source_ref)
+    return f"https://www.bilibili.com/video/{base}" + (f"?p={part}" if part != 1 else "")
 
 
 def _text(value: Any, name: str, *, limit: int = 4096, required: bool = True) -> str | None:
@@ -268,10 +305,15 @@ class BilibiliSourceAdapter:
         data = _mapping(payload.get("data"), "data")
         bvid = data.get("bvid")
         aid = data.get("aid")
-        actual_id = str(bvid) if isinstance(bvid, str) and _BVID.fullmatch(bvid) else ("av" + str(aid) if isinstance(aid, int) and aid > 0 else source_id)
+        requested_base, requested_part = source_parts(source_id)
+        reported_part = data.get("part", 1)
+        if type(reported_part) is not int or not 1 <= reported_part <= 10_000 or reported_part != requested_part:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Bilibili returned another or unverified video part", provider_id=self.provider_id, source_id=source_id)
+        actual_base = str(bvid) if isinstance(bvid, str) and _BVID.fullmatch(bvid) else ("av" + str(aid) if type(aid) is int and aid > 0 else requested_base)
+        actual_id = _with_part(actual_base, reported_part)
         title = _text(data.get("title"), "title")
         description = _text(data.get("desc"), "desc", limit=16_384, required=False)
-        canonical = f"https://www.bilibili.com/video/{actual_id}"
+        canonical = canonical_source_url(actual_id)
         return SourceItem(
             identity=SourceIdentity(self.provider_id, actual_id, canonical),
             title=title or actual_id,

@@ -72,7 +72,8 @@ class YtDlpProviderTransport:
 
     def _url(self, source_ref: str) -> str:
         if self.provider_id == "bilibili":
-            return f"https://www.bilibili.com/video/{source_ref}"
+            from .bilibili.adapter import canonical_source_url
+            return canonical_source_url(source_ref)
         if str(source_ref).startswith("short-"):
             return f"https://v.douyin.com/{str(source_ref)[6:]}"
         return f"https://www.douyin.com/video/{source_ref}"
@@ -127,6 +128,14 @@ def _map_payload(provider_id: str, raw: Mapping[str, Any], source_ref: str) -> d
     audios.sort(key=lambda value: float(value.get("abr", 0)) if isinstance(value.get("abr"), (int, float)) else 0, reverse=True)
     best = videos[0]
     if provider_id == "bilibili":
+        from .bilibili.adapter import source_parts
+        try:
+            actual_base, actual_part = source_parts(raw.get("id"))
+            _, requested_part = source_parts(source_ref)
+        except SourceError:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "yt-dlp returned an invalid Bilibili identity", provider_id=provider_id) from None
+        if actual_part != requested_part:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "yt-dlp returned another Bilibili part", provider_id=provider_id)
         # A video-only format is never a progressive audio/video fallback.
         # Preserve protocol/container hints so playlists cannot masquerade as
         # complete MP4 objects at the local mux boundary.
@@ -142,7 +151,9 @@ def _map_payload(provider_id: str, raw: Mapping[str, Any], source_ref: str) -> d
                        "mime_type": "audio/webm" if value.get("ext") == "webm" else "audio/mp4"} for index, value in enumerate(audios[:256])]
         dash_audio = [value for value in dash_audio if value["baseUrl"]]
         return {
-            "bvid": raw.get("id") if isinstance(raw.get("id"), str) and str(raw.get("id")).startswith("BV") else None,
+            "bvid": actual_base if actual_base.startswith("BV") else None,
+            "aid": int(actual_base[2:]) if actual_base.startswith("av") else None,
+            "part": actual_part,
             "title": raw.get("title") or source_ref,
             "desc": raw.get("description"),
             "duration": raw.get("duration"),

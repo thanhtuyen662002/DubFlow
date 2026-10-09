@@ -2,6 +2,31 @@
 
 Status: Accepted
 
+## Bilibili selected-part identity compatibility
+
+The video adapter retains an explicit bounded positive `p` selector. Bare URLs,
+`p=1` and SDK `BVID_p1` keep the existing first-part `BVID` identity. Later parts
+use distinct opaque `BVID_pN` identities (or `avID_pN` before the authoritative
+BVID is resolved), with canonical URLs containing `?p=N`. The selected part is
+preserved through SDK inspection and fresh canonical reinspection before download.
+SDK/API metadata must confirm that same part; missing, different or malformed part
+evidence fails as `SOURCE_CHANGED` before materialization. Ambiguous selectors and
+parts outside the application bound of 1–10000 fail before calling the extractor.
+Tracking parameters do not enter identity. This selects one part, not a whole
+anthology or generic playlist.
+
+Source contract v1 and supervisor schemas remain unchanged: `source_id` is already
+an opaque provider value and dedup uses the complete provider/source key. No old
+first-part artifact or queue row is renamed. Historical versions discarded `p`
+before inspection and cannot prove which part was intended; no migration guesses
+from those rows. Users must explicitly reacquire a later part in the corrected
+release, producing a separate identity/output. Existing jobs retain their pinned
+release/runtime. Rollback keeps prior completed artifacts and first-part jobs;
+an older adapter rejects a new `_pN` id rather than treating it as part 1. Channel
+page recipes/IDs/cursors are unchanged because their current flat entries select
+the first part only. Full authenticated media, whole-channel and desktop recovery
+acceptance remains separate.
+
 ## Context
 
 DubFlow accepts local files without a network dependency, while optional source
