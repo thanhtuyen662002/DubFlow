@@ -25,6 +25,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod execution_lock;
+use execution_lock::JobExecutionGuard;
+
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
 const MAX_ATTEMPTS: u8 = 3;
@@ -647,8 +650,9 @@ fn run() -> SupervisorResult<()> {
     };
     let server_data_root = data_root.unwrap_or_else(|| root.clone());
     let runtime = RuntimePaths::from_root_and_data(root, server_data_root, db, model_root)?;
-    let startup_store = DurableStore::open(&runtime.db)?;
-    let recovered = startup_store.recover_after_restart(now_ms())?;
+    // Opening a server is not evidence that another supervisor died. Recovery
+    // is request-bound, after immutable admission and exclusive job ownership.
+    let _startup_store = DurableStore::open(&runtime.db)?;
 
     let (tx, rx) = mpsc::channel::<InternalMessage>();
     spawn_stdin_reader(tx.clone());
@@ -661,7 +665,7 @@ fn run() -> SupervisorResult<()> {
             "event": "ready",
             "schema_version": 1,
             "runtime_root": runtime.root.display().to_string(),
-            "recovered_stages": recovered,
+            "recovered_stages": 0,
         }),
     )?;
 
@@ -902,7 +906,6 @@ fn run_one_shot(
     // reconcile that state before execute_job tries to start the stage again.
     // Without this hook a valid restart would attempt the illegal
     // `running -> running` transition.
-    let startup_store = DurableStore::open(&runtime.db)?;
     let spec = StartSpec::from_request(
         Some(job_id.unwrap_or_else(new_job_id)),
         source_path,
@@ -912,10 +915,14 @@ fn run_one_shot(
         Some(enable_dubbing),
         Some(burn_in_subtitles),
     )?.with_voice_id(tts_voice_id)?;
+    // Keep the kernel lease through the final status write. A duplicate must
+    // not change SQL/status, reconcile artifacts or start another worker.
+    let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
+    let startup_store = DurableStore::open(&runtime.db)?;
     // Verify/admit before changing status files or restart state. A conflicting
     // caller has no authority to fail or relabel the original durable job.
     ensure_job(&startup_store, &spec, &runtime)?;
-    startup_store.recover_after_restart(now_ms())?;
+    startup_store.recover_job_after_restart(&spec.job_id, now_ms())?;
     let final_status_path = status_path.unwrap_or_else(|| {
         data_root
             .join("control")
@@ -945,7 +952,7 @@ fn run_one_shot(
     let tx_for_worker = tx.clone();
     thread::spawn(move || {
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            execute_job(
+            execute_job_owned(
                 &runtime_for_worker,
                 spec_for_worker.clone(),
                 control_for_worker,
@@ -1596,6 +1603,13 @@ fn handle_request(
                     json!({"event":"cancellation_requested", "job_id":job_id, "reason":reason}),
                 )?;
             } else {
+                let _execution_lease = match JobExecutionGuard::acquire(&runtime.db, &job_id) {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        emit_value(stdout, error_value(Some(&job_id), supervisor_error_code(&error), &error.to_string(), false))?;
+                        return Ok(false);
+                    }
+                };
                 let store = DurableStore::open(&runtime.db)?;
                 match store.job_status(&job_id) {
                     Ok(
@@ -1665,6 +1679,13 @@ fn handle_request(
                 )?;
                 return Ok(false);
             }
+            let execution_lease = match JobExecutionGuard::acquire(&runtime.db, &spec.job_id) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    emit_value(stdout, error_value(Some(&spec.job_id), supervisor_error_code(&error), &error.to_string(), false))?;
+                    return Ok(false);
+                }
+            };
             let store = DurableStore::open(&runtime.db)?;
             if let Err(error) = ensure_job(&store, &spec, runtime) {
                 emit_value(stdout, error_value(Some(&spec.job_id), supervisor_error_code(&error), &error.to_string(), false))?;
@@ -1680,9 +1701,12 @@ fn handle_request(
             let runtime = runtime.clone();
             let tx = tx.clone();
             thread::spawn(move || {
+                // Retain ownership through failure/panic handling as well as
+                // worker execution; no second owner may race those SQL writes.
+                let _execution_lease = execution_lease;
                 let job_id = spec.job_id.clone();
                 let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    execute_job(&runtime, spec, control.clone(), tx.clone())
+                    execute_job_owned(&runtime, spec, control.clone(), tx.clone())
                 }));
                 match outcome {
                     Ok(Ok(())) => {}
@@ -1718,7 +1742,19 @@ fn handle_request(
     Ok(false)
 }
 
+#[cfg(test)]
 fn execute_job(
+    runtime: &RuntimePaths,
+    spec: StartSpec,
+    control: Arc<JobControl>,
+    tx: Sender<InternalMessage>,
+) -> SupervisorResult<()> {
+    let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
+    execute_job_owned(runtime, spec, control, tx)
+}
+
+/// The caller retains the execution lease until its final status publication.
+fn execute_job_owned(
     runtime: &RuntimePaths,
     spec: StartSpec,
     control: Arc<JobControl>,
@@ -1726,6 +1762,7 @@ fn execute_job(
 ) -> SupervisorResult<()> {
     let store = DurableStore::open(&runtime.db)?;
     ensure_job(&store, &spec, runtime)?;
+    store.recover_job_after_restart(&spec.job_id, now_ms())?;
     // A process can die between artifact registration and its final commit.
     // Reconcile those durable rows before deciding whether the job is already
     // complete or starting another worker attempt.
@@ -1932,7 +1969,7 @@ fn supervisor_error_code(error: &SupervisorError) -> &str {
 }
 
 fn preserve_existing_job(error: &SupervisorError) -> bool {
-    matches!(error, SupervisorError::Worker { code, .. } if matches!(code.as_str(), "JOB_ID_CONFLICT" | "JOB_START_UNVERIFIED" | "JOB_INPUT_CHANGED"))
+    matches!(error, SupervisorError::Worker { code, .. } if matches!(code.as_str(), "JOB_ID_CONFLICT" | "JOB_START_UNVERIFIED" | "JOB_INPUT_CHANGED" | "JOB_ALREADY_RUNNING"))
 }
 
 fn cancel_durable(store: &DurableStore, job_id: &str, reason: &str) -> SupervisorResult<()> {
@@ -2501,6 +2538,48 @@ mod tests {
             apply_durable_status(&mut replay, JobStatus::Succeeded, &mut output, &spec, &store);
             assert_eq!(replay, first);
             fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn live_duplicate_refuses_before_admission_recovery_or_worker_state_writes() {
+        let (_root, runtime, spec) = identity_fixture();
+        let store = DurableStore::open(&runtime.db).unwrap();
+        store.create_job(&spec.job_id, "file:///source", 1).unwrap();
+        store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS).unwrap();
+        store.start_job(&spec.job_id, 2).unwrap();
+        store.start_stage(&spec.job_id, STAGE_ID, 3).unwrap();
+        store.record_checkpoint(&spec.job_id, STAGE_ID, "transcript", None, true, 4).unwrap();
+        let before = store.stage_history(&spec.job_id, STAGE_ID).unwrap();
+        let _lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let error = execute_job(&runtime, spec.clone(), Arc::new(JobControl::new()), tx).unwrap_err();
+        assert_eq!(supervisor_error_code(&error), "JOB_ALREADY_RUNNING");
+        assert!(preserve_existing_job(&error));
+        assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Running);
+        assert_eq!(store.stage_status(&spec.job_id, STAGE_ID).unwrap(), StageStatus::Running);
+        assert_eq!(store.stage_history(&spec.job_id, STAGE_ID).unwrap(), before);
+        assert!(!spec.output_dir.exists());
+        let controls = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = mpsc::channel();
+        for request in [
+            json!({"command":"start", "job_id":spec.job_id, "source_path":spec.source_path,
+                "output_dir":spec.output_dir, "enable_dubbing":true, "tts_voice_id":spec.tts_voice_id}),
+            json!({"command":"cancel", "job_id":spec.job_id}),
+        ] {
+            let mut stdout = Vec::new();
+            assert!(!handle_request(serde_json::from_value(request).unwrap(), &runtime,
+                &controls, &tx, &mut stdout).unwrap());
+            let response: Value = serde_json::from_slice(&stdout).unwrap();
+            assert_eq!(response["event"], "error");
+            assert_eq!(response["code"], "JOB_ALREADY_RUNNING");
+            assert_eq!(response["retryable"], false);
+            assert!(controls.lock().unwrap().is_empty());
+            assert!(rx.try_recv().is_err());
+            assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Running);
+            assert_eq!(store.stage_status(&spec.job_id, STAGE_ID).unwrap(), StageStatus::Running);
+            assert_eq!(store.stage_history(&spec.job_id, STAGE_ID).unwrap(), before);
+            assert!(!spec.output_dir.exists());
         }
     }
 

@@ -23,3 +23,12 @@ events and cannot replace that denominator. Running progress is capped at 999;
 1000/1000 follows validated artifact commit and durable success. A fresh
 invocation starts its projected event/heartbeat sequence at zero; it is not a
 cumulative durable history counter. Reconciliation does not increment it.
+
+Opening another supervisor does not prove a worker crashed. A run/start request
+first holds the OS execution lock for its canonical database and job ID, then
+verifies immutable producer/input identity and recovers only that job. A live
+duplicate receives nonretryable `JOB_ALREADY_RUNNING` before admission, SQL
+recovery, worker start or status-file publication. An idle server cannot cancel
+a different process's live job; its cancel request receives the same refusal.
+Server `ready.recovered_stages` is zero because recovery is request-bound.
+The owning one-shot process retains its lock through the final status write.

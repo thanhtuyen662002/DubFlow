@@ -35,6 +35,93 @@ def write_record(record: Path, artifact: dict) -> None:
         "artifact_record_hash": sha256(encoded).hexdigest()}), encoding="utf-8")
 
 
+class LiveOwnershipEvidenceTests(unittest.TestCase):
+    def test_native_guard_rejects_actual_race_signatures_and_missing_overlap(self):
+        # These are deterministic guard tests with controlled child results,
+        # never evidence of native execution, actual TTS or human voice quality.
+        for defect in (None, "neighbor_recovered", "server_recovered", "server_accepted",
+                       "duplicate_accepted", "duplicate_status", "no_overlap", "extra_start", "missing_speech"):
+            with self.subTest(defect=defect), TemporaryDirectory() as directory:
+                work = Path(directory)
+                data = work / "data"
+                (data / "control/jobs").mkdir(parents=True)
+                database = data / "control/jobs.sqlite3"
+                job_id = "smoke-live-owner"
+                output = work / "ownership output"
+                source = work / "source.mp4"
+                source.write_bytes(b"generated fixture only")
+                status_path = data / f"control/jobs/{job_id}.json"
+                with closing(sqlite3.connect(database)) as db, db:
+                    db.execute("CREATE TABLE jobs(job_id TEXT, status TEXT, last_error TEXT)")
+                    db.execute("CREATE TABLE stages(job_id TEXT, stage_id TEXT, status TEXT, attempt INTEGER, "
+                               "max_attempts INTEGER, last_error TEXT, retry_condition TEXT, checkpoint_id TEXT)")
+                    db.execute("INSERT INTO jobs VALUES (?, 'running', NULL)", (job_id,))
+                    db.execute("INSERT INTO stages VALUES (?, 'local-file', 'running', 1, 3, NULL, NULL, 'transcript')", (job_id,))
+                child = SimpleNamespace(returncode=None)
+                child.poll = lambda: child.returncode
+
+                def start(*args, **kwargs):
+                    status_path.write_text(json.dumps({"job_id": job_id, "status": {"state": "RUNNING"}}))
+                    return child
+
+                def finish(timeout):
+                    child.returncode = 0
+                    with closing(sqlite3.connect(database)) as db, db:
+                        db.execute("UPDATE jobs SET status='succeeded'")
+                        db.execute("UPDATE stages SET status='succeeded', checkpoint_id='qc', attempt=?",
+                                   (2 if defect == "extra_start" else 1,))
+                    output.mkdir()
+                    speech = output / "tts.json"
+                    speech.write_text(json.dumps({"failures": [], "artifacts": [{}] * (35 if defect == "missing_speech" else 36)}))
+                    (output / "job_manifest.json").write_text(json.dumps({"audio": {"tts_document": str(speech)}}))
+                    status_path.write_text(json.dumps({"job_id": job_id, "status": {"state": "COMPLETED",
+                        "checkpoint_id": "qc", "retry": {"attempt": "1", "max_attempts": "3", "condition_fingerprint": None},
+                        "progress": {"completed_units": "1000", "total_units": "1000"}}}))
+                child.wait = finish
+
+                def corrupt(*args, **kwargs):
+                    if defect == "neighbor_recovered":
+                        with closing(sqlite3.connect(database)) as db, db:
+                            db.execute("UPDATE jobs SET status='recovering', last_error='PROCESS_RESTART'")
+                            db.execute("UPDATE stages SET status='recovering', last_error='PROCESS_RESTART'")
+                    if defect == "no_overlap": child.returncode = 0
+                    bad_id = "smoke-live-corrupt-neighbor"
+                    log = json.dumps({"event": "failed", "job_id": bad_id,
+                                      "code": "MEDIA_PROBE_FAILED", "attempt": 1, "retryable": False})
+                    return {"job_id": bad_id, "status": {"state": "FAILED"}}, False, log
+
+                def secondary(command, **kwargs):
+                    if command[1] == "serve":
+                        events = [{"event": "ready", "recovered_stages": 1 if defect == "server_recovered" else 0}]
+                        events.extend({"event": "accepted" if defect == "server_accepted" else "error", "job_id": job_id,
+                                       "code": "JOB_ALREADY_RUNNING", "retryable": False} for _ in range(2))
+                        return SimpleNamespace(returncode=0, stdout="\n".join(json.dumps(row) for row in events), stderr="")
+                    if defect == "duplicate_status":
+                        Path(command[command.index("--status-path") + 1]).write_text("forbidden publication")
+                    return SimpleNamespace(returncode=0 if defect == "duplicate_accepted" else 1,
+                                           stdout="", stderr="JOB_ALREADY_RUNNING")
+
+                def terminate(process):
+                    if process.returncode is None: process.returncode = -9
+
+                with mock.patch.object(smoke, "_make_source", return_value=source), \
+                        mock.patch.object(smoke.subprocess, "Popen", side_effect=start), \
+                        mock.patch.object(smoke.subprocess, "run", side_effect=secondary), \
+                        mock.patch.object(smoke, "_run_supervisor", side_effect=corrupt), \
+                        mock.patch.object(smoke, "_terminate_tree", side_effect=terminate), \
+                        mock.patch.object(smoke, "_verify_output", return_value={"fixture_only": True}), \
+                        mock.patch.object(smoke, "_run"):
+                    if defect is None:
+                        report = smoke._verify_live_job_ownership(work / "supervisor", work, data, work,
+                            work / "ffmpeg", work / "ffprobe", voice_id="fixture", timeout=10)
+                        self.assertTrue(report["overlap_verified"])
+                        self.assertEqual(report["completed"]["attempt"], 1)
+                    else:
+                        with self.assertRaises(smoke.SmokeError):
+                            smoke._verify_live_job_ownership(work / "supervisor", work, data, work,
+                                work / "ffmpeg", work / "ffprobe", voice_id="fixture", timeout=10)
+
+
 class RecoverySnapshotTests(unittest.TestCase):
     def test_snapshot_waits_for_commit_and_validates_actual_waveform(self):
         with TemporaryDirectory() as directory:

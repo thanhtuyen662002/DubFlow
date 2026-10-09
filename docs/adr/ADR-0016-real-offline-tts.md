@@ -403,3 +403,45 @@ output hashes and mtimes. Only the invocation counter may differ. Prior f3 CI
 and real-video receipts remain historical for that source; required exact new
 HEAD/current-base lanes and real-media evidence must rerun. These repairs do not
 qualify film acting, bounded semantic rewrite or the full #166/#175 release.
+
+## Per-job execution ownership before restart recovery
+
+An isolated installed f3 real-media concurrency test found that starting a
+corrupt neighboring job recovered the healthy live job's SQL stage. A second
+process then ran the same job ID concurrently, reaching actual duplicate
+worker starts and `STATE_WRITE_FAILED`. Process startup alone cannot establish
+that all running rows belong to a dead process.
+
+Each one-shot or IPC start now acquires an exclusive OS file lock keyed by the
+canonical database path and job ID, before admission or durable mutation. The
+file is an empty retained handle under `.execution-locks` beside the database;
+its name is a SHA-256 digest, never raw user path text. The file is never
+unlinked or cloned. Handle closure/process death releases authority, so a
+hard-killed supervisor can restart without time-based stale-lock reclamation.
+The one-shot holds it through final status publication. IPC retains it through
+worker execution and failure/panic handling. A server without the owning
+in-process worker also requires this lock before cancellation.
+
+Live duplicates return existing nonretryable `JOB_ALREADY_RUNNING` without
+changing the original job, status or artifacts. Startup of `serve` performs no
+global recovery; `ready.recovered_stages` remains zero. After immutable
+admission, recovery touches only the locked requested job, preserves checkpoint
+and attempt history, and never revives a cancelled job. The legacy global state
+recovery API is retained for callers with exclusive whole-store ownership; the
+production per-job supervisor no longer calls it.
+
+The supervisor MSRV becomes Rust 1.89 for stable `File::try_lock`. No crate,
+lockfile, SQLite migration, worker/status schema, model or timeline format
+changes. Previous runtimes have no lock interoperability guarantee: immutable
+ADR-0020 producer pins continue refusing cross-version job replay. Rollback
+uses the retained coherent runtime/database, never relabels existing job IDs
+or rewrites outputs. Empty lock files are operational coordination, not durable
+project/artifact authority or evidence of live ownership.
+
+Actual Rust tests must exercise two processes and hard-kill release. Native
+staged/installed qualification must overlap a healthy pinned-TTS job, a corrupt
+neighbor and a duplicate, including idle-server startup. It checks actual SQL
+running state and start count, typed refusal, committed speech, playable export
+and durable completion. Generated media/authored VI cues exercise execution
+isolation; they do not qualify real ASR/translation, GUI, film acting or the
+full #166/#175 gates. All new source/base required lanes must rerun.

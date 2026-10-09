@@ -545,6 +545,142 @@ def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, wo
             "scope": "actual pinned TTS/content refusal, native status and source-preserving export; authored VI sidecars and generated media"}
 
 
+def _job_execution_snapshot(data_root: Path, job_id: str) -> dict[str, Any]:
+    database = data_root / "control/jobs.sqlite3"
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+        row = db.execute("SELECT j.status, s.status, s.attempt, s.max_attempts, "
+            "j.last_error, s.last_error, s.retry_condition, s.checkpoint_id "
+            "FROM jobs j JOIN stages s ON s.job_id=j.job_id "
+            "WHERE j.job_id=? AND s.stage_id='local-file'", (job_id,)).fetchone()
+    if row is None:
+        raise SmokeError("execution qualification has no durable local-file stage")
+    return dict(zip(("job_state", "stage_state", "attempt", "max_attempts", "job_error",
+                     "stage_error", "retry_condition", "checkpoint_id"), row))
+
+
+def _require_live_execution(before: dict[str, Any], after: dict[str, Any], phase: str) -> None:
+    for snapshot in (before, after):
+        if (snapshot.get("job_state") != "running" or snapshot.get("stage_state") != "running" or
+                snapshot.get("attempt") != 1 or snapshot.get("max_attempts") != 3 or
+                any(snapshot.get(key) is not None for key in ("job_error", "stage_error", "retry_condition"))):
+            raise SmokeError(f"{phase} recovered, failed or restarted the healthy live job: {snapshot!r}")
+    if before.get("checkpoint_id") is not None and after.get("checkpoint_id") is None:
+        raise SmokeError(f"{phase} erased the live checkpoint")
+
+
+def _verify_live_job_ownership(supervisor: Path, root: Path, data_root: Path, work: Path,
+                               ffmpeg: Path, ffprobe: Path, *, voice_id: str, timeout: float) -> dict[str, Any]:
+    """Actual process overlap; generated source/authored VI, not ASR or film quality."""
+    cues, seconds = 36, 108
+    source = _make_source(ffmpeg, work / "ownership input", seconds=seconds, stem="healthy dialogue")
+    def stamp(ms: int) -> str:
+        return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+    source.with_suffix(".srt").write_text("\n".join(
+        f"{index + 1}\n{stamp(index * 3000)} --> {stamp(index * 3000 + 2900)}\nVâng.\n"
+        for index in range(cues)), encoding="utf-8")
+    output, job_id = work / "ownership output", "smoke-live-owner"
+    if output.exists() or (data_root / f"control/jobs/{job_id}.json").exists():
+        raise SmokeError("execution qualification requires a fresh job and output")
+    command = _supervisor_command(supervisor, root, data_root, source, output, job_id,
+        enable_dubbing=True, tts_voice_id=voice_id, source_language="vi")
+    deadline = time.monotonic() + timeout
+    status_path = data_root / f"control/jobs/{job_id}.json"
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        healthy = subprocess.Popen(command, stdout=stdout, stderr=stderr,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            start_new_session=os.name != "nt")
+        try:
+            while healthy.poll() is None and time.monotonic() < deadline:
+                if status_path.exists() and _json(status_path).get("status", {}).get("state") == "RUNNING":
+                    before = _job_execution_snapshot(data_root, job_id)
+                    if before["job_state"] == before["stage_state"] == "running":
+                        break
+                time.sleep(0.05)
+            else:
+                raise SmokeError("execution qualification missed a live running stage")
+            _require_live_execution(before, before, "initial overlap")
+            corrupt = work / "ownership corrupt.mp4"
+            corrupt.write_bytes(b"DubFlow execution-isolation corrupt-media qualification")
+            bad_id = "smoke-live-corrupt-neighbor"
+            bad, killed, bad_log = _run_supervisor(supervisor, root, data_root, corrupt,
+                work / "ownership corrupt output", bad_id, timeout=min(120, timeout))
+            if killed or bad is None:
+                raise SmokeError("corrupt neighbor did not reach its typed terminal failure")
+            _require_status(bad, "FAILED", bad_id)
+            corrupt_failure = _verify_corrupt_failure(bad_log, bad_id)
+            after_corrupt = _job_execution_snapshot(data_root, job_id)
+            if healthy.poll() is not None:
+                raise SmokeError("execution qualification missed corrupt-neighbor overlap")
+            _require_live_execution(before, after_corrupt, "corrupt neighbor startup")
+
+            # The idle server receives actual start/cancel requests for a job
+            # owned by the other process. EOF exits only this idle QA server.
+            server_command = [str(supervisor), "serve", "--root", str(root), "--data-root", str(data_root),
+                              "--model-root", str(data_root / "models")]
+            requests = [{"command": "start", "job_id": job_id, "source_path": str(source),
+                         "output_dir": str(output), "source_language": "vi", "enable_dubbing": True,
+                         "tts_voice_id": voice_id}, {"command": "cancel", "job_id": job_id}]
+            server = subprocess.run(server_command, input="".join(json.dumps(item) + "\n" for item in requests),
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=min(30, timeout))
+            events = [json.loads(line) for line in server.stdout.splitlines() if line.strip()]
+            ready = [event for event in events if event.get("event") == "ready"]
+            refusals = [event for event in events if event.get("job_id") == job_id]
+            if (server.returncode != 0 or len(ready) != 1 or ready[0].get("recovered_stages") != 0 or
+                    len(refusals) != 2 or any(event.get("event") != "error" or
+                    event.get("code") != "JOB_ALREADY_RUNNING" or event.get("retryable") is not False
+                    for event in refusals)):
+                raise SmokeError("idle server recovered or accepted another process's live job")
+            after_server = _job_execution_snapshot(data_root, job_id)
+            if healthy.poll() is not None:
+                raise SmokeError("execution qualification missed idle-server overlap")
+            _require_live_execution(after_corrupt, after_server, "idle server startup/start/cancel")
+
+            # Same producer/job/source/output/voice; a separate canary status
+            # path makes even transient duplicate publication observable.
+            canary = work / "duplicate must not publish.json"
+            duplicate_command = command.copy()
+            duplicate_command[duplicate_command.index("--status-path") + 1] = str(canary)
+            duplicate = subprocess.run(duplicate_command, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=min(30, timeout))
+            if (duplicate.returncode == 0 or "JOB_ALREADY_RUNNING" not in duplicate.stderr or
+                    duplicate.stdout.strip() or canary.exists()):
+                raise SmokeError("duplicate ran a worker or published status before execution refusal")
+            after_duplicate = _job_execution_snapshot(data_root, job_id)
+            if healthy.poll() is not None:
+                raise SmokeError("execution qualification missed duplicate overlap")
+            _require_live_execution(after_server, after_duplicate, "duplicate startup")
+            try:
+                healthy.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired as error:
+                raise SmokeError("healthy execution owner did not finish") from error
+            if healthy.returncode != 0:
+                raise SmokeError("healthy execution owner failed after overlapping requests")
+        finally:
+            _terminate_tree(healthy)
+    status = _json(status_path)
+    _require_status(status, "COMPLETED", job_id)
+    durable = _job_execution_snapshot(data_root, job_id)
+    history = _completed_replay_history(status)
+    if (durable["job_state"] != "succeeded" or durable["stage_state"] != "succeeded" or
+            durable["attempt"] != 1 or durable["checkpoint_id"] != "qc" or
+            history["retry"]["attempt"] != "1" or
+            history["completed_units"] != history["total_units"] or history["total_units"] != "1000"):
+        raise SmokeError("execution owner lost durable success, checkpoint, starts or final progress")
+    output_report = _verify_output(ffprobe, output, seconds, expect_dubbing=True, expect_voice_id=voice_id)
+    audio = _json(output / "job_manifest.json")["audio"]
+    speech = _json(Path(audio["tts_document"]))
+    if speech.get("failures") or len(speech["artifacts"]) != cues:
+        raise SmokeError("execution owner did not commit every actual pinned-TTS cue")
+    _run([ffmpeg, "-v", "error", "-i", output / "final_vi.mp4", "-f", "null", "-"], timeout=timeout)
+    return {"status": "passed", "scope": "actual overlapping supervisor processes; generated media/authored VI",
+            "corrupt_neighbor": corrupt_failure, "idle_server_recovered_stages": 0,
+            "ipc_start_cancel_refusals": 2, "duplicate_code": "JOB_ALREADY_RUNNING",
+            "duplicate_status_not_published": True, "overlap_verified": True,
+            "before": before, "after_corrupt": after_corrupt, "after_server": after_server,
+            "after_duplicate": after_duplicate, "completed": durable, "completed_history": history,
+            "actual_tts_cues": cues, "full_output_decode": True, "output": output_report}
+
+
 def _tts_checkpoint_snapshot(output: Path) -> dict[str, Any] | None:
     records = list(output.glob(".dubflow-work/b2-audio/*/*/tts/checkpoints/*.json"))
     if not records:
@@ -814,6 +950,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         voice_id=selected_voice, timeout=args.timeout) if selected_voice is not None else None
     visible_downgrades = _verify_visible_downgrades(supervisor, root, data_root, work_root, ffmpeg, ffprobe,
         voice_id=selected_voice, timeout=args.timeout) if selected_voice is not None else None
+    execution_ownership = _verify_live_job_ownership(supervisor, root, data_root, work_root, ffmpeg, ffprobe,
+        voice_id=selected_voice, timeout=args.timeout) if selected_voice is not None else None
     profile_marker = data_root / "models" / ".profile-ready"
     if not profile_marker.is_file() or profile_marker.stat().st_size <= 0:
         raise SmokeError(f"model profile did not become ready: {profile_marker}")
@@ -826,6 +964,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "voice_version_isolation": voice_version,
         "tts_checkpoint_recovery": tts_recovery,
         "visible_dubbing_downgrades": visible_downgrades,
+        "live_job_execution_ownership": execution_ownership,
         "corrupt_job_state": bad_status["status"],
         "corrupt_media_failure": corrupt_failure,
         "good_job": good_output_report,

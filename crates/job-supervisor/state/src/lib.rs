@@ -568,6 +568,20 @@ impl DurableStore {
         Ok(events)
     }
 
+    /// The supervisor must hold exclusive execution ownership for this job.
+    pub fn recover_job_after_restart(&self, job_id: &str, now_ms: u64) -> Result<u64> {
+        self.require_job(job_id)?;
+        let now = to_i64(now_ms, "now_ms")?;
+        let tx = self.connection.unchecked_transaction()?;
+        let stages = tx.execute("UPDATE stages SET status = 'recovering', last_error = 'PROCESS_RESTART' WHERE job_id = ?1 AND status = 'running' AND EXISTS (SELECT 1 FROM jobs WHERE job_id = ?1 AND status <> 'cancelled')", params![job_id])?;
+        tx.execute("UPDATE jobs SET status = 'recovering', updated_at_ms = ?2, last_error = 'PROCESS_RESTART' WHERE job_id = ?1 AND status = 'running'", params![job_id, now])?;
+        tx.execute("UPDATE jobs SET status = 'recovering', updated_at_ms = ?2, last_error = 'PROCESS_RESTART' WHERE job_id = ?1 AND status NOT IN ('recovering', 'cancelled') AND EXISTS (SELECT 1 FROM stages WHERE job_id = ?1 AND status = 'recovering' AND last_error = 'PROCESS_RESTART')", params![job_id, now])?;
+        tx.commit()?;
+        Ok(stages as u64)
+    }
+
+    /// Requires exclusive ownership of the whole store, not merely one job.
+    /// Production per-job execution uses `recover_job_after_restart` instead.
     pub fn recover_after_restart(&self, now_ms: u64) -> Result<u64> {
         let now = to_i64(now_ms, "now_ms")?;
         let tx = self.connection.unchecked_transaction()?;
@@ -903,6 +917,32 @@ mod tests {
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn owned_job_recovery_preserves_live_neighbors_and_never_revives_cancelled_jobs() {
+        let store = DurableStore::open_in_memory().unwrap();
+        setup(&store);
+        store.create_job("job-2", "file:///other-source.mp4", 1).unwrap();
+        store.create_stage("job-2", "analysis", "analysis", 3).unwrap();
+        for id in ["job-1", "job-2"] {
+            store.start_job(id, 2).unwrap();
+            store.start_stage(id, "analysis", 3).unwrap();
+        }
+        store.record_checkpoint("job-1", "analysis", "transcript", None, true, 4).unwrap();
+        let neighbor = store.stage_history("job-1", "analysis").unwrap();
+        assert_eq!(store.recover_job_after_restart("job-2", 5).unwrap(), 1);
+        assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Running);
+        assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Running);
+        assert_eq!(store.stage_history("job-1", "analysis").unwrap(), neighbor);
+        assert_eq!(store.job_status("job-2").unwrap(), JobStatus::Recovering);
+        assert_eq!(store.start_stage("job-2", "analysis", 6).unwrap(), 2);
+        store.cancel_job("job-2", "user cancellation", 7).unwrap();
+        assert_eq!(store.recover_job_after_restart("job-2", 8).unwrap(), 0);
+        assert_eq!(store.job_status("job-2").unwrap(), JobStatus::Cancelled);
+        assert_eq!(store.stage_status("job-2", "analysis").unwrap(), StageStatus::Cancelled);
+        assert!(matches!(store.recover_job_after_restart("missing", 9), Err(StateError::NotFound { .. })));
+        assert_eq!(store.stage_history("job-1", "analysis").unwrap(), neighbor);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 name = "dubflow-supervisor"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.89"
 description = "Durable Rust process supervisor for the DubFlow production worker"
 license = "MIT"
 publish = false
