@@ -69,7 +69,7 @@ def _prepare_worker_import_path() -> None:
 
 _prepare_worker_import_path()
 
-from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult
+from engine.dubflow.media import CANONICAL_TIME_BASE, FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult, MediaTimeline
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
 from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.translation.adapter import SourceSegment, TranslationError, resolve_source_language
@@ -754,6 +754,14 @@ def _b2_generation(checkpoint: dict[str, Any], checkpoint_path: Path, work_dir: 
     return directory
 
 
+def _source_render_duration(probe: MediaProbeResult) -> MediaTimeline | None:
+    video = probe.video
+    if video.time_base is not None and video.duration_ticks is not None and video.duration_ticks > 0:
+        return MediaTimeline(video.time_base, 0, video.duration_ticks, video.duration_ticks)
+    ticks = probe.duration_ticks
+    return MediaTimeline(CANONICAL_TIME_BASE, 0, ticks, ticks) if ticks is not None and ticks > 0 else None
+
+
 def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -> dict[str, Any]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     work_dir = config.output_dir / ".dubflow-work"
@@ -915,11 +923,12 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
 
     final_path = export_dir / "final_vi.mp4"
     render_stage = "render-dubbed" if audio_path is not None else "render"
+    video_duration = _source_render_duration(probe)
     # A successful B2 run always re-renders against the newly verified mix.
     # This prevents a changed voice-pack hash or regenerated mix from being
     # hidden by a stale final-video checkpoint after a resumable restart.
     def render_identity() -> str:
-        return sha256(json.dumps({"source": source_hash, "translation": translation_input, "subtitles": _sha256(ass_path), "burn_in": config.burn_in_subtitles, "audio": _sha256(audio_path) if audio_path is not None else "original", "recipe": "h264-aac-v1"}, sort_keys=True).encode()).hexdigest()
+        return sha256(json.dumps({"source": source_hash, "translation": translation_input, "subtitles": _sha256(ass_path), "burn_in": config.burn_in_subtitles, "audio": _sha256(audio_path) if audio_path is not None else "original", "recipe": "h264-aac-source-duration-v2", "duration": video_duration.to_dict() if video_duration else None, "adapter": _sha256(Path(__file__).parents[1] / "media" / "adapter.py")}, sort_keys=True).encode()).hexdigest()
 
     render_input = render_identity()
     render_ready = False
@@ -938,6 +947,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 final_path,
                 subtitle_path=ass_path,
                 audio_path=audio_path,
+                video_duration=video_duration,
                 preserve_original_audio=audio_path is None,
                 burn_in_subtitles=config.burn_in_subtitles,
                 overwrite=True,
@@ -958,6 +968,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 final_path,
                 subtitle_path=ass_path,
                 preserve_original_audio=True,
+                video_duration=video_duration,
                 burn_in_subtitles=config.burn_in_subtitles,
                 overwrite=True,
             )
@@ -992,6 +1003,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             final_path,
             subtitle_path=ass_path,
             preserve_original_audio=True,
+            video_duration=video_duration,
             burn_in_subtitles=config.burn_in_subtitles,
             overwrite=True,
         )

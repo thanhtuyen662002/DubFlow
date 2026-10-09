@@ -156,7 +156,7 @@ class LanguageRoutingTests(unittest.TestCase):
             source.with_suffix(".srt").write_text("1\n00:00:01,250 --> 00:00:02,500\n你好\n", encoding="utf-8")
             config = SimpleNamespace(job_id="job-1", stage_id="local-file", source_path=source, output_dir=root / "output", app_root=app, model_root=root / "models", ffmpeg_path=root / "ffmpeg", ffprobe_path=root / "ffprobe", media_runtime_root=root, checkpoint_path=None, source_language="zh", target_language="vi", enable_dubbing=False, burn_in_subtitles=False)
             config.model_root.mkdir()
-            probe = SimpleNamespace(has_audio=False, duration_ticks=4000, video=SimpleNamespace(codec_name="h264"), to_dict=lambda: {})
+            probe = SimpleNamespace(has_audio=False, duration_ticks=4000, video=SimpleNamespace(codec_name="h264", time_base=None, duration_ticks=None), to_dict=lambda: {})
             media = Media()
             runtime = Runtime()
             with patch.object(worker, "ensure_model_profile"), patch.object(worker, "MediaProbe") as probing, patch.object(worker, "FfmpegMediaAdapter", return_value=media), patch.object(worker, "ArgosRuntime", side_effect=lambda *a, **k: runtime):
@@ -210,8 +210,8 @@ class LanguageRoutingTests(unittest.TestCase):
             source.with_suffix(".srt").write_text("1\n00:00:01,250 --> 00:00:02,500\n你好\n", encoding="utf-8")
             config = SimpleNamespace(job_id="job-1", stage_id="local-file", source_path=source, output_dir=root / "output", app_root=app, model_root=root / "models", ffmpeg_path=root / "ffmpeg", ffprobe_path=root / "ffprobe", media_runtime_root=root, checkpoint_path=None, source_language="zh", target_language="vi", enable_dubbing=False, burn_in_subtitles=False)
             config.model_root.mkdir()
-            good = SimpleNamespace(has_audio=False, duration_ticks=4000, video=SimpleNamespace(codec_name="h264"), to_dict=lambda: {})
-            bad = SimpleNamespace(has_audio=False, duration_ticks=4000, video=SimpleNamespace(codec_name="vp9"), to_dict=lambda: {})
+            good = SimpleNamespace(has_audio=False, duration_ticks=4000, video=SimpleNamespace(codec_name="h264", time_base=None, duration_ticks=None), to_dict=lambda: {})
+            bad = SimpleNamespace(has_audio=False, duration_ticks=4000, video=SimpleNamespace(codec_name="vp9", time_base=None, duration_ticks=None), to_dict=lambda: {})
             media = Media()
             runtime = Runtime()
             reject_qc = [True]

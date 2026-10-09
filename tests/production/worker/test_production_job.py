@@ -20,12 +20,24 @@ from engine.dubflow.worker.production_job import (
     _validate_rendered_audio,
     _write_subtitles,
 )
-from engine.dubflow.media import parse_ffprobe_json, MediaAdapterError
+from engine.dubflow.media import parse_ffprobe_json, MediaAdapterError, Rational
 from engine.dubflow.worker import production_job as worker
 from engine.dubflow.worker.protocol import Envelope, MessageType
 
 
 class ProductionWorkerTests(unittest.TestCase):
+    def test_render_duration_preserves_source_integer_base_before_canonical_fallback(self):
+        probe = SimpleNamespace(video=SimpleNamespace(time_base=Rational(1001, 30000), duration_ticks=241), duration_ticks=8042)
+        duration = worker._source_render_duration(probe)
+        self.assertEqual(duration.time_base, Rational(1001, 30000))
+        self.assertEqual(duration.duration_ticks, 241)
+        probe.video = SimpleNamespace(time_base=None, duration_ticks=None)
+        fallback = worker._source_render_duration(probe)
+        self.assertEqual(fallback.duration_ticks, 8042)
+        self.assertEqual(fallback.time_base, Rational(1, 1000))
+        probe.duration_ticks = None
+        self.assertIsNone(worker._source_render_duration(probe))
+
     def test_editable_copy_has_bounded_reads_and_reuses_verified_completed_asset(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

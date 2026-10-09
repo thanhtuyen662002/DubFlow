@@ -11,6 +11,7 @@ from engine.dubflow.media import (
     FfmpegMediaAdapter,
     MediaAdapterError,
     MediaProbe,
+    MediaTimeline,
     Rational,
     parse_ffprobe_json,
 )
@@ -186,6 +187,27 @@ class MediaCommandTests(unittest.TestCase):
         self.assertIn("-c:a", render_call)
         self.assertNotIn("|", " ".join(render_call))
         self.assertEqual(list(self.root.glob(".*.partial")), [])
+
+    def test_sparse_subtitle_cannot_choose_render_end_and_integer_video_duration_bounds_output(self):
+        for burn_in in (False, True):
+            with self.subTest(burn_in=burn_in):
+                runner = RecordingRunner()
+                adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+                adapter.render(self.source, self.root / "bounded.mp4", subtitle_path=self.subtitle,
+                    audio_path=self.audio, preserve_original_audio=False, burn_in_subtitles=burn_in,
+                    video_duration=MediaTimeline(Rational(1001, 30000), 0, 241, 241), overwrite=True)
+                call = runner.calls[-1]
+                self.assertNotIn("-shortest", call)
+                self.assertEqual(call[call.index("-t") + 1], "8.041367")
+        runner = RecordingRunner()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        adapter.render(self.source, self.root / "unknown-duration.mp4", subtitle_path=self.subtitle,
+                       audio_path=self.audio, preserve_original_audio=False)
+        self.assertNotIn("-shortest", runner.calls[-1])
+        self.assertNotIn("-t", runner.calls[-1])
+        for invalid in (0, 8.0, MediaTimeline(Rational(1, 1000), 0, 0, 0)):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(MediaAdapterError, "MEDIA_DURATION_INVALID"):
+                adapter.render(self.source, self.root / "invalid.mp4", video_duration=invalid)
 
     def test_burn_in_escapes_filter_path_without_shelling(self) -> None:
         runner = RecordingRunner()

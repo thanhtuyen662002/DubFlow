@@ -640,6 +640,7 @@ class FfmpegMediaAdapter:
         *,
         subtitle_path: str | Path | None = None,
         audio_path: str | Path | None = None,
+        video_duration: MediaTimeline | None = None,
         preserve_original_audio: bool = True,
         burn_in_subtitles: bool = False,
         overwrite: bool = False,
@@ -647,6 +648,8 @@ class FfmpegMediaAdapter:
         source = _validate_input_file(source_path, "source_path")
         subtitle = _validate_input_file(subtitle_path, "subtitle_path") if subtitle_path is not None else None
         audio = _validate_input_file(audio_path, "audio_path") if audio_path is not None else None
+        if video_duration is not None and (not isinstance(video_duration, MediaTimeline) or video_duration.duration_ticks <= 0):
+            raise MediaAdapterError("MEDIA_DURATION_INVALID", "render duration requires a positive integer source timeline")
         output = self._prepare_output(output_path, source, overwrite=overwrite)
         if audio is not None and preserve_original_audio:
             raise MediaAdapterError("AUDIO_MODE_INVALID", "dubbed audio cannot preserve the original audio")
@@ -709,7 +712,15 @@ class FfmpegMediaAdapter:
             args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-quality", "90", "-pix_fmt", "yuv420p"))
             if audio is not None or preserve_original_audio:
                 args.extend(("-c:a", "aac", "-b:a", "192k"))
-            if audio is not None:
+            if video_duration is not None:
+                # A sparse subtitle may end well before the video. -shortest
+                # includes that stream and would truncate the whole export.
+                # Bound all streams by source-derived integer video duration;
+                # rounding up to microseconds never discards a partial tick.
+                numerator = video_duration.duration_ticks * video_duration.time_base.numerator * 1_000_000
+                microseconds = (numerator + video_duration.time_base.denominator - 1) // video_duration.time_base.denominator
+                args.extend(("-t", f"{microseconds // 1_000_000}.{microseconds % 1_000_000:06d}"))
+            elif audio is not None and (subtitle is None or burn_in_subtitles):
                 args.append("-shortest")
             args.extend(("-movflags", "+faststart"))
             return self._write_atomic(output, tuple(args), output_format="mp4", cwd=output.parent if subtitle_staging else None)

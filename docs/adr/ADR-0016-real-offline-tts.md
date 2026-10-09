@@ -242,3 +242,28 @@ the mixer receipts. Deterministic tests cover abrupt process exit, fitted cue
 reuse, corrupt/oversized/foreign records and copy/promotion/storage failures.
 Real full-worker hard-kill recovery and large-file memory evidence still need
 source-bound receipts; this decision alone does not qualify #166 or #175.
+
+## Source video bounds dubbed mux duration
+
+The two-hour actual-video-loop rehearsal completed 120 real Adam TTS cues and
+streaming mixing, but B2 QC detected truncation and preserved B1. A minimal
+actual FFmpeg reproduction shortened an 8.08-second source to 0.48 seconds when
+an embedded subtitle ended at 0.5 seconds: output `-shortest` considered that
+sparse stream as well as the full-duration video/audio.
+
+Production passes an integer `MediaTimeline` containing the video stream's
+source time-base and duration to the media render adapter, using the existing
+canonical format-duration fallback only when the stream duration is absent.
+The output limit is formatted with integer arithmetic, rounding upward to a
+microsecond; it cannot depend on the last subtitle or dialogue slot. A render
+with this explicit limit omits `-shortest`. Embedded sparse subtitles never
+authorize `-shortest`, even for callers without a known duration. Existing
+codec/audio QC and B1 preservation still apply.
+
+The private render identity changes to `h264-aac-source-duration-v2` and pins
+the exact source duration and media adapter digest. Previous runtime/job pins
+and validated exports retain their original bytes; an older render checkpoint
+is not relabeled with the new recipe. Public timelines, artifact schemas,
+worker envelopes, models and durable schema do not change. This fixes source
+video preservation, with no hardware-profile or speaker-identity changes.
+Required native CI and long-media evidence must rerun against this source.
