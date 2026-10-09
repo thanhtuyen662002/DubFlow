@@ -132,6 +132,20 @@ def _text(value: Any, name: str, *, limit: int = 4096, required: bool = True) ->
     return value.strip()
 
 
+def _description(value: Any) -> str | None:
+    if value is None:
+        return None
+    # Provider descriptions commonly contain paragraphs. Normalize only their
+    # presentation whitespace to the existing single-line SourceItem contract;
+    # validate the raw size before normalization and reject other controls.
+    if not isinstance(value, str) or len(value) > 16_384:
+        raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Bilibili field desc is malformed", provider_id="bilibili")
+    normalized = re.sub(r"[\r\n\t]+", " ", value)
+    if _CONTROL.search(normalized):
+        raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Bilibili field desc is malformed", provider_id="bilibili")
+    return normalized.strip() or None
+
+
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise SourceError(SourceErrorCode.SOURCE_CHANGED, f"Bilibili field {name} is malformed", provider_id="bilibili")
@@ -312,7 +326,7 @@ class BilibiliSourceAdapter:
         actual_base = str(bvid) if isinstance(bvid, str) and _BVID.fullmatch(bvid) else ("av" + str(aid) if type(aid) is int and aid > 0 else requested_base)
         actual_id = _with_part(actual_base, reported_part)
         title = _text(data.get("title"), "title")
-        description = _text(data.get("desc"), "desc", limit=16_384, required=False)
+        description = _description(data.get("desc"))
         canonical = canonical_source_url(actual_id)
         return SourceItem(
             identity=SourceIdentity(self.provider_id, actual_id, canonical),

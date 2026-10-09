@@ -372,3 +372,32 @@ The additive `offline_sdk_pages` report preserves the existing runtime-health
 scope and explicitly leaves browser sessions, live sources and durable desktop
 scans unqualified. This is qualification evidence only; public source/worker
 contracts, producer pins, SQLite and old artifacts/cursors are unchanged.
+
+## Public Bilibili descriptions at the strict metadata boundary
+
+The actual public SDK returned the requested `BV1o4411M71o_p2`, but the adapter
+rejected its ordinary 297-character description containing six LF paragraph
+breaks before media download. Line breaks in auxiliary metadata are not evidence
+that the source identity changed.
+
+Bilibili bounds the raw optional description at 16,384 characters before
+normalizing CR/LF/TAB runs to a space. Empty descriptions become null. Other
+ASCII controls, malformed types and oversized metadata remain typed refusals.
+Title, URL, source/part identity, credential and stream validation remain strict.
+This is a provider presentation normalization into the existing single-line
+SourceItem contract; description text never becomes dialogue semantics.
+
+Source schema 1, identities/cursors, SDK/helper pins, worker/producer/model
+versions and SQLite are unchanged; no migration rewrites previous metadata or
+media. Older consumers read the same bounded field. A retained old adapter may
+again refuse multiline public descriptions on rollback, while preserving prior
+validated exports and the local-file route. Existing pinned jobs retain their
+original runtime; this correction does not grant producer rebinding.
+
+Whole-adapter SDK mapping tests cover multiline/empty descriptions, raw limits,
+control refusals and unchanged selected-part identity/title checks. Actual live
+evidence uses the current adapter with a previously verified standalone owned
+SDK/media runtime; it is not installed current-release or desktop evidence.
+All required exact new HEAD/current-base lanes must rerun. Generic playlists,
+browser sessions, authenticated providers, Douyin creators and durable desktop
+enumeration remain acceptance work under #167/#175.
