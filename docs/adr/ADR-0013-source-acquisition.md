@@ -335,3 +335,15 @@ semantics evidence; it does not qualify live websites or installed desktop scans
 Existing jobs/artifacts need no migration. A paired runtime update retains old
 producer pins; an old cursor remains resumable only with its original producer,
 or the user starts an explicit new scan with identity deduplication.
+
+The source runtime release smoke now also runs those six recorded SDK cases
+under each staged/installed owned isolated interpreter. It takes the helper,
+descriptor and wheel from the already verified release inventory, rechecks
+the bounded helper/descriptor bytes before execution and rejects a foreign
+interpreter or previously imported SDK. Helper execution uses the verified bytes;
+the probe blocks DNS and socket connection APIs. A failed case fails the existing
+required Windows qualification step, without adding live-site dependencies.
+The additive `offline_sdk_pages` report preserves the existing runtime-health
+scope and explicitly leaves browser sessions, live sources and durable desktop
+scans unqualified. This is qualification evidence only; public source/worker
+contracts, producer pins, SQLite and old artifacts/cursors are unchanged.

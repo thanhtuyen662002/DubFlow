@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -12,7 +13,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from packaging.release.bootstrap import verify_bundle
 from packaging.release.manifest import ReleaseManifest
-from engine.dubflow.download.runtime import source_runtime_health
+from engine.dubflow.download.runtime import BUNDLE_HELPER, BUNDLE_PROFILE, source_runtime_health
+
+
+def qualify_sdk_pages(*args, **kwargs):
+    path = Path(__file__).resolve().parents[2] / "tests/source_adapter/qualify_sdk_pages.py"
+    spec = importlib.util.spec_from_file_location("source_sdk_page_qualification", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.qualify_sdk_pages(*args, **kwargs)
 
 
 def qualify(root: Path, expected_source_sha: str) -> dict:
@@ -30,9 +39,26 @@ def qualify(root: Path, expected_source_sha: str) -> dict:
     # equality and bounded per-file hashes before any native SDK invocation.
     verify_bundle(root, manifest)
     health = source_runtime_health(root, artifacts=[item.to_dict() for item in manifest.artifacts])
+    inventory = {item.path: item for item in manifest.artifacts}
+    descriptor = root / BUNDLE_PROFILE
+    with descriptor.open("rb") as stream:
+        descriptor_bytes = stream.read(16 * 1024 + 1)
+    if (len(descriptor_bytes) > 16 * 1024
+            or hashlib.sha256(descriptor_bytes).hexdigest() != inventory[BUNDLE_PROFILE].sha256):
+        raise ValueError("SDK descriptor differs from verified bundle inventory")
+    profile = json.loads(descriptor_bytes)
+    sdk_name = "runtime/source/" + profile["filename"]
+    if sdk_name not in inventory or inventory[sdk_name].sha256 != health["sdk_sha256"]:
+        raise ValueError("SDK archive is absent from the verified bundle inventory")
+    pages = qualify_sdk_pages(root / sdk_name, root / BUNDLE_HELPER, descriptor,
+        helper_sha256=inventory[BUNDLE_HELPER].sha256, descriptor_sha256=inventory[BUNDLE_PROFILE].sha256)
+    if (pages["status"] != "passed" or len(pages["cases"]) != 6
+            or Path(pages["python"]).resolve() != (root / "runtime/python.exe").resolve()):
+        raise ValueError("SDK page qualification did not run in the owned interpreter")
     return {"schema_version": 1, "source_sha": manifest.source_sha, "version": manifest.version,
             "release_channel": manifest.release_channel, "manifest_sha256": hashlib.sha256(raw).hexdigest(),
             "scope": "source-sdk-runtime-health", "verified_release_tree": True, "health": health,
+            "offline_sdk_pages": pages,
             "live_source_acquisition": "not_run", "browser_session": "not_run",
             "durable_intake_enumeration": "not_run", "production_qualified": False}
 

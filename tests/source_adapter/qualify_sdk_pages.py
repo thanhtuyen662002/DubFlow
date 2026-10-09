@@ -12,40 +12,67 @@ import json
 from pathlib import Path
 import sys
 import time
+from unittest.mock import patch
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--sdk-archive", type=Path, required=True)
-    parser.add_argument("--report", type=Path, required=True)
-    args = parser.parse_args()
-    root = Path(__file__).resolve().parents[2]
-    helper_path = root / "engine/dubflow/download/authenticated_native.py"
-    descriptor_path = root / "engine/dubflow/download/assets/yt-dlp-sdk-v1.json"
-    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+def bounded_bytes(path: Path, maximum: int) -> bytes:
+    with path.open("rb") as stream:
+        data = stream.read(maximum + 1)
+    if not data or len(data) > maximum:
+        raise ValueError("qualification input exceeds its bound")
+    return data
+
+
+def qualify_sdk_pages(archive: Path, helper_path: Path, descriptor_path: Path,
+                      *, helper_sha256: str, descriptor_sha256: str) -> dict:
+    # Even a future SDK change must not turn this required recorded lane into
+    # a live-site check. Restore the process guard on both success and failure.
+    def forbidden(*args, **kwargs):
+        raise RuntimeError("network forbidden during recorded SDK qualification")
+    with patch("socket.socket.connect", forbidden), patch("socket.socket.connect_ex", forbidden), \
+            patch("socket.getaddrinfo", forbidden), patch("socket.create_connection", forbidden):
+        return _qualify(archive, helper_path, descriptor_path,
+                        helper_sha256=helper_sha256, descriptor_sha256=descriptor_sha256)
+
+
+def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
+             *, helper_sha256: str, descriptor_sha256: str) -> dict:
+    descriptor_bytes = bounded_bytes(descriptor_path, 16 * 1024)
+    if hashlib.sha256(descriptor_bytes).hexdigest() != descriptor_sha256:
+        raise ValueError("descriptor differs from verified bundle inventory")
+    descriptor = json.loads(descriptor_bytes)
     # The reviewed wheel is code. Reject a substituted archive before import.
     expected = "1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf"
     if descriptor.get("sha256") != expected or descriptor.get("version") != "2026.08.19":
         raise ValueError("reviewed descriptor changed; qualify the new producer explicitly")
-    archive = args.sdk_archive.resolve(strict=True)
+    helper_bytes = bounded_bytes(helper_path, 1024 * 1024)
+    helper_hash = hashlib.sha256(helper_bytes).hexdigest()
+    if helper_hash != helper_sha256:
+        raise ValueError("helper differs from verified bundle inventory")
+    archive = archive.resolve(strict=True)
     if not 0 < archive.stat().st_size <= 16 * 1024 * 1024:
         raise ValueError("SDK archive exceeds qualification bound")
-    if hashlib.sha256(archive.read_bytes()).hexdigest() != expected:
+    if hashlib.sha256(bounded_bytes(archive, 16 * 1024 * 1024)).hexdigest() != expected:
         raise ValueError("SDK archive differs from reviewed qualification pin")
     if not sys.flags.isolated or not sys.flags.no_site:
         raise ValueError("qualification requires isolated no-site Python")
-    helper_bytes = helper_path.read_bytes()
-    helper_hash = hashlib.sha256(helper_bytes).hexdigest()
+    if any(name == "yt_dlp" or name.startswith("yt_dlp.") for name in sys.modules):
+        raise ValueError("qualification cannot reuse an already imported SDK")
     sys.path.insert(0, str(archive))
+    import yt_dlp
     from yt_dlp import YoutubeDL
     from yt_dlp.extractor.common import InfoExtractor
     from yt_dlp.globals import plugin_dirs
     from yt_dlp.utils import OnDemandPagedList
     from yt_dlp.version import __version__
+    if __version__ != descriptor["version"] or Path(yt_dlp.__file__).parents[1].resolve() != archive:
+        raise ValueError("imported SDK version differs from reviewed descriptor")
     plugin_dirs.value = []
     spec = importlib.util.spec_from_file_location("reviewed_source_helper", helper_path)
     helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
+    # Execute the exact bytes just verified rather than reopening a mutable
+    # helper path in the import loader.
+    exec(compile(helper_bytes, str(helper_path), "exec"), helper.__dict__)
     pages, cases = [], []
     population, poison = 10002, False
 
@@ -84,19 +111,38 @@ def main():
         cases.append({"offset": offset, "requested_page_size": size, "returned": len(result["entries"]),
                       "has_more": result["has_more"], "sdk_page_callbacks": list(pages),
                       "deleted_slot": poison, "selected_ids": observed_ids})
-    if helper_bytes != helper_path.read_bytes():
+    if helper_bytes != bounded_bytes(helper_path, 1024 * 1024):
         raise ValueError("helper changed during qualification")
+    if descriptor_bytes != bounded_bytes(descriptor_path, 16 * 1024):
+        raise ValueError("descriptor changed during qualification")
     report = {"schema_version": 1, "status": "passed",
               "scope": "actual pinned SDK with recorded offline paged extractor",
               "helper_sha256": helper_hash, "sdk_sha256": expected, "sdk_version": __version__,
               "qualification_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-              "descriptor_sha256": hashlib.sha256(descriptor_path.read_bytes()).hexdigest(),
+              "descriptor_sha256": descriptor_sha256,
+              "helper_path": str(helper_path.resolve()), "descriptor_path": str(descriptor_path.resolve()),
+              "sdk_archive": str(archive), "network": "forbidden",
+              "sdk_import_origin": yt_dlp.__file__,
               "python": sys.executable, "isolated": True, "no_site": True,
               "elapsed_seconds": time.monotonic() - started, "cases": cases,
               "live_bilibili": "NOT_RUN", "live_douyin": "NOT_RUN",
               "durable_desktop_scan": "NOT_RUN", "production_qualified": False}
+    return report
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sdk-archive", type=Path, required=True)
+    parser.add_argument("--report", type=Path, required=True)
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parents[2]
+    helper = root / "engine/dubflow/download/authenticated_native.py"
+    descriptor = root / "engine/dubflow/download/assets/yt-dlp-sdk-v1.json"
+    report = qualify_sdk_pages(args.sdk_archive, helper, descriptor,
+        helper_sha256=hashlib.sha256(bounded_bytes(helper, 1024 * 1024)).hexdigest(),
+        descriptor_sha256=hashlib.sha256(bounded_bytes(descriptor, 16 * 1024)).hexdigest())
     args.report.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps({"status": "passed", "cases": len(cases), "report": str(args.report),
+    print(json.dumps({"status": "passed", "cases": len(report["cases"]), "report": str(args.report),
                       "sha256": hashlib.sha256(args.report.read_bytes()).hexdigest()}))
     return 0
 
