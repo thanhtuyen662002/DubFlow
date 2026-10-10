@@ -328,6 +328,8 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
                 if "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest() != actual_hash:
                     raise SmokeError(f"packaged B2 editable audio hash differs: {key}")
             with wave.open(str(path), "rb") as reader:
+                if reader.getnchannels() != 2:
+                    raise SmokeError(f"packaged B2 mix artifact is not stereo: {key}")
                 if (reader.getnframes() != artifact["frame_count"] or reader.getnchannels() != artifact["channels"] or
                         reader.getframerate() != artifact["sample_rate"] or reader.getsampwidth() != 2):
                     raise SmokeError(f"packaged B2 mix artifact PCM differs: {key}")
@@ -354,6 +356,8 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         raise SmokeError(f"output video is not H.264: {videos}")
     if expect_audio and (not audios or audios[0].get("codec_name") != "aac"):
         raise SmokeError(f"output audio is not AAC: {audios}")
+    if expect_dubbing and (not audios or type(audios[0].get("channels")) is not int or audios[0]["channels"] != 2):
+        raise SmokeError(f"packaged B2 output audio is not stereo: {audios}")
     if not expect_audio and audios:
         raise SmokeError(f"no-audio source unexpectedly gained an audio stream: {audios}")
     duration = float((probe.get("format") or {}).get("duration", "0"))
@@ -364,6 +368,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         "duration_seconds": duration,
         "video_codec": videos[0].get("codec_name"),
         "audio_codec": audios[0].get("codec_name") if audios else None,
+        "audio_channels": audios[0].get("channels") if audios else None,
         "width": videos[0].get("width"),
         "height": videos[0].get("height"),
         "artifacts": [str(path.relative_to(output_dir)) for path in required],

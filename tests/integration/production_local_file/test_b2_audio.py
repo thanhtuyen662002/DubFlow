@@ -25,18 +25,46 @@ class HermeticDecodedAudioAdapter:
     """Hermetic decoded PCM seam; this is wiring evidence, not media quality."""
     ffmpeg_path = Path("unused-fixture-ffmpeg")
 
-    def extract_audio(self, _source: Path, output: Path, **_options: object) -> Path:
+    def extract_audio(self, _source: Path, output: Path, **options: object) -> Path:
+        channels = options["channels"]
+        # Opposite-phase channels disappear if the caller requests a downmix.
+        frame = struct.pack("<hh", 1200, -1200) if channels == 2 else bytes(2)
         stream = io.BytesIO()
         with wave.open(stream, "wb") as writer:
-            writer.setnchannels(1)
+            writer.setnchannels(channels)
             writer.setsampwidth(2)
             writer.setframerate(16_000)
-            writer.writeframes(b"".join(struct.pack("<h", 1200) for _ in range(48_000)))
+            writer.writeframes(frame * 48_000)
         output.write_bytes(stream.getvalue())
         return output
 
 
 class ProductionLocalFileB2Tests(unittest.TestCase):
+    def test_stereo_source_survives_mix_with_centered_mono_dialogue(self):
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",
+            return_value=(SimpleNamespace(sample_rate=16000, channels=1), approved_default_voice())), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", return_value=DeterministicFixtureEngine()):
+            root = Path(directory)
+            # Actual PCM and streaming mixer; the decoder and TTS are fixtures.
+            result = run_b2_audio(media=HermeticDecodedAudioAdapter(), source_path=root / "stereo.mp4",
+                source_probe=SimpleNamespace(has_audio=True), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2",
+                translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),))
+            self.assertEqual(result.mix_document.source_layout, "stereo-source")
+            self.assertEqual(result.source_audio_path.read_bytes(), result.original_audio_path.read_bytes())
+            samples = {}
+            for name, path in (("source", result.original_audio_path), ("speech", result.dialogue_stem_path),
+                               ("final", result.final_mix_path)):
+                with wave.open(str(path), "rb") as reader:
+                    self.assertEqual((reader.getnchannels(), reader.getframerate(), reader.getnframes()), (2, 16000, 48000))
+                    samples[name] = tuple(struct.iter_unpack("<hh", reader.readframes(reader.getnframes())))
+            self.assertTrue(all(left == -right != 0 for left, right in samples["source"]))
+            self.assertTrue(all(left == right for left, right in samples["speech"]))
+            self.assertTrue(any(left for left, _ in samples["speech"]))
+            self.assertTrue(all(left != right for left, right in samples["final"]))
+            self.assertFalse(result.mix_document.failures)
+
     def test_no_audio_with_supplied_dialogue_produces_dub_and_honest_silent_source(self):
         with TemporaryDirectory(prefix="dubflow-no-audio-b2-") as directory, patch(
             "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",

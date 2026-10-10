@@ -101,6 +101,55 @@ def write_record(record: Path, artifact: dict) -> None:
         "artifact_record_hash": sha256(encoded).hexdigest()}), encoding="utf-8")
 
 
+class StereoDubEvidenceTests(unittest.TestCase):
+    def test_dubbing_rejects_mono_editable_pcm_and_non_stereo_final_aac(self):
+        cases = [(None, 2), *( (name, 2) for name in ("original_audio", "dialogue_stem", "final_mix")),
+                 *( (None, channels) for channels in (1, 0, 3, None, True, "2", 2.0))]
+        for mono_asset, channels in cases:
+            with self.subTest(mono_asset=mono_asset, channels=channels), TemporaryDirectory() as directory:
+                output = Path(directory)
+                (output / "editable").mkdir()
+                for name in ("final_vi.mp4", "captions_vi.srt", "captions_vi.ass", "qc_report.json", "editable/timeline.json"):
+                    (output / name).write_text("qualification-checker fixture; not real media", encoding="utf-8")
+                speech, record = checkpoint(output)
+                artifact = json.loads(record.read_text(encoding="utf-8"))["artifact"]
+                record.rename(record.with_name(sha256(artifact["segment_id"].encode()).hexdigest() + ".json"))
+                tts_path = speech.parent.parent / "tts_document.json"
+                tts_path.write_text(json.dumps({"provenance": {"backend_id": "vieneu-v3-turbo-onnx-v1",
+                    "producer_version": "3.2.0", "voice_id": "fixture"}, "artifacts": [artifact]}), encoding="utf-8")
+                mix = {}
+                for key, name in (("original_audio", "source_audio.wav"), ("dialogue_stem", "dialogue_stem.wav"),
+                                  ("final_mix", "final_mix.wav")):
+                    path = output / "editable" / name
+                    pcm_channels = 1 if key == mono_asset else 2
+                    with wave.open(str(path), "wb") as writer:
+                        writer.setparams((pcm_channels, 2, 8000, 8000, "NONE", "not compressed"))
+                        writer.writeframes(b"\x00\x01" * 8000 * pcm_channels)
+                    digest = "sha256:" + smoke._file_digest(path)
+                    mix[key] = {"path": str(path), "channels": pcm_channels, "sample_rate": 8000, "frame_count": 8000,
+                        "content_hash": digest, "metrics": {"content_hash": digest, "clipped_samples": 0}}
+                provenance = {"backend_id": "pcm-stream-duck-v1", "producer_version": "2.0.1",
+                    "runtime": "owned-python/numpy-2.2.6", "non_destructive": True,
+                    "source_hash": mix["original_audio"]["content_hash"]}
+                mix["provenance"] = provenance
+                mix_path = output / "mix_document.json"
+                mix_path.write_text(json.dumps(mix), encoding="utf-8")
+                (output / "job_manifest.json").write_text(json.dumps({"audio": {"mode": "dubbed",
+                    "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
+                    "mix_document": str(mix_path), "mix_provenance": provenance}}), encoding="utf-8")
+                probe = {"format": {"duration": "1"}, "streams": [
+                    {"codec_type": "video", "codec_name": "h264", "width": 320, "height": 180},
+                    {"codec_type": "audio", "codec_name": "aac", "channels": channels}]}
+                with mock.patch.object(smoke, "_run", return_value=SimpleNamespace(stdout=json.dumps(probe))):
+                    if mono_asset is None and type(channels) is int and channels == 2:
+                        report = smoke._verify_output(output / "ffprobe", output, 1, expect_dubbing=True, expect_voice_id="fixture")
+                        self.assertEqual(report["audio_channels"], 2)
+                        self.assertEqual(report["streaming_mix"]["tts_checkpoint_records_verified"], 1)
+                    else:
+                        with self.assertRaisesRegex(smoke.SmokeError, "not stereo"):
+                            smoke._verify_output(output / "ffprobe", output, 1, expect_dubbing=True, expect_voice_id="fixture")
+
+
 class LiveOwnershipEvidenceTests(unittest.TestCase):
     def test_native_guard_rejects_actual_race_signatures_and_missing_overlap(self):
         # These are deterministic guard tests with controlled child results,
@@ -407,7 +456,7 @@ class VisibleDowngradeTests(unittest.TestCase):
                     (output / name).write_text("fixture only")
                 (output / "job_manifest.json").write_text("{}")
                 streams = [{"codec_type": "video", "codec_name": "h264", "width": 320, "height": 180}]
-                if has_audio: streams.append({"codec_type": "audio", "codec_name": "aac"})
+                if has_audio: streams.append({"codec_type": "audio", "codec_name": "aac", "channels": 1})
                 probe = {"format": {"duration": "18"}, "streams": streams}
                 with mock.patch.object(smoke, "_run", return_value=SimpleNamespace(stdout=json.dumps(probe))):
                     if expect_audio == has_audio:

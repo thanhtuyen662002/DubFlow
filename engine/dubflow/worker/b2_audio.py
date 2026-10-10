@@ -211,7 +211,8 @@ def run_b2_audio(
         if silence_duration is not None:
             media.create_silent_audio(source_path, source_audio_path, video_duration=silence_duration, overwrite=True)
         else:
-            media.extract_audio(source_path, source_audio_path, sample_rate=pack.sample_rate, channels=1, overwrite=True)
+            # Keep the source bed stereo; mono TTS is centered by the mixer.
+            media.extract_audio(source_path, source_audio_path, sample_rate=pack.sample_rate, channels=2, overwrite=True)
         source_end_ticks = _wav_duration_ticks(source_audio_path)
     except BaseException as error:
         close = getattr(engine, "close", None)
@@ -320,7 +321,7 @@ def run_b2_audio(
             start=TimePoint(0, BASE_TIME),
             end=TimePoint(source_end_ticks, BASE_TIME),
             source_id=Path(source_path).name,
-            layout="generated-silence-stereo" if silence_duration is not None else "mono-source",
+            layout="generated-silence-stereo" if silence_duration is not None else "stereo-source",
         )
         mixer = StreamingAudioMixer(
             config=MixConfig(

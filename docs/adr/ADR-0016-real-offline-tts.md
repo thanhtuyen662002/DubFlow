@@ -556,3 +556,26 @@ successor HEAD/current-base lanes and actual installed qualification must rerun.
 WebView2 override semantics and writable user-data placement:
 https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl
 and https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder.
+
+## Preserve stereo in the B2 source bed
+
+The retained installed e96 actual Sintel trailer run generated two real TrucLy
+cues and passed its existing QC, but decoded the stereo source to mono and
+exported mono editable PCM and AAC. Current c055 had the same explicit mono
+decode request. Those historical receipts do not establish stereo preservation.
+
+B2 now decodes the source bed as stereo and records `stereo-source`. Mono
+sources are upmixed; mono TTS remains centered by the existing streaming mixer.
+No-audio jobs retain their generated stereo silence. Source and dialogue assets
+remain separate. A distinct opposite-phase L/R regression exercises actual PCM
+mixing with fixture decoding/TTS. Packaged qualification must require two
+channels in every editable mix WAV and the final AAC stream, in addition to
+its existing hashes, producer pins and decode checks. Fixture tests do not
+approve film acting, semantic accuracy or actual installed release behavior.
+
+No public schema, durable migration, model, dependency or artifact format changes.
+The existing private B2 generation hashes this worker source, separating the
+changed decode policy from previous generations. Existing jobs retain their
+original producer/runtime; rollback uses that coherent retained release.
+All successor HEAD/current-base required lanes and actual packaged stereo
+qualification must rerun. Full #166/#175 acceptance remains required.
