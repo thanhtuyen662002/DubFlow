@@ -156,19 +156,24 @@ class SourceSession:
                 or (not page.completed and page.next_cursor == cursor)):
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "source page is malformed or made no progress")
         items = []
+        failures = [{"source_id": failure.source_id, "code": failure.code.value,
+            "condition": "source item unavailable (" + failure.code.value + ")", "retryable": failure.retryable}
+            for failure in page.failures]
         for item in page.items:
             if item.identity.provider_id != self.provider:
                 raise SourceError(SourceErrorCode.SOURCE_CHANGED, "source page provider changed")
             # Do not persist signed CDN locators, headers or credential-bearing
             # candidates from an inspected item. Reinspect its public identity
             # through the same adapter before materialization.
-            public = _public_reference(item.identity.canonical_url)
+            try:
+                public = _public_reference(item.identity.canonical_url)
+            except SourceError as error:
+                failures.append({"source_id": item.identity.source_id, "code": error.code.value,
+                    "condition": "source item reference rejected", "retryable": False})
+                continue
             items.append({"schema_version": SOURCE_CONTRACT_VERSION,
                 "identity": {**item.identity.to_dict(), "canonical_url": public},
                 "title": item.title, "duration_ticks": None if item.duration_ticks is None else str(item.duration_ticks)})
-        failures = [{"source_id": failure.source_id, "code": failure.code.value,
-            "condition": "source item unavailable (" + failure.code.value + ")", "retryable": failure.retryable}
-            for failure in page.failures]
         self.completed = page.completed
         return {"schema_version": 1, "kind": "source-page", "producer_fingerprint": self.fingerprint,
             "dispatch_revision": revision, "request_cursor": cursor,

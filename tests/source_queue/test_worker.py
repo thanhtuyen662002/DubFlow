@@ -90,8 +90,10 @@ class SourceWorkerTests(unittest.TestCase):
         session = self.session()
         self.adapter.enumerate_channel.return_value = SourcePage((SourceItem(
             SourceIdentity("generic", "one", "https://example.test/one?X-Amz-Signature=private-value"), "one"),), None, True)
-        with self.assertRaises(SourceError):
-            self.dispatch(session)
+        document = self.dispatch(session)
+        self.assertEqual(document["page"]["items"], [])
+        self.assertEqual(document["page"]["failures"][0]["source_id"], "one")
+        self.assertNotIn("private-value", json.dumps(document))
         self.assertEqual(list(self.work.iterdir()), [])
 
     def test_work_root_inside_bundle_or_source_credentials_never_admit(self):
@@ -157,15 +159,26 @@ class SourceWorkerTests(unittest.TestCase):
         self.assertEqual(document["page"]["items"][0]["duration_ticks"], "90")
         self.assertTrue(document["page"]["failures"][0]["retryable"])
 
-    def test_poisoned_identity_or_wrong_provider_cannot_publish(self):
-        for identity in [SourceIdentity("bilibili", "one", "https://www.bilibili.com/video/one"),
-                         SourceIdentity("generic", "one", "https://example.test/video?cookie=private")]:
-            with self.subTest(identity=identity):
-                session = self.session()
-                self.adapter.enumerate_channel.return_value = SourcePage((SourceItem(identity, "one"),), None, True)
-                with self.assertRaises(SourceError):
-                    self.dispatch(session)
+    def test_wrong_provider_cannot_publish_into_another_scan(self):
+        session = self.session()
+        identity = SourceIdentity("bilibili", "one", "https://www.bilibili.com/video/one")
+        self.adapter.enumerate_channel.return_value = SourcePage((SourceItem(identity, "one"),), None, True)
+        with self.assertRaises(SourceError):
+            self.dispatch(session)
         self.assertEqual(list(self.work.iterdir()), [])
+
+    def test_poisoned_public_url_isolated_while_valid_items_and_cursor_continue(self):
+        session = self.session()
+        valid = SourceItem(SourceIdentity("generic", "valid", "https://example.test/valid"), "valid")
+        poisoned = SourceItem(SourceIdentity("generic", "poisoned", "https://example.test/video?X-Amz-Signature=private-signature"), "poisoned")
+        self.adapter.enumerate_channel.return_value = SourcePage((valid, poisoned), "page-2", False,
+            (SourcePageFailure("deleted", SourceErrorCode.NOT_FOUND, "deleted", False),))
+        document = self.dispatch(session)
+        self.assertEqual([item["identity"]["source_id"] for item in document["page"]["items"]], ["valid"])
+        self.assertEqual([failure["source_id"] for failure in document["page"]["failures"]], ["deleted", "poisoned"])
+        self.assertEqual(document["page"]["next_cursor"], "page-2")
+        packet, _ = session.publish(document, "scan-1")
+        self.assertNotIn(b"private-signature", (self.work / packet).read_bytes())
 
     def test_oversized_page_and_no_progress_are_actionable(self):
         item = SourceItem(SourceIdentity("generic", "one", "https://example.test/one"), "one")
