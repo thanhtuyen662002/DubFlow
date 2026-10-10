@@ -609,6 +609,18 @@ Local Rust metadata checks are not execution evidence. A fresh packaged native
 real-media parent-only kill and same-runtime checkpoint restart must rerun;
 whole-tree cleanup alone cannot satisfy that qualification.
 
+The first c3d34bf hosted Windows run executed the actual native tests: the
+parent-only hard-kill and x64 ABI tests passed. Guard-drop observed both
+worker/grandchild handles terminal and the independent neighbor still live,
+then failed an unnecessary assertion that the dropped worker must have a
+nonzero exit status. Its infinitely parked fixture cannot finish voluntarily;
+Job Object closure can report exit zero. The successor test observes both
+handles live before the action and terminal within the same bounded wait,
+retains the live-neighbor assertion, and reaps without prescribing that exit
+status. No production guard behavior or Windows gate is changed. Keep the
+original failed run immutable; all successor lanes and actual media recovery
+remain required. Kernel-handle state qualifies lifetime, not ExitStatus.success.
+
 No dependency, lockfile, public worker/timeline/artifact contract, durable
 migration, model or TTS producer version changes. Updated app/source/runtime
 producer pins require fresh successor jobs. Old78b profiles, failed lifetime

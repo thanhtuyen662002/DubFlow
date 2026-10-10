@@ -143,6 +143,10 @@ mod windows {
             fn stopped(&self) {
                 assert_eq!(unsafe { WaitForSingleObject(self.0, 3000) }, 0);
             }
+
+            fn running(&self) {
+                assert_eq!(unsafe { WaitForSingleObject(self.0, 0) }, 258); // WAIT_TIMEOUT
+            }
         }
 
         impl Drop for ProcessObservation {
@@ -256,11 +260,15 @@ mod windows {
             let (mut worker, tree, grandchild) = contained_worker();
             let worker_handle = ProcessObservation::open(worker.0.id());
             let grandchild_handle = ProcessObservation::open(grandchild);
+            worker_handle.running();
+            grandchild_handle.running();
             drop(tree);
             worker_handle.stopped();
             grandchild_handle.stopped();
             assert!(neighbor.0.try_wait().unwrap().is_none());
-            assert!(!worker.0.wait().unwrap().success());
+            // Job closure can yield exit zero. The retained kernel handles,
+            // observed live before drop and terminal after, prove retirement.
+            worker.0.wait().unwrap();
         }
 
         #[test]
@@ -270,6 +278,8 @@ mod windows {
             assert_eq!(ids.len(), 2);
             let worker_handle = ProcessObservation::open(ids[0]);
             let grandchild_handle = ProcessObservation::open(ids[1]);
+            worker_handle.running();
+            grandchild_handle.running();
             owner.0.kill().unwrap(); // Only the owner; no taskkill /T or injected tree cleanup.
             assert!(!owner.0.wait().unwrap().success());
             worker_handle.stopped();
