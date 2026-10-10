@@ -881,3 +881,36 @@ stream's extent. This checkpoint repair does not waive timing validation;
 Matroska timing and fresh packaged native range-recovery remain acceptance
 work. A deterministic real killed downloader/local HTTP range test covers
 process loss independently of optional live-provider qualification.
+
+## Missing Matroska stream duration from observed packet extents
+
+The admitted actual8ad ffprobe found no duration/duration_ts for either AV
+stream of the licensed full Sintel Matroska, while its packets establish
+video0..887999 and audio0..888032 in the original1/1000 time base. Derive
+missing extents from actual packet integer PTS and positive duration, mapping
+the min/max span through that rational base to90k ticks. Never substitute the
+container's duration for both selected streams, use frame counts as identity,
+or override a present/malformed duration with inferred timing.
+
+Read compact packet records through a bounded128-entry queue, with512-byte
+line and16-million-record limits, existing process deadline/cancellation,
+64KiB diagnostic bound and checked app-owned media executables. Keep only
+per-stream min/max extent, not a whole-film packet/frame list. The source
+objects are complete acquisition checkpoints; interruption repeats this local
+bounded metadata read without redownloading media or recomputing AI stages.
+Close the owned media Job before joining its reader on cancellation/failure.
+Reported time bases, source-file size/mtime and complete process exit remain
+checked. Missing/zero/malformed packet timing refuses publication.
+
+The existing selected AV start/duration consistency and post-mux codec/extent
+comparisons remain mandatory. An actual generated Matroska with3s video and
+1s audio must fail and preserve its previous output even though its container
+reports3s. Positive real mux/decode and retained licensed full-film timing
+observations are distinct from packaged native/live-provider qualification.
+
+This is private metadata validation, not a public timeline/artifact/schema or
+source identity change. Stream receipt1 and producer recipe remain coherent;
+native admissions pin the complete original manifest/source code. Existing
+scans resume their original runtime; a corrected successor starts a fresh
+admission. Rollback may reproduce the old Matroska refusal but preserves
+canonical media/standard exports; no old record is rebound or migrated.

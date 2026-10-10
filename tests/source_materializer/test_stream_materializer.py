@@ -13,7 +13,7 @@ import unittest
 
 from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, HttpResponse, MediaMaterializer
 from engine.dubflow.download.source_adapter import MediaCandidate
-from engine.dubflow.download.stream_materializer import FfmpegStreamMuxer, StreamInfo, StreamMaterializer, _ownership, _stream_info
+from engine.dubflow.download.stream_materializer import FfmpegStreamMuxer, StreamInfo, StreamMaterializer, _ownership, _packet_span, _stream_info
 
 
 VIDEO = MediaCandidate("v", "https://cdn.example.test/v.m4s?token=secret", "dash", "video/mp4", 1280, 720, False)
@@ -265,6 +265,52 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(info.start_ticks, 45000)
         with self.assertRaises(DownloadError):
             _stream_info({"codec_type": "audio", "codec_name": "aac", "time_base": "1/0", "duration_ts": 100, "start_pts": 0})
+
+    def test_missing_stream_duration_uses_actual_packet_extent_and_rational_base(self):
+        info = _stream_info({"codec_type": "video", "codec_name": "h264", "time_base": "1/24000"},
+            packet_extent=(12000, 60048))
+        self.assertEqual(info, StreamInfo("video", "h264", 45000, 180180))
+        observed = _stream_info({"codec_type": "audio", "codec_name": "ac3", "time_base": "1/1000"},
+            packet_extent=(0, 888032))
+        self.assertEqual(observed.duration_ticks, 79922880)
+        for extent in ((0, 0), (10, 5), (False, 5), (0, 10**15)):
+            with self.subTest(extent=extent), self.assertRaises(DownloadError):
+                _stream_info({"codec_type": "video", "codec_name": "h264", "time_base": "1/1000"}, packet_extent=extent)
+
+    def test_packet_extent_does_not_replace_reported_or_malformed_duration(self):
+        base = {"codec_type": "video", "codec_name": "h264", "time_base": "1/24000", "start_pts": 0}
+        valid = _stream_info(dict(base, duration_ts=48048), packet_extent=(0, 888032))
+        self.assertEqual(valid.duration_ticks, 180180)
+        for malformed in ({"duration": "NaN"}, {"duration_ts": "wrong"}, {"time_base": "1/0"}):
+            with self.subTest(malformed=malformed), self.assertRaises(DownloadError):
+                _stream_info(dict(base, **malformed), packet_extent=(0, 888032))
+
+    def test_compact_packet_requires_bounded_integer_pts_and_duration(self):
+        self.assertEqual(_packet_span(b"stream_index=0|pts=-1|duration=41\n", {0, 1}), (0, -1, 40))
+        self.assertIsNone(_packet_span(b"stream_index=2|pts=N/A|duration=N/A\n", {0, 1}))
+        for line in (b"stream_index=0|pts=N/A|duration=41\n", b"stream_index=0|pts=1.0|duration=41\n",
+            b"stream_index=0|pts=0|duration=0\n", b"stream_index=0|pts=0|duration=-1\n",
+            b"stream_index=0|pts=0|pts=10|duration=41\n", b"stream_index=0|pts=0\n",
+            b"stream_index=0|pts=9223372036854775807|duration=1\n", b"stream_index=32|pts=0|duration=41\n",
+            b"stream_index=0|pts=0|duration=" + b"1"*513):
+            with self.subTest(line=line[:80]), self.assertRaises(DownloadError) as context:
+                _packet_span(line, {0, 1})
+            self.assertEqual(context.exception.code, DownloadErrorCode.SOURCE_CHANGED)
+
+    def test_packet_probe_cancellation_keeps_typed_cancelled_error(self):
+        executable = self.root / "ffprobe.exe"
+        executable.write_bytes(b"fixture")
+        digest = hashlib.sha256(b"fixture").hexdigest()
+        class CancelledMuxer(FfmpegStreamMuxer):
+            def _run(self, *args, **kwargs):
+                return json.dumps({"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "time_base": "1/1000"}]}).encode()
+            def _packet_extents(self, *args, **kwargs):
+                raise DownloadError(DownloadErrorCode.CANCELLED, "recorded cancel during packet scan")
+        muxer = CancelledMuxer(executable, executable, trusted_root=self.root,
+            ffmpeg_sha256=digest, ffprobe_sha256=digest)
+        with self.assertRaises(DownloadError) as context:
+            muxer.probe(executable)
+        self.assertEqual(context.exception.code, DownloadErrorCode.CANCELLED)
 
 
 if __name__ == "__main__":

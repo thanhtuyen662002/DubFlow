@@ -16,6 +16,7 @@ import json
 import math
 import os
 from pathlib import Path
+import queue
 import re
 import subprocess
 import tempfile
@@ -37,6 +38,9 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TICKS_PER_SECOND = 90_000
 _MAX_PROBE_BYTES = 1024 * 1024
 _MAX_LOG_BYTES = 64 * 1024
+_MAX_PACKET_LINE = 512
+_MAX_PACKET_COUNT = 16_000_000
+_PACKET_INTEGER = re.compile(r"^-?(?:0|[1-9][0-9]{0,18})$")
 _FORMATS = "mov,matroska,webm"
 
 
@@ -92,7 +96,43 @@ def _ticks(value: object) -> int:
         raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "stream timestamps are malformed or unbounded") from error
 
 
-def _stream_info(raw: object) -> StreamInfo | None:
+def _packet_span(line: bytes, selected: set[int]) -> tuple[int, int, int] | None:
+    """One compact ffprobe packet: source integer PTS, never frame identity."""
+    try:
+        if len(line) > _MAX_PACKET_LINE:
+            raise ValueError()
+        fields = {}
+        for entry in line.decode("ascii").strip().split("|"):
+            if not entry:
+                continue
+            name, value = entry.split("=", 1)
+            if name in fields:
+                raise ValueError()
+            fields[name] = value
+        index = fields["stream_index"]
+        if not _PACKET_INTEGER.fullmatch(index):
+            raise ValueError()
+        index = int(index)
+        if not 0 <= index < 32:
+            raise ValueError()
+        if index not in selected:
+            return None  # Untimed subtitles/unselected streams are not AV.
+        if set(fields) != {"stream_index", "pts", "duration"}:
+            raise ValueError()
+        if any(not _PACKET_INTEGER.fullmatch(fields[key]) for key in ("pts", "duration")):
+            raise ValueError()
+        pts, duration = int(fields["pts"]), int(fields["duration"])
+        if not -(1 << 63) <= pts < (1 << 63) or not 0 < duration < (1 << 63):
+            raise ValueError()
+        end = pts + duration
+        if not -(1 << 63) <= end < (1 << 63):
+            raise ValueError()
+        return index, pts, end
+    except (KeyError, ValueError, UnicodeError) as error:
+        raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "source packet timing is missing, malformed or unbounded") from error
+
+
+def _stream_info(raw: object, *, packet_extent: tuple[int, int] | None = None) -> StreamInfo | None:
     if not isinstance(raw, dict) or raw.get("codec_type") not in {"video", "audio"}:
         return None
     codec = raw.get("codec_name")
@@ -104,7 +144,13 @@ def _stream_info(raw: object) -> StreamInfo | None:
         start = raw.get("start_pts")
         if base <= 0 or base > 1 or base.denominator > (1 << 32):
             raise ValueError()
-        if type(duration) is int and type(start) is int:
+        if duration is None and raw.get("duration") is None and packet_extent is not None:
+            first, end = packet_extent
+            if type(first) is not int or type(end) is not int or end <= first:
+                raise ValueError()
+            duration_ticks = round((end - first) * base * _TICKS_PER_SECOND)
+            start_ticks = round(first * base * _TICKS_PER_SECOND)
+        elif type(duration) is int and type(start) is int:
             duration_ticks = round(duration * base * _TICKS_PER_SECOND)
             start_ticks = round(start * base * _TICKS_PER_SECOND)
         else:
@@ -152,14 +198,17 @@ class FfmpegStreamMuxer:
             raise DownloadError(DownloadErrorCode.CHECKSUM_MISMATCH, "media executable differs from its pinned version")
         return path, digest
 
+    def _verify_pins(self) -> None:
+        for path, digest in self._pins:
+            if _file_digest(path) != digest:
+                raise DownloadError(DownloadErrorCode.CHECKSUM_MISMATCH, "pinned media runtime changed before launch")
+
     def _run(self, argv: tuple[str, ...], cancel: Callable[[], bool] | None, *,
              output: Path | None = None, max_bytes: int = MAX_DOWNLOAD_BYTES) -> bytes:
         _cancelled(cancel)
         # Recheck before launch: a mutable installation may not silently change
         # the producer for a resumed source acquisition.
-        for path, digest in self._pins:
-            if _file_digest(path) != digest:
-                raise DownloadError(DownloadErrorCode.CHECKSUM_MISMATCH, "pinned media runtime changed before launch")
+        self._verify_pins()
         process = None
         owner = None
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
@@ -214,9 +263,118 @@ class FfmpegStreamMuxer:
             streams = payload.get("streams") if isinstance(payload, dict) else None
             if not isinstance(streams, list) or not 1 <= len(streams) <= 32:
                 raise ValueError()
-            return tuple(info for value in streams if (info := _stream_info(value)) is not None)
+            missing = [value for value in streams if isinstance(value, dict)
+                and value.get("codec_type") in {"video", "audio"}
+                and value.get("duration_ts") is None and value.get("duration") is None]
+            selected = set()
+            for value in missing:
+                index = value.get("index")
+                if type(index) is not int or not 0 <= index < 32 or index in selected:
+                    raise ValueError()
+                selected.add(index)
+            extents = self._packet_extents(path, selected, cancel) if selected else {}
+            return tuple(info for value in streams if (info := _stream_info(value,
+                packet_extent=extents.get(value.get("index")) if isinstance(value, dict) else None)) is not None)
+        except DownloadError:
+            raise
         except (ValueError, UnicodeError) as error:
             raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "local stream probe metadata is malformed") from error
+
+    def _packet_extents(self, path: Path, selected: set[int],
+                        cancel: Callable[[], bool] | None) -> dict[int, tuple[int, int]]:
+        """Bounded streaming validation of absent duration, not container guessing.
+
+        Completed source objects are already acquisition checkpoints. Interruption
+        reruns this local metadata read without downloading media or rerunning AI.
+        """
+        _cancelled(cancel)
+        self._verify_pins()
+        before = path.stat()
+        pending = queue.Queue(maxsize=128)
+        retired = threading.Event()
+        process = owner = reader = None
+
+        def publish(value):
+            while not retired.is_set():
+                try:
+                    pending.put(value, timeout=0.1)
+                    return
+                except queue.Full:
+                    pass
+
+        with tempfile.TemporaryFile() as stderr:
+            try:
+                process = subprocess.Popen((str(self.ffprobe_path), "-v", "error",
+                    "-protocol_whitelist", "file", "-format_whitelist", _FORMATS,
+                    "-show_packets", "-show_entries", "packet=stream_index,pts,duration:packet_side_data=",
+                    "-of", "compact=p=0:nk=0", str(path)), shell=False,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=stderr,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                from .generic.windows_job import WindowsSourceJob
+                owner = WindowsSourceJob(process)
+
+                def consume():
+                    try:
+                        while not retired.is_set():
+                            line = process.stdout.readline(_MAX_PACKET_LINE + 1)
+                            if not line:
+                                break
+                            publish(line)
+                    except (OSError, ValueError) as error:
+                        publish(error)
+                    finally:
+                        publish(None)
+
+                reader = threading.Thread(target=consume, daemon=True)
+                reader.start()
+                deadline = time.monotonic() + self.timeout_s
+                extents = {}
+                packets = 0
+                while True:
+                    _cancelled(cancel)
+                    if time.monotonic() >= deadline:
+                        raise DownloadError(DownloadErrorCode.NETWORK, "source packet probe timed out", retryable=True, action="reduce_item_or_change_runtime")
+                    if os.fstat(stderr.fileno()).st_size > _MAX_LOG_BYTES:
+                        raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "packet probe diagnostics exceed the bounded limit")
+                    try:
+                        value = pending.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if value is None:
+                        break
+                    if isinstance(value, Exception):
+                        raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "packet probe output could not be read") from value
+                    packets += 1
+                    if packets > _MAX_PACKET_COUNT:
+                        raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "packet probe exceeds the bounded packet count")
+                    span = _packet_span(value, selected)
+                    if span is not None:
+                        index, first, end = span
+                        previous = extents.get(index, (first, end))
+                        extents[index] = (min(previous[0], first), max(previous[1], end))
+                if process.wait(timeout=10) != 0 or set(extents) != selected:
+                    raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "packet probe did not establish every selected stream extent")
+                _reject_links(path)
+                after = path.stat()
+                if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                    raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "local source changed during packet probe")
+                return extents
+            except subprocess.TimeoutExpired as error:
+                raise DownloadError(DownloadErrorCode.NETWORK, "packet probe did not exit after EOF", retryable=True, action="reduce_item_or_change_runtime") from error
+            except OSError as error:
+                raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "packet probe could not read private source media") from error
+            finally:
+                retired.set()
+                # Retire the complete owned tree before joining the pipe reader.
+                if owner is not None:
+                    owner.close()
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=10)
+                if reader is not None:
+                    reader.join(timeout=3)
+                if process is not None and process.stdout is not None and (reader is None or not reader.is_alive()):
+                    process.stdout.close()
 
     def mux(self, video: Path, audio: Path | None, output: Path, *,
             cancel: Callable[[], bool] | None, max_bytes: int) -> None:
