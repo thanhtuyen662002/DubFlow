@@ -106,7 +106,7 @@ class WordAlignedCuesTests(unittest.TestCase):
                 audio.writeframes(bytes(4 * 16000 * 2))
             with patch.dict("sys.modules", {"faster_whisper": SimpleNamespace(WhisperModel=Model)}):
                 result = worker._transcribe_with_faster_whisper(audio_path, root, "auto")
-            document = {"schema_version": 3, "source": "faster-whisper", "requested_source_language": "auto", **result.language_metadata(), "asr_evidence": result.asr_evidence}
+            document = {"schema_version": 4, "source": "faster-whisper", "requested_source_language": "auto", **result.language_metadata(), "asr_evidence": result.asr_evidence}
             restored = worker._language_checkpoint(result.cues, json.loads(json.dumps(document)), "auto")
             self.assertEqual(restored.asr_evidence, result.asr_evidence)
             self.assertEqual(restored.cues, result.cues)

@@ -622,3 +622,29 @@ Python scalar validation rejected SDK NumPy timestamp scalars. Normalize
 real numeric scalars to plain sample integers/scores;40 worker regressions
 then passed and the fresh second attempt completed. Both attempts are
 retained; original50-file installed766 movie output is unchanged.
+# Production ASR chunk recovery continuation — 2026-10-10
+
+The ea5ed96 predecessor has all four required lanes successful on main404a429.
+Five native reports and actual hosted Windows regression execution were audited
+in PR195 checkpoint6092909550; candidate manifest76034d7f/unsigned, not a stable
+or full production qualification. Actual source-worker film/9-minute and all25
+same-film preset evidence remain bound to ea5 and its verified predecessor runtime.
+
+The next source recipe is bounded production ASR, declared before edits in
+Issue166 checkpoint6092909850. Private transcript4/ASR evidence2 and per-chunk
+record1 compatibility are specified in ADR0023. Fifty-two focused worker
+regressions pass locally, including interruption after atomic chunk commit,
+model/language binding, forged timing/coverage refusal and immutable replay.
+
+Actual pinned small-model inference on the retained Sintel PCM now also exits
+with `os._exit(42)` immediately after its first committed chunk, then resumes
+the same fresh private QA output with exactly one remaining model inference.
+The two balanced chunks produce11 cues. Cached replay performs zero model
+loads/inferences and preserves the original first record's bytes/size/mtime.
+Original PCM and three tested source-file hashes remain unchanged. Receipt
+SHA2565143dfd8382b78daaa1ad1f9b49350293dee59aef671b1531c26a69e801d4b48
+binds the uncommitted source snapshot to the verified766 owned runtime/models;
+bind that snapshot to the successor commit separately. This is source-code ASR
+hard-exit recovery, not installed successor/supervisor/GUI/reboot evidence,
+whole-film intelligibility, six-hour processing or a500-item batch. New actual
+pipeline/installed recovery and exact-head/current-base lanes remain required.

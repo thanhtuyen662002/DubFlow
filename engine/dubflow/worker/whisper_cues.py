@@ -14,7 +14,7 @@ from typing import Any
 
 from engine.dubflow.asr import TimeBase, TimePoint, map_sample_interval
 
-ASR_RECIPE = "faster-whisper-1.2.1-word-gap-v2"
+ASR_RECIPE = "faster-whisper-1.2.1-bounded-word-gap-v3"
 SAMPLE_RATE = 16_000
 MAX_GAP_SAMPLES = SAMPLE_RATE
 
@@ -29,6 +29,31 @@ class AlignedCue:
     evidence: dict[str, Any]
 
 
+def cue_from_words(words: list[dict[str, Any]], raw_scores: dict[str, Any], *, review_reason: str | None = None, origins: list[dict[str, Any]] | None = None) -> AlignedCue:
+    """Rebuild identity from integer source positions after boundary reconciliation."""
+    start = min(word["start_sample"] for word in words)
+    end = max(word["end_sample"] for word in words)
+    if end <= start:
+        raise ValueError("a speech group must have a positive source interval")
+    value = "".join(word["text"] for word in words).strip()
+    interval = map_sample_interval(TimePoint(0, TimeBase(1, 1000)), start, end, SAMPLE_RATE)
+    probabilities = [word["probability"] for word in words]
+    available = all(probability is not None for probability in probabilities)
+    confidence = min(probability for probability in probabilities if probability is not None) if available else 0.0
+    evidence = {
+        "recipe": ASR_RECIPE,
+        "timing_basis": "segment-fallback" if review_reason else "word-alignment",
+        "confidence_basis": "minimum-word-probability-uncalibrated" if available else "unavailable",
+        "review_reason": review_reason,
+        "start_sample": start, "end_sample": end, "sample_rate": SAMPLE_RATE,
+        "raw_segment_scores": raw_scores, "words": words,
+    }
+    if origins is not None:
+        evidence["chunk_origins"] = origins
+    identity = f"asr-{start}-{end}-{sha256(value.encode()).hexdigest()[:12]}"
+    return AlignedCue(identity, interval.start.ticks, interval.end.ticks, value, confidence, evidence)
+
+
 def _score(value: Any) -> float | None:
     if isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 1:
         return float(value)
@@ -41,7 +66,7 @@ def _sample(value: Any, *, end: bool = False) -> int:
     return int((Decimal(str(value)) * SAMPLE_RATE).to_integral_value(rounding=ROUND_CEILING if end else ROUND_FLOOR))
 
 
-def segment_cues(segment: Any, total_samples: int) -> tuple[AlignedCue, ...]:
+def segment_cues(segment: Any, total_samples: int, *, sample_offset: int = 0) -> tuple[AlignedCue, ...]:
     """Split pauses without dropping words or fabricating certainty.
 
     Missing/malformed word alignment retains the original segment text and
@@ -49,6 +74,8 @@ def segment_cues(segment: Any, total_samples: int) -> tuple[AlignedCue, ...]:
     """
     if type(total_samples) is not int or total_samples <= 0:
         raise ValueError("decoded audio must contain positive sample frames")
+    if type(sample_offset) is not int or sample_offset < 0:
+        raise ValueError("sample offset must be a non-negative source integer")
     text = str(getattr(segment, "text", "")).strip()
     if not text:
         return ()
@@ -97,22 +124,6 @@ def segment_cues(segment: Any, total_samples: int) -> tuple[AlignedCue, ...]:
         groups = [[(text, segment_start, segment_end, None)]]
     result = []
     for group in groups:
-        start = min(word[1] for word in group)
-        end = max(word[2] for word in group)
-        value = "".join(word[0] for word in group).strip()
-        interval = map_sample_interval(TimePoint(0, TimeBase(1, 1000)), start, end, SAMPLE_RATE)
-        probabilities = [word[3] for word in group]
-        available = all(probability is not None for probability in probabilities)
-        confidence = min(probability for probability in probabilities if probability is not None) if available else 0.0
-        evidence = {
-            "recipe": ASR_RECIPE,
-            "timing_basis": "segment-fallback" if reason else "word-alignment",
-            "confidence_basis": "minimum-word-probability-uncalibrated" if available else "unavailable",
-            "review_reason": reason,
-            "start_sample": start, "end_sample": end, "sample_rate": SAMPLE_RATE,
-            "raw_segment_scores": raw,
-            "words": [{"text": word[0], "start_sample": word[1], "end_sample": word[2], "probability": word[3]} for word in group],
-        }
-        identity = f"asr-{start}-{end}-{sha256(value.encode()).hexdigest()[:12]}"
-        result.append(AlignedCue(identity, interval.start.ticks, interval.end.ticks, value, confidence, evidence))
+        words = [{"text": word[0], "start_sample": sample_offset + word[1], "end_sample": sample_offset + word[2], "probability": word[3]} for word in group]
+        result.append(cue_from_words(words, raw, review_reason=reason))
     return tuple(result)

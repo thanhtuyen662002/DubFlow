@@ -91,9 +91,9 @@ class LanguageRoutingTests(unittest.TestCase):
             self.assertEqual((resolved.source_language, resolved.authority), ("zh-CN", "requested"))
 
     def test_legacy_and_forged_authority_cannot_reuse_auto_language(self):
-        document = {"schema_version": 3, "requested_source_language": "auto", "source_language": "zh", "language_authority": "whisper-detected", "language_probability": 0.9}
+        document = {"schema_version": 4, "requested_source_language": "auto", "source_language": "zh", "language_authority": "whisper-detected", "language_probability": 0.9}
         self.assertEqual(worker._language_checkpoint(self.cues, document, "auto").source_language, "zh")
-        for change in ({"schema_version": 1}, {"schema_version": 2}, {"language_authority": "requested"}, {"language_probability": True}, {"source_language": "und"}, {"schema_version": 3.0}):
+        for change in ({"schema_version": 1}, {"schema_version": 2}, {"schema_version": 3}, {"language_authority": "requested"}, {"language_probability": True}, {"source_language": "und"}, {"schema_version": 4.0}):
             candidate = {**document, **change}
             if change.get("source_language") == "und":
                 with self.assertRaisesRegex(worker.ProductionJobError, "SOURCE_LANGUAGE_UNRESOLVED"):

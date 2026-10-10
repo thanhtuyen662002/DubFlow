@@ -552,8 +552,9 @@ def _whisper_language(requested: str) -> str | None:
     return "zh" if requested.lower() in {"zh", "zh-cn", "zh-tw"} else requested.lower()
 
 
-def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_language: str) -> TranscriptResult:
-    from engine.dubflow.worker.whisper_cues import ASR_RECIPE, SAMPLE_RATE, MAX_GAP_SAMPLES, segment_cues
+def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_language: str, *, chunks_dir: Path | None = None, model_binding: str | None = None, on_chunk: Any = None) -> TranscriptResult:
+    from engine.dubflow.worker.whisper_cues import ASR_RECIPE, SAMPLE_RATE, MAX_GAP_SAMPLES
+    from engine.dubflow.worker.whisper_chunks import CORE_SAMPLES, OVERLAP_SAMPLES, ChunkAsrError, transcribe_bounded
     try:
         from faster_whisper import WhisperModel  # type: ignore[import-not-found]
     except ImportError as error:
@@ -566,22 +567,33 @@ def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_l
             if (reader.getframerate(), reader.getnchannels(), reader.getsampwidth()) != (SAMPLE_RATE, 1, 2):
                 raise ProductionJobError("ASR_AUDIO_INVALID", "ASR requires the owned 16K mono PCM analysis audio")
             total_samples = reader.getnframes()
-        model = WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=max(1, min(8, os.cpu_count() or 1)), local_files_only=True)
-        segments, info = model.transcribe(
-            str(audio_path),
-            language=_whisper_language(source_language),
-            beam_size=5,
-            vad_filter=True,
-            word_timestamps=True,
+        audio_hash = _sha256(audio_path)
+        base_evidence = {"schema_version": 1, "recipe": ASR_RECIPE, "analysis_audio_sha256": audio_hash,
+                         "sample_rate": SAMPLE_RATE, "total_samples": total_samples,
+                         "max_gap_samples": MAX_GAP_SAMPLES, "calibrated": False}
+        def to_cues(aligned: Any) -> tuple[TextCue, ...]:
+            return tuple(TextCue(item.cue_id, item.start_ms, item.end_ms, item.text, confidence=item.confidence) for item in aligned)
+        def validate(aligned: Any) -> bool:
+            try:
+                return _asr_word_evidence_matches(to_cues(aligned), {**base_evidence, "cue_quality": {item.cue_id: item.evidence for item in aligned}})
+            except (TypeError, ValueError):
+                return False
+        bounded = transcribe_bounded(
+            audio_path, total_samples=total_samples, audio_hash=audio_hash, language=_whisper_language(source_language),
+            model_binding=model_binding or ASR_RECIPE, chunks_dir=chunks_dir or (audio_path.parent / "asr-chunks"),
+            model_factory=lambda: WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=max(1, min(8, os.cpu_count() or 1)), local_files_only=True),
+            write_json=_atomic_json, validate_cues=validate, on_chunk=on_chunk,
         )
-        cues: list[TextCue] = []
-        cue_quality: dict[str, Any] = {}
-        for segment in segments:
-            for aligned in segment_cues(segment, total_samples):
-                if aligned.cue_id in cue_quality:
-                    raise ProductionJobError("ASR_CUE_ID_COLLISION", "ASR emitted duplicate source-derived cue identity")
-                cues.append(TextCue(aligned.cue_id, aligned.start_ms, aligned.end_ms, aligned.text, confidence=aligned.confidence))
-                cue_quality[aligned.cue_id] = aligned.evidence
+        cues = to_cues(bounded.cues)
+        evidence = {**base_evidence, "schema_version": 2, "cue_quality": {item.cue_id: item.evidence for item in bounded.cues},
+                    "chunking": {"core_samples": CORE_SAMPLES, "overlap_samples": OVERLAP_SAMPLES, "ownership": "word-midpoint-v1"},
+                    "chunk_identity": bounded.identity, "chunk_binding": bounded.binding,
+                    "language_pin": {"language": bounded.language, "probability": bounded.probability},
+                    "chunks": list(bounded.chunks), "boundary_reviews": list(bounded.reviews)}
+        if not _asr_evidence_matches(cues, evidence):
+            raise ProductionJobError("ASR_HYPOTHESIS_INVALID", "reconciled ASR evidence does not match source cues")
+    except ChunkAsrError as error:
+        raise ProductionJobError(error.code, str(error), retryable=False) from error
     except ProductionJobError:
         raise
     except ValueError as error:
@@ -590,14 +602,8 @@ def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_l
         raise ProductionJobError("ASR_FAILED", str(error), retryable=True) from error
     if not cues:
         raise ProductionJobError("ASR_EMPTY", "ASR produced no speech segments")
-    resolved = _resolved_language(cues, source_language, getattr(info, "language", None))
-    probability = getattr(info, "language_probability", None) if source_language == "auto" else None
-    if type(probability) not in (int, float) or not 0 <= probability <= 1:
-        probability = None
-    evidence = {"schema_version": 1, "recipe": ASR_RECIPE, "analysis_audio_sha256": _sha256(audio_path),
-                "sample_rate": SAMPLE_RATE, "total_samples": total_samples, "max_gap_samples": MAX_GAP_SAMPLES,
-                "calibrated": False, "cue_quality": cue_quality}
-    return TranscriptResult(tuple(cues), resolved, "whisper-detected" if source_language == "auto" else "requested", probability, evidence)
+    resolved = _resolved_language(cues, source_language, bounded.language)
+    return TranscriptResult(cues, resolved, "whisper-detected" if source_language == "auto" else "requested", bounded.probability, evidence)
 
 
 def _sidecar_language(cues: tuple[TextCue, ...], config: WorkerConfig, audio_path: Path) -> TranscriptResult:
@@ -625,7 +631,7 @@ def _sidecar_language(cues: tuple[TextCue, ...], config: WorkerConfig, audio_pat
 
 
 def _language_checkpoint(cues: tuple[TextCue, ...], document: Mapping[str, Any], requested: str) -> TranscriptResult | None:
-    if type(document.get("schema_version")) is not int or document.get("schema_version") != 3 or document.get("requested_source_language") != requested:
+    if type(document.get("schema_version")) is not int or document.get("schema_version") != 4 or document.get("requested_source_language") != requested:
         return None
     observed = document.get("source_language")
     authority = document.get("language_authority")
@@ -640,10 +646,17 @@ def _language_checkpoint(cues: tuple[TextCue, ...], document: Mapping[str, Any],
     evidence = document.get("asr_evidence")
     if document.get("source") == "faster-whisper" and not _asr_evidence_matches(cues, evidence):
         return None
+    if document.get("source") == "faster-whisper" and (_whisper_language(resolved) != evidence["language_pin"]["language"] or probability != evidence["language_pin"]["probability"]):
+        return None
     return TranscriptResult(cues, resolved, authority, probability, evidence)
 
 
 def _asr_evidence_matches(cues: Sequence[TextCue], evidence: Any) -> bool:
+    from engine.dubflow.worker.whisper_chunks import summary_matches
+    return summary_matches(evidence) and _asr_word_evidence_matches(cues, {**evidence, "schema_version": 1})
+
+
+def _asr_word_evidence_matches(cues: Sequence[TextCue], evidence: Any) -> bool:
     from engine.dubflow.worker.whisper_cues import ASR_RECIPE, SAMPLE_RATE, MAX_GAP_SAMPLES
     from engine.dubflow.asr import map_sample_interval
     if not isinstance(evidence, Mapping) or type(evidence.get("schema_version")) is not int or evidence.get("schema_version") != 1 or evidence.get("recipe") != ASR_RECIPE or evidence.get("calibrated") is not False:
@@ -913,10 +926,13 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             transcript_source = "sidecar-srt"
         else:
             emitter.progress(0.18, "Đang nhận dạng lời thoại bằng model CPU")
-            transcript = _transcribe_with_faster_whisper(audio_path, config.model_root, config.source_language)
+            def asr_checkpoint(done: int, total: int, chunk_id: str, artifact_hash: str) -> None:
+                emitter.progress(0.18 + 0.19 * done / total, "Đang nhận dạng lời thoại", units_done=done, units_total=total)
+                emitter.checkpoint("asr:" + chunk_id, artifact_hash)
+            transcript = _transcribe_with_faster_whisper(audio_path, config.model_root, config.source_language, chunks_dir=work_dir / "asr-chunks", model_binding=transcript_input, on_chunk=asr_checkpoint)
             transcript_source = "faster-whisper"
         cues = transcript.cues
-        _atomic_json(transcript_path, {"schema_version": 3, "input_hash": transcript_input, "source": transcript_source, "requested_source_language": config.source_language, **transcript.language_metadata(), "asr_evidence": transcript.asr_evidence, "cues": [cue.to_dict() for cue in cues]})
+        _atomic_json(transcript_path, {"schema_version": 4, "input_hash": transcript_input, "source": transcript_source, "requested_source_language": config.source_language, **transcript.language_metadata(), "asr_evidence": transcript.asr_evidence, "cues": [cue.to_dict() for cue in cues]})
         _write_stage(checkpoint, checkpoint_path, "transcript", {"source": transcript_source, "path": str(transcript_path), "sha256": _sha256(transcript_path)})
     emitter.progress(0.38, "Đã nhận dạng lời thoại", units_done=len(cues), units_total=len(cues))
     emitter.checkpoint("transcript", _sha256(work_dir / "transcript.json"))
