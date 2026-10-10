@@ -114,7 +114,7 @@ class TextCue:
             raise ValueError("cue source text is invalid")
         if self.translated_text is not None and (not isinstance(self.translated_text, str) or not self.translated_text.strip()):
             raise ValueError("cue translation is invalid")
-        if not isinstance(self.confidence, (int, float)) or not math.isfinite(float(self.confidence)) or not 0 <= float(self.confidence) <= 1:
+        if type(self.confidence) not in (int, float) or not math.isfinite(float(self.confidence)) or not 0 <= float(self.confidence) <= 1:
             raise ValueError("cue confidence is invalid")
 
     def to_dict(self) -> dict[str, Any]:
@@ -532,6 +532,7 @@ class TranscriptResult:
     source_language: str
     authority: str
     probability: float | None = None
+    asr_evidence: Mapping[str, Any] | None = None
 
     def language_metadata(self) -> dict[str, Any]:
         return {"source_language": self.source_language, "language_authority": self.authority, "language_probability": self.probability}
@@ -552,6 +553,7 @@ def _whisper_language(requested: str) -> str | None:
 
 
 def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_language: str) -> TranscriptResult:
+    from engine.dubflow.worker.whisper_cues import ASR_RECIPE, SAMPLE_RATE, MAX_GAP_SAMPLES, segment_cues
     try:
         from faster_whisper import WhisperModel  # type: ignore[import-not-found]
     except ImportError as error:
@@ -560,23 +562,30 @@ def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_l
     if not model_path.is_dir():
         raise ProductionJobError("ASR_MODEL_MISSING", f"the pinned ASR model is missing: {model_path}")
     try:
-        model = WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=max(1, min(8, os.cpu_count() or 1)))
+        with wave.open(str(audio_path), "rb") as reader:
+            if (reader.getframerate(), reader.getnchannels(), reader.getsampwidth()) != (SAMPLE_RATE, 1, 2):
+                raise ProductionJobError("ASR_AUDIO_INVALID", "ASR requires the owned 16K mono PCM analysis audio")
+            total_samples = reader.getnframes()
+        model = WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=max(1, min(8, os.cpu_count() or 1)), local_files_only=True)
         segments, info = model.transcribe(
             str(audio_path),
             language=_whisper_language(source_language),
             beam_size=5,
             vad_filter=True,
-            word_timestamps=False,
+            word_timestamps=True,
         )
         cues: list[TextCue] = []
-        for index, segment in enumerate(segments, start=1):
-            text = str(getattr(segment, "text", "")).strip()
-            start = int(max(0.0, float(getattr(segment, "start", 0.0))) * 1000)
-            end = int(max(float(getattr(segment, "end", 0.0)), float(getattr(segment, "start", 0.0)) + 0.05) * 1000)
-            if text and end > start:
-                cues.append(TextCue(f"cue-{index}", start, end, text, confidence=0.85))
+        cue_quality: dict[str, Any] = {}
+        for segment in segments:
+            for aligned in segment_cues(segment, total_samples):
+                if aligned.cue_id in cue_quality:
+                    raise ProductionJobError("ASR_CUE_ID_COLLISION", "ASR emitted duplicate source-derived cue identity")
+                cues.append(TextCue(aligned.cue_id, aligned.start_ms, aligned.end_ms, aligned.text, confidence=aligned.confidence))
+                cue_quality[aligned.cue_id] = aligned.evidence
     except ProductionJobError:
         raise
+    except ValueError as error:
+        raise ProductionJobError("ASR_HYPOTHESIS_INVALID", str(error), retryable=False) from error
     except Exception as error:
         raise ProductionJobError("ASR_FAILED", str(error), retryable=True) from error
     if not cues:
@@ -585,7 +594,10 @@ def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_l
     probability = getattr(info, "language_probability", None) if source_language == "auto" else None
     if type(probability) not in (int, float) or not 0 <= probability <= 1:
         probability = None
-    return TranscriptResult(tuple(cues), resolved, "whisper-detected" if source_language == "auto" else "requested", probability)
+    evidence = {"schema_version": 1, "recipe": ASR_RECIPE, "analysis_audio_sha256": _sha256(audio_path),
+                "sample_rate": SAMPLE_RATE, "total_samples": total_samples, "max_gap_samples": MAX_GAP_SAMPLES,
+                "calibrated": False, "cue_quality": cue_quality}
+    return TranscriptResult(tuple(cues), resolved, "whisper-detected" if source_language == "auto" else "requested", probability, evidence)
 
 
 def _sidecar_language(cues: tuple[TextCue, ...], config: WorkerConfig, audio_path: Path) -> TranscriptResult:
@@ -613,7 +625,7 @@ def _sidecar_language(cues: tuple[TextCue, ...], config: WorkerConfig, audio_pat
 
 
 def _language_checkpoint(cues: tuple[TextCue, ...], document: Mapping[str, Any], requested: str) -> TranscriptResult | None:
-    if type(document.get("schema_version")) is not int or document.get("schema_version") != 2 or document.get("requested_source_language") != requested:
+    if type(document.get("schema_version")) is not int or document.get("schema_version") != 3 or document.get("requested_source_language") != requested:
         return None
     observed = document.get("source_language")
     authority = document.get("language_authority")
@@ -625,7 +637,75 @@ def _language_checkpoint(cues: tuple[TextCue, ...], document: Mapping[str, Any],
     probability = document.get("language_probability")
     if probability is not None and (type(probability) not in (int, float) or not 0 <= probability <= 1):
         return None
-    return TranscriptResult(cues, resolved, authority, probability)
+    evidence = document.get("asr_evidence")
+    if document.get("source") == "faster-whisper" and not _asr_evidence_matches(cues, evidence):
+        return None
+    return TranscriptResult(cues, resolved, authority, probability, evidence)
+
+
+def _asr_evidence_matches(cues: Sequence[TextCue], evidence: Any) -> bool:
+    from engine.dubflow.worker.whisper_cues import ASR_RECIPE, SAMPLE_RATE, MAX_GAP_SAMPLES
+    from engine.dubflow.asr import map_sample_interval
+    if not isinstance(evidence, Mapping) or type(evidence.get("schema_version")) is not int or evidence.get("schema_version") != 1 or evidence.get("recipe") != ASR_RECIPE or evidence.get("calibrated") is not False:
+        return False
+    if evidence.get("sample_rate") != SAMPLE_RATE or evidence.get("max_gap_samples") != MAX_GAP_SAMPLES or type(evidence.get("total_samples")) is not int or evidence["total_samples"] <= 0:
+        return False
+    if not isinstance(evidence.get("analysis_audio_sha256"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", evidence["analysis_audio_sha256"]):
+        return False
+    quality = evidence.get("cue_quality")
+    if not isinstance(quality, Mapping) or len(quality) != len(cues) or set(quality) != {cue.cue_id for cue in cues}:
+        return False
+    try:
+        for cue in cues:
+            item = quality[cue.cue_id]
+            if not isinstance(item, Mapping) or item.get("recipe") != ASR_RECIPE or item.get("sample_rate") != SAMPLE_RATE:
+                return False
+            start, end = item.get("start_sample"), item.get("end_sample")
+            if type(start) is not int or type(end) is not int or not 0 <= start < end <= evidence["total_samples"]:
+                return False
+            interval = map_sample_interval(TimePoint(0, TimeBase(1, 1000)), start, end, SAMPLE_RATE)
+            if (interval.start.ticks, interval.end.ticks) != (cue.start_ms, cue.end_ms):
+                return False
+            words = item.get("words")
+            if not isinstance(words, list) or not words or "".join(word["text"] for word in words).strip() != cue.source_text:
+                return False
+            if len(words) > 16_384:
+                return False
+            previous_start = previous_end = -1
+            for word in words:
+                word_start, word_end = word.get("start_sample"), word.get("end_sample")
+                if type(word_start) is not int or type(word_end) is not int or not start <= word_start <= word_end <= end or word_start < previous_start:
+                    return False
+                if previous_end >= 0 and word_start - previous_end > MAX_GAP_SAMPLES:
+                    return False
+                previous_start, previous_end = word_start, max(previous_end, word_end)
+                value = word.get("probability")
+                if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1):
+                    return False
+            if min(word["start_sample"] for word in words) != start or max(word["end_sample"] for word in words) != end:
+                return False
+            if cue.cue_id != f"asr-{start}-{end}-{sha256(cue.source_text.encode()).hexdigest()[:12]}":
+                return False
+            probabilities = [word.get("probability") for word in words]
+            available = all(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1 for value in probabilities)
+            basis = "minimum-word-probability-uncalibrated" if available else "unavailable"
+            if item.get("confidence_basis") != basis or cue.confidence != (min(probabilities) if available else 0.0):
+                return False
+            if item.get("timing_basis") not in {"word-alignment", "segment-fallback"}:
+                return False
+            if item["timing_basis"] == "segment-fallback":
+                if available or len(words) != 1 or item.get("review_reason") not in {"word-alignment-unavailable", "word-alignment-invalid"}:
+                    return False
+            elif item.get("review_reason") is not None:
+                return False
+            raw = item.get("raw_segment_scores")
+            if not isinstance(raw, Mapping) or set(raw) != {"avg_logprob", "no_speech_prob", "compression_ratio", "temperature"}:
+                return False
+            if any(value is not None and (type(value) not in (int, float) or not math.isfinite(value)) for value in raw.values()):
+                return False
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return False
+    return True
 
 
 def _translation_identity(cues: Sequence[TextCue], language: str, provenance: Mapping[str, Any]) -> str:
@@ -682,6 +762,7 @@ def _write_manifest(
     audio: Mapping[str, Any] | None = None,
     language: Mapping[str, Any] | None = None,
     translation: Mapping[str, Any] | None = None,
+    asr: Mapping[str, Any] | None = None,
 ) -> Path:
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -701,6 +782,8 @@ def _write_manifest(
         manifest["language"] = dict(language)
     if translation is not None:
         manifest["translation"] = dict(translation)
+    if asr is not None:
+        manifest["asr"] = dict(asr)
     path = output_dir / "job_manifest.json"
     _atomic_json(path, manifest)
     return path
@@ -815,7 +898,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             emitter.checkpoint("audio", _sha256(audio_path))
 
     transcript_path = work_dir / "transcript.json"
-    transcript_input = "sha256:" + sha256(json.dumps({"source_hash": source_hash, "requested_language": config.source_language, "sidecar_cues": [cue.to_dict() for cue in sidecar] if sidecar is not None else None, "asr_profile_hash": _sha256(profile_path), "recipe": "faster-whisper-1.2.1-v1"}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    from engine.dubflow.worker.whisper_cues import ASR_RECIPE
+    transcript_input = "sha256:" + sha256(json.dumps({"source_hash": source_hash, "requested_language": config.source_language, "sidecar_cues": [cue.to_dict() for cue in sidecar] if sidecar is not None else None, "asr_profile_hash": _sha256(profile_path), "recipe": ASR_RECIPE}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     transcript = None
     if _stage_ready(checkpoint, "transcript", (transcript_path,)):
         transcript_document = json.loads(transcript_path.read_text(encoding="utf-8"))
@@ -832,7 +916,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             transcript = _transcribe_with_faster_whisper(audio_path, config.model_root, config.source_language)
             transcript_source = "faster-whisper"
         cues = transcript.cues
-        _atomic_json(transcript_path, {"schema_version": 2, "input_hash": transcript_input, "source": transcript_source, "requested_source_language": config.source_language, **transcript.language_metadata(), "cues": [cue.to_dict() for cue in cues]})
+        _atomic_json(transcript_path, {"schema_version": 3, "input_hash": transcript_input, "source": transcript_source, "requested_source_language": config.source_language, **transcript.language_metadata(), "asr_evidence": transcript.asr_evidence, "cues": [cue.to_dict() for cue in cues]})
         _write_stage(checkpoint, checkpoint_path, "transcript", {"source": transcript_source, "path": str(transcript_path), "sha256": _sha256(transcript_path)})
     emitter.progress(0.38, "Đã nhận dạng lời thoại", units_done=len(cues), units_total=len(cues))
     emitter.checkpoint("transcript", _sha256(work_dir / "transcript.json"))
@@ -1052,7 +1136,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             "editable_dialogue_stem": editable_dir / "dialogue_stem.wav",
             "editable_final_mix": editable_dir / "final_mix.wav",
         })
-    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=translation_provenance)
+    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=translation_provenance, asr=transcript.asr_evidence)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.checkpoint("qc", _sha256(qc_path))
     return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "manifest": str(manifest_path)}

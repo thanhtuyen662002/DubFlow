@@ -590,3 +590,35 @@ describes recipe identity, internal attempt semantics, private warning and
 coherent rollback. Fresh source-bound real CPU/tempo and exact-head four-lane
 native checks must rerun; existing766 greens are historical. No default voice,
 translation, semantic coverage, human listening or full166/175 gate is promoted.
+# Word-aligned film follow-up — 2026-10-10
+
+The fresh repository-source worker (parent commit `0887d5e`, declared successor
+changes; verified installed766 owned runtime and cached models) completed the
+licensed no-sidecar Sintel excerpt in 56.766 seconds with actual Whisper,
+Argos, VieNeu3.2.0, streaming mixer and H.264/AAC output. Full AV decode and
+artifact hashes passed. This is source-worker evidence, **not an installed
+successor, native supervisor/GUI or full #166/#175 qualification**.
+
+Eleven word-aligned, pause-separated cues replace nine segment-wide windows.
+The night phrase now spans137.88–138.62 seconds instead of122.02–138.66:
+the former interval placed speech about15.86 seconds early. Its raw minimum
+word probability is0.2853, explicitly uncalibrated, and the `skis`/Scales name
+recognition error remains. No reference-name hotwords were supplied.
+
+Actual Trúc Ly speech fits **7/11** windows. Four `DURATION_FIT_REQUIRED`
+intervals preserve original source audio, including the night phrase. Correct
+boundaries expose short Vietnamese speech windows; prior95/99 fits from11
+voices used old segment bounds and do not establish film synchronization.
+Bounded intelligible fitting/semantic rewrite remains open. The25-voice
+catalog and provisional default are unchanged.
+
+Raw actual receipt SHA256:
+`eaacb8b3843cd43709c6ec6a8fe9663bd65902652038a1f9fe56489584f6af86`.
+Its harness `tts_cues=0` incorrectly queried nonexistent `utterances`; the
+actual TTS document has11 source segment IDs,7 artifacts,4 refusals. Preserve
+the raw receipt and use the separate count audit for the corrected count.
+The initial fresh attempt stopped before translation/TTS because strict
+Python scalar validation rejected SDK NumPy timestamp scalars. Normalize
+real numeric scalars to plain sample integers/scores;40 worker regressions
+then passed and the fresh second attempt completed. Both attempts are
+retained; original50-file installed766 movie output is unchanged.

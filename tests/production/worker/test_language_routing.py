@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+import wave
 from unittest.mock import patch
 
 from engine.dubflow.worker import production_job as worker
@@ -57,15 +58,22 @@ class LanguageRoutingTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "asr/faster-whisper-small").mkdir(parents=True)
+            with wave.open(str(root / "a.wav"), "wb") as audio:
+                audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                audio.writeframes(bytes(3 * 16000 * 2))
             with patch.dict("sys.modules", {"faster_whisper": SimpleNamespace(WhisperModel=Model)}):
                 auto = worker._transcribe_with_faster_whisper(root / "a.wav", root, "auto")
                 explicit = worker._transcribe_with_faster_whisper(root / "a.wav", root, "zh-TW")
         self.assertEqual((auto.source_language, auto.authority, auto.probability), ("zh", "whisper-detected", 0.98))
-        self.assertEqual((auto.cues[0].cue_id, auto.cues[0].start_ms, auto.cues[0].end_ms), ("cue-1", 1250, 2500))
+        self.assertEqual((auto.cues[0].start_ms, auto.cues[0].end_ms), (1250, 2500))
+        self.assertTrue(auto.cues[0].cue_id.startswith("asr-20000-40000-"))
+        self.assertEqual(auto.cues[0].confidence, 0)
+        self.assertEqual(auto.asr_evidence["cue_quality"][auto.cues[0].cue_id]["timing_basis"], "segment-fallback")
         self.assertEqual(explicit.source_language, "zh-TW")
         self.assertIsNone(explicit.probability)
         self.assertIsNone(observed_calls[0]["language"])
         self.assertEqual(observed_calls[1]["language"], "zh")
+        self.assertTrue(all(call["word_timestamps"] for call in observed_calls))
 
     def test_unresolved_language_is_rejected_before_runtime_initialization(self):
         runtime = RecordingRuntime()
@@ -83,9 +91,9 @@ class LanguageRoutingTests(unittest.TestCase):
             self.assertEqual((resolved.source_language, resolved.authority), ("zh-CN", "requested"))
 
     def test_legacy_and_forged_authority_cannot_reuse_auto_language(self):
-        document = {"schema_version": 2, "requested_source_language": "auto", "source_language": "zh", "language_authority": "whisper-detected", "language_probability": 0.9}
+        document = {"schema_version": 3, "requested_source_language": "auto", "source_language": "zh", "language_authority": "whisper-detected", "language_probability": 0.9}
         self.assertEqual(worker._language_checkpoint(self.cues, document, "auto").source_language, "zh")
-        for change in ({"schema_version": 1}, {"language_authority": "requested"}, {"language_probability": True}, {"source_language": "und"}, {"schema_version": 2.0}):
+        for change in ({"schema_version": 1}, {"schema_version": 2}, {"language_authority": "requested"}, {"language_probability": True}, {"source_language": "und"}, {"schema_version": 3.0}):
             candidate = {**document, **change}
             if change.get("source_language") == "und":
                 with self.assertRaisesRegex(worker.ProductionJobError, "SOURCE_LANGUAGE_UNRESOLVED"):
