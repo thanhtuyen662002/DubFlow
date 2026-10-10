@@ -510,10 +510,10 @@ class VoiceVersionQualificationTests(unittest.TestCase):
                               ("final_mix", "final_mix.wav")):
                 path = editable / name
                 with production_smoke.wave.open(str(path), "wb") as writer:
-                    writer.setparams((1, 2, 16000, 16000, "NONE", "not compressed"))
-                    writer.writeframes(b"\x00\x01" * 16000)
+                    writer.setparams((2, 2, 16000, 16000, "NONE", "not compressed"))
+                    writer.writeframes(b"\x00\x01" * 32000)
                 digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-                artifacts[key] = {"path": str(path), "content_hash": digest, "frame_count": 16000, "channels": 1,
+                artifacts[key] = {"path": str(path), "content_hash": digest, "frame_count": 16000, "channels": 2,
                                   "sample_rate": 16000, "metrics": {"content_hash": digest, "clipped_samples": 0}}
             provenance = {"backend_id": "pcm-stream-duck-v1", "producer_version": "2.0.1",
                           "runtime": "owned-python/numpy-2.2.6", "non_destructive": True,
@@ -538,7 +538,7 @@ class VoiceVersionQualificationTests(unittest.TestCase):
             manifest = {"audio": {"mode": "dubbed", "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
                                    "mix_document": str(mix_path), "mix_provenance": provenance}}
             (root / "job_manifest.json").write_text(json.dumps(manifest))
-            probe = {"streams": [{"codec_type": "video", "codec_name": "h264"}, {"codec_type": "audio", "codec_name": "aac"}],
+            probe = {"streams": [{"codec_type": "video", "codec_name": "h264"}, {"codec_type": "audio", "codec_name": "aac", "channels": 2}],
                      "format": {"duration": "3"}}
             with mock.patch.object(production_smoke, "_run", return_value=SimpleNamespace(stdout=json.dumps(probe))):
                 report = production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True,
