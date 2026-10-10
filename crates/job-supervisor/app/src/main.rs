@@ -2760,6 +2760,21 @@ mod tests {
     }
 
     #[test]
+    fn complete_no_audio_dub_keeps_loudness_advisory_visible() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        let mut qc = test_qc(json!({"mode":"dubbed", "source_audio_origin":"generated-silence", "tts_failures":0, "mix_failures":0,
+            "mix_warnings":["final mix is below the configured target RMS; source and dialogue were preserved"]}));
+        qc["source_probe"]["has_audio"] = json!(false);
+        commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+        let (reason, message) = completion_summary(&store, &spec);
+        assert_eq!(reason, "completed_with_warnings");
+        assert!(message.contains("báo cáo chất lượng"));
+        assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Succeeded);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn no_audio_source_does_not_claim_original_audio_in_fallback() {
         let (root, _, spec) = identity_fixture();
         let store = DurableStore::open_in_memory().unwrap();

@@ -546,13 +546,33 @@ def _verify_no_audio_dub(ffprobe: Path, output: Path, status: dict[str, Any], jo
     value = _require_status(status, "COMPLETED", job_id)
     qc, manifest = _json(output / "qc_report.json"), _json(output / "job_manifest.json")
     audio = manifest.get("audio", {})
-    if (manifest.get("job_id") != job_id or qc.get("source_probe", {}).get("has_audio") is not False or
-            qc.get("audio") != audio or audio.get("mode") != "dubbed" or
-            audio.get("source_audio_origin") != "generated-silence" or
-            audio.get("tts_failures") != 0 or audio.get("mix_failures") != 0 or
-            value.get("reason") != "completed"):
-        raise SmokeError("no-audio captions did not produce a verified real dub with explicit silent origin")
+    mix_warnings = audio.get("mix_warnings")
+    # Long silent intervals lower whole-video RMS without losing synthesized
+    # dialogue. Keep the native advisory visible and reject other degradations.
+    loudness_advisory = "final mix is below the configured target RMS; source and dialogue were preserved"
+    checks = {
+        "job_identity": manifest.get("job_id") == job_id,
+        "no_source_audio": qc.get("source_probe", {}).get("has_audio") is False,
+        "passing_qc": qc.get("status") == "passed" and qc.get("downgrade") is False,
+        "matching_audio": qc.get("audio") == audio,
+        "dubbed_silent_origin": audio.get("mode") == "dubbed" and audio.get("source_audio_origin") == "generated-silence",
+        "no_tts_failures": type(audio.get("tts_failures")) is int and audio["tts_failures"] == 0,
+        "no_mix_failures": type(audio.get("mix_failures")) is int and audio["mix_failures"] == 0,
+        "no_pipeline_warnings": qc.get("warnings") == [] and manifest.get("warnings") == [],
+        "recognized_mix_advisory": isinstance(mix_warnings, list) and all(item == loudness_advisory for item in mix_warnings),
+        "matching_completion_reason": value.get("reason") == ("completed_with_warnings" if mix_warnings else "completed"),
+    }
+    if not all(checks.values()):
+        diagnostics = {"failed_checks": [name for name, passed in checks.items() if not passed],
+                       "reason": str(value.get("reason"))[:96],
+                       "tts_failures": str(audio.get("tts_failures"))[:32],
+                       "mix_failures": str(audio.get("mix_failures"))[:32],
+                       "mix_warnings": [str(item)[:256] for item in mix_warnings[:4]] if isinstance(mix_warnings, list) else "invalid"}
+        raise SmokeError("no-audio dub evidence rejected: " + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True))
     verified = _verify_output(ffprobe, output, seconds, expect_dubbing=True, expect_voice_id=voice_id, expect_audio=True)
+    tts, mix = _json(Path(audio["tts_document"])), _json(Path(audio["mix_document"]))
+    if tts.get("failures") != [] or mix.get("failures") != [] or mix.get("warnings") != mix_warnings:
+        raise SmokeError("no-audio TTS/mix documents disagree with reported failures or warnings")
     with wave.open(str(output / "editable/source_audio.wav"), "rb") as reader:
         if (reader.getnframes(), reader.getframerate(), reader.getnchannels(), reader.getsampwidth()) != (seconds * 48000, 48000, 2, 2):
             raise SmokeError("silent bed differs from the source duration or stereo PCM format")
@@ -566,7 +586,7 @@ def _verify_no_audio_dub(ffprobe: Path, output: Path, status: dict[str, Any], jo
         if not audible:
             raise SmokeError("no-audio dub exported a silent dialogue stem")
     return {"reason": value["reason"], "message": value["message"], "source_audio_origin": "generated-silence",
-            "source_frames": seconds * 48000, "dialogue_nonzero": True, "output": verified,
+            "source_frames": seconds * 48000, "dialogue_nonzero": True, "mix_warnings": mix_warnings, "output": verified,
             "qc_sha256": _file_digest(output / "qc_report.json")}
 
 

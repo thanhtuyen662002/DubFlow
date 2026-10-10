@@ -17,20 +17,45 @@ from scripts.release import production_smoke as smoke
 
 class NoAudioDubEvidenceTests(unittest.TestCase):
     def test_silent_origin_pcm_and_real_dialogue_are_required(self):
-        for defect in (None, "original_origin", "bed_noise", "short_bed", "silent_dialogue", "fallback", "partial"):
+        advisory = "final mix is below the configured target RMS; source and dialogue were preserved"
+        accepted = (None, "low_rms")
+        for defect in (*accepted, "original_origin", "bed_noise", "short_bed", "silent_dialogue", "fallback", "partial",
+                       "low_rms_partial", "unreported_warning", "unknown_warning", "quality_unverified", "false_count",
+                       "wrong_reason", "qc_warning", "downgrade", "hidden_tts_failure", "hidden_mix_failure", "hidden_mix_warning"):
             with self.subTest(defect=defect), TemporaryDirectory(prefix="dubflow-no-audio-evidence-") as directory:
                 root = Path(directory)
                 (root / "editable").mkdir()
-                audio = {"mode": "dubbed", "source_audio_origin": "generated-silence", "tts_failures": 0, "mix_failures": 0}
+                audio = {"mode": "dubbed", "source_audio_origin": "generated-silence", "tts_failures": 0, "mix_failures": 0,
+                         "mix_warnings": [], "tts_document": str(root / "tts.json"), "mix_document": str(root / "mix.json")}
+                reason = "completed"
+                if defect in ("low_rms", "low_rms_partial", "wrong_reason"):
+                    audio["mix_warnings"] = [advisory]
+                    reason = "completed_with_warnings" if defect != "wrong_reason" else "completed"
+                if defect == "unreported_warning":
+                    reason = "completed_with_warnings"
+                if defect == "unknown_warning":
+                    audio["mix_warnings"] = ["unknown mixer degradation"]
+                    reason = "completed_with_warnings"
+                if defect == "quality_unverified":
+                    reason = "completed_quality_unverified"
+                if defect == "false_count":
+                    audio["tts_failures"] = False
                 if defect == "original_origin":
                     audio["source_audio_origin"] = "decoded-source"
                 if defect == "fallback":
                     audio["mode"] = "original"
-                if defect == "partial":
+                if defect in ("partial", "low_rms_partial"):
                     audio["tts_failures"] = 1
-                qc = {"source_probe": {"has_audio": False}, "audio": audio}
+                qc = {"source_probe": {"has_audio": False}, "audio": audio, "status": "passed", "warnings": [], "downgrade": False}
+                if defect == "qc_warning":
+                    qc["warnings"] = ["pipeline degradation"]
+                if defect == "downgrade":
+                    qc["downgrade"] = True
                 (root / "qc_report.json").write_text(json.dumps(qc), encoding="utf-8")
-                (root / "job_manifest.json").write_text(json.dumps({"job_id": "no-audio", "audio": audio}), encoding="utf-8")
+                (root / "job_manifest.json").write_text(json.dumps({"job_id": "no-audio", "audio": audio, "warnings": []}), encoding="utf-8")
+                (root / "tts.json").write_text(json.dumps({"failures": [{}] if defect == "hidden_tts_failure" else []}), encoding="utf-8")
+                (root / "mix.json").write_text(json.dumps({"failures": [{}] if defect == "hidden_mix_failure" else [],
+                    "warnings": [advisory] if defect == "hidden_mix_warning" else audio["mix_warnings"]}), encoding="utf-8")
                 for name in ("source_audio.wav", "dialogue_stem.wav"):
                     with wave.open(str(root / "editable" / name), "wb") as writer:
                         writer.setnchannels(2)
@@ -40,15 +65,20 @@ class NoAudioDubEvidenceTests(unittest.TestCase):
                         frame = b"\x01\x00\x01\x00" if (source and defect == "bed_noise") or (not source and defect != "silent_dialogue") else bytes(4)
                         writer.writeframes(frame * (24000 if source and defect == "short_bed" else 48000))
                 status = {"job_id": "no-audio", "output_path": str(root / "final_vi.mp4"),
-                          "status": {"state": "COMPLETED", "reason": "completed", "message": "Đã xuất video lồng tiếng Việt."}}
+                          "status": {"state": "COMPLETED", "reason": reason, "message": "Đã xuất video; hãy kiểm tra báo cáo chất lượng."}}
                 with mock.patch.object(smoke, "_verify_output", return_value={"scope": "checker fixture"}):
-                    if defect is None:
+                    if defect in accepted:
                         report = smoke._verify_no_audio_dub(root / "ffprobe", root, status, "no-audio", seconds=1, voice_id="fixture")
                         self.assertTrue(report["dialogue_nonzero"])
                         self.assertEqual(report["source_frames"], 48000)
+                        self.assertEqual(report["reason"], reason)
+                        self.assertEqual(report["mix_warnings"], audio["mix_warnings"])
                     else:
-                        with self.assertRaises(smoke.SmokeError):
+                        with self.assertRaises(smoke.SmokeError) as rejected:
                             smoke._verify_no_audio_dub(root / "ffprobe", root, status, "no-audio", seconds=1, voice_id="fixture")
+                        if defect in ("low_rms_partial", "unreported_warning", "unknown_warning", "false_count"):
+                            self.assertIn("failed_checks", str(rejected.exception))
+                            self.assertLess(len(str(rejected.exception)), 2048)
 
 
 def checkpoint(output: Path) -> tuple[Path, Path]:

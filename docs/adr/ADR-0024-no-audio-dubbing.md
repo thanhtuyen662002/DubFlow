@@ -66,3 +66,13 @@ media probes prove wiring only. Native tests verify truthful silent partial
 status. All four required exact new HEAD/current-main CI lanes and installed
 real no-audio + captions + selected-voice output remain required. Long-form,
 batch/recovery, intelligibility and full166/175 qualification stay open.
+
+The real18-second captioned no-audio worker test produced complete speech and
+zero TTS/mix failures, with the existing below-target RMS advisory because
+silent intervals lower whole-video RMS. Native completion remains
+completed_with_warnings and retains its quality-review message. Qualification
+accepts that specific advisory only with matching producer documents and
+status, passing QC, zero actual failures, zero source-bed PCM and audible
+dialogue. Unknown warnings, mismatched status, partial speech and B1 fallback
+remain refusals. This corrects the smoke check; it does not remove the warning
+or promote a partial result to a fully qualified release.
