@@ -2,6 +2,57 @@
 
 Status: Accepted
 
+## Owned page worker adapter over worker wire v1
+
+The next producer adapter uses the existing version-1 JSONL envelopes, not a
+new wire schema. `source_prepare` verifies the supplied immutable release
+manifest hash, full inventory/signature policy, isolated owned Python origin
+and worker path before constructing the existing verified SDK adapter. Its
+identity binds the release manifest/source/version, source contract, worker
+recipe, provider, canonical public reference and page size. The fingerprint is
+canonical sorted UTF-8 JSON hashed with SHA-256; it is a verified producer
+identity, never permission to repin an old scan. The supervisor must validate
+this ready receipt and retain the original admission/producer before creating
+or resuming a bound scan. A different release or recipe requires the retained
+compatible runtime or an explicitly new admission.
+
+Subsequent `source_page` commands carry that same fingerprint, the captured
+integer dispatch revision and cursor. Duplicate/non-increasing dispatches,
+changed producer, malformed input, completed producers and non-progressing
+pages fail explicitly. This producer emits source-contract-v1 public identities,
+titles, integer duration ticks and typed item failures. It omits media/subtitle
+locators, headers and raw provider diagnostics. Authenticated session capture
+and materialization remain separate work; no anonymous generic request receives
+provider cookies. Source item failures remain data and do not poison valid items.
+
+Internal source-ready/source-page packet version 1 is a bounded private adapter
+artifact, not a project/export format. Unique packets are fsynced and atomically
+published outside the immutable release; checkpoint envelopes carry their leaf
+name and SHA-256. Publication failures remove only the worker's own partial file
+and preserve previous packets. The native consumer must enforce the private root,
+packet budget/schema/hash, job/stage, original producer/revision/cursor and then
+commit through `checkpoint_page_checked`. Emitting a packet is not committing
+durable state. Existing jobs, source contract and worker wire v1 are unchanged;
+an older runtime does not execute these new commands or consume these packets.
+
+The parent keeps private stdin open until terminal output. Heartbeats continue
+during preparation/extraction. Control input has a bounded queue; overflow or
+invalid scope fails instead of blocking cancellation behind queued requests.
+Cancellation acknowledges the last supervisor commit without inventing an
+artifact hash for the producer's latest uncommitted page. The producer exits
+immediately, closing nested SDK Windows Job handles. EOF/parent loss exits as
+failure, never completion. The native supervisor must durably invalidate the
+dispatch and observe process termination before declaring pause/cancel complete;
+its prior committed page remains the recovery point. Retryability is returned
+as data; only the supervisor may authorize a bounded retry with changed conditions.
+
+Boundary tests substitute bundle admission/adapter outputs and do not qualify
+the installed SDK or durable native flow. Real subprocess tests additionally
+exercise cancellation during a blocked page, parent EOF and wrong-scan control
+using unchanged wire v1; their admission is explicitly substituted. Actual
+installed admission/enumeration, process ownership, native checked commits,
+scan restart, download and desktop intake still require product evidence.
+
 ## Durable dispatch guards and producer binding — source queue schema 2
 
 The version-1 store accepted a late page while Paused and restored Running.
