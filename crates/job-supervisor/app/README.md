@@ -37,6 +37,10 @@ Source commands and events use this service's bounded JSONL stream:
 {"command":"pause","scan_id":"scan-1"}
 {"command":"resume","scan_id":"scan-1"}
 {"command":"cancel","scan_id":"scan-1"}
+{"command":"download","scan_id":"scan-1","identity_key":"generic:example-id","resume":false}
+{"command":"pause_download","scan_id":"scan-1"}
+{"command":"download","scan_id":"scan-1","identity_key":"generic:example-id","resume":true}
+{"command":"cancel_download","scan_id":"scan-1"}
 {"command":"shutdown"}
 ```
 
@@ -57,10 +61,47 @@ uses the last committed cursor. Source failures preserve their typed code and
 retryability; no automatic retry is performed. Repair the condition before
 resuming. Cancellation before ready produces no false durable scan.
 
+After a producer-bound scan completes, `download` materializes one selected
+discovered item using a fresh owned SDK worker. Fresh inspection must reproduce
+its provider, ID, public canonical URL and identity key. The host chooses no
+media or scratch path. The native service owns byte/failure/final item commits;
+worker packets retain the original attempt revision and identity while each
+successful checked transaction advances the native snapshot. `items` exposes
+observed transfer bytes, optional total, error code and verified final media.
+Transfer bytes include reused verified streams and can differ from muxed size;
+they are not a guarantee of bytes retained after reboot.
+
+Pause invalidates the attempt before observing the child exit. Partial streams
+remain under `source-work/materialization/<manifest>/<scan>/<identity-hash>`.
+Only explicit `resume:true` with the original admitted runtime can resume an
+interrupted downloading row. Failed/cancelled items cannot automatically retry;
+another discovered sibling can still run. Enumeration remains completed and
+its cursor is preserved. Generic scan pause/cancel commands also control an
+active download; shutdown pauses it. Completed owner recovery advances the
+in-flight item epoch before admitting new callbacks.
+
+Native streaming SHA verification requires a successful producer exit and
+retains the verified file handle through publication. Windows denies concurrent
+writes; final admission also denies deletion, and file identity is checked
+before/after publication. Media publishes by a same-volume hard link under
+`source-media/<manifest>/<scan>/<identity-hash>/<content-hash>.mp4`; filesystems
+without this capability refuse publication. A failed checked commit retains
+an orphan for rehashing during explicit original-producer recovery. A filename
+alone never authorizes reuse. Final packet removal is best effort after commit;
+private completed stream retention/GC remains a storage-policy integration task.
+Windows mux/probe subprocesses use the existing source-owned kill-on-close Job
+boundary, including descendants; worker parent loss closes these handles.
+
 The native recorded-process tests use a substituted SDK/worker admission while
 exercising real Python stdio, packet hashing, OS ownership and SQLite reopen.
-They do not qualify installed live sources, authentication, download scheduling
-or desktop intake. Those remain #167/#168/#175 acceptance work.
+Download tests additionally cover actual recorded-child stdio, checked item
+progress, publication/orphan recovery, pause/cancel/reopen, changed producer,
+invalid hash/exit, foreign/late packets and replaced file handles. The recorded
+media bytes and adapter are fixtures. The named Windows process-tree test uses
+real child/grandchild processes, without claiming a live provider or real mux.
+Installed live acquisition, authentication, retries after changed conditions,
+single-video desktop intake and automatic production handoff still need their
+#167/#168/#175 acceptance evidence.
 
 `dubflow-supervisor` is the durable process owner for the local-file
 production profile.  It owns the SQLite connection, launches only the

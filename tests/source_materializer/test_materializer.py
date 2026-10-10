@@ -33,6 +33,48 @@ def response(status: int, body: bytes, headers: dict[str, str]) -> HttpResponse:
 
 
 class MaterializerTests(unittest.TestCase):
+    def test_progress_reports_actual_resume_prefix_and_unknown_http_total_before_publication(self):
+        payload = b"0123456789"
+        for prefix, headers in ((5, {"content-length": "5", "content-range": "bytes 5-9/10"}), (0, {})):
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as temp:
+                destination = Path(temp) / "media.mp4"
+                destination.write_bytes(b"previous")
+                if prefix:
+                    destination.with_name("media.mp4.part").write_bytes(payload[:prefix])
+                transport = FakeTransport([response(206 if prefix else 200, payload[prefix:], headers)])
+                observed = []
+
+                def progress(downloaded, total):
+                    self.assertEqual(destination.read_bytes(), b"previous")
+                    observed.append((downloaded, total))
+
+                result = MediaMaterializer(transport, chunk_bytes=3).download(
+                    MediaCandidate("media", "https://cdn.example.test/media.mp4", "progressive", "video/mp4"),
+                    destination, expected_sha256=hashlib.sha256(payload).hexdigest(), progress=progress)
+                self.assertEqual(observed[0], (prefix, 10 if prefix else None))
+                self.assertEqual(observed[-1], (10, 10 if prefix else None))
+                self.assertEqual([value[0] for value in observed], [5, 8, 10] if prefix else [0, 3, 6, 9, 10])
+                self.assertEqual(destination.read_bytes(), payload)
+                self.assertEqual(result.resumed, bool(prefix))
+
+    def test_observer_failure_preserves_previous_output_and_recoverable_partial(self):
+        payload = b"0123456789"
+        transport = FakeTransport([response(200, payload, {"content-length": "10"})])
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "media.mp4"
+            destination.write_bytes(b"previous")
+
+            def progress(downloaded, total):
+                if downloaded >= 3:
+                    raise RuntimeError("supervisor stopped accepting this dispatch")
+
+            with self.assertRaisesRegex(RuntimeError, "stopped accepting"):
+                MediaMaterializer(transport, chunk_bytes=3).download(
+                    MediaCandidate("media", "https://cdn.example.test/media.mp4", "progressive", "video/mp4"),
+                    destination, progress=progress)
+            self.assertEqual(destination.read_bytes(), b"previous")
+            self.assertEqual(destination.with_name("media.mp4.part").read_bytes(), payload[:3])
+
     def test_fresh_download_hashes_and_publishes_atomically(self) -> None:
         payload = b"dubflow-media"
         transport = FakeTransport([response(200, payload, {"content-length": str(len(payload) )})])

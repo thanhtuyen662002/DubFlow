@@ -660,6 +660,40 @@ impl SourceQueue {
         self.scan(scan_id)
     }
 
+    /// Read one original item through the scan/identity primary index.
+    /// Materialization callbacks never allocate the whole bounded scan.
+    pub fn item(&self, scan_id: &str, identity_key: &str) -> Result<SourceQueueItem> {
+        self.scan(scan_id)?;
+        let row = self.connection.query_row(
+            "SELECT scan_id, identity_key, source_id, source_url, position, status, retry_count, downloaded_bytes, total_bytes, error_code, error_message, media_path, content_hash FROM source_items WHERE scan_id = ?1 AND identity_key = ?2",
+            params![scan_id, identity_key], |row| Ok((
+                row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?, row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?, row.get::<_, Option<String>>(12)?,
+            )),
+        ).optional()?.ok_or_else(|| QueueError::NotFound { entity: "source item", id: identity_key.into() })?;
+        Ok(SourceQueueItem {
+            scan_id: row.0,
+            identity_key: row.1,
+            source_id: row.2,
+            source_url: row.3,
+            position: to_u64(row.4, "position")?,
+            status: ItemStatus::parse(row.5)?,
+            retry_count: to_u8(row.6, "retry_count")?,
+            downloaded_bytes: to_u64(row.7, "downloaded_bytes")?,
+            total_bytes: row
+                .8
+                .map(|value| to_u64(value, "total_bytes"))
+                .transpose()?,
+            error_code: row.9,
+            error_message: row.10,
+            media_path: row.11,
+            content_hash: row.12,
+        })
+    }
+
     pub fn items(&self, scan_id: &str) -> Result<Vec<SourceQueueItem>> {
         self.scan(scan_id)?;
         let mut statement = self.connection.prepare("SELECT scan_id, identity_key, source_id, source_url, position, status, retry_count, downloaded_bytes, total_bytes, error_code, error_message, media_path, content_hash FROM source_items WHERE scan_id = ?1 ORDER BY position, identity_key")?;
@@ -1501,6 +1535,41 @@ mod tests {
             content_hash: Some("a".repeat(64)),
             ..ItemProgress::discovered()
         }
+    }
+
+    #[test]
+    fn indexed_item_is_scoped_and_returns_the_current_complete_snapshot() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        let (record, item) = bound_item(&queue, true);
+        assert_eq!(queue.item("bound", &item.identity_key).unwrap(), item);
+        queue
+            .update_item_progress_checked(&record, &item, &downloaded(), 2)
+            .unwrap();
+        assert_eq!(
+            queue.item("bound", &item.identity_key).unwrap(),
+            queue.items("bound").unwrap()[0]
+        );
+        assert!(matches!(
+            queue.item("bound", "absent"),
+            Err(QueueError::NotFound {
+                entity: "source item",
+                ..
+            })
+        ));
+        assert!(matches!(
+            queue.item("absent", &item.identity_key),
+            Err(QueueError::NotFound { entity: "scan", .. })
+        ));
+        queue
+            .create_scan("other", "generic", "https://example.test/other", 10, 3)
+            .unwrap();
+        assert!(matches!(
+            queue.item("other", &item.identity_key),
+            Err(QueueError::NotFound {
+                entity: "source item",
+                ..
+            })
+        ));
     }
 
     #[test]

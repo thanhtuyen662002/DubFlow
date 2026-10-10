@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from engine.dubflow.download.enumeration import worker
+from engine.dubflow.download.materializer import DownloadResult
 from engine.dubflow.download.source_adapter import (
     MediaCandidate, SourceError, SourceErrorCode, SourceIdentity, SourceItem,
     SourcePage, SourcePageFailure, SubtitleCandidate,
@@ -58,6 +59,89 @@ class SourceWorkerTests(unittest.TestCase):
     def dispatch(self, session, revision=1, cursor=None, **changes):
         return session.page({"producer_fingerprint": session.fingerprint,
             "dispatch_revision": revision, "cursor": cursor, **changes})
+
+    def download_args(self, session, **changes):
+        identity = SourceIdentity("generic", "one", "https://example.test/one")
+        return {"producer_fingerprint": session.fingerprint, "dispatch_revision": 1,
+            "identity_key": identity.identity_key, "source_id": identity.source_id,
+            "source_url": identity.canonical_url, "resume": True, **changes}
+
+    def test_selected_download_reinspects_identity_and_publishes_only_private_media_receipt(self):
+        session = self.session()
+        item = SourceItem(SourceIdentity("generic", "one", "https://example.test/one"), "one",
+            media_candidates=(MediaCandidate("media", "https://cdn.example.test/media?token=secret-token", "progressive", "video/mp4"),))
+        self.adapter.inspect.return_value = item
+        payload = b"recorded media bytes; not native media qualification"
+        observed = []
+
+        def download(selected, destination, *, root, resume, cancel, progress):
+            self.assertEqual(selected, item)
+            self.assertEqual(root.resolve(), self.work.resolve())
+            self.assertTrue(resume)
+            progress(4, None)
+            destination.write_bytes(payload)
+            progress(len(payload), len(payload))
+            return DownloadResult(destination, len(payload), sha256(payload).hexdigest(), True)
+
+        self.adapter.download.side_effect = download
+        document = session.download(self.download_args(session), progress=observed.append)
+        self.adapter.inspect.assert_called_once_with("https://example.test/one")
+        self.assertEqual(document["media_file"], "source-media.mp4")
+        self.assertEqual(document["size_bytes"], len(payload))
+        self.assertEqual(document["downloaded_bytes"], len(payload))
+        self.assertEqual([item["downloaded_bytes"] for item in observed], [4, len(payload)])
+        self.assertTrue(all(item["identity_key"] == document["identity_key"] and item["dispatch_revision"] == 1 for item in observed))
+        name, digest = session.publish(document, "selected-one")
+        raw = (self.work / name).read_bytes()
+        self.assertEqual(digest, "sha256:" + sha256(raw).hexdigest())
+        self.assertNotIn(b"secret-token", raw)
+        self.assertNotIn(str(self.root).encode(), raw)
+        with self.assertRaises(SourceError):
+            session.download(self.download_args(session, dispatch_revision=2))
+        self.assertEqual(self.adapter.download.call_count, 1)
+
+    def test_download_rejects_changed_provider_source_url_or_identity_before_transfer(self):
+        for identity in (SourceIdentity("bilibili", "one", "https://example.test/one"),
+                         SourceIdentity("generic", "other", "https://example.test/one"),
+                         SourceIdentity("generic", "one", "https://example.test/other")):
+            with self.subTest(identity=identity):
+                session = self.session()
+                self.adapter.inspect.return_value = SourceItem(identity, "one")
+                with self.assertRaises(SourceError) as refused:
+                    session.download(self.download_args(session))
+                self.assertEqual(refused.exception.code, SourceErrorCode.SOURCE_CHANGED)
+        self.adapter.download.assert_not_called()
+
+    def test_download_rejects_malformed_private_and_cross_producer_dispatch_before_inspection(self):
+        for change in ({"resume": 1}, {"dispatch_revision": True}, {"dispatch_revision": -1},
+                       {"producer_fingerprint": "b" * 64}, {"source_url": "https://example.test/one?token=secret"},
+                       {"identity_key": "x" * 1025}, {"unexpected": "value"}):
+            with self.subTest(change=change):
+                session = self.session()
+                with self.assertRaises(SourceError):
+                    session.download(self.download_args(session, **change))
+        self.adapter.inspect.assert_not_called()
+        self.adapter.download.assert_not_called()
+
+    def test_download_refuses_invalid_progress_and_foreign_final_receipt(self):
+        self.adapter.inspect.return_value = SourceItem(SourceIdentity("generic", "one", "https://example.test/one"), "one")
+        for downloaded, total in ((True, None), (1, False), (-1, None), (2, 1), (1, "2")):
+            with self.subTest(downloaded=downloaded, total=total):
+                session = self.session()
+
+                def download(item, destination, **options):
+                    options["progress"](downloaded, total)
+                    raise AssertionError("invalid progress was accepted")
+
+                self.adapter.download.side_effect = download
+                with self.assertRaises(SourceError):
+                    session.download(self.download_args(session))
+                self.assertFalse((self.work / "source-media.mp4").exists())
+        self.adapter.download.side_effect = None
+        self.adapter.download.return_value = DownloadResult(self.work / "foreign.mp4", 1, "a" * 64, False)
+        session = self.session()
+        with self.assertRaises(SourceError):
+            session.download(self.download_args(session))
 
     def test_changed_manifest_and_wrong_owned_origin_fail_before_factory(self):
         with self.assertRaises(SourceError):

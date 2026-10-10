@@ -1,8 +1,10 @@
 //! Native source service. One OS owner, one active producer, one page in flight.
-//! This service does not download media or substitute fixtures for installed SDKs.
+//! Owned SDK workers produce private page/media artifacts; the supervisor alone
+//! commits producer-bound durable state.
 use super::source_owner::{reject_links, SourceOwner};
 use dubflow_source_queue::{
-    PageCheckpoint, PageFailure, PageItem, QueueError, ScanRecord, ScanStatus, SourceQueue,
+    ItemProgress, ItemStatus, PageCheckpoint, PageFailure, PageItem, QueueError, ScanRecord,
+    ScanStatus, SourceQueue, SourceQueueItem,
 };
 use dubflow_worker_protocol::{
     Envelope, MessageType, Payload, ShutdownStatus, StreamValidator, MAX_LINE_BYTES,
@@ -11,11 +13,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -373,6 +379,17 @@ enum Request {
         offset: usize,
         limit: usize,
     },
+    Download {
+        scan_id: String,
+        identity_key: String,
+        resume: bool,
+    },
+    PauseDownload {
+        scan_id: String,
+    },
+    CancelDownload {
+        scan_id: String,
+    },
     Shutdown,
 }
 
@@ -493,6 +510,36 @@ enum Packet {
         dispatch_revision: u64,
         request_cursor: Option<String>,
         page: Page,
+    },
+    #[serde(rename = "source-download-progress")]
+    DownloadProgress {
+        schema_version: u32,
+        job_id: String,
+        stage_id: String,
+        producer_fingerprint: String,
+        dispatch_revision: u64,
+        identity_key: String,
+        source_id: String,
+        source_url: String,
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+    #[serde(rename = "source-download")]
+    Download {
+        schema_version: u32,
+        job_id: String,
+        stage_id: String,
+        producer_fingerprint: String,
+        dispatch_revision: u64,
+        identity_key: String,
+        source_id: String,
+        source_url: String,
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
+        media_file: String,
+        size_bytes: u64,
+        sha256: String,
+        resumed: bool,
     },
 }
 #[derive(Deserialize)]
@@ -650,6 +697,197 @@ struct Active {
     sequence: u64,
     original: Option<ScanRecord>,
     last_seen: Instant,
+    download: Option<DownloadDispatch>,
+}
+
+struct DownloadDispatch {
+    original: ScanRecord,
+    item: SourceQueueItem,
+    origin_revision: u64,
+    resume: bool,
+    worker_completed: bool,
+    final_receipt: Option<MediaReceipt>,
+    verifier: Option<MediaVerifier>,
+}
+
+struct MediaReceipt {
+    packet_file: String,
+    size_bytes: u64,
+    sha256: String,
+    resumed: bool,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    verified_path: PathBuf,
+    destination: PathBuf,
+}
+
+struct MediaVerifier {
+    result: Receiver<std::result::Result<VerifiedMedia, ()>>,
+    stopped: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+struct VerifiedMedia {
+    file: File,
+    modified: std::time::SystemTime,
+}
+
+fn media_reader(path: &Path, publication: bool) -> Result<File> {
+    reject_links(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Refuse concurrent writers while hashing. The final publication guard
+        // also denies deletion until the supervisor's checked SQLite commit.
+        options
+            .share_mode(if publication { 1 } else { 1 | 4 })
+            .custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    #[cfg(not(windows))]
+    let _ = publication;
+    Ok(options.open(path)?)
+}
+
+#[cfg(windows)]
+fn media_identity(file: &File) -> Result<(u64, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    #[derive(Default)]
+    struct Information {
+        attributes: u32,
+        creation: [u32; 2],
+        access: [u32; 2],
+        write: [u32; 2],
+        volume: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(handle: *mut std::ffi::c_void, info: *mut Information)
+            -> i32;
+    }
+    let mut info = Information::default();
+    // The repr(C) buffer matches BY_HANDLE_FILE_INFORMATION; the retained File
+    // owns this valid handle for the entire call. No handle ownership transfers.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    if info.attributes & 0x400 != 0 || info.links == 0 {
+        return Err(invalid());
+    }
+    Ok((
+        u64::from(info.volume),
+        (u64::from(info.index_high) << 32) | u64::from(info.index_low),
+    ))
+}
+
+#[cfg(unix)]
+fn media_identity(file: &File) -> Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn checked_media(media: &VerifiedMedia, path: &Path, size: u64, publication: bool) -> Result<File> {
+    let guard = media_reader(path, publication)?;
+    let original = media.file.metadata()?;
+    let observed = guard.metadata()?;
+    if !observed.is_file()
+        || observed.len() != size
+        || original.len() != size
+        || original.modified()? != media.modified
+        || observed.modified()? != media.modified
+        || media_identity(&media.file)? != media_identity(&guard)?
+    {
+        return Err(invalid());
+    }
+    reject_links(path)?;
+    Ok(guard)
+}
+impl Drop for MediaVerifier {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+fn verify_media(path: PathBuf, size: u64, expected: String) -> MediaVerifier {
+    let (tx, result) = mpsc::channel();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stop = stopped.clone();
+    let handle = thread::spawn(move || {
+        let checked = (|| -> Result<VerifiedMedia> {
+            let mut file = media_reader(&path, false)?;
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || metadata.len() != size {
+                return Err(invalid());
+            }
+            let stamp = metadata.modified()?;
+            let mut digest = Sha256::new();
+            let mut buffer = [0u8; 65536];
+            let mut read = 0u64;
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    return Err(invalid());
+                }
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                read = read.checked_add(count as u64).ok_or_else(invalid)?;
+                if read > size {
+                    return Err(invalid());
+                }
+                digest.update(&buffer[..count]);
+            }
+            reject_links(&path)?;
+            let media = VerifiedMedia {
+                file,
+                modified: stamp,
+            };
+            if read != size || format!("{:x}", digest.finalize()) != expected {
+                return Err(invalid());
+            }
+            checked_media(&media, &path, size, false)?;
+            Ok(media)
+        })()
+        .map_err(|_| ());
+        let _ = tx.send(checked);
+    });
+    MediaVerifier {
+        result,
+        stopped,
+        thread: Some(handle),
+    }
+}
+
+fn observed_progress(
+    item: &SourceQueueItem,
+    status: ItemStatus,
+    bytes: u64,
+    total: Option<u64>,
+    code: Option<&str>,
+) -> ItemProgress {
+    ItemProgress { status, retry_count: item.retry_count, downloaded_bytes: bytes,
+        total_bytes: total, error_code: code.map(str::to_owned),
+        error_message: code.map(|_| "Source materialization stopped; retained private data may be resumed only by its original producer.".into()),
+        media_path: None, content_hash: None }
+}
+fn apply_progress(item: &mut SourceQueueItem, progress: &ItemProgress) {
+    item.status = progress.status;
+    item.retry_count = progress.retry_count;
+    item.downloaded_bytes = progress.downloaded_bytes;
+    item.total_bytes = progress.total_bytes;
+    item.error_code = progress.error_code.clone();
+    item.error_message = progress.error_message.clone();
+    item.media_path = progress.media_path.clone();
+    item.content_hash = progress.content_hash.clone();
 }
 impl Active {
     fn send(&mut self, payload: Payload) -> Result<()> {
@@ -732,6 +970,9 @@ fn bounded_line(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
 }
 
 fn launch(runtime: &Runtime, spec: Spec) -> Result<Active> {
+    launch_in_work(runtime, spec, None)
+}
+fn launch_in_work(runtime: &Runtime, spec: Spec, selected_work: Option<PathBuf>) -> Result<Active> {
     if !identifier(&spec.id)
         || !["generic", "bilibili", "douyin"].contains(&spec.provider.as_str())
         || !(1..=100).contains(&spec.page_size)
@@ -740,13 +981,15 @@ fn launch(runtime: &Runtime, spec: Spec) -> Result<Active> {
         return Err(invalid());
     }
     public_url(&spec.reference)?;
-    let work = runtime.data.join("source-work").join(format!(
-        "{}-{}-{}-{}",
-        spec.id,
-        std::process::id(),
-        super::now_ms(),
-        super::ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let work = selected_work.unwrap_or_else(|| {
+        runtime.data.join("source-work").join(format!(
+            "{}-{}-{}-{}",
+            spec.id,
+            std::process::id(),
+            super::now_ms(),
+            super::ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    });
     reject_links(&work)?;
     fs::create_dir_all(&work)?;
     reject_links(&work)?;
@@ -787,6 +1030,7 @@ fn launch(runtime: &Runtime, spec: Spec) -> Result<Active> {
         sequence: 1,
         original: None,
         last_seen: Instant::now(),
+        download: None,
     };
     active.send(Payload::Command { command: "source_prepare".into(), args_json: serde_json::to_string(&json!({"bundle_root":super::external_runtime_path(runtime.root.clone()), "work_root":super::external_runtime_path(active.work.clone()), "manifest_sha256":runtime.manifest_hash, "provider_id":active.spec.provider, "source_ref":active.spec.reference, "page_size":active.spec.page_size}))? })?;
     Ok(active)
@@ -858,7 +1102,109 @@ impl Server {
             _owner: owner,
         })
     }
+    fn start_download(&mut self, id: String, identity: String, resume: bool) -> Result<Value> {
+        if self.active.is_some() || !identifier(&id) || !bounded_text(&identity, 1024) {
+            return Err(invalid());
+        }
+        let record = self.queue.scan(&id)?;
+        if record.status != ScanStatus::Completed || record.producer_fingerprint.is_none() {
+            return Err(invalid());
+        }
+        let producer = load_admission(&self.runtime.data, &record)?;
+        let spec = Spec {
+            id: id.clone(),
+            provider: record.provider_id.clone(),
+            reference: record.source_ref.clone(),
+            page_size: producer.page_size,
+            maximum: record.max_items,
+            existing: true,
+        };
+        producer.validate(&self.runtime, &spec)?;
+        let mut item = self.queue.item(&id, &identity)?;
+        if item.status != ItemStatus::Discovered
+            && !(resume && item.status == ItemStatus::Downloading)
+        {
+            // Failed/cancelled items are not automatic retries. A changed
+            // protected/network condition needs a separate explicit decision.
+            return Err(invalid());
+        }
+        public_url(&item.source_url)?;
+        let work = self
+            .runtime
+            .data
+            .join("source-work/materialization")
+            .join(&self.runtime.manifest_hash)
+            .join(&id)
+            .join(hex_digest(identity.as_bytes()));
+        let mut active = launch_in_work(&self.runtime, spec, Some(work))?;
+        let progress = observed_progress(
+            &item,
+            ItemStatus::Downloading,
+            item.downloaded_bytes,
+            item.total_bytes,
+            None,
+        );
+        let original =
+            self.queue
+                .update_item_progress_checked(&record, &item, &progress, super::now_ms())?;
+        apply_progress(&mut item, &progress);
+        active.download = Some(DownloadDispatch {
+            origin_revision: original.dispatch_revision,
+            original,
+            item,
+            resume,
+            worker_completed: false,
+            final_receipt: None,
+            verifier: None,
+        });
+        self.active = Some(active);
+        Ok(json!({"event":"source_download_preparing", "scan_id":id, "identity_key":identity}))
+    }
+    fn halt_download(&mut self, id: &str, cancel: bool) -> Result<Value> {
+        let active = self.active.as_mut().ok_or_else(invalid)?;
+        if active.spec.id != id {
+            return Err(invalid());
+        }
+        let download = active.download.as_mut().ok_or_else(invalid)?;
+        let progress = observed_progress(
+            &download.item,
+            if cancel {
+                ItemStatus::Cancelled
+            } else {
+                ItemStatus::Downloading
+            },
+            download.item.downloaded_bytes,
+            download.item.total_bytes,
+            Some(if cancel {
+                "SOURCE_DOWNLOAD_CANCELLED"
+            } else {
+                "SOURCE_DOWNLOAD_PAUSED"
+            }),
+        );
+        let record = self.queue.update_item_progress_checked(
+            &download.original,
+            &download.item,
+            &progress,
+            super::now_ms(),
+        )?;
+        apply_progress(&mut download.item, &progress);
+        download.original = record;
+        let identity = download.item.identity_key.clone();
+        let mut active = self.active.take().ok_or_else(invalid)?;
+        active.stop()?;
+        Ok(
+            json!({"event":if cancel {"source_download_cancelled"} else {"source_download_paused"},
+            "scan_id":id, "identity_key":identity, "retained_private_media":true}),
+        )
+    }
     fn halt(&mut self, id: &str, cancel: bool) -> Result<Value> {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|a| a.spec.id == id && a.download.is_some())
+        {
+            return self.halt_download(id, cancel);
+        }
         if self
             .active
             .as_ref()
@@ -959,10 +1305,17 @@ impl Server {
                 let total = items.len();
                 let items: Vec<Value> = items.into_iter().skip(offset).take(limit).map(|i| {
                     let public = public_url(&i.source_url).is_ok();
-                    json!({"identity_key":i.identity_key, "source_id":i.source_id, "source_url":if public {Some(i.source_url)} else {None}, "status":format!("{:?}",i.status).to_ascii_lowercase(), "retry_count":i.retry_count, "downloaded_bytes":i.downloaded_bytes, "content_hash":i.content_hash})
+                    json!({"identity_key":i.identity_key, "source_id":i.source_id, "source_url":if public {Some(i.source_url)} else {None}, "status":format!("{:?}",i.status).to_ascii_lowercase(), "retry_count":i.retry_count, "downloaded_bytes":i.downloaded_bytes, "total_bytes":i.total_bytes, "media_path":i.media_path, "content_hash":i.content_hash, "error_code":i.error_code})
                 }).collect();
                 json!({"event":"source_items", "scan_id":scan_id, "offset":offset, "total":total, "items":items})
             }
+            Request::Download {
+                scan_id,
+                identity_key,
+                resume,
+            } => self.start_download(scan_id, identity_key, resume)?,
+            Request::PauseDownload { scan_id } => self.halt_download(&scan_id, false)?,
+            Request::CancelDownload { scan_id } => self.halt_download(&scan_id, true)?,
             Request::Shutdown => {
                 self.shutdown()?;
                 return Ok((json!({"event":"source_shutdown"}), true));
@@ -971,6 +1324,11 @@ impl Server {
         Ok((value, false))
     }
     fn shutdown(&mut self) -> Result<()> {
+        if self.active.as_ref().is_some_and(|a| a.download.is_some()) {
+            let id = self.active.as_ref().ok_or_else(invalid)?.spec.id.clone();
+            self.halt_download(&id, false)?;
+            return Ok(());
+        }
         if let Some(mut active) = self.active.take() {
             if let Ok(record) = self.queue.scan(&active.spec.id) {
                 if record.status == ScanStatus::Running {
@@ -981,7 +1339,251 @@ impl Server {
         }
         Ok(())
     }
+    fn download_packet(&mut self, document: Packet, packet_file: String) -> Result<Option<Value>> {
+        let active = self.active.as_mut().ok_or_else(invalid)?;
+        if active.original.is_none() {
+            return Err(invalid());
+        }
+        let download = active.download.as_mut().ok_or_else(invalid)?;
+        if download.final_receipt.is_some() {
+            return Err(invalid());
+        }
+        let (schema, job, stage, fingerprint, revision, identity, source, url, bytes, total, media) =
+            match document {
+                Packet::DownloadProgress {
+                    schema_version,
+                    job_id,
+                    stage_id,
+                    producer_fingerprint,
+                    dispatch_revision,
+                    identity_key,
+                    source_id,
+                    source_url,
+                    downloaded_bytes,
+                    total_bytes,
+                } => (
+                    schema_version,
+                    job_id,
+                    stage_id,
+                    producer_fingerprint,
+                    dispatch_revision,
+                    identity_key,
+                    source_id,
+                    source_url,
+                    downloaded_bytes,
+                    total_bytes,
+                    None,
+                ),
+                Packet::Download {
+                    schema_version,
+                    job_id,
+                    stage_id,
+                    producer_fingerprint,
+                    dispatch_revision,
+                    identity_key,
+                    source_id,
+                    source_url,
+                    downloaded_bytes,
+                    total_bytes,
+                    media_file,
+                    size_bytes,
+                    sha256,
+                    resumed,
+                } => (
+                    schema_version,
+                    job_id,
+                    stage_id,
+                    producer_fingerprint,
+                    dispatch_revision,
+                    identity_key,
+                    source_id,
+                    source_url,
+                    downloaded_bytes,
+                    total_bytes,
+                    Some((media_file, size_bytes, sha256, resumed)),
+                ),
+                _ => return Err(invalid()),
+            };
+        const MAX_TRANSFER: u64 = 64 * 1024 * 1024 * 1024;
+        if schema != 1
+            || job != active.spec.id
+            || stage != STAGE
+            || Some(&fingerprint) != download.original.producer_fingerprint.as_ref()
+            || revision != download.origin_revision
+            || identity != download.item.identity_key
+            || source != download.item.source_id
+            || url != download.item.source_url
+            || bytes > MAX_TRANSFER
+            || total.is_some_and(|value| value < bytes || value > MAX_TRANSFER)
+        {
+            return Err(invalid());
+        }
+        public_url(&url)?;
+        if let Some((name, size, hash, resumed)) = media {
+            if name != "source-media.mp4"
+                || size == 0
+                || size > MAX_TRANSFER / 2
+                || !digest_valid(&hash)
+            {
+                return Err(invalid());
+            }
+            let path = active.work.join(name);
+            reject_links(&path)?;
+            let parent = self
+                .runtime
+                .data
+                .join("source-media")
+                .join(&self.runtime.manifest_hash)
+                .join(&active.spec.id)
+                .join(hex_digest(download.item.identity_key.as_bytes()));
+            reject_links(&parent)?;
+            fs::create_dir_all(&parent)?;
+            reject_links(&parent)?;
+            let destination = parent.join(format!("{hash}.mp4"));
+            reject_links(&destination)?;
+            // An interrupted publication may already exist. Rehash it, never
+            // trust its content-addressed name or replace an unverified orphan.
+            let verified_path = if destination.exists() {
+                destination.clone()
+            } else {
+                path
+            };
+            download.verifier = Some(verify_media(verified_path.clone(), size, hash.clone()));
+            download.final_receipt = Some(MediaReceipt {
+                packet_file,
+                size_bytes: size,
+                sha256: hash,
+                resumed,
+                downloaded_bytes: bytes,
+                total_bytes: total,
+                verified_path,
+                destination,
+            });
+            active.last_seen = Instant::now();
+            return Ok(None);
+        }
+        let progress =
+            observed_progress(&download.item, ItemStatus::Downloading, bytes, total, None);
+        let record = self.queue.update_item_progress_checked(
+            &download.original,
+            &download.item,
+            &progress,
+            super::now_ms(),
+        )?;
+        apply_progress(&mut download.item, &progress);
+        download.original = record;
+        fs::remove_file(active.work.join(packet_file))?;
+        active.last_seen = Instant::now();
+        Ok(Some(
+            json!({"event":"source_download_progress", "scan_id":active.spec.id,
+            "identity_key":identity, "downloaded_bytes":bytes, "total_bytes":total}),
+        ))
+    }
+    fn poll_download(&mut self) -> Result<Option<Value>> {
+        let Some(active) = self.active.as_mut() else {
+            return Ok(None);
+        };
+        let Some(download) = active.download.as_mut() else {
+            return Ok(None);
+        };
+        if !download.worker_completed {
+            return Ok(None);
+        }
+        let verifier = download.verifier.as_mut().ok_or_else(invalid)?;
+        let verified = match verifier.result.try_recv() {
+            Err(TryRecvError::Empty) => {
+                // Actual verified-file worker is still live; source controls
+                // remain available while bounded streaming SHA verification runs.
+                if verifier
+                    .thread
+                    .as_ref()
+                    .is_some_and(|handle| !handle.is_finished())
+                {
+                    active.last_seen = Instant::now();
+                    return Ok(None);
+                }
+                return Err(invalid());
+            }
+            Ok(Ok(media)) => media,
+            _ => return Err(invalid()),
+        };
+        let receipt = download.final_receipt.as_ref().ok_or_else(invalid)?;
+        let source = active.work.join("source-media.mp4");
+        // Only a successful producer and verified media can be promoted. Keep
+        // a content-addressed orphan if the subsequent checked DB commit fails.
+        let destination = &receipt.destination;
+        checked_media(&verified, &receipt.verified_path, receipt.size_bytes, false)?;
+        if &receipt.verified_path != destination {
+            // Same owned data volume. Hard-link publication refuses an existing
+            // name atomically and avoids copying multi-gigabyte verified media.
+            fs::hard_link(&receipt.verified_path, destination)?;
+        }
+        let publication_guard = checked_media(&verified, destination, receipt.size_bytes, true)?;
+        let mut progress = observed_progress(
+            &download.item,
+            ItemStatus::Downloaded,
+            receipt.downloaded_bytes,
+            receipt.total_bytes,
+            None,
+        );
+        progress.media_path = Some(
+            super::external_runtime_path(destination.clone())
+                .to_string_lossy()
+                .into_owned(),
+        );
+        progress.content_hash = Some(receipt.sha256.clone());
+        let record = self.queue.update_item_progress_checked(
+            &download.original,
+            &download.item,
+            &progress,
+            super::now_ms(),
+        )?;
+        let value = json!({"event":"source_downloaded", "scan_id":active.spec.id,
+            "identity_key":download.item.identity_key, "media_path":progress.media_path,
+            "sha256":receipt.sha256, "size_bytes":receipt.size_bytes, "resumed":receipt.resumed,
+            "downloaded_bytes":receipt.downloaded_bytes, "total_bytes":receipt.total_bytes,
+            "completed_count":record.completed_count, "failed_count":record.failed_count});
+        let _ = fs::remove_file(active.work.join(&receipt.packet_file));
+        drop(publication_guard);
+        drop(verified);
+        // A duplicate private final is no longer needed after durable admission.
+        // Partial streams/receipts remain scoped to their original producer.
+        let _ = fs::remove_file(source);
+        self.active.take();
+        Ok(Some(value))
+    }
+    fn fail_download(&mut self, code: &str, retryable: bool) -> Result<Value> {
+        let active = self.active.as_mut().ok_or_else(invalid)?;
+        let download = active.download.as_mut().ok_or_else(invalid)?;
+        let progress = observed_progress(
+            &download.item,
+            ItemStatus::Failed,
+            download.item.downloaded_bytes,
+            download.item.total_bytes,
+            Some(code),
+        );
+        self.queue.update_item_progress_checked(
+            &download.original,
+            &download.item,
+            &progress,
+            super::now_ms(),
+        )?;
+        let value = json!({"event":"source_download_failed", "scan_id":active.spec.id,
+            "identity_key":download.item.identity_key, "code":code, "retryable":retryable, "automatic_retry":false,
+            "retained_private_media":true});
+        let mut active = self.active.take().ok_or_else(invalid)?;
+        active.stop()?;
+        Ok(value)
+    }
     fn event(&mut self, wire: Wire) -> Result<Option<Value>> {
+        if matches!(&wire, Wire::Closed)
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|a| a.download.as_ref().is_some_and(|d| d.worker_completed))
+        {
+            return Ok(None);
+        }
         let active = self.active.as_mut().ok_or_else(invalid)?;
         let envelope = match wire {
             Wire::Message(value) => value,
@@ -1002,6 +1604,12 @@ impl Server {
                 artifact_hash: Some(hash),
             } => {
                 let document = packet(&active.work, &checkpoint_id, &hash)?;
+                if matches!(
+                    &document,
+                    Packet::DownloadProgress { .. } | Packet::Download { .. }
+                ) {
+                    return self.download_packet(document, checkpoint_id);
+                }
                 let record = if active.original.is_none() {
                     let (schema, job, stage, producer, fingerprint) = match document {
                         Packet::Ready {
@@ -1042,7 +1650,15 @@ impl Server {
                             &fingerprint,
                         )?;
                     }
-                    self.queue.resume_scan(&active.spec.id, super::now_ms())?
+                    if let Some(download) = active.download.as_ref() {
+                        let record = self.queue.scan(&active.spec.id)?;
+                        if record != download.original {
+                            return Err(invalid());
+                        }
+                        record
+                    } else {
+                        self.queue.resume_scan(&active.spec.id, super::now_ms())?
+                    }
                 } else {
                     let original = active.original.as_ref().ok_or_else(invalid)?;
                     let page = checked_page(document, original, active.spec.page_size)?;
@@ -1051,7 +1667,13 @@ impl Server {
                 };
                 // Only a checked durable commit authorizes deletion and UI update.
                 fs::remove_file(active.work.join(&checkpoint_id))?;
-                if record.status == ScanStatus::Running {
+                if let Some(download) = active.download.as_ref() {
+                    active.send(Payload::Command { command: "source_download".into(), args_json: serde_json::to_string(&json!({
+                        "producer_fingerprint":record.producer_fingerprint, "dispatch_revision":download.origin_revision,
+                        "identity_key":download.item.identity_key, "source_id":download.item.source_id,
+                        "source_url":download.item.source_url, "resume":download.resume}))? })?;
+                    active.original = Some(record.clone());
+                } else if record.status == ScanStatus::Running {
                     active.dispatch(record.clone())?;
                 }
                 Ok(Some(scan_value(&record)))
@@ -1059,6 +1681,26 @@ impl Server {
             Payload::Shutdown {
                 status: ShutdownStatus::Completed,
             } => {
+                if let Some(download) = active.download.as_mut() {
+                    if download.final_receipt.is_none() {
+                        return Err(invalid());
+                    }
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    loop {
+                        if let Some(status) = active.child.try_wait()? {
+                            if !status.success() {
+                                return Err(invalid());
+                            }
+                            break;
+                        }
+                        if Instant::now() >= deadline {
+                            return Err(invalid());
+                        }
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    download.worker_completed = true;
+                    return Ok(None);
+                }
                 let record = self.queue.scan(&active.spec.id)?;
                 if record.status != ScanStatus::Completed {
                     return Err(invalid());
@@ -1102,6 +1744,9 @@ impl Server {
                 {
                     return Err(invalid());
                 }
+                if active.download.is_some() {
+                    return self.fail_download(&code, retryable).map(Some);
+                }
                 let id = active.spec.id.clone();
                 self.shutdown()?;
                 Ok(Some(
@@ -1112,6 +1757,17 @@ impl Server {
         }
     }
     fn fail_active(&mut self) -> Value {
+        if self.active.as_ref().is_some_and(|a| a.download.is_some()) {
+            if let Ok(value) = self.fail_download("SOURCE_CHANGED", false) {
+                return value;
+            }
+            // A stale/failed durable transaction must never be overwritten by
+            // an unchecked fallback. Retire the producer and retain evidence.
+            if let Some(mut active) = self.active.take() {
+                let _ = active.stop();
+            }
+            return json!({"event":"source_error", "code":"SOURCE_DOWNLOAD_DISPATCH_REJECTED", "retryable":false});
+        }
         let id = self.active.as_ref().map(|a| a.spec.id.clone());
         let _ = self.shutdown();
         json!({"event":"source_error", "scan_id":id, "code":"SOURCE_SCAN_STOPPED", "condition":"Source scan stopped; the last committed page is retained. Repair the reported source/runtime condition before explicit resume.", "retryable":false})
@@ -1198,6 +1854,14 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
                 }
             }
         }
+        match server.poll_download() {
+            Ok(Some(value)) => super::emit_value(&mut output, value)?,
+            Ok(None) => (),
+            Err(_) => {
+                let value = server.fail_active();
+                super::emit_value(&mut output, value)?;
+            }
+        }
         if server
             .active
             .as_ref()
@@ -1275,7 +1939,22 @@ while True:
  if not line: sys.exit(2)
  request=json.loads(line)
  if request['message_type']=='cancel':sys.exit(0)
- args=request['payload']['args'];cursor=args['cursor']
+ args=request['payload']['args']
+ if request['payload']['command']=='source_download':
+  mode_path=work/'download-mode.json';mode=json.loads(mode_path.read_text()) if mode_path.exists() else 'complete'
+  partial=work/'recorded-media.part';resumed=args['resume'] and partial.exists()
+  binding={key:args[key] for key in ('producer_fingerprint','dispatch_revision','identity_key','source_id','source_url')}
+  partial.write_bytes(b'abcd')
+  packet({'schema_version':1,'kind':'source-download-progress',**binding,'downloaded_bytes':4,'total_bytes':8})
+  if mode=='pause':
+   sys.stdin.buffer.readline();sys.exit(0)
+  if mode=='fail':
+   emit('failure',{'code':'NETWORK','retryable':True,'attempt':1,'condition':'recorded network failure'})
+   emit('shutdown',{'status':'failed'});sys.exit(2)
+  raw=partial.read_bytes()+b'efgh';(work/'source-media.mp4').write_bytes(raw)
+  packet({'schema_version':1,'kind':'source-download',**binding,'media_file':'source-media.mp4','size_bytes':len(raw),'sha256':'0'*64 if mode=='bad-hash' else hashlib.sha256(raw).hexdigest(),'resumed':resumed,'downloaded_bytes':8,'total_bytes':8})
+  emit('shutdown',{'status':'completed'});sys.exit(2 if mode=='bad-exit' else 0)
+ cursor=args['cursor']
  if cursor=='page-2' and request['sequence']>2:
   time.sleep(30)  # Interrupt a real page-2 process after the first DB commit.
  item={'schema_version':1,'identity':{'provider_id':producer['provider_id'],'source_id':'one' if cursor is None else 'two','canonical_url':'https://example.test/one' if cursor is None else 'https://example.test/two','identity_key':producer['provider_id']+(':one' if cursor is None else ':two')},'title':'Recorded item','duration_ticks':'1000'}
@@ -1340,6 +2019,372 @@ while True:
             .recv_timeout(Duration::from_secs(10))
             .unwrap();
         server.event(wire).unwrap();
+    }
+
+    fn download_server(temp: &Temporary) -> Server {
+        let mut server = Server::open(temp.recorded_runtime()).unwrap();
+        let record = original(&server.queue);
+        let mut value = page_value(&record);
+        value["page"]["completed"] = json!(true);
+        value["page"]["next_cursor"] = Value::Null;
+        let mut sibling = value["page"]["items"][0].clone();
+        sibling["identity"]["source_id"] = json!("two");
+        sibling["identity"]["identity_key"] = json!("generic:two");
+        sibling["identity"]["canonical_url"] = json!("https://example.test/two");
+        value["page"]["items"].as_array_mut().unwrap().push(sibling);
+        server
+            .queue
+            .checkpoint_page_checked(
+                &record,
+                &checked_page(decode(value), &record, 2).unwrap(),
+                3,
+            )
+            .unwrap();
+        save_admission(&server.runtime.data, "scan", &producer()).unwrap();
+        server
+    }
+    fn begin_download(server: &mut Server, identity: &str, mode: &str, resume: bool) -> PathBuf {
+        server
+            .request(Request::Download {
+                scan_id: "scan".into(),
+                identity_key: identity.into(),
+                resume,
+            })
+            .unwrap();
+        let work = server.active.as_ref().unwrap().work.clone();
+        fs::write(
+            work.join("download-mode.json"),
+            serde_json::to_vec(mode).unwrap(),
+        )
+        .unwrap();
+        pump(server); // Actual private ready/producer admission and command.
+        work
+    }
+    fn finish_verification(server: &mut Server) -> Result<Value> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(value) = server.poll_download()? {
+                return Ok(value);
+            }
+            if Instant::now() >= deadline {
+                return Err(invalid());
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    fn finish_download(server: &mut Server) -> Value {
+        pump(server); // Actual progress -> checked item transaction.
+        pump(server); // Actual final packet -> native streaming verification.
+        pump(server); // Actual successful child exit.
+        finish_verification(server).unwrap()
+    }
+
+    #[test]
+    fn native_recorded_download_commits_verified_owned_media_and_reopens() {
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        let before = server.queue.scan("scan").unwrap();
+        let work = begin_download(&mut server, "generic:one", "complete", false);
+        let value = finish_download(&mut server);
+        assert_eq!(value["event"], "source_downloaded");
+        assert_eq!(value["downloaded_bytes"], 8);
+        assert_eq!(value["completed_count"], 1);
+        assert!(server.active.is_none());
+        let item = server.queue.item("scan", "generic:one").unwrap();
+        assert_eq!(item.status, ItemStatus::Downloaded);
+        assert_eq!(
+            item.content_hash.as_deref(),
+            Some(hex_digest(b"abcdefgh").as_str())
+        );
+        let media = PathBuf::from(item.media_path.as_ref().unwrap())
+            .canonicalize()
+            .unwrap();
+        assert!(media.starts_with(&server.runtime.data.join("source-media")));
+        assert_eq!(fs::read(&media).unwrap(), b"abcdefgh");
+        assert!(!work.join("source-media.mp4").exists());
+        let record = server.queue.scan("scan").unwrap();
+        assert_eq!(record.status, ScanStatus::Completed);
+        assert_eq!(record.cursor, before.cursor);
+        assert_eq!(record.producer_fingerprint, before.producer_fingerprint);
+        assert_eq!(
+            server.queue.item("scan", "generic:two").unwrap().status,
+            ItemStatus::Discovered
+        );
+        assert!(server
+            .start_download("scan".into(), "generic:one".into(), true)
+            .is_err());
+        drop(server);
+        let reopened = Server::open(temp.recorded_runtime()).unwrap();
+        assert_eq!(reopened.queue.item("scan", "generic:one").unwrap(), item);
+        assert_eq!(reopened.queue.scan("scan").unwrap(), record);
+    }
+
+    #[test]
+    fn native_download_pause_preserves_parts_and_refuses_old_dispatch_on_resume() {
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        let work = begin_download(&mut server, "generic:one", "pause", false);
+        pump(&mut server);
+        let old = server.active.as_ref().unwrap().download.as_ref().unwrap();
+        let (original, item) = (old.original.clone(), old.item.clone());
+        assert_eq!(item.downloaded_bytes, 4);
+        assert_eq!(
+            server.halt_download("scan", false).unwrap()["event"],
+            "source_download_paused"
+        );
+        assert_eq!(fs::read(work.join("recorded-media.part")).unwrap(), b"abcd");
+        assert!(server
+            .queue
+            .update_item_progress_checked(
+                &original,
+                &item,
+                &observed_progress(&item, ItemStatus::Downloaded, 8, Some(8), None),
+                super::super::now_ms()
+            )
+            .is_err());
+        assert!(server
+            .start_download("scan".into(), "generic:one".into(), false)
+            .is_err());
+        assert_eq!(
+            begin_download(&mut server, "generic:one", "complete", true),
+            work
+        );
+        let value = finish_download(&mut server);
+        assert_eq!(value["resumed"], true);
+        assert_eq!(
+            server.queue.item("scan", "generic:one").unwrap().status,
+            ItemStatus::Downloaded
+        );
+    }
+
+    #[test]
+    fn native_download_failure_and_cancel_leave_siblings_executable() {
+        for cancel in [false, true] {
+            let temp = Temporary::new();
+            let mut server = download_server(&temp);
+            begin_download(
+                &mut server,
+                "generic:one",
+                if cancel { "pause" } else { "fail" },
+                false,
+            );
+            pump(&mut server);
+            if cancel {
+                assert_eq!(
+                    server.halt_download("scan", true).unwrap()["event"],
+                    "source_download_cancelled"
+                );
+            } else {
+                let wire = server
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .events
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                let value = server.event(wire).unwrap().unwrap();
+                assert_eq!(value["code"], "NETWORK");
+                assert_eq!(value["retryable"], true);
+                assert_eq!(value["automatic_retry"], false);
+            }
+            let item = server.queue.item("scan", "generic:one").unwrap();
+            assert_eq!(
+                item.status,
+                if cancel {
+                    ItemStatus::Cancelled
+                } else {
+                    ItemStatus::Failed
+                }
+            );
+            assert_eq!(item.downloaded_bytes, 4);
+            assert!(item.media_path.is_none());
+            assert!(server
+                .start_download("scan".into(), "generic:one".into(), true)
+                .is_err());
+            begin_download(&mut server, "generic:two", "complete", false);
+            assert_eq!(finish_download(&mut server)["event"], "source_downloaded");
+            assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+            assert_eq!(
+                server.queue.scan("scan").unwrap().failed_count,
+                if cancel { 0 } else { 1 }
+            );
+        }
+    }
+
+    #[test]
+    fn native_interrupted_download_reopens_with_new_epoch_and_original_producer() {
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        let work = begin_download(&mut server, "generic:one", "pause", false);
+        pump(&mut server);
+        let old = server.active.as_ref().unwrap().download.as_ref().unwrap();
+        let (original, item) = (old.original.clone(), old.item.clone());
+        server.active.as_mut().unwrap().child.kill().unwrap();
+        server.active.as_mut().unwrap().child.wait().unwrap();
+        drop(server); // Actual OS owner/store reopen; interrupted item stays resumable.
+        let mut reopened = Server::open(temp.recorded_runtime()).unwrap();
+        assert!(
+            reopened.queue.scan("scan").unwrap().dispatch_revision > original.dispatch_revision
+        );
+        assert!(reopened
+            .queue
+            .update_item_progress_checked(
+                &original,
+                &item,
+                &observed_progress(&item, ItemStatus::Downloaded, 8, Some(8), None),
+                super::super::now_ms()
+            )
+            .is_err());
+        assert_eq!(fs::read(work.join("recorded-media.part")).unwrap(), b"abcd");
+        reopened.runtime.source_sha = "c".repeat(40);
+        assert!(reopened
+            .start_download("scan".into(), "generic:one".into(), true)
+            .is_err());
+        assert!(reopened.active.is_none());
+        assert_eq!(reopened.queue.item("scan", "generic:one").unwrap(), item);
+        reopened.runtime.source_sha = "b".repeat(40);
+        assert_eq!(
+            begin_download(&mut reopened, "generic:one", "complete", true),
+            work
+        );
+        assert_eq!(finish_download(&mut reopened)["resumed"], true);
+    }
+
+    #[test]
+    fn native_download_refuses_false_hash_and_unsuccessful_worker_exit() {
+        for mode in ["bad-hash", "bad-exit"] {
+            let temp = Temporary::new();
+            let mut server = download_server(&temp);
+            begin_download(&mut server, "generic:one", mode, false);
+            pump(&mut server);
+            pump(&mut server);
+            let wire = server
+                .active
+                .as_ref()
+                .unwrap()
+                .events
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap();
+            if mode == "bad-exit" {
+                assert!(server.event(wire).is_err());
+            } else {
+                server.event(wire).unwrap();
+                assert!(finish_verification(&mut server).is_err());
+            }
+            assert_eq!(server.fail_active()["event"], "source_download_failed");
+            let item = server.queue.item("scan", "generic:one").unwrap();
+            assert_eq!(item.status, ItemStatus::Failed);
+            assert!(item.media_path.is_none() && item.content_hash.is_none());
+            assert_eq!(server.queue.scan("scan").unwrap().completed_count, 0);
+        }
+    }
+
+    #[test]
+    fn native_download_recovers_verified_publication_after_rejected_commit() {
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        begin_download(&mut server, "generic:one", "complete", false);
+        pump(&mut server);
+        pump(&mut server);
+        pump(&mut server);
+        let download = server.active.as_ref().unwrap().download.as_ref().unwrap();
+        let destination = download.final_receipt.as_ref().unwrap().destination.clone();
+        // Advance the durable row behind this callback before publication. The
+        // file may publish, but the old snapshot cannot bless it in SQLite.
+        server
+            .queue
+            .update_item_progress_checked(
+                &download.original,
+                &download.item,
+                &observed_progress(&download.item, ItemStatus::Downloading, 4, Some(8), None),
+                super::super::now_ms(),
+            )
+            .unwrap();
+        assert!(finish_verification(&mut server).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"abcdefgh");
+        assert_eq!(
+            server.fail_active()["code"],
+            "SOURCE_DOWNLOAD_DISPATCH_REJECTED"
+        );
+        assert_eq!(
+            server.queue.item("scan", "generic:one").unwrap().status,
+            ItemStatus::Downloading
+        );
+        drop(server);
+        let mut reopened = Server::open(temp.recorded_runtime()).unwrap();
+        begin_download(&mut reopened, "generic:one", "complete", true);
+        assert_eq!(finish_download(&mut reopened)["event"], "source_downloaded");
+        assert_eq!(
+            PathBuf::from(
+                reopened
+                    .queue
+                    .item("scan", "generic:one")
+                    .unwrap()
+                    .media_path
+                    .unwrap()
+            )
+            .canonicalize()
+            .unwrap(),
+            destination.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn native_download_refuses_foreign_packet_without_mutating_progress() {
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        begin_download(&mut server, "generic:one", "pause", false);
+        let download = server.active.as_ref().unwrap().download.as_ref().unwrap();
+        let item = download.item.clone();
+        let record = download.original.clone();
+        let base = json!({"kind":"source-download-progress","schema_version":1,"job_id":"scan","stage_id":STAGE,
+            "producer_fingerprint":record.producer_fingerprint,"dispatch_revision":download.origin_revision,
+            "identity_key":item.identity_key,"source_id":item.source_id,"source_url":item.source_url,"downloaded_bytes":4,"total_bytes":8});
+        for (key, value) in [
+            ("job_id", json!("foreign")),
+            ("producer_fingerprint", json!("0".repeat(64))),
+            ("dispatch_revision", json!(record.dispatch_revision + 1)),
+            ("identity_key", json!("generic:two")),
+            ("source_id", json!("two")),
+            ("source_url", json!("https://example.test/two")),
+            ("downloaded_bytes", json!(9)),
+        ] {
+            let mut packet = base.clone();
+            packet[key] = value;
+            assert!(server
+                .download_packet(decode(packet), "source-packet-invalid.json".into())
+                .is_err());
+            assert_eq!(server.queue.scan("scan").unwrap(), record);
+            assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+        }
+        server.halt_download("scan", true).unwrap();
+        assert!(server
+            .download_packet(decode(base), "source-packet-late.json".into())
+            .is_err());
+        assert_eq!(
+            server.queue.item("scan", "generic:one").unwrap().status,
+            ItemStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn native_verified_media_refuses_replaced_path_after_hash() {
+        let temp = Temporary::new();
+        let path = temp.0.join("media.mp4");
+        fs::write(&path, b"abcdefgh").unwrap();
+        let verifier = verify_media(path.clone(), 8, hex_digest(b"abcdefgh"));
+        let media = verifier
+            .result
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        #[cfg(windows)]
+        assert!(fs::write(&path, b"badbytes").is_err());
+        fs::rename(&path, temp.0.join("original.mp4")).unwrap();
+        fs::write(&path, b"abcdefgh").unwrap(); // Same bytes/size, a different file.
+        assert!(checked_media(&media, &path, 8, true).is_err());
+        drop(media);
+        drop(verifier);
     }
 
     #[test]

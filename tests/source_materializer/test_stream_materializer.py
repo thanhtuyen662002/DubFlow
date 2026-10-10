@@ -3,8 +3,12 @@
 from io import BytesIO
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, HttpResponse, MediaMaterializer
@@ -66,6 +70,82 @@ class StreamTests(unittest.TestCase):
 
     def download(self, **kwargs):
         return self.materializer.download(VIDEO, self.destination, audio=AUDIO, root=self.root, **kwargs)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job lifetime evidence")
+    def test_windows_parent_loss_retires_owned_media_process_tree(self):
+        import ctypes
+        from ctypes import wintypes
+
+        repo = Path(__file__).resolve().parents[2]
+        pid_file = self.root / "media-processes.json"
+        child = "import time;time.sleep(60)"
+        media = "import json,os,pathlib,subprocess,sys,time;p=subprocess.Popen([sys.executable,'-I','-S','-B','-c'," + repr(child) + "]);pathlib.Path(" + repr(str(pid_file)) + ").write_text(json.dumps([os.getpid(),p.pid]));time.sleep(60)"
+        parent = "import sys;from pathlib import Path;sys.path.insert(0," + repr(str(repo)) + ");from engine.dubflow.download.stream_materializer import FfmpegStreamMuxer,_file_digest;p=Path(sys.executable);m=FfmpegStreamMuxer(p,p,trusted_root=p.parent,ffmpeg_sha256=_file_digest(p),ffprobe_sha256=_file_digest(p));m._run((str(p),'-I','-S','-B','-c'," + repr(media) + "),None)"
+        process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", parent],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        api.OpenProcess.restype = wintypes.HANDLE
+        api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        api.WaitForSingleObject.restype = wintypes.DWORD
+        api.CloseHandle.argtypes = [wintypes.HANDLE]
+        api.CloseHandle.restype = wintypes.BOOL
+        handles = []
+        try:
+            deadline = time.monotonic() + 15
+            while not pid_file.exists():
+                self.assertIsNone(process.poll(), "media owner exited before containment proof")
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.02)
+            # Wait until the writer has closed the small private receipt.
+            while True:
+                try:
+                    pids = json.loads(pid_file.read_text())
+                    break
+                except (OSError, ValueError):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.02)
+            for pid in pids:
+                handle = api.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+                self.assertTrue(handle)
+                handles.append(handle)
+                self.assertEqual(api.WaitForSingleObject(handle, 0), 258)  # WAIT_TIMEOUT/live
+            process.kill(); process.wait(timeout=10)
+            for handle in handles:
+                self.assertEqual(api.WaitForSingleObject(handle, 10000), 0)  # Signalled/dead
+        finally:
+            if process.poll() is None:
+                process.kill(); process.wait(timeout=10)
+            for handle in handles:
+                api.CloseHandle(handle)
+
+    def test_selected_stream_progress_includes_verified_reused_video_without_counting_mux_bytes(self):
+        self.transport.fail_audio = True
+        observed = []
+        with self.assertRaises(DownloadError):
+            self.download(progress=lambda downloaded, total: observed.append((downloaded, total)))
+        self.assertFalse(self.destination.exists())
+        self.assertEqual(observed[-1], (5, None))
+        self.transport.fail_audio = False
+        observed.clear()
+        result = self.download(progress=lambda downloaded, total: observed.append((downloaded, total)))
+        self.assertTrue(result.resumed)
+        self.assertEqual(observed, [(5, None), (5, 10), (10, 10)])
+        self.assertEqual(result.size_bytes, 11)
+        self.assertEqual(self.transport.calls.count(VIDEO.locator), 1)
+
+    def test_progress_observer_rejects_transfer_without_publishing_a_mux(self):
+        self.destination.write_bytes(b"previous")
+
+        def progress(downloaded, total):
+            if downloaded:
+                raise RuntimeError("late item dispatch")
+
+        with self.assertRaisesRegex(RuntimeError, "late item"):
+            self.download(progress=progress)
+        self.assertEqual(self.destination.read_bytes(), b"previous")
+        self.assertEqual(self.muxer.commands, [])
 
     def test_publishes_only_after_both_streams_and_output_probe(self):
         result = self.download()

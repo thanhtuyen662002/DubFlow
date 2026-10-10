@@ -301,6 +301,7 @@ class MediaMaterializer:
         expected_size: int | None = None,
         resume: bool = True,
         cancel: Callable[[], bool] | None = None,
+        progress: Callable[[int, int | None], None] | None = None,
     ) -> DownloadResult:
         if not isinstance(candidate, MediaCandidate):
             raise DownloadError(DownloadErrorCode.INVALID_SOURCE, "candidate is invalid")
@@ -311,13 +312,15 @@ class MediaMaterializer:
         if expected_size is not None and (type(expected_size) is not int or not 0 <= expected_size <= self.max_bytes):
             raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "expected size is outside the bounded range")
         destination_path, part_path = _validate_destination(Path(destination), None if root is None else Path(root))
+        if progress is not None and not callable(progress):
+            raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "download progress observer is invalid")
         if candidate.kind == "local":
-            result = self._copy_local(candidate.locator, destination_path, part_path, expected_sha256, expected_size, resume, cancel)
+            result = self._copy_local(candidate.locator, destination_path, part_path, expected_sha256, expected_size, resume, cancel, progress)
         else:
-            result = self._download_http(candidate.locator, destination_path, part_path, expected_sha256, expected_size, resume, cancel)
+            result = self._download_http(candidate.locator, destination_path, part_path, expected_sha256, expected_size, resume, cancel, progress)
         return result
 
-    def _copy_local(self, locator: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None) -> DownloadResult:
+    def _copy_local(self, locator: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None, progress: Callable[[int, int | None], None] | None) -> DownloadResult:
         source = Path(locator)
         if not source.is_absolute() or not source.is_file() or source.is_symlink():
             raise DownloadError(DownloadErrorCode.INVALID_SOURCE, "local media source is unavailable or unsafe")
@@ -353,6 +356,8 @@ class MediaMaterializer:
             with source.open("rb") as src, part.open(mode) as out:
                 src.seek(start)
                 copied = start
+                if progress is not None:
+                    progress(copied, source_size)
                 while True:
                     if cancel and cancel():
                         raise DownloadError(DownloadErrorCode.CANCELLED, "download cancelled at a safe boundary")
@@ -364,6 +369,8 @@ class MediaMaterializer:
                         raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "download exceeds the configured size limit")
                     digest.update(chunk)
                     out.write(chunk)
+                    if progress is not None:
+                        progress(copied, source_size)
                 out.flush()
                 os.fsync(out.fileno())
             after = source.stat()
@@ -377,7 +384,7 @@ class MediaMaterializer:
             raise DownloadError(DownloadErrorCode.CANCELLED, "local copy cancelled before publication")
         return self._publish(part, destination, copied, digest.hexdigest(), expected_sha256, expected_size, resumed)
 
-    def _download_http(self, locator: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None) -> DownloadResult:
+    def _download_http(self, locator: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None, progress: Callable[[int, int | None], None] | None) -> DownloadResult:
         url = validate_http_url(locator)
         start = part.stat().st_size if resume and part.exists() else 0
         receipt = part.with_name(part.name + ".resume.json")
@@ -476,6 +483,8 @@ class MediaMaterializer:
                     _hash_stream(existing, digest, start, self.chunk_bytes)
             mode = "ab" if start else "wb"
             copied = start
+            if progress is not None:
+                progress(copied, total)
             with part.open(mode) as out:
                 wrote_body = True
                 while True:
@@ -491,6 +500,8 @@ class MediaMaterializer:
                         raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "download exceeds the configured size limit")
                     digest.update(chunk)
                     out.write(chunk)
+                    if progress is not None:
+                        progress(copied, total)
                 out.flush()
                 os.fsync(out.fileno())
             if total is not None and copied != total:

@@ -161,11 +161,17 @@ class FfmpegStreamMuxer:
             if _file_digest(path) != digest:
                 raise DownloadError(DownloadErrorCode.CHECKSUM_MISMATCH, "pinned media runtime changed before launch")
         process = None
+        owner = None
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
             try:
                 process = subprocess.Popen(argv, shell=False, stdin=subprocess.DEVNULL,
                     stdout=stdout, stderr=stderr,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                # Load after this module's initialization to avoid the generic
+                # adapter's import cycle. Parent death closes the non-inherited
+                # Job handle and retires mux/probe descendants on Windows.
+                from .generic.windows_job import WindowsSourceJob
+                owner = WindowsSourceJob(process)
                 deadline = time.monotonic() + self.timeout_s
                 waiter = threading.Event()
                 while True:
@@ -189,9 +195,13 @@ class FfmpegStreamMuxer:
             except OSError as error:
                 raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "media runtime could not read or write private files") from error
             finally:
-                if process is not None and process.poll() is None:
-                    process.kill()
-                    process.wait(timeout=10)
+                try:
+                    if process is not None and process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=10)
+                finally:
+                    if owner is not None:
+                        owner.close()
 
     def probe(self, path: Path, *, cancel: Callable[[], bool] | None = None) -> tuple[StreamInfo, ...]:
         _reject_links(path)
@@ -243,15 +253,17 @@ class StreamMaterializer:
     def download(self, video: MediaCandidate, destination: str | Path, *,
                  audio: MediaCandidate | None = None, root: str | Path | None = None,
                  expected_sha256: str | None = None, expected_size: int | None = None,
-                 resume: bool = True, cancel: Callable[[], bool] | None = None) -> DownloadResult:
+                 resume: bool = True, cancel: Callable[[], bool] | None = None,
+                 progress: Callable[[int, int | None], None] | None = None) -> DownloadResult:
         destination, _ = _validate_destination(Path(destination), None if root is None else Path(root))
         with _ownership(destination):
             return self._download(video, destination, audio=audio, expected_sha256=expected_sha256,
-                expected_size=expected_size, resume=resume, cancel=cancel)
+                expected_size=expected_size, resume=resume, cancel=cancel, progress=progress)
 
     def _download(self, video: MediaCandidate, destination: Path, *,
                   audio: MediaCandidate | None, expected_sha256: str | None,
-                  expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None) -> DownloadResult:
+                  expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None,
+                  progress: Callable[[int, int | None], None] | None) -> DownloadResult:
         self._direct(video)
         if not video.mime_type.startswith("video/") or (audio is None and not video.has_audio):
             raise DownloadError(DownloadErrorCode.UNSUPPORTED, "selected video has no audio stream to preserve")
@@ -266,6 +278,16 @@ class StreamMaterializer:
         if destination.suffix.lower() != ".mp4":
             raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "stream acquisition output must be MP4")
         inputs = [video, audio]
+        if progress is not None and not callable(progress):
+            raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "download progress observer is invalid")
+        observed = {index: (0, None) for index, candidate in enumerate(inputs) if candidate is not None}
+
+        def observe(index, downloaded, total):
+            observed[index] = (downloaded, total)
+            if progress is not None:
+                progress(sum(value[0] for value in observed.values()),
+                    sum(value[1] for value in observed.values()) if all(value[1] is not None for value in observed.values()) else None)
+
         # Only digests reach disk. IDs/locators can contain provider tokens.
         identity = hashlib.sha256(json.dumps([self.muxer.fingerprint,
             [candidate.to_dict() if candidate else None for candidate in inputs]],
@@ -296,9 +318,11 @@ class StreamMaterializer:
                     valid = False
             if valid:
                 recovered = True
+                observe(index, record["size_bytes"], record["size_bytes"])
             else:
                 result = self.materializer.download(self._direct(candidate), path, root=private,
-                    resume=resume, cancel=cancel)
+                    resume=resume, cancel=cancel,
+                    **({"progress": lambda downloaded, total, index=index: observe(index, downloaded, total)} if progress is not None else {}))
                 recovered |= result.resumed
                 _write_receipt(receipt, {"schema_version": 1, "producer_version": PRODUCER_VERSION,
                     "identity_sha256": identity, "size_bytes": result.size_bytes, "sha256": result.sha256})

@@ -715,3 +715,61 @@ SDK/media runtime; it is not installed current-release or desktop evidence.
 All required exact new HEAD/current-base lanes must rerun. Generic playlists,
 browser sessions, authenticated providers, Douyin creators and durable desktop
 enumeration remain acceptance work under #167/#175.
+
+## Native selected-item materialization
+
+The private native source service adds `download`, `pause_download` and
+`cancel_download`. A completed bound scan may dispatch one discovered item to
+the same admitted producer. A fresh SDK inspection must reproduce all original
+public identity fields before downloading. Original runtime/manifest/source,
+provider, scan reference and page-size pins remain mandatory. Signed locators
+and credentials remain private to the adapter, outside durable packets/logs.
+
+Workers receive an identity and original attempt revision, write only private
+media/receipts and emit bounded transfer observations plus a final hash/size.
+Native code alone owns checked SQLite mutations. Its snapshot advances after
+each receipt, while worker callbacks stay bound to the fixed dispatch attempt;
+both the current native snapshot and all original item fields must still match.
+Pause/cancel advance the durable revision before child termination. A recovered
+completed scan keeps its enumeration/cursor and invalidates in-flight item
+callbacks. Explicit resume is allowed only for downloading rows under original
+pins; failed/cancelled rows need a separate changed-condition retry decision.
+One item failure never blocks selecting a discovered sibling.
+
+Private staging is deterministic per manifest/scan/hashed identity, preserving
+validated stream receipts across interrupted workers. Progress reports observed
+selected-transfer bytes (including checksum-verified resumed prefixes/streams),
+with an unknown total until all selected totals are known. It does not promise
+filesystem persistence of un-fsynced observations, monotonicity across recovery
+or equality with final mux size. Existing callers with no progress observer keep
+the previous materializer API behavior. Packets are throttled to five seconds;
+heartbeats and streaming native verification keep source control responsive.
+
+A successful worker exit, native SHA check and retained file identity authorize
+publication. Windows opens the hash handle without write sharing and holds a
+final guard without delete sharing until the checked commit. Native publication
+uses an atomic no-replace same-volume hard link into content-addressed owned
+media. A filesystem without hard-link support refuses publication rather than
+claiming completion. A failed checked transaction retains source and orphan;
+original-producer recovery rehashes an existing destination before reuse and
+never overwrites it based on its name. Private completed stream GC belongs to
+the storage policy; the canonical media remains usable by the local-file route.
+Mux/probe subprocesses now share the existing source Windows Job guard, so
+parent loss retires nested media processes as well as SDK helpers.
+
+This is an additive private command/packet change, retaining worker envelope 1,
+source contract 1, store schema 2 and public source identity recipes. Runtime and
+producer fingerprints include the exact manifest/source; old workers need not
+understand the new commands. No existing cursor, job or item is rebound to this
+runtime. Old retained runtimes resume their original scans. A successor starts
+a new scan; rollback preserves canonical media and standard exports. There is
+no durable schema migration or new dependency/lockfile.
+
+Recorded native tests exercise real child stdio and SQLite/file reopen for
+progress, pause/cancel, original-pin resume, stale packets, failure isolation,
+hash/exit refusal and interrupted publication. Windows requires named receipts
+for these cases plus real mux-owner child/grandchild termination. Fixture media
+bytes are not live media qualification. Current installed/native live downloads,
+authenticated priority providers, explicit changed-condition retry, desktop
+single-video intake and automatic B1/B2 handoff remain acceptance work; this
+unit does not close #167, #168 or #175 by itself.

@@ -117,7 +117,15 @@ jobs:
             'native_final_inventory_refuses_post_hash_missing_extra_or_resized_files',
             'native_final_inventory_refuses_post_hash_directory_junction',
             'native_full_nested_inventory_is_verified_without_skipping_files',
-            'native_recorded_stdio_commits_pauses_and_restarts_from_page_n'
+            'native_recorded_stdio_commits_pauses_and_restarts_from_page_n',
+            'native_recorded_download_commits_verified_owned_media_and_reopens',
+            'native_download_pause_preserves_parts_and_refuses_old_dispatch_on_resume',
+            'native_download_failure_and_cancel_leave_siblings_executable',
+            'native_interrupted_download_reopens_with_new_epoch_and_original_producer',
+            'native_download_refuses_false_hash_and_unsuccessful_worker_exit',
+            'native_download_recovers_verified_publication_after_rejected_commit',
+            'native_download_refuses_foreign_packet_without_mutating_progress',
+            'native_verified_media_refuses_replaced_path_after_hash'
           )) {
             $nativeSourcePattern = '(?m)^test source_server::tests::' + [regex]::Escape($nativeSourceTest) + ' \.\.\. ok\r?$'
             if ($nativeSourceEvidence -notmatch $nativeSourcePattern) { throw "Missing Windows native evidence: $nativeSourceTest" }
@@ -127,6 +135,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows source queue transaction tests failed' }
           $sourceQueueEvidence = Get-Content -LiteralPath $sourceQueueLog -Raw
           foreach ($sourceQueueTest in @(
+            'indexed_item_is_scoped_and_returns_the_current_complete_snapshot',
             'bound_items_refuse_unchecked_writes_and_alias',
             'checked_item_commit_is_single_use_and_preserves_completed_enumeration',
             'checked_items_refuse_changed_producer_scope_and_original_item',
@@ -139,6 +148,13 @@ jobs:
           )) {
             $sourceQueuePattern = '(?m)^test tests::' + [regex]::Escape($sourceQueueTest) + ' \.\.\. ok\r?$'
             if ($sourceQueueEvidence -notmatch $sourceQueuePattern) { throw "Missing Windows source queue evidence: $sourceQueueTest" }
+          }
+          $mediaLifetimeLog = Join-Path $env:RUNNER_TEMP 'dubflow-source-media-lifetime-tests.log'
+          python -m unittest discover -s tests/source_materializer -p test_stream_materializer.py -v 2>&1 | Tee-Object -FilePath $mediaLifetimeLog
+          if ($LASTEXITCODE -ne 0) { throw 'Windows source media lifetime tests failed' }
+          $mediaLifetimeEvidence = Get-Content -LiteralPath $mediaLifetimeLog -Raw
+          if ($mediaLifetimeEvidence -notmatch '(?m)^test_windows_parent_loss_retires_owned_media_process_tree \(.*\) \.\.\. ok\r?$') {
+            throw 'Missing Windows media process-tree parent-loss evidence'
           }
 
       - name: Download and verify app-owned FFmpeg runtime

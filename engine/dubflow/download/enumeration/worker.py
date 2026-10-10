@@ -30,9 +30,9 @@ if __name__ == "__main__":
 
 from packaging.release.bootstrap import verify_bundle
 from packaging.release.manifest import ReleaseManifest
-from engine.dubflow.download.materializer import _reject_links
+from engine.dubflow.download.materializer import DownloadResult, MAX_DOWNLOAD_BYTES, _reject_links
 from engine.dubflow.download.runtime import provider_from_verified_bundle
-from engine.dubflow.download.source_adapter import SOURCE_CONTRACT_VERSION, SourceError, SourceErrorCode, SourcePage
+from engine.dubflow.download.source_adapter import SOURCE_CONTRACT_VERSION, SourceError, SourceErrorCode, SourceItem, SourcePage
 from engine.dubflow.download.generic.sdk import source_url
 from engine.dubflow.download.enumeration.sdk import channel_url
 from engine.dubflow.worker.protocol import Envelope, MAX_LINE_BYTES, MessageType, StreamValidator
@@ -45,6 +45,7 @@ MAX_PACKET = 4 * 1024 * 1024
 _SHA = re.compile(r"[0-9a-f]{64}")
 _PREPARE = {"bundle_root", "work_root", "manifest_sha256", "provider_id", "source_ref", "page_size"}
 _PAGE = {"producer_fingerprint", "dispatch_revision", "cursor"}
+_DOWNLOAD = {"producer_fingerprint", "dispatch_revision", "identity_key", "source_id", "source_url", "resume"}
 _PRIVATE_QUERY = {"x_amz_credential", "x_amz_security_token", "x_amz_signature",
     "x_goog_credential", "x_goog_signature", "awsaccesskeyid", "client_secret", "oauth_token", "oauth_verifier"}
 
@@ -180,6 +181,63 @@ class SourceSession:
             "page": {"schema_version": SOURCE_CONTRACT_VERSION, "items": items,
                 "failures": failures, "next_cursor": page.next_cursor, "completed": page.completed}}
 
+    def download(self, args: dict, *, progress=None, cancel=None) -> dict:
+        """Reinspect one original identity and materialize only private media.
+
+        Progress is observed selected-stream bytes, not a durable media receipt.
+        Only the supervisor can authorize a final producer-bound queue commit.
+        """
+        _keys(args, _DOWNLOAD)
+        revision = args["dispatch_revision"]
+        if (self.completed or _digest(args["producer_fingerprint"]) != self.fingerprint
+                or type(revision) is not int or not 0 <= revision < (1 << 63) - 1
+                or (self.last_revision is not None and revision <= self.last_revision)
+                or type(args["resume"]) is not bool):
+            raise _invalid()
+        for key, limit in (("identity_key", 1024), ("source_id", 512)):
+            value = args[key]
+            if (not isinstance(value, str) or not value or len(value.encode("utf-8")) > limit
+                    or any(ord(ch) < 32 for ch in value)):
+                raise _invalid()
+        reference = _public_reference(args["source_url"])
+        self.last_revision = revision
+        item = self.adapter.inspect(reference)
+        if (not isinstance(item, SourceItem) or item.identity.provider_id != self.provider
+                or item.identity.source_id != args["source_id"]
+                or item.identity.identity_key != args["identity_key"]
+                or _public_reference(item.identity.canonical_url) != reference):
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "selected source identity changed before materialization")
+        binding = {"producer_fingerprint": self.fingerprint, "dispatch_revision": revision,
+            "identity_key": args["identity_key"], "source_id": args["source_id"], "source_url": reference}
+        observed = [0, None]
+
+        def observe(downloaded, total):
+            if (type(downloaded) is not int or not 0 <= downloaded <= 2 * MAX_DOWNLOAD_BYTES
+                    or (total is not None and (type(total) is not int or not downloaded <= total <= 2 * MAX_DOWNLOAD_BYTES))):
+                raise _invalid()
+            observed[:] = [downloaded, total]
+            if progress is not None:
+                progress({"schema_version": 1, "kind": "source-download-progress", **binding,
+                    "downloaded_bytes": downloaded, "total_bytes": total})
+
+        _reject_links(self.work_root)
+        destination = self.work_root / "source-media.mp4"
+        _reject_links(destination)
+        result = self.adapter.download(item, destination, root=self.work_root, resume=args["resume"],
+            cancel=cancel, progress=observe)
+        if (not isinstance(result, DownloadResult) or result.path != destination
+                or type(result.size_bytes) is not int or not 0 < result.size_bytes <= MAX_DOWNLOAD_BYTES
+                or type(result.resumed) is not bool):
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "materialized source receipt is invalid")
+        _digest(result.sha256)
+        _reject_links(destination)
+        if not destination.is_file() or destination.stat().st_size != result.size_bytes:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "materialized source file differs from its receipt")
+        self.completed = True
+        return {"schema_version": 1, "kind": "source-download", **binding,
+            "media_file": destination.name, "size_bytes": result.size_bytes, "sha256": result.sha256,
+            "resumed": result.resumed, "downloaded_bytes": observed[0], "total_bytes": observed[1]}
+
     def publish(self, document: dict, job_id: str) -> tuple[str, str]:
         raw = json.dumps({**document, "job_id": job_id, "stage_id": STAGE_ID},
             sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode()
@@ -277,7 +335,7 @@ def main() -> int:
                             "reusable": True})
                         emitter.send(MessageType.SHUTDOWN, {"status": "cancelled"})
                         os._exit(0)
-                    if request.payload["command"] != "source_page":
+                    if request.payload["command"] not in {"source_page", "source_download"}:
                         raise _invalid()
                     pending.put_nowait(request)
             except Exception:
@@ -290,9 +348,22 @@ def main() -> int:
         emitter.checkpoint(session.publish(session.ready(), first.job_id))
         while not emitter.finished.is_set():
             request = pending.get()
-            document = session.page(request.payload["args"])
+            if request.payload["command"] == "source_download":
+                last_progress = [0.0]
+
+                def publish_progress(document):
+                    now = time.monotonic()
+                    # At most one progress packet per five seconds, plus the
+                    # existing heartbeat; long transfers stay inside wire bounds.
+                    if now - last_progress[0] >= 5:
+                        emitter.checkpoint(session.publish(document, first.job_id))
+                        last_progress[0] = now
+
+                document = session.download(request.payload["args"], progress=publish_progress)
+            else:
+                document = session.page(request.payload["args"])
             emitter.checkpoint(session.publish(document, first.job_id))
-            if document["page"]["completed"]:
+            if document["kind"] == "source-download" or document["page"]["completed"]:
                 emitter.send(MessageType.SHUTDOWN, {"status": "completed"})
                 return 0
         return 0
