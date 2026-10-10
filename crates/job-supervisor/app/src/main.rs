@@ -5,12 +5,13 @@
 //! connection and the Python child process.  Python emits only the versioned
 //! worker protocol; all durable mutations happen in this process.
 
-use dubflow_job_state::{ArtifactState, DurableStore, JobStatus, StageStatus, StateError};
+use dubflow_job_state::{hash_file, ArtifactState, DurableStore, JobStatus, StageStatus, StateError};
 use dubflow_worker_protocol::{
     Envelope, MessageType, Payload, ShutdownStatus, StreamValidator, MAX_LINE_BYTES,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -24,11 +25,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod execution_lock;
+use execution_lock::JobExecutionGuard;
+mod worker_tree;
+use worker_tree::WorkerTree;
+
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
 const MAX_ATTEMPTS: u8 = 3;
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(35);
 const STDERR_LIMIT: usize = 64 * 1024;
+const QC_SUMMARY_LIMIT: u64 = 1024 * 1024;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 type SupervisorResult<T> = Result<T, SupervisorError>;
@@ -324,6 +331,8 @@ enum UiRequest {
         #[serde(default)]
         enable_dubbing: Option<bool>,
         #[serde(default)]
+        tts_voice_id: Option<String>,
+        #[serde(default)]
         burn_in_subtitles: Option<bool>,
     },
     Status {
@@ -346,6 +355,7 @@ struct StartSpec {
     source_language: String,
     target_language: String,
     enable_dubbing: bool,
+    tts_voice_id: Option<String>,
     burn_in_subtitles: bool,
 }
 
@@ -391,9 +401,73 @@ impl StartSpec {
             source_language,
             target_language,
             enable_dubbing: enable_dubbing.unwrap_or(false),
+            tts_voice_id: None,
             burn_in_subtitles: burn_in_subtitles.unwrap_or(true),
         })
     }
+    fn with_voice_id(mut self, voice_id: Option<String>) -> SupervisorResult<Self> {
+        if let Some(value) = &voice_id {
+            if value.is_empty() || value.len() > 96
+                || !value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            {
+                return Err(SupervisorError::Invalid("tts_voice_id is invalid".into()));
+            }
+        }
+        self.tts_voice_id = voice_id;
+        Ok(self)
+    }
+
+    fn durable_request(&self, runtime: &RuntimePaths) -> SupervisorResult<String> {
+        let source = input_fingerprint(&self.source_path)?;
+        // Mirror the accepted sidecar priority; adding/removing/changing the
+        // selected subtitle cannot reuse a completed transcript or dub.
+        let sidecar = ["srt", "SRT", "vtt", "VTT"].into_iter()
+            .map(|suffix| self.source_path.with_extension(suffix))
+            .find(|path| path.is_file())
+            .map(|path| input_fingerprint(&path)).transpose()?;
+        let manifest_root = runtime.app_root.join("models").join("manifests");
+        let mut manifests = Vec::new();
+        if manifest_root.is_dir() {
+            for entry in fs::read_dir(&manifest_root)? {
+                let path = entry?.path();
+                if path.is_file() && path.extension().and_then(|value| value.to_str()) == Some("json") {
+                    if manifests.len() >= 64 {
+                        return Err(SupervisorError::Invalid("model manifest inventory exceeds the bounded limit".into()));
+                    }
+                    manifests.push((path.file_name().unwrap().to_string_lossy().into_owned(), input_fingerprint(&path)?));
+                }
+            }
+            manifests.sort_by(|left, right| left.0.cmp(&right.0));
+        }
+        let release_manifest = runtime.root.join("release-manifest.json");
+        Ok(serde_json::to_string(&json!({
+            "schema_version": 1, "source_path": self.source_path, "source": source,
+            "sidecar": sidecar, "output_dir": self.output_dir,
+            "source_language": self.source_language, "target_language": self.target_language,
+            "enable_dubbing": self.enable_dubbing, "tts_voice_id": self.tts_voice_id,
+            "burn_in_subtitles": self.burn_in_subtitles,
+            "producer": {"runtime_root": runtime.root, "model_root": runtime.model_root,
+                "worker": input_fingerprint(&runtime.worker_script)?,
+                "python": input_fingerprint(&runtime.python)?,
+                "ffmpeg": input_fingerprint(&runtime.ffmpeg)?,
+                "ffprobe": input_fingerprint(&runtime.ffprobe)?,
+                "release_manifest": if release_manifest.is_file() { Some(input_fingerprint(&release_manifest)?) } else { None },
+                "model_manifests": manifests}
+        }))?)
+    }
+}
+
+fn input_fingerprint(path: &Path) -> SupervisorResult<Value> {
+    let before = fs::metadata(path)?;
+    if !before.is_file() {
+        return Err(SupervisorError::Invalid("job input is not a regular file".into()));
+    }
+    let (hash, size) = hash_file(path)?;
+    let after = fs::metadata(path)?;
+    if before.len() != size || before.len() != after.len() || before.modified()? != after.modified()? {
+        return Err(SupervisorError::Worker { code:"JOB_INPUT_CHANGED".into(), condition:"job input changed while computing its identity".into(), retryable:false });
+    }
+    Ok(json!({"sha256":hash, "size_bytes":size}))
 }
 
 fn absolute_path(value: &str, name: &str) -> SupervisorResult<PathBuf> {
@@ -506,6 +580,7 @@ enum CliMode {
         source_language: Option<String>,
         target_language: Option<String>,
         enable_dubbing: bool,
+        tts_voice_id: Option<String>,
         burn_in_subtitles: bool,
     },
     Cancel {
@@ -541,6 +616,7 @@ fn run() -> SupervisorResult<()> {
             source_language,
             target_language,
             enable_dubbing,
+            tts_voice_id,
             burn_in_subtitles,
         } => {
             return run_one_shot(
@@ -555,6 +631,7 @@ fn run() -> SupervisorResult<()> {
                 target_language,
                 enable_dubbing,
                 burn_in_subtitles,
+                tts_voice_id,
             );
         }
         CliMode::Cancel {
@@ -575,8 +652,9 @@ fn run() -> SupervisorResult<()> {
     };
     let server_data_root = data_root.unwrap_or_else(|| root.clone());
     let runtime = RuntimePaths::from_root_and_data(root, server_data_root, db, model_root)?;
-    let startup_store = DurableStore::open(&runtime.db)?;
-    let recovered = startup_store.recover_after_restart(now_ms())?;
+    // Opening a server is not evidence that another supervisor died. Recovery
+    // is request-bound, after immutable admission and exclusive job ownership.
+    let _startup_store = DurableStore::open(&runtime.db)?;
 
     let (tx, rx) = mpsc::channel::<InternalMessage>();
     spawn_stdin_reader(tx.clone());
@@ -589,7 +667,7 @@ fn run() -> SupervisorResult<()> {
             "event": "ready",
             "schema_version": 1,
             "runtime_root": runtime.root.display().to_string(),
-            "recovered_stages": recovered,
+            "recovered_stages": 0,
         }),
     )?;
 
@@ -640,6 +718,7 @@ where
             let mut source_language = None;
             let mut target_language = None;
             let mut enable_dubbing = false;
+            let mut tts_voice_id = None;
             let mut burn_in_subtitles = true;
             while let Some(arg) = args.next() {
                 match arg.to_string_lossy().as_ref() {
@@ -665,6 +744,7 @@ where
                         target_language = Some(next_arg(&mut args, "--target-language")?)
                     }
                     "--enable-dubbing" => enable_dubbing = true,
+                    "--tts-voice-id" => tts_voice_id = Some(next_arg(&mut args, "--tts-voice-id")?),
                     "--no-burn-in" => burn_in_subtitles = false,
                     "--help" | "-h" => {
                         println!("dubflow-supervisor run --source <absolute file> --output-dir <absolute dir> --data-root <absolute dir> [--root <version root>] [--status-path <file>]");
@@ -691,6 +771,7 @@ where
                 source_language,
                 target_language,
                 enable_dubbing,
+                tts_voice_id,
                 burn_in_subtitles,
             }
         }
@@ -815,6 +896,7 @@ fn run_one_shot(
     target_language: Option<String>,
     enable_dubbing: bool,
     burn_in_subtitles: bool,
+    tts_voice_id: Option<String>,
 ) -> SupervisorResult<()> {
     let root = match root {
         Some(root) => root,
@@ -826,8 +908,6 @@ fn run_one_shot(
     // reconcile that state before execute_job tries to start the stage again.
     // Without this hook a valid restart would attempt the illegal
     // `running -> running` transition.
-    let startup_store = DurableStore::open(&runtime.db)?;
-    startup_store.recover_after_restart(now_ms())?;
     let spec = StartSpec::from_request(
         Some(job_id.unwrap_or_else(new_job_id)),
         source_path,
@@ -836,7 +916,15 @@ fn run_one_shot(
         target_language,
         Some(enable_dubbing),
         Some(burn_in_subtitles),
-    )?;
+    )?.with_voice_id(tts_voice_id)?;
+    // Keep the kernel lease through the final status write. A duplicate must
+    // not change SQL/status, reconcile artifacts or start another worker.
+    let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
+    let startup_store = DurableStore::open(&runtime.db)?;
+    // Verify/admit before changing status files or restart state. A conflicting
+    // caller has no authority to fail or relabel the original durable job.
+    ensure_job(&startup_store, &spec, &runtime)?;
+    startup_store.recover_job_after_restart(&spec.job_id, now_ms())?;
     let final_status_path = status_path.unwrap_or_else(|| {
         data_root
             .join("control")
@@ -848,10 +936,16 @@ fn run_one_shot(
             "--status-path must be absolute".into(),
         ));
     }
+    let store = DurableStore::open(&runtime.db)?;
     let mut contract_status = default_contract_status();
     let mut output_path: Option<String> = None;
     let mut terminal_event: Option<String> = None;
-    write_status_file(&final_status_path, &spec.job_id, &contract_status, None)?;
+    // Reconstruct from the reconciled supervisor-owned state before publishing
+    // anything. A completed replay must never briefly erase its saved history.
+    store.reconcile_job(&spec.job_id, now_ms())?;
+    apply_durable_status(&mut contract_status, store.job_status(&spec.job_id)?,
+        &mut output_path, &spec, &store);
+    write_status_file(&final_status_path, &spec.job_id, &contract_status, output_path.as_deref())?;
     let control = Arc::new(JobControl::new());
     let (tx, rx) = mpsc::channel();
     let runtime_for_worker = runtime.clone();
@@ -860,7 +954,7 @@ fn run_one_shot(
     let tx_for_worker = tx.clone();
     thread::spawn(move || {
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            execute_job(
+            execute_job_owned(
                 &runtime_for_worker,
                 spec_for_worker.clone(),
                 control_for_worker,
@@ -870,14 +964,12 @@ fn run_one_shot(
         match outcome {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                best_effort_fail_job(
-                    &runtime_for_worker,
-                    &spec_for_worker.job_id,
-                    &format!("SUPERVISOR_JOB_ERROR: {error}"),
-                );
+                if !preserve_existing_job(&error) {
+                    best_effort_fail_job(&runtime_for_worker, &spec_for_worker.job_id, &format!("SUPERVISOR_JOB_ERROR: {error}"));
+                }
                 let _ = tx_for_worker.send(InternalMessage::Output(error_value(
                     Some(&spec_for_worker.job_id),
-                    "SUPERVISOR_JOB_ERROR",
+                    supervisor_error_code(&error),
                     &error.to_string(),
                     false,
                 )));
@@ -906,7 +998,7 @@ fn run_one_shot(
                 if let Some(event_name) = terminal_event_name(&value) {
                     terminal_event = Some(event_name.to_owned());
                 }
-                apply_status_event(&mut contract_status, &value, &mut output_path, &spec);
+                apply_status_event(&mut contract_status, &value, &mut output_path, &spec, &store);
                 write_status_file(
                     &final_status_path,
                     &spec.job_id,
@@ -924,7 +1016,6 @@ fn run_one_shot(
             Ok(InternalMessage::Request(_)) => {}
         }
     }
-    let store = DurableStore::open(&runtime.db)?;
     let durable_status = store.job_status(&spec.job_id).unwrap_or(JobStatus::Failed);
     // A worker-thread error can be observed before its best-effort durable
     // failure write completes (or when the SQLite file itself is unavailable).
@@ -943,6 +1034,7 @@ fn run_one_shot(
                 durable_status,
                 &mut output_path,
                 &spec,
+                &store,
             );
         } else {
             contract_status["resource"]["held"] = Value::Bool(false);
@@ -1071,11 +1163,125 @@ fn contract_counter(status: &Value, path: &[&str]) -> u64 {
         .unwrap_or(0)
 }
 
+/// Read only the latest supervisor-committed QC snapshot for this execution.
+/// Hash exactly the bounded bytes we parse, never a separately reopened file.
+/// Missing, modified or legacy reports cannot authorize a full-dub claim.
+fn committed_qc_summary(store: &DurableStore, spec: &StartSpec) -> Option<Value> {
+    let expected_path = spec.output_dir.join("qc_report.json");
+    for attempt in (1..=MAX_ATTEMPTS).rev() {
+        let id = format!("{}-{}-qc-report-a{}", spec.job_id, STAGE_ID, attempt);
+        let artifact = match store.artifact(&id) {
+            Ok(artifact) => artifact,
+            Err(StateError::NotFound { .. }) => continue,
+            Err(_) => return None,
+        };
+        let size = artifact.size_bytes?;
+        if artifact.job_id != spec.job_id || artifact.stage_id != STAGE_ID
+            || artifact.state != ArtifactState::Committed
+            || Path::new(&artifact.path) != expected_path
+            || size == 0 || size > QC_SUMMARY_LIMIT
+            || !fs::symlink_metadata(&expected_path).ok()?.file_type().is_file()
+        {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(&expected_path).ok()?.take(QC_SUMMARY_LIMIT + 1)
+            .read_to_end(&mut bytes).ok()?;
+        if bytes.len() as u64 != size {
+            return None;
+        }
+        let hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        if artifact.content_hash.as_deref() != Some(hash.as_str()) {
+            return None;
+        }
+        let qc: Value = serde_json::from_slice(&bytes).ok()?;
+        if qc.get("schema_version").and_then(Value::as_u64) != Some(1)
+            || qc.get("status").and_then(Value::as_str) != Some("passed")
+        {
+            return None;
+        }
+        return Some(qc);
+    }
+    None
+}
+
+fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, String) {
+    let unverified = || ("completed_quality_unverified", if spec.enable_dubbing {
+        "Đã xuất video; chưa xác minh được mức độ hoàn tất lồng tiếng. Hãy kiểm tra báo cáo chất lượng."
+    } else {
+        "Đã xuất video; chưa đọc được báo cáo chất lượng."
+    }.into());
+    let qc = match committed_qc_summary(store, spec) {
+        Some(qc) => qc,
+        None => return unverified(),
+    };
+    let warnings = match qc.get("warnings").and_then(Value::as_array) {
+        Some(warnings) if warnings.iter().all(Value::is_string) => warnings,
+        _ => return unverified(),
+    };
+    let downgraded = match qc.get("downgrade").and_then(Value::as_bool) {
+        Some(value) => value,
+        None => return unverified(),
+    };
+    let audio = match qc.get("audio").and_then(Value::as_object) {
+        Some(audio) => audio,
+        None => return unverified(),
+    };
+    match audio.get("mode").and_then(Value::as_str) {
+        Some("original") if spec.enable_dubbing => return (
+            "completed_b1_fallback",
+            match qc.get("source_probe").and_then(|probe| probe.get("has_audio")).and_then(Value::as_bool) {
+                Some(true) => "Đã xuất video có Vietsub và audio gốc; lồng tiếng không khả dụng.",
+                Some(false) => "Video nguồn không có audio; đã xuất Vietsub, lồng tiếng không khả dụng.",
+                None => "Đã xuất video có Vietsub; lồng tiếng không khả dụng.",
+            }.into(),
+        ),
+        Some("dubbed") if spec.enable_dubbing => {
+            let tts_failures = match audio.get("tts_failures").and_then(Value::as_u64) {
+                Some(value) => value,
+                None => return unverified(),
+            };
+            let mix_failures = match audio.get("mix_failures").and_then(Value::as_u64) {
+                Some(value) => value,
+                None => return unverified(),
+            };
+            if tts_failures > 0 || mix_failures > 0 {
+                let summary = if mix_failures == 0 {
+                    format!("Đã xuất video; {tts_failures} câu chưa lồng tiếng được.")
+                } else {
+                    "Đã xuất video; lồng tiếng chưa đầy đủ.".into()
+                };
+                let fallback = match qc.get("source_probe").and_then(|probe| probe.get("has_audio")).and_then(Value::as_bool) {
+                    Some(true) => "Audio gốc được giữ ở các đoạn lỗi.",
+                    Some(false) => "Nguồn không có audio; các câu chưa lồng tiếng vẫn im lặng. Hãy kiểm tra phụ đề.",
+                    None => "Hãy kiểm tra các đoạn chưa lồng tiếng và báo cáo chất lượng.",
+                };
+                return ("completed_partial_dubbing", format!("{summary} {fallback}"));
+            }
+            if !matches!(audio.get("mix_warnings").and_then(Value::as_array), Some(values) if values.iter().all(Value::is_string)) {
+                return unverified();
+            }
+        }
+        Some("original") if !spec.enable_dubbing => {}
+        _ => return unverified(),
+    }
+    if downgraded || !warnings.is_empty()
+        || audio.get("mix_warnings").and_then(Value::as_array).map_or(false, |values| !values.is_empty())
+    {
+        ("completed_with_warnings", "Đã xuất video; có lưu ý trong báo cáo chất lượng. Hãy kiểm tra trước khi sử dụng.".into())
+    } else if spec.enable_dubbing {
+        ("completed", "Đã xuất video lồng tiếng Việt.".into())
+    } else {
+        ("completed", "Đã xuất video có Vietsub.".into())
+    }
+}
+
 fn apply_status_event(
     status: &mut Value,
     event: &Value,
     output_path: &mut Option<String>,
     spec: &StartSpec,
+    store: &DurableStore,
 ) {
     let event_name = event
         .get("event")
@@ -1100,14 +1306,13 @@ fn apply_status_event(
             if let Some(detail) = event.get("detail").and_then(Value::as_str) {
                 status["message"] = Value::String(detail.chars().take(4096).collect());
             }
-            if let Some(done) = event.get("units_done").and_then(Value::as_u64) {
-                status["progress"]["completed_units"] = Value::String(done.to_string());
-            } else if let Some(fraction) = event.get("fraction").and_then(Value::as_f64) {
+            // `fraction` describes the whole local-file pipeline. Cue counts
+            // describe only the current stage and stay in the raw event.
+            if let Some(fraction) = event.get("fraction").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+                let done = ((fraction.clamp(0.0, 1.0) * 1000.0).round() as u64).min(999);
                 status["progress"]["completed_units"] =
-                    Value::String((fraction.clamp(0.0, 1.0) * 1000.0).round().to_string());
-            }
-            if let Some(total) = event.get("units_total").and_then(Value::as_u64) {
-                status["progress"]["total_units"] = Value::String(total.to_string());
+                    Value::String(done.to_string());
+                status["progress"]["total_units"] = Value::String("1000".into());
             }
         }
         "checkpoint" => {
@@ -1130,9 +1335,10 @@ fn apply_status_event(
             }
         }
         "completed" => {
+            let (reason, message) = completion_summary(store, spec);
             status["state"] = Value::String("COMPLETED".into());
-            status["reason"] = Value::String("completed".into());
-            status["message"] = Value::String("Đã kiểm tra và xuất video H.264/AAC".into());
+            status["reason"] = Value::String(reason.into());
+            status["message"] = Value::String(message);
             status["progress"]["completed_units"] = Value::String("1000".into());
             status["progress"]["total_units"] = Value::String("1000".into());
             status["resource"]["held"] = Value::Bool(false);
@@ -1158,9 +1364,29 @@ fn apply_status_event(
                 .get("condition")
                 .and_then(Value::as_str)
                 .unwrap_or("job failed");
-            *status = failed_contract_status(code, condition);
+            set_status_failure(status, code, condition);
         }
         _ => {}
+    }
+    restore_stage_history(status, spec, store);
+}
+
+fn set_status_failure(status: &mut Value, code: &str, detail: &str) {
+    let failed = failed_contract_status(code, detail);
+    for key in ["state", "reason", "message"] {
+        status[key] = failed[key].clone();
+    }
+    status["resource"]["held"] = Value::Bool(false);
+}
+
+fn restore_stage_history(status: &mut Value, spec: &StartSpec, store: &DurableStore) {
+    // Do not use a previous status JSON as authority. If SQLite is unavailable,
+    // retain history already observed in this process instead of resetting it.
+    if let Ok(history) = store.stage_history(&spec.job_id, STAGE_ID) {
+        status["checkpoint_id"] = history.checkpoint_id.map(Value::String).unwrap_or(Value::Null);
+        status["retry"]["attempt"] = Value::String(history.attempt.to_string());
+        status["retry"]["max_attempts"] = Value::String(history.max_attempts.to_string());
+        status["retry"]["condition_fingerprint"] = history.retry_condition.map(Value::String).unwrap_or(Value::Null);
     }
 }
 
@@ -1169,10 +1395,12 @@ fn apply_durable_status(
     durable: JobStatus,
     output_path: &mut Option<String>,
     spec: &StartSpec,
+    store: &DurableStore,
 ) {
+    let heartbeat = status["progress"]["heartbeat_sequence"].clone();
     match durable {
         JobStatus::Succeeded => {
-            apply_status_event(status, &json!({"event":"completed"}), output_path, spec)
+            apply_status_event(status, &json!({"event":"completed"}), output_path, spec, store)
         }
         JobStatus::Failed => {
             let current = status
@@ -1180,11 +1408,10 @@ fn apply_durable_status(
                 .and_then(Value::as_str)
                 .unwrap_or("job failed")
                 .to_owned();
-            *status = failed_contract_status("JOB_FAILED", &current);
-            status["resource"]["held"] = Value::Bool(false);
+            set_status_failure(status, "JOB_FAILED", &current);
         }
         JobStatus::Cancelled => {
-            apply_status_event(status, &json!({"event":"cancelled"}), output_path, spec);
+            apply_status_event(status, &json!({"event":"cancelled"}), output_path, spec, store);
         }
         JobStatus::Recovering => {
             status["state"] = Value::String("RECOVERED".into());
@@ -1200,6 +1427,9 @@ fn apply_durable_status(
         }
         JobStatus::Queued => {}
     }
+    // Reconciliation is a read, not a newly observed worker/status event.
+    status["progress"]["heartbeat_sequence"] = heartbeat;
+    restore_stage_history(status, spec, store);
 }
 
 fn atomic_json_file(path: &Path, value: &Value) -> SupervisorResult<()> {
@@ -1266,6 +1496,10 @@ fn replace_atomic(source: &Path, destination: &Path) -> io::Result<()> {
         // A desktop status poll can briefly hold the previous file open.  A
         // bounded retry handles that transient sharing violation without ever
         // falling back to delete-then-rename (which would expose a gap).
+        // Actual Windows readers also produce ERROR_ACCESS_DENIED (5),
+        // including handles with FILE_SHARE_DELETE. Retry it only for an
+        // existing ordinary writable target; persistent/readonly errors stay
+        // fatal and never grant permission or consume another worker attempt.
         for attempt in 0..8 {
             let success = unsafe {
                 MoveFileExW(
@@ -1278,7 +1512,14 @@ fn replace_atomic(source: &Path, destination: &Path) -> io::Result<()> {
                 return Ok(());
             }
             let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(32) || attempt == 7 {
+            let transient = match error.raw_os_error() {
+                Some(32) => true,
+                Some(5) => fs::symlink_metadata(destination)
+                    .map(|metadata| metadata.file_type().is_file() && !metadata.permissions().readonly())
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if !transient || attempt == 7 {
                 return Err(error);
             }
             thread::sleep(Duration::from_millis(15));
@@ -1381,6 +1622,13 @@ fn handle_request(
                     json!({"event":"cancellation_requested", "job_id":job_id, "reason":reason}),
                 )?;
             } else {
+                let _execution_lease = match JobExecutionGuard::acquire(&runtime.db, &job_id) {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        emit_value(stdout, error_value(Some(&job_id), supervisor_error_code(&error), &error.to_string(), false))?;
+                        return Ok(false);
+                    }
+                };
                 let store = DurableStore::open(&runtime.db)?;
                 match store.job_status(&job_id) {
                     Ok(
@@ -1414,6 +1662,7 @@ fn handle_request(
             source_language,
             target_language,
             enable_dubbing,
+            tts_voice_id,
             burn_in_subtitles,
         } => {
             let spec = match StartSpec::from_request(
@@ -1424,7 +1673,7 @@ fn handle_request(
                 target_language,
                 enable_dubbing,
                 burn_in_subtitles,
-            ) {
+            ).and_then(|spec| spec.with_voice_id(tts_voice_id)) {
                 Ok(spec) => spec,
                 Err(error) => {
                     emit_value(
@@ -1449,6 +1698,18 @@ fn handle_request(
                 )?;
                 return Ok(false);
             }
+            let execution_lease = match JobExecutionGuard::acquire(&runtime.db, &spec.job_id) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    emit_value(stdout, error_value(Some(&spec.job_id), supervisor_error_code(&error), &error.to_string(), false))?;
+                    return Ok(false);
+                }
+            };
+            let store = DurableStore::open(&runtime.db)?;
+            if let Err(error) = ensure_job(&store, &spec, runtime) {
+                emit_value(stdout, error_value(Some(&spec.job_id), supervisor_error_code(&error), &error.to_string(), false))?;
+                return Ok(false);
+            }
             let control = Arc::new(JobControl::new());
             active.insert(spec.job_id.clone(), control.clone());
             drop(active);
@@ -1459,21 +1720,22 @@ fn handle_request(
             let runtime = runtime.clone();
             let tx = tx.clone();
             thread::spawn(move || {
+                // Retain ownership through failure/panic handling as well as
+                // worker execution; no second owner may race those SQL writes.
+                let _execution_lease = execution_lease;
                 let job_id = spec.job_id.clone();
                 let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    execute_job(&runtime, spec, control.clone(), tx.clone())
+                    execute_job_owned(&runtime, spec, control.clone(), tx.clone())
                 }));
                 match outcome {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => {
-                        best_effort_fail_job(
-                            &runtime,
-                            &job_id,
-                            &format!("SUPERVISOR_JOB_ERROR: {error}"),
-                        );
+                        if !preserve_existing_job(&error) {
+                            best_effort_fail_job(&runtime, &job_id, &format!("SUPERVISOR_JOB_ERROR: {error}"));
+                        }
                         let _ = tx.send(InternalMessage::Output(error_value(
                             Some(&job_id),
-                            "SUPERVISOR_JOB_ERROR",
+                            supervisor_error_code(&error),
                             &error.to_string(),
                             false,
                         )));
@@ -1499,14 +1761,27 @@ fn handle_request(
     Ok(false)
 }
 
+#[cfg(test)]
 fn execute_job(
     runtime: &RuntimePaths,
     spec: StartSpec,
     control: Arc<JobControl>,
     tx: Sender<InternalMessage>,
 ) -> SupervisorResult<()> {
+    let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
+    execute_job_owned(runtime, spec, control, tx)
+}
+
+/// The caller retains the execution lease until its final status publication.
+fn execute_job_owned(
+    runtime: &RuntimePaths,
+    spec: StartSpec,
+    control: Arc<JobControl>,
+    tx: Sender<InternalMessage>,
+) -> SupervisorResult<()> {
     let store = DurableStore::open(&runtime.db)?;
-    ensure_job(&store, &spec)?;
+    ensure_job(&store, &spec, runtime)?;
+    store.recover_job_after_restart(&spec.job_id, now_ms())?;
     // A process can die between artifact registration and its final commit.
     // Reconcile those durable rows before deciding whether the job is already
     // complete or starting another worker attempt.
@@ -1664,19 +1939,38 @@ fn execute_job(
     }
 }
 
-fn ensure_job(store: &DurableStore, spec: &StartSpec) -> SupervisorResult<()> {
+fn ensure_job(store: &DurableStore, spec: &StartSpec, runtime: &RuntimePaths) -> SupervisorResult<()> {
+    let request = spec.durable_request(runtime)?;
     match store.job_status(&spec.job_id) {
-        Ok(_) => match store.stage_status(&spec.job_id, STAGE_ID) {
-            Ok(_) => Ok(()),
-            Err(StateError::NotFound { .. }) => Err(SupervisorError::Invalid(
-                "existing job has no production stage".into(),
-            )),
-            Err(error) => Err(error.into()),
+        Ok(status) => {
+            match store.job_start_request(&spec.job_id)? {
+                Some(saved) if saved == request => {},
+                Some(_) => return Err(SupervisorError::Worker {
+                    code:"JOB_ID_CONFLICT".into(),
+                    condition:"job ID belongs to different input, voice, output options or producer; create a new job ID".into(),
+                    retryable:false,
+                }),
+                None => return Err(SupervisorError::Worker {
+                    code:"JOB_START_UNVERIFIED".into(),
+                    condition:"historical job has no verified start options; keep its artifacts and create a new job ID".into(),
+                    retryable:false,
+                }),
+            }
+            match store.stage_status(&spec.job_id, STAGE_ID) {
+                Ok(_) => Ok(()),
+                Err(StateError::NotFound { .. }) if status == JobStatus::Queued => {
+                    // Recover a crash after admission but before stage creation.
+                    store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS)?;
+                    Ok(())
+                },
+                Err(error) => Err(error.into()),
+            }
         },
         Err(StateError::NotFound { .. }) => {
-            store.create_job(
+            store.create_job_with_start_request(
                 &spec.job_id,
                 &format!("file://{}", spec.source_path.display()),
+                &request,
                 now_ms(),
             )?;
             store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS)?;
@@ -1684,6 +1978,17 @@ fn ensure_job(store: &DurableStore, spec: &StartSpec) -> SupervisorResult<()> {
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn supervisor_error_code(error: &SupervisorError) -> &str {
+    match error {
+        SupervisorError::Worker { code, .. } => code,
+        _ => "SUPERVISOR_JOB_ERROR",
+    }
+}
+
+fn preserve_existing_job(error: &SupervisorError) -> bool {
+    matches!(error, SupervisorError::Worker { code, .. } if matches!(code.as_str(), "JOB_ID_CONFLICT" | "JOB_START_UNVERIFIED" | "JOB_INPUT_CHANGED" | "JOB_ALREADY_RUNNING"))
 }
 
 fn cancel_durable(store: &DurableStore, job_id: &str, reason: &str) -> SupervisorResult<()> {
@@ -1735,6 +2040,7 @@ fn run_worker_attempt(
         "source_language": spec.source_language,
         "target_language": spec.target_language,
         "enable_dubbing": spec.enable_dubbing,
+        "tts_voice_id": spec.tts_voice_id,
         "burn_in_subtitles": spec.burn_in_subtitles,
         "checkpoint_path": checkpoint_path,
     });
@@ -1769,11 +2075,26 @@ fn run_worker_attempt(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = process.spawn().map_err(|error| SupervisorError::Worker {
+    let mut child = process.spawn().map_err(|error| SupervisorError::Worker {
         code: "WORKER_SPAWN_FAILED".into(),
         condition: error.to_string(),
         retryable: true,
     })?;
+    // Own descendants before stdin can start ASR/TTS/FFmpeg. The private
+    // Windows job handle also closes when this supervisor is hard-killed.
+    let worker_tree = match WorkerTree::attach(&child) {
+        Ok(tree) => tree,
+        Err(error) => {
+            // No command has been sent; refuse without leaving an unowned child.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(SupervisorError::Worker {
+                code: "WORKER_CONTAINMENT_FAILED".into(),
+                condition: format!("unable to own worker process tree: {error}"),
+                retryable: false,
+            });
+        }
+    };
     let child = Arc::new(Mutex::new(child));
     control.set_child(child.clone());
     let setup_result: SupervisorResult<(ChildStdout, ChildStderr)> = (|| {
@@ -1799,6 +2120,7 @@ fn run_worker_attempt(
     let (stdout_pipe, stderr_pipe) = match setup_result {
         Ok(pipes) => pipes,
         Err(error) => {
+            drop(worker_tree);
             let _ = control.terminate();
             control.clear_child();
             return Err(error);
@@ -1847,7 +2169,13 @@ fn run_worker_attempt(
                 let envelope = match Envelope::from_line(&line) {
                     Ok(envelope) => envelope,
                     Err(error) => {
-                        return abort_worker(control, &child, stderr_thread, error.into())
+                        return abort_worker(
+                            control,
+                            &child,
+                            stderr_thread,
+                            error.into(),
+                            worker_tree,
+                        )
                     }
                 };
                 if envelope.job_id != spec.job_id || envelope.stage_id != STAGE_ID {
@@ -1858,10 +2186,11 @@ fn run_worker_attempt(
                         SupervisorError::Invalid(
                             "worker envelope job/stage identity mismatch".into(),
                         ),
+                        worker_tree,
                     );
                 }
                 if let Err(error) = validator.accept(&envelope) {
-                    return abort_worker(control, &child, stderr_thread, error.into());
+                    return abort_worker(control, &child, stderr_thread, error.into(), worker_tree);
                 }
                 last_message_at = Instant::now();
                 match envelope.payload {
@@ -1886,7 +2215,13 @@ fn run_worker_attempt(
                             reusable,
                             now_ms(),
                         ) {
-                            return abort_worker(control, &child, stderr_thread, error.into());
+                            return abort_worker(
+                                control,
+                                &child,
+                                stderr_thread,
+                                error.into(),
+                                worker_tree,
+                            );
                         }
                         let _ = tx.send(InternalMessage::Output(json!({"event":"checkpoint", "job_id":spec.job_id, "stage_id":STAGE_ID, "checkpoint_id":checkpoint_id, "reusable":reusable, "artifact_hash":artifact_hash, "attempt":attempt})));
                     }
@@ -1908,6 +2243,7 @@ fn run_worker_attempt(
                             SupervisorError::Invalid(
                                 "worker emitted an invalid command/cancel message".into(),
                             ),
+                            worker_tree,
                         )
                     }
                 }
@@ -1923,12 +2259,14 @@ fn run_worker_attempt(
                         condition: error.to_string(),
                         retryable: true,
                     },
+                    worker_tree,
                 )
             }
             Err(RecvTimeoutError::Timeout) => {
                 if control.cancelled.load(Ordering::Acquire)
                     || matches!(store.job_status(&spec.job_id), Ok(JobStatus::Cancelled))
                 {
+                    drop(worker_tree);
                     let _ = control.terminate();
                     let _ = child.lock().map(|mut child_guard| child_guard.wait());
                     control.clear_child();
@@ -1938,6 +2276,7 @@ fn run_worker_attempt(
                 if last_message_at.elapsed() < HEARTBEAT_TIMEOUT {
                     continue;
                 }
+                drop(worker_tree);
                 let _ = control.terminate();
                 let _ = child.lock().map(|mut child_guard| child_guard.wait());
                 control.clear_child();
@@ -1961,6 +2300,8 @@ fn run_worker_attempt(
             .map_err(|_| SupervisorError::Invalid("child lock poisoned".into()))?;
         child_guard.wait()?
     };
+    // Retire remaining descendants before joining readers of inherited pipes.
+    drop(worker_tree);
     let stderr = stderr_thread
         .join()
         .unwrap_or_else(|_| Ok(String::new()))
@@ -2008,7 +2349,9 @@ fn abort_worker(
     child: &Arc<Mutex<Child>>,
     stderr_thread: thread::JoinHandle<io::Result<String>>,
     error: SupervisorError,
+    worker_tree: WorkerTree,
 ) -> SupervisorResult<WorkerOutcome> {
+    drop(worker_tree);
     let _ = control.terminate();
     if let Ok(mut child_guard) = child.lock() {
         let _ = child_guard.wait();
@@ -2180,6 +2523,418 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn identity_fixture() -> (PathBuf, RuntimePaths, StartSpec) {
+        let root = std::env::temp_dir().join(format!("dubflow-start-identity-{}-{}", std::process::id(), ID_COUNTER.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(root.join("app/models/manifests")).unwrap();
+        for (name, bytes) in [("source.mp4", "original media"), ("worker.py", "worker"), ("python.exe", "runtime"), ("ffmpeg.exe", "ffmpeg"), ("ffprobe.exe", "ffprobe"), ("app/models/manifests/tts.json", "{\"version\":1}")] {
+            fs::write(root.join(name), bytes).unwrap();
+        }
+        let runtime = RuntimePaths { root:root.clone(), app_root:root.join("app"), python:root.join("python.exe"), worker_script:root.join("worker.py"),
+            ffmpeg:root.join("ffmpeg.exe"), ffprobe:root.join("ffprobe.exe"), model_root:root.join("models"), db:root.join("state.sqlite") };
+        let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
+            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true };
+        (root, runtime, spec)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_status_publication_waits_for_actual_windows_reader_release() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (root, _, _) = identity_fixture();
+        let target = root.join("reader-release.json");
+        atomic_json_file(&target, &json!({"checkpoint":"old"})).unwrap();
+        let replacement = root.join("reader-release.partial");
+        fs::write(&replacement, b"{\"checkpoint\":\"new\"}\n").unwrap();
+        let reader = fs::OpenOptions::new().read(true).share_mode(3).open(&target).unwrap();
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(45));
+            drop(reader);
+        });
+        let result = replace_atomic(&replacement, &target);
+        thread.join().unwrap();
+        result.unwrap();
+        assert!(!replacement.exists());
+        assert_eq!(serde_json::from_slice::<Value>(&fs::read(&target).unwrap()).unwrap(), json!({"checkpoint":"new"}));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_status_persistent_reader_preserves_bytes_then_recovers_after_release() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (root, _, _) = identity_fixture();
+        let target = root.join("persistent-reader.json");
+        atomic_json_file(&target, &json!({"checkpoint":"original"})).unwrap();
+        let original = fs::read(&target).unwrap();
+        let reader = fs::OpenOptions::new().read(true).share_mode(3).open(&target).unwrap();
+        assert!(atomic_json_file(&target, &json!({"checkpoint":"new"})).is_err());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        drop(reader);
+        atomic_json_file(&target, &json!({"checkpoint":"new"})).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&fs::read(&target).unwrap()).unwrap(), json!({"checkpoint":"new"}));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_status_readonly_target_refuses_and_preserves_original() {
+        let (root, _, _) = identity_fixture();
+        let target = root.join("readonly-status.json");
+        atomic_json_file(&target, &json!({"checkpoint":"original"})).unwrap();
+        let original = fs::read(&target).unwrap();
+        let writable = fs::metadata(&target).unwrap().permissions();
+        let mut readonly = writable.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&target, readonly).unwrap();
+        let result = atomic_json_file(&target, &json!({"checkpoint":"new"}));
+        fs::set_permissions(&target, writable).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read(&target).unwrap(), original);
+    }
+
+    fn commit_test_qc(store: &DurableStore, spec: &StartSpec, path: &Path, bytes: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+        store.create_job(&spec.job_id, "file:///source", 1).unwrap();
+        store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS).unwrap();
+        store.start_job(&spec.job_id, 3).unwrap();
+        store.start_stage(&spec.job_id, STAGE_ID, 4).unwrap();
+        store.record_checkpoint(&spec.job_id, STAGE_ID, "qc", None, true, 5).unwrap();
+        let id = format!("{}-{}-qc-report-a1", spec.job_id, STAGE_ID);
+        store.record_artifact_written(&id, &spec.job_id, STAGE_ID, path, None, true, 5).unwrap();
+        store.commit_artifact(&id, 6).unwrap();
+        store.complete_job(&spec.job_id, 7).unwrap();
+    }
+
+    fn test_qc(audio: Value) -> Value {
+        json!({"schema_version":1, "status":"passed", "source_probe":{"has_audio":true}, "audio":audio, "warnings":[], "downgrade":false})
+    }
+
+    #[test]
+    fn completed_dub_reports_partial_or_b1_fallback_after_durable_replay() {
+        let cases = [
+            (json!({"mode":"dubbed", "tts_failures":0, "mix_failures":0, "mix_warnings":[]}), "completed", "lồng tiếng Việt"),
+            (json!({"mode":"dubbed", "tts_failures":22, "mix_failures":0, "mix_warnings":[]}), "completed_partial_dubbing", "22 câu"),
+            (json!({"mode":"dubbed", "tts_failures":0, "mix_failures":1, "mix_warnings":[]}), "completed_partial_dubbing", "các đoạn lỗi"),
+            (json!({"mode":"original", "backend":"source-audio"}), "completed_b1_fallback", "lồng tiếng không khả dụng"),
+        ];
+        for (audio, reason, text) in cases {
+            let (root, _, spec) = identity_fixture();
+            let store = DurableStore::open_in_memory().unwrap();
+            let qc = test_qc(audio);
+            commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+            let mut status = default_contract_status();
+            let mut output = None;
+            apply_status_event(&mut status, &json!({"event":"completed"}), &mut output, &spec, &store);
+            assert_eq!(status["state"], "COMPLETED");
+            assert_eq!(status["reason"], reason);
+            assert!(status["message"].as_str().unwrap().contains(text));
+            assert_eq!(output, Some(spec.output_dir.join("final_vi.mp4").to_string_lossy().into_owned()));
+            let completed_message = status["message"].clone();
+            // The final durable reconciliation must not overwrite a downgrade.
+            apply_durable_status(&mut status, store.job_status(&spec.job_id).unwrap(), &mut output, &spec, &store);
+            assert_eq!(status["message"], completed_message);
+            // An already completed job with no worker event recovers the same truth.
+            let mut replay = default_contract_status();
+            apply_durable_status(&mut replay, JobStatus::Succeeded, &mut output, &spec, &store);
+            assert_eq!(replay["message"], completed_message);
+            assert_eq!(replay["reason"], reason);
+            assert_eq!(replay["checkpoint_id"], "qc");
+            assert_eq!(replay["retry"]["attempt"], "1");
+            assert_eq!(replay["retry"]["max_attempts"], MAX_ATTEMPTS.to_string());
+            assert_eq!(replay["progress"]["completed_units"], "1000");
+            assert_eq!(replay["progress"]["total_units"], "1000");
+            assert_eq!(replay["progress"]["heartbeat_sequence"], "0");
+            let first = replay.clone();
+            apply_durable_status(&mut replay, JobStatus::Succeeded, &mut output, &spec, &store);
+            assert_eq!(replay, first);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn live_duplicate_refuses_before_admission_recovery_or_worker_state_writes() {
+        let (_root, runtime, spec) = identity_fixture();
+        let store = DurableStore::open(&runtime.db).unwrap();
+        store.create_job(&spec.job_id, "file:///source", 1).unwrap();
+        store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS).unwrap();
+        store.start_job(&spec.job_id, 2).unwrap();
+        store.start_stage(&spec.job_id, STAGE_ID, 3).unwrap();
+        store.record_checkpoint(&spec.job_id, STAGE_ID, "transcript", None, true, 4).unwrap();
+        let before = store.stage_history(&spec.job_id, STAGE_ID).unwrap();
+        let _lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let error = execute_job(&runtime, spec.clone(), Arc::new(JobControl::new()), tx).unwrap_err();
+        assert_eq!(supervisor_error_code(&error), "JOB_ALREADY_RUNNING");
+        assert!(preserve_existing_job(&error));
+        assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Running);
+        assert_eq!(store.stage_status(&spec.job_id, STAGE_ID).unwrap(), StageStatus::Running);
+        assert_eq!(store.stage_history(&spec.job_id, STAGE_ID).unwrap(), before);
+        assert!(!spec.output_dir.exists());
+        let controls = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = mpsc::channel();
+        for request in [
+            json!({"command":"start", "job_id":spec.job_id, "source_path":spec.source_path,
+                "output_dir":spec.output_dir, "enable_dubbing":true, "tts_voice_id":spec.tts_voice_id}),
+            json!({"command":"cancel", "job_id":spec.job_id}),
+        ] {
+            let mut stdout = Vec::new();
+            assert!(!handle_request(serde_json::from_value(request).unwrap(), &runtime,
+                &controls, &tx, &mut stdout).unwrap());
+            let response: Value = serde_json::from_slice(&stdout).unwrap();
+            assert_eq!(response["event"], "error");
+            assert_eq!(response["code"], "JOB_ALREADY_RUNNING");
+            assert_eq!(response["retryable"], false);
+            assert!(controls.lock().unwrap().is_empty());
+            assert!(rx.try_recv().is_err());
+            assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Running);
+            assert_eq!(store.stage_status(&spec.job_id, STAGE_ID).unwrap(), StageStatus::Running);
+            assert_eq!(store.stage_history(&spec.job_id, STAGE_ID).unwrap(), before);
+            assert!(!spec.output_dir.exists());
+        }
+    }
+
+    #[test]
+    fn pipeline_progress_never_reuses_stage_cue_count_as_its_denominator() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        let mut status = default_contract_status();
+        let mut output = None;
+        // Actual nine-minute ASR/translation sequence: 272 cues, then an
+        // overall fractional event without any new stage-unit denominator.
+        for (event, expected) in [
+            (json!({"event":"progress", "fraction":0.38, "units_done":272, "units_total":272}), "380"),
+            (json!({"event":"progress", "fraction":0.44}), "440"),
+            (json!({"event":"progress", "fraction":0.58, "units_done":272, "units_total":272}), "580"),
+            (json!({"event":"progress", "fraction":0.9999}), "999"),
+            (json!({"event":"progress", "fraction":1.0}), "999"),
+        ] {
+            apply_status_event(&mut status, &event, &mut output, &spec, &store);
+            assert_eq!(status["state"], "RUNNING");
+            assert_eq!(status["progress"]["completed_units"], expected);
+            assert_eq!(status["progress"]["total_units"], "1000");
+            assert!(output.is_none());
+        }
+        apply_status_event(&mut status, &json!({"event":"progress", "units_done":7, "units_total":7}),
+            &mut output, &spec, &store);
+        assert_eq!(status["progress"]["completed_units"], "999");
+        assert_eq!(status["progress"]["total_units"], "1000");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restart_and_failure_status_preserve_actual_start_count_and_checkpoint() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        store.create_job(&spec.job_id, "file:///source", 1).unwrap();
+        store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS).unwrap();
+        store.start_job(&spec.job_id, 2).unwrap();
+        store.start_stage(&spec.job_id, STAGE_ID, 3).unwrap();
+        store.record_checkpoint(&spec.job_id, STAGE_ID, "transcript", None, true, 4).unwrap();
+        store.recover_after_restart(5).unwrap();
+        let mut status = default_contract_status();
+        let mut output = None;
+        apply_durable_status(&mut status, store.job_status(&spec.job_id).unwrap(), &mut output, &spec, &store);
+        assert_eq!(status["state"], "RECOVERED");
+        assert_eq!(status["checkpoint_id"], "transcript");
+        assert_eq!(status["retry"]["attempt"], "1");
+        store.start_stage(&spec.job_id, STAGE_ID, 6).unwrap();
+        store.fail_stage(&spec.job_id, STAGE_ID, "timeout", true, 7).unwrap();
+        store.retry_stage(&spec.job_id, STAGE_ID, "smaller chunk", 8).unwrap();
+        apply_status_event(&mut status, &json!({"event":"retrying", "next_attempt":3, "code":"TIMEOUT"}),
+            &mut output, &spec, &store);
+        assert_eq!(status["retry"]["attempt"], "2");
+        assert_eq!(status["retry"]["condition_fingerprint"], "smaller chunk");
+        store.fail_job(&spec.job_id, "retry stopped", 9).unwrap();
+        apply_status_event(&mut status, &json!({"event":"error", "code":"TEST_FAILURE", "condition":"retry stopped"}),
+            &mut output, &spec, &store);
+        let heartbeat = status["progress"]["heartbeat_sequence"].clone();
+        apply_durable_status(&mut status, JobStatus::Failed, &mut output, &spec, &store);
+        assert_eq!(status["state"], "FAILED");
+        assert_eq!(status["checkpoint_id"], "transcript");
+        assert_eq!(status["retry"]["attempt"], "2");
+        assert_eq!(status["retry"]["condition_fingerprint"], "smaller chunk");
+        assert_eq!(status["progress"]["heartbeat_sequence"], heartbeat);
+        assert_eq!(status["resource"]["held"], false);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completed_quality_requires_exact_committed_bounded_qc_bytes() {
+        for defect in ["missing", "tampered", "foreign_path", "oversized", "bad_json", "bad_version", "failed_qc", "invalid_counts"] {
+            let (root, _, spec) = identity_fixture();
+            let store = DurableStore::open_in_memory().unwrap();
+            let mut qc = test_qc(json!({"mode":"dubbed", "tts_failures":1, "mix_failures":0, "mix_warnings":[]}));
+            if defect == "bad_version" { qc["schema_version"] = json!(2); }
+            if defect == "failed_qc" { qc["status"] = json!("failed"); }
+            if defect == "invalid_counts" { qc["audio"]["tts_failures"] = json!("0"); }
+            let path = spec.output_dir.join(if defect == "foreign_path" { "foreign.json" } else { "qc_report.json" });
+            let bytes = if defect == "oversized" { vec![b' '; (QC_SUMMARY_LIMIT + 1) as usize] }
+                else if defect == "bad_json" { b"not JSON".to_vec() }
+                else { serde_json::to_vec(&qc).unwrap() };
+            commit_test_qc(&store, &spec, &path, &bytes);
+            if defect == "missing" { fs::remove_file(&path).unwrap(); }
+            if defect == "tampered" {
+                qc["audio"]["tts_failures"] = json!(0);
+                let replacement = serde_json::to_vec(&qc).unwrap();
+                assert_eq!(replacement.len(), bytes.len());
+                fs::write(&path, replacement).unwrap();
+            }
+            assert_eq!(completion_summary(&store, &spec).0, "completed_quality_unverified", "{defect}");
+            assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Succeeded);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn b1_completion_and_verified_warnings_remain_visible_without_dub_claim() {
+        let (root, _, mut spec) = identity_fixture();
+        spec.enable_dubbing = false;
+        let store = DurableStore::open_in_memory().unwrap();
+        let mut qc = test_qc(json!({"mode":"original"}));
+        qc["warnings"] = json!(["source audio not present"]);
+        qc["downgrade"] = json!(true);
+        commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+        assert_eq!(completion_summary(&store, &spec).0, "completed_with_warnings");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn complete_no_audio_dub_keeps_loudness_advisory_visible() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        let mut qc = test_qc(json!({"mode":"dubbed", "source_audio_origin":"generated-silence", "tts_failures":0, "mix_failures":0,
+            "mix_warnings":["final mix is below the configured target RMS; source and dialogue were preserved"]}));
+        qc["source_probe"]["has_audio"] = json!(false);
+        commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+        let (reason, message) = completion_summary(&store, &spec);
+        assert_eq!(reason, "completed_with_warnings");
+        assert!(message.contains("báo cáo chất lượng"));
+        assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Succeeded);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_audio_source_does_not_claim_original_audio_in_fallback() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        let mut qc = test_qc(json!({"mode":"original"}));
+        qc["source_probe"]["has_audio"] = json!(false);
+        commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+        let (reason, message) = completion_summary(&store, &spec);
+        assert_eq!(reason, "completed_b1_fallback");
+        assert!(message.contains("không có audio"));
+        assert!(!message.contains("audio gốc"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_audio_partial_dub_identifies_silent_refused_cues() {
+        for mix_failures in [0, 1] {
+            let (root, _, spec) = identity_fixture();
+            let store = DurableStore::open_in_memory().unwrap();
+            let mut qc = test_qc(json!({"mode":"dubbed", "tts_failures":1, "mix_failures":mix_failures, "mix_warnings":[]}));
+            qc["source_probe"]["has_audio"] = json!(false);
+            commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+            let (reason, message) = completion_summary(&store, &spec);
+            assert_eq!(reason, "completed_partial_dubbing");
+            assert!(message.contains("im lặng"));
+            assert!(!message.contains("Audio gốc"));
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn replay_rejects_changed_source_voice_options_before_completed_shortcut() {
+        let (root, runtime, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        store.start_job(&spec.job_id, 1).unwrap();
+        store.start_stage(&spec.job_id, STAGE_ID, 2).unwrap();
+        store.complete_stage(&spec.job_id, STAGE_ID, 3).unwrap();
+        store.complete_job(&spec.job_id, 4).unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        let mut changed = spec.clone();
+        changed.tts_voice_id = Some("vi-thai-son-vieneu3-v1".into());
+        assert!(matches!(ensure_job(&store, &changed, &runtime), Err(SupervisorError::Worker { code, .. }) if code == "JOB_ID_CONFLICT"));
+        changed = spec.clone(); changed.output_dir = root.join("other-output");
+        assert!(ensure_job(&store, &changed, &runtime).is_err());
+        changed = spec.clone(); changed.enable_dubbing = false;
+        assert!(ensure_job(&store, &changed, &runtime).is_err());
+        changed = spec.clone(); changed.source_language = "zh".into();
+        assert!(ensure_job(&store, &changed, &runtime).is_err());
+        changed = spec.clone(); changed.burn_in_subtitles = false;
+        assert!(ensure_job(&store, &changed, &runtime).is_err());
+        fs::write(&spec.source_path, b"different media").unwrap();
+        assert!(ensure_job(&store, &spec, &runtime).is_err());
+        assert_eq!(store.job_status(&spec.job_id).unwrap(), JobStatus::Succeeded);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bound_job_recovers_missing_stage_but_legacy_job_is_not_rebound() {
+        let (root, runtime, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        store.create_job_with_start_request(&spec.job_id, "file:///source", &spec.durable_request(&runtime).unwrap(), 1).unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        assert_eq!(store.stage_status(&spec.job_id, STAGE_ID).unwrap(), StageStatus::Pending);
+        let mut legacy = spec.clone(); legacy.job_id = "legacy".into();
+        store.create_job(&legacy.job_id, "file:///original", 2).unwrap();
+        assert!(matches!(ensure_job(&store, &legacy, &runtime), Err(SupervisorError::Worker { code, .. }) if code == "JOB_START_UNVERIFIED"));
+        assert_eq!(store.job_start_request(&legacy.job_id).unwrap(), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_sidecar_and_model_manifest_cannot_change_a_bound_job() {
+        let (root, runtime, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        fs::write(spec.source_path.with_extension("srt"), "original subtitles").unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        fs::write(spec.source_path.with_extension("srt"), "changed subtitles").unwrap();
+        assert!(ensure_job(&store, &spec, &runtime).is_err());
+        fs::write(spec.source_path.with_extension("srt"), "original subtitles").unwrap();
+        ensure_job(&store, &spec, &runtime).unwrap();
+        fs::write(runtime.app_root.join("models/manifests/tts.json"), "{\"version\":2}").unwrap();
+        assert!(ensure_job(&store, &spec, &runtime).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cli_and_json_start_preserve_the_selected_voice() {
+        let voice = "vi-truc-ly-vieneu3-v1";
+        let args = ["run", "--source", "source.mp4", "--output-dir", "output", "--data-root", "data", "--enable-dubbing", "--tts-voice-id", voice];
+        match parse_cli(args.into_iter().map(OsString::from)).unwrap() {
+            CliMode::Run { enable_dubbing, tts_voice_id, .. } => {
+                assert!(enable_dubbing);
+                assert_eq!(tts_voice_id.as_deref(), Some(voice));
+            }
+            _ => panic!("expected run"),
+        }
+        let request: UiRequest = serde_json::from_value(json!({
+            "command":"start", "source_path":"source.mp4", "output_dir":"output",
+            "enable_dubbing":true, "tts_voice_id":voice
+        })).unwrap();
+        match request {
+            UiRequest::Start { tts_voice_id, .. } => assert_eq!(tts_voice_id.as_deref(), Some(voice)),
+            _ => panic!("expected start"),
+        }
+        let mut invalid = args.map(OsString::from).to_vec();
+        invalid.pop();
+        assert!(parse_cli(invalid.into_iter()).is_err());
+    }
+
+    #[test]
+    fn start_spec_rejects_unsafe_voice_ids() {
+        let spec = StartSpec {
+            job_id:"test".into(), source_path:PathBuf::from("source"), output_dir:PathBuf::from("output"),
+            source_language:"auto".into(), target_language:"vi".into(), enable_dubbing:true,
+            burn_in_subtitles:true, tts_voice_id:None,
+        };
+        for invalid in ["", "../escape", "Unknown", "a\nb", &"a".repeat(97)] {
+            assert!(spec.clone().with_voice_id(Some(invalid.into())).is_err());
+        }
+        assert_eq!(spec.with_voice_id(Some("vi-truc-ly-vieneu3-v1".into())).unwrap().tts_voice_id.as_deref(), Some("vi-truc-ly-vieneu3-v1"));
+    }
 
     #[test]
     fn generated_ids_are_path_safe() {

@@ -1,0 +1,392 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from array import array
+from dataclasses import replace
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+import unittest
+from unittest.mock import MagicMock, Mock, patch
+import wave
+
+from engine.dubflow.asr import TimeBase, TimePoint
+from engine.dubflow.tts.adapter import TtsConfig, TtsInput, TtsRequest, TtsError, EngineHealth, approved_default_voice
+from engine.dubflow.tts.vieneu import load_vieneu_voice, voice_choices, VieNeuVietnameseTtsEngine, FILES
+from engine.dubflow.tts.vieneu_native import NativeModel, NativeCueRejected, VERSIONS, INFERENCE_RECIPE
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+class VieNeuPackTests(unittest.TestCase):
+    def fixture(self, root):
+        profile = json.loads((ROOT / "models/manifests/production-vieneu-v1.json").read_text(encoding="utf-8"))
+        data = {f: b"fixture-data" for f in FILES}
+        data["voices.json"] = json.dumps({"presets": {voice["name"]: {} for voice in profile["voices"]}}).encode()
+        records = {k: {"sha256": hashlib.sha256(v).hexdigest(), "size_bytes": len(v)} for k, v in data.items()}
+        tree = hashlib.sha256(json.dumps(records, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        profile["model_tree_sha256"] = tree
+        prefix = "tts/packs/vieneu-" + tree
+        profile["artifacts"] = [{"id": "file-" + str(i), "path": prefix + "/" + k, "url": "https://example.invalid/" + k, **records[k]} for i, k in enumerate(sorted(data))]
+        app, cache = root / "app", root / "models"
+        app.mkdir()
+        metadata, selected = app / "voice.json", app / "cpu.json"
+        metadata.write_text(json.dumps(profile), encoding="utf-8")
+        selected.write_text(json.dumps({"tts_neural_profile": "voice.json"}))
+        installed = cache / prefix
+        for k, payload in data.items():
+            p = installed / k
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(payload)
+        return app, cache, metadata, selected, installed, profile
+
+    def test_warmed_pack_does_not_download_and_voice_change_changes_identity(self):
+        with TemporaryDirectory() as directory:
+            app, cache, metadata, selected, _, profile = self.fixture(Path(directory))
+            with patch("engine.dubflow.models.runtime.urllib.request.urlopen", side_effect=AssertionError("offline cache must not download")):
+                pack, voice = load_vieneu_voice(app, cache, selected)
+            self.assertEqual(pack.sample_rate, 48000)
+            self.assertEqual(pack.voice_name, "Ngọc Huyền")
+            self.assertEqual(voice.license_id, "Apache-2.0")
+            next(item for item in profile["voices"] if item["voice_id"] == profile["voice_id"])["voice_version"] = "1.0.1"
+            metadata.write_text(json.dumps(profile), encoding="utf-8")
+            _, changed = load_vieneu_voice(app, cache, selected)
+            self.assertNotEqual(voice.content_hash(), changed.content_hash())
+
+    def test_presets_share_model_bytes_but_have_distinct_voice_identities(self):
+        with TemporaryDirectory() as directory:
+            app, cache, _, selected, _, profile = self.fixture(Path(directory))
+            identities = set()
+            models = set()
+            for choice in profile["voices"]:
+                with patch("engine.dubflow.models.runtime.urllib.request.urlopen", side_effect=AssertionError("offline")):
+                    pack, voice = load_vieneu_voice(app, cache, selected, voice_id=choice["voice_id"])
+                self.assertEqual(pack.voice_name, choice["name"])
+                self.assertEqual(voice.voice_id, choice["voice_id"])
+                identities.add(voice.content_hash())
+                models.add(voice.model_hash)
+            self.assertEqual(len(identities), 25)
+            self.assertEqual(len(models), 1)
+
+    def test_unknown_or_invalid_voice_cannot_download_or_replace_an_existing_choice(self):
+        with TemporaryDirectory() as directory:
+            app, cache, _, selected, _, _ = self.fixture(Path(directory))
+            with patch("engine.dubflow.tts.vieneu.ensure_model_profile", side_effect=AssertionError("invalid voice must not provision")):
+                for voice_id in ("missing", "../escape", "", 123, True):
+                    with self.subTest(voice_id=voice_id), self.assertRaisesRegex(TtsError, "VOICE_ID_UNKNOWN"):
+                        load_vieneu_voice(app, cache, selected, voice_id=voice_id)
+
+    def test_invalid_catalog_is_rejected_before_provisioning(self):
+        profile = json.loads((ROOT / "models/manifests/production-vieneu-v1.json").read_text(encoding="utf-8"))
+        for kind in ("duplicate", "unapproved", "integer", "empty", "missing_default", "too_many"):
+            invalid = deepcopy(profile)
+            if kind == "duplicate": invalid["voices"].append(invalid["voices"][0])
+            if kind == "unapproved": invalid["voices"][0]["approved"] = False
+            if kind == "integer": invalid["voices"][0]["voice_id"] = 123
+            if kind == "empty": invalid["voices"][0]["name"] = ""
+            if kind == "missing_default": invalid["voice_id"] = "missing"
+            if kind == "too_many": invalid["voices"] = invalid["voices"] * 3
+            with self.subTest(kind=kind), self.assertRaisesRegex(TtsError, "VOICE_MANIFEST_INVALID"):
+                voice_choices(invalid)
+
+    def test_unsafe_manifest_rejected_before_download_or_writing_pack(self):
+        for kind in ("traversal", "foreign", "duplicate", "hash", "recipe", "runtime", "license"):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                app, cache, metadata, selected, installed, profile = self.fixture(Path(directory))
+                original = (installed / "tts/config.json").read_bytes()
+                if kind == "traversal": profile["artifacts"][0]["path"] = "../escape"
+                if kind == "foreign": profile["artifacts"][0]["path"] += ".py"
+                if kind == "duplicate": profile["artifacts"][1] = deepcopy(profile["artifacts"][0])
+                if kind == "hash": profile["model_tree_sha256"] = "a" * 64
+                if kind == "recipe": profile["inference"]["babble_retries"] = 9
+                if kind == "runtime": profile["runtime_versions"]["vieneu"] = "latest"
+                if kind == "license": profile["approved"] = False
+                metadata.write_text(json.dumps(profile), encoding="utf-8")
+                with patch("engine.dubflow.tts.vieneu.ensure_model_profile", side_effect=AssertionError("invalid inventory must not bootstrap")), self.assertRaises(TtsError):
+                    load_vieneu_voice(app, cache, selected)
+                self.assertEqual((installed / "tts/config.json").read_bytes(), original)
+                self.assertFalse((Path(directory) / "escape").exists())
+
+    def test_foreign_code_and_linked_model_data_are_rejected(self):
+        for kind in ("foreign_code", "symlink"):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                app, cache, _, selected, installed, _ = self.fixture(Path(directory))
+                if kind == "foreign_code":
+                    (installed / "modeling.py").write_text("raise RuntimeError('do not execute')")
+                else:
+                    target = installed / "tts/config.json"
+                    target.unlink()
+                    outside = Path(directory) / "outside"
+                    outside.write_text("foreign")
+                    try: target.symlink_to(outside)
+                    except OSError: continue  # OS privilege not supplied in this lane.
+                with self.assertRaisesRegex(TtsError, "VOICE_PATH_UNSAFE"):
+                    load_vieneu_voice(app, cache, selected)
+
+    def test_tamper_cannot_be_accepted_when_downloader_claims_ready(self):
+        with TemporaryDirectory() as directory:
+            app, cache, _, selected, installed, _ = self.fixture(Path(directory))
+            (installed / "tts/config.json").write_bytes(b"changed-data")
+            with patch("engine.dubflow.tts.vieneu.ensure_model_profile", return_value={"ready": True}), self.assertRaisesRegex(TtsError, "VOICE_PACK_CHECKSUM_MISMATCH"):
+                load_vieneu_voice(app, cache, selected)
+
+
+class VieNeuBoundsTests(unittest.TestCase):
+    def test_no_eos_is_rejected_after_one_changed_seed_without_publication(self):
+        model = NativeModel.__new__(NativeModel)
+        model.last_text = None
+        model.last_samples = None
+        seeds = []
+        model.np = SimpleNamespace(random=SimpleNamespace(seed=seeds.append))
+        model.phonemize = lambda _: "phones"
+        model.expected_frame_cap = lambda _: 18
+        model.codes, model.speaker = None, None
+        calls = []
+        model.engine = SimpleNamespace(ended=False, tokenizer=SimpleNamespace(encode=lambda _: SimpleNamespace(ids=[1])), infer=lambda **kw: calls.append(kw) or [0.1])
+        with self.assertRaisesRegex(NativeCueRejected, "before end-of-speech") as rejected:
+            model.generate({"text": "Xin chào", "speed": 1.0, "sequence": 1})
+        self.assertEqual(rejected.exception.code, "TTS_SPEECH_INCOMPLETE")
+        self.assertEqual(seeds, [20261007, 20261008])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([call["max_new_frames"] for call in calls], [18, 36])
+        self.assertEqual({key: value for key, value in calls[0].items() if key != "max_new_frames"},
+                         {key: value for key, value in calls[1].items() if key != "max_new_frames"})
+        self.assertFalse(calls[0]["frame_cap"])
+        self.assertIsNone(model.last_samples)
+
+    def decode_model(self, outcomes):
+        model = NativeModel.__new__(NativeModel)
+        model.last_text, model.last_samples, model.last_warnings = None, None, ()
+        model.codes, model.speaker = None, None
+        model.phonemize = lambda _: "phones"
+        model.expected_frame_cap = lambda _: 18
+        pcm = MagicMock()
+        pcm.reshape.return_value = pcm
+        pcm.astype.return_value = pcm
+        pcm.tobytes.return_value = b"\x00\x00\x80\x3e"
+        pcm.__len__.return_value = 1
+        model.np = SimpleNamespace(random=SimpleNamespace(seed=Mock()), float32="float32",
+            asarray=Mock(return_value=pcm), isfinite=Mock(return_value=SimpleNamespace(all=lambda: True)))
+        def infer(**kwargs):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            model.engine.ended = outcome
+            return pcm if outcome else [99.0]  # Incomplete PCM must never reach validation/publication.
+        model.engine = SimpleNamespace(ended=True, tokenizer=SimpleNamespace(encode=lambda _: SimpleNamespace(ids=[1])), infer=Mock(side_effect=infer))
+        return model, pcm
+
+    def test_reseed_caches_only_complete_pcm_and_preserves_warning_on_reuse(self):
+        model, pcm = self.decode_model([False, True])
+        with TemporaryDirectory() as directory:
+            model.output = Path(directory)
+            first = model.generate({"text":"Làm gì vậy?", "speed":1., "sequence":1})
+            again = model.generate({"text":"Làm gì vậy?", "speed":1., "sequence":2})
+            self.assertEqual(first["warnings"], ["TTS_EOS_RESEEDED", "TTS_EOS_FRAME_BUDGET_EXTENDED"])
+            self.assertEqual(again["warnings"], first["warnings"])
+            self.assertEqual(first["sha256"], again["sha256"])
+            self.assertEqual(model.engine.infer.call_count, 2)
+            model.np.asarray.assert_called_once_with(pcm, dtype="float32")
+            self.assertIs(model.last_samples, pcm)
+            self.assertEqual(model.np.random.seed.call_args_list[0].args, (20261007,))
+            self.assertEqual(model.np.random.seed.call_args_list[1].args, (20261008,))
+
+    def test_primary_eos_never_regenerates_or_marks_reseed(self):
+        model, pcm = self.decode_model([True])
+        with TemporaryDirectory() as directory:
+            model.output = Path(directory)
+            reply = model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+            self.assertEqual(reply["warnings"], [])
+            model.engine.infer.assert_called_once()
+            self.assertEqual(model.engine.infer.call_args.kwargs["max_new_frames"], 18)
+            self.assertFalse(model.engine.infer.call_args.kwargs["frame_cap"])
+            model.np.random.seed.assert_called_once_with(20261007)
+
+    def test_retry_budget_never_exceeds_global_cap_and_reports_only_actual_extension(self):
+        for expected in (149, 150, 250, 300, 400):
+            with self.subTest(expected=expected):
+                model, _ = self.decode_model([False, True])
+                model.expected_frame_cap = lambda _: expected
+                _, warnings = model._infer_complete("phones")
+                initial = min(expected, 300)
+                self.assertEqual([call.kwargs["max_new_frames"] for call in model.engine.infer.call_args_list],
+                                 [initial, min(initial * 2, 300)])
+                self.assertIn("TTS_EOS_RESEEDED", warnings)
+                self.assertEqual("TTS_EOS_FRAME_BUDGET_EXTENDED" in warnings, initial < 300)
+                self.assertEqual(model.engine.infer.call_count, 2)
+
+    def test_invalid_sdk_budget_is_fatal_before_inference_or_cache(self):
+        for expected in (0, -1, True, 18.0, None):
+            with self.subTest(expected=expected):
+                model, _ = self.decode_model([])
+                model.expected_frame_cap = lambda _: expected
+                with self.assertRaisesRegex(ValueError, "phoneme frame budget"):
+                    model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+                model.engine.infer.assert_not_called()
+                self.assertIsNone(model.last_samples)
+
+    def test_runtime_error_is_not_an_eos_retry_or_cached_audio(self):
+        model, _ = self.decode_model([RuntimeError("native session failure")])
+        with self.assertRaisesRegex(RuntimeError, "native session failure"):
+            model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+        model.engine.infer.assert_called_once()
+        model.np.asarray.assert_not_called()
+        self.assertIsNone(model.last_samples)
+
+    def test_invalid_complete_pcm_is_fatal_without_reseed_or_publication(self):
+        model, _ = self.decode_model([True])
+        model.np.isfinite.return_value = SimpleNamespace(all=lambda: False)
+        with TemporaryDirectory() as directory:
+            model.output = Path(directory)
+            with self.assertRaisesRegex(ValueError, "finite size bound"):
+                model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+            self.assertEqual(list(model.output.iterdir()), [])
+        model.engine.infer.assert_called_once()
+        self.assertIsNone(model.last_samples)
+
+    def test_unsupported_phoneme_context_is_a_cue_refusal_before_inference(self):
+        for phones, token_count in (("x" * 4097, 1), ("phones", 1025)):
+            with self.subTest(token_count=token_count):
+                model = NativeModel.__new__(NativeModel)
+                model.last_text, model.last_samples = None, None
+                model.phonemize = lambda _: phones
+                model.engine = SimpleNamespace(tokenizer=SimpleNamespace(encode=lambda _: SimpleNamespace(ids=[1] * token_count)))
+                with self.assertRaises(NativeCueRejected) as refused:
+                    model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+                self.assertEqual(refused.exception.code, "TTS_TEXT_UNSUPPORTED")
+                self.assertIsNone(model.last_samples)
+
+    def test_invalid_text_and_speed_fail_before_sdk_inference(self):
+        model = NativeModel.__new__(NativeModel)
+        for text, speed in (("", 1.), ("x" * 513, 1.), ("xin chào", float("nan")), ("xin chào", 1.31), ("xin chào", True)):
+            with self.subTest(text=text[:20], speed=speed), self.assertRaises(ValueError):
+                model.generate({"text": text, "speed": speed, "sequence": 1})
+
+
+class MeasuredVieNeuFitTests(unittest.TestCase):
+    def test_explicit_window_uses_only_natural_tail_and_keeps_safe_rate_refusal(self):
+        import io
+        engine = VieNeuVietnameseTtsEngine(SimpleNamespace(sample_rate=48000))
+        from dataclasses import replace
+        cue = TtsInput("gap", "gap", "Xin chào", TimePoint(0, TimeBase(1, 48000)),
+            TimePoint(48000, TimeBase(1, 48000)), render_window_end=TimePoint(96000, TimeBase(1, 48000)))
+        speeds = []
+        def generate(text, sid=0, speed=1.):
+            speeds.append(speed)
+            return SimpleNamespace(samples=array("f", [0.1]) * 72000, sample_rate=48000, warnings=())
+        engine._tts = SimpleNamespace(generate=generate)
+        request = TtsRequest("gap", cue, approved_default_voice(), TtsConfig(sample_rate=48000),
+            "sha256:" + "a" * 64, 0, 48000)
+        with patch.object(engine, "healthcheck", return_value=EngineHealth(True)):
+            result = engine.synthesize(request)
+            with wave.open(io.BytesIO(result.audio_bytes)) as pcm:
+                self.assertEqual(pcm.getnframes(), 72000)  # no full-window padding or tail cut
+            self.assertEqual(result.speed_ratio_milli, 1000)
+            self.assertEqual(speeds, [1., 1.])  # natural child cache is reused
+            speeds.clear()
+            with self.assertRaisesRegex(TtsError, "safe speaking rate"):
+                engine.synthesize(replace(request, segment=replace(cue, render_window_end=TimePoint(50000, TimeBase(1, 48000)))))
+            self.assertEqual(speeds, [1., 1.])
+
+    def synthesize(self, frames, *, maximum=1300):
+        speeds = []
+
+        def generate(text, sid=0, speed=1.0):
+            speeds.append(speed)
+            return SimpleNamespace(samples=array("f", [0.1]) * frames.pop(0), sample_rate=48000, warnings=())
+
+        engine = VieNeuVietnameseTtsEngine(SimpleNamespace(sample_rate=48000))
+        engine._tts = SimpleNamespace(generate=generate)
+        base = TimeBase(1, 48000)
+        segment = TtsInput("fit", "fit", "Xin chào Việt Nam.", TimePoint(0, base), TimePoint(48000, base))
+        request = TtsRequest("fit", segment, approved_default_voice(),
+            TtsConfig(sample_rate=48000, max_speed_ratio_milli=maximum), "sha256:" + "a" * 64, 0, 48000)
+        with patch.object(engine, "healthcheck", return_value=EngineHealth(True)):
+            try:
+                result = engine.synthesize(request)
+            except TtsError as error:
+                return error, speeds
+        return result, speeds
+
+    def test_measured_residual_changes_rate_and_keeps_complete_speech(self):
+        result, speeds = self.synthesize([57600, 48120, 47900])
+        self.assertEqual(speeds, [1.0, 1.2, 1.209])
+        self.assertEqual(result.speed_ratio_milli, 1209)
+        self.assertEqual(result.fit_mode, "speed_adjusted")
+        import io
+        with wave.open(io.BytesIO(result.audio_bytes)) as reader:
+            self.assertEqual(reader.getnframes(), 48000)
+            self.assertNotEqual(reader.readframes(47900), b"\0" * 95800)
+            self.assertEqual(reader.readframes(100), b"\0" * 200)
+
+    def test_rate_cap_rejects_residual_instead_of_cutting_or_sending_unsafe_speed(self):
+        error, speeds = self.synthesize([62400, 48500], maximum=2000)
+        self.assertEqual(speeds, [1.0, 1.3])
+        self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
+        self.assertIn("spoken samples will not be cut", error.condition)
+        error, speeds = self.synthesize([96000], maximum=2000)
+        self.assertEqual(speeds, [1.0])
+        self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
+
+    def test_residual_retries_are_bounded_and_each_rate_changes(self):
+        error, speeds = self.synthesize([57600, 48500, 48200, 48100])
+        self.assertEqual(len(speeds), 4)  # natural + at most three tempo passes
+        self.assertEqual(speeds, sorted(set(speeds)))
+        self.assertLessEqual(max(speeds), 1.3)
+        self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
+
+
+@unittest.skipUnless(os.environ.get("DUBFLOW_REAL_VIENEU_MODEL_ROOT"), "real pinned VieNeu data not supplied")
+class ActualVieNeuTests(unittest.TestCase):
+    def test_actual_reseed_tempo_cache_and_short_cue_eos(self):
+        pack, voice = load_vieneu_voice(ROOT, os.environ["DUBFLOW_REAL_VIENEU_MODEL_ROOT"], ROOT / "models/manifests/production-cpu-v1.json")
+        engine = VieNeuVietnameseTtsEngine(pack, ffmpeg_path=os.environ["DUBFLOW_REAL_FFMPEG"])
+        try:
+            health = engine.healthcheck(voice)
+            self.assertTrue(health.ready, health.condition)
+            pid = engine._tts.process.pid
+            natural = engine._tts.generate("Làm gì vậy?", 0, 1.)
+            self.assertEqual(natural.warnings, ("TTS_EOS_RESEEDED", "TTS_EOS_FRAME_BUDGET_EXTENDED"))
+            fitted = engine._tts.generate("Làm gì vậy?", 0, 1.2)
+            self.assertEqual(fitted.warnings, natural.warnings)
+            self.assertLess(len(fitted.samples), len(natural.samples))
+            short = engine._tts.generate("Ngồi yên.", 0, 1.)
+            self.assertEqual(short.warnings, ("TTS_EOS_RESEEDED", "TTS_EOS_FRAME_BUDGET_EXTENDED"))
+            self.assertEqual(len(short.samples), 72960)
+            following = engine._tts.generate("Xin chào Việt Nam.", 0, 1.)
+            self.assertEqual(following.warnings, ())
+            self.assertGreater(max(abs(value) for value in following.samples), 0.01)
+            self.assertEqual(engine._tts.process.pid, pid)
+            self.assertIsNone(engine._tts.process.poll())
+        finally:
+            engine.close()
+
+    def test_native_offline_speech_and_bounded_pitch_preserving_fit(self):
+        pack, voice = load_vieneu_voice(ROOT, os.environ["DUBFLOW_REAL_VIENEU_MODEL_ROOT"], ROOT / "models/manifests/production-cpu-v1.json")
+        engine = VieNeuVietnameseTtsEngine(pack, ffmpeg_path=os.environ["DUBFLOW_REAL_FFMPEG"])
+        try:
+            health = engine.healthcheck(voice)
+            self.assertTrue(health.ready, health.condition)
+            natural = engine._tts.generate("Xin chào Việt Nam.", 0, 1.)
+            fitted = engine._tts.generate("Xin chào Việt Nam.", 0, 1.2)
+            self.assertEqual(natural.sample_rate, 48000)
+            self.assertGreater(max(abs(x) for x in natural.samples), 0.01)
+            self.assertLess(len(fitted.samples), len(natural.samples))
+            self.assertLess(abs(len(fitted.samples) - len(natural.samples) / 1.2), 4800)
+            target = len(natural.samples) * 10 // 11
+            segment = TtsInput("fit", "fit", "Xin chào Việt Nam.", TimePoint(0, TimeBase(1, 48000)), TimePoint(target, TimeBase(1, 48000)))
+            result = engine.synthesize(TtsRequest("fit", segment, voice, TtsConfig(sample_rate=48000), "sha256:" + "a" * 64, 0, target))
+            with TemporaryDirectory() as directory:
+                path = Path(directory) / "fit.wav"
+                path.write_bytes(result.audio_bytes)
+                with wave.open(str(path)) as f:
+                    self.assertEqual(f.getnframes(), target)
+                    self.assertEqual(f.getframerate(), 48000)
+            self.assertEqual(result.fit_mode, "speed_adjusted")
+        finally:
+            engine.close()

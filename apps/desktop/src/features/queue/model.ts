@@ -1,4 +1,5 @@
 import type { JobStatus, JobStatusState } from "../job_status/status.ts";
+import { isDubbingOptions, type DubbingOptions } from "../voices/model.ts";
 
 export const QUEUE_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_QUEUE_LIMIT = 10_000;
@@ -10,6 +11,7 @@ export type QueueJob = {
   createdAt: string;
   status: JobStatus;
   outputPath: string | null;
+  dubbing: DubbingOptions;
 };
 
 export type QueueSnapshot = {
@@ -33,6 +35,12 @@ export type SnapshotStorage = {
 };
 
 export type QueueClock = () => string;
+export type QueueIdFactory = () => string;
+
+function newQueueJobId(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  return `job-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
 
 export type QueueListener = (snapshot: QueueSnapshot) => void;
 
@@ -148,7 +156,8 @@ function isQueueJob(value: unknown): value is QueueJob {
     typeof job.displayName === "string" && job.displayName.length > 0 &&
     typeof job.createdAt === "string" && !Number.isNaN(Date.parse(job.createdAt)) &&
     isJobStatus(job.status) &&
-    (job.outputPath === null || typeof job.outputPath === "string")
+    (job.outputPath === null || typeof job.outputPath === "string") &&
+    (job.dubbing === undefined || isDubbingOptions(job.dubbing))
   );
 }
 
@@ -170,7 +179,9 @@ export function parseQueueSnapshot(serialized: string | null): QueueSnapshot | n
     const ids = new Set(snapshot.jobs.map((job) => job.id));
     if (snapshot.selected_job_id !== null && !ids.has(snapshot.selected_job_id)) return null;
     if (ids.size !== snapshot.jobs.length) return null;
-    return cloneSnapshot(snapshot as QueueSnapshot);
+    const restored = cloneSnapshot(snapshot as QueueSnapshot);
+    for (const job of restored.jobs) job.dubbing ??= { enabled: false, voiceId: null };
+    return restored;
   } catch {
     return null;
   }
@@ -219,35 +230,34 @@ export function createQueueJob(
     createdAt,
     status: emptyStatus(),
     outputPath: null,
+    dubbing: { enabled: false, voiceId: null },
   };
 }
 
 export class QueueController {
   private snapshot: QueueSnapshot;
   private readonly listeners = new Set<QueueListener>();
-  private sequence: number;
   private readonly storage: SnapshotStorage;
   private readonly clock: QueueClock;
   private readonly queueLimit: number;
+  private readonly idFactory: QueueIdFactory;
 
   constructor(
     storage: SnapshotStorage,
     clock: QueueClock = () => new Date().toISOString(),
     queueLimit = DEFAULT_QUEUE_LIMIT,
+    idFactory: QueueIdFactory = newQueueJobId,
   ) {
     this.storage = storage;
     this.clock = clock;
     this.queueLimit = queueLimit;
+    this.idFactory = idFactory;
     const restored = parseQueueSnapshot(storage.read());
     this.snapshot = restored ?? {
       schema_version: QUEUE_SCHEMA_VERSION,
       selected_job_id: null,
       jobs: [],
     };
-    this.sequence = this.snapshot.jobs.reduce((max, job) => {
-      const match = /^job-(\d+)$/.exec(job.id);
-      return Math.max(max, match ? Number(match[1]) : 0);
-    }, 0);
   }
 
   subscribe(listener: QueueListener): () => void {
@@ -273,8 +283,7 @@ export class QueueController {
       if (this.snapshot.jobs.length >= this.queueLimit) {
         throw new Error(`Queue limit of ${this.queueLimit} jobs reached`);
       }
-      this.sequence += 1;
-      const job = createQueueJob(`job-${this.sequence}`, trimmed, this.clock());
+      const job = createQueueJob(this.allocateId(), trimmed, this.clock());
       this.snapshot.jobs.push(job);
       existing.add(trimmed);
       added.push(job.id);
@@ -306,23 +315,32 @@ export class QueueController {
     this.commit();
   }
 
-  retryJob(jobId: string): void {
+  retryJob(jobId: string): string {
     const job = this.requireJob(jobId);
     if (!TERMINAL_STATES.has(job.status.state) && job.status.state !== "BLOCKED_NEEDS_ACTION") {
-      throw new Error("Only failed or blocked jobs can be retried");
+      throw new Error("Only terminal or blocked jobs can be retried");
     }
-    job.status = {
+    if (this.snapshot.jobs.length >= this.queueLimit) throw new Error(`Queue limit of ${this.queueLimit} jobs reached`);
+    // The durable original remains terminal with its original options/artifacts.
+    // An explicit rerun is a distinct executable job, including its voice.
+    const retry = createQueueJob(this.allocateId(), job.sourcePath, this.clock());
+    retry.dubbing = { ...job.dubbing };
+    retry.status = {
       ...emptyStatus(),
       reason: "manual_retry",
-      message: "Queued for retry",
-      retry: {
-        ...emptyStatus().retry,
-        attempt: job.status.retry.attempt,
-        max_attempts: job.status.retry.max_attempts,
-        condition_fingerprint: null,
-      },
+      message: "Đang chờ xử lý bản mới",
     };
-    job.outputPath = null;
+    this.snapshot.jobs.push(retry);
+    this.snapshot.selected_job_id = retry.id;
+    this.commit();
+    return retry.id;
+  }
+
+  setDubbing(jobId: string, options: DubbingOptions): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Requeue the job before changing its voice");
+    if (!isDubbingOptions(options)) throw new Error("Invalid dubbing options");
+    job.dubbing = { ...options };
     this.commit();
   }
 
@@ -339,6 +357,15 @@ export class QueueController {
     const job = this.snapshot.jobs.find((candidate) => candidate.id === jobId);
     if (!job) throw new Error(`Unknown job: ${jobId}`);
     return job;
+  }
+
+  private allocateId(): string {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const id = this.idFactory();
+      if (typeof id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(id)) throw new Error("Invalid generated job ID");
+      if (!this.snapshot.jobs.some((job) => job.id === id)) return id;
+    }
+    throw new Error("Could not allocate an independent job ID");
   }
 
   private commit(): void {

@@ -137,6 +137,67 @@ def adapter(engine, *, config: TtsConfig | None = None, voice: VoiceProfile | No
 
 
 class TtsAdapterTests(unittest.TestCase):
+    def test_explicit_window_preserves_source_slots_measured_tail_and_strict_version(self):
+        cue = replace(segment("window"), render_window_end=point(2000))
+        config = TtsConfig(max_attempts=1)
+        engine = StaticEngine(lambda _: make_wave([1000] * 24000))
+        with TemporaryDirectory() as directory:
+            adapter = LocalTtsAdapter(engine, config=config, voice=approved_default_voice(),
+                provenance=make_provenance(config), output_dir=Path(directory))
+            document = adapter.synthesize((cue,), input_hash=INPUT_HASH)
+            artifact = document.artifacts[0]
+            self.assertEqual((artifact.slot_start, artifact.slot_end, artifact.actual_end, artifact.render_window_end),
+                (point(0), point(1000), point(1500), point(2000)))
+            value = parse_tts_json(document.to_json())
+            self.assertEqual(value["schema_version"], 2)
+            self.assertEqual(value["artifacts"][0]["slot_end"]["ticks"], "1000")
+            self.assertTrue(any(w.startswith("TTS_INTERCUE_GAP_USED:") for w in document.warnings))
+            from engine.dubflow.mix import FileSegment
+            self.assertEqual(FileSegment.from_tts_artifact(artifact).end, point(1500))
+            for version in (1, 3):
+                changed = json.loads(document.to_json());changed["schema_version"] = version
+                with self.assertRaises(TtsError): validate_tts_document(changed)
+            changed = json.loads(document.to_json());changed["artifacts"][0]["actual_end"]["ticks"] = "1501"
+            with self.assertRaises(TtsError): validate_tts_document(changed)
+            del changed["artifacts"][0]["render_window_end"]
+            with self.assertRaises(TtsError): validate_tts_document(changed)
+
+    def test_explicit_window_rejects_one_frame_overrun_and_neighbor_overlap(self):
+        config = TtsConfig(max_attempts=1)
+        cue = replace(segment("window"), render_window_end=point(2000))
+        engine = StaticEngine(lambda _: make_wave([1000] * 32001))
+        with TemporaryDirectory() as directory:
+            adapter = LocalTtsAdapter(engine, config=config, voice=approved_default_voice(),
+                provenance=make_provenance(config), output_dir=Path(directory))
+            with self.assertRaises(TtsStageError) as caught:
+                adapter.synthesize((cue,), input_hash=INPUT_HASH)
+            self.assertEqual(caught.exception.document.failures[0].code, "AUDIO_DURATION_MISMATCH")
+            self.assertEqual(caught.exception.document.schema_version, 2)
+            self.assertEqual(list(Path(directory).glob("*.wav")), [])
+            neighbor = replace(segment("next", 1500, 2500), render_window_end=point(2500))
+            with self.assertRaisesRegex(TtsError, "overlaps another"):
+                adapter.synthesize((cue, neighbor), input_hash=INPUT_HASH)
+            with self.assertRaisesRegex(TtsError, "cannot mix"):
+                adapter.synthesize((cue, segment("next", 2500, 3500)), input_hash=INPUT_HASH)
+
+    def test_render_window_reuse_retains_advisory_and_changed_limit_invalidates(self):
+        config = TtsConfig(max_attempts=1)
+        cue = replace(segment("window"), render_window_end=point(2000))
+        engine = StaticEngine(lambda _: make_wave([1000] * 24000))
+        with TemporaryDirectory() as directory:
+            adapter = LocalTtsAdapter(engine, config=config, voice=approved_default_voice(),
+                provenance=make_provenance(config), output_dir=Path(directory))
+            first = adapter.synthesize((cue,), input_hash=INPUT_HASH).artifacts[0]
+            stamp = Path(first.path).stat().st_mtime_ns
+            checkpoint = {cue.segment_id: TtsCheckpoint(cue.segment_id, first.artifact_hash, first)}
+            reused = adapter.synthesize((cue,), input_hash=INPUT_HASH, checkpoints=checkpoint)
+            self.assertEqual(engine.calls, [cue.segment_id])
+            self.assertEqual(Path(first.path).stat().st_mtime_ns, stamp)
+            self.assertTrue(any(w.startswith("TTS_INTERCUE_GAP_USED:") for w in reused.warnings))
+            changed = adapter.synthesize((replace(cue, render_window_end=point(2100)),), input_hash=INPUT_HASH, checkpoints=checkpoint)
+            self.assertEqual(len(engine.calls), 2)
+            self.assertNotEqual(changed.artifacts[0].artifact_hash, first.artifact_hash)
+
     def test_fixture_preserves_identity_timeline_and_schema_surface(self) -> None:
         with TemporaryDirectory() as directory:
             result = adapter(DeterministicFixtureEngine(), output_dir=directory).synthesize(

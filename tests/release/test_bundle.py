@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from contextlib import closing
 import importlib.util
 import json
+import hashlib
+import io
 from pathlib import Path
 import shutil
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 from packaging.release.bootstrap import BootstrapInstallError, install_bundle
-from packaging.release.builder import BuildError, build_bundle
+from packaging.release.builder import BuildError, build_bundle, main as builder_main
 from packaging.release.manifest import ManifestError, ReleaseArtifact, ReleaseManifest, hash_file, load_manifest
+from scripts.release import production_smoke
 
 
 SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -36,6 +42,17 @@ def _desktop_binary(root: Path) -> Path:
 
 
 class ReleaseBundleTests(unittest.TestCase):
+    def test_builder_stdout_preserves_vietnamese_on_a_windows_legacy_console(self) -> None:
+        stream = io.BytesIO()
+        console = io.TextIOWrapper(stream, encoding="cp1252", write_through=True)
+        manifest = {"voice": "Ngọc Huyền", "path": "D:/Thư viện/video.mp4"}
+        result = SimpleNamespace(bundle_path=Path("DubFlow.zip"), checksum_path=Path("SHA256.txt"), manifest=SimpleNamespace(to_dict=lambda: manifest))
+        with mock.patch("packaging.release.builder.build_bundle", return_value=result), mock.patch("sys.stdout", console):
+            self.assertEqual(builder_main(["--source-root", ".", "--output-dir", "out", "--version", "test", "--source-sha", SOURCE_SHA, "--runtime-root", "runtime"]), 0)
+        decoded = json.loads(stream.getvalue().decode("cp1252"))
+        self.assertEqual(decoded["manifest"], manifest)
+        console.detach()
+
     def test_build_is_deterministic_and_manifest_hashes_every_payload_file(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -465,6 +482,147 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertIn('gh release create "$tag" --repo "$GITHUB_REPOSITORY"', workflow)
         self.assertIn('gh release upload "$tag" --repo "$GITHUB_REPOSITORY"', workflow)
         self.assertIn("resolved_sha", workflow)
+
+
+class VoiceVersionQualificationTests(unittest.TestCase):
+    def test_corrupt_media_qualification_rejects_untyped_or_repeated_failure(self):
+        failure = {"event": "failed", "job_id": "smoke-corrupt", "code": "MEDIA_PROBE_FAILED",
+                   "attempt": 1, "retryable": False}
+        self.assertEqual(production_smoke._verify_corrupt_failure(json.dumps(failure), "smoke-corrupt")["attempt"], 1)
+        invalid = ({**failure, "code": "WORKER_UNHANDLED"}, {**failure, "attempt": 3},
+                   {**failure, "retryable": True})
+        for event in invalid:
+            with self.subTest(event=event), self.assertRaises(production_smoke.SmokeError):
+                production_smoke._verify_corrupt_failure(json.dumps(event), "smoke-corrupt")
+        retry = {"event": "retrying", "job_id": "smoke-corrupt", "attempt": 1}
+        with self.assertRaises(production_smoke.SmokeError):
+            production_smoke._verify_corrupt_failure(json.dumps(retry) + "\n" + json.dumps(failure), "smoke-corrupt")
+
+    def test_output_qualification_requires_streaming_producer_and_actual_pcm_hashes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            editable = root / "editable"
+            editable.mkdir()
+            for relative in ("final_vi.mp4", "captions_vi.srt", "captions_vi.ass", "qc_report.json", "editable/timeline.json"):
+                (root / relative).write_bytes(b"qualification-fixture")
+            artifacts = {}
+            for key, name in (("original_audio", "source_audio.wav"), ("dialogue_stem", "dialogue_stem.wav"),
+                              ("final_mix", "final_mix.wav")):
+                path = editable / name
+                with production_smoke.wave.open(str(path), "wb") as writer:
+                    writer.setparams((2, 2, 16000, 16000, "NONE", "not compressed"))
+                    writer.writeframes(b"\x00\x01" * 32000)
+                digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                artifacts[key] = {"path": str(path), "content_hash": digest, "frame_count": 16000, "channels": 2,
+                                  "sample_rate": 16000, "metrics": {"content_hash": digest, "clipped_samples": 0}}
+            provenance = {"backend_id": "pcm-stream-duck-v1", "producer_version": "2.0.1",
+                          "runtime": "owned-python/numpy-2.2.6", "non_destructive": True,
+                          "source_hash": artifacts["original_audio"]["content_hash"]}
+            mix_path = root / "mix_document.json"
+            tts_path = root / "tts_document.json"
+            mix = {**artifacts, "provenance": provenance}
+            mix_path.write_text(json.dumps(mix))
+            tts_root = root / "tts"
+            from dataclasses import replace
+            from engine.dubflow.asr import TimeBase, TimePoint
+            from engine.dubflow.tts import LocalTtsAdapter, TtsConfig, TtsInput, TtsProvenance, DeterministicFixtureEngine, approved_default_voice
+            from engine.dubflow.worker.tts_checkpoints import TtsCheckpointStore
+            from engine.dubflow.worker.b2_audio import _dubbing_windows, _input_hash
+            canonical = [{"cue_id": "cue-1", "start_ms": 0, "end_ms": 1000, "source_text": "Hello", "translated_text": "Xin chào", "confidence": 1.0}]
+            base = TimeBase(1,1000)
+            placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": "source-intercue-postroll-2000ms-gap120ms-v1",
+                "time_base": base.to_dict(), "source_end": TimePoint(1000,base).to_dict(),
+                "source_audio_sha256": artifacts["original_audio"]["content_hash"], "canonical_cue_input_hash": _input_hash(canonical),
+                "gap_evidence": "recognized-source-cue-intervals;silence-not-certified", "windows": _dubbing_windows(canonical,1000)}
+            placement_bytes = (json.dumps(placement,ensure_ascii=False,sort_keys=True,separators=(",",":"))+"\n").encode()
+            placement_digest = "sha256:" + hashlib.sha256(placement_bytes).hexdigest()
+            (root/'dubbing_placement.json').write_bytes(placement_bytes)
+            (editable/'dubbing_placement.json').write_bytes(placement_bytes)
+            config = TtsConfig(max_attempts=1)
+            voice = replace(approved_default_voice(),voice_id='vi-truc-ly-vieneu3-v1')
+            tts_provenance = TtsProvenance('qualification-fixture','3.4.0','vieneu-v3-turbo-onnx-v1','fixture',
+                'timeline-v1',config.content_hash(),placement_digest,voice.model_id,voice.model_version,voice.model_hash,
+                voice.content_hash(),voice.voice_id,voice.voice_version,config.requested_profile,'fixture',config.resource)
+            cue = TtsInput('cue-1','cue-1','Xin chào',TimePoint(0,base),TimePoint(1000,base),render_window_end=TimePoint(1000,base))
+            store = TtsCheckpointStore(tts_root,identity='2'*64)
+            speech = LocalTtsAdapter(DeterministicFixtureEngine(),config=config,voice=voice,provenance=tts_provenance,
+                output_dir=tts_root).synthesize((cue,),input_hash=placement_digest,on_checkpoint=store.commit)
+            tts_artifact = speech.artifacts[0].to_dict()
+            record = tts_root / "checkpoints" / (hashlib.sha256(b"cue-1").hexdigest() + ".json")
+            tts_path.write_bytes(speech.to_bytes())
+            manifest = {"audio": {"mode": "dubbed", "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
+                                   "mix_document": str(mix_path), "mix_provenance": provenance,
+                                   "dubbing_placement": {"schema_version": 1, "path": str(root/'dubbing_placement.json'), "sha256": placement_digest}},
+                        "cues": canonical,"warnings": []}
+            (root / "job_manifest.json").write_text(json.dumps(manifest))
+            probe = {"streams": [{"codec_type": "video", "codec_name": "h264"}, {"codec_type": "audio", "codec_name": "aac", "channels": 2}],
+                     "format": {"duration": "3"}}
+            with mock.patch.object(production_smoke, "_run", return_value=SimpleNamespace(stdout=json.dumps(probe))):
+                report = production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True,
+                                                        expect_voice_id="vi-truc-ly-vieneu3-v1")
+                self.assertEqual(report["streaming_mix"]["producer_version"], "2.0.1")
+                self.assertEqual(report["streaming_mix"]["tts_checkpoint_records_verified"], 1)
+                current_tts = json.loads(tts_path.read_text())
+                historical_tts = json.loads(tts_path.read_text())
+                historical_tts["provenance"]["producer_version"] = "3.1.0"
+                tts_path.write_text(json.dumps(historical_tts))
+                with self.assertRaisesRegex(production_smoke.SmokeError, "selected native producer"):
+                    production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True)
+                tts_path.write_text(json.dumps(current_tts))
+                saved_record = record.read_bytes()
+                record.write_bytes(b"{")
+                with self.assertRaisesRegex(production_smoke.SmokeError, "per-cue checkpoint"):
+                    production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True)
+                record.write_bytes(saved_record)
+                mix["provenance"] = {**provenance, "producer_version": "1.0.0"}
+                mix_path.write_text(json.dumps(mix))
+                with self.assertRaisesRegex(production_smoke.SmokeError, "pinned streaming"):
+                    production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True)
+                mix["provenance"] = provenance
+                mix_path.write_text(json.dumps(mix))
+                with Path(artifacts["final_mix"]["path"]).open("r+b") as handle:
+                    handle.seek(-2, 2)
+                    handle.write(b"\x02\x01")
+                with self.assertRaisesRegex(production_smoke.SmokeError, "hash differs"):
+                    production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True)
+
+    def test_voice_version_evidence_rejects_export_mutation_and_reused_audio(self) -> None:
+        for defect in (None, "original_export_mutated", "identical_dialogue"):
+            with self.subTest(defect=defect), TemporaryDirectory() as directory:
+                root = Path(directory)
+                original = root / "original"
+                (original / "editable").mkdir(parents=True)
+                (original / "editable/dialogue_stem.wav").write_bytes(b"original voice")
+                (original / "captions_vi.srt").write_bytes(b"original subtitles")
+                (root / "control/jobs").mkdir(parents=True)
+                (root / "control/jobs/smoke-good.json").write_bytes(b"original status")
+                with closing(sqlite3.connect(root / "control/jobs.sqlite3")) as connection, connection:
+                    connection.execute("CREATE TABLE jobs(job_id TEXT PRIMARY KEY, status TEXT)")
+                    connection.execute("INSERT INTO jobs VALUES('smoke-good','succeeded')")
+
+                def complete_variant(supervisor, app, data, source, output, job_id, **options):
+                    self.assertEqual(options["tts_voice_id"], "vi-thai-son-vieneu3-v1")
+                    (output / "editable").mkdir(parents=True)
+                    (output / "editable/dialogue_stem.wav").write_bytes(
+                        b"original voice" if defect == "identical_dialogue" else b"different voice")
+                    if defect == "original_export_mutated":
+                        (original / "captions_vi.srt").write_bytes(b"overwritten subtitles")
+                    with closing(sqlite3.connect(data / "control/jobs.sqlite3")) as connection, connection:
+                        connection.execute("INSERT INTO jobs VALUES(?, 'succeeded')", (job_id,))
+                    return {"job_id": job_id, "status": {"state": "COMPLETED"}}, False, ""
+
+                with mock.patch.object(production_smoke, "_run_supervisor", side_effect=complete_variant), \
+                        mock.patch.object(production_smoke, "_verify_output", return_value={"fixture_only": True}):
+                    if defect is None:
+                        report = production_smoke._verify_voice_version(root / "supervisor", root, root, root / "source.mp4",
+                            original, root / "ffprobe", voice_id="vi-truc-ly-vieneu3-v1", timeout=10)
+                        self.assertEqual(report["original_exports_and_status"], "preserved")
+                        self.assertNotEqual(report["original_dialogue_sha256"], report["new_dialogue_sha256"])
+                    else:
+                        message = "original export" if defect == "original_export_mutated" else "identical dialogue"
+                        with self.assertRaisesRegex(production_smoke.SmokeError, message):
+                            production_smoke._verify_voice_version(root / "supervisor", root, root, root / "source.mp4",
+                                original, root / "ffprobe", voice_id="vi-truc-ly-vieneu3-v1", timeout=10)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { connectDesktopShell } from "./shell/desktop_shell.ts";
-import { QueueController, type SnapshotStorage } from "./features/queue/model.ts";
+import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
+import { dubbingOptions, filterVoices, parseVoiceCatalog, voiceLabel, type VoiceCatalog } from "./features/voices/model.ts";
 import type { JobStatus } from "./features/job_status/status.ts";
 
 type ReleaseInfo = { version: string; channel: string; backend: string };
@@ -41,9 +42,71 @@ const summary = $("#queue-summary");
 const queueState = $("#queue-state");
 const queueList = $("#queue-list");
 const detail = $("#job-detail");
+const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
+const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
+const voiceSelect = $<HTMLSelectElement>("#tts-voice");
+const genderFilter = $<HTMLSelectElement>("#voice-gender");
+const accentFilter = $<HTMLSelectElement>("#voice-accent");
+const styleFilter = $<HTMLSelectElement>("#voice-style");
+let voiceCatalog: VoiceCatalog | null = null;
+let voiceCatalogError = "";
+let voiceJobId: string | null = null;
+
+function selectedJob(): QueueJob | undefined {
+  const snapshot = queue.getSnapshot();
+  return snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
+}
+
+function canStart(job: QueueJob | undefined): boolean {
+  return !!job && ["QUEUED", "RECOVERED"].includes(job.status.state) &&
+    (!job.dubbing.enabled || !!voiceCatalog?.voices.some((voice) => voice.voice_id === job.dubbing.voiceId));
+}
+
+function canCreateNewVersion(job: QueueJob | undefined): boolean {
+  return !!job && ["COMPLETED", "FAILED", "BLOCKED_NEEDS_ACTION"].includes(job.status.state);
+}
+
+function renderVoiceControls(job: QueueJob | undefined): void {
+  if (voiceJobId !== (job?.id ?? null)) {
+    genderFilter.value = accentFilter.value = "";
+    styleFilter.value = voiceCatalog?.voices.some((voice) => voice.style === "tự nhiên") ? "tự nhiên" : "";
+    voiceJobId = job?.id ?? null;
+  }
+  voiceControls.disabled = !job || job.status.state !== "QUEUED" || !voiceCatalog;
+  dubbingToggle.checked = job?.dubbing.enabled ?? false;
+  $("#voice-picker").hidden = !dubbingToggle.checked;
+  voiceSelect.replaceChildren();
+  if (!voiceCatalog) {
+    $("#voice-catalog-status").textContent = voiceCatalogError || "Đang đọc danh mục giọng…";
+    return;
+  }
+  const selected = job?.dubbing.voiceId ?? voiceCatalog.default_voice_id;
+  const choices = filterVoices(voiceCatalog, { gender: genderFilter.value, accent: accentFilter.value, style: styleFilter.value });
+  const pinned = voiceCatalog.voices.find((voice) => voice.voice_id === selected);
+  // Filtering narrows browsing; it never silently changes a saved voice.
+  const rows = pinned && !choices.includes(pinned) ? [pinned, ...choices] : choices;
+  for (const voice of rows) {
+    const option = document.createElement("option");
+    option.value = voice.voice_id;
+    option.textContent = voiceLabel(voice) + (voice === pinned && !choices.includes(voice) ? " (đang chọn)" : "");
+    voiceSelect.append(option);
+  }
+  if (!pinned && job?.dubbing.voiceId) {
+    const unavailable = document.createElement("option");
+    unavailable.value = job.dubbing.voiceId;
+    unavailable.textContent = "Giọng đã lưu không có trong phiên bản này";
+    voiceSelect.append(unavailable);
+  }
+  voiceSelect.value = selected;
+  $("#voice-description").textContent = pinned?.description ?? "Cần chọn một giọng có sẵn trước khi lồng tiếng.";
+  $("#voice-catalog-status").textContent = job && job.status.state !== "QUEUED"
+    ? "Giọng của video này đã được lưu khi bắt đầu xử lý."
+    : `${voiceCatalog.voices.length} giọng có sẵn · ${choices.length} giọng khớp bộ lọc`;
+}
 
 function render(model: Parameters<Parameters<typeof connectDesktopShell>[1]>[0]): void {
   const { view } = model;
+  renderVoiceControls(view.selected ?? undefined);
   const total = view.summary.total;
   summary.textContent = `${total} video${total === 1 ? "" : "s"}`;
   queueState.textContent = total === 0 ? "Sẵn sàng" : `${view.summary.queued} đang chờ`;
@@ -143,9 +206,14 @@ $("#start-processing").addEventListener("click", async () => {
   const selected = queue.getSnapshot().jobs.find((job) => job.id === queue.getSnapshot().selected_job_id);
   if (!selected) return;
   const button = $("#start-processing") as HTMLButtonElement;
+  if (!canStart(selected)) return;
   button.disabled = true;
+  queue.updateStatus(selected.id, { ...selected.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    await invoke("start_job", { jobId: selected.id, sourcePath: selected.sourcePath, outputDir: null });
+    await invoke("start_job", {
+      jobId: selected.id, sourcePath: selected.sourcePath, outputDir: null,
+      enableDubbing: selected.dubbing.enabled, ttsVoiceId: selected.dubbing.voiceId,
+    });
     beginPolling(selected.id);
     await refreshJob(selected.id);
   } catch (error) {
@@ -158,7 +226,7 @@ $("#start-processing").addEventListener("click", async () => {
     });
   } finally {
     const current = queue.getSnapshot().jobs.find((job) => job.id === selected.id);
-    button.disabled = !current || !["QUEUED", "RECOVERED", "FAILED"].includes(current.status.state);
+    button.disabled = !canStart(current);
   }
 });
 
@@ -179,6 +247,17 @@ cancelButton.addEventListener("click", async () => {
   }
 });
 
+const newVersionButton = $("#new-processing-version") as HTMLButtonElement;
+newVersionButton.addEventListener("click", () => {
+  const selected = selectedJob();
+  if (!canCreateNewVersion(selected) || !selected) return;
+  try {
+    queue.retryJob(selected.id);
+  } catch (error) {
+    $("#queue-state").textContent = `Không tạo được bản xử lý mới: ${String(error).slice(0, 180)}`;
+  }
+});
+
 $("#clear-queue").addEventListener("click", () => {
   for (const job of queue.getSnapshot().jobs) {
     const timer = pollers.get(job.id);
@@ -191,11 +270,43 @@ $("#clear-queue").addEventListener("click", () => {
 const startButton = $("#start-processing") as HTMLButtonElement;
 queue.subscribe((snapshot) => {
   const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
-  startButton.disabled = !selected || !["QUEUED", "RECOVERED", "FAILED"].includes(selected.status.state);
+  startButton.disabled = !canStart(selected);
+  newVersionButton.disabled = !canCreateNewVersion(selected);
+  newVersionButton.hidden = !canCreateNewVersion(selected);
   cancelButton.disabled = !selected || !["RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state);
   if (selected && ["RUNNING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) beginPolling(selected.id);
 });
 for (const job of queue.getSnapshot().jobs) beginPolling(job.id);
+
+dubbingToggle.addEventListener("change", () => {
+  const job = selectedJob();
+  if (job && voiceCatalog) queue.setDubbing(job.id, dubbingOptions(voiceCatalog, dubbingToggle.checked, job.dubbing.voiceId));
+});
+voiceSelect.addEventListener("change", () => {
+  const job = selectedJob();
+  if (job && voiceCatalog) queue.setDubbing(job.id, dubbingOptions(voiceCatalog, true, voiceSelect.value));
+});
+for (const filter of [genderFilter, accentFilter, styleFilter]) {
+  filter.addEventListener("change", () => renderVoiceControls(selectedJob()));
+}
+void invoke<unknown>("voice_catalog").then((data) => {
+  voiceCatalog = parseVoiceCatalog(data);
+  for (const [select, key] of [[genderFilter, "gender"], [accentFilter, "accent"], [styleFilter, "style"]] as const) {
+    for (const value of new Set(voiceCatalog.voices.map((voice) => voice[key]))) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = key === "accent" ? `Miền ${value}`
+        : key === "style" && value === "tự nhiên" ? "Đối thoại phim · tự nhiên" : value;
+      select.append(option);
+    }
+  }
+  styleFilter.value = voiceCatalog.voices.some((voice) => voice.style === "tự nhiên") ? "tự nhiên" : "";
+  renderVoiceControls(selectedJob());
+  startButton.disabled = !canStart(selectedJob());
+}).catch((error) => {
+  voiceCatalogError = `Không đọc được danh mục giọng: ${String(error).slice(0, 160)}`;
+  renderVoiceControls(selectedJob());
+});
 
 void invoke<ReleaseInfo>("release_info")
   .then((info) => {

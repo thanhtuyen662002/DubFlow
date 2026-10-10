@@ -263,6 +263,8 @@ class MixSegment:
             source_utterance_id = getattr(artifact, "source_utterance_id")
             start = getattr(artifact, "slot_start")
             end = getattr(artifact, "slot_end")
+            if getattr(artifact, "render_window_end", None) is not None:
+                end = getattr(artifact, "actual_end")
             path = getattr(artifact, "path")
             confidence = getattr(artifact, "confidence", 1.0)
             fallback_used = getattr(artifact, "fallback_used", False)

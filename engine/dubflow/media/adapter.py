@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import wave
 from typing import Any, Callable, Mapping, Sequence
 
 from engine.dubflow.security import SecurityBoundaryError, build_subprocess_plan, redact_diagnostics
@@ -610,6 +611,65 @@ class FfmpegMediaAdapter:
             output_format="wav",
         )
 
+    def create_silent_audio(
+        self,
+        source_path: str | Path,
+        output_path: str | Path,
+        *,
+        video_duration: MediaTimeline,
+        sample_rate: int = 48_000,
+        channels: int = 2,
+        overwrite: bool = False,
+    ) -> Path:
+        """Publish a silent PCM bed for media with no audio, never infer speech.
+
+        Only source-derived integer duration chooses the sample count. Writes
+        use at most64KiB, so a long silent video does not allocate its full WAV.
+        """
+        source = _validate_input_file(source_path, "source_path")
+        if not isinstance(video_duration, MediaTimeline) or video_duration.duration_ticks <= 0:
+            raise MediaAdapterError("MEDIA_DURATION_INVALID", "silent audio requires a positive integer source timeline")
+        if type(sample_rate) is not int or not 8_000 <= sample_rate <= 384_000:
+            raise MediaAdapterError("AUDIO_CONFIG_INVALID", "sample_rate must be between8000 and384000")
+        if type(channels) is not int or not 1 <= channels <= 8:
+            raise MediaAdapterError("AUDIO_CONFIG_INVALID", "channels must be between1 and8")
+        numerator = video_duration.duration_ticks * video_duration.time_base.numerator * sample_rate
+        frames = (numerator + video_duration.time_base.denominator - 1) // video_duration.time_base.denominator
+        frame_bytes = channels * 2
+        # Python's PCM RIFF writer uses a36-byte RIFF header before the data.
+        if frames * frame_bytes > (1 << 32) - 1 - 36:
+            raise MediaAdapterError("AUDIO_SIZE_UNSUPPORTED", "silent PCM exceeds the WAV RIFF size limit")
+        output = self._prepare_output(output_path, source, overwrite=overwrite, suffix=".wav")
+        temporary: Path | None = None
+        try:
+            descriptor, name = tempfile.mkstemp(prefix=f".{output.stem}.", suffix=".wav.partial", dir=output.parent)
+            temporary = Path(name)
+            chunk_frames = 65_536 // frame_bytes
+            zeros = bytes(chunk_frames * frame_bytes)
+            with os.fdopen(descriptor, "w+b") as handle:
+                with wave.open(handle, "wb") as writer:
+                    writer.setnchannels(channels)
+                    writer.setsampwidth(2)
+                    writer.setframerate(sample_rate)
+                    remaining = frames
+                    while remaining:
+                        count = min(remaining, chunk_frames)
+                        writer.writeframesraw(zeros[:count * frame_bytes])
+                        remaining -= count
+                handle.flush()
+                os.fsync(handle.fileno())
+            with wave.open(str(temporary), "rb") as reader:
+                actual = (reader.getnframes(), reader.getframerate(), reader.getnchannels(), reader.getsampwidth(), reader.getcomptype())
+            if actual != (frames, sample_rate, channels, 2, "NONE") or temporary.stat().st_size != 44 + frames * frame_bytes:
+                raise MediaAdapterError("SOURCE_AUDIO_INVALID", "silent PCM duration or format failed validation")
+            os.replace(temporary, output)
+            return output
+        except (OSError, EOFError, wave.Error) as error:
+            raise MediaAdapterError("AUDIO_WRITE_FAILED", "silent PCM could not be written or validated", retryable=True) from error
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
     def mux_audio(
         self,
         source_path: str | Path,
@@ -640,6 +700,7 @@ class FfmpegMediaAdapter:
         *,
         subtitle_path: str | Path | None = None,
         audio_path: str | Path | None = None,
+        video_duration: MediaTimeline | None = None,
         preserve_original_audio: bool = True,
         burn_in_subtitles: bool = False,
         overwrite: bool = False,
@@ -647,6 +708,8 @@ class FfmpegMediaAdapter:
         source = _validate_input_file(source_path, "source_path")
         subtitle = _validate_input_file(subtitle_path, "subtitle_path") if subtitle_path is not None else None
         audio = _validate_input_file(audio_path, "audio_path") if audio_path is not None else None
+        if video_duration is not None and (not isinstance(video_duration, MediaTimeline) or video_duration.duration_ticks <= 0):
+            raise MediaAdapterError("MEDIA_DURATION_INVALID", "render duration requires a positive integer source timeline")
         output = self._prepare_output(output_path, source, overwrite=overwrite)
         if audio is not None and preserve_original_audio:
             raise MediaAdapterError("AUDIO_MODE_INVALID", "dubbed audio cannot preserve the original audio")
@@ -709,7 +772,15 @@ class FfmpegMediaAdapter:
             args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-quality", "90", "-pix_fmt", "yuv420p"))
             if audio is not None or preserve_original_audio:
                 args.extend(("-c:a", "aac", "-b:a", "192k"))
-            if audio is not None:
+            if video_duration is not None:
+                # A sparse subtitle may end well before the video. -shortest
+                # includes that stream and would truncate the whole export.
+                # Bound all streams by source-derived integer video duration;
+                # rounding up to microseconds never discards a partial tick.
+                numerator = video_duration.duration_ticks * video_duration.time_base.numerator * 1_000_000
+                microseconds = (numerator + video_duration.time_base.denominator - 1) // video_duration.time_base.denominator
+                args.extend(("-t", f"{microseconds // 1_000_000}.{microseconds % 1_000_000:06d}"))
+            elif audio is not None and (subtitle is None or burn_in_subtitles):
                 args.append("-shortest")
             args.extend(("-movflags", "+faststart"))
             return self._write_atomic(output, tuple(args), output_format="mp4", cwd=output.parent if subtitle_staging else None)

@@ -7,8 +7,8 @@ The worker places the app source after runtime site-packages on `sys.path` so
 the repository's release-policy package cannot shadow Argos Translate's
 third-party `packaging` distribution.
 
-The CPU local-file profile uses Faster-Whisper `small` and Argos Translate
-`en→vi`. Their model bytes are downloaded on first use from
+The CPU local-file profile uses Faster-Whisper `small` and pinned Argos routes
+`en→vi`, `zh→en→vi`, with Vietnamese identity. Their model bytes are downloaded on first use from
 `models/manifests/production-cpu-v1.json`, written to the user-owned model
 root, and accepted only after the manifest's exact byte count and SHA-256
 match. Interrupted downloads retain a private partial file and resume with a
@@ -21,10 +21,57 @@ Windows media, the supervisor launches the app-owned worker, captions are
 obtained from a matching `.srt`/`.vtt` sidecar or CPU ASR, and English text is
 translated locally to Vietnamese. The default B1 result emits a playable
 H.264/AAC MP4 plus Vietnamese SRT/ASS, QC, editable timeline, and provenance
-manifest while preserving source audio. Opt-in B2 additionally loads the
-app-owned `vi-builtin-v1` voice pack selected by the same manifest, synthesizes
-per-cue signed-16 PCM on CPU, and runs the non-destructive AUD-0 mixer. The
-voice pack is pinned by byte count, SHA-256, model/version ID and the approved
-`dubflow-builtin-voice-1.0` license; no network or credential is required.
+manifest while preserving source audio.
+
+## B2 neural speech candidate (not production-qualified)
+
+The former `vi-builtin-v1` implementation generates character tones. It is
+retained for compatibility tests and must not be counted as intelligible
+Vietnamese speech. The historical Draft candidate selected the Mimic3 VAIS1000 VITS voice,
+ONNX Runtime 1.30.0 and the eSpeak API from the pinned Sherpa-ONNX 1.13.8
+wheel through `production-tts-v1.json`. It uses the app-owned
+model root, a resumable first-use download, archive and extracted-tree hashes,
+and 22,050 Hz mono signed-16 PCM. Inference itself is offline. The AUD-0
+mixer publishes original audio, dialogue stem and final mix as before.
+
+PyAV is explicitly pinned to 16.1.0: the tested Faster-Whisper 1.2.1 decoder
+uses `av.open(metadata_errors=...)`, which failed with the unpinned 19.0.1
+wheel. This is a decoder compatibility pin, not evidence of a packaged build.
+
+Local native execution and back-ASR diagnostics are recorded in
+`docs/production/REAL_TTS_EVIDENCE.md`. The previous Piper frontend measured
+31.94% common-phrase mean CER; the new word-blank frontend measured 11.93%
+on that small diagnostic set. The voice remains `qualification-pending`.
+A working native WAV or green hermetic
+test does not make this candidate release-ready. Before publication, require
+speech-quality evidence, actual packaged Windows runs, required CI lanes and
+the native phonemizer's license/source obligations described in
+`docs/licenses/vietnamese-neural-tts.md`.
+
 If model health, TTS, source decoding or mixing fails, B2 records an actionable
 `B2_AUDIO_FALLBACK_TO_B1` downgrade and emits the already-valid B1 result.
+Native initialization/inference now runs in a separate child using the same
+app-owned interpreter in isolated mode. Bounded protocol, inference timeout,
+initialization/after-health crash tests and normal cleanup protect the worker.
+Windows Job Object containment now has hard worker-death tests for initialization
+and inference, including native descendants. Installed B1 recovery and staging
+reclamation still need qualification; process separation is not a security sandbox.
+
+### Current selected candidate: VieNeu v3 Turbo
+
+The user rejected the VAIS1000 listening samples. New B2 jobs select the
+Ngọc Huyền preset in `production-vieneu-v1.json`, subject to comparative
+listening preference. CPU fp32 ONNX uses SDK 3.8.3, sea-g2p 0.9.1, ONNX Runtime
+1.30.0, tokenizers 0.23.2 and NumPy 2.2.6. No GPU, Torch or downloaded model
+Python code is needed for this preset inference path. The complete SDK wheel's
+declared transitive packages are installed by the release requirements and
+must be included in runtime/license qualification.
+
+All model, codec, preset and notice bytes are size/hash verified in a separate
+immutable app-owned inventory. The child blocks network access, verifies the
+reviewed SDK source files, and rejects generation without EOS. One safe fit
+changes app-owned FFmpeg `atempo` within 1.3; remaining overlong speech uses
+the B1 downgrade. Native mono output is 48 kHz. Producer is `3.0.0`, distinct
+from historical `2.1.0` artifacts. The tiny same-corpus back-ASR diagnostic
+measured 0.48% common-phrase mean CER; this is not human or release approval.
+See `docs/licenses/vieneu-turbo.md` and `docs/production/REAL_TTS_EVIDENCE.md`.
