@@ -869,17 +869,18 @@ impl SourceQueue {
         )
     }
 
-    /// Mark scans that were running when the supervisor process stopped as
-    /// paused.  A later explicit resume starts them from the persisted cursor.
+    /// Recover only after the caller proves exclusive supervisor ownership.
+    /// Running scans become paused. Completed bound scans with an in-flight
+    /// download keep enumeration completion, but invalidate old item callbacks.
     pub fn recover_running(&self, now_ms: u64) -> Result<usize> {
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
-        let exhausted: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM source_scans WHERE status='running' AND dispatch_revision=9223372036854775807)", [], |row| row.get(0))?;
+        let exhausted: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM source_scans WHERE dispatch_revision=9223372036854775807 AND (status='running' OR (status='completed' AND producer_fingerprint IS NOT NULL AND EXISTS(SELECT 1 FROM source_items WHERE source_items.scan_id=source_scans.scan_id AND source_items.status='downloading'))))", [], |row| row.get(0))?;
         if exhausted {
             return Err(QueueError::InvalidInput(
                 "source dispatch revision exhausted".into(),
             ));
         }
-        let changed = tx.execute("UPDATE source_scans SET status = 'paused', updated_at_ms = ?1, dispatch_revision = dispatch_revision + 1 WHERE status = 'running'", params![to_i64(now_ms, "now_ms")?])?;
+        let changed = tx.execute("UPDATE source_scans SET status = CASE WHEN status='running' THEN 'paused' ELSE status END, updated_at_ms = ?1, dispatch_revision = dispatch_revision + 1 WHERE status='running' OR (status='completed' AND producer_fingerprint IS NOT NULL AND EXISTS(SELECT 1 FROM source_items WHERE source_items.scan_id=source_scans.scan_id AND source_items.status='downloading'))", params![to_i64(now_ms, "now_ms")?])?;
         tx.commit()?;
         Ok(changed)
     }
@@ -1618,6 +1619,69 @@ mod tests {
         queue
             .update_item_progress_checked(&resumed, &item, &downloaded(), 1)
             .unwrap();
+    }
+
+    #[test]
+    fn completed_enumeration_recovery_invalidates_inflight_item_dispatch() {
+        let database = TestDatabase::new();
+        let (record, item);
+        {
+            let queue = SourceQueue::open(database.path()).unwrap();
+            let (complete, discovered) = bound_item(&queue, true);
+            let mut progress = ItemProgress::discovered();
+            progress.status = ItemStatus::Downloading;
+            progress.downloaded_bytes = 4;
+            record = queue
+                .update_item_progress_checked(&complete, &discovered, &progress, 1)
+                .unwrap();
+            item = queue.items("bound").unwrap().remove(0);
+        }
+        let queue = SourceQueue::open(database.path()).unwrap();
+        assert_eq!(queue.recover_running(1).unwrap(), 1);
+        let recovered = queue.scan("bound").unwrap();
+        assert_eq!(recovered.status, ScanStatus::Completed);
+        assert_eq!(recovered.cursor, record.cursor);
+        assert_eq!(recovered.producer_fingerprint, record.producer_fingerprint);
+        assert_eq!(recovered.dispatch_revision, record.dispatch_revision + 1);
+        assert_eq!(queue.items("bound").unwrap(), vec![item.clone()]);
+        assert!(matches!(
+            queue.update_item_progress_checked(&record, &item, &downloaded(), 1),
+            Err(QueueError::StaleDispatch { .. })
+        ));
+        assert_eq!(queue.scan("bound").unwrap(), recovered);
+        let committed = queue
+            .update_item_progress_checked(&recovered, &item, &downloaded(), 1)
+            .unwrap();
+        assert_eq!(committed.status, ScanStatus::Completed);
+        assert_eq!(committed.completed_count, 1);
+        assert_eq!(queue.recover_running(1).unwrap(), 0);
+    }
+
+    #[test]
+    fn exhausted_completed_item_recovery_preserves_other_running_scans() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        let (complete, item) = bound_item(&queue, true);
+        let progress = ItemProgress {
+            status: ItemStatus::Downloading,
+            ..ItemProgress::discovered()
+        };
+        queue
+            .update_item_progress_checked(&complete, &item, &progress, 1)
+            .unwrap();
+        queue
+            .create_scan("other", "fixture", "other", 10, 1)
+            .unwrap();
+        let other = queue.resume_scan("other", 1).unwrap();
+        queue.connection.execute("UPDATE source_scans SET dispatch_revision=9223372036854775807 WHERE scan_id='bound'", []).unwrap();
+        let exhausted = queue.scan("bound").unwrap();
+        let items = queue.items("bound").unwrap();
+        assert!(matches!(
+            queue.recover_running(1),
+            Err(QueueError::InvalidInput(_))
+        ));
+        assert_eq!(queue.scan("bound").unwrap(), exhausted);
+        assert_eq!(queue.scan("other").unwrap(), other);
+        assert_eq!(queue.items("bound").unwrap(), items);
     }
 
     #[test]

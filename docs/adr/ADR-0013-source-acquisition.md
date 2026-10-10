@@ -17,6 +17,11 @@ Page and item dispatches are serialized per scan; a checked item commit also
 invalidates an older in-flight page. Equal wall-clock timestamps cannot replay
 a dispatch. A completed enumeration may materialize its discovered items;
 enumeration completion does not imply downloaded media.
+Owner-proven recovery also increments the revision of Completed bound scans
+that still contain Downloading items. It retains enumeration completion,
+cursor, producer and partial item progress; an old callback cannot use an
+unchanged Completed snapshot after restart. Exhaustion of any such revision
+refuses the entire recovery transaction before other Running scans are paused.
 
 Producer-bound rows now refuse unchecked item writes through both compatibility
 entry points. Legacy unbound rows keep their prior API and behavior. SQLite stays

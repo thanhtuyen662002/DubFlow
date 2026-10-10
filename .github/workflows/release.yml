@@ -132,6 +132,8 @@ jobs:
             'checked_items_refuse_changed_producer_scope_and_original_item',
             'same_clock_pause_resume_and_competing_item_commit_refuse_late_callbacks',
             'recovered_item_dispatch_requires_a_new_supervisor_snapshot',
+            'completed_enumeration_recovery_invalidates_inflight_item_dispatch',
+            'exhausted_completed_item_recovery_preserves_other_running_scans',
             'paused_cancelled_progress_and_count_failure_preserve_items_atomically',
             'item_revision_write_failure_and_exhaustion_roll_back_all_mutations'
           )) {
