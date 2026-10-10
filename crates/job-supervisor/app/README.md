@@ -18,9 +18,10 @@ be outside the immutable version directory. An OS lifetime lock protects
 without recovering the first service's running scans. Retained lock metadata is
 diagnostic, and is replaced only after obtaining exclusive OS ownership.
 
-Admission hashes every inventoried file during one tree walk, checks each
-node's symlink/reparse metadata and the directory ancestry before/after walking
-and before return, and rechecks the trusted manifest digest. Missing, unexpected,
+Admission hashes every inventoried file during one tree walk. A final metadata
+walk rechecks the exact file set, sizes and symlink/reparse nodes, including
+leaves already hashed. Directory ancestry is checked before/after walking and
+before return, then the trusted manifest digest is rechecked. Missing, unexpected,
 case-duplicate, wrong-size/hash and linked entries are refused before imports.
 No prior admission cache or model/file hash exemption is used. Internal paths
 remain canonical; the existing Windows external-path conversion is applied to

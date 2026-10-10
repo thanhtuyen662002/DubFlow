@@ -213,7 +213,6 @@ impl Runtime {
             return Err(invalid());
         }
         let mut directories = vec![root.clone()];
-        let mut checked_directories = Vec::new();
         let mut observed = std::collections::HashSet::new();
         let mut buffer = [0u8; 64 * 1024];
         while let Some(directory) = directories.pop() {
@@ -262,14 +261,11 @@ impl Runtime {
                 }
             }
             reject_links(&directory)?;
-            checked_directories.push(directory);
         }
         if observed.len() != inventory.len() {
             return Err(invalid());
         }
-        for directory in checked_directories {
-            reject_links(&directory)?;
-        }
+        verify_final_inventory(&root, &inventory)?;
         if hex_digest(&read_bounded(
             &root.join("release-manifest.json"),
             16 * 1024 * 1024,
@@ -287,6 +283,54 @@ impl Runtime {
             version,
         })
     }
+}
+
+fn verify_final_inventory(
+    root: &Path,
+    inventory: &std::collections::HashMap<String, (u64, String)>,
+) -> Result<()> {
+    // Restore the final actual-tree check after hashing. Directory ancestry
+    // alone cannot detect a previously hashed leaf becoming linked/missing or
+    // an unexpected file arriving. Inspect each node without following links;
+    // files are not rehashed and ancestors are checked per directory.
+    let mut directories = vec![root.to_path_buf()];
+    let mut checked_directories = Vec::new();
+    let mut observed = std::collections::HashSet::new();
+    while let Some(directory) = directories.pop() {
+        reject_links(&directory)?;
+        for child in fs::read_dir(&directory)? {
+            let path = child?.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            reject_reparse(&metadata)?;
+            if metadata.is_dir() {
+                directories.push(path);
+            } else if metadata.is_file() {
+                let relative = path
+                    .strip_prefix(root)?
+                    .to_str()
+                    .ok_or_else(invalid)?
+                    .replace('\\', "/");
+                if relative == "release-manifest.json" {
+                    continue;
+                }
+                let (expected_size, _) = inventory.get(&relative).ok_or_else(invalid)?;
+                if metadata.len() != *expected_size || !observed.insert(relative) {
+                    return Err(invalid());
+                }
+            } else {
+                return Err(invalid());
+            }
+        }
+        reject_links(&directory)?;
+        checked_directories.push(directory);
+    }
+    if observed.len() != inventory.len() {
+        return Err(invalid());
+    }
+    for directory in checked_directories {
+        reject_links(&directory)?;
+    }
+    Ok(())
 }
 
 fn reject_reparse(metadata: &fs::Metadata) -> Result<()> {
@@ -1379,6 +1423,95 @@ print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'worker':__fil
         let raw = serde_json::to_vec(&json!({"schema_version":1,"source_sha":"b".repeat(40),"version":"0.1.0-test","artifacts":entries})).unwrap();
         fs::write(runtime.root.join("release-manifest.json"), &raw).unwrap();
         hex_digest(&raw)
+    }
+
+    fn fully_admitted_inventory(
+        temp: &Temporary,
+    ) -> (Runtime, std::collections::HashMap<String, (u64, String)>) {
+        let (runtime, entries) = admission_inventory(temp);
+        let expected = admission_manifest(&runtime, &entries);
+        let admitted = Runtime::admit(runtime.root, runtime.data, expected).unwrap();
+        let inventory = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry["path"].as_str().unwrap().to_owned(),
+                    (
+                        entry["size_bytes"].as_str().unwrap().parse().unwrap(),
+                        entry["sha256"].as_str().unwrap().to_owned(),
+                    ),
+                )
+            })
+            .collect();
+        (admitted, inventory)
+    }
+
+    #[test]
+    fn native_final_inventory_refuses_post_hash_missing_extra_or_resized_files() {
+        for mutation in ["missing", "extra", "resized"] {
+            let temp = Temporary::new();
+            // The complete real hash walk succeeds before the mutation. Then
+            // exercise the exact final verifier used at the admission boundary.
+            let (runtime, inventory) = fully_admitted_inventory(&temp);
+            let path = runtime
+                .root
+                .join("app/engine/dubflow/download/source_adapter.py");
+            assert!(path.starts_with(&temp.0));
+            match mutation {
+                "missing" => fs::remove_file(path).unwrap(),
+                "extra" => fs::write(runtime.root.join("late-import.py"), b"unverified").unwrap(),
+                "resized" => fs::write(path, b"recorded-import-extended").unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(
+                verify_final_inventory(&runtime.root, &inventory).is_err(),
+                "{mutation}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn native_final_inventory_refuses_post_hash_link_changes() {
+        for directory in [false, true] {
+            let temp = Temporary::new();
+            let (runtime, inventory) = fully_admitted_inventory(&temp);
+            let link = runtime.root.join(if directory {
+                "app/engine"
+            } else {
+                "app/engine/dubflow/download/source_adapter.py"
+            });
+            let target = temp.0.join("late-identical-external");
+            assert!(link.starts_with(&temp.0) && target.starts_with(&temp.0));
+            fs::rename(&link, &target).unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(verify_final_inventory(&runtime.root, &inventory).is_err());
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_final_inventory_refuses_post_hash_directory_junction() {
+        let temp = Temporary::new();
+        let (runtime, inventory) = fully_admitted_inventory(&temp);
+        let link = runtime.root.join("app/engine");
+        let target = temp.0.join("late-identical-external");
+        assert!(link.starts_with(&temp.0) && target.starts_with(&temp.0));
+        fs::rename(&link, &target).unwrap();
+        let output = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let refused = verify_final_inventory(&runtime.root, &inventory).is_err();
+        fs::remove_dir(&link).unwrap(); // Remove only our junction before fixture cleanup.
+        assert!(refused);
     }
 
     #[test]

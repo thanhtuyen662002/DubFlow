@@ -34,11 +34,26 @@ current-state rereads cannot authorize a late page.
 Actual26,166-file native admission took272.968 seconds and approximately
 2.77million ancillary I/O operations when checking every leaf's ancestor chain
 and then walking the whole tree again. Admission now validates the exact
-manifest list, hashes each actual file in one tree walk, checks every node's
-symlink/reparse metadata and rechecks directory ancestry at entry/exit and
-before return. Size/hash equality and exact inventory coverage remain mandatory;
+manifest list, hashes each actual file in one tree walk, then performs a final
+metadata walk reconciling every file path/size and refusing all symlink/reparse
+nodes. This final walk detects previously hashed leaves that become linked or
+missing and late unmanifested files; directory-only rechecks cannot detect them.
+It does not rehash files or repeat every ancestor check for every leaf. Directory
+ancestry is checked at entry/exit and before return. Tests mutate fully admitted
+fixtures before invoking the same final verifier, including identical external
+Unix leaf/directory links and a Windows directory junction. These are boundary
+tests, not an executed concurrent attack or installed performance evidence.
+Size/hash equality and exact inventory coverage remain mandatory;
 the trusted raw manifest digest is checked again before admission completes.
 No success cache, import-before-verification or dependency exemption is added.
+
+The old Windows release lane built the supervisor without executing its native
+source tests; Ubuntu Integration cannot qualify Windows-only path/junction
+regressions. The existing Windows Release lane now runs the release-mode native
+source tests after installing pinned CI Python and refuses a missing pass receipt
+for each required Windows launch, junction, final inventory and page-resume case.
+This CI fixture interpreter is not a shipped runtime proof; all staged/installed
+owned-runtime smokes and later actual native SDK qualification remain required.
 
 The same installed attempt reached readiness but the page worker refused its
 owned origin before any provider scan. Windows canonical verbatim paths caused
