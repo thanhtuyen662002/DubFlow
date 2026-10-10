@@ -6,14 +6,14 @@
 //! scan after a process restart, and track materialization progress for each
 //! admitted source item.
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 pub const MAX_ITEMS: usize = 10_000;
 pub const MAX_SCAN_ID: usize = 128;
 pub const MAX_PROVIDER_ID: usize = 64;
@@ -104,6 +104,12 @@ pub enum QueueError {
         from: String,
         to: String,
     },
+    StaleDispatch {
+        scan_id: String,
+    },
+    ProducerBindingRequired {
+        scan_id: String,
+    },
 }
 
 impl fmt::Display for QueueError {
@@ -121,6 +127,13 @@ impl fmt::Display for QueueError {
             }
             Self::InvalidTransition { entity, from, to } => {
                 write!(f, "invalid {entity} transition {from} -> {to}")
+            }
+            Self::StaleDispatch { scan_id } => write!(f, "source scan {scan_id} dispatch is stale"),
+            Self::ProducerBindingRequired { scan_id } => {
+                write!(
+                    f,
+                    "source scan {scan_id} requires a checked producer-bound dispatch"
+                )
             }
         }
     }
@@ -227,6 +240,10 @@ pub struct ScanRecord {
     pub failed_count: usize,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+    /// Changes on page commits and control transitions, independently of wall clock.
+    pub dispatch_revision: u64,
+    /// Fingerprint of the verified runtime/adapter/recipe request; never repinned.
+    pub producer_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -365,24 +382,29 @@ impl SourceQueue {
     }
 
     fn migrate(&self) -> Result<()> {
-        self.connection.execute_batch(SCHEMA_SQL)?;
-        let current: Option<i64> = self.connection.query_row(
-            "SELECT MAX(version) FROM source_queue_schema",
-            [],
-            |row| row.get(0),
-        )?;
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS source_queue_schema (version INTEGER PRIMARY KEY NOT NULL, applied_at_ms INTEGER NOT NULL);")?;
+        let current: Option<i64> =
+            tx.query_row("SELECT MAX(version) FROM source_queue_schema", [], |row| {
+                row.get(0)
+            })?;
         let current = current.unwrap_or(0);
         if current > SCHEMA_VERSION {
             return Err(QueueError::InvalidInput(format!(
                 "unsupported source queue schema {current}"
             )));
         }
-        if current < SCHEMA_VERSION {
-            self.connection.execute(
-                "INSERT INTO source_queue_schema(version, applied_at_ms) VALUES (?1, 0)",
-                params![SCHEMA_VERSION],
+        if current == 0 {
+            tx.execute_batch(SCHEMA_SQL)?;
+            tx.execute(
+                "INSERT INTO source_queue_schema(version, applied_at_ms) VALUES (1, 0)",
+                [],
             )?;
         }
+        if current < 2 {
+            tx.execute_batch("ALTER TABLE source_scans ADD COLUMN dispatch_revision INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_revision >= 0); ALTER TABLE source_scans ADD COLUMN producer_fingerprint TEXT; INSERT INTO source_queue_schema(version, applied_at_ms) VALUES (2, 0);")?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -403,24 +425,66 @@ impl SourceQueue {
         max_items: usize,
         now_ms: u64,
     ) -> Result<ScanRecord> {
+        self.create_scan_inner(scan_id, provider_id, source_ref, max_items, now_ms, None)
+    }
+
+    /// Admit a fresh scan using a fingerprint computed from verified producer pins.
+    /// Existing scan IDs and legacy rows cannot be rebound to another producer.
+    pub fn create_bound_scan(
+        &self,
+        scan_id: &str,
+        provider_id: &str,
+        source_ref: &str,
+        max_items: usize,
+        now_ms: u64,
+        producer_fingerprint: &str,
+    ) -> Result<ScanRecord> {
+        if producer_fingerprint.len() != 64
+            || !producer_fingerprint
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(QueueError::InvalidInput(
+                "producer fingerprint must be a lowercase SHA-256".into(),
+            ));
+        }
+        self.create_scan_inner(
+            scan_id,
+            provider_id,
+            source_ref,
+            max_items,
+            now_ms,
+            Some(producer_fingerprint),
+        )
+    }
+
+    fn create_scan_inner(
+        &self,
+        scan_id: &str,
+        provider_id: &str,
+        source_ref: &str,
+        max_items: usize,
+        now_ms: u64,
+        producer_fingerprint: Option<&str>,
+    ) -> Result<ScanRecord> {
         validate_text(scan_id, "scan_id", MAX_SCAN_ID)?;
         validate_text(provider_id, "provider_id", MAX_PROVIDER_ID)?;
         validate_text(source_ref, "source_ref", MAX_SOURCE_REF)?;
         validate_capacity(max_items)?;
         let now = to_i64(now_ms, "now_ms")?;
         self.connection.execute(
-            "INSERT INTO source_scans(scan_id, provider_id, source_ref, status, max_items, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?5)",
-            params![scan_id, provider_id, source_ref, max_items as i64, now],
+            "INSERT INTO source_scans(scan_id, provider_id, source_ref, status, max_items, created_at_ms, updated_at_ms, producer_fingerprint) VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?5, ?6)",
+            params![scan_id, provider_id, source_ref, max_items as i64, now, producer_fingerprint],
         )?;
         self.scan(scan_id)
     }
 
     pub fn scan(&self, scan_id: &str) -> Result<ScanRecord> {
         let row = self.connection.query_row(
-            "SELECT scan_id, provider_id, source_ref, cursor, status, max_items, discovered_count, completed_count, failed_count, created_at_ms, updated_at_ms FROM source_scans WHERE scan_id = ?1",
+            "SELECT scan_id, provider_id, source_ref, cursor, status, max_items, discovered_count, completed_count, failed_count, created_at_ms, updated_at_ms, dispatch_revision, producer_fingerprint FROM source_scans WHERE scan_id = ?1",
             params![scan_id],
             |row| Ok((
-                row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, i64>(5)?, row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?, row.get::<_, i64>(9)?, row.get::<_, i64>(10)?
+                row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, i64>(5)?, row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?, row.get::<_, i64>(9)?, row.get::<_, i64>(10)?, row.get::<_, i64>(11)?, row.get::<_, Option<String>>(12)?
             )),
         ).optional()?.ok_or_else(|| QueueError::NotFound { entity: "scan", id: scan_id.into() })?;
         Ok(ScanRecord {
@@ -435,6 +499,8 @@ impl SourceQueue {
             failed_count: to_usize(row.8, "failed_count")?,
             created_at_ms: to_u64(row.9, "created_at_ms")?,
             updated_at_ms: to_u64(row.10, "updated_at_ms")?,
+            dispatch_revision: to_u64(row.11, "dispatch_revision")?,
+            producer_fingerprint: row.12,
         })
     }
 
@@ -447,18 +513,62 @@ impl SourceQueue {
         page: &PageCheckpoint,
         now_ms: u64,
     ) -> Result<ScanRecord> {
+        self.commit_page(scan_id, None, page, now_ms)
+    }
+
+    /// Commit only the page dispatched from this exact producer/revision/cursor.
+    /// Capturing a new record after a late callback does not authorize its page.
+    pub fn checkpoint_page_checked(
+        &self,
+        dispatched: &ScanRecord,
+        page: &PageCheckpoint,
+        now_ms: u64,
+    ) -> Result<ScanRecord> {
+        self.commit_page(&dispatched.scan_id, Some(dispatched), page, now_ms)
+    }
+
+    fn commit_page(
+        &self,
+        scan_id: &str,
+        dispatched: Option<&ScanRecord>,
+        page: &PageCheckpoint,
+        now_ms: u64,
+    ) -> Result<ScanRecord> {
         validate_page(page)?;
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         let existing = self.scan(scan_id)?;
-        if matches!(
-            existing.status,
-            ScanStatus::Completed | ScanStatus::Cancelled | ScanStatus::Failed
-        ) {
+        if !matches!(existing.status, ScanStatus::Queued | ScanStatus::Running) {
             return Err(QueueError::InvalidTransition {
                 entity: "scan",
                 from: existing.status.as_str().into(),
                 to: "checkpointed".into(),
             });
         }
+        if let Some(expected) = dispatched {
+            if existing.producer_fingerprint.is_none() {
+                return Err(QueueError::ProducerBindingRequired {
+                    scan_id: scan_id.into(),
+                });
+            }
+            if expected.status != ScanStatus::Running
+                || existing.status != ScanStatus::Running
+                || expected.dispatch_revision != existing.dispatch_revision
+                || expected.cursor != existing.cursor
+                || expected.producer_fingerprint != existing.producer_fingerprint
+                || expected.provider_id != existing.provider_id
+                || expected.source_ref != existing.source_ref
+                || expected.max_items != existing.max_items
+            {
+                return Err(QueueError::StaleDispatch {
+                    scan_id: scan_id.into(),
+                });
+            }
+        } else if existing.producer_fingerprint.is_some() {
+            return Err(QueueError::ProducerBindingRequired {
+                scan_id: scan_id.into(),
+            });
+        }
+        ensure_next_revision(existing.dispatch_revision)?;
         if !page.completed && page.next_cursor == existing.cursor {
             return Err(QueueError::NoProgress {
                 scan_id: scan_id.into(),
@@ -466,7 +576,6 @@ impl SourceQueue {
             });
         }
         let now = to_i64(now_ms, "now_ms")?;
-        let tx = self.connection.unchecked_transaction()?;
         let current_count: i64 = tx.query_row(
             "SELECT COUNT(*) FROM source_items WHERE scan_id = ?1",
             params![scan_id],
@@ -544,7 +653,7 @@ impl SourceQueue {
             ScanStatus::Running
         };
         tx.execute(
-            "UPDATE source_scans SET cursor = ?1, status = ?2, discovered_count = (SELECT COUNT(*) FROM source_items WHERE scan_id = ?3), completed_count = (SELECT COUNT(*) FROM source_items WHERE scan_id = ?3 AND status = 'downloaded'), failed_count = (SELECT COUNT(*) FROM source_failures WHERE scan_id = ?3) + (SELECT COUNT(*) FROM source_items WHERE scan_id = ?3 AND status = 'failed'), updated_at_ms = ?4 WHERE scan_id = ?3",
+            "UPDATE source_scans SET cursor = ?1, status = ?2, discovered_count = (SELECT COUNT(*) FROM source_items WHERE scan_id = ?3), completed_count = (SELECT COUNT(*) FROM source_items WHERE scan_id = ?3 AND status = 'downloaded'), failed_count = (SELECT COUNT(*) FROM source_failures WHERE scan_id = ?3) + (SELECT COUNT(*) FROM source_items WHERE scan_id = ?3 AND status = 'failed'), updated_at_ms = ?4, dispatch_revision = dispatch_revision + 1 WHERE scan_id = ?3",
             params![page.next_cursor, next_status.as_str(), scan_id, now],
         )?;
         tx.commit()?;
@@ -605,15 +714,19 @@ impl SourceQueue {
     ) -> Result<()> {
         validate_text(identity_key, "identity_key", MAX_IDENTITY_KEY)?;
         validate_progress(progress)?;
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         let scan = self.scan(scan_id)?;
-        if matches!(scan.status, ScanStatus::Cancelled | ScanStatus::Failed) {
+        if matches!(
+            scan.status,
+            ScanStatus::Paused | ScanStatus::Cancelled | ScanStatus::Failed
+        ) {
             return Err(QueueError::InvalidTransition {
                 entity: "scan",
                 from: scan.status.as_str().into(),
                 to: "item-progress".into(),
             });
         }
-        let changed = self.connection.execute(
+        let changed = tx.execute(
             "UPDATE source_items SET status = ?1, retry_count = ?2, downloaded_bytes = ?3, total_bytes = ?4, error_code = ?5, error_message = ?6, media_path = ?7, content_hash = ?8, updated_at_ms = ?9 WHERE scan_id = ?10 AND identity_key = ?11",
             params![progress.status.as_str(), i64::from(progress.retry_count), to_i64(progress.downloaded_bytes, "downloaded_bytes")?, progress.total_bytes.map(|value| to_i64(value, "total_bytes")).transpose()?, progress.error_code, progress.error_message, progress.media_path, progress.content_hash, to_i64(now_ms, "now_ms")?, scan_id, identity_key],
         )?;
@@ -623,10 +736,11 @@ impl SourceQueue {
                 id: format!("{scan_id}/{identity_key}"),
             });
         }
-        self.connection.execute(
+        tx.execute(
             "UPDATE source_scans SET completed_count = (SELECT COUNT(*) FROM source_items WHERE scan_id = ?1 AND status = 'downloaded'), failed_count = (SELECT COUNT(*) FROM source_failures WHERE scan_id = ?1) + (SELECT COUNT(*) FROM source_items WHERE scan_id = ?1 AND status = 'failed'), updated_at_ms = ?2 WHERE scan_id = ?1",
             params![scan_id, to_i64(now_ms, "now_ms")?],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -669,25 +783,27 @@ impl SourceQueue {
     }
 
     pub fn resume_scan(&self, scan_id: &str, now_ms: u64) -> Result<ScanRecord> {
-        let existing = self.scan(scan_id)?;
-        if !matches!(existing.status, ScanStatus::Paused | ScanStatus::Queued) {
-            return Err(QueueError::InvalidTransition {
-                entity: "scan",
-                from: existing.status.as_str().into(),
-                to: ScanStatus::Running.as_str().into(),
-            });
-        }
-        self.connection.execute(
-            "UPDATE source_scans SET status = 'running', updated_at_ms = ?1 WHERE scan_id = ?2",
-            params![to_i64(now_ms, "now_ms")?, scan_id],
-        )?;
-        self.scan(scan_id)
+        self.transition_scan(
+            scan_id,
+            ScanStatus::Running,
+            now_ms,
+            &[ScanStatus::Paused, ScanStatus::Queued],
+        )
     }
 
     /// Mark scans that were running when the supervisor process stopped as
     /// paused.  A later explicit resume starts them from the persisted cursor.
     pub fn recover_running(&self, now_ms: u64) -> Result<usize> {
-        Ok(self.connection.execute("UPDATE source_scans SET status = 'paused', updated_at_ms = ?1 WHERE status = 'running'", params![to_i64(now_ms, "now_ms")?])?)
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let exhausted: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM source_scans WHERE status='running' AND dispatch_revision=9223372036854775807)", [], |row| row.get(0))?;
+        if exhausted {
+            return Err(QueueError::InvalidInput(
+                "source dispatch revision exhausted".into(),
+            ));
+        }
+        let changed = tx.execute("UPDATE source_scans SET status = 'paused', updated_at_ms = ?1, dispatch_revision = dispatch_revision + 1 WHERE status = 'running'", params![to_i64(now_ms, "now_ms")?])?;
+        tx.commit()?;
+        Ok(changed)
     }
 
     fn transition_scan(
@@ -697,6 +813,7 @@ impl SourceQueue {
         now_ms: u64,
         allowed: &[ScanStatus],
     ) -> Result<ScanRecord> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         let existing = self.scan(scan_id)?;
         if !allowed.contains(&existing.status) {
             return Err(QueueError::InvalidTransition {
@@ -705,10 +822,12 @@ impl SourceQueue {
                 to: target.as_str().into(),
             });
         }
-        self.connection.execute(
-            "UPDATE source_scans SET status = ?1, updated_at_ms = ?2 WHERE scan_id = ?3",
+        ensure_next_revision(existing.dispatch_revision)?;
+        tx.execute(
+            "UPDATE source_scans SET status = ?1, updated_at_ms = ?2, dispatch_revision = dispatch_revision + 1 WHERE scan_id = ?3",
             params![target.as_str(), to_i64(now_ms, "now_ms")?, scan_id],
         )?;
+        tx.commit()?;
         self.scan(scan_id)
     }
 }
@@ -718,6 +837,15 @@ impl SourceQueue {
 #[allow(dead_code)]
 fn _transaction<'a>(queue: &'a SourceQueue) -> Result<Transaction<'a>> {
     Ok(queue.connection.unchecked_transaction()?)
+}
+
+fn ensure_next_revision(revision: u64) -> Result<()> {
+    if revision >= i64::MAX as u64 {
+        return Err(QueueError::InvalidInput(
+            "source dispatch revision exhausted".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_page(page: &PageCheckpoint) -> Result<()> {
@@ -843,12 +971,8 @@ mod tests {
 
     #[test]
     fn page_commit_is_deduplicated_and_resumes_after_reopen() {
-        let path = std::env::temp_dir().join(format!(
-            "dubflow-source-queue-{}-{}.db",
-            std::process::id(),
-            1
-        ));
-        let _ = fs::remove_file(&path);
+        let database = TestDatabase::new();
+        let path = database.path();
         {
             let queue = SourceQueue::open(&path).unwrap();
             queue
@@ -876,7 +1000,6 @@ mod tests {
         let queue = SourceQueue::open(&path).unwrap();
         assert_eq!(queue.items("scan").unwrap().len(), 3);
         assert_eq!(queue.scan("scan").unwrap().status, ScanStatus::Completed);
-        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -971,5 +1094,317 @@ mod tests {
         queue.pause_scan("one", 5).unwrap();
         queue.cancel_scan("one", 6).unwrap();
         assert_eq!(queue.scan("one").unwrap().status, ScanStatus::Cancelled);
+    }
+
+    struct TestDatabase {
+        directory: std::path::PathBuf,
+    }
+
+    impl TestDatabase {
+        fn new() -> Self {
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let index = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let directory = std::env::temp_dir().join(format!(
+                "dubflow-source-dispatch-{}-{nonce}-{index}",
+                std::process::id()
+            ));
+            fs::create_dir(&directory).unwrap();
+            Self { directory }
+        }
+        fn path(&self) -> std::path::PathBuf {
+            self.directory.join("queue.sqlite3")
+        }
+    }
+
+    impl Drop for TestDatabase {
+        fn drop(&mut self) {
+            if let (Ok(target), Ok(parent)) = (
+                fs::canonicalize(&self.directory),
+                fs::canonicalize(std::env::temp_dir()),
+            ) {
+                if target.parent() == Some(parent.as_path())
+                    && target
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("dubflow-source-dispatch-")
+                {
+                    let _ = fs::remove_dir_all(target);
+                }
+            }
+        }
+    }
+
+    fn bound(queue: &SourceQueue) -> ScanRecord {
+        queue
+            .create_bound_scan("bound", "fixture", "creator", 10, 1, &"a".repeat(64))
+            .unwrap();
+        queue.resume_scan("bound", 1).unwrap()
+    }
+
+    #[test]
+    fn paused_page_cannot_restart_scan_or_commit_items() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        queue
+            .create_scan("scan", "fixture", "creator", 10, 1)
+            .unwrap();
+        queue.resume_scan("scan", 1).unwrap();
+        queue.pause_scan("scan", 1).unwrap();
+        let before = queue.scan("scan").unwrap();
+        assert!(matches!(
+            queue.checkpoint_page("scan", &page(&["late"], Some("late"), false), 1),
+            Err(QueueError::InvalidTransition { .. })
+        ));
+        assert_eq!(queue.scan("scan").unwrap(), before);
+        assert!(queue.items("scan").unwrap().is_empty());
+    }
+
+    #[test]
+    fn bound_pages_require_the_original_producer_and_dispatch() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        let dispatched = bound(&queue);
+        let result = page(&["one"], Some("page-1"), false);
+        assert!(matches!(
+            queue.checkpoint_page("bound", &result, 1),
+            Err(QueueError::ProducerBindingRequired { .. })
+        ));
+        let mut wrong = dispatched.clone();
+        wrong.producer_fingerprint = Some("b".repeat(64));
+        assert!(matches!(
+            queue.checkpoint_page_checked(&wrong, &result, 1),
+            Err(QueueError::StaleDispatch { .. })
+        ));
+        assert_eq!(queue.scan("bound").unwrap(), dispatched);
+        let committed = queue
+            .checkpoint_page_checked(&dispatched, &result, 1)
+            .unwrap();
+        assert_eq!(
+            committed.dispatch_revision,
+            dispatched.dispatch_revision + 1
+        );
+        assert_eq!(
+            committed.producer_fingerprint,
+            dispatched.producer_fingerprint
+        );
+        assert!(matches!(
+            queue.checkpoint_page_checked(&dispatched, &result, 1),
+            Err(QueueError::StaleDispatch { .. })
+        ));
+        assert_eq!(queue.items("bound").unwrap().len(), 1);
+        assert!(queue
+            .create_bound_scan("bound", "fixture", "other", 10, 1, &"b".repeat(64))
+            .is_err());
+        assert_eq!(queue.scan("bound").unwrap(), committed);
+    }
+
+    #[test]
+    fn pause_resume_same_millisecond_invalidates_inflight_page() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        let dispatched = bound(&queue);
+        let paused = queue.pause_scan("bound", 1).unwrap();
+        let resumed = queue.resume_scan("bound", 1).unwrap();
+        assert_eq!(resumed.cursor, dispatched.cursor);
+        assert_eq!(resumed.updated_at_ms, dispatched.updated_at_ms);
+        assert!(paused.dispatch_revision > dispatched.dispatch_revision);
+        assert!(resumed.dispatch_revision > paused.dispatch_revision);
+        let mut late = page(&["late"], Some("late-cursor"), false);
+        late.failures
+            .push(PageFailure::new("deleted", "NOT_FOUND", "deleted", false));
+        assert!(matches!(
+            queue.checkpoint_page_checked(&dispatched, &late, 1),
+            Err(QueueError::StaleDispatch { .. })
+        ));
+        assert_eq!(queue.scan("bound").unwrap(), resumed);
+        assert!(queue.items("bound").unwrap().is_empty());
+        let failures: i64 = queue
+            .connection
+            .query_row("SELECT COUNT(*) FROM source_failures", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(failures, 0);
+        queue.checkpoint_page_checked(&resumed, &late, 1).unwrap();
+    }
+
+    #[test]
+    fn reopened_scan_keeps_binding_cursor_and_invalidates_recovered_dispatch() {
+        let database = TestDatabase::new();
+        let before;
+        {
+            let queue = SourceQueue::open(database.path()).unwrap();
+            let dispatched = bound(&queue);
+            before = queue
+                .checkpoint_page_checked(&dispatched, &page(&["one"], Some("page-1"), false), 2)
+                .unwrap();
+        }
+        let queue = SourceQueue::open(database.path()).unwrap();
+        assert_eq!(queue.scan("bound").unwrap(), before);
+        assert_eq!(queue.recover_running(2).unwrap(), 1);
+        let resumed = queue.resume_scan("bound", 2).unwrap();
+        assert!(matches!(
+            queue.checkpoint_page_checked(&before, &page(&["late"], None, true), 2),
+            Err(QueueError::StaleDispatch { .. })
+        ));
+        let finished = queue
+            .checkpoint_page_checked(&resumed, &page(&["two"], None, true), 2)
+            .unwrap();
+        assert_eq!(finished.status, ScanStatus::Completed);
+        assert_eq!(finished.discovered_count, 2);
+        assert_eq!(finished.producer_fingerprint, Some("a".repeat(64)));
+    }
+
+    #[test]
+    fn competing_connections_commit_only_one_dispatch() {
+        let database = TestDatabase::new();
+        {
+            let queue = SourceQueue::open(database.path()).unwrap();
+            bound(&queue);
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        // Open both connections before spawning: an open failure must fail the
+        // test rather than strand a peer forever at the dispatch barrier.
+        let queues: Vec<_> = (0..2)
+            .map(|_| SourceQueue::open(database.path()).unwrap())
+            .collect();
+        let handles: Vec<_> = queues
+            .into_iter()
+            .enumerate()
+            .map(|(index, queue)| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let dispatched = queue.scan("bound").unwrap();
+                    barrier.wait();
+                    let name = format!("item-{index}");
+                    let mut result = page(&[&name], Some(&name), false);
+                    result
+                        .failures
+                        .push(PageFailure::new(&name, "PRIVATE", "private", false));
+                    match queue.checkpoint_page_checked(&dispatched, &result, 2) {
+                        Ok(_) => true,
+                        Err(QueueError::StaleDispatch { .. }) => false,
+                        other => panic!("unexpected concurrent result: {other:?}"),
+                    }
+                })
+            })
+            .collect();
+        let successes = handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(successes, 1);
+        let queue = SourceQueue::open(database.path()).unwrap();
+        let scan = queue.scan("bound").unwrap();
+        assert_eq!(scan.discovered_count, 1);
+        assert_eq!(scan.failed_count, 1);
+        assert_eq!(scan.dispatch_revision, 2);
+        assert_eq!(queue.items("bound").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn version_one_rows_migrate_without_inventing_producer_pins() {
+        let database = TestDatabase::new();
+        {
+            let connection = Connection::open(database.path()).unwrap();
+            connection.execute_batch(SCHEMA_SQL).unwrap();
+            connection.execute_batch("INSERT INTO source_queue_schema VALUES(1,0); INSERT INTO source_scans(scan_id,provider_id,source_ref,cursor,status,max_items,discovered_count) VALUES('legacy','fixture','creator','page-4','running',10,1); INSERT INTO source_items(scan_id,identity_key,source_id,source_url,position,status) VALUES('legacy','fixture:one','one','https://example.test/one',1,'discovered');").unwrap();
+        }
+        let queue = SourceQueue::open(database.path()).unwrap();
+        assert_eq!(queue.schema_version().unwrap(), 2);
+        let legacy = queue.scan("legacy").unwrap();
+        assert_eq!(legacy.cursor.as_deref(), Some("page-4"));
+        assert_eq!(legacy.producer_fingerprint, None);
+        assert_eq!(legacy.dispatch_revision, 0);
+        assert_eq!(queue.items("legacy").unwrap().len(), 1);
+        assert!(matches!(
+            queue.checkpoint_page_checked(&legacy, &page(&["two"], None, true), 1),
+            Err(QueueError::ProducerBindingRequired { .. })
+        ));
+        assert!(queue
+            .create_bound_scan("legacy", "fixture", "creator", 10, 1, &"a".repeat(64))
+            .is_err());
+        assert_eq!(queue.scan("legacy").unwrap(), legacy);
+        queue
+            .checkpoint_page("legacy", &page(&["two"], None, true), 1)
+            .unwrap();
+    }
+
+    #[test]
+    fn invalid_fingerprint_and_future_schema_do_not_admit_or_migrate() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        for fingerprint in ["", "abc", &"A".repeat(64), &"g".repeat(64)] {
+            assert!(queue
+                .create_bound_scan("bad", "fixture", "creator", 10, 1, fingerprint)
+                .is_err());
+        }
+        assert!(matches!(
+            queue.scan("bad"),
+            Err(QueueError::NotFound { .. })
+        ));
+        let database = TestDatabase::new();
+        {
+            let connection = Connection::open(database.path()).unwrap();
+            connection.execute_batch(SCHEMA_SQL).unwrap();
+            connection
+                .execute("INSERT INTO source_queue_schema VALUES(3,0)", [])
+                .unwrap();
+        }
+        assert!(SourceQueue::open(database.path()).is_err());
+        let connection = Connection::open(database.path()).unwrap();
+        let columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('source_scans') WHERE name IN ('dispatch_revision','producer_fingerprint')", [], |row| row.get(0)).unwrap();
+        assert_eq!(columns, 0);
+        let versions: i64 = connection
+            .query_row("SELECT COUNT(*) FROM source_queue_schema", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(versions, 1);
+    }
+
+    #[test]
+    fn paused_cancelled_progress_and_count_failure_preserve_items_atomically() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        let dispatched = bound(&queue);
+        queue
+            .checkpoint_page_checked(&dispatched, &page(&["one"], Some("page-1"), false), 2)
+            .unwrap();
+        let mut progress = ItemProgress::discovered();
+        progress.status = ItemStatus::Downloaded;
+        progress.downloaded_bytes = 10;
+        progress.total_bytes = Some(10);
+        queue.pause_scan("bound", 3).unwrap();
+        assert!(queue
+            .update_item_progress("bound", "fixture:one", &progress, 3)
+            .is_err());
+        queue.resume_scan("bound", 3).unwrap();
+        queue.connection.execute_batch("CREATE TRIGGER refuse_count BEFORE UPDATE OF completed_count ON source_scans BEGIN SELECT RAISE(ABORT,'injected count failure'); END;").unwrap();
+        assert!(queue
+            .update_item_progress("bound", "fixture:one", &progress, 3)
+            .is_err());
+        let item = &queue.items("bound").unwrap()[0];
+        assert_eq!(item.status, ItemStatus::Discovered);
+        assert_eq!(item.downloaded_bytes, 0);
+        assert_eq!(queue.scan("bound").unwrap().completed_count, 0);
+        queue.cancel_scan("bound", 3).unwrap();
+        assert!(queue
+            .update_item_progress("bound", "fixture:one", &progress, 3)
+            .is_err());
+        assert_eq!(queue.items("bound").unwrap()[0], *item);
+    }
+
+    #[test]
+    fn exhausted_revision_fails_without_wrapping_or_partial_page() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        bound(&queue);
+        queue.connection.execute("UPDATE source_scans SET dispatch_revision=9223372036854775807 WHERE scan_id='bound'", []).unwrap();
+        let before = queue.scan("bound").unwrap();
+        assert!(queue.pause_scan("bound", 3).is_err());
+        assert!(queue.recover_running(3).is_err());
+        assert!(queue
+            .checkpoint_page_checked(&before, &page(&["one"], None, true), 3)
+            .is_err());
+        assert_eq!(queue.scan("bound").unwrap(), before);
+        assert!(queue.items("bound").unwrap().is_empty());
     }
 }

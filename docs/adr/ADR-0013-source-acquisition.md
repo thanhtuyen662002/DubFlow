@@ -2,6 +2,55 @@
 
 Status: Accepted
 
+## Durable dispatch guards and producer binding — source queue schema 2
+
+The version-1 store accepted a late page while Paused and restored Running.
+Its scan read preceded a deferred write transaction, allowing another callback
+or control request to change state between validation and commit. Cursor alone
+cannot identify a dispatch: pause/resume can retain the same cursor and wall
+clock millisecond. This is a prerequisite repair within production leaf #167;
+it does not itself connect the owned provider worker to native/desktop intake.
+
+Schema 2 adds a monotonic `dispatch_revision` and nullable
+`producer_fingerprint`. Admission of a new bound scan requires a lowercase
+SHA-256 fingerprint computed by the supervisor from the verified runtime,
+adapter, SDK/recipe and request pins. The database stores it once; admission
+never upserts or repins an existing ID. A hash is an identity, not evidence of
+authenticity: the native caller must first verify the producer and must never
+store cookies, signed URLs or credential material as durable producer pins.
+
+The supervisor captures the running ScanRecord before dispatch. Its checked
+page callback supplies that original record, rather than reading a fresh token
+to authorize an old result. An IMMEDIATE SQLite transaction validates runnable
+state, producer, revision, cursor, provider/source and capacity before recording
+items/failures and advancing the cursor and revision atomically. Bound scans
+refuse the unchecked compatibility callback. Pause, resume, cancel and recovery
+increment the revision even when the clock and cursor are unchanged, invalidating
+in-flight pages. Paused or cancelled scans reject item progress; item writes
+and aggregate counts commit or roll back together. Revision exhaustion is an
+explicit failure before writes, never an overflow or silent wrap.
+
+Migration runs inside an IMMEDIATE transaction. Version-1 rows, identities,
+cursors, download states and source artifacts are retained; legacy rows receive
+revision zero and no invented producer binding. They remain inspectable through
+the compatibility API. New bound execution cannot reinterpret or repin a legacy
+scan; retain its compatible runtime or explicitly admit a new scan. Future
+schema versions are refused before adding columns. Version-1 binaries already
+refuse higher schema versions. Rollback therefore retains the old runtime with
+its pre-migration database or a schema-2-compatible runtime; never remove columns,
+strip producer pins, relabel old scans or silently resume with different helpers.
+No public source/worker/timeline/artifact contract or model format changes.
+
+Real SQLite tests cover two competing connections, callbacks after pause/resume
+at one millisecond, reopen/recovery, producer substitution and unchecked callback
+refusal, version-1 migration, future schemas, cancelled/paused progress, injected
+aggregate-update failure and exhausted revisions. Exact-head/current-base lanes
+must rerun before readiness. Installed native provider dispatch, process lease,
+per-scan ownership-aware recovery, authenticated sources, download/restart and
+desktop integration remain full #167/#168/#175 work. `recover_running` is a
+compatibility-wide recovery helper, not proof that another process is dead; the
+production connector must establish ownership before recovering any scan.
+
 ## Anonymous generic SDK and playlist identity compatibility
 
 The verified-bundle factory now constructs a generic adapter using the same
