@@ -75,6 +75,11 @@ jobs:
         run: |
           $actual = (git rev-parse HEAD).Trim()
           if ($actual -ne $env:EXPECTED_SHA) { throw "Expected $env:EXPECTED_SHA but checked out $actual" }
+      - name: Exercise durable source SQLite on native Windows
+        shell: pwsh
+        run: |
+          cargo test --manifest-path crates/job-supervisor/source_queue/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Native source SQLite dispatch/migration tests failed' }
       - name: Exercise real user DPAPI and private extractor stdio
         shell: pwsh
         run: |
