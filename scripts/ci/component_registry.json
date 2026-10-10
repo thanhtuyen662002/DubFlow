@@ -775,6 +775,24 @@
       ]
     },
     {
+      "id": "native-source-controller",
+      "roots": [
+        "crates/job-supervisor/app/src/source_server.rs",
+        "crates/job-supervisor/app/src/source_owner.rs",
+        "crates/job-supervisor/app/src/main.rs",
+        "crates/job-supervisor/app/Cargo.toml"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/app/Cargo.toml",
+          "--locked"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "engine/dubflow/download/acquisition_queue.py",

@@ -17,6 +17,14 @@ import run_integration as selector
 
 
 class ComponentSelectionTests(unittest.TestCase):
+    def test_native_source_changes_select_executable_rust_evidence(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next(item for item in registry["components"] if item["id"] == "native-source-controller")
+        for path in ("crates/job-supervisor/app/src/source_server.rs", "crates/job-supervisor/app/src/source_owner.rs"):
+            with self.subTest(path=path):
+                self.assertTrue(selector.component_affected(component, {path}))
+        self.assertIn(["cargo", "test", "--manifest-path", "crates/job-supervisor/app/Cargo.toml", "--locked"], component["commands"])
+
     def setUp(self) -> None:
         self.component = {"id": "tts", "roots": ["engine/dubflow/tts"]}
 

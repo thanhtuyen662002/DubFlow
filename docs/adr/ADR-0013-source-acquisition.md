@@ -2,6 +2,67 @@
 
 Status: Accepted
 
+## Native source controller and admission artifact v1
+
+The installed supervisor's additive `source-serve` mode owns a separate source
+database and private work namespace. Existing local-file commands/worker wire
+and source schema remain unchanged. It acquires a lifetime OS claim before
+writable SQLite open and `recover_running`: Windows opens the diagnostic lock
+with no read/write/delete sharing; POSIX development uses nonblocking exclusive
+flock. Process death releases ownership without guessing from a text file/PID.
+This source-only handle proof is an additive implementation of ADR0008's
+ownership requirement; its diagnostic metadata is not the create-new project
+lock format and is never interpreted by the older project-lock primitive.
+Only this compatible controller writes `control/sources.sqlite3`. A second
+service cannot recover a live owner. The owner handle outlives the store and
+active child. Linked roots, database sidecars and packet paths are refused.
+
+The native admission receives the trusted installed manifest digest from its
+host, checks raw bytes, every inventory file/hash/size and inventory equality
+before executing Python. Checking only the entry point would allow altered
+dependencies to execute before a Python verifier. Owned `-I -S -B` preparation
+requires the native executable itself to be the inventoried supervisor in this
+exact installed root, so another consumer binary cannot claim installed evidence
+for the supplied runtime. Owned Python preparation
+then applies the existing signature policy/full inventory verifier and SDK
+factory. The parent independently recomputes sorted compact UTF-8 producer JSON,
+requires original runtime/source/version/provider/reference/page-size identity,
+and scopes each private packet by name, bounded size, hash, scan and stage.
+The original ScanRecord captured before dispatch is the only commit token;
+current-state rereads cannot authorize a late page.
+
+New private admission artifact v1 is the closed public Producer JSON under
+`control/source-admissions/<safe-scan-id>.json`. Its canonical fingerprint must
+match the immutable SQLite binding. Create-new/write/fsync precedes first DB
+admission. An orphan after a crash may be reused only with identical bytes; a
+partial, changed or missing record cannot silently repair/repin the scan. Resume
+loads its original page size and runtime/request pins before any producer
+launch. A new runtime must retain the compatible original release or admit an
+explicit new scan. Old schema2/unbound records without this artifact stay
+inspectable through status/items; native resume refuses them. There is no schema3
+migration, public worker/source/timeline/export format change or model upgrade.
+Rollback preserves database, admission files and exports; the retained older
+runtime/compatible controller is required for an existing bound scan. Never
+delete producer pins or rewrite an old cursor to make rollback appear resumable.
+
+One producer and one page are active per service; stdio/control queues and lines
+are bounded. Heartbeat timeout, malformed packets and typed source failures stop
+only the active scan and retain its last committed cursor. No automatic retry
+loop exists. Pause/cancel invalidate durable dispatch first, send cooperative
+cancel, then observe exit or terminate after a bounded deadline before emitting
+the control result. A cancelled preparation creates no fake scan. Completion is
+enumeration completion only, never a claim that media download completed.
+
+Recorded native tests exercise actual child stdio and packet hashes, UTF-8
+cross-language fingerprinting, OS exclusion, SQLite page commit, blocked-page
+termination and reopen/resume at pageN. Admission/SDK in that process fixture is
+explicitly substituted, not exposed as a production injection option. Other
+tests reject tampered/unexpected imports before execution, changed admissions,
+private URLs, wrong dispatch/scopes, malformed packets and unbounded input.
+Installed real-provider dispatch, browser sessions, downloads/restart and full
+desktop acceptance remain required. All exact-head/current-base lanes must run
+for the successor before any readiness or merge decision.
+
 ## Owned page worker adapter over worker wire v1
 
 The next producer adapter uses the existing version-1 JSONL envelopes, not a

@@ -80,6 +80,8 @@ jobs:
         run: |
           cargo test --manifest-path crates/job-supervisor/source_queue/Cargo.toml --locked
           if ($LASTEXITCODE -ne 0) { throw 'Native source SQLite dispatch/migration tests failed' }
+          cargo test --manifest-path crates/job-supervisor/app/Cargo.toml --locked source_server::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Native source supervisor ownership/stdio/restart tests failed' }
           python -m unittest discover -s tests/source_queue -p 'test_*.py' -v
           if ($LASTEXITCODE -ne 0) { throw 'Native source worker protocol/control tests failed' }
       - name: Exercise real user DPAPI and private extractor stdio

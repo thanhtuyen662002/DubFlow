@@ -1,5 +1,57 @@
 # DubFlow supervisor
 
+## Native source service
+
+The installed binary also exposes a separate source database service:
+
+```text
+dubflow-supervisor source-serve --root <installed-version> --data-root <private-data> --manifest-sha256 <trusted-installed-manifest-digest>
+```
+
+The desktop/installer must supply the already admitted manifest digest. The
+service verifies the exact full inventory before executing owned Python with
+`-I -S -B`; the worker additionally verifies release signature policy. Data must
+be supplied to the supervisor executable inside that exact installed bundle;
+an external binary cannot claim a different runtime. Data must
+be outside the immutable version directory. An OS lifetime lock protects
+`control/sources.sqlite3` before writable open/recovery. A second service fails
+without recovering the first service's running scans. Retained lock metadata is
+diagnostic, and is replaced only after obtaining exclusive OS ownership.
+
+Source commands and events use this service's bounded JSONL stream:
+
+```json
+{"command":"start","scan_id":"scan-1","provider_id":"generic","source_ref":"https://media.ccc.de/c/congress/2025","page_size":25,"max_items":10000}
+{"command":"status","scan_id":"scan-1"}
+{"command":"items","scan_id":"scan-1","offset":0,"limit":100}
+{"command":"pause","scan_id":"scan-1"}
+{"command":"resume","scan_id":"scan-1"}
+{"command":"cancel","scan_id":"scan-1"}
+{"command":"shutdown"}
+```
+
+References must already be canonical public adapter references. For Bilibili,
+use `https://space.bilibili.com/<numeric-id>/video`; Douyin uses
+`https://www.douyin.com/user/<id>`. The owned SDK may return a scoped UNSUPPORTED
+for unsupported provider enumeration. This service runs one producer at a time,
+keeps one page in flight, and returns only bounded item windows. Ready admission
+persists the original public producer record/page size in
+`control/source-admissions/<scan-id>.json`, cross-checked against the SQLite
+producer fingerprint on resume. Legacy scans without that record are inspectable
+but cannot be repinned. Runtime changes are rejected before extraction.
+
+Only a hashed, scoped packet matching the original dispatch may commit a page.
+Pause/cancel durably invalidate that dispatch before stopping and observing the
+child. A crash is recovered as paused under exclusive ownership; explicit resume
+uses the last committed cursor. Source failures preserve their typed code and
+retryability; no automatic retry is performed. Repair the condition before
+resuming. Cancellation before ready produces no false durable scan.
+
+The native recorded-process tests use a substituted SDK/worker admission while
+exercising real Python stdio, packet hashing, OS ownership and SQLite reopen.
+They do not qualify installed live sources, authentication, download scheduling
+or desktop intake. Those remain #167/#168/#175 acceptance work.
+
 `dubflow-supervisor` is the durable process owner for the local-file
 production profile.  It owns the SQLite connection, launches only the
 app-owned Python runtime, validates every worker JSONL envelope with the
