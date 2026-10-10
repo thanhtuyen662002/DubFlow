@@ -46,8 +46,14 @@ def downloader_options():
 
 def provider_request(request):
     provider = request.get("provider_id")
-    if provider not in {"bilibili", "douyin"}:
+    if provider not in {"bilibili", "douyin", "generic"}:
         raise ValueError("invalid provider")
+    if provider == "generic":
+        # Public generic extraction gets no cookie/session capability, even
+        # when the helper is invoked without its normal parent transport.
+        if not isinstance(request.get("headers", {}), dict) or request.get("headers"):
+            raise ValueError("generic credentials are not supported")
+        return provider, public_url(request.get("url")), []
     cookies = scoped_cookies(provider, request.get("headers")) if request.get("headers") else []
     url = request.get("url")
     if not isinstance(url, str) or not 0 < len(url) <= 1024 or any(ord(ch) < 33 for ch in url):
@@ -60,6 +66,16 @@ def provider_request(request):
     return provider, url, cookies
 
 
+def public_url(value):
+    if not isinstance(value, str) or not 0 < len(value) <= 4096 or any(ord(ch) < 33 or ord(ch) == 127 for ch in value):
+        raise ValueError("invalid public URL")
+    parts = urlsplit(value)
+    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username is not None or parts.password is not None:
+        raise ValueError("invalid public URL")
+    parts.port  # Validate malformed/out-of-range ports before SDK network I/O.
+    return value
+
+
 def inspect(request, youtube_dl):
     provider, url, cookies = provider_request(request)
     with youtube_dl(downloader_options()) as downloader:
@@ -68,7 +84,7 @@ def inspect(request, youtube_dl):
         raw = downloader.extract_info(url, download=False)
         if not isinstance(raw, dict) or raw.get("_type") in {"playlist", "multi_video"}:
             raise ValueError("unexpected provider metadata")
-        return public_metadata(raw)
+        return public_metadata(raw, generic=provider == "generic")
 
 
 def enumerate_page(request, youtube_dl):
@@ -80,12 +96,13 @@ def enumerate_page(request, youtube_dl):
     # to scrape a login page and present it as an empty completed channel.
     if provider == "douyin":
         raise NotImplementedError("unsupported creator extractor")
-    parts = urlsplit(url)
-    if parts.hostname != "space.bilibili.com" or parts.query or parts.fragment:
-        raise ValueError("invalid creator URL")
-    path = parts.path.strip("/").split("/")
-    if len(path) != 2 or not path[0].isascii() or not path[0].isdigit() or path[1] != "video":
-        raise ValueError("invalid creator URL")
+    if provider == "bilibili":
+        parts = urlsplit(url)
+        if parts.hostname != "space.bilibili.com" or parts.query or parts.fragment:
+            raise ValueError("invalid creator URL")
+        path = parts.path.strip("/").split("/")
+        if len(path) != 2 or not path[0].isascii() or not path[0].isdigit() or path[1] != "video":
+            raise ValueError("invalid creator URL")
     size = min(page_size, 10000 - offset)
     options = downloader_options()
     options.update(noplaylist=False, extract_flat="in_playlist", lazy_playlist=True,
@@ -110,8 +127,14 @@ def enumerate_page(request, youtube_dl):
             if not isinstance(entry, dict):
                 public.append({"invalid": True})
                 continue
+            if provider == "generic" and entry.get("_type") in {"playlist", "multi_video"}:
+                public.append({"invalid": True})
+                continue
             item = {}
-            for key, bound in (("id", 512), ("title", 1024), ("availability", 64)):
+            fields = [("id", 512), ("title", 1024), ("availability", 64)]
+            if provider == "generic":
+                fields += [("ie_key", 128), ("extractor_key", 128), ("url", 4096), ("webpage_url", 4096)]
+            for key, bound in fields:
                 value = entry.get(key)
                 if value is not None:
                     if not isinstance(value, str) or not value or len(value) > bound or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
@@ -123,10 +146,12 @@ def enumerate_page(request, youtube_dl):
                 "has_more": len(entries) > size}
 
 
-def public_metadata(raw):
+def public_metadata(raw, *, generic=False):
     # Preserve only fields used by provider mapping; never return Cookie,
     # Authorization, request headers or a serializable credential jar.
     result = {key: raw[key] for key in ("id", "title", "description", "duration") if key in raw}
+    if generic:
+        result.update({key: raw[key] for key in ("extractor_key", "webpage_url", "url", "ext", "protocol", "vcodec", "acodec", "filesize") if key in raw})
     formats = []
     values = raw.get("formats", [])
     if not isinstance(values, list) or len(values) > 256:

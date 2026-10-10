@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from packaging.release.manifest import ReleaseArtifact, ReleaseManifest, dump_manifest
 
@@ -39,7 +39,19 @@ def prepare(root):
 
 def page_report(root):
     return {"status": "passed", "cases": ["recorded"] * 6,
+            "generic_playlist_cases": ["recorded"] * 6, "generic_inspection": {"status": "passed"},
             "python": str(root / "runtime/python.exe"), "production_qualified": False}
+
+
+def generic_factory(root):
+    adapter = Mock(provider_id="generic")
+    native = adapter._transport._sdk
+    native.python = root / "runtime/python.exe"
+    native.helper = root / smoke.BUNDLE_HELPER
+    native.sdk_archive = root / "runtime/source" / PROFILE["filename"]
+    native.pins = {"python": "0" * 64, "helper": "b" * 64, "sdk_archive": "c" * 64}
+    adapter._stream_materializer.materializer = adapter._materializer
+    return adapter
 
 
 class RuntimeSmokeTests(unittest.TestCase):
@@ -63,7 +75,7 @@ class RuntimeSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             prepare(root)
-            with patch.object(smoke, "verify_bundle"), patch.object(smoke, "source_runtime_health", return_value={"sdk_sha256": "c" * 64}) as health, patch.object(smoke, "qualify_sdk_pages", return_value=page_report(root)) as pages:
+            with patch.object(smoke, "verify_bundle"), patch.object(smoke, "source_runtime_health", return_value={"sdk_sha256": "c" * 64}) as health, patch.object(smoke, "qualify_sdk_pages", return_value=page_report(root)) as pages, patch.object(smoke, "provider_from_verified_bundle", return_value=generic_factory(root)):
                 result = smoke.qualify(root, "a" * 40)
             health.assert_called_once()
             pages.assert_called_once_with(root / "runtime/source" / PROFILE["filename"],
@@ -75,6 +87,7 @@ class RuntimeSmokeTests(unittest.TestCase):
             self.assertEqual(result["live_source_acquisition"], "not_run")
             self.assertEqual(result["durable_intake_enumeration"], "not_run")
             self.assertEqual(result["offline_sdk_pages"], page_report(root))
+            self.assertEqual(result["generic_factory"]["status"], "passed")
 
     def test_failed_runtime_health_cannot_start_sdk_page_probe(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -102,10 +115,22 @@ class RuntimeSmokeTests(unittest.TestCase):
             root = Path(temp)
             prepare(root)
             for change in ({"python": str(root.parent / "foreign/python.exe")},
-                           {"status": "failed"}, {"cases": ["recorded"] * 5}):
-                with self.subTest(change=change), patch.object(smoke, "verify_bundle"), patch.object(smoke, "source_runtime_health", return_value={"sdk_sha256": "c" * 64}), patch.object(smoke, "qualify_sdk_pages", return_value={**page_report(root), **change}):
+                           {"status": "failed"}, {"cases": ["recorded"] * 5},
+                           {"generic_playlist_cases": []}, {"generic_inspection": {"status": "failed"}}):
+                with self.subTest(change=change), patch.object(smoke, "verify_bundle"), patch.object(smoke, "source_runtime_health", return_value={"sdk_sha256": "c" * 64}), patch.object(smoke, "qualify_sdk_pages", return_value={**page_report(root), **change}), patch.object(smoke, "provider_from_verified_bundle", return_value=generic_factory(root)):
                     with self.assertRaisesRegex(ValueError, "owned interpreter"):
                         smoke.qualify(root, "a" * 40)
+
+    def test_foreign_generic_factory_producer_cannot_start_recorded_probe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prepare(root)
+            adapter = generic_factory(root)
+            adapter._transport._sdk.python = root.parent / "foreign/python.exe"
+            with patch.object(smoke, "verify_bundle"), patch.object(smoke, "source_runtime_health", return_value={"sdk_sha256": "c" * 64}), patch.object(smoke, "qualify_sdk_pages") as pages, patch.object(smoke, "provider_from_verified_bundle", return_value=adapter):
+                with self.assertRaisesRegex(ValueError, "generic factory"):
+                    smoke.qualify(root, "a" * 40)
+                pages.assert_not_called()
 
 
 if __name__ == "__main__":

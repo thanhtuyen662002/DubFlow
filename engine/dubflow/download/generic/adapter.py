@@ -420,9 +420,19 @@ class GenericUrlAdapter:
         )
 
     def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50) -> SourcePage:
+        enumerate_playlist = getattr(self._transport, "enumerate_playlist", None)
+        if callable(enumerate_playlist):
+            return enumerate_playlist(channel_id, cursor=cursor, page_size=page_size)
         raise SourceError(SourceErrorCode.UNSUPPORTED, "generic URL enumeration requires a playlist-capable extractor", provider_id=self.provider_id)
 
     def download(self, item: SourceItem, destination: str | Path, *, candidate_id: str | None = None, **kwargs: object) -> DownloadResult:
+        if item.identity.provider_id != self.provider_id:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "generic download received another provider identity", provider_id=self.provider_id)
+        if not item.media_candidates:
+            fresh = self.inspect(item.identity.canonical_url)
+            if fresh.identity.identity_key != item.identity.identity_key:
+                raise SourceError(SourceErrorCode.SOURCE_CHANGED, "playlist video identity changed before download", provider_id=self.provider_id)
+            item = fresh
         candidates = [candidate for candidate in item.media_candidates if candidate.mime_type.startswith("video/") and (candidate_id is None or candidate.candidate_id == candidate_id)]
         if not candidates:
             raise SourceError(SourceErrorCode.UNSUPPORTED, "requested generic media candidate was not found", provider_id=self.provider_id, source_id=item.identity.source_id)

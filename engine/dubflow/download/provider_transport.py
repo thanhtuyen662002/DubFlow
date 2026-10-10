@@ -20,14 +20,16 @@ class PublicProviderHttpTransport:
     """Approved public SDK defaults, never a provider credential capability."""
 
     def __init__(self, provider_id: str, public_headers: Mapping[str, str], *, transport: HttpTransport | None = None):
-        if provider_id not in {"bilibili", "douyin"}:
+        if provider_id not in {"bilibili", "douyin", "generic"}:
             raise ValueError("unsupported public media provider")
         if not isinstance(public_headers, Mapping) or set(public_headers) != {"User-Agent", "Accept", "Accept-Language"}:
             raise ValueError("approved public SDK header defaults are required")
         if any(not isinstance(value, str) or not 1 <= len(value) <= 512
                or any(ord(ch) < 32 or ord(ch) > 126 for ch in value) for value in public_headers.values()):
             raise ValueError("invalid public SDK headers")
-        self._headers = {**public_headers, "Referer": "https://www." + provider_id + ".com/"}
+        self._headers = dict(public_headers)
+        if provider_id != "generic":
+            self._headers["Referer"] = "https://www." + provider_id + ".com/"
         self._transport = transport or UrllibHttpTransport()
 
     def open(self, url: str, *, headers: Mapping[str, str] | None = None):

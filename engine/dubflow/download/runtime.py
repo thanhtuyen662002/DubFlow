@@ -18,6 +18,8 @@ import zipfile
 from .authenticated import AuthenticatedYtDlpTransport
 from .bilibili import BilibiliSourceAdapter
 from .douyin import DouyinSourceAdapter
+from .generic import GenericUrlAdapter
+from .generic.sdk import GenericSdkTransport
 from .materializer import DownloadError, HttpTransport, MediaMaterializer, _reject_links
 from .provider_transport import PublicProviderHttpTransport, YtDlpProviderTransport
 from .sessions import ProtectedSessionBridge
@@ -142,8 +144,10 @@ def provision_sdk(runtime_root: str | Path, *, transport: HttpTransport | None =
 def provider_from_verified_bundle(bundle_root: str | Path, *, artifacts: Sequence[Mapping],
                                   provider_id: str, session_bridge: ProtectedSessionBridge | None = None):
     """Use the bootstrap's verified inventory, never self-pin current disk bytes."""
-    if provider_id not in {"bilibili", "douyin"}:
+    if provider_id not in {"bilibili", "douyin", "generic"}:
         raise SourceError(SourceErrorCode.INVALID_INPUT, "unsupported source provider")
+    if provider_id == "generic" and session_bridge is not None:
+        raise SourceError(SourceErrorCode.INVALID_INPUT, "generic acquisition cannot receive provider sessions", provider_id="generic")
     try:
         root = Path(bundle_root)
         if not root.is_absolute() or not root.is_dir() or not isinstance(artifacts, (list, tuple)) or not 1 <= len(artifacts) <= 50_000:
@@ -184,6 +188,9 @@ def provider_from_verified_bundle(bundle_root: str | Path, *, artifacts: Sequenc
         muxer = FfmpegStreamMuxer(ffmpeg, ffprobe, trusted_root=root,
             ffmpeg_sha256=ffmpeg_sha, ffprobe_sha256=ffprobe_sha)
         materializer = MediaMaterializer(PublicProviderHttpTransport(provider_id, profile["public_http_headers"]))
+        if provider_id == "generic":
+            return GenericUrlAdapter(GenericSdkTransport(transport), materializer=materializer,
+                stream_materializer=StreamMaterializer(muxer, materializer=materializer))
         kwargs = {"transport": YtDlpProviderTransport(provider_id, authenticated_transport=transport),
                   "session_bridge": session_bridge, "materializer": materializer,
                   "stream_materializer": StreamMaterializer(muxer, materializer=materializer)}

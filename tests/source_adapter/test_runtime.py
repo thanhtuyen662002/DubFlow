@@ -104,10 +104,10 @@ class SourceRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             inventory = bundle(root)
-            for provider in ("bilibili", "douyin"):
+            for provider in ("bilibili", "douyin", "generic"):
                 adapter = runtime.provider_from_verified_bundle(root, artifacts=inventory, provider_id=provider)
                 self.assertEqual(adapter.provider_id, provider)
-                transport = adapter._transport._authenticated
+                transport = adapter._transport._sdk if provider == "generic" else adapter._transport._authenticated
                 self.assertEqual(transport.python, root / "runtime/python.exe")
                 self.assertEqual(transport.pins["python"], inventory[2]["sha256"])
                 self.assertIsNotNone(adapter._stream_materializer)
@@ -146,7 +146,12 @@ class SourceRuntimeTests(unittest.TestCase):
         with self.assertRaises(SourceError):
             runtime.provider_from_verified_bundle("relative", artifacts=[], provider_id="bilibili")
         with self.assertRaises(SourceError) as error:
-            runtime.provider_from_verified_bundle(Path.cwd(), artifacts=[], provider_id="generic")
+            runtime.provider_from_verified_bundle(Path.cwd(), artifacts=[], provider_id="unknown")
+        self.assertEqual(error.exception.code, SourceErrorCode.INVALID_INPUT)
+
+    def test_generic_factory_refuses_session_capability_before_runtime_io(self):
+        with self.assertRaises(SourceError) as error:
+            runtime.provider_from_verified_bundle("relative", artifacts=[], provider_id="generic", session_bridge=object())
         self.assertEqual(error.exception.code, SourceErrorCode.INVALID_INPUT)
 
     def test_health_rejects_external_prefix_or_import_search_roots(self):

@@ -111,6 +111,76 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
         cases.append({"offset": offset, "requested_page_size": size, "returned": len(result["entries"]),
                       "has_more": result["has_more"], "sdk_page_callbacks": list(pages),
                       "deleted_slot": poison, "selected_ids": observed_ids})
+
+    # Exercise the same real SDK's flat URL entries and full video resolution.
+    # The recorded extractors never contact a site or call another downloader.
+    generic_pages, generic_cases, resolved_videos = [], [], []
+
+    class RecordedPlaylistIE(InfoExtractor):
+        _VALID_URL = r"https://video\.example\.test/list/(?P<id>[0-9]+)"
+
+        def _real_extract(self, url):
+            def page(index):
+                generic_pages.append(index)
+                for n in range(index * 30, min((index + 1) * 30, population)):
+                    if poison and n == 1:
+                        yield None
+                    else:
+                        yield self.url_result(f"https://video.example.test/watch/{n}",
+                            ie="RecordedVideo", video_id=str(n), video_title=f"Video {n}")
+            return self.playlist_result(OnDemandPagedList(page, 30), self._match_id(url), "recorded playlist")
+
+    class RecordedVideoIE(InfoExtractor):
+        _VALID_URL = r"https://video\.example\.test/watch/(?P<id>[0-9]+)"
+
+        def _real_extract(self, url):
+            identifier = self._match_id(url)
+            resolved_videos.append(identifier)
+            return {"id": identifier, "title": "Recorded public video", "description": "First line\nSecond line",
+                    "duration": 1.25, "formats": [{"format_id": "av", "url": "https://cdn.example.test/file.mp4",
+                        "vcodec": "h264", "acodec": "aac", "ext": "mp4", "protocol": "https"}],
+                    "subtitles": {"en": [{"url": "https://cdn.example.test/sub.vtt", "ext": "vtt"}]}}
+
+    def generic_downloader(options):
+        actual = YoutubeDL(options, auto_init=False)
+        actual.add_info_extractor(RecordedPlaylistIE())
+        actual.add_info_extractor(RecordedVideoIE())
+        if (options["cachedir"] is not False or options["js_runtimes"] != {}
+                or options["remote_components"] or list(actual.cookiejar)):
+            raise ValueError("generic SDK acquired an unapproved runtime/session capability")
+        return actual
+
+    for offset, size, population, expected_pages, expected_more, poison in (
+            (0, 2, 10002, [0], True, False), (31, 2, 10002, [1], True, False),
+            (900, 2, 10002, [30], True, False), (92, 2, 94, [3], False, False),
+            (9998, 100, 10002, [333], True, False), (0, 2, 10002, [0], True, True)):
+        generic_pages.clear()
+        result = helper.enumerate_page({"provider_id": "generic", "url": "https://video.example.test/list/123",
+                                       "offset": offset, "page_size": size}, generic_downloader)
+        count = min(size, 10000 - offset, population - offset)
+        expected_ids = [None if poison and n == 1 else str(n) for n in range(offset, offset + count)]
+        observed_ids = [item["id"] if item is not None else None for item in result["entries"]]
+        if (observed_ids != expected_ids or result["has_more"] is not expected_more
+                or generic_pages != expected_pages or resolved_videos):
+            raise ValueError("actual generic SDK selected wrong IDs/page callbacks or eagerly resolved videos")
+        if any(item is not None and (item.get("ie_key") != "RecordedVideo"
+                or item.get("url") != f"https://video.example.test/watch/{item['id']}") for item in result["entries"]):
+            raise ValueError("actual SDK did not preserve generic flat entry identity/URL")
+        generic_cases.append({"offset": offset, "requested_page_size": size, "returned": count,
+                              "has_more": result["has_more"], "sdk_page_callbacks": list(generic_pages),
+                              "selected_ids": observed_ids, "deleted_slot": poison, "eager_video_resolutions": 0})
+    video = helper.inspect({"provider_id": "generic", "url": "https://video.example.test/watch/31"}, generic_downloader)
+    if (video["id"] != "31" or video["extractor_key"] != "RecordedVideo"
+            or video["webpage_url"] != "https://video.example.test/watch/31" or resolved_videos != ["31"]
+            or len(video["formats"]) != 1 or video["subtitles"]["en"][0]["ext"] != "vtt"):
+        raise ValueError("actual generic SDK full video resolution did not preserve identity/media/subtitle candidates")
+    try:
+        helper.provider_request({"provider_id": "generic", "url": "https://video.example.test/watch/31",
+                                 "headers": {"Cookie": "synthetic-secret"}})
+    except ValueError:
+        pass
+    else:
+        raise ValueError("generic helper accepted a provider session")
     if helper_bytes != bounded_bytes(helper_path, 1024 * 1024):
         raise ValueError("helper changed during qualification")
     if descriptor_bytes != bounded_bytes(descriptor_path, 16 * 1024):
@@ -125,6 +195,10 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
               "sdk_import_origin": yt_dlp.__file__,
               "python": sys.executable, "isolated": True, "no_site": True,
               "elapsed_seconds": time.monotonic() - started, "cases": cases,
+              "generic_playlist_cases": generic_cases,
+              "generic_inspection": {"status": "passed", "extractor_key": video["extractor_key"],
+                                     "source_id": video["id"], "resolved_videos": list(resolved_videos),
+                                     "provider_session_refusal": "passed"},
               "live_bilibili": "NOT_RUN", "live_douyin": "NOT_RUN",
               "durable_desktop_scan": "NOT_RUN", "production_qualified": False}
     return report
@@ -142,7 +216,7 @@ def main():
         helper_sha256=hashlib.sha256(bounded_bytes(helper, 1024 * 1024)).hexdigest(),
         descriptor_sha256=hashlib.sha256(bounded_bytes(descriptor, 16 * 1024)).hexdigest())
     args.report.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps({"status": "passed", "cases": len(report["cases"]), "report": str(args.report),
+    print(json.dumps({"status": "passed", "cases": len(report["cases"]), "generic_cases": len(report["generic_playlist_cases"]), "report": str(args.report),
                       "sha256": hashlib.sha256(args.report.read_bytes()).hexdigest()}))
     return 0
 

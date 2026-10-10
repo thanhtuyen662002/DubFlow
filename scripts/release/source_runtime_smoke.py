@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from packaging.release.bootstrap import verify_bundle
 from packaging.release.manifest import ReleaseManifest
-from engine.dubflow.download.runtime import BUNDLE_HELPER, BUNDLE_PROFILE, source_runtime_health
+from engine.dubflow.download.runtime import BUNDLE_HELPER, BUNDLE_PROFILE, provider_from_verified_bundle, source_runtime_health
 
 
 def qualify_sdk_pages(*args, **kwargs):
@@ -50,15 +50,27 @@ def qualify(root: Path, expected_source_sha: str) -> dict:
     sdk_name = "runtime/source/" + profile["filename"]
     if sdk_name not in inventory or inventory[sdk_name].sha256 != health["sdk_sha256"]:
         raise ValueError("SDK archive is absent from the verified bundle inventory")
+    generic = provider_from_verified_bundle(root, artifacts=[item.to_dict() for item in manifest.artifacts], provider_id="generic")
+    native = generic._transport._sdk
+    if (generic.provider_id != "generic" or native.python.resolve() != (root / "runtime/python.exe").resolve()
+            or native.helper.resolve() != (root / BUNDLE_HELPER).resolve()
+            or native.sdk_archive.resolve() != (root / sdk_name).resolve()
+            or native.pins["helper"] != inventory[BUNDLE_HELPER].sha256
+            or native.pins["sdk_archive"] != inventory[sdk_name].sha256
+            or generic._stream_materializer.materializer is not generic._materializer):
+        raise ValueError("generic factory did not bind the verified owned producers/materializer")
     pages = qualify_sdk_pages(root / sdk_name, root / BUNDLE_HELPER, descriptor,
         helper_sha256=inventory[BUNDLE_HELPER].sha256, descriptor_sha256=inventory[BUNDLE_PROFILE].sha256)
-    if (pages["status"] != "passed" or len(pages["cases"]) != 6
+    if (pages["status"] != "passed" or len(pages["cases"]) != 6 or len(pages.get("generic_playlist_cases", [])) != 6
+            or pages.get("generic_inspection", {}).get("status") != "passed"
             or Path(pages["python"]).resolve() != (root / "runtime/python.exe").resolve()):
         raise ValueError("SDK page qualification did not run in the owned interpreter")
     return {"schema_version": 1, "source_sha": manifest.source_sha, "version": manifest.version,
             "release_channel": manifest.release_channel, "manifest_sha256": hashlib.sha256(raw).hexdigest(),
             "scope": "source-sdk-runtime-health", "verified_release_tree": True, "health": health,
             "offline_sdk_pages": pages,
+            "generic_factory": {"status": "passed", "provider_id": generic.provider_id,
+                                "python": str(native.python), "producer_pins": native.pins},
             "live_source_acquisition": "not_run", "browser_session": "not_run",
             "durable_intake_enumeration": "not_run", "production_qualified": False}
 

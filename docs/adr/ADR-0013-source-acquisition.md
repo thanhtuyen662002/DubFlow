@@ -2,6 +2,53 @@
 
 Status: Accepted
 
+## Anonymous generic SDK and playlist identity compatibility
+
+The verified-bundle factory now constructs a generic adapter using the same
+app-owned isolated Python, reviewed SDK wheel, inventory-pinned helper and media
+muxer. The generic boundary receives no provider session bridge, Cookie,
+Authorization or arbitrary headers. The helper separately enforces this boundary
+before extraction. Source/display URLs with recognized credential query keys
+are refused; signed media candidates remain transient inputs to the existing
+materializer. Public SDK default headers carry no invented provider Referer.
+Programmatic extraction retains disabled cache, plugins, external JS runtimes
+and remote components. Bilibili/Douyin URL and cookie scopes are unchanged.
+
+New generic SDK identities use opaque `sdk-v1-<sha256>` source IDs derived from
+recipe `anonymous-generic-sdk-v1`, normalized extractor key and the SDK video ID.
+GenericIE's filename-derived IDs additionally bind the canonical page URL to
+avoid collisions between unrelated sites. Flat playlist entries use their own
+`ie_key`, rather than the parent playlist's extractor identity. Full reinspection
+must resolve the same provider/source key before materializing a flat item.
+This allows extractor-owned redirect aliases to deduplicate without conflating
+identical numeric IDs from different extractors. Legacy recorded/direct/CLI
+adapter IDs are preserved and never rewritten or silently mixed with SDK IDs.
+
+Generic playlist cursors bind the source URL digest, every verified producer pin,
+the recipe and an integer offset. Each SDK request reads at most 100 slots plus
+one lookahead, using lazy flat extraction. Deleted/private/invalid slots produce
+item failures; they advance the page offset while remaining valid items continue.
+A malformed or non-progressing page, changed cursor binding, nested playlist item
+or discovery beyond 10,000 slots fails explicitly. An incomplete last page cannot
+claim completion. The coordinator/supervisor remains responsible for checkpoint
+transactions, identity deduplication and durable state; no worker writes SQLite.
+
+Public source contract v1 and queue schema do not change. Existing jobs keep
+their pinned adapter/runtime/identity. New SDK scans require a fresh scan ID;
+an old cursor cannot resume with changed helper/runtime bytes. Rollback retains
+completed artifacts and old queue rows and refuses incompatible SDK cursors.
+Reacquisition with a legacy adapter may form a separate identity; no speculative
+migration infers equivalence. Helper changes are pinned by each fresh bundle's
+verified inventory, never by re-pinning an existing installed release.
+
+Actual pinned SDK qualification retains the six recorded Bilibili page cases
+and adds six generic page cases, full generic video/subtitle resolution and
+generic session refusal. Network APIs are forbidden. Those receipts prove the
+SDK/helper boundaries in their recorded environment, not live-site availability,
+authenticated providers, Douyin creator support, desktop scan/recovery or full
+Issue167/175 acceptance. Segmented HLS/DASH remains unsupported by the current
+complete-object muxer and is never published as a complete media file.
+
 ## Bilibili selected-part identity compatibility
 
 The video adapter retains an explicit bounded positive `p` selector. Bare URLs,
