@@ -810,3 +810,40 @@ bytes are not live media qualification. Current installed/native live downloads,
 authenticated priority providers, explicit changed-condition retry, desktop
 single-video intake and automatic B1/B2 handoff remain acceptance work; this
 unit does not close #167, #168 or #175 by itself.
+
+## Terminal source-worker retirement and Windows launch context
+
+The actual b292 portable single-video run preserved original mode/admission
+after reopen, but rejected download at a260-character private working directory.
+An owned isolated Python child reproduced Windows CreateProcess error267 with
+both ordinary and verbatim current-directory spellings. Launch source workers
+from the admitted data root instead; the unchanged private work_root is passed
+explicitly in source_prepare. Keep all deterministic staging/checkpoint paths,
+inside-data/no-link checks and artifact identity unchanged. Isolation and owned
+module/runtime checks prevent cwd from becoming an import source.
+
+At a shorter diagnostic root, actual SDK/FFmpeg materialization produced the
+correct52.208333-second licensed Sintel H264/AAC file and hash. Its real worker
+emitted completed but could not finalize BufferedReader stdin while the daemon
+control reader retained its lock. The native wait kept its writer open; Python
+reported Fatal _enter_buffered_busy and exited nonzero. This was a lifecycle
+failure, not evidence that the public source changed.
+
+Mark the Python emitter terminal/finished before making shutdown visible on
+stdout, preventing EOF immediately after that message from being treated as
+premature parent loss. Native closes child stdin after validated completed,
+then keeps its existing bounded3s successful-exit requirement for enumeration
+and download. Python joins its control reader for at most1s before interpreter
+finalization. Premature EOF, malformed control, cancelled work, missing receipts,
+failed exit/hash/publication and changed queue snapshots remain failures.
+No forced zero exit or bypass of native verification is permitted.
+
+This changes process lifetime/cwd only: worker envelope1, source identity,
+producer recipe, private paths, SQLite and dependencies stay unchanged. Existing
+jobs retain their immutable old runtime and all earlier failed/private outputs;
+the successor's exact manifest/source pins require a fresh admitted scan. No
+in-place migration or old-record rebinding is performed. Coherent rollback may
+reproduce the old lifecycle/path refusal while preserving standard/local output.
+Subprocess framing and Windows long-private-work tests are deterministic scope;
+actual successor native acquisition and all four exact-head/current-base CI
+lanes still require fresh evidence. Full167/168/175 acceptance remains open.

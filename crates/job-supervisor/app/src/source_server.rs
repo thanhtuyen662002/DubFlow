@@ -1013,7 +1013,7 @@ fn launch_in_work(runtime: &Runtime, spec: Spec, selected_work: Option<PathBuf>)
     if !work.starts_with(&runtime.data) {
         return Err(invalid());
     }
-    let mut command = owned_worker_command(runtime, &work);
+    let mut command = owned_worker_command(runtime);
     let mut child = command.spawn()?;
     let stdout = child.stdout.take().ok_or_else(invalid)?;
     let stderr = child.stderr.take().ok_or_else(invalid)?;
@@ -1059,7 +1059,7 @@ fn launch_in_work(runtime: &Runtime, spec: Spec, selected_work: Option<PathBuf>)
     Ok(active)
 }
 
-fn owned_worker_command(runtime: &Runtime, work: &Path) -> Command {
+fn owned_worker_command(runtime: &Runtime) -> Command {
     // Canonical Windows paths retain a verbatim prefix. Python preserves it
     // in executable/prefix/__file__, while the command's roots are normalized.
     // Use one external spelling; the worker's strict origin check stays intact.
@@ -1067,7 +1067,9 @@ fn owned_worker_command(runtime: &Runtime, work: &Path) -> Command {
     command
         .args(["-I", "-S", "-B"])
         .arg(super::external_runtime_path(runtime.worker.clone()))
-        .current_dir(work)
+        // Windows CreateProcess rejects long current directories even with a
+        // verbatim prefix. The private work root travels explicitly on stdio.
+        .current_dir(super::external_runtime_path(runtime.data.clone()))
         .env_remove("PYTHONPATH")
         .env_remove("PYTHONHOME")
         .env("PYTHONUTF8", "1")
@@ -1733,6 +1735,9 @@ impl Server {
             Payload::Shutdown {
                 status: ShutdownStatus::Completed,
             } => {
+                // Retire the worker's blocked control reader before waiting for
+                // successful interpreter exit. Terminal validation is complete.
+                drop(active.child.stdin.take());
                 if let Some(download) = active.download.as_mut() {
                     if download.final_receipt.is_none() {
                         return Err(invalid());
@@ -1973,6 +1978,7 @@ mod tests {
             fs::write(&runtime.worker, r#"import hashlib,json,pathlib,sys,time,uuid
 first=json.loads(sys.stdin.buffer.readline())
 args=first['payload']['args']; work=pathlib.Path(args['work_root'])
+require_eof=pathlib.Path(__file__).with_name('require-native-eof').exists()
 producer={'recipe':'owned-source-page-worker-v1','source_contract_version':1,'manifest_sha256':args['manifest_sha256'],'source_sha':'b'*40,'release_version':'0.1.0-test','provider_id':args['provider_id'],'source_ref':args['source_ref'],'page_size':args['page_size']}
 single_video=args.get('source_mode')=='video'
 if single_video:producer.update(recipe='owned-source-page-worker-v2',source_mode='video')
@@ -2007,14 +2013,19 @@ while True:
    emit('shutdown',{'status':'failed'});sys.exit(2)
   raw=partial.read_bytes()+b'efgh';(work/'source-media.mp4').write_bytes(raw)
   packet({'schema_version':1,'kind':'source-download',**binding,'media_file':'source-media.mp4','size_bytes':len(raw),'sha256':'0'*64 if mode=='bad-hash' else hashlib.sha256(raw).hexdigest(),'resumed':resumed,'downloaded_bytes':8,'total_bytes':8})
-  emit('shutdown',{'status':'completed'});sys.exit(2 if mode=='bad-exit' else 0)
+  emit('shutdown',{'status':'completed'})
+  if mode=='await-eof':assert sys.stdin.buffer.read()==b''
+  sys.exit(2 if mode=='bad-exit' else 0)
  cursor=args['cursor']
  if cursor=='page-2' and request['sequence']>2:
   time.sleep(30)  # Interrupt a real page-2 process after the first DB commit.
  item={'schema_version':1,'identity':{'provider_id':producer['provider_id'],'source_id':'one' if cursor is None else 'two','canonical_url':'https://example.test/one' if cursor is None else 'https://example.test/two','identity_key':producer['provider_id']+(':one' if cursor is None else ':two')},'title':'Recorded item','duration_ticks':'1000'}
  done=single_video or cursor is not None
  packet({'schema_version':1,'kind':'source-page','producer_fingerprint':fingerprint,'dispatch_revision':args['dispatch_revision'],'request_cursor':cursor,'page':{'schema_version':1,'items':[item],'failures':[],'next_cursor':None if done else 'page-2','completed':done}})
- if done:emit('shutdown',{'status':'completed'});sys.exit(0)
+ if done:
+  emit('shutdown',{'status':'completed'})
+  if require_eof:assert sys.stdin.buffer.read()==b''
+  sys.exit(0)
 "#).unwrap();
             runtime
         }
@@ -2181,6 +2192,35 @@ while True:
         .video_mode()
         .unwrap());
         drop(restarted);
+    }
+
+    #[test]
+    fn native_completion_retires_control_pipe_before_waiting_for_worker_exit() {
+        let temp = Temporary::new();
+        let runtime = temp.recorded_runtime();
+        fs::write(runtime.root.join("require-native-eof"), b"").unwrap();
+        let mut server = Server::open(runtime).unwrap();
+        server
+            .request(Request::StartVideo {
+                scan_id: "scan".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/one".into(),
+            })
+            .unwrap();
+        pump(&mut server);
+        pump(&mut server);
+        pump(&mut server); // Child cannot exit until native closes its writer.
+        assert!(server.active.is_none());
+        assert_eq!(
+            server.queue.scan("scan").unwrap().status,
+            ScanStatus::Completed
+        );
+        begin_download(&mut server, "generic:one", "await-eof", false);
+        assert_eq!(finish_download(&mut server)["event"], "source_downloaded");
+        assert_eq!(
+            server.queue.item("scan", "generic:one").unwrap().status,
+            ItemStatus::Downloaded
+        );
     }
 
     #[test]
@@ -2564,6 +2604,66 @@ while True:
 
     #[test]
     #[cfg(windows)]
+    fn native_long_private_work_launches_from_admitted_data_root() {
+        let temp = Temporary::new();
+        let runtime = temp.recorded_runtime();
+        let mut work = runtime.data.join("private-work");
+        while super::super::external_runtime_path(work.clone())
+            .to_string_lossy()
+            .len()
+            <= 270
+        {
+            work.push("long-private-source-work-component");
+        }
+        fs::create_dir_all(&work).unwrap();
+        fs::write(&runtime.worker, r#"import json,os,pathlib,sys
+first=json.loads(sys.stdin.buffer.readline())
+args=first['payload']['args'];work=pathlib.Path(args['work_root'])
+(work/'launch-context.json').write_text(json.dumps({'cwd':os.getcwd(),'work':str(work),'executable':sys.executable,
+ 'isolated':sys.flags.isolated,'no_site':sys.flags.no_site,'no_bytecode':sys.dont_write_bytecode}))
+"#).unwrap();
+        let mut active = launch_in_work(
+            &runtime,
+            Spec {
+                id: "long-work".into(),
+                provider: "generic".into(),
+                reference: "https://example.test/one".into(),
+                page_size: 1,
+                maximum: 1,
+                existing: false,
+                single_video: true,
+            },
+            Some(work.clone()),
+        )
+        .unwrap();
+        assert!(active.child.wait().unwrap().success());
+        let value: Value =
+            serde_json::from_slice(&fs::read(work.join("launch-context.json")).unwrap()).unwrap();
+        assert_eq!(
+            PathBuf::from(value["cwd"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            runtime.data.canonicalize().unwrap()
+        );
+        assert_eq!(
+            PathBuf::from(value["work"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            active.work
+        );
+        assert_eq!(
+            PathBuf::from(value["executable"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            runtime.python.canonicalize().unwrap()
+        );
+        assert_eq!(value["isolated"], 1);
+        assert_eq!(value["no_site"], 1);
+        assert_eq!(value["no_bytecode"], true);
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn native_worker_observes_normal_paths_after_canonical_windows_launch() {
         let temp = Temporary::new();
         let mut runtime = temp.recorded_runtime();
@@ -2573,7 +2673,7 @@ print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'worker':__fil
 "#).unwrap();
         runtime.python = runtime.python.canonicalize().unwrap();
         runtime.worker = runtime.worker.canonicalize().unwrap();
-        let output = owned_worker_command(&runtime, &runtime.data)
+        let output = owned_worker_command(&runtime)
             .stdin(Stdio::null())
             .output()
             .unwrap();

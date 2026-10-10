@@ -408,6 +408,72 @@ class SourceWorkerTests(unittest.TestCase):
         self.assertEqual(result.stdout, b"")
 
 
+class SourceWorkerCompletionTests(unittest.TestCase):
+    def test_terminal_state_precedes_the_visible_shutdown_and_parent_eof(self):
+        class ParentPipe(io.BytesIO):
+            def write(pipe, payload):
+                message = Envelope.from_line(payload)
+                if message.message_type is MessageType.SHUTDOWN:
+                    self.assertTrue(emitter.finished.is_set())
+                    self.assertTrue(emitter.terminal)
+                return super().write(payload)
+        emitter = worker._Emitter("scan-1", ParentPipe())
+        emitter.send(MessageType.SHUTDOWN, {"status": "completed"})
+
+    def test_completed_page_and_download_retire_reader_after_native_eof(self):
+        script = '''import sys
+from unittest.mock import patch
+sys.path.insert(0,sys.argv[1])
+from engine.dubflow.download.enumeration import worker
+class CompletedSession:
+    def __init__(self,args): pass
+    def ready(self): return {"kind":"source-ready"}
+    def publish(self,document,job): return ("source-packet-"+"1"*32+".json","sha256:"+"a"*64)
+    def page(self,args): return {"kind":"source-page","page":{"completed":True}}
+    def download(self,args,progress): return {"kind":"source-download"}
+with patch.object(worker,"SourceSession",CompletedSession):
+    raise SystemExit(worker.main())
+'''
+        root = str(Path(__file__).resolve().parents[2])
+        for command in ("source_page", "source_download"):
+            with self.subTest(command=command):
+                process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", script, root],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                output = queue.Queue()
+                def read_lines():
+                    for line in iter(process.stdout.readline, b""):
+                        output.put(line)
+                    output.put(None)
+                reader = threading.Thread(target=read_lines, daemon=True)
+                reader.start()
+                def send(sequence, name):
+                    request = Envelope.from_dict({"schema_version": 1, "message_type": "command", "message_id": "complete-" + str(sequence),
+                        "job_id": "scan-1", "stage_id": worker.STAGE_ID, "sequence": sequence,
+                        "payload": {"command": name, "args": {}}})
+                    process.stdin.write(request.to_line());process.stdin.flush()
+                try:
+                    send(1, "source_prepare")
+                    self.assertEqual(Envelope.from_line(output.get(timeout=5)).message_type, MessageType.CHECKPOINT)
+                    send(2, command)
+                    self.assertEqual(Envelope.from_line(output.get(timeout=5)).message_type, MessageType.CHECKPOINT)
+                    terminal = Envelope.from_line(output.get(timeout=5))
+                    self.assertEqual(terminal.payload["status"], "completed")
+                    # Production native validates this event, closes its writer,
+                    # then requires a genuine zero exit before durable success.
+                    process.stdin.close()
+                    self.assertEqual(process.wait(timeout=5), 0)
+                    self.assertEqual(process.stderr.read(), b"")
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+                    if not process.stdin.closed:
+                        process.stdin.close()
+                    reader.join(timeout=5)
+                    process.stdout.close();process.stderr.close()
+
+
 class SourceWorkerProcessControlTests(unittest.TestCase):
     """Real process/v1 control with substituted admission and a blocked page.
 

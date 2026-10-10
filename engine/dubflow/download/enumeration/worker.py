@@ -285,12 +285,14 @@ class _Emitter:
             message = Envelope.from_dict({"schema_version": 1, "message_type": kind.value,
                 "message_id": "source-" + uuid.uuid4().hex, "job_id": self.job_id,
                 "stage_id": STAGE_ID, "sequence": self.sequence, "payload": payload})
+            if kind is MessageType.SHUTDOWN:
+                # Once the parent sees shutdown it may close its control pipe.
+                # Publish local terminal state before exposing that wire event.
+                self.terminal = True
+                self.finished.set()
             self.stdout.write(message.to_line())
             self.stdout.flush()
             self.sequence += 1
-            if kind is MessageType.SHUTDOWN:
-                self.terminal = True
-                self.finished.set()
 
     def checkpoint(self, packet):
         self.send(MessageType.CHECKPOINT, {"checkpoint_id": packet[0], "artifact_hash": packet[1], "reusable": True})
@@ -319,6 +321,7 @@ def main() -> int:
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
     validator = StreamValidator()
     emitter = None
+    controls = None
     try:
         first = _request(stdin.readline(MAX_LINE_BYTES + 1), validator)
         if first.message_type is not MessageType.COMMAND or first.payload["command"] != "source_prepare":
@@ -352,7 +355,8 @@ def main() -> int:
                 emitter.fail("SOURCE_WORKER_REQUEST_INVALID")
                 os._exit(2)
 
-        threading.Thread(target=read_controls, daemon=True).start()
+        controls = threading.Thread(target=read_controls, daemon=True)
+        controls.start()
         threading.Thread(target=emitter.heartbeat, daemon=True).start()
         session = SourceSession(first.payload["args"])
         emitter.checkpoint(session.publish(session.ready(), first.job_id))
@@ -385,6 +389,10 @@ def main() -> int:
     finally:
         if emitter is not None:
             emitter.finished.set()
+        if controls is not None:
+            # Native closes stdin after a validated terminal message. Give the
+            # blocked reader time to retire before BufferedReader finalization.
+            controls.join(timeout=1)
 
 
 if __name__ == "__main__":
