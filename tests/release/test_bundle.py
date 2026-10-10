@@ -540,7 +540,7 @@ class VoiceVersionQualificationTests(unittest.TestCase):
             (editable/'dubbing_placement.json').write_bytes(placement_bytes)
             config = TtsConfig(max_attempts=1)
             voice = replace(approved_default_voice(),voice_id='vi-truc-ly-vieneu3-v1')
-            tts_provenance = TtsProvenance('qualification-fixture','3.3.0','vieneu-v3-turbo-onnx-v1','fixture',
+            tts_provenance = TtsProvenance('qualification-fixture','3.4.0','vieneu-v3-turbo-onnx-v1','fixture',
                 'timeline-v1',config.content_hash(),placement_digest,voice.model_id,voice.model_version,voice.model_hash,
                 voice.content_hash(),voice.voice_id,voice.voice_version,config.requested_profile,'fixture',config.resource)
             cue = TtsInput('cue-1','cue-1','Xin chào',TimePoint(0,base),TimePoint(1000,base),render_window_end=TimePoint(1000,base))

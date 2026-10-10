@@ -144,6 +144,7 @@ class VieNeuBoundsTests(unittest.TestCase):
         seeds = []
         model.np = SimpleNamespace(random=SimpleNamespace(seed=seeds.append))
         model.phonemize = lambda _: "phones"
+        model.expected_frame_cap = lambda _: 18
         model.codes, model.speaker = None, None
         calls = []
         model.engine = SimpleNamespace(ended=False, tokenizer=SimpleNamespace(encode=lambda _: SimpleNamespace(ids=[1])), infer=lambda **kw: calls.append(kw) or [0.1])
@@ -152,9 +153,10 @@ class VieNeuBoundsTests(unittest.TestCase):
         self.assertEqual(rejected.exception.code, "TTS_SPEECH_INCOMPLETE")
         self.assertEqual(seeds, [20261007, 20261008])
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0], calls[1])
-        self.assertEqual(calls[0]["max_new_frames"], 300)
-        self.assertTrue(calls[0]["frame_cap"])
+        self.assertEqual([call["max_new_frames"] for call in calls], [18, 36])
+        self.assertEqual({key: value for key, value in calls[0].items() if key != "max_new_frames"},
+                         {key: value for key, value in calls[1].items() if key != "max_new_frames"})
+        self.assertFalse(calls[0]["frame_cap"])
         self.assertIsNone(model.last_samples)
 
     def decode_model(self, outcomes):
@@ -162,6 +164,7 @@ class VieNeuBoundsTests(unittest.TestCase):
         model.last_text, model.last_samples, model.last_warnings = None, None, ()
         model.codes, model.speaker = None, None
         model.phonemize = lambda _: "phones"
+        model.expected_frame_cap = lambda _: 18
         pcm = MagicMock()
         pcm.reshape.return_value = pcm
         pcm.astype.return_value = pcm
@@ -184,7 +187,7 @@ class VieNeuBoundsTests(unittest.TestCase):
             model.output = Path(directory)
             first = model.generate({"text":"Làm gì vậy?", "speed":1., "sequence":1})
             again = model.generate({"text":"Làm gì vậy?", "speed":1., "sequence":2})
-            self.assertEqual(first["warnings"], ["TTS_EOS_RESEEDED"])
+            self.assertEqual(first["warnings"], ["TTS_EOS_RESEEDED", "TTS_EOS_FRAME_BUDGET_EXTENDED"])
             self.assertEqual(again["warnings"], first["warnings"])
             self.assertEqual(first["sha256"], again["sha256"])
             self.assertEqual(model.engine.infer.call_count, 2)
@@ -200,7 +203,32 @@ class VieNeuBoundsTests(unittest.TestCase):
             reply = model.generate({"text":"Xin chào", "speed":1., "sequence":1})
             self.assertEqual(reply["warnings"], [])
             model.engine.infer.assert_called_once()
+            self.assertEqual(model.engine.infer.call_args.kwargs["max_new_frames"], 18)
+            self.assertFalse(model.engine.infer.call_args.kwargs["frame_cap"])
             model.np.random.seed.assert_called_once_with(20261007)
+
+    def test_retry_budget_never_exceeds_global_cap_and_reports_only_actual_extension(self):
+        for expected in (149, 150, 250, 300, 400):
+            with self.subTest(expected=expected):
+                model, _ = self.decode_model([False, True])
+                model.expected_frame_cap = lambda _: expected
+                _, warnings = model._infer_complete("phones")
+                initial = min(expected, 300)
+                self.assertEqual([call.kwargs["max_new_frames"] for call in model.engine.infer.call_args_list],
+                                 [initial, min(initial * 2, 300)])
+                self.assertIn("TTS_EOS_RESEEDED", warnings)
+                self.assertEqual("TTS_EOS_FRAME_BUDGET_EXTENDED" in warnings, initial < 300)
+                self.assertEqual(model.engine.infer.call_count, 2)
+
+    def test_invalid_sdk_budget_is_fatal_before_inference_or_cache(self):
+        for expected in (0, -1, True, 18.0, None):
+            with self.subTest(expected=expected):
+                model, _ = self.decode_model([])
+                model.expected_frame_cap = lambda _: expected
+                with self.assertRaisesRegex(ValueError, "phoneme frame budget"):
+                    model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+                model.engine.infer.assert_not_called()
+                self.assertIsNone(model.last_samples)
 
     def test_runtime_error_is_not_an_eos_retry_or_cached_audio(self):
         model, _ = self.decode_model([RuntimeError("native session failure")])
@@ -315,7 +343,7 @@ class MeasuredVieNeuFitTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("DUBFLOW_REAL_VIENEU_MODEL_ROOT"), "real pinned VieNeu data not supplied")
 class ActualVieNeuTests(unittest.TestCase):
-    def test_actual_reseed_tempo_cache_and_next_cue_after_bounded_refusal(self):
+    def test_actual_reseed_tempo_cache_and_short_cue_eos(self):
         pack, voice = load_vieneu_voice(ROOT, os.environ["DUBFLOW_REAL_VIENEU_MODEL_ROOT"], ROOT / "models/manifests/production-cpu-v1.json")
         engine = VieNeuVietnameseTtsEngine(pack, ffmpeg_path=os.environ["DUBFLOW_REAL_FFMPEG"])
         try:
@@ -323,14 +351,13 @@ class ActualVieNeuTests(unittest.TestCase):
             self.assertTrue(health.ready, health.condition)
             pid = engine._tts.process.pid
             natural = engine._tts.generate("Làm gì vậy?", 0, 1.)
-            self.assertEqual(natural.warnings, ("TTS_EOS_RESEEDED",))
+            self.assertEqual(natural.warnings, ("TTS_EOS_RESEEDED", "TTS_EOS_FRAME_BUDGET_EXTENDED"))
             fitted = engine._tts.generate("Làm gì vậy?", 0, 1.2)
             self.assertEqual(fitted.warnings, natural.warnings)
             self.assertLess(len(fitted.samples), len(natural.samples))
-            with self.assertRaises(TtsError) as refusal:
-                engine._tts.generate("Ngồi yên.", 0, 1.)
-            self.assertEqual(refusal.exception.code, "TTS_SPEECH_INCOMPLETE")
-            self.assertFalse(refusal.exception.retryable)
+            short = engine._tts.generate("Ngồi yên.", 0, 1.)
+            self.assertEqual(short.warnings, ("TTS_EOS_RESEEDED", "TTS_EOS_FRAME_BUDGET_EXTENDED"))
+            self.assertEqual(len(short.samples), 72960)
             following = engine._tts.generate("Xin chào Việt Nam.", 0, 1.)
             self.assertEqual(following.warnings, ())
             self.assertGreater(max(abs(value) for value in following.samples), 0.01)

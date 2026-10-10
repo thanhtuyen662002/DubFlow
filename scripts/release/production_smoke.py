@@ -86,9 +86,11 @@ def _terminate_tree(process: subprocess.Popen[str]) -> None:
 
 def _write_sidecar(source: Path, *, seconds: int) -> Path:
     sidecar = source.with_suffix(".srt")
-    end = max(1, min(seconds, 59))
+    if type(seconds) is not int or seconds <= 0:
+        raise SmokeError("synthetic source duration must be a positive integer")
+    end_seconds, end_millis = divmod(min(seconds * 1000 - 500, 59500), 1000)
     sidecar.write_text(
-        "1\n00:00:00,000 --> 00:00:{:02d},500\nHello from DubFlow\n\n".format(end),
+        "1\n00:00:00,000 --> 00:00:{:02d},{:03d}\nHello from DubFlow\n\n".format(end_seconds, end_millis),
         encoding="utf-8",
     )
     return sidecar
@@ -349,7 +351,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
             raise SmokeError(f"B2 manifest does not prove the app-owned voice path: {audio!r}")
         tts_document = _json(Path(audio["tts_document"]))
         provenance = tts_document.get("provenance", {})
-        if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.3.0":
+        if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.4.0":
             raise SmokeError(f"B2 TTS receipt differs from the selected native producer: {provenance!r}")
         if expect_voice_id is not None and provenance.get("voice_id") != expect_voice_id:
             raise SmokeError("packaged TTS did not preserve the explicitly selected preset")

@@ -18,7 +18,7 @@ from .neural_vits import (
 from .vieneu_native import FRONTEND_ID, VERSIONS, INFERENCE_RECIPE
 
 ENGINE_ID = "vieneu-v3-turbo-onnx-v1"
-PRODUCER_VERSION = "3.3.0"
+PRODUCER_VERSION = "3.4.0"
 RUNTIME_ID = "vieneu-3.8.3+sea-g2p-0.9.1+onnxruntime-1.30.0+tokenizers-0.23.2+numpy-2.2.6"
 PROFILE_PATH = "models/manifests/production-vieneu-v1.json"
 FILES = frozenset({

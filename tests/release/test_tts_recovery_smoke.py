@@ -15,6 +15,26 @@ import wave
 from scripts.release import production_smoke as smoke
 
 
+class SyntheticSourceBoundsTests(unittest.TestCase):
+    def test_authored_sidecar_fits_each_source_and_rejects_invalid_duration(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "synthetic.mp4"
+            for duration in (1, 3, 27, 59, 60, 3600):
+                with self.subTest(duration=duration):
+                    sidecar = smoke._write_sidecar(source, seconds=duration)
+                    end = sidecar.read_text(encoding="utf-8").splitlines()[1].split(" --> ")[1]
+                    hours, minutes, fraction = end.split(":")
+                    seconds, millis = fraction.split(",")
+                    end_ms = ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000 + int(millis)
+                    self.assertGreater(end_ms, 0)
+                    self.assertLess(end_ms, duration * 1000)
+            original = sidecar.read_bytes()
+            for duration in (0, -1, True, 1.5):
+                with self.subTest(duration=duration), self.assertRaises(smoke.SmokeError):
+                    smoke._write_sidecar(source, seconds=duration)
+                self.assertEqual(sidecar.read_bytes(), original)
+
+
 class NoAudioDubEvidenceTests(unittest.TestCase):
     def test_silent_origin_pcm_and_real_dialogue_are_required(self):
         advisory = "final mix is below the configured target RMS; source and dialogue were preserved"
@@ -120,7 +140,7 @@ def tts2_evidence(output: Path, source_hash: str):
     digest = "sha256:" + sha256(payload).hexdigest()
     config = TtsConfig(max_attempts=1)
     voice = replace(approved_default_voice(), voice_id="fixture")
-    provenance = TtsProvenance("qualification-fixture", "3.3.0", "vieneu-v3-turbo-onnx-v1", "fixture", "timeline-v1",
+    provenance = TtsProvenance("qualification-fixture", "3.4.0", "vieneu-v3-turbo-onnx-v1", "fixture", "timeline-v1",
         config.content_hash(), digest, voice.model_id, voice.model_version, voice.model_hash, voice.content_hash(),
         voice.voice_id, voice.voice_version, config.requested_profile, "fixture", config.resource)
     store = TtsCheckpointStore(generation / "tts", identity="1" * 64)

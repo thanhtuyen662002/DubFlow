@@ -128,13 +128,16 @@ reply = {'schema_version':1,'sequence':request['sequence'],'ok':True,'file':name
 print(json.dumps(reply), flush=True)
 sys.stdin.read()
 """
-        for warnings in (["TTS_EOS_RESEEDED"], None, True, "TTS_EOS_RESEEDED", [7], ["unreviewed"], ["TTS_EOS_RESEEDED"] * 2):
+        accepted = ([], ["TTS_EOS_RESEEDED"], ["TTS_EOS_RESEEDED", "TTS_EOS_FRAME_BUDGET_EXTENDED"])
+        for warnings in (*accepted, None, True, "TTS_EOS_RESEEDED", [7], [{}], ["unreviewed"],
+                         ["TTS_EOS_RESEEDED"] * 2, ["TTS_EOS_FRAME_BUDGET_EXTENDED"],
+                         ["TTS_EOS_RESEEDED", "TTS_EOS_FRAME_BUDGET_EXTENDED", "TTS_EOS_RESEEDED"]):
             with self.subTest(warnings=warnings):
                 bridge = self.start(child.replace("WARNINGS", repr(warnings)))
                 try:
-                    if warnings == ["TTS_EOS_RESEEDED"]:
+                    if warnings in accepted:
                         speech = bridge.generate("Xin chào", 0, 1.)
-                        self.assertEqual(speech.warnings, ("TTS_EOS_RESEEDED",))
+                        self.assertEqual(speech.warnings, tuple(warnings))
                         self.assertIsNone(bridge.process.poll())
                     else:
                         with self.assertRaises(TtsError) as invalid:

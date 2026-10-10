@@ -31,6 +31,8 @@
     "eos_retries": 1,
     "threads": 2,
     "max_new_frames": 300,
+    "frame_budget": "pinned-sdk-phoneme-cap",
+    "eos_retry_frame_budget_multiplier": 2,
     "temperature": 0.8,
     "top_k": 25,
     "top_p": 0.95,

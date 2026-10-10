@@ -2,7 +2,7 @@
 
 - Status: Proposed, Issue #166 / Draft PR #195.
 - Versions: TTS document 2, private dubbing placement 1, private TTS checkpoint 2,
-  VieNeu parent producer 3.3.0. Timeline/worker/SQLite/model formats unchanged.
+  VieNeu parent producer 3.4.0. Timeline/worker/SQLite/model formats unchanged.
 
 ## Evidence and decision
 
@@ -32,8 +32,20 @@ speech is shorter. When natural speech exceeds the render limit, preserve the
 existing <=1.3 pitch-preserving tempo cap and bounded measured correction
 passes. Never cut spoken samples, shorten translated text or relax native
 complete-speech refusal. The native child's pinned natural-waveform cache
-avoids new model sampling during tempo fitting. The complete-speech failure
-remains a separate defect to measure and repair.
+avoids new model sampling during tempo fitting.
+
+The actual short-cue diagnosis found that the pinned SDK heuristic allowed
+only 18 acoustic frames for "Ngồi yên.". Both existing seeds hit that bound
+without EOS; the same retry seed with a bounded 36-frame budget ended naturally
+at frame19 (72960 samples, 1.52 seconds). Producer3.4 computes the same pinned
+SDK phoneme cap explicitly for the first attempt. Only missing EOS permits
+one fresh retry with the existing second seed and at most twice that budget,
+still bounded by the global300 acoustic frames and32 seconds of finite PCM.
+Disable the SDK's secondary heuristic cap for these explicitly bounded calls;
+keep its source checksums, weights, runtime versions and babble retries unchanged.
+Require actual EOS and preserve complete PCM; runtime errors do not trigger
+this retry. Report reseeding and any actual budget extension as advisories,
+including cached tempo reuse. No additional attempts or forced EOS are allowed.
 
 Both mixer bridges consume measured `actual_end` for explicit TTS2 artifacts,
 so speech tails are neither truncated to a source end nor padded/ducked across
@@ -66,13 +78,25 @@ generation. The B2 generation already pins b2/adapter/native/checkpoint/mixer
 code and recipe; new source bytes invalidate descendants. Rollback retains
 the coherent previous runtime and its own artifacts. Never relabel old audio,
 repin old job IDs, strip a render limit or overwrite a published old export.
+The new inference fields and native/parent source hashes distinguish producer3.4
+from3.2/3.3 even though the model bytes and25 voice presets are unchanged. Keep
+old immutable profiles with their installed runtimes; never overwrite them
+with the new recipe or reuse their cached speech as producer3.4 evidence.
+The private schema1 native bridge accepts at most two unique reviewed synthesis
+advisories; a frame-budget extension requires the reseed advisory. Absent/empty
+and old singleton warnings remain valid. Old immutable bridges reject the new
+optional warning, so producer3.4 ships its parent, child and profile together.
 Standard MP4/PCM/subtitle exports stay usable for consumers without TTS2 support.
 
 ## Qualification
 
 Deterministic tests cover unchanged source timing and TTS1 serialization,
 overlap/neighbor/media/2000 ms bounds, strict overrun rejection, spoken-tail
-mixing, safe tempo caps, malformed/unknown2 and reuse/invalidation. Actual
+mixing, safe tempo caps, malformed/unknown2 and reuse/invalidation. EOS tests
+cover the initial heuristic, doubled/capped retry, two-seed refusal, runtime-error
+refusal, finite PCM and warning-preserving natural-waveform cache. The release
+harness authors synthetic subtitles strictly inside its own media extent;
+the product's rejection of out-of-source dialogue remains unchanged. Actual
 retained-model/source probes and new packaged/runtime/native evidence are
 separate from fixture wiring. All original166/175 acceptance and four CI lanes
 remain mandatory, including real film/human quality, long form, batch/restart

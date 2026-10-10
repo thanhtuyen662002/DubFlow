@@ -17,7 +17,7 @@ import sys
 
 FRONTEND_ID = "vieneu-sea-g2p-preset-v1"
 VERSIONS = {"vieneu": "3.8.3", "sea-g2p": "0.9.1", "onnxruntime": "1.30.0", "numpy": "2.2.6", "tokenizers": "0.23.2"}
-INFERENCE_RECIPE = {"seed": 20261007, "eos_retry_seed": 20261008, "eos_retries": 1, "threads": 2, "max_new_frames": 300, "temperature": 0.8, "top_k": 25, "top_p": 0.95, "repetition_penalty": 1.2, "babble_retries": 0, "precision": "fp32", "duration_fit": "app-owned-ffmpeg-atempo-max1.3-measured3-pad5ms"}
+INFERENCE_RECIPE = {"seed": 20261007, "eos_retry_seed": 20261008, "eos_retries": 1, "threads": 2, "max_new_frames": 300, "frame_budget": "pinned-sdk-phoneme-cap", "eos_retry_frame_budget_multiplier": 2, "temperature": 0.8, "top_k": 25, "top_p": 0.95, "repetition_penalty": 1.2, "babble_retries": 0, "precision": "fp32", "duration_fit": "app-owned-ffmpeg-atempo-max1.3-measured3-pad5ms"}
 SOURCE_FILES = {
     "vieneu/_v3_turbo_engine/onnx_runtime_lite.py": "7747ac18fb5b660a810a434461bd8386ba40b0b46d559c07907db0c19414084e",
     "vieneu/_v3_turbo_engine/rep_history.py": "2cfc52f9a860fb53450e5b3b364fa5955fba03acf558195c423b476535104a2b",
@@ -63,9 +63,10 @@ class NativeModel:
         import numpy as np
         from vieneu._v3_turbo_engine.onnx_runtime_lite import OnnxV3LiteEngine
         from vieneu_utils.phonemize_text import phonemize_text
-        from vieneu_utils.core_utils import strip_encoder_pad_frame
+        from vieneu_utils.core_utils import max_expected_frames, strip_encoder_pad_frame
         self.np = np
         self.phonemize = phonemize_text
+        self.expected_frame_cap = max_expected_frames
         self.pack = Path(config["pack_path"])
         self.output = Path(config["output_root"])
         self.ffmpeg = config.get("ffmpeg_path")
@@ -99,17 +100,25 @@ class NativeModel:
         self.last_warnings = ()
 
     def _infer_complete(self, phones):
-        # Each SDK call builds fresh decode/repetition state. Retry only missing
-        # EOS, with one pinned changed seed and identical text/voice/frame caps.
+        expected = self.expected_frame_cap(phones)
+        if type(expected) is not int or expected <= 0:
+            raise ValueError("invalid pinned SDK phoneme frame budget")
+        initial = min(INFERENCE_RECIPE["max_new_frames"], expected)
+        retry = min(INFERENCE_RECIPE["max_new_frames"], initial * INFERENCE_RECIPE["eos_retry_frame_budget_multiplier"])
+        # The first attempt preserves the SDK heuristic. Only missing EOS gets
+        # one fresh decode with a changed seed and bounded extra frame budget.
         for index, seed in enumerate((INFERENCE_RECIPE["seed"], INFERENCE_RECIPE["eos_retry_seed"])):
             self.np.random.seed(seed)
             self.engine.ended = False
             samples = self.engine.infer(phonemes=phones, ref_codes=self.codes, speaker_emb=self.speaker,
-                max_new_frames=INFERENCE_RECIPE["max_new_frames"], frame_cap=True,
+                max_new_frames=retry if index else initial, frame_cap=False,
                 temperature=INFERENCE_RECIPE["temperature"], top_k=INFERENCE_RECIPE["top_k"],
                 top_p=INFERENCE_RECIPE["top_p"], repetition_penalty=INFERENCE_RECIPE["repetition_penalty"])
             if self.engine.ended:
-                return samples, ("TTS_EOS_RESEEDED",) if index else ()
+                warnings = ("TTS_EOS_RESEEDED",) if index else ()
+                if index and retry > initial:
+                    warnings += ("TTS_EOS_FRAME_BUDGET_EXTENDED",)
+                return samples, warnings
         raise NativeCueRejected("TTS_SPEECH_INCOMPLETE", "speech reached its generation bound before end-of-speech in both pinned seed attempts; output rejected")
 
     def generate(self, request: dict) -> dict:
