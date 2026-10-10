@@ -176,6 +176,7 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
             or video["webpage_url"] != "https://video.example.test/watch/31" or resolved_videos != ["31"]
             or len(video["formats"]) != 1 or video["subtitles"]["en"][0]["ext"] != "vtt"):
         raise ValueError("actual generic SDK full video resolution did not preserve identity/media/subtitle candidates")
+    inspected_videos = list(resolved_videos)
     try:
         helper.provider_request({"provider_id": "generic", "url": "https://video.example.test/watch/31",
                                  "headers": {"Cookie": "synthetic-secret"}})
@@ -224,7 +225,7 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
               "elapsed_seconds": time.monotonic() - started, "cases": cases,
               "generic_playlist_cases": generic_cases,
               "generic_inspection": {"status": "passed", "extractor_key": video["extractor_key"],
-                                     "source_id": video["id"], "resolved_videos": list(resolved_videos),
+                                     "source_id": video["id"], "resolved_videos": inspected_videos,
                                      "provider_session_refusal": "passed"},
               "generic_missing_identity": missing_report,
               "live_bilibili": "NOT_RUN", "live_douyin": "NOT_RUN",
