@@ -44,6 +44,22 @@ def adapter(root: Path, engine=None):
 
 
 class TtsCheckpointTests(unittest.TestCase):
+    def test_explicit_window_checkpoint2_roundtrip_and_version_mismatch_refusal(self):
+        cue = replace(SEGMENTS[0], render_window_end=TimePoint(1100, TimeBase(1,1000)))
+        with TemporaryDirectory() as directory:
+            root = Path(directory); engine = FittedFixture()
+            store = TtsCheckpointStore(root, identity=IDENTITY)
+            first = adapter(root,engine).synthesize((cue,),input_hash=INPUT,on_checkpoint=store.commit)
+            path = next(store.directory.glob('*.json'))
+            value = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual(value['schema_version'],2)
+            second = adapter(root,engine).synthesize((cue,),input_hash=INPUT,checkpoints=store.load((cue,)))
+            self.assertEqual(len(engine.cue_calls),1)
+            self.assertEqual(second.artifacts,first.artifacts)
+            value['schema_version']=1;path.write_text(json.dumps(value),encoding='utf-8')
+            self.assertEqual(store.load((cue,)),{})
+            self.assertTrue(store.warnings)
+
     def test_abrupt_process_exit_resumes_committed_fitted_cue_without_rewriting(self):
         for mode in ("padded", "speed_adjusted"):
             with self.subTest(mode=mode), TemporaryDirectory() as directory:

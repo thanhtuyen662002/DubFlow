@@ -1000,6 +1000,10 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 "mix_failures": len(b2_audio.mix_document.failures),
                 "mix_warnings": list(b2_audio.mix_document.warnings),
             }
+            if b2_audio.placement_document_path is not None:
+                audio_metadata["dubbing_placement"] = {"schema_version": 1, "path": str(b2_audio.placement_document_path),
+                    "sha256": _sha256(b2_audio.placement_document_path)}
+                warnings.extend(warning for warning in b2_audio.tts_document.warnings if warning.startswith("TTS_INTERCUE_GAP_USED:"))
             _write_stage(
                 checkpoint,
                 checkpoint_path,
@@ -1121,6 +1125,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     editable_names = {"captions_vi.srt", "captions_vi.ass", "timeline.json"}
     if b2_audio is not None:
         editable_names.update({"source_audio.wav", "dialogue_stem.wav", "final_mix.wav"})
+        if b2_audio.placement_document_path is not None:
+            editable_names.add("dubbing_placement.json")
     if editable_dir.exists():
         for path in editable_dir.iterdir():
             export_publication.plain(path.absolute())
@@ -1137,6 +1143,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             (b2_audio.dialogue_stem_path, "dialogue_stem.wav", b2_audio.mix_document.dialogue_stem.content_hash),
             (b2_audio.final_mix_path, "final_mix.wav", b2_audio.mix_document.final_mix.content_hash),
         ]
+        if b2_audio.placement_document_path is not None:
+            editable_audio.append((b2_audio.placement_document_path, "dubbing_placement.json", _sha256(b2_audio.placement_document_path)))
         for source, name, expected_hash in editable_audio:
             target = editable_dir / name
             _copy_editable_artifact(source, target, expected_hash=expected_hash)
@@ -1154,6 +1162,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             "editable_dialogue_stem": editable_dir / "dialogue_stem.wav",
             "editable_final_mix": editable_dir / "final_mix.wav",
         })
+        if b2_audio.placement_document_path is not None:
+            artifacts["dubbing_placement"] = b2_audio.placement_document_path
+            artifacts["editable_dubbing_placement"] = editable_dir / "dubbing_placement.json"
     manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=translation_provenance, asr=transcript.asr_evidence)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.checkpoint("qc", _sha256(qc_path))

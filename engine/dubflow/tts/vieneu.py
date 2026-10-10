@@ -18,7 +18,7 @@ from .neural_vits import (
 from .vieneu_native import FRONTEND_ID, VERSIONS, INFERENCE_RECIPE
 
 ENGINE_ID = "vieneu-v3-turbo-onnx-v1"
-PRODUCER_VERSION = "3.2.0"
+PRODUCER_VERSION = "3.3.0"
 RUNTIME_ID = "vieneu-3.8.3+sea-g2p-0.9.1+onnxruntime-1.30.0+tokenizers-0.23.2+numpy-2.2.6"
 PROFILE_PATH = "models/manifests/production-vieneu-v1.json"
 FILES = frozenset({
@@ -123,6 +123,22 @@ class VieNeuVietnameseTtsEngine(NeuralVietnameseTtsEngine):
 
     def capabilities(self):
         return EngineCapabilities(ENGINE_ID, sample_rates=(48000,), deterministic=False)
+
+    def _target_frames(self, request, target, max_frames):
+        window = request.segment.render_window_end
+        if window is None:
+            return target
+        base = request.segment.start.time_base
+        # Floor limits the measured duration; ceil could cross the next cue.
+        limit = (window.ticks - request.segment.start.ticks) * base.numerator * self.pack.sample_rate // base.denominator
+        if not target <= limit <= max_frames:
+            raise TtsError("TTS_AUDIO_TOO_LARGE", "render window exceeds the waveform/timeline bound")
+        natural = self._tts.generate(request.segment.text, sid=0, speed=1.0)
+        if natural.sample_rate != self.pack.sample_rate or not 0 < len(natural.samples) <= max_frames:
+            raise TtsError("TTS_AUDIO_INVALID", "natural speech has invalid waveform metadata")
+        # The native child caches this exact natural speech for later tempo
+        # passes. Consume only the needed interval, never pad the entire gap.
+        return max(target, min(limit, len(natural.samples)))
 
     def _duration_fit(self, request, target):
         audio, speed_milli = super()._duration_fit(request, target, max_speed_milli=1300)

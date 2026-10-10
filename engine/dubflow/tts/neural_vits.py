@@ -359,6 +359,7 @@ class NeuralVietnameseTtsEngine:
         if target < 1 or target > max_frames:
             raise TtsBackendError("TTS_AUDIO_TOO_LARGE", "requested cue exceeds the waveform memory bound")
         try:
+            target = self._target_frames(request, target, max_frames)
             audio, speed_milli = self._duration_fit(request, target)
             samples = audio.samples
             if audio.sample_rate != self.pack.sample_rate or not 0 < len(samples) <= max_frames:
@@ -392,6 +393,9 @@ class NeuralVietnameseTtsEngine:
             raise
         except Exception as error:
             raise TtsBackendError("TTS_INFERENCE_FAILED", str(error)[:1000], retryable=False) from error
+
+    def _target_frames(self, request: TtsRequest, target: int, max_frames: int) -> int:
+        return target
 
     def _duration_fit(self, request: TtsRequest, target: int, *, max_speed_milli: int | None = None):
         audio = self._tts.generate(request.segment.text, sid=0, speed=1.0)

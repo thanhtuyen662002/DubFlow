@@ -203,6 +203,7 @@ class TtsInput:
     target_language: str = TARGET_LANGUAGE
     confidence: float = 1.0
     normalized_text: str | None = None
+    render_window_end: TimePoint | None = None
 
     def __post_init__(self) -> None:
         _text(self.segment_id, "segment.segment_id", limit=256)
@@ -213,6 +214,10 @@ class TtsInput:
             raise TtsError("UNSUPPORTED_TARGET", "TTS v1 targets Vietnamese (vi)")
         _confidence(self.confidence, "segment.confidence")
         _canonical_interval(self.start, self.end, "segment")
+        if self.render_window_end is not None:
+            _canonical_interval(self.start, self.render_window_end, "segment.render_window")
+            if self.render_window_end.ticks < self.end.ticks:
+                raise TtsError("INVALID_RENDER_WINDOW", "render window cannot shorten the source slot")
         normalized = _normalize_text(self.text if self.normalized_text is None else self.normalized_text)
         if not normalized or _CONTROL.search(normalized):
             raise TtsError("INVALID_TEXT", "segment.normalized_text must not be empty")
@@ -241,7 +246,7 @@ class TtsInput:
             raise TtsError("INVALID_SOURCE", "translated segment lacks required identity/timing fields") from error
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "segment_id": self.segment_id,
             "source_utterance_id": self.source_utterance_id,
             "text": self.text,
@@ -252,6 +257,9 @@ class TtsInput:
             "target_language": self.target_language,
             "confidence": self.confidence,
         }
+        if self.render_window_end is not None:
+            value["render_window_end"] = self.render_window_end.to_dict()
+        return value
 
 
 @dataclass(frozen=True)
@@ -618,6 +626,7 @@ class TtsArtifact:
     confidence: float
     warnings: tuple[str, ...] = ()
     fallback_used: bool = False
+    render_window_end: TimePoint | None = None
 
     def __post_init__(self) -> None:
         _text(self.segment_id, "artifact.segment_id", limit=256)
@@ -634,6 +643,13 @@ class TtsArtifact:
         _integer(self.frame_count, "artifact.frame_count", minimum=1, maximum=U64_MAX)
         _canonical_interval(self.slot_start, self.slot_end, "artifact.slot")
         _canonical_interval(self.slot_start, self.actual_end, "artifact.actual")
+        if self.render_window_end is not None:
+            _canonical_interval(self.slot_start, self.render_window_end, "artifact.render_window")
+            if self.render_window_end.ticks < self.slot_end.ticks or self.actual_end.ticks > self.render_window_end.ticks:
+                raise TtsError("INVALID_RENDER_WINDOW", "artifact exceeds its explicit render window")
+            base = self.slot_start.time_base
+            if self.actual_end.ticks != self.slot_start.ticks + _ceil_div(self.frame_count * base.denominator, self.sample_rate * base.numerator):
+                raise TtsError("INVALID_RENDER_WINDOW", "artifact actual end differs from measured PCM")
         if self.fit_mode not in {"native", "trimmed_silence", "speed_adjusted", "padded"}:
             raise TtsError("INVALID_DURATION_FIT", "artifact fit mode is unsupported")
         _integer(self.speed_ratio_milli, "artifact.speed_ratio_milli", minimum=100, maximum=3000)
@@ -652,7 +668,7 @@ class TtsArtifact:
             _text(warning, "artifact.warning", limit=4096)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "segment_id": self.segment_id,
             "source_utterance_id": self.source_utterance_id,
             "path": self.path,
@@ -673,6 +689,9 @@ class TtsArtifact:
             "warnings": list(self.warnings),
             "fallback_used": self.fallback_used,
         }
+        if self.render_window_end is not None:
+            value["render_window_end"] = self.render_window_end.to_dict()
+        return value
 
 
 @dataclass(frozen=True)
@@ -761,8 +780,13 @@ class TtsDocument:
     provenance: TtsProvenance
     failures: tuple[TtsFailure, ...] = ()
     warnings: tuple[str, ...] = ()
+    schema_version: int = TTS_CONTRACT_VERSION
 
     def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version not in {1, 2}:
+            raise TtsError("INVALID_DOCUMENT", "unsupported TTS document version")
+        if any((artifact.render_window_end is not None) != (self.schema_version == 2) for artifact in self.artifacts):
+            raise TtsError("INVALID_DOCUMENT", "TTS document version disagrees with render windows")
         if self.target_language != TARGET_LANGUAGE:
             raise TtsError("UNSUPPORTED_TARGET", "TTS v1 targets Vietnamese (vi)")
         if not self.source_segment_ids or len(set(self.source_segment_ids)) != len(self.source_segment_ids):
@@ -774,7 +798,7 @@ class TtsDocument:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": TTS_CONTRACT_VERSION,
+            "schema_version": self.schema_version,
             "kind": "tts_document",
             "source_kind": "translation",
             "target_language": self.target_language,
@@ -841,7 +865,7 @@ def validate_tts_document(value: Mapping[str, Any]) -> None:
         "document",
         {"schema_version", "kind", "source_kind", "target_language", "source_segment_ids", "artifacts", "chunks", "provenance", "failures", "warnings"},
     )
-    if type(value["schema_version"]) is not int or value["schema_version"] != TTS_CONTRACT_VERSION or value["kind"] != "tts_document" or value["source_kind"] != "translation" or value["target_language"] != TARGET_LANGUAGE:
+    if type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2} or value["kind"] != "tts_document" or value["source_kind"] != "translation" or value["target_language"] != TARGET_LANGUAGE:
         raise TtsError("INVALID_DOCUMENT", "TTS document discriminator/version is unsupported")
     if type(value["source_segment_ids"]) is not list or not value["source_segment_ids"]:
         raise TtsError("INVALID_DOCUMENT", "source_segment_ids must be a non-empty array")
@@ -874,7 +898,7 @@ def validate_tts_document(value: Mapping[str, Any]) -> None:
         item = _object(
             raw_item,
             f"artifacts[{position}]",
-            {"segment_id", "source_utterance_id", "path", "content_hash", "format", "sample_rate", "channels", "bits_per_sample", "frame_count", "slot_start", "slot_end", "actual_end", "fit_mode", "speed_ratio_milli", "metrics", "artifact_hash", "confidence", "warnings", "fallback_used"},
+            {"segment_id", "source_utterance_id", "path", "content_hash", "format", "sample_rate", "channels", "bits_per_sample", "frame_count", "slot_start", "slot_end", "actual_end", "fit_mode", "speed_ratio_milli", "metrics", "artifact_hash", "confidence", "warnings", "fallback_used"} | ({"render_window_end"} if value["schema_version"] == 2 else set()),
         )
         segment_id = _text(item["segment_id"], "artifact.segment_id", limit=256)
         if segment_id in artifacts or segment_id not in source_id_set:
@@ -909,6 +933,7 @@ def validate_tts_document(value: Mapping[str, Any]) -> None:
                 _confidence(item["confidence"], "artifact.confidence"),
                 tuple(item["warnings"]),
                 item["fallback_used"],
+                _parse_point(item["render_window_end"], f"artifacts[{position}].render_window_end") if value["schema_version"] == 2 else None,
             )
         except TtsError:
             raise
@@ -1171,6 +1196,16 @@ class LocalTtsAdapter:
             if len(item.normalized_text or "") > self.config.max_text_chars:
                 raise TtsError("TEXT_TOO_LONG", f"TTS segment {item.segment_id} exceeds the configured text limit")
         ordered = tuple(sorted(values, key=lambda item: (item.start.ticks, item.end.ticks, item.segment_id)))
+        with_windows = tuple(item.render_window_end is not None for item in values)
+        if any(with_windows) and not all(with_windows):
+            raise TtsError("INVALID_RENDER_WINDOW", "one document cannot mix implicit and explicit render windows")
+        prior_end = None
+        for index, item in enumerate(ordered):
+            if item.render_window_end is not None and item.render_window_end.ticks > item.end.ticks:
+                if ((prior_end is not None and item.start.ticks < prior_end)
+                        or (index + 1 < len(ordered) and item.render_window_end.ticks > ordered[index + 1].start.ticks)):
+                    raise TtsError("INVALID_RENDER_WINDOW", "render extension overlaps another source utterance")
+            prior_end = item.end.ticks if prior_end is None else max(prior_end, item.end.ticks)
         source_ids = tuple(item.segment_id for item in ordered)
         try:
             capabilities = self.engine.capabilities()
@@ -1254,7 +1289,7 @@ class LocalTtsAdapter:
                 hardware_profile="mixed",
                 fallback_reason="document contains primary and fallback segment results; see per-segment failures",
             )
-        document = TtsDocument(TARGET_LANGUAGE, source_ids, tuple(artifacts), tuple(chunks), selected_provenance, tuple(failures), tuple(dict.fromkeys(warnings)))
+        document = TtsDocument(TARGET_LANGUAGE, source_ids, tuple(artifacts), tuple(chunks), selected_provenance, tuple(failures), tuple(dict.fromkeys(warnings)), 2 if all(with_windows) else 1)
         validate_tts_document(document.to_dict())
         if successful == 0:
             raise TtsStageError(document)
@@ -1302,12 +1337,14 @@ class LocalTtsAdapter:
                     and checkpoint.artifact.actual_end == checked_end
                     and checkpoint.artifact.slot_start == segment.start
                     and checkpoint.artifact.slot_end == segment.end
+                    and checkpoint.artifact.render_window_end == segment.render_window_end
                     and checkpoint.artifact.fit_mode == checked_synthesis.fit_mode
                     and checkpoint.artifact.speed_ratio_milli == checked_synthesis.speed_ratio_milli
                     and checkpoint.artifact.content_hash == checked_metrics.content_hash
                 )
                 if descriptor_matches:
-                    return checkpoint.artifact, failures, checkpoint.artifact.fallback_used, True, 1, ("reused TTS checkpoint for " + segment.segment_id,)
+                    retained_warnings = checkpoint.artifact.warnings if segment.render_window_end is not None else ()
+                    return checkpoint.artifact, failures, checkpoint.artifact.fallback_used, True, 1, retained_warnings + ("reused TTS checkpoint for " + segment.segment_id,)
             except (OSError, TtsError):
                 pass
         primary_result, primary_errors, attempts = self._invoke(self.engine, request, capability_error, capabilities)
@@ -1348,8 +1385,10 @@ class LocalTtsAdapter:
             return None, failures, used_fallback, False, max(1, attempts), ()
         artifact_hash = self._artifact_hash(segment, metrics.content_hash, request_id=request.request_id)
         warnings = tuple(synthesis.warnings)
+        if segment.render_window_end is not None and actual_end.ticks > segment.end.ticks:
+            warnings += ("TTS_INTERCUE_GAP_USED: " + segment.segment_id + "; source slot preserved, dubbing extends into an unverified inter-cue gap",)
         try:
-            artifact = TtsArtifact(segment.segment_id, segment.source_utterance_id, str(artifact_path), metrics.content_hash, "wav", sample_rate, channels, 16, metrics.frame_count, segment.start, segment.end, actual_end, synthesis.fit_mode, synthesis.speed_ratio_milli, metrics, artifact_hash, segment.confidence, warnings, used_fallback)
+            artifact = TtsArtifact(segment.segment_id, segment.source_utterance_id, str(artifact_path), metrics.content_hash, "wav", sample_rate, channels, 16, metrics.frame_count, segment.start, segment.end, actual_end, synthesis.fit_mode, synthesis.speed_ratio_milli, metrics, artifact_hash, segment.confidence, warnings, used_fallback, segment.render_window_end)
         except TtsError as error:
             failures.append(TtsFailure.from_error(error, segment_id=segment.segment_id, fallback_used=used_fallback))
             return None, failures, used_fallback, False, max(1, attempts), ()
@@ -1409,14 +1448,17 @@ class LocalTtsAdapter:
             raise TtsError("AUDIO_METADATA_MISMATCH", "WAV header metadata differs from requested profile")
         target_ticks = segment.end.ticks - segment.start.ticks
         actual_ticks = _ceil_div(metrics.frame_count * segment.start.time_base.denominator, sample_rate * segment.start.time_base.numerator)
-        if abs(actual_ticks - target_ticks) > self.config.max_duration_error_ticks:
+        window_ticks = None if segment.render_window_end is None else segment.render_window_end.ticks - segment.start.ticks
+        if (abs(actual_ticks - target_ticks) > self.config.max_duration_error_ticks if window_ticks is None
+                else actual_ticks < target_ticks - self.config.max_duration_error_ticks or actual_ticks > window_ticks):
             raise TtsError("AUDIO_DURATION_MISMATCH", f"audio duration {actual_ticks} ticks differs from target {target_ticks}")
         if synthesis.fit_mode == "speed_adjusted" and not (self.config.min_speed_ratio_milli <= synthesis.speed_ratio_milli <= self.config.max_speed_ratio_milli):
             raise TtsError("DURATION_FIT_REQUIRED", "engine speed adjustment exceeds safe duration-fit bounds")
         return synthesis, metrics, sample_rate, channels
 
     def _request_id(self, segment: TtsInput, input_hash: str) -> str:
-        return "tts-" + sha256(f"{input_hash}|{self.config.content_hash()}|{self.voice.content_hash()}|{segment.segment_id}|{segment.start.ticks}:{segment.end.ticks}".encode("utf-8")).hexdigest()[:32]
+        window = "" if segment.render_window_end is None else "|render-window-v2:" + str(segment.render_window_end.ticks)
+        return "tts-" + sha256((f"{input_hash}|{self.config.content_hash()}|{self.voice.content_hash()}|{segment.segment_id}|{segment.start.ticks}:{segment.end.ticks}" + window).encode("utf-8")).hexdigest()[:32]
 
     def _actual_end(self, segment: TtsInput, frame_count: int, sample_rate: int) -> TimePoint:
         actual_ticks = _ceil_div(frame_count * segment.start.time_base.denominator, sample_rate * segment.start.time_base.numerator)

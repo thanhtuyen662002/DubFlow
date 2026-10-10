@@ -40,6 +40,9 @@ from .tts_checkpoints import TtsCheckpointStore
 
 
 BASE_TIME = TimeBase(1, 1000)
+DUBBING_WINDOW_RECIPE = "source-intercue-postroll-2000ms-gap120ms-v1"
+MAX_POSTROLL_MS = 2000
+NEXT_CUE_GUARD_MS = 120
 
 
 def tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
@@ -89,6 +92,7 @@ class B2AudioResult:
     tts_document: TtsDocument
     mix_document: MixDocument
     voice: VoiceProfile
+    placement_document_path: Path | None = None
 
     @property
     def final_mix_path(self) -> Path:
@@ -156,6 +160,47 @@ def _cue_mapping(cue: Any) -> dict[str, Any]:
         "translated_text": translated,
         "confidence": confidence,
     }
+
+
+def _dubbing_windows(mappings: Sequence[Mapping[str, Any]], source_end: int) -> tuple[dict[str, Any], ...]:
+    """Derive render limits without changing canonical source cue intervals.
+
+    The gaps are between recognized cues, not certified source silence. An
+    overlap on either side keeps the original slot. Planning is O(n log n).
+    """
+    ordered = sorted(mappings, key=lambda item: (item["start_ms"], item["end_ms"], item["cue_id"]))
+    if len({item["cue_id"] for item in ordered}) != len(ordered):
+        raise B2AudioError("TTS_INPUT_INVALID", "source cue identity is duplicated")
+    result = []
+    prior_end = -1
+    for index, item in enumerate(ordered):
+        start, end = item["start_ms"], item["end_ms"]
+        if not 0 <= start < end <= source_end:
+            raise B2AudioError("TTS_INPUT_INVALID", "source cue is outside the decoded/media extent")
+        next_start = ordered[index + 1]["start_ms"] if index + 1 < len(ordered) else None
+        overlaps = start < prior_end or (next_start is not None and next_start < end)
+        window_end = end
+        if not overlaps:
+            limit = source_end if next_start is None else next_start - NEXT_CUE_GUARD_MS
+            window_end = max(end, min(end + MAX_POSTROLL_MS, limit, source_end))
+        result.append({"cue_id": item["cue_id"], "slot_start": TimePoint(start, BASE_TIME).to_dict(),
+            "slot_end": TimePoint(end, BASE_TIME).to_dict(), "render_window_end": TimePoint(window_end, BASE_TIME).to_dict(),
+            "next_source_start": None if next_start is None else TimePoint(next_start, BASE_TIME).to_dict(),
+            "overlaps_source": overlaps, "confidence": item["confidence"]})
+        prior_end = max(prior_end, end)
+    return tuple(result)
+
+
+def _media_extent_ms(probe: MediaProbeResult, decoded_end: int) -> int:
+    video = getattr(probe, "video", None)
+    base, ticks = getattr(video, "time_base", None), getattr(video, "duration_ticks", None)
+    if base is None or ticks is None:
+        base, ticks = CANONICAL_TIME_BASE, getattr(probe, "duration_ticks", None)
+    if base is not None and type(ticks) is int and ticks > 0:
+        duration = ticks * base.numerator * 1000 // base.denominator
+        if duration > 0:
+            return min(decoded_end, duration)
+    return decoded_end
 
 
 def run_b2_audio(
@@ -236,6 +281,19 @@ def run_b2_audio(
         )
         mappings = tuple(_cue_mapping(cue) for cue in translated_cues)
         input_hash = _input_hash(mappings)
+        placement_document_path = None
+        windows_by_id: dict[str, dict[str, Any]] = {}
+        if backend_id == vieneu.ENGINE_ID:
+            windows = _dubbing_windows(mappings, _media_extent_ms(source_probe, source_end_ticks))
+            placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": DUBBING_WINDOW_RECIPE,
+                "time_base": BASE_TIME.to_dict(), "source_end": TimePoint(_media_extent_ms(source_probe, source_end_ticks), BASE_TIME).to_dict(),
+                "source_audio_sha256": "sha256:" + _digest(source_audio_path), "canonical_cue_input_hash": input_hash,
+                "gap_evidence": "recognized-source-cue-intervals;silence-not-certified", "windows": windows}
+            placement_bytes = (json.dumps(placement, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+            input_hash = "sha256:" + sha256(placement_bytes).hexdigest()
+            placement_document_path = root / "dubbing_placement.json"
+            _atomic_bytes(placement_document_path, placement_bytes)
+            windows_by_id = {item["cue_id"]: item for item in windows}
         provenance = TtsProvenance(
             "dubflow-production-tts",
             producer_version,
@@ -263,6 +321,7 @@ def run_b2_audio(
                 TimePoint(item["end_ms"], BASE_TIME),
                 source_language=_source_language(source_language),
                 confidence=item["confidence"],
+                render_window_end=TimePoint(int(windows_by_id[item["cue_id"]]["render_window_end"]["ticks"]), BASE_TIME) if windows_by_id else None,
             )
             for item in mappings
         )
@@ -348,7 +407,7 @@ def run_b2_audio(
         _atomic_bytes(mix_document_path, (mix_document.to_json() + "\n").encode("utf-8"))
     except OSError as error:
         raise B2AudioError("MIX_ARTIFACT_WRITE_FAILED", str(error), retryable=True) from error
-    return B2AudioResult(source_audio_path, tts_document_path, mix_document_path, tts_document, mix_document, voice)
+    return B2AudioResult(source_audio_path, tts_document_path, mix_document_path, tts_document, mix_document, voice, placement_document_path)
 
 
 __all__ = ["B2AudioError", "B2AudioResult", "BASE_TIME", "run_b2_audio", "mix_recipe_identity"]

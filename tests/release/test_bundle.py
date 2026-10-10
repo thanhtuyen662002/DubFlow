@@ -523,20 +523,37 @@ class VoiceVersionQualificationTests(unittest.TestCase):
             mix = {**artifacts, "provenance": provenance}
             mix_path.write_text(json.dumps(mix))
             tts_root = root / "tts"
-            (tts_root / "checkpoints").mkdir(parents=True)
-            tts_wav = tts_root / ("tts-" + "1" * 32 + ".wav")
-            tts_wav.write_bytes((editable / "dialogue_stem.wav").read_bytes())
-            tts_artifact = {"segment_id": "cue-1", "path": str(tts_wav),
-                            "content_hash": artifacts["dialogue_stem"]["content_hash"]}
+            from dataclasses import replace
+            from engine.dubflow.asr import TimeBase, TimePoint
+            from engine.dubflow.tts import LocalTtsAdapter, TtsConfig, TtsInput, TtsProvenance, DeterministicFixtureEngine, approved_default_voice
+            from engine.dubflow.worker.tts_checkpoints import TtsCheckpointStore
+            from engine.dubflow.worker.b2_audio import _dubbing_windows, _input_hash
+            canonical = [{"cue_id": "cue-1", "start_ms": 0, "end_ms": 1000, "source_text": "Hello", "translated_text": "Xin chào", "confidence": 1.0}]
+            base = TimeBase(1,1000)
+            placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": "source-intercue-postroll-2000ms-gap120ms-v1",
+                "time_base": base.to_dict(), "source_end": TimePoint(1000,base).to_dict(),
+                "source_audio_sha256": artifacts["original_audio"]["content_hash"], "canonical_cue_input_hash": _input_hash(canonical),
+                "gap_evidence": "recognized-source-cue-intervals;silence-not-certified", "windows": _dubbing_windows(canonical,1000)}
+            placement_bytes = (json.dumps(placement,ensure_ascii=False,sort_keys=True,separators=(",",":"))+"\n").encode()
+            placement_digest = "sha256:" + hashlib.sha256(placement_bytes).hexdigest()
+            (root/'dubbing_placement.json').write_bytes(placement_bytes)
+            (editable/'dubbing_placement.json').write_bytes(placement_bytes)
+            config = TtsConfig(max_attempts=1)
+            voice = replace(approved_default_voice(),voice_id='vi-truc-ly-vieneu3-v1')
+            tts_provenance = TtsProvenance('qualification-fixture','3.3.0','vieneu-v3-turbo-onnx-v1','fixture',
+                'timeline-v1',config.content_hash(),placement_digest,voice.model_id,voice.model_version,voice.model_hash,
+                voice.content_hash(),voice.voice_id,voice.voice_version,config.requested_profile,'fixture',config.resource)
+            cue = TtsInput('cue-1','cue-1','Xin chào',TimePoint(0,base),TimePoint(1000,base),render_window_end=TimePoint(1000,base))
+            store = TtsCheckpointStore(tts_root,identity='2'*64)
+            speech = LocalTtsAdapter(DeterministicFixtureEngine(),config=config,voice=voice,provenance=tts_provenance,
+                output_dir=tts_root).synthesize((cue,),input_hash=placement_digest,on_checkpoint=store.commit)
+            tts_artifact = speech.artifacts[0].to_dict()
             record = tts_root / "checkpoints" / (hashlib.sha256(b"cue-1").hexdigest() + ".json")
-            metadata_hash = hashlib.sha256(json.dumps(tts_artifact, ensure_ascii=False,
-                sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-            record.write_text(json.dumps({"schema_version": 1, "identity": "2" * 64,
-                "artifact": tts_artifact, "artifact_record_hash": metadata_hash}))
-            tts_path.write_text(json.dumps({"provenance": {"backend_id": "vieneu-v3-turbo-onnx-v1", "producer_version": "3.2.0",
-                "voice_id": "vi-truc-ly-vieneu3-v1"}, "artifacts": [tts_artifact]}))
+            tts_path.write_bytes(speech.to_bytes())
             manifest = {"audio": {"mode": "dubbed", "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
-                                   "mix_document": str(mix_path), "mix_provenance": provenance}}
+                                   "mix_document": str(mix_path), "mix_provenance": provenance,
+                                   "dubbing_placement": {"schema_version": 1, "path": str(root/'dubbing_placement.json'), "sha256": placement_digest}},
+                        "cues": canonical,"warnings": []}
             (root / "job_manifest.json").write_text(json.dumps(manifest))
             probe = {"streams": [{"codec_type": "video", "codec_name": "h264"}, {"codec_type": "audio", "codec_name": "aac", "channels": 2}],
                      "format": {"duration": "3"}}

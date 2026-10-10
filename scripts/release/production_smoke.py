@@ -248,6 +248,78 @@ def _verify_corrupt_failure(log: str, job_id: str) -> dict[str, Any]:
     return {key: failure[key] for key in ("code", "attempt", "retryable")}
 
 
+def _verify_dubbing_placement(output_dir: Path, manifest: dict, speech: dict) -> None:
+    from engine.dubflow.tts import validate_tts_document
+    try:
+        validate_tts_document(speech)
+        if speech["schema_version"] != 2:
+            raise ValueError("current producer requires TTS2")
+        metadata = manifest["audio"]["dubbing_placement"]
+        if set(metadata) != {"schema_version", "path", "sha256"} or type(metadata["schema_version"]) is not int or metadata["schema_version"] != 1:
+            raise ValueError("invalid placement descriptor")
+        path = Path(metadata["path"])
+        if path.parent != Path(manifest["audio"]["tts_document"]).parent or path.name != "dubbing_placement.json":
+            raise ValueError("placement escaped its generation")
+        raw = path.read_bytes()
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        placement = _json(path)
+        if raw != (json.dumps(placement, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode():
+            raise ValueError("noncanonical placement bytes")
+        fields = {"schema_version", "kind", "recipe", "time_base", "source_end", "source_audio_sha256", "canonical_cue_input_hash", "gap_evidence", "windows"}
+        if (set(placement) != fields or type(placement["schema_version"]) is not int or placement["schema_version"] != 1
+                or placement["kind"] != "dubbing_placement" or placement["recipe"] != "source-intercue-postroll-2000ms-gap120ms-v1"
+                or placement["gap_evidence"] != "recognized-source-cue-intervals;silence-not-certified"
+                or metadata["sha256"] != digest or speech["provenance"]["input_hash"] != digest):
+            raise ValueError("placement recipe/source binding differs")
+        from engine.dubflow.asr import TimeBase, TimePoint
+        base = TimeBase(1, 1000)
+        if placement["time_base"] != base.to_dict(): raise ValueError("placement time base differs")
+        source_end = int(placement["source_end"]["ticks"])
+        if source_end <= 0 or placement["source_end"] != TimePoint(source_end, base).to_dict():
+            raise ValueError("noncanonical source extent")
+        source_pcm = output_dir / "editable/source_audio.wav"
+        with source_pcm.open("rb") as stream:
+            if "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest() != placement["source_audio_sha256"]:
+                raise ValueError("placement decoded source hash differs")
+        with wave.open(str(source_pcm)) as reader:
+            if source_end > (reader.getnframes() * 1000 + reader.getframerate() - 1) // reader.getframerate():
+                raise ValueError("placement exceeds decoded audio")
+        canonical = [{key: cue[key] for key in ("cue_id", "start_ms", "end_ms", "source_text", "translated_text", "confidence")} for cue in manifest["cues"]]
+        cue_hash = "sha256:" + hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if cue_hash != placement["canonical_cue_input_hash"]: raise ValueError("source cue identity was rewritten")
+        ordered = sorted(canonical, key=lambda item:(item["start_ms"],item["end_ms"],item["cue_id"]))
+        if len(ordered) != len(placement["windows"]): raise ValueError("placement omitted source cues")
+        windows = {}; prior_end = -1
+        for index, (cue, window) in enumerate(zip(ordered, placement["windows"])):
+            if set(window) != {"cue_id", "slot_start", "slot_end", "render_window_end", "next_source_start", "overlaps_source", "confidence"}:
+                raise ValueError("unknown or missing placement fields")
+            start, end = cue["start_ms"], cue["end_ms"]
+            next_start = ordered[index + 1]["start_ms"] if index + 1 < len(ordered) else None
+            limit = int(window["render_window_end"]["ticks"])
+            overlaps = start < prior_end or (next_start is not None and next_start < end)
+            if (window["cue_id"] != cue["cue_id"] or window["slot_start"] != TimePoint(start,base).to_dict()
+                    or window["slot_end"] != TimePoint(end,base).to_dict() or window["render_window_end"] != TimePoint(limit,base).to_dict()
+                    or not 0 <= start < end <= limit <= source_end or limit-end > 2000
+                    or type(window["overlaps_source"]) is not bool or window["overlaps_source"] != overlaps
+                    or window["confidence"] != cue["confidence"]
+                    or window["next_source_start"] != (None if next_start is None else TimePoint(next_start,base).to_dict())
+                    or (overlaps and limit != end) or (limit > end and next_start is not None and limit > next_start-120)):
+                raise ValueError("render limit crosses source/neighbor bounds")
+            if cue["cue_id"] in windows: raise ValueError("duplicate placement identity")
+            windows[cue["cue_id"]] = window; prior_end = max(prior_end,end)
+        for artifact in speech["artifacts"]:
+            window = windows[artifact["segment_id"]]
+            for key in ("slot_start", "slot_end", "render_window_end"):
+                if artifact[key] != window[key]: raise ValueError("TTS source/render slot differs")
+            if int(artifact["actual_end"]["ticks"]) > int(window["slot_end"]["ticks"]):
+                if not any(item.startswith("TTS_INTERCUE_GAP_USED: " + artifact["segment_id"] + ";") for item in manifest["warnings"]):
+                    raise ValueError("used postroll was hidden")
+        if (output_dir/'editable/dubbing_placement.json').read_bytes() != raw:
+            raise ValueError("editable placement differs")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, wave.Error) as error:
+        raise SmokeError("packaged dubbing placement/TTS2 verification failed: " + str(error)) from error
+
+
 def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int, *, expect_dubbing: bool = False, expect_voice_id: str | None = None, expect_audio: bool = True) -> dict[str, Any]:
     final = output_dir / "final_vi.mp4"
     required = [
@@ -277,10 +349,11 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
             raise SmokeError(f"B2 manifest does not prove the app-owned voice path: {audio!r}")
         tts_document = _json(Path(audio["tts_document"]))
         provenance = tts_document.get("provenance", {})
-        if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.2.0":
+        if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.3.0":
             raise SmokeError(f"B2 TTS receipt differs from the selected native producer: {provenance!r}")
         if expect_voice_id is not None and provenance.get("voice_id") != expect_voice_id:
             raise SmokeError("packaged TTS did not preserve the explicitly selected preset")
+        _verify_dubbing_placement(output_dir, manifest, tts_document)
         tts_artifacts = tts_document.get("artifacts")
         if not isinstance(tts_artifacts, list) or not tts_artifacts:
             raise SmokeError("packaged TTS has no committed per-cue artifacts")
@@ -298,7 +371,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
                 checkpoint = json.loads(payload)
                 metadata_hash = hashlib.sha256(json.dumps(artifact, ensure_ascii=False, sort_keys=True,
                     separators=(",", ":"), allow_nan=False).encode()).hexdigest()
-                if (type(checkpoint.get("schema_version")) is not int or checkpoint["schema_version"] != 1 or
+                if (type(checkpoint.get("schema_version")) is not int or checkpoint["schema_version"] != 2 or
                         not re.fullmatch(r"[a-f0-9]{64}", checkpoint.get("identity", "")) or
                         checkpoint.get("artifact") != artifact or checkpoint.get("artifact_record_hash") != metadata_hash):
                     raise ValueError("record differs from TTS artifact")
@@ -894,6 +967,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     for path, label in ((supervisor, "supervisor"), (ffmpeg, "ffmpeg"), (ffprobe, "ffprobe")):
         if not path.is_file():
             raise SmokeError(f"{label} is unavailable: {path}")
+    if args.enable_dubbing:
+        # This standalone controller uses the selected bundle's contract
+        # reader. The native supervisor verifies that same root before output.
+        sys.path.insert(0, os.fspath(root / "app"))
     work_root.mkdir(parents=True, exist_ok=True)
     data_root.mkdir(parents=True, exist_ok=True)
 

@@ -79,14 +79,18 @@ class TtsCheckpointStore:
                 if len(payload) > MAX_RECORD_BYTES:
                     raise ValueError("checkpoint record exceeds bounds")
                 value = json.loads(payload, object_pairs_hook=_unique)
-                if not isinstance(value, dict) or set(value) != {"schema_version", "identity", "artifact", "artifact_record_hash"} or type(value["schema_version"]) is not int or value["schema_version"] != SCHEMA_VERSION or value["identity"] != self.identity:
+                if not isinstance(value, dict) or set(value) != {"schema_version", "identity", "artifact", "artifact_record_hash"} or type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2} or value["identity"] != self.identity:
                     raise ValueError("checkpoint recipe changed or record is invalid")
                 fields = value["artifact"]
                 if value["artifact_record_hash"] != sha256(_encoded(fields)).hexdigest():
                     raise ValueError("checkpoint metadata checksum differs")
                 fields = dict(fields)
+                if ("render_window_end" in fields) != (value["schema_version"] == 2):
+                    raise ValueError("checkpoint artifact version differs")
                 for key in ("slot_start", "slot_end", "actual_end"):
                     fields[key] = _point(fields[key])
+                if "render_window_end" in fields:
+                    fields["render_window_end"] = _point(fields["render_window_end"])
                 fields["metrics"] = AudioMetrics(**fields["metrics"])
                 if not isinstance(fields["warnings"], list):
                     raise ValueError("invalid checkpoint warnings")
@@ -105,7 +109,7 @@ class TtsCheckpointStore:
     def commit(self, checkpoint: TtsCheckpoint) -> None:
         self._audio_path(checkpoint.artifact)
         fields = checkpoint.artifact.to_dict()
-        payload = _encoded({"schema_version": SCHEMA_VERSION, "identity": self.identity, "artifact": fields,
+        payload = _encoded({"schema_version": 2 if checkpoint.artifact.render_window_end is not None else SCHEMA_VERSION, "identity": self.identity, "artifact": fields,
                             "artifact_record_hash": sha256(_encoded(fields)).hexdigest()})
         if len(payload) > MAX_RECORD_BYTES:
             raise TtsError("TTS_CHECKPOINT_TOO_LARGE", "per-cue checkpoint exceeds bounds")

@@ -241,6 +241,30 @@ class VieNeuBoundsTests(unittest.TestCase):
 
 
 class MeasuredVieNeuFitTests(unittest.TestCase):
+    def test_explicit_window_uses_only_natural_tail_and_keeps_safe_rate_refusal(self):
+        import io
+        engine = VieNeuVietnameseTtsEngine(SimpleNamespace(sample_rate=48000))
+        from dataclasses import replace
+        cue = TtsInput("gap", "gap", "Xin chào", TimePoint(0, TimeBase(1, 48000)),
+            TimePoint(48000, TimeBase(1, 48000)), render_window_end=TimePoint(96000, TimeBase(1, 48000)))
+        speeds = []
+        def generate(text, sid=0, speed=1.):
+            speeds.append(speed)
+            return SimpleNamespace(samples=array("f", [0.1]) * 72000, sample_rate=48000, warnings=())
+        engine._tts = SimpleNamespace(generate=generate)
+        request = TtsRequest("gap", cue, approved_default_voice(), TtsConfig(sample_rate=48000),
+            "sha256:" + "a" * 64, 0, 48000)
+        with patch.object(engine, "healthcheck", return_value=EngineHealth(True)):
+            result = engine.synthesize(request)
+            with wave.open(io.BytesIO(result.audio_bytes)) as pcm:
+                self.assertEqual(pcm.getnframes(), 72000)  # no full-window padding or tail cut
+            self.assertEqual(result.speed_ratio_milli, 1000)
+            self.assertEqual(speeds, [1., 1.])  # natural child cache is reused
+            speeds.clear()
+            with self.assertRaisesRegex(TtsError, "safe speaking rate"):
+                engine.synthesize(replace(request, segment=replace(cue, render_window_end=TimePoint(50000, TimeBase(1, 48000)))))
+            self.assertEqual(speeds, [1., 1.])
+
     def synthesize(self, frames, *, maximum=1300):
         speeds = []
 

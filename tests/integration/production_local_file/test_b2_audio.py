@@ -10,7 +10,7 @@ from unittest.mock import patch
 import wave
 from types import SimpleNamespace
 
-from engine.dubflow.worker.b2_audio import B2AudioError, run_b2_audio, tts_recipe_identity, mix_recipe_identity
+from engine.dubflow.worker.b2_audio import B2AudioError, run_b2_audio, tts_recipe_identity, mix_recipe_identity, _dubbing_windows
 from engine.dubflow.mix import streaming
 from engine.dubflow.media import FfmpegMediaAdapter, Rational
 from engine.dubflow.tts.adapter import TtsError
@@ -40,6 +40,18 @@ class HermeticDecodedAudioAdapter:
 
 
 class ProductionLocalFileB2Tests(unittest.TestCase):
+    def test_source_window_bounds_keep_nested_overlaps_next_cue_and_media_immutable(self):
+        mappings = [{"cue_id": identifier, "start_ms": start, "end_ms": end, "confidence": .4}
+            for identifier, start, end in (("first", 0, 500), ("second", 1700, 1800),
+                ("outer", 4000, 6000), ("inner", 4500, 4600), ("last", 8000, 9000))]
+        before = [dict(item) for item in mappings]
+        windows = _dubbing_windows(mappings, 9500)
+        self.assertEqual([int(item["render_window_end"]["ticks"]) for item in windows], [1580, 3800, 6000, 4600, 9500])
+        self.assertEqual([item["overlaps_source"] for item in windows], [False, False, True, True, False])
+        self.assertEqual(mappings, before)
+        for invalid in (mappings + [mappings[0]], [{**mappings[0], "end_ms": 9501}]):
+            with self.assertRaises(B2AudioError): _dubbing_windows(invalid, 9500)
+
     def test_stereo_source_survives_mix_with_centered_mono_dialogue(self):
         with TemporaryDirectory() as directory, patch(
             "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",
@@ -184,7 +196,8 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             self.assertEqual(bootstrap.call_args.kwargs["voice_id"], "vi-truc-ly-vieneu3-v1")
             backend.assert_called_once_with(pack, ffmpeg_path=HermeticDecodedAudioAdapter.ffmpeg_path)
             self.assertEqual(result.tts_document.provenance.backend_id, "vieneu-v3-turbo-onnx-v1")
-            self.assertEqual(result.tts_document.provenance.producer_version, "3.2.0")
+            self.assertEqual(result.tts_document.provenance.producer_version, "3.3.0")
+            self.assertEqual(result.tts_document.schema_version, 2)
             self.assertEqual(result.tts_document.provenance.model_id, "dubflow-fixture-vi")
             self.assertEqual(result.mix_document.provenance.backend_id, "pcm-stream-duck-v1")
             self.assertEqual(result.mix_document.provenance.producer_version, "2.0.1")
