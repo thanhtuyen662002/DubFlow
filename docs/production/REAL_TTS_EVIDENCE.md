@@ -563,3 +563,30 @@ That run exposed a misleading transient worker progress message claiming
 original audio on a no-audio source; it now explicitly reports no source audio
 while continuing the usable Vietsub export. This message change requires fresh
 worker/native source evidence and does not alter B1 media/QC behavior.
+
+## Observed EOS recovery and prepared producer3.2.0 — 2026-10-10
+
+Actual installed766 licensed Sintel completed8/9 speech cues, with an immutable
+50-file completed replay. The retained Chinese/Taiwanese vlogger completed
+196/272, with76 refusals (60 duration-fit,16 missing-EOS) and an immutable
+689-file replay. These are partial CLI exports with full final AV decode,
+not native GUI, human film quality or complete production acceptance.
+
+A separate private actual CPU seed diagnostic reproduced all17 missing-EOS
+intervals using seed20261007 and tried preselected seed20261008, keeping all
+frame/context bounds. The second seed reached EOS on9/17 intervals, comprising
+4 distinct texts and6 repetitions of `Dịch lời là:`. All9 natural durations
+fit the advisory1.3 limit; this was not measured tempo-fit qualification.
+Back-ASR differs on7/9, and Sintel `Ngồi yên.` remains refused. Three authored
+controls reached EOS on both seeds. Actual40 syntheses plus back-ASR took
+56.422s. Report SHA256:
+`0faefe59153d3a7ebdbe023949e7ac2b9b6e431aec21e34cbbe1795e9f38dab3`.
+The probe used verified installed766 own Python/SDK/model bytes, with a private
+seed override. It does not qualify the changed product source.
+
+Prepared3.2.0 implements at most one recorded changed-seed decode after missing
+EOS; it retains primary success and all frame/text/voice/duration caps. ADR0016
+describes recipe identity, internal attempt semantics, private warning and
+coherent rollback. Fresh source-bound real CPU/tempo and exact-head four-lane
+native checks must rerun; existing766 greens are historical. No default voice,
+translation, semantic coverage, human listening or full166/175 gate is promoted.

@@ -12,7 +12,7 @@ import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 import wave
 
 from engine.dubflow.asr import TimeBase, TimePoint
@@ -137,11 +137,12 @@ class VieNeuPackTests(unittest.TestCase):
 
 
 class VieNeuBoundsTests(unittest.TestCase):
-    def test_no_eos_is_rejected_without_waveform_publication_or_hidden_retry(self):
+    def test_no_eos_is_rejected_after_one_changed_seed_without_publication(self):
         model = NativeModel.__new__(NativeModel)
         model.last_text = None
         model.last_samples = None
-        model.np = SimpleNamespace(random=SimpleNamespace(seed=lambda _: None))
+        seeds = []
+        model.np = SimpleNamespace(random=SimpleNamespace(seed=seeds.append))
         model.phonemize = lambda _: "phones"
         model.codes, model.speaker = None, None
         calls = []
@@ -149,7 +150,75 @@ class VieNeuBoundsTests(unittest.TestCase):
         with self.assertRaisesRegex(NativeCueRejected, "before end-of-speech") as rejected:
             model.generate({"text": "Xin chào", "speed": 1.0, "sequence": 1})
         self.assertEqual(rejected.exception.code, "TTS_SPEECH_INCOMPLETE")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(seeds, [20261007, 20261008])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], calls[1])
+        self.assertEqual(calls[0]["max_new_frames"], 300)
+        self.assertTrue(calls[0]["frame_cap"])
+        self.assertIsNone(model.last_samples)
+
+    def decode_model(self, outcomes):
+        model = NativeModel.__new__(NativeModel)
+        model.last_text, model.last_samples, model.last_warnings = None, None, ()
+        model.codes, model.speaker = None, None
+        model.phonemize = lambda _: "phones"
+        pcm = MagicMock()
+        pcm.reshape.return_value = pcm
+        pcm.astype.return_value = pcm
+        pcm.tobytes.return_value = b"\x00\x00\x80\x3e"
+        pcm.__len__.return_value = 1
+        model.np = SimpleNamespace(random=SimpleNamespace(seed=Mock()), float32="float32",
+            asarray=Mock(return_value=pcm), isfinite=Mock(return_value=SimpleNamespace(all=lambda: True)))
+        def infer(**kwargs):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            model.engine.ended = outcome
+            return pcm if outcome else [99.0]  # Incomplete PCM must never reach validation/publication.
+        model.engine = SimpleNamespace(ended=True, tokenizer=SimpleNamespace(encode=lambda _: SimpleNamespace(ids=[1])), infer=Mock(side_effect=infer))
+        return model, pcm
+
+    def test_reseed_caches_only_complete_pcm_and_preserves_warning_on_reuse(self):
+        model, pcm = self.decode_model([False, True])
+        with TemporaryDirectory() as directory:
+            model.output = Path(directory)
+            first = model.generate({"text":"Làm gì vậy?", "speed":1., "sequence":1})
+            again = model.generate({"text":"Làm gì vậy?", "speed":1., "sequence":2})
+            self.assertEqual(first["warnings"], ["TTS_EOS_RESEEDED"])
+            self.assertEqual(again["warnings"], first["warnings"])
+            self.assertEqual(first["sha256"], again["sha256"])
+            self.assertEqual(model.engine.infer.call_count, 2)
+            model.np.asarray.assert_called_once_with(pcm, dtype="float32")
+            self.assertIs(model.last_samples, pcm)
+            self.assertEqual(model.np.random.seed.call_args_list[0].args, (20261007,))
+            self.assertEqual(model.np.random.seed.call_args_list[1].args, (20261008,))
+
+    def test_primary_eos_never_regenerates_or_marks_reseed(self):
+        model, pcm = self.decode_model([True])
+        with TemporaryDirectory() as directory:
+            model.output = Path(directory)
+            reply = model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+            self.assertEqual(reply["warnings"], [])
+            model.engine.infer.assert_called_once()
+            model.np.random.seed.assert_called_once_with(20261007)
+
+    def test_runtime_error_is_not_an_eos_retry_or_cached_audio(self):
+        model, _ = self.decode_model([RuntimeError("native session failure")])
+        with self.assertRaisesRegex(RuntimeError, "native session failure"):
+            model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+        model.engine.infer.assert_called_once()
+        model.np.asarray.assert_not_called()
+        self.assertIsNone(model.last_samples)
+
+    def test_invalid_complete_pcm_is_fatal_without_reseed_or_publication(self):
+        model, _ = self.decode_model([True])
+        model.np.isfinite.return_value = SimpleNamespace(all=lambda: False)
+        with TemporaryDirectory() as directory:
+            model.output = Path(directory)
+            with self.assertRaisesRegex(ValueError, "finite size bound"):
+                model.generate({"text":"Xin chào", "speed":1., "sequence":1})
+            self.assertEqual(list(model.output.iterdir()), [])
+        model.engine.infer.assert_called_once()
         self.assertIsNone(model.last_samples)
 
     def test_unsupported_phoneme_context_is_a_cue_refusal_before_inference(self):
@@ -222,6 +291,30 @@ class MeasuredVieNeuFitTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("DUBFLOW_REAL_VIENEU_MODEL_ROOT"), "real pinned VieNeu data not supplied")
 class ActualVieNeuTests(unittest.TestCase):
+    def test_actual_reseed_tempo_cache_and_next_cue_after_bounded_refusal(self):
+        pack, voice = load_vieneu_voice(ROOT, os.environ["DUBFLOW_REAL_VIENEU_MODEL_ROOT"], ROOT / "models/manifests/production-cpu-v1.json")
+        engine = VieNeuVietnameseTtsEngine(pack, ffmpeg_path=os.environ["DUBFLOW_REAL_FFMPEG"])
+        try:
+            health = engine.healthcheck(voice)
+            self.assertTrue(health.ready, health.condition)
+            pid = engine._tts.process.pid
+            natural = engine._tts.generate("Làm gì vậy?", 0, 1.)
+            self.assertEqual(natural.warnings, ("TTS_EOS_RESEEDED",))
+            fitted = engine._tts.generate("Làm gì vậy?", 0, 1.2)
+            self.assertEqual(fitted.warnings, natural.warnings)
+            self.assertLess(len(fitted.samples), len(natural.samples))
+            with self.assertRaises(TtsError) as refusal:
+                engine._tts.generate("Ngồi yên.", 0, 1.)
+            self.assertEqual(refusal.exception.code, "TTS_SPEECH_INCOMPLETE")
+            self.assertFalse(refusal.exception.retryable)
+            following = engine._tts.generate("Xin chào Việt Nam.", 0, 1.)
+            self.assertEqual(following.warnings, ())
+            self.assertGreater(max(abs(value) for value in following.samples), 0.01)
+            self.assertEqual(engine._tts.process.pid, pid)
+            self.assertIsNone(engine._tts.process.poll())
+        finally:
+            engine.close()
+
     def test_native_offline_speech_and_bounded_pitch_preserving_fit(self):
         pack, voice = load_vieneu_voice(ROOT, os.environ["DUBFLOW_REAL_VIENEU_MODEL_ROOT"], ROOT / "models/manifests/production-cpu-v1.json")
         engine = VieNeuVietnameseTtsEngine(pack, ffmpeg_path=os.environ["DUBFLOW_REAL_FFMPEG"])

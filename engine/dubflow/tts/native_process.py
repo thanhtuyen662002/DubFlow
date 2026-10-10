@@ -18,6 +18,7 @@ from .mimic3_native import FRONTEND_ID, MAX_FRAMES
 from .windows_job import WindowsJob
 
 CUE_REJECTION_CODES = {"TTS_SPEECH_INCOMPLETE", "TTS_TEXT_UNSUPPORTED"}
+CUE_SYNTHESIS_WARNINGS = {"TTS_EOS_RESEEDED"}
 
 
 class NativeProcess:
@@ -138,7 +139,11 @@ class NativeProcess:
                 unknown = reply.get("unknown", [])
                 if type(unknown) is not list or len(unknown) > 512 or any(type(value) is not str or len(value) > 128 for value in unknown):
                     raise TtsBackendError("TTS_NATIVE_PROTOCOL_INVALID", "native phoneme warnings differ")
-                return SimpleNamespace(samples=samples, sample_rate=self.sample_rate, warnings=("UNSUPPORTED_PHONEMES: " + ",".join(unknown),) if unknown else ())
+                warnings = reply.get("warnings", [])
+                if type(warnings) is not list or len(warnings) > 1 or any(type(value) is not str or value not in CUE_SYNTHESIS_WARNINGS for value in warnings):
+                    raise TtsBackendError("TTS_NATIVE_PROTOCOL_INVALID", "native synthesis warnings differ")
+                phoneme_warnings = ("UNSUPPORTED_PHONEMES: " + ",".join(unknown),) if unknown else ()
+                return SimpleNamespace(samples=samples, sample_rate=self.sample_rate, warnings=phoneme_warnings + tuple(warnings))
             except TtsBackendError:
                 self.close()
                 raise

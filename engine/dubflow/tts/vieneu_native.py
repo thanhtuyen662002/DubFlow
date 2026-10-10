@@ -17,7 +17,7 @@ import sys
 
 FRONTEND_ID = "vieneu-sea-g2p-preset-v1"
 VERSIONS = {"vieneu": "3.8.3", "sea-g2p": "0.9.1", "onnxruntime": "1.30.0", "numpy": "2.2.6", "tokenizers": "0.23.2"}
-INFERENCE_RECIPE = {"seed": 20261007, "threads": 2, "max_new_frames": 300, "temperature": 0.8, "top_k": 25, "top_p": 0.95, "repetition_penalty": 1.2, "babble_retries": 0, "precision": "fp32", "duration_fit": "app-owned-ffmpeg-atempo-max1.3-measured3-pad5ms"}
+INFERENCE_RECIPE = {"seed": 20261007, "eos_retry_seed": 20261008, "eos_retries": 1, "threads": 2, "max_new_frames": 300, "temperature": 0.8, "top_k": 25, "top_p": 0.95, "repetition_penalty": 1.2, "babble_retries": 0, "precision": "fp32", "duration_fit": "app-owned-ffmpeg-atempo-max1.3-measured3-pad5ms"}
 SOURCE_FILES = {
     "vieneu/_v3_turbo_engine/onnx_runtime_lite.py": "7747ac18fb5b660a810a434461bd8386ba40b0b46d559c07907db0c19414084e",
     "vieneu/_v3_turbo_engine/rep_history.py": "2cfc52f9a860fb53450e5b3b364fa5955fba03acf558195c423b476535104a2b",
@@ -96,6 +96,21 @@ class NativeModel:
         self.engine.babble_retries = 0  # DubFlow owns bounded, condition-changing retries.
         self.last_text = None
         self.last_samples = None
+        self.last_warnings = ()
+
+    def _infer_complete(self, phones):
+        # Each SDK call builds fresh decode/repetition state. Retry only missing
+        # EOS, with one pinned changed seed and identical text/voice/frame caps.
+        for index, seed in enumerate((INFERENCE_RECIPE["seed"], INFERENCE_RECIPE["eos_retry_seed"])):
+            self.np.random.seed(seed)
+            self.engine.ended = False
+            samples = self.engine.infer(phonemes=phones, ref_codes=self.codes, speaker_emb=self.speaker,
+                max_new_frames=INFERENCE_RECIPE["max_new_frames"], frame_cap=True,
+                temperature=INFERENCE_RECIPE["temperature"], top_k=INFERENCE_RECIPE["top_k"],
+                top_p=INFERENCE_RECIPE["top_p"], repetition_penalty=INFERENCE_RECIPE["repetition_penalty"])
+            if self.engine.ended:
+                return samples, ("TTS_EOS_RESEEDED",) if index else ()
+        raise NativeCueRejected("TTS_SPEECH_INCOMPLETE", "speech reached its generation bound before end-of-speech in both pinned seed attempts; output rejected")
 
     def generate(self, request: dict) -> dict:
         text, speed = request["text"], request["speed"]
@@ -107,16 +122,13 @@ class NativeModel:
                 raise NativeCueRejected("TTS_TEXT_UNSUPPORTED", "phoneme sequence exceeds its bound")
             if len(self.engine.tokenizer.encode(phones).ids) > 1024:
                 raise NativeCueRejected("TTS_TEXT_UNSUPPORTED", "phoneme token count exceeds the bounded model context")
-            # Fixed seed is a reproducible recipe, not a cross-platform bit-exact claim.
-            self.np.random.seed(20261007)
-            self.engine.ended = False
-            samples = self.engine.infer(phonemes=phones, ref_codes=self.codes, speaker_emb=self.speaker, max_new_frames=300, frame_cap=True)
-            if not self.engine.ended:
-                raise NativeCueRejected("TTS_SPEECH_INCOMPLETE", "speech reached its generation bound before end-of-speech; output rejected")
+            # Fixed seeds are a reproducible recipe, not cross-platform bit-exactness.
+            samples, warnings = self._infer_complete(phones)
             samples = self.np.asarray(samples, dtype=self.np.float32).reshape(-1)
             if not 0 < len(samples) <= MAX_FRAMES or not self.np.isfinite(samples).all():
                 raise ValueError("native waveform exceeds its finite size bound")
             self.last_text, self.last_samples = text, samples
+            self.last_warnings = warnings
         samples = self.last_samples
         if speed != 1.0:
             if not self.ffmpeg or not Path(self.ffmpeg).is_absolute():
@@ -134,7 +146,7 @@ class NativeModel:
         name = "samples-" + str(request["sequence"]) + ".f32"
         payload = samples.astype("<f4").tobytes()
         (self.output / name).write_bytes(payload)
-        return {"file": name, "frames": len(samples), "sample_rate": 48000, "sha256": hashlib.sha256(payload).hexdigest(), "unknown": []}
+        return {"file": name, "frames": len(samples), "sample_rate": 48000, "sha256": hashlib.sha256(payload).hexdigest(), "unknown": [], "warnings": list(self.last_warnings)}
 
 
 def main():

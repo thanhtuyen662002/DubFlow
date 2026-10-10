@@ -4,6 +4,59 @@
 - Date: 2026-10-07
 - Scope: B2 TTS adapter, model provisioning and provenance. No durable schema change.
 
+## One condition-changing EOS recovery — producer 3.2.0, 2026-10-10
+
+Actual installed766 NgocHuyen speech refused17 film/vlogger intervals at its
+reviewed frame cap. A private CPU diagnostic reproduced all17 with seed20261007.
+The preselected changed seed20261008 reached EOS for9 intervals (4 distinct
+texts, including6 repetitions of the same translation). This is mechanical
+recovery evidence. Back-ASR differs on7 of those9; Sintel `Ngồi yên.` still
+does not reach EOS. Neither seed nor this voice is human quality-approved.
+
+New generations retain seed20261007 first. Only missing EOS permits one fresh
+SDK decode with recipe-pinned `eos_retry_seed:20261008`, `eos_retries:1`.
+Text, phonemes, preset, model, sampling parameters, phoneme/token limits and
+the existing maximum300 plus SDK phoneme-based frame cap are unchanged. SDK
+`babble_retries` remains0. Runtime errors, unsupported input and invalid
+complete PCM do not trigger this recovery. Two missing-EOS results refuse
+the cue and preserve the source-audio fallback; neither incomplete waveform
+is cached or published. A successful primary result is never regenerated.
+
+Successful reseeding returns optional private `warnings:[TTS_EOS_RESEEDED]`.
+The bridge accepts only this bounded known warning; malformed/unreviewed
+warnings terminate the child. Natural PCM and this warning stay together in
+the one-text cache for all tempo passes. Existing TTS artifact warnings retain
+this evidence through the existing document/checkpoint format. Reaching EOS
+does not prove spoken-text coverage or film acting. Worker/adapter `attempt:1`
+counts one synthesis request; the recipe and warning separately record the
+at-most-two internal decodes. It does not consume or invent job retry history.
+
+### Compatibility, versioning and qualification
+
+Producer becomes3.2.0 and the manifest inference dictionary changes. Model
+bytes, preset IDs/versions and licensed inventory are unchanged. Manifest and
+adapter/bridge digests already separate private B2/checkpoint generations;
+old audio cannot satisfy the changed recipe. No public TTS/worker/status
+schema, SQLite, canonical timeline or artifact-format migration is required.
+Old private readers ignore the optional warning; missing warnings retain
+legacy behavior. Shipping still requires a coherent app/runtime/manifest.
+
+Existing job IDs retain their immutable owned runtime/start binding and old
+WAVs, exports and receipts. Use a fresh execution for3.2.0; never replay a766
+job under the new runtime or relabel its metadata. An old manifest is rejected
+by the new loader's exact recipe check. Rollback uses the retained coherent
+old runtime/database; no historic artifact rewrite or database migration.
+New-candidate native qualification requires3.2.0, explicitly refusing a3.1.0
+receipt as proof of the changed producer.
+
+Deterministic regressions cover the finite changed-seed bound, successful
+primary preservation, incomplete/invalid/runtime refusal, cache-warning
+retention and malformed private warning replies. Opt-in real CPU regressions
+exercise observed reseeding, measured tempo cache and following-cue survival.
+All4 exact new HEAD/current-base lanes and native candidate checks remain
+required. Duration rewrite/intelligibility, ASR names/confidence, native GUI,
+film acting, real long-form/batch and full166/175 acceptance stay open.
+
 ## Installer progress observer compatibility — 2026-10-09
 
 Actual local setup840 failed with Windows error5 when a PowerShell diagnostic
@@ -28,7 +81,7 @@ hashes. No durable job/schema/model/timeline migration is introduced. Real
 Windows deny-delete handle tests cover advisory contention and retained pointer
 failure. Full new-candidate installation/GUI and #166 acceptance remain required.
 
-## Private native cue rejection compatibility — 2026-10-09
+## Private native cue rejection compatibility — 3.1.0 history, 2026-10-09
 
 A reviewed VieNeu context/frame bound can refuse one cue while its native model
 remains healthy. The former bridge treated every `ok:false` as process failure,

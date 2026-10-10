@@ -277,7 +277,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
             raise SmokeError(f"B2 manifest does not prove the app-owned voice path: {audio!r}")
         tts_document = _json(Path(audio["tts_document"]))
         provenance = tts_document.get("provenance", {})
-        if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.1.0":
+        if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.2.0":
             raise SmokeError(f"B2 TTS receipt differs from the selected native producer: {provenance!r}")
         if expect_voice_id is not None and provenance.get("voice_id") != expect_voice_id:
             raise SmokeError("packaged TTS did not preserve the explicitly selected preset")

@@ -114,6 +114,36 @@ for line in sys.stdin:
             self.start(code)
         self.assertEqual(failure.exception.code, "TTS_NATIVE_INFERENCE_FAILED")
 
+    def test_optional_reseed_warning_is_preserved_and_malformed_warnings_are_fatal(self):
+        child = """
+import hashlib, json, sys
+from pathlib import Path
+spec = json.loads(sys.stdin.readline())
+print(json.dumps({'schema_version':1,'sequence':0,'ok':True,'frontend':'mimic3-word-blanks-v1'}), flush=True)
+request = json.loads(sys.stdin.readline())
+payload = b'\\x00\\x00\\x80\\x3e' * 10
+name = 'samples-' + str(request['sequence']) + '.f32'
+(Path(spec['output_root']) / name).write_bytes(payload)
+reply = {'schema_version':1,'sequence':request['sequence'],'ok':True,'file':name,'frames':10,'sample_rate':22050,'sha256':hashlib.sha256(payload).hexdigest(),'unknown':[],'warnings':WARNINGS}
+print(json.dumps(reply), flush=True)
+sys.stdin.read()
+"""
+        for warnings in (["TTS_EOS_RESEEDED"], None, True, "TTS_EOS_RESEEDED", [7], ["unreviewed"], ["TTS_EOS_RESEEDED"] * 2):
+            with self.subTest(warnings=warnings):
+                bridge = self.start(child.replace("WARNINGS", repr(warnings)))
+                try:
+                    if warnings == ["TTS_EOS_RESEEDED"]:
+                        speech = bridge.generate("Xin chào", 0, 1.)
+                        self.assertEqual(speech.warnings, ("TTS_EOS_RESEEDED",))
+                        self.assertIsNone(bridge.process.poll())
+                    else:
+                        with self.assertRaises(TtsError) as invalid:
+                            bridge.generate("Xin chào", 0, 1.)
+                        self.assertEqual(invalid.exception.code, "TTS_NATIVE_PROTOCOL_INVALID")
+                        self.assertIsNotNone(bridge.process.poll())
+                finally:
+                    bridge.close()
+
     def test_reviewed_entrypoints_emit_cue_scope_and_serve_next_input(self):
         child = """
 import hashlib, runpy, sys
