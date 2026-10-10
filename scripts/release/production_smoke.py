@@ -534,15 +534,40 @@ def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, wo
         timeout=timeout, enable_dubbing=True, tts_voice_id=voice_id, source_language="vi")
     if killed or no_audio_status is None:
         raise SmokeError("no-audio qualification was unexpectedly interrupted")
-    no_audio_summary = _verify_downgrade_receipt(no_audio_output, no_audio_status, no_audio_id,
-        partial=False, fallback_code="AUDIO_STREAM_MISSING")
-    if (_json(no_audio_output / "qc_report.json").get("source_probe", {}).get("has_audio") is not False or
-            "không có audio" not in no_audio_summary["message"] or "audio gốc" in no_audio_summary["message"]):
-        raise SmokeError("no-audio source lost its explicit limitation or claimed nonexistent original audio")
-    no_audio_summary["output"] = _verify_output(ffprobe, no_audio_output, 18, expect_audio=False)
+    no_audio_summary = _verify_no_audio_dub(ffprobe, no_audio_output, no_audio_status, no_audio_id,
+                                           seconds=18, voice_id=voice_id)
     _run([ffmpeg, "-v", "error", "-i", no_audio_output / "final_vi.mp4", "-f", "null", "-"], timeout=timeout)
     return {"partial_dubbing": partial, "all_cues_refused": fallback_summary, "no_audio_source": no_audio_summary,
             "scope": "actual pinned TTS/content refusal, native status and source-preserving export; authored VI sidecars and generated media"}
+
+
+def _verify_no_audio_dub(ffprobe: Path, output: Path, status: dict[str, Any], job_id: str,
+                         *, seconds: int, voice_id: str) -> dict[str, Any]:
+    value = _require_status(status, "COMPLETED", job_id)
+    qc, manifest = _json(output / "qc_report.json"), _json(output / "job_manifest.json")
+    audio = manifest.get("audio", {})
+    if (manifest.get("job_id") != job_id or qc.get("source_probe", {}).get("has_audio") is not False or
+            qc.get("audio") != audio or audio.get("mode") != "dubbed" or
+            audio.get("source_audio_origin") != "generated-silence" or
+            audio.get("tts_failures") != 0 or audio.get("mix_failures") != 0 or
+            value.get("reason") != "completed"):
+        raise SmokeError("no-audio captions did not produce a verified real dub with explicit silent origin")
+    verified = _verify_output(ffprobe, output, seconds, expect_dubbing=True, expect_voice_id=voice_id, expect_audio=True)
+    with wave.open(str(output / "editable/source_audio.wav"), "rb") as reader:
+        if (reader.getnframes(), reader.getframerate(), reader.getnchannels(), reader.getsampwidth()) != (seconds * 48000, 48000, 2, 2):
+            raise SmokeError("silent bed differs from the source duration or stereo PCM format")
+        while pcm := reader.readframes(16384):
+            if any(pcm):
+                raise SmokeError("no-audio source bed contains invented speech or nonzero samples")
+    with wave.open(str(output / "editable/dialogue_stem.wav"), "rb") as reader:
+        audible = False
+        while pcm := reader.readframes(16384):
+            audible = audible or any(pcm)
+        if not audible:
+            raise SmokeError("no-audio dub exported a silent dialogue stem")
+    return {"reason": value["reason"], "message": value["message"], "source_audio_origin": "generated-silence",
+            "source_frames": seconds * 48000, "dialogue_nonzero": True, "output": verified,
+            "qc_sha256": _file_digest(output / "qc_report.json")}
 
 
 def _job_execution_snapshot(data_root: Path, job_id: str) -> dict[str, Any]:

@@ -15,6 +15,42 @@ import wave
 from scripts.release import production_smoke as smoke
 
 
+class NoAudioDubEvidenceTests(unittest.TestCase):
+    def test_silent_origin_pcm_and_real_dialogue_are_required(self):
+        for defect in (None, "original_origin", "bed_noise", "short_bed", "silent_dialogue", "fallback", "partial"):
+            with self.subTest(defect=defect), TemporaryDirectory(prefix="dubflow-no-audio-evidence-") as directory:
+                root = Path(directory)
+                (root / "editable").mkdir()
+                audio = {"mode": "dubbed", "source_audio_origin": "generated-silence", "tts_failures": 0, "mix_failures": 0}
+                if defect == "original_origin":
+                    audio["source_audio_origin"] = "decoded-source"
+                if defect == "fallback":
+                    audio["mode"] = "original"
+                if defect == "partial":
+                    audio["tts_failures"] = 1
+                qc = {"source_probe": {"has_audio": False}, "audio": audio}
+                (root / "qc_report.json").write_text(json.dumps(qc), encoding="utf-8")
+                (root / "job_manifest.json").write_text(json.dumps({"job_id": "no-audio", "audio": audio}), encoding="utf-8")
+                for name in ("source_audio.wav", "dialogue_stem.wav"):
+                    with wave.open(str(root / "editable" / name), "wb") as writer:
+                        writer.setnchannels(2)
+                        writer.setsampwidth(2)
+                        writer.setframerate(48000)
+                        source = name == "source_audio.wav"
+                        frame = b"\x01\x00\x01\x00" if (source and defect == "bed_noise") or (not source and defect != "silent_dialogue") else bytes(4)
+                        writer.writeframes(frame * (24000 if source and defect == "short_bed" else 48000))
+                status = {"job_id": "no-audio", "output_path": str(root / "final_vi.mp4"),
+                          "status": {"state": "COMPLETED", "reason": "completed", "message": "Đã xuất video lồng tiếng Việt."}}
+                with mock.patch.object(smoke, "_verify_output", return_value={"scope": "checker fixture"}):
+                    if defect is None:
+                        report = smoke._verify_no_audio_dub(root / "ffprobe", root, status, "no-audio", seconds=1, voice_id="fixture")
+                        self.assertTrue(report["dialogue_nonzero"])
+                        self.assertEqual(report["source_frames"], 48000)
+                    else:
+                        with self.assertRaises(smoke.SmokeError):
+                            smoke._verify_no_audio_dub(root / "ffprobe", root, status, "no-audio", seconds=1, voice_id="fixture")
+
+
 def checkpoint(output: Path) -> tuple[Path, Path]:
     audio = output / ".dubflow-work/b2-audio/recipe/generation/tts" / ("tts-" + "a" * 32 + ".wav")
     audio.parent.mkdir(parents=True)

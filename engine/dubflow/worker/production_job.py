@@ -988,6 +988,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             audio_path = b2_audio.final_mix_path
             audio_metadata = {
                 "mode": "dubbed",
+                "source_audio_origin": "decoded-source" if probe.has_audio else "generated-silence",
                 "backend": b2_audio.tts_document.provenance.backend_id,
                 "voice_id": b2_audio.voice.voice_id,
                 "voice_version": b2_audio.voice.voice_version,
@@ -1013,7 +1014,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 },
             )
             if b2_audio.tts_document.failures or b2_audio.mix_document.failures:
-                warnings.append("B2_AUDIO_DEGRADED: one or more dialogue cues used bounded per-cue fallback; source audio was preserved")
+                warnings.append("B2_AUDIO_DEGRADED: one or more dialogue cues used bounded per-cue fallback; "
+                                + ("source audio was preserved" if probe.has_audio else "source has no audio; refused cues remain silent"))
             emitter.checkpoint("b2-audio", _sha256(b2_audio.final_mix_path))
         except B2AudioError as error:
             b2_audio = None

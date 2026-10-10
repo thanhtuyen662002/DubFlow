@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 import struct
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 
 from engine.dubflow.worker.b2_audio import B2AudioError, run_b2_audio, tts_recipe_identity, mix_recipe_identity
 from engine.dubflow.mix import streaming
+from engine.dubflow.media import FfmpegMediaAdapter, Rational
 from engine.dubflow.tts.adapter import TtsError
 from engine.dubflow.tts import DeterministicFixtureEngine, approved_default_voice
 from engine.dubflow.worker.production_job import TextCue
@@ -35,6 +37,53 @@ class HermeticDecodedAudioAdapter:
 
 
 class ProductionLocalFileB2Tests(unittest.TestCase):
+    def test_no_audio_with_supplied_dialogue_produces_dub_and_honest_silent_source(self):
+        with TemporaryDirectory(prefix="dubflow-no-audio-b2-") as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",
+            return_value=(SimpleNamespace(sample_rate=16000, channels=1), approved_default_voice())), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", return_value=DeterministicFixtureEngine()):
+            root = Path(directory)
+            source = root / "no-audio.mp4"
+            source.write_bytes(b"controlled-media-seam-not-a-real-video")
+            media = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent)
+            # Actual bounded PCM writer/mixer, substituted TTS and media probe.
+            # Native packaged real-media/backend qualification remains separate.
+            probe = SimpleNamespace(has_audio=False, video=SimpleNamespace(time_base=Rational(1, 1000), duration_ticks=3000))
+            with patch.object(media, "extract_audio", side_effect=AssertionError("source has no audio to decode")):
+                result = run_b2_audio(media=media, source_path=source, source_probe=probe,
+                    translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),),
+                    source_language="en", app_root=ROOT, profile_path=ROOT / "models/manifests/production-cpu-v1.json",
+                    work_dir=root / "b2", tts_voice_id="vi-truc-ly-vieneu3-v1")
+            self.assertEqual(result.mix_document.source_layout, "generated-silence-stereo")
+            self.assertEqual(result.mix_document.source_end.ticks, 3000)
+            self.assertEqual(len(result.tts_document.artifacts), 1)
+            self.assertFalse(result.tts_document.failures)
+            with wave.open(str(result.source_audio_path), "rb") as reader:
+                self.assertEqual((reader.getnframes(), reader.getframerate(), reader.getnchannels()), (144000, 48000, 2))
+                self.assertEqual(reader.readframes(reader.getnframes()), bytes(144000 * 4))
+            with wave.open(str(result.final_mix_path), "rb") as reader:
+                self.assertEqual((reader.getnframes(), reader.getnchannels()), (144000, 2))
+                self.assertTrue(any(reader.readframes(reader.getnframes())))
+            self.assertTrue(result.dialogue_stem_path.is_file())
+
+    def test_no_audio_without_positive_source_duration_refuses_before_model_bootstrap(self):
+        for duration in (None, 0):
+            with self.subTest(duration=duration), patch("engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice") as bootstrap:
+                probe = SimpleNamespace(has_audio=False, video=SimpleNamespace(time_base=None, duration_ticks=None), duration_ticks=duration)
+                with self.assertRaisesRegex(B2AudioError, "MEDIA_DURATION_INVALID"):
+                    run_b2_audio(media=HermeticDecodedAudioAdapter(), source_path="unused.mp4", source_probe=probe,
+                        translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),),
+                        source_language="en", app_root=ROOT, profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir="unused")
+                bootstrap.assert_not_called()
+
+    def test_no_audio_does_not_invent_dialogue(self):
+        with patch("engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice") as bootstrap:
+            with self.assertRaisesRegex(B2AudioError, "TTS_INPUT_EMPTY"):
+                run_b2_audio(media=HermeticDecodedAudioAdapter(), source_path="unused.mp4", source_probe=SimpleNamespace(has_audio=False),
+                    translated_cues=(), source_language="en", app_root=ROOT,
+                    profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir="unused")
+            bootstrap.assert_not_called()
+
     def test_interrupted_production_synthesis_loads_per_cue_checkpoints(self):
         class InterruptedEngine(DeterministicFixtureEngine):
             interrupted = True

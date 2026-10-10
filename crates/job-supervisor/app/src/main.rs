@@ -1244,11 +1244,17 @@ fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, 
                 None => return unverified(),
             };
             if tts_failures > 0 || mix_failures > 0 {
-                return ("completed_partial_dubbing", if mix_failures == 0 {
-                    format!("Đã xuất video; {tts_failures} câu chưa lồng tiếng được. Audio gốc được giữ ở các câu này.")
+                let summary = if mix_failures == 0 {
+                    format!("Đã xuất video; {tts_failures} câu chưa lồng tiếng được.")
                 } else {
-                    "Đã xuất video; lồng tiếng chưa đầy đủ. Audio gốc được giữ ở các đoạn lỗi.".into()
-                });
+                    "Đã xuất video; lồng tiếng chưa đầy đủ.".into()
+                };
+                let fallback = match qc.get("source_probe").and_then(|probe| probe.get("has_audio")).and_then(Value::as_bool) {
+                    Some(true) => "Audio gốc được giữ ở các đoạn lỗi.",
+                    Some(false) => "Nguồn không có audio; các câu chưa lồng tiếng vẫn im lặng. Hãy kiểm tra phụ đề.",
+                    None => "Hãy kiểm tra các đoạn chưa lồng tiếng và báo cáo chất lượng.",
+                };
+                return ("completed_partial_dubbing", format!("{summary} {fallback}"));
             }
             if !matches!(audio.get("mix_warnings").and_then(Value::as_array), Some(values) if values.iter().all(Value::is_string)) {
                 return unverified();
@@ -2765,6 +2771,22 @@ mod tests {
         assert!(message.contains("không có audio"));
         assert!(!message.contains("audio gốc"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_audio_partial_dub_identifies_silent_refused_cues() {
+        for mix_failures in [0, 1] {
+            let (root, _, spec) = identity_fixture();
+            let store = DurableStore::open_in_memory().unwrap();
+            let mut qc = test_qc(json!({"mode":"dubbed", "tts_failures":1, "mix_failures":mix_failures, "mix_warnings":[]}));
+            qc["source_probe"]["has_audio"] = json!(false);
+            commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+            let (reason, message) = completion_summary(&store, &spec);
+            assert_eq!(reason, "completed_partial_dubbing");
+            assert!(message.contains("im lặng"));
+            assert!(!message.contains("Audio gốc"));
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

@@ -20,7 +20,7 @@ import wave
 from typing import Any, Iterable, Mapping, Sequence
 
 from engine.dubflow.asr import TimeBase, TimePoint
-from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbeResult
+from engine.dubflow.media import CANONICAL_TIME_BASE, FfmpegMediaAdapter, MediaAdapterError, MediaProbeResult, MediaTimeline
 from engine.dubflow.mix import FileSegment, FileSource, StreamingAudioMixer, MixConfig, MixDocument, ResourceProfile as MixResourceProfile
 from engine.dubflow.mix import streaming
 from engine.dubflow.tts import (
@@ -173,10 +173,17 @@ def run_b2_audio(
 ) -> B2AudioResult:
     """Execute real TTS and AUD-0 mixing for translated production cues."""
 
-    if not source_probe.has_audio:
-        raise B2AudioError("AUDIO_STREAM_MISSING", "source media has no audio stream")
     if not translated_cues:
         raise B2AudioError("TTS_INPUT_EMPTY", "translated production cues are empty")
+    silence_duration: MediaTimeline | None = None
+    if not source_probe.has_audio:
+        video = source_probe.video
+        if video.time_base is not None and video.duration_ticks is not None and video.duration_ticks > 0:
+            silence_duration = MediaTimeline(video.time_base, 0, video.duration_ticks, video.duration_ticks)
+        elif source_probe.duration_ticks is not None and source_probe.duration_ticks > 0:
+            silence_duration = MediaTimeline(CANONICAL_TIME_BASE, 0, source_probe.duration_ticks, source_probe.duration_ticks)
+        else:
+            raise B2AudioError("MEDIA_DURATION_INVALID", "no-audio dubbing requires a known positive source duration")
     root = Path(work_dir).absolute()
     root.mkdir(parents=True, exist_ok=True)
     try:
@@ -201,12 +208,18 @@ def run_b2_audio(
         raise B2AudioError(getattr(error, "code", "TTS_BOOTSTRAP_FAILED"), str(error), retryable=bool(getattr(error, "retryable", False))) from error
     source_audio_path = root / "source_audio.wav"
     try:
-        media.extract_audio(source_path, source_audio_path, sample_rate=pack.sample_rate, channels=1, overwrite=True)
-    except MediaAdapterError as error:
-        raise B2AudioError(error.code, error.condition, retryable=error.retryable) from error
-    source_end_ticks = _wav_duration_ticks(source_audio_path)
-    if source_end_ticks <= 0:
-        raise B2AudioError("SOURCE_AUDIO_INVALID", "decoded source audio has no duration")
+        if silence_duration is not None:
+            media.create_silent_audio(source_path, source_audio_path, video_duration=silence_duration, overwrite=True)
+        else:
+            media.extract_audio(source_path, source_audio_path, sample_rate=pack.sample_rate, channels=1, overwrite=True)
+        source_end_ticks = _wav_duration_ticks(source_audio_path)
+    except BaseException as error:
+        close = getattr(engine, "close", None)
+        if close is not None:
+            close()
+        if isinstance(error, MediaAdapterError):
+            raise B2AudioError(error.code, error.condition, retryable=error.retryable) from error
+        raise
 
     try:
         tts_config = TtsConfig(
@@ -307,7 +320,7 @@ def run_b2_audio(
             start=TimePoint(0, BASE_TIME),
             end=TimePoint(source_end_ticks, BASE_TIME),
             source_id=Path(source_path).name,
-            layout="mono-source",
+            layout="generated-silence-stereo" if silence_duration is not None else "mono-source",
         )
         mixer = StreamingAudioMixer(
             config=MixConfig(

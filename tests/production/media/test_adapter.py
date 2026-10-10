@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import wave
 
 from engine.dubflow.media import (
     FfmpegMediaAdapter,
@@ -152,6 +154,71 @@ class MediaCommandTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_silent_pcm_uses_integer_source_duration_and_bounded_actual_writes(self):
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent)
+        duration = MediaTimeline(Rational(1001, 30000), -12, 241, 229)
+        output = self.root / "silent source.wav"
+        writes = []
+        original = wave.Wave_write.writeframesraw
+
+        def record(writer, data):
+            writes.append(len(data))
+            return original(writer, data)
+
+        with patch.object(wave.Wave_write, "writeframesraw", record):
+            adapter.create_silent_audio(self.source, output, video_duration=duration)
+        expected = (241 * 1001 * 48000 + 30000 - 1) // 30000
+        with wave.open(str(output), "rb") as reader:
+            self.assertEqual((reader.getnframes(), reader.getframerate(), reader.getnchannels(), reader.getsampwidth()),
+                             (expected, 48000, 2, 2))
+            while pcm := reader.readframes(16384):
+                self.assertEqual(pcm, bytes(len(pcm)))
+        self.assertGreater(len(writes), 1)
+        self.assertLessEqual(max(writes), 65536)
+        self.assertEqual(sum(writes), expected * 4)
+        self.assertEqual(output.stat().st_size, 44 + expected * 4)
+        self.assertEqual(list(self.root.glob(".*.partial")), [])
+
+    def test_silent_pcm_interruption_preserves_prior_output_and_removes_partial(self):
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent)
+        output = self.root / "silent.wav"
+        duration = MediaTimeline(Rational(1, 1000), 0, 1000, 1000)
+        adapter.create_silent_audio(self.source, output, video_duration=duration)
+        previous = (output.read_bytes(), output.stat().st_mtime_ns)
+        original = wave.Wave_write.writeframesraw
+        calls = 0
+
+        def interrupt(writer, data):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise KeyboardInterrupt("interrupted during the second bounded PCM block")
+            return original(writer, data)
+
+        with patch.object(wave.Wave_write, "writeframesraw", interrupt), self.assertRaises(KeyboardInterrupt):
+            adapter.create_silent_audio(self.source, output, video_duration=duration, overwrite=True)
+        self.assertEqual((output.read_bytes(), output.stat().st_mtime_ns), previous)
+        with patch("engine.dubflow.media.adapter.os.fsync", side_effect=OSError("disk write failed")):
+            with self.assertRaisesRegex(MediaAdapterError, "AUDIO_WRITE_FAILED"):
+                adapter.create_silent_audio(self.source, output, video_duration=duration, overwrite=True)
+        self.assertEqual((output.read_bytes(), output.stat().st_mtime_ns), previous)
+        self.assertEqual(list(self.root.glob(".*.partial")), [])
+
+    def test_silent_pcm_refuses_unknown_duration_invalid_config_and_riff_overflow(self):
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent)
+        output = self.root / "refused.wav"
+        duration = MediaTimeline(Rational(1, 1), 0, 21600, 21600)
+        cases = (({"video_duration": None}, "MEDIA_DURATION_INVALID"),
+                 ({"video_duration": MediaTimeline(Rational(1, 1000), 0, 0, 0)}, "MEDIA_DURATION_INVALID"),
+                 ({"video_duration": duration, "sample_rate": True}, "AUDIO_CONFIG_INVALID"),
+                 ({"video_duration": duration, "channels": 0}, "AUDIO_CONFIG_INVALID"),
+                 ({"video_duration": duration, "sample_rate": 384000}, "AUDIO_SIZE_UNSUPPORTED"))
+        with patch("engine.dubflow.media.adapter.tempfile.mkstemp", side_effect=AssertionError("must refuse before writing")):
+            for options, code in cases:
+                with self.subTest(code=code), self.assertRaisesRegex(MediaAdapterError, code):
+                    adapter.create_silent_audio(self.source, output, **options)
+        self.assertFalse(output.exists())
 
     def test_probe_and_operations_use_absolute_argv_without_shell(self) -> None:
         probe_runner = RecordingRunner()

@@ -25,3 +25,9 @@ through the subtitles filter grammar while retaining shell-free argv.
 The module intentionally has no fixture backend or model selection. ASR,
 translation and TTS workers inject their own app-owned model adapters and use
 these operations for media I/O.
+
+For a source without audio, `create_silent_audio` provides a bounded stereo
+PCM bed when the worker already has valid dialogue captions. Its sample count
+comes from integer source duration/time-base, and it validates the WAV before
+atomic publication. It never supplies dialogue text. QC and mix provenance
+identify this generated silence; see ADR0024 for compatibility and recovery.
