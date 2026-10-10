@@ -101,6 +101,41 @@ def write_record(record: Path, artifact: dict) -> None:
         "artifact_record_hash": sha256(encoded).hexdigest()}), encoding="utf-8")
 
 
+def tts2_evidence(output: Path, source_hash: str):
+    """Typed checker fixture; never evidence of real neural synthesis."""
+    from dataclasses import replace
+    from engine.dubflow.asr import TimeBase, TimePoint
+    from engine.dubflow.tts import LocalTtsAdapter, TtsConfig, TtsInput, TtsProvenance, DeterministicFixtureEngine, approved_default_voice
+    from engine.dubflow.worker.b2_audio import _dubbing_windows, _input_hash
+    from engine.dubflow.worker.tts_checkpoints import TtsCheckpointStore
+    generation = output / ".dubflow-work/b2-audio/recipe/generation"
+    canonical = [{"cue_id": "cue-1", "start_ms": 0, "end_ms": 1000, "source_text": "Hello",
+                  "translated_text": "Xin chào", "confidence": 1.0}]
+    base = TimeBase(1, 1000)
+    placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": "source-intercue-postroll-2000ms-gap120ms-v1",
+        "time_base": base.to_dict(), "source_end": TimePoint(1000, base).to_dict(), "source_audio_sha256": source_hash,
+        "canonical_cue_input_hash": _input_hash(canonical), "gap_evidence": "recognized-source-cue-intervals;silence-not-certified",
+        "windows": _dubbing_windows(canonical, 1000)}
+    payload = (json.dumps(placement, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    digest = "sha256:" + sha256(payload).hexdigest()
+    config = TtsConfig(max_attempts=1)
+    voice = replace(approved_default_voice(), voice_id="fixture")
+    provenance = TtsProvenance("qualification-fixture", "3.3.0", "vieneu-v3-turbo-onnx-v1", "fixture", "timeline-v1",
+        config.content_hash(), digest, voice.model_id, voice.model_version, voice.model_hash, voice.content_hash(),
+        voice.voice_id, voice.voice_version, config.requested_profile, "fixture", config.resource)
+    store = TtsCheckpointStore(generation / "tts", identity="1" * 64)
+    cue = TtsInput("cue-1", "cue-1", "Xin chào", TimePoint(0, base), TimePoint(1000, base), render_window_end=TimePoint(1000, base))
+    speech = LocalTtsAdapter(DeterministicFixtureEngine(), config=config, voice=voice, provenance=provenance,
+        output_dir=generation / "tts").synthesize((cue,), input_hash=digest, on_checkpoint=store.commit)
+    tts_path = generation / "tts_document.json"
+    tts_path.write_bytes(speech.to_bytes())
+    placement_path = generation / "dubbing_placement.json"
+    placement_path.write_bytes(payload)
+    (output / "editable").mkdir(exist_ok=True)
+    (output / "editable/dubbing_placement.json").write_bytes(payload)
+    return speech, tts_path, {"schema_version": 1, "path": str(placement_path), "sha256": digest}, canonical
+
+
 class StereoDubEvidenceTests(unittest.TestCase):
     def test_dubbing_rejects_mono_editable_pcm_and_non_stereo_final_aac(self):
         cases = [(None, 2), *( (name, 2) for name in ("original_audio", "dialogue_stem", "final_mix")),
@@ -111,12 +146,6 @@ class StereoDubEvidenceTests(unittest.TestCase):
                 (output / "editable").mkdir()
                 for name in ("final_vi.mp4", "captions_vi.srt", "captions_vi.ass", "qc_report.json", "editable/timeline.json"):
                     (output / name).write_text("qualification-checker fixture; not real media", encoding="utf-8")
-                speech, record = checkpoint(output)
-                artifact = json.loads(record.read_text(encoding="utf-8"))["artifact"]
-                record.rename(record.with_name(sha256(artifact["segment_id"].encode()).hexdigest() + ".json"))
-                tts_path = speech.parent.parent / "tts_document.json"
-                tts_path.write_text(json.dumps({"provenance": {"backend_id": "vieneu-v3-turbo-onnx-v1",
-                    "producer_version": "3.2.0", "voice_id": "fixture"}, "artifacts": [artifact]}), encoding="utf-8")
                 mix = {}
                 for key, name in (("original_audio", "source_audio.wav"), ("dialogue_stem", "dialogue_stem.wav"),
                                   ("final_mix", "final_mix.wav")):
@@ -134,9 +163,11 @@ class StereoDubEvidenceTests(unittest.TestCase):
                 mix["provenance"] = provenance
                 mix_path = output / "mix_document.json"
                 mix_path.write_text(json.dumps(mix), encoding="utf-8")
+                _, tts_path, placement, canonical = tts2_evidence(output, mix["original_audio"]["content_hash"])
                 (output / "job_manifest.json").write_text(json.dumps({"audio": {"mode": "dubbed",
                     "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
-                    "mix_document": str(mix_path), "mix_provenance": provenance}}), encoding="utf-8")
+                    "mix_document": str(mix_path), "mix_provenance": provenance, "dubbing_placement": placement},
+                    "cues": canonical, "warnings": []}), encoding="utf-8")
                 probe = {"format": {"duration": "1"}, "streams": [
                     {"codec_type": "video", "codec_name": "h264", "width": 320, "height": 180},
                     {"codec_type": "audio", "codec_name": "aac", "channels": channels}]}
@@ -239,6 +270,31 @@ class LiveOwnershipEvidenceTests(unittest.TestCase):
 
 
 class RecoverySnapshotTests(unittest.TestCase):
+    def test_checkpoint2_requires_typed_measured_end_window_and_version(self):
+        for defect in (None, "version", "missing_window", "short_window", "actual_end", "unknown_field"):
+            with self.subTest(defect=defect), TemporaryDirectory() as directory:
+                output = Path(directory)
+                speech, _, _, _ = tts2_evidence(output, "sha256:" + "a" * 64)
+                audio = Path(speech.artifacts[0].path)
+                record = audio.parent / "checkpoints" / (sha256(b"cue-1").hexdigest() + ".json")
+                if defect is None:
+                    snapshot = smoke._tts_checkpoint_snapshot(output)
+                    self.assertEqual(snapshot["sha256"], smoke._file_digest(audio))
+                    self.assertEqual(snapshot["committed_cues"], 1)
+                    continue
+                value = json.loads(record.read_text())
+                if defect == "version": value["schema_version"] = 1
+                elif defect == "missing_window": del value["artifact"]["render_window_end"]
+                elif defect == "short_window": value["artifact"]["render_window_end"]["ticks"] = "999"
+                elif defect == "actual_end": value["artifact"]["actual_end"]["ticks"] = "1001"
+                else: value["artifact"]["unknown"] = True
+                # Rehash the malformed descriptor so semantic validation,
+                # rather than just checksum rejection, must protect recovery.
+                value["artifact_record_hash"] = sha256(json.dumps(value["artifact"], ensure_ascii=False,
+                    sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                record.write_text(json.dumps(value), encoding="utf-8")
+                with self.assertRaises(smoke.SmokeError): smoke._tts_checkpoint_snapshot(output)
+
     def test_snapshot_waits_for_commit_and_validates_actual_waveform(self):
         with TemporaryDirectory() as directory:
             output = Path(directory)

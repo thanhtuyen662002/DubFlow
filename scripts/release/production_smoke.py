@@ -821,7 +821,8 @@ def _tts_checkpoint_snapshot(output: Path) -> dict[str, Any] | None:
         artifact = value["artifact"]
         encoded = json.dumps(artifact, ensure_ascii=False, sort_keys=True,
                              separators=(",", ":"), allow_nan=False).encode("utf-8")
-        if (type(value["schema_version"]) is not int or value["schema_version"] != 1 or
+        if (type(value["schema_version"]) is not int or value["schema_version"] not in {1, 2} or
+                ("render_window_end" in artifact) != (value["schema_version"] == 2) or
                 re.fullmatch(r"[a-f0-9]{64}", value["identity"]) is None or
                 value["artifact_record_hash"] != hashlib.sha256(encoded).hexdigest()):
             raise ValueError("invalid checkpoint identity or metadata")
@@ -829,6 +830,15 @@ def _tts_checkpoint_snapshot(output: Path) -> dict[str, Any] | None:
         if (not audio.is_absolute() or audio.parent != record.parent.parent or
                 re.fullmatch(r"tts-[a-f0-9]{32}\.wav", audio.name) is None):
             raise ValueError("checkpoint audio escapes its generation")
+        if value["schema_version"] == 2:
+            from types import SimpleNamespace
+            from engine.dubflow.worker.tts_checkpoints import TtsCheckpointStore
+            # The selected runtime validates the full typed descriptor,
+            # including measured PCM end and explicit render bounds.
+            store = TtsCheckpointStore(audio.parent, identity=value["identity"])
+            parsed = store.load((SimpleNamespace(segment_id=artifact["segment_id"]),)).get(artifact["segment_id"])
+            if parsed is None or parsed.artifact.to_dict() != artifact:
+                raise ValueError("invalid checkpoint2 artifact or render bounds")
         for path in (record, audio, *record.parents):
             if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
                 raise ValueError("checkpoint uses a linked path")
