@@ -45,7 +45,8 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             root = Path(directory)
             source = root / "no-audio.mp4"
             source.write_bytes(b"controlled-media-seam-not-a-real-video")
-            media = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent)
+            executable = Path(sys.executable).resolve()
+            media = FfmpegMediaAdapter(executable, trusted_root=executable.parent)
             # Actual bounded PCM writer/mixer, substituted TTS and media probe.
             # Native packaged real-media/backend qualification remains separate.
             probe = SimpleNamespace(has_audio=False, video=SimpleNamespace(time_base=Rational(1, 1000), duration_ticks=3000))
