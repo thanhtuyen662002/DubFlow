@@ -31,6 +31,27 @@ and scopes each private packet by name, bounded size, hash, scan and stage.
 The original ScanRecord captured before dispatch is the only commit token;
 current-state rereads cannot authorize a late page.
 
+Actual26,166-file native admission took272.968 seconds and approximately
+2.77million ancillary I/O operations when checking every leaf's ancestor chain
+and then walking the whole tree again. Admission now validates the exact
+manifest list, hashes each actual file in one tree walk, checks every node's
+symlink/reparse metadata and rechecks directory ancestry at entry/exit and
+before return. Size/hash equality and exact inventory coverage remain mandatory;
+the trusted raw manifest digest is checked again before admission completes.
+No success cache, import-before-verification or dependency exemption is added.
+
+The same installed attempt reached readiness but the page worker refused its
+owned origin before any provider scan. Windows canonical verbatim paths caused
+Python to preserve a different prefix spelling than the normalized command
+roots. Normalize external executable/script arguments using the same existing
+platform conversion as the command payload; internal canonical containment,
+worker origin refusal and all version/manifest pins remain unchanged. Actual
+packaged normal-path ownership passed and verbatim/mixed-path ownership refused
+in a separate no-network probe. New native tests use a test interpreter for
+launch spelling and integrity fixtures only; installed successor/live pageN
+evidence is still required. This is an implementation repair with no public
+protocol, SQLite, producer identity, admission-artifact or migration change.
+
 New private admission artifact v1 is the closed public Producer JSON under
 `control/source-admissions/<safe-scan-id>.json`. Its canonical fingerprint must
 match the immutable SQLite binding. Create-new/write/fsync precedes first DB

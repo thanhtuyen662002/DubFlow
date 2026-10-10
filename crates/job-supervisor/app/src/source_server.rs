@@ -182,7 +182,7 @@ impl Runtime {
         let worker = root.join("app/engine/dubflow/download/enumeration/worker.py");
         // Verify all importable dependencies before executing Python. A trusted
         // entry point cannot verify dependencies already executed during import.
-        let mut inventory = std::collections::HashSet::new();
+        let mut inventory = std::collections::HashMap::new();
         let mut folded = std::collections::HashSet::new();
         for entry in manifest["artifacts"].as_array().ok_or_else(invalid)?.iter() {
             let relative = entry["path"].as_str().ok_or_else(invalid)?;
@@ -191,52 +191,43 @@ impl Runtime {
                 || relative
                     .split('/')
                     .any(|p| p.is_empty() || p == "." || p == "..")
-                || !inventory.insert(relative.to_owned())
                 || !folded.insert(relative.to_lowercase())
             {
                 return Err(invalid());
             }
-            let path = root.join(relative);
-            if !path.starts_with(&root) {
-                return Err(invalid());
-            }
-            reject_links(&path)?;
             let expected_size: u64 = entry["size_bytes"].as_str().ok_or_else(invalid)?.parse()?;
             let expected = entry["sha256"]
                 .as_str()
                 .filter(|v| digest_valid(v))
                 .ok_or_else(invalid)?;
-            let mut file = File::open(&path)?;
-            if !file.metadata()?.is_file() || file.metadata()?.len() != expected_size {
-                return Err(invalid());
-            }
-            let mut digest = Sha256::new();
-            let mut buffer = [0u8; 64 * 1024];
-            loop {
-                let n = file.read(&mut buffer)?;
-                if n == 0 {
-                    break;
-                }
-                digest.update(&buffer[..n]);
-            }
-            if format!("{:x}", digest.finalize()) != expected {
+            if inventory
+                .insert(relative.to_owned(), (expected_size, expected.to_owned()))
+                .is_some()
+            {
                 return Err(invalid());
             }
         }
-        if !inventory.contains("runtime/python.exe")
-            || !inventory.contains("app/engine/dubflow/download/enumeration/worker.py")
+        if !inventory.contains_key("runtime/python.exe")
+            || !inventory.contains_key("app/engine/dubflow/download/enumeration/worker.py")
         {
             return Err(invalid());
         }
         let mut directories = vec![root.clone()];
+        let mut checked_directories = Vec::new();
         let mut observed = std::collections::HashSet::new();
+        let mut buffer = [0u8; 64 * 1024];
         while let Some(directory) = directories.pop() {
+            // Recheck the directory ancestry at entry/exit, rather than for
+            // every leaf. Never follow a linked child; no imports occur until
+            // the whole tree and every expected file have been verified.
+            reject_links(&directory)?;
             for child in fs::read_dir(&directory)? {
                 let path = child?.path();
-                reject_links(&path)?;
-                if path.is_dir() {
+                let metadata = fs::symlink_metadata(&path)?;
+                reject_reparse(&metadata)?;
+                if metadata.is_dir() {
                     directories.push(path);
-                } else if path.is_file() {
+                } else if metadata.is_file() {
                     let relative = path
                         .strip_prefix(&root)?
                         .to_str()
@@ -245,16 +236,45 @@ impl Runtime {
                     if relative == "release-manifest.json" {
                         continue;
                     }
-                    if !inventory.contains(&relative) {
+                    let (expected_size, expected_hash) =
+                        inventory.get(&relative).ok_or_else(invalid)?;
+                    let mut file = File::open(&path)?;
+                    let opened = file.metadata()?;
+                    reject_reparse(&opened)?;
+                    if !opened.is_file() || opened.len() != *expected_size {
                         return Err(invalid());
                     }
-                    observed.insert(relative);
+                    let mut digest = Sha256::new();
+                    loop {
+                        let n = file.read(&mut buffer)?;
+                        if n == 0 {
+                            break;
+                        }
+                        digest.update(&buffer[..n]);
+                    }
+                    if format!("{:x}", digest.finalize()) != *expected_hash
+                        || !observed.insert(relative)
+                    {
+                        return Err(invalid());
+                    }
                 } else {
                     return Err(invalid());
                 }
             }
+            reject_links(&directory)?;
+            checked_directories.push(directory);
         }
-        if observed != inventory {
+        if observed.len() != inventory.len() {
+            return Err(invalid());
+        }
+        for directory in checked_directories {
+            reject_links(&directory)?;
+        }
+        if hex_digest(&read_bounded(
+            &root.join("release-manifest.json"),
+            16 * 1024 * 1024,
+        )?) != manifest_hash
+        {
             return Err(invalid());
         }
         Ok(Self {
@@ -267,6 +287,19 @@ impl Runtime {
             version,
         })
     }
+}
+
+fn reject_reparse(metadata: &fs::Metadata) -> Result<()> {
+    let linked = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    let linked = {
+        use std::os::windows::fs::MetadataExt;
+        linked || metadata.file_attributes() & 0x400 != 0
+    };
+    if linked {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -677,22 +710,7 @@ fn launch(runtime: &Runtime, spec: Spec) -> Result<Active> {
     if !work.starts_with(&runtime.data) {
         return Err(invalid());
     }
-    let mut command = Command::new(&runtime.python);
-    command
-        .args(["-I", "-S", "-B"])
-        .arg(&runtime.worker)
-        .current_dir(&work)
-        .env_remove("PYTHONPATH")
-        .env_remove("PYTHONHOME")
-        .env("PYTHONUTF8", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    let mut command = owned_worker_command(runtime, &work);
     let mut child = command.spawn()?;
     let stdout = child.stdout.take().ok_or_else(invalid)?;
     let stderr = child.stderr.take().ok_or_else(invalid)?;
@@ -728,6 +746,29 @@ fn launch(runtime: &Runtime, spec: Spec) -> Result<Active> {
     };
     active.send(Payload::Command { command: "source_prepare".into(), args_json: serde_json::to_string(&json!({"bundle_root":super::external_runtime_path(runtime.root.clone()), "work_root":super::external_runtime_path(active.work.clone()), "manifest_sha256":runtime.manifest_hash, "provider_id":active.spec.provider, "source_ref":active.spec.reference, "page_size":active.spec.page_size}))? })?;
     Ok(active)
+}
+
+fn owned_worker_command(runtime: &Runtime, work: &Path) -> Command {
+    // Canonical Windows paths retain a verbatim prefix. Python preserves it
+    // in executable/prefix/__file__, while the command's roots are normalized.
+    // Use one external spelling; the worker's strict origin check stays intact.
+    let mut command = Command::new(super::external_runtime_path(runtime.python.clone()));
+    command
+        .args(["-I", "-S", "-B"])
+        .arg(super::external_runtime_path(runtime.worker.clone()))
+        .current_dir(work)
+        .env_remove("PYTHONPATH")
+        .env_remove("PYTHONHOME")
+        .env("PYTHONUTF8", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
 }
 
 fn scan_value(record: &ScanRecord) -> Value {
@@ -1275,6 +1316,187 @@ while True:
         assert!(server.active.is_none());
         assert!(server.queue.scan("scan").is_err());
         drop(server);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_worker_observes_normal_paths_after_canonical_windows_launch() {
+        let temp = Temporary::new();
+        let mut runtime = temp.recorded_runtime();
+        fs::write(&runtime.worker, r#"import json,sys
+print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'worker':__file__,
+    'isolated':sys.flags.isolated,'no_site':sys.flags.no_site,'no_bytecode':sys.dont_write_bytecode}))
+"#).unwrap();
+        runtime.python = runtime.python.canonicalize().unwrap();
+        runtime.worker = runtime.worker.canonicalize().unwrap();
+        let output = owned_worker_command(&runtime, &runtime.data)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            PathBuf::from(value["executable"].as_str().unwrap()),
+            super::super::external_runtime_path(runtime.python.clone())
+        );
+        assert_eq!(
+            PathBuf::from(value["worker"].as_str().unwrap()),
+            super::super::external_runtime_path(runtime.worker.clone())
+        );
+        assert!(!value["prefix"].as_str().unwrap().starts_with(r"\\?\"));
+        assert_eq!(value["isolated"], 1);
+        assert_eq!(value["no_site"], 1);
+        assert_eq!(value["no_bytecode"], true);
+    }
+
+    fn admission_inventory(temp: &Temporary) -> (Runtime, Vec<Value>) {
+        let runtime = temp.runtime();
+        let mut entries = Vec::new();
+        for (relative, raw) in [
+            ("runtime/python.exe", b"recorded-python".as_slice()),
+            (
+                "app/engine/dubflow/download/enumeration/worker.py",
+                b"recorded-worker".as_slice(),
+            ),
+            (
+                "app/engine/dubflow/download/source_adapter.py",
+                b"recorded-import".as_slice(),
+            ),
+        ] {
+            let path = runtime.root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, raw).unwrap();
+            entries.push(json!({"path":relative,"size_bytes":raw.len().to_string(),"sha256":hex_digest(raw)}));
+        }
+        (runtime, entries)
+    }
+
+    fn admission_manifest(runtime: &Runtime, entries: &[Value]) -> String {
+        let raw = serde_json::to_vec(&json!({"schema_version":1,"source_sha":"b".repeat(40),"version":"0.1.0-test","artifacts":entries})).unwrap();
+        fs::write(runtime.root.join("release-manifest.json"), &raw).unwrap();
+        hex_digest(&raw)
+    }
+
+    #[test]
+    fn native_inventory_rejects_incomplete_tampered_or_ambiguous_entries() {
+        for defect in [
+            "missing",
+            "same_size_tamper",
+            "wrong_size",
+            "wrong_hash",
+            "duplicate",
+            "case_duplicate",
+            "traversal",
+            "unexpected",
+            "missing_worker",
+        ] {
+            let temp = Temporary::new();
+            let (runtime, mut entries) = admission_inventory(&temp);
+            let import = runtime
+                .root
+                .join("app/engine/dubflow/download/source_adapter.py");
+            match defect {
+                "missing" => fs::remove_file(&import).unwrap(),
+                "same_size_tamper" => fs::write(&import, b"tampered-import").unwrap(),
+                "wrong_size" => entries[2]["size_bytes"] = json!("900"),
+                "wrong_hash" => entries[2]["sha256"] = json!("0".repeat(64)),
+                "duplicate" => entries.push(entries[2].clone()),
+                "case_duplicate" => {
+                    let mut entry = entries[2].clone();
+                    entry["path"] = json!(entry["path"].as_str().unwrap().to_uppercase());
+                    entries.push(entry);
+                }
+                "traversal" => entries[2]["path"] = json!("../outside.py"),
+                "unexpected" => {
+                    fs::write(runtime.root.join("unexpected.py"), b"shadow-import").unwrap()
+                }
+                "missing_worker" => {
+                    entries.remove(1);
+                }
+                _ => unreachable!(),
+            }
+            let expected = admission_manifest(&runtime, &entries);
+            assert!(
+                Runtime::admit(runtime.root, runtime.data, expected).is_err(),
+                "{defect}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_full_nested_inventory_is_verified_without_skipping_files() {
+        let temp = Temporary::new();
+        let (runtime, mut entries) = admission_inventory(&temp);
+        for index in 0u32..2048 {
+            let relative = format!("app/nested/level-{}/imports/module-{index}.py", index % 64);
+            let path = runtime.root.join(&relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let raw = index.to_le_bytes();
+            fs::write(path, raw).unwrap();
+            entries.push(json!({"path":relative,"size_bytes":raw.len().to_string(),"sha256":hex_digest(&raw)}));
+        }
+        let expected = admission_manifest(&runtime, &entries);
+        assert!(
+            Runtime::admit(runtime.root.clone(), runtime.data.clone(), expected.clone()).is_ok()
+        );
+        fs::write(
+            runtime
+                .root
+                .join("app/nested/level-63/imports/module-2047.py"),
+            [0, 0, 0, 0],
+        )
+        .unwrap();
+        assert!(Runtime::admit(runtime.root, runtime.data, expected).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn native_inventory_refuses_identical_linked_files_and_directories() {
+        for directory in [false, true] {
+            let temp = Temporary::new();
+            let (runtime, entries) = admission_inventory(&temp);
+            let expected = admission_manifest(&runtime, &entries);
+            let link = runtime.root.join(if directory {
+                "app/engine"
+            } else {
+                "app/engine/dubflow/download/source_adapter.py"
+            });
+            let target = temp.0.join("external-identical");
+            assert!(link.starts_with(&temp.0) && target.starts_with(&temp.0));
+            fs::rename(&link, &target).unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(Runtime::admit(runtime.root, runtime.data, expected).is_err());
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_inventory_refuses_identical_directory_junction() {
+        let temp = Temporary::new();
+        let (runtime, entries) = admission_inventory(&temp);
+        let expected = admission_manifest(&runtime, &entries);
+        let link = runtime.root.join("app/engine");
+        let target = temp.0.join("external-identical");
+        assert!(link.starts_with(&temp.0) && target.starts_with(&temp.0));
+        fs::rename(&link, &target).unwrap();
+        let output = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let refused = Runtime::admit(runtime.root, runtime.data, expected).is_err();
+        fs::remove_dir(&link).unwrap(); // Remove junction itself before fixture cleanup.
+        assert!(refused);
     }
 
     #[test]
