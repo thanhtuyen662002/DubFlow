@@ -101,13 +101,18 @@ class SourceSession:
     """
 
     def __init__(self, args: dict):
-        _keys(args, _PREPARE)
+        self.single_video = isinstance(args, dict) and "source_mode" in args
+        _keys(args, _PREPARE | {"source_mode"} if self.single_video else _PREPARE)
+        if self.single_video and args["source_mode"] != "video":
+            raise _invalid()
         provider = args["provider_id"]
         if not isinstance(provider, str) or provider not in {"bilibili", "douyin", "generic"}:
             raise _invalid()
         if type(args["page_size"]) is not int or not 1 <= args["page_size"] <= 100:
             raise _invalid()
-        reference = _public_reference(args["source_ref"]) if provider == "generic" else channel_url(provider, args["source_ref"])
+        if self.single_video and args["page_size"] != 1:
+            raise _invalid()
+        reference = _public_reference(args["source_ref"]) if provider == "generic" or self.single_video else channel_url(provider, args["source_ref"])
         root, work = _absolute(args["bundle_root"]), _absolute(args["work_root"])
         if work == root or root in work.parents:
             raise _invalid()
@@ -125,10 +130,12 @@ class SourceSession:
         self.adapter = provider_from_verified_bundle(root, artifacts=artifacts, provider_id=provider)
         self.work_root, self.root = work, root
         self.provider, self.reference, self.page_size = provider, reference, args["page_size"]
-        self.identity = {"recipe": RECIPE, "source_contract_version": SOURCE_CONTRACT_VERSION,
+        self.identity = {"recipe": "owned-source-page-worker-v2" if self.single_video else RECIPE, "source_contract_version": SOURCE_CONTRACT_VERSION,
             "manifest_sha256": manifest_hash, "source_sha": manifest.source_sha,
             "release_version": manifest.version, "provider_id": provider,
             "source_ref": reference, "page_size": self.page_size}
+        if self.single_video:
+            self.identity["source_mode"] = "video"
         self.fingerprint = sha256(json.dumps(self.identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
         self.last_revision: int | None = None
         self.completed = False
@@ -151,8 +158,11 @@ class SourceSession:
             raise _invalid()
         # A fresh producer dispatch may retry only through the supervisor's new
         # generation/changed-condition decision. Never replay one generation.
+        if self.single_video and cursor is not None:
+            raise _invalid()
         self.last_revision = revision
-        page = self.adapter.enumerate_channel(self.reference, cursor=cursor, page_size=self.page_size)
+        page = (SourcePage((self.adapter.inspect(self.reference),), None, True) if self.single_video
+                else self.adapter.enumerate_channel(self.reference, cursor=cursor, page_size=self.page_size))
         if (not isinstance(page, SourcePage) or len(page.items) + len(page.failures) > self.page_size
                 or (not page.completed and page.next_cursor == cursor)):
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "source page is malformed or made no progress")

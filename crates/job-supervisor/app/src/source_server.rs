@@ -355,6 +355,11 @@ fn reject_reparse(metadata: &fs::Metadata) -> Result<()> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
+    StartVideo {
+        scan_id: String,
+        provider_id: String,
+        source_ref: String,
+    },
     Start {
         scan_id: String,
         provider_id: String,
@@ -404,8 +409,17 @@ struct Producer {
     provider_id: String,
     source_ref: String,
     page_size: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_mode: Option<String>,
 }
 impl Producer {
+    fn video_mode(&self) -> Result<bool> {
+        match (self.recipe.as_str(), self.source_mode.as_deref()) {
+            ("owned-source-page-worker-v1", None) => Ok(false),
+            ("owned-source-page-worker-v2", Some("video")) if self.page_size == 1 => Ok(true),
+            _ => Err(invalid()),
+        }
+    }
     fn fingerprint(&self) -> Result<String> {
         // Explicit ordered map matches Python's sorted compact UTF-8 JSON.
         let value = serde_json::to_value(self)?;
@@ -418,7 +432,7 @@ impl Producer {
         Ok(hex_digest(&serde_json::to_vec(&sorted)?))
     }
     fn validate(&self, runtime: &Runtime, spec: &Spec) -> Result<()> {
-        if self.recipe != "owned-source-page-worker-v1"
+        if self.video_mode()? != spec.single_video
             || self.source_contract_version != 1
             || self.manifest_sha256 != runtime.manifest_hash
             || self.source_sha != runtime.source_sha
@@ -682,6 +696,7 @@ struct Spec {
     page_size: usize,
     maximum: usize,
     existing: bool,
+    single_video: bool,
 }
 enum Wire {
     Message(Envelope),
@@ -977,6 +992,7 @@ fn launch_in_work(runtime: &Runtime, spec: Spec, selected_work: Option<PathBuf>)
         || !["generic", "bilibili", "douyin"].contains(&spec.provider.as_str())
         || !(1..=100).contains(&spec.page_size)
         || !(1..=10000).contains(&spec.maximum)
+        || (spec.single_video && (spec.page_size != 1 || spec.maximum != 1))
     {
         return Err(invalid());
     }
@@ -1032,7 +1048,14 @@ fn launch_in_work(runtime: &Runtime, spec: Spec, selected_work: Option<PathBuf>)
         last_seen: Instant::now(),
         download: None,
     };
-    active.send(Payload::Command { command: "source_prepare".into(), args_json: serde_json::to_string(&json!({"bundle_root":super::external_runtime_path(runtime.root.clone()), "work_root":super::external_runtime_path(active.work.clone()), "manifest_sha256":runtime.manifest_hash, "provider_id":active.spec.provider, "source_ref":active.spec.reference, "page_size":active.spec.page_size}))? })?;
+    let mut preparation = json!({"bundle_root":super::external_runtime_path(runtime.root.clone()), "work_root":super::external_runtime_path(active.work.clone()), "manifest_sha256":runtime.manifest_hash, "provider_id":active.spec.provider, "source_ref":active.spec.reference, "page_size":active.spec.page_size});
+    if active.spec.single_video {
+        preparation["source_mode"] = json!("video");
+    }
+    active.send(Payload::Command {
+        command: "source_prepare".into(),
+        args_json: serde_json::to_string(&preparation)?,
+    })?;
     Ok(active)
 }
 
@@ -1118,6 +1141,7 @@ impl Server {
             page_size: producer.page_size,
             maximum: record.max_items,
             existing: true,
+            single_video: producer.video_mode()?,
         };
         producer.validate(&self.runtime, &spec)?;
         let mut item = self.queue.item(&id, &identity)?;
@@ -1239,6 +1263,32 @@ impl Server {
     }
     fn request(&mut self, request: Request) -> Result<(Value, bool)> {
         let value = match request {
+            Request::StartVideo {
+                scan_id,
+                provider_id,
+                source_ref,
+            } => {
+                if self.active.is_some() {
+                    return Err(invalid());
+                }
+                match self.queue.scan(&scan_id) {
+                    Err(QueueError::NotFound { .. }) => (),
+                    _ => return Err(invalid()),
+                }
+                self.active = Some(launch(
+                    &self.runtime,
+                    Spec {
+                        id: scan_id.clone(),
+                        provider: provider_id,
+                        reference: source_ref,
+                        page_size: 1,
+                        maximum: 1,
+                        existing: false,
+                        single_video: true,
+                    },
+                )?);
+                json!({"event":"source_preparing", "scan_id":scan_id})
+            }
             Request::Start {
                 scan_id,
                 provider_id,
@@ -1262,6 +1312,7 @@ impl Server {
                         page_size,
                         maximum: max_items,
                         existing: false,
+                        single_video: false,
                     },
                 )?);
                 json!({"event":"source_preparing", "scan_id":scan_id})
@@ -1284,6 +1335,7 @@ impl Server {
                     page_size: producer.page_size,
                     maximum: record.max_items,
                     existing: true,
+                    single_video: producer.video_mode()?,
                 };
                 // Reject a changed runtime before any extraction or resume write.
                 producer.validate(&self.runtime, &spec)?;
@@ -1922,6 +1974,8 @@ mod tests {
 first=json.loads(sys.stdin.buffer.readline())
 args=first['payload']['args']; work=pathlib.Path(args['work_root'])
 producer={'recipe':'owned-source-page-worker-v1','source_contract_version':1,'manifest_sha256':args['manifest_sha256'],'source_sha':'b'*40,'release_version':'0.1.0-test','provider_id':args['provider_id'],'source_ref':args['source_ref'],'page_size':args['page_size']}
+single_video=args.get('source_mode')=='video'
+if single_video:producer.update(recipe='owned-source-page-worker-v2',source_mode='video')
 fingerprint=hashlib.sha256(json.dumps(producer,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
 sequence=0
 def emit(kind,payload):
@@ -1958,7 +2012,7 @@ while True:
  if cursor=='page-2' and request['sequence']>2:
   time.sleep(30)  # Interrupt a real page-2 process after the first DB commit.
  item={'schema_version':1,'identity':{'provider_id':producer['provider_id'],'source_id':'one' if cursor is None else 'two','canonical_url':'https://example.test/one' if cursor is None else 'https://example.test/two','identity_key':producer['provider_id']+(':one' if cursor is None else ':two')},'title':'Recorded item','duration_ticks':'1000'}
- done=cursor is not None
+ done=single_video or cursor is not None
  packet({'schema_version':1,'kind':'source-page','producer_fingerprint':fingerprint,'dispatch_revision':args['dispatch_revision'],'request_cursor':cursor,'page':{'schema_version':1,'items':[item],'failures':[],'next_cursor':None if done else 'page-2','completed':done}})
  if done:emit('shutdown',{'status':'completed'});sys.exit(0)
 "#).unwrap();
@@ -1988,6 +2042,7 @@ while True:
             provider_id: "generic".into(),
             source_ref: "https://example.test/điện-ảnh".into(),
             page_size: 2,
+            source_mode: None,
         }
     }
     fn original(queue: &SourceQueue) -> ScanRecord {
@@ -2077,6 +2132,106 @@ while True:
         pump(server); // Actual final packet -> native streaming verification.
         pump(server); // Actual successful child exit.
         finish_verification(server).unwrap()
+    }
+
+    #[test]
+    fn native_single_video_commits_original_mode_and_download_after_reopen() {
+        let temp = Temporary::new();
+        let runtime = temp.recorded_runtime();
+        let mut server = Server::open(runtime).unwrap();
+        server
+            .request(Request::StartVideo {
+                scan_id: "scan".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/one".into(),
+            })
+            .unwrap();
+        pump(&mut server);
+        pump(&mut server);
+        pump(&mut server);
+        assert!(server.active.is_none());
+        let record = server.queue.scan("scan").unwrap();
+        assert_eq!(record.status, ScanStatus::Completed);
+        assert_eq!((record.discovered_count, record.completed_count), (1, 0));
+        assert_eq!(record.cursor, None);
+        let binding = load_admission(&server.runtime.data, &record).unwrap();
+        assert!(binding.video_mode().unwrap());
+        assert_eq!(binding.page_size, 1);
+        assert_eq!(binding.source_ref, "https://example.test/one");
+        assert_eq!(
+            server.queue.item("scan", "generic:one").unwrap().status,
+            ItemStatus::Discovered
+        );
+        let runtime = temp.recorded_runtime();
+        drop(server);
+        let mut restarted = Server::open(runtime).unwrap();
+        assert_eq!(restarted.queue.scan("scan").unwrap(), record);
+        begin_download(&mut restarted, "generic:one", "complete", false);
+        let value = finish_download(&mut restarted);
+        assert_eq!(value["event"], "source_downloaded");
+        assert_eq!(restarted.queue.scan("scan").unwrap().completed_count, 1);
+        let item = restarted.queue.item("scan", "generic:one").unwrap();
+        assert_eq!(item.status, ItemStatus::Downloaded);
+        assert_eq!(fs::read(item.media_path.unwrap()).unwrap(), b"abcdefgh");
+        assert!(load_admission(
+            &restarted.runtime.data,
+            &restarted.queue.scan("scan").unwrap()
+        )
+        .unwrap()
+        .video_mode()
+        .unwrap());
+        drop(restarted);
+    }
+
+    #[test]
+    fn native_single_video_refuses_mode_rebinding_and_private_reference() {
+        assert!(serde_json::from_value::<Request>(
+            json!({"command":"start_video", "scan_id":"scan",
+            "provider_id":"generic", "source_ref":"https://example.test/one", "page_size":100})
+        )
+        .is_err());
+        let temp = Temporary::new();
+        let mut server = Server::open(temp.recorded_runtime()).unwrap();
+        assert!(server
+            .request(Request::StartVideo {
+                scan_id: "scan".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/one?token=private".into(),
+            })
+            .is_err());
+        assert!(server.active.is_none());
+        assert!(server.queue.scan("scan").is_err());
+        server
+            .request(Request::StartVideo {
+                scan_id: "scan".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/one".into(),
+            })
+            .unwrap();
+        pump(&mut server);
+        pump(&mut server);
+        pump(&mut server);
+        let record = server.queue.scan("scan").unwrap();
+        let item = server.queue.item("scan", "generic:one").unwrap();
+        let mut binding = load_admission(&server.runtime.data, &record).unwrap();
+        binding.recipe = "owned-source-page-worker-v1".into();
+        binding.source_mode = None;
+        fs::write(
+            admission_path(&server.runtime.data, "scan").unwrap(),
+            serde_json::to_vec(&binding).unwrap(),
+        )
+        .unwrap();
+        assert!(server
+            .request(Request::Download {
+                scan_id: "scan".into(),
+                identity_key: "generic:one".into(),
+                resume: false,
+            })
+            .is_err());
+        assert!(server.active.is_none());
+        assert_eq!(server.queue.scan("scan").unwrap(), record);
+        assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+        drop(server);
     }
 
     #[test]
@@ -2887,6 +3042,7 @@ print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'worker':__fil
             page_size: 2,
             maximum: 100,
             existing: true,
+            single_video: false,
         };
         let mut changed_runtime = temp.runtime();
         changed_runtime.manifest_hash = "c".repeat(64);

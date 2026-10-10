@@ -2,6 +2,15 @@
 
 ## Native source service
 
+`{"command":"start_video","scan_id":"film-1","provider_id":"generic","source_ref":"https://example.com/film.mp4"}`
+admits a single public video through that provider's real inspection adapter.
+Provider IDs are `generic`, `bilibili` and `douyin`. The one-item scan completes
+enumeration only; the item remains discovered until explicit `download` succeeds.
+No playlist cursor or adjustable collection capacity is accepted for this command.
+Video mode uses producer recipe 2 and is pinned in its admission fingerprint.
+Resume/download recover that original mode after restart. Existing `start`
+channel/playlist scans retain recipe 1 and its original admission bytes.
+
 The installed binary also exposes a separate source database service:
 
 ```text

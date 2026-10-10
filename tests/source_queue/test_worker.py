@@ -200,6 +200,69 @@ class SourceWorkerTests(unittest.TestCase):
         self.manifest.source_sha = "b" * 40
         self.assertNotEqual(first.fingerprint, self.session(provider_id="bilibili", source_ref="123").fingerprint)
 
+    def test_single_video_inspects_one_original_provider_and_reinspects_for_download(self):
+        references = {"generic": ("one", "https://example.test/one"),
+            "bilibili": ("BV1xx411c7mD", "https://www.bilibili.com/video/BV1xx411c7mD"),
+            "douyin": ("7420000000000000001", "https://www.douyin.com/video/7420000000000000001")}
+        for provider, (source_id, reference) in references.items():
+            with self.subTest(provider=provider):
+                self.adapter.reset_mock()
+                session = self.session(provider_id=provider, source_ref=reference, page_size=1, source_mode="video")
+                identity = SourceIdentity(provider, source_id, reference)
+                item = SourceItem(identity, "A video", media_candidates=(MediaCandidate(
+                    "media", "https://cdn.test/media?token=private-media", "progressive", "video/mp4"),))
+                self.adapter.inspect.return_value = item
+                page = self.dispatch(session)
+                self.assertTrue(page["page"]["completed"])
+                self.assertIsNone(page["page"]["next_cursor"])
+                self.assertEqual([row["identity"] for row in page["page"]["items"]], [identity.to_dict()])
+                self.adapter.enumerate_channel.assert_not_called()
+                self.assertEqual(session.ready()["producer"]["recipe"], "owned-source-page-worker-v2")
+                self.assertEqual(session.ready()["producer"]["source_mode"], "video")
+                # Enumeration retires its worker. Materialization launches a
+                # fresh owned producer with exactly the original mode/pins.
+                fresh = self.session(provider_id=provider, source_ref=reference, page_size=1, source_mode="video")
+                self.assertEqual(fresh.fingerprint, session.fingerprint)
+                raw = b"recorded individual-video bytes; not real-media qualification"
+                def download(selected, destination, **kwargs):
+                    self.assertEqual(selected.identity, identity)
+                    destination.write_bytes(raw)
+                    return DownloadResult(destination, len(raw), sha256(raw).hexdigest(), False)
+                self.adapter.download.side_effect = download
+                result = fresh.download({"producer_fingerprint":session.fingerprint,"dispatch_revision":2,
+                    "identity_key":identity.identity_key,"source_id":source_id,"source_url":reference,"resume":False})
+                self.assertEqual(result["identity_key"], identity.identity_key)
+                self.assertEqual(self.adapter.inspect.call_args_list, [unittest.mock.call(reference), unittest.mock.call(reference)])
+                name, _ = session.publish(page, "single-video")
+                self.assertNotIn(b"private-media", (self.work/name).read_bytes())
+                with self.assertRaises(SourceError):self.dispatch(session, revision=3)
+
+    def test_video_mode_cannot_rebind_collection_identity_or_admit_invalid_mode(self):
+        old = self.session(page_size=1)
+        video = self.session(page_size=1, source_mode="video")
+        self.assertNotIn("source_mode", old.ready()["producer"])
+        self.assertNotEqual(old.fingerprint, video.fingerprint)
+        for changes in [{"source_mode":None},{"source_mode":"playlist"},
+                        {"source_mode":"video","page_size":2}]:
+            with self.subTest(changes=changes), self.assertRaises(SourceError):self.session(**changes)
+        with self.assertRaises(SourceError):self.dispatch(video, cursor="page-2")
+        with self.assertRaises(SourceError):self.dispatch(video, producer_fingerprint=old.fingerprint)
+        self.adapter.inspect.assert_not_called()
+
+    def test_single_video_private_reference_and_typed_inspection_failure_never_create_media(self):
+        with self.assertRaises(SourceError):self.session(source_mode="video", page_size=1,
+            source_ref="https://example.test/video?token=private")
+        for code in (SourceErrorCode.NOT_FOUND, SourceErrorCode.PRIVATE, SourceErrorCode.AUTH_REQUIRED,
+                     SourceErrorCode.RATE_LIMITED, SourceErrorCode.NETWORK, SourceErrorCode.SOURCE_CHANGED):
+            with self.subTest(code=code):
+                session=self.session(page_size=1, source_mode="video")
+                self.adapter.inspect.side_effect=SourceError(code,"private diagnostic")
+                with self.assertRaises(SourceError) as caught:self.dispatch(session)
+                self.assertEqual(caught.exception.code, code)
+                self.assertFalse(session.completed)
+        self.assertEqual(list(self.work.iterdir()), [])
+        self.adapter.download.assert_not_called()
+
     def test_changed_producer_and_malformed_dispatch_fail_before_network(self):
         session = self.session()
         for changes in [{"producer_fingerprint": "b" * 64}, {"producer_fingerprint": "A" * 64},

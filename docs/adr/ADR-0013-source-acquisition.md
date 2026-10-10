@@ -2,6 +2,43 @@
 
 Status: Accepted
 
+## Explicit single-video admission and producer recipe 2
+
+Native `start_video` admits one public generic, Bilibili or Douyin video URL.
+It fixes page size and item capacity to one. The owned worker uses the existing
+provider's `inspect` boundary, then publishes one completed enumeration page;
+inspection does not mark the item downloaded. A fresh original producer must
+reinspect that exact public identity before the unchanged hash/atomic media
+publication and checked SQLite commit can mark it Downloaded. Typed inspection
+errors leave other scans/local jobs runnable. Media locators and credentials
+remain absent from durable page/admission packets.
+
+Video producers explicitly use `owned-source-page-worker-v2` with
+`source_mode: video` in the immutable producer identity and fingerprint.
+Recipe 1 retains its exact previous JSON, without a null or default mode field;
+channel/playlist admission bytes and fingerprints therefore remain compatible.
+The native controller and worker implement both recipes. Video mode cannot
+resume a collection cursor; resume/download recover the original mode from the
+hash-bound create-new admission artifact rather than from a new caller option.
+Changing mode/recipe in that artifact invalidates the original SQLite binding.
+All original runtime, release manifest, provider, URL and page pins still apply.
+
+SQLite remains schema 2; no columns or data migration are required. The source
+contract and worker envelopes remain version 1. The additive private command
+arguments and producer identity are versioned by recipe 2. An older controller
+rejects new video admission fields/recipe, preserving the rows without repinning
+or relabeling them. Rollback requires the compatible original retained producer
+for those scans; recipe-1 scans continue using their existing retained release.
+Never remove the mode to make a new video scan resumable in an older controller.
+
+Recorded adapter tests cover all three providers, original-mode fingerprints,
+fresh reinspection, private references and typed unavailable/rate-limit/network
+errors. Native stdio/SQLite tests cover one-item enumeration without a false
+download, owner reopen, materialization and mode-tamper refusal. Their bytes are
+fixtures, not real media/provider or credential/desktop qualification. Successor
+exact-head/current-base required CI and actual installed acquisition remain
+necessary before the complete source Issue or release can be qualified.
+
 ## Producer-bound materialization callbacks
 
 The schema-2 store's unchecked item-progress API previously admitted a bound

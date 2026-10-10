@@ -119,6 +119,8 @@ jobs:
             'native_full_nested_inventory_is_verified_without_skipping_files',
             'native_recorded_stdio_commits_pauses_and_restarts_from_page_n',
             'native_recorded_download_commits_verified_owned_media_and_reopens',
+            'native_single_video_commits_original_mode_and_download_after_reopen',
+            'native_single_video_refuses_mode_rebinding_and_private_reference',
             'native_download_pause_preserves_parts_and_refuses_old_dispatch_on_resume',
             'native_download_failure_and_cancel_leave_siblings_executable',
             'native_interrupted_download_reopens_with_new_epoch_and_original_producer',
