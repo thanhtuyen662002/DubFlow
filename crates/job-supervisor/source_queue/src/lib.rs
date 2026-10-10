@@ -240,7 +240,7 @@ pub struct ScanRecord {
     pub failed_count: usize,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
-    /// Changes on page commits and control transitions, independently of wall clock.
+    /// Changes on checked commits and control transitions, independently of wall clock.
     pub dispatch_revision: u64,
     /// Fingerprint of the verified runtime/adapter/recipe request; never repinned.
     pub producer_fingerprint: Option<String>,
@@ -712,6 +712,39 @@ impl SourceQueue {
         progress: &ItemProgress,
         now_ms: u64,
     ) -> Result<()> {
+        self.commit_item_progress(scan_id, identity_key, None, progress, now_ms)?;
+        Ok(())
+    }
+
+    /// Commit an item callback against the supervisor's original dispatch.
+    ///
+    /// The caller must capture both records before launching the worker. It must
+    /// not reread them to authorize a late callback. The returned scan contains
+    /// the next dispatch revision, even when every wall-clock timestamp is equal.
+    pub fn update_item_progress_checked(
+        &self,
+        dispatched: &ScanRecord,
+        item: &SourceQueueItem,
+        progress: &ItemProgress,
+        now_ms: u64,
+    ) -> Result<ScanRecord> {
+        self.commit_item_progress(
+            &dispatched.scan_id,
+            &item.identity_key,
+            Some((dispatched, item)),
+            progress,
+            now_ms,
+        )
+    }
+
+    fn commit_item_progress(
+        &self,
+        scan_id: &str,
+        identity_key: &str,
+        dispatched: Option<(&ScanRecord, &SourceQueueItem)>,
+        progress: &ItemProgress,
+        now_ms: u64,
+    ) -> Result<ScanRecord> {
         validate_text(identity_key, "identity_key", MAX_IDENTITY_KEY)?;
         validate_progress(progress)?;
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
@@ -724,6 +757,44 @@ impl SourceQueue {
                 entity: "scan",
                 from: scan.status.as_str().into(),
                 to: "item-progress".into(),
+            });
+        }
+        if let Some((expected, expected_item)) = dispatched {
+            if scan.producer_fingerprint.is_none() {
+                return Err(QueueError::ProducerBindingRequired {
+                    scan_id: scan_id.into(),
+                });
+            }
+            if !matches!(scan.status, ScanStatus::Running | ScanStatus::Completed)
+                || expected != &scan
+                || expected_item.scan_id != scan_id
+            {
+                return Err(QueueError::StaleDispatch {
+                    scan_id: scan_id.into(),
+                });
+            }
+            // Match the indexed item directly; progress on a 10k-item scan must
+            // not allocate the entire scan for each worker callback.
+            let unchanged: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM source_items WHERE scan_id=?1 AND identity_key=?2 AND source_id=?3 AND source_url=?4 AND position=?5 AND status=?6 AND retry_count=?7 AND downloaded_bytes=?8 AND total_bytes IS ?9 AND error_code IS ?10 AND error_message IS ?11 AND media_path IS ?12 AND content_hash IS ?13)",
+                params![scan_id, identity_key, expected_item.source_id,
+                    expected_item.source_url, to_i64(expected_item.position, "position")?,
+                    expected_item.status.as_str(), i64::from(expected_item.retry_count),
+                    to_i64(expected_item.downloaded_bytes, "downloaded_bytes")?,
+                    expected_item.total_bytes.map(|v| to_i64(v, "total_bytes")).transpose()?,
+                    expected_item.error_code, expected_item.error_message,
+                    expected_item.media_path, expected_item.content_hash],
+                |row| row.get(0),
+            )?;
+            if !unchanged {
+                return Err(QueueError::StaleDispatch {
+                    scan_id: scan_id.into(),
+                });
+            }
+            ensure_next_revision(scan.dispatch_revision)?;
+        } else if scan.producer_fingerprint.is_some() {
+            return Err(QueueError::ProducerBindingRequired {
+                scan_id: scan_id.into(),
             });
         }
         let changed = tx.execute(
@@ -740,8 +811,15 @@ impl SourceQueue {
             "UPDATE source_scans SET completed_count = (SELECT COUNT(*) FROM source_items WHERE scan_id = ?1 AND status = 'downloaded'), failed_count = (SELECT COUNT(*) FROM source_failures WHERE scan_id = ?1) + (SELECT COUNT(*) FROM source_items WHERE scan_id = ?1 AND status = 'failed'), updated_at_ms = ?2 WHERE scan_id = ?1",
             params![scan_id, to_i64(now_ms, "now_ms")?],
         )?;
+        if dispatched.is_some() {
+            tx.execute(
+                "UPDATE source_scans SET dispatch_revision = dispatch_revision + 1 WHERE scan_id = ?1",
+                params![scan_id],
+            )?;
+        }
+        let committed = self.scan(scan_id)?;
         tx.commit()?;
-        Ok(())
+        Ok(committed)
     }
 
     /// Compatibility alias for callers that model a page checkpoint as a
@@ -1373,24 +1451,194 @@ mod tests {
         progress.status = ItemStatus::Downloaded;
         progress.downloaded_bytes = 10;
         progress.total_bytes = Some(10);
+        let dispatched = queue.scan("bound").unwrap();
+        let original = queue.items("bound").unwrap().remove(0);
         queue.pause_scan("bound", 3).unwrap();
         assert!(queue
-            .update_item_progress("bound", "fixture:one", &progress, 3)
+            .update_item_progress_checked(&dispatched, &original, &progress, 3)
             .is_err());
-        queue.resume_scan("bound", 3).unwrap();
+        let resumed = queue.resume_scan("bound", 3).unwrap();
         queue.connection.execute_batch("CREATE TRIGGER refuse_count BEFORE UPDATE OF completed_count ON source_scans BEGIN SELECT RAISE(ABORT,'injected count failure'); END;").unwrap();
-        assert!(queue
-            .update_item_progress("bound", "fixture:one", &progress, 3)
-            .is_err());
+        assert!(matches!(
+            queue.update_item_progress_checked(&resumed, &original, &progress, 3),
+            Err(QueueError::Sqlite(_))
+        ));
         let item = &queue.items("bound").unwrap()[0];
         assert_eq!(item.status, ItemStatus::Discovered);
         assert_eq!(item.downloaded_bytes, 0);
         assert_eq!(queue.scan("bound").unwrap().completed_count, 0);
+        assert_eq!(queue.scan("bound").unwrap(), resumed);
         queue.cancel_scan("bound", 3).unwrap();
         assert!(queue
-            .update_item_progress("bound", "fixture:one", &progress, 3)
+            .update_item_progress_checked(&resumed, &original, &progress, 3)
             .is_err());
         assert_eq!(queue.items("bound").unwrap()[0], *item);
+    }
+
+    fn bound_item(queue: &SourceQueue, completed: bool) -> (ScanRecord, SourceQueueItem) {
+        let initial = bound(queue);
+        let record = queue
+            .checkpoint_page_checked(
+                &initial,
+                &page(
+                    &["one"],
+                    if completed { None } else { Some("page-1") },
+                    completed,
+                ),
+                1,
+            )
+            .unwrap();
+        (record, queue.items("bound").unwrap().remove(0))
+    }
+
+    fn downloaded() -> ItemProgress {
+        ItemProgress {
+            status: ItemStatus::Downloaded,
+            downloaded_bytes: 10,
+            total_bytes: Some(10),
+            media_path: Some("owned/media.mp4".into()),
+            content_hash: Some("a".repeat(64)),
+            ..ItemProgress::discovered()
+        }
+    }
+
+    #[test]
+    fn bound_items_refuse_unchecked_writes_and_alias() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        let (record, item) = bound_item(&queue, false);
+        let progress = downloaded();
+        assert!(matches!(
+            queue.update_item_progress("bound", &item.identity_key, &progress, 1),
+            Err(QueueError::ProducerBindingRequired { .. })
+        ));
+        assert!(matches!(
+            queue.update_item("bound", &item.identity_key, &progress, 1),
+            Err(QueueError::ProducerBindingRequired { .. })
+        ));
+        assert_eq!(queue.scan("bound").unwrap(), record);
+        assert_eq!(queue.items("bound").unwrap(), vec![item]);
+    }
+
+    #[test]
+    fn checked_item_commit_is_single_use_and_preserves_completed_enumeration() {
+        for complete in [false, true] {
+            let queue = SourceQueue::open_in_memory().unwrap();
+            let (record, item) = bound_item(&queue, complete);
+            assert_eq!(record.completed_count, 0);
+            let committed = queue
+                .update_item_progress_checked(&record, &item, &downloaded(), 1)
+                .unwrap();
+            assert_eq!(committed.status, record.status);
+            assert_eq!(committed.cursor, record.cursor);
+            assert_eq!(committed.producer_fingerprint, record.producer_fingerprint);
+            assert_eq!(committed.completed_count, 1);
+            assert_eq!(committed.dispatch_revision, record.dispatch_revision + 1);
+            assert!(matches!(
+                queue.update_item_progress_checked(&record, &item, &downloaded(), 1),
+                Err(QueueError::StaleDispatch { .. })
+            ));
+            assert_eq!(queue.scan("bound").unwrap(), committed);
+            assert_eq!(
+                queue.items("bound").unwrap()[0].status,
+                ItemStatus::Downloaded
+            );
+        }
+    }
+
+    #[test]
+    fn checked_items_refuse_changed_producer_scope_and_original_item() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        let (record, item) = bound_item(&queue, false);
+        let mut changed = record.clone();
+        changed.producer_fingerprint = Some("b".repeat(64));
+        assert!(matches!(
+            queue.update_item_progress_checked(&changed, &item, &downloaded(), 1),
+            Err(QueueError::StaleDispatch { .. })
+        ));
+        for change in 0..4 {
+            let mut changed = item.clone();
+            match change {
+                0 => changed.scan_id = "other".into(),
+                1 => changed.source_url = "https://example.test/other".into(),
+                2 => changed.retry_count += 1,
+                _ => changed.downloaded_bytes += 1,
+            }
+            assert!(matches!(
+                queue.update_item_progress_checked(&record, &changed, &downloaded(), 1),
+                Err(QueueError::StaleDispatch { .. })
+            ));
+        }
+        assert_eq!(queue.scan("bound").unwrap(), record);
+        assert_eq!(queue.items("bound").unwrap(), vec![item]);
+    }
+
+    #[test]
+    fn same_clock_pause_resume_and_competing_item_commit_refuse_late_callbacks() {
+        let database = TestDatabase::new();
+        let first = SourceQueue::open(database.path()).unwrap();
+        let (record, item) = bound_item(&first, false);
+        let second = SourceQueue::open(database.path()).unwrap();
+        second.pause_scan("bound", 1).unwrap();
+        let resumed = second.resume_scan("bound", 1).unwrap();
+        assert_eq!(resumed.updated_at_ms, record.updated_at_ms);
+        assert!(matches!(
+            first.update_item_progress_checked(&record, &item, &downloaded(), 1),
+            Err(QueueError::StaleDispatch { .. })
+        ));
+        let committed = second
+            .update_item_progress_checked(&resumed, &item, &downloaded(), 1)
+            .unwrap();
+        assert!(matches!(
+            first.update_item_progress_checked(&resumed, &item, &ItemProgress::discovered(), 1),
+            Err(QueueError::StaleDispatch { .. })
+        ));
+        assert_eq!(first.scan("bound").unwrap(), committed);
+        assert_eq!(
+            first.items("bound").unwrap()[0].status,
+            ItemStatus::Downloaded
+        );
+    }
+
+    #[test]
+    fn recovered_item_dispatch_requires_a_new_supervisor_snapshot() {
+        let database = TestDatabase::new();
+        let (record, item);
+        {
+            let queue = SourceQueue::open(database.path()).unwrap();
+            (record, item) = bound_item(&queue, false);
+        }
+        let queue = SourceQueue::open(database.path()).unwrap();
+        assert_eq!(queue.recover_running(1).unwrap(), 1);
+        let resumed = queue.resume_scan("bound", 1).unwrap();
+        assert!(matches!(
+            queue.update_item_progress_checked(&record, &item, &downloaded(), 1),
+            Err(QueueError::StaleDispatch { .. })
+        ));
+        assert_eq!(queue.items("bound").unwrap(), vec![item.clone()]);
+        queue
+            .update_item_progress_checked(&resumed, &item, &downloaded(), 1)
+            .unwrap();
+    }
+
+    #[test]
+    fn item_revision_write_failure_and_exhaustion_roll_back_all_mutations() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        let (record, item) = bound_item(&queue, false);
+        queue.connection.execute_batch("CREATE TRIGGER refuse_revision BEFORE UPDATE OF dispatch_revision ON source_scans BEGIN SELECT RAISE(ABORT,'injected revision failure'); END;").unwrap();
+        assert!(matches!(
+            queue.update_item_progress_checked(&record, &item, &downloaded(), 1),
+            Err(QueueError::Sqlite(_))
+        ));
+        assert_eq!(queue.scan("bound").unwrap(), record);
+        assert_eq!(queue.items("bound").unwrap(), vec![item.clone()]);
+        queue.connection.execute_batch("DROP TRIGGER refuse_revision; UPDATE source_scans SET dispatch_revision=9223372036854775807 WHERE scan_id='bound';").unwrap();
+        let exhausted = queue.scan("bound").unwrap();
+        assert!(matches!(
+            queue.update_item_progress_checked(&exhausted, &item, &downloaded(), 1),
+            Err(QueueError::InvalidInput(_))
+        ));
+        assert_eq!(queue.scan("bound").unwrap(), exhausted);
+        assert_eq!(queue.items("bound").unwrap(), vec![item]);
     }
 
     #[test]

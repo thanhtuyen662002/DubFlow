@@ -2,6 +2,37 @@
 
 Status: Accepted
 
+## Producer-bound materialization callbacks
+
+The schema-2 store's unchecked item-progress API previously admitted a bound
+scan whenever its current status allowed writes. A download callback dispatched
+before pause/resume or owner recovery could overwrite a newer item after the
+scan became runnable again. Production integrations must use
+`update_item_progress_checked` with the original ScanRecord and SourceQueueItem
+captured before dispatch, never reread records to authorize a late callback.
+The same IMMEDIATE transaction checks the exact producer/scan/revision/cursor
+and item snapshot, commits item progress and aggregate counts, and increments
+the existing dispatch revision. It captures the returned revision before commit.
+Page and item dispatches are serialized per scan; a checked item commit also
+invalidates an older in-flight page. Equal wall-clock timestamps cannot replay
+a dispatch. A completed enumeration may materialize its discovered items;
+enumeration completion does not imply downloaded media.
+
+Producer-bound rows now refuse unchecked item writes through both compatibility
+entry points. Legacy unbound rows keep their prior API and behavior. SQLite stays
+at schema 2; no columns, public source/worker contract, producer identity, model
+or artifact format changes. Older compatible runtimes remain retained for their
+pinned scans and rollback preserves all rows, cursors, admissions and artifacts.
+This new dispatch guard does not repin or relabel old scans and is not a native
+download/desktop acceptance claim. File validation, bounded retries with changed
+conditions, worker ownership and actual installed acquisition remain required.
+Real SQLite tests cover single-use commits, completed enumeration, competing
+connections, same-clock pause/resume, owner recovery, changed producer/item
+scope, aggregate/revision rollback and exhaustion without partial mutation.
+The existing Windows Release native-source step also executes release-mode
+source-queue tests and refuses missing named item-guard receipts; a successful
+build alone does not prove these transaction boundaries executed on Windows.
+
 ## Native source controller and admission artifact v1
 
 The installed supervisor's additive `source-serve` mode owns a separate source

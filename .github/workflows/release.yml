@@ -122,6 +122,22 @@ jobs:
             $nativeSourcePattern = '(?m)^test source_server::tests::' + [regex]::Escape($nativeSourceTest) + ' \.\.\. ok\r?$'
             if ($nativeSourceEvidence -notmatch $nativeSourcePattern) { throw "Missing Windows native evidence: $nativeSourceTest" }
           }
+          $sourceQueueLog = Join-Path $env:RUNNER_TEMP 'dubflow-source-queue-tests.log'
+          cargo test --manifest-path crates/job-supervisor/source_queue/Cargo.toml --target-dir crates/job-supervisor/app/target --locked --release -- --color never 2>&1 | Tee-Object -FilePath $sourceQueueLog
+          if ($LASTEXITCODE -ne 0) { throw 'Windows source queue transaction tests failed' }
+          $sourceQueueEvidence = Get-Content -LiteralPath $sourceQueueLog -Raw
+          foreach ($sourceQueueTest in @(
+            'bound_items_refuse_unchecked_writes_and_alias',
+            'checked_item_commit_is_single_use_and_preserves_completed_enumeration',
+            'checked_items_refuse_changed_producer_scope_and_original_item',
+            'same_clock_pause_resume_and_competing_item_commit_refuse_late_callbacks',
+            'recovered_item_dispatch_requires_a_new_supervisor_snapshot',
+            'paused_cancelled_progress_and_count_failure_preserve_items_atomically',
+            'item_revision_write_failure_and_exhaustion_roll_back_all_mutations'
+          )) {
+            $sourceQueuePattern = '(?m)^test tests::' + [regex]::Escape($sourceQueueTest) + ' \.\.\. ok\r?$'
+            if ($sourceQueueEvidence -notmatch $sourceQueuePattern) { throw "Missing Windows source queue evidence: $sourceQueueTest" }
+          }
 
       - name: Download and verify app-owned FFmpeg runtime
         shell: pwsh
