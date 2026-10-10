@@ -271,6 +271,14 @@ jobs:
           $check = & $launcher --self-check | ConvertFrom-Json
           if (-not $check.ready) { throw "Installed self-check failed: $($check | ConvertTo-Json -Compress)" }
           $installedRoot = Join-Path $env:LOCALAPPDATA "DubFlow/versions/$env:RELEASE_VERSION"
+          $installedHost = Join-Path $installedRoot 'app/bin/DubFlow.exe'
+          $hosts = @(Get-Process -Name 'DubFlow' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $installedHost })
+          if ($hosts.Count -ne 1) { throw 'Setup did not auto-launch exactly one host from the installed runtime' }
+          $installedHostPid = $hosts[0].Id
+          & (Join-Path $installedRoot 'runtime/python.exe') -I -S -B scripts/release/desktop_runtime_smoke.py `
+            --root $installedRoot --data-root (Join-Path $env:LOCALAPPDATA 'DubFlow') `
+            --expected-source-sha $env:SOURCE_SHA --report (Join-Path $PWD 'dist/installed-desktop-runtime-smoke.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Normal desktop launch invalidated the installed runtime or failed WebView2 initialization' }
           # Keep the installed qualification independent from the staging
           # smoke above.  Reusing its durable job store with the same smoke
           # IDs would correctly return COMPLETED without recreating artifacts
@@ -291,14 +299,16 @@ jobs:
             --report (Join-Path $PWD 'dist/installed-streaming-pcm.json')
           if ($LASTEXITCODE -ne 0) { throw 'Installed owned streaming PCM qualification failed' }
           Start-Sleep -Seconds 8
-          $hostProcess = Get-Process -Name 'DubFlow' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($null -eq $hostProcess) { throw 'Setup completed but did not auto-launch the desktop host' }
-          Stop-Process -Id $hostProcess.Id -Force
+          $hostProcess = Get-Process -Id $installedHostPid -ErrorAction SilentlyContinue
+          if ($null -eq $hostProcess -or $hostProcess.Path -ne $installedHost) { throw 'Installed desktop host stopped during qualification' }
+          Stop-Process -Id $installedHostPid -Force
           $evidencePath = "dist/DubFlow-$env:RELEASE_VERSION-release-evidence.json"
           $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
           $evidence | Add-Member -NotePropertyName desktop_host -NotePropertyValue ([ordered]@{
             packaged_path = 'app/bin/DubFlow.exe'
             launch_smoke = 'passed'
+            post_launch_inventory = 'passed'
+            runtime_report = 'dist/installed-desktop-runtime-smoke.json'
           }) -Force
           $evidence | Add-Member -NotePropertyName installed_pipeline_smoke -NotePropertyValue 'passed' -Force
           $evidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $evidencePath -Encoding utf8NoBOM
@@ -317,6 +327,7 @@ jobs:
             dist/installed-pipeline-smoke.json
             dist/qualification/streaming-pcm.json
             dist/installed-streaming-pcm.json
+            dist/installed-desktop-runtime-smoke.json
           if-no-files-found: error
 
   publish:

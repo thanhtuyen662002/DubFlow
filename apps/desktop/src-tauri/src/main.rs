@@ -124,6 +124,39 @@ fn control_root() -> Result<PathBuf, String> {
     Ok(root)
 }
 
+fn webview_data_root(local_app_data: &Path, version: &str) -> Result<PathBuf, String> {
+    if !local_app_data.is_absolute() || version.is_empty() || version.len() > 64
+        || !version.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+    {
+        return Err(fail("desktop profile root or release version is invalid"));
+    }
+    // Preserve version identity even on case-insensitive Windows filesystems.
+    let encoded: String = version.bytes().map(|byte| format!("{byte:02x}")).collect();
+    Ok(local_app_data.join("DubFlow/control/webview2").join(encoded))
+}
+
+#[cfg(windows)]
+fn configure_webview_data() -> Result<(), String> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .ok_or_else(|| fail("LOCALAPPDATA is unavailable"))?;
+    let profile = webview_data_root(Path::new(&local_app_data), &release_info().version)?;
+    let runtime = version_root()?.canonicalize().map_err(|error| fail(format!("unable to resolve desktop runtime: {error}")))?;
+    let ancestor = profile.ancestors().find(|path| path.exists())
+        .ok_or_else(|| fail("desktop profile has no available parent"))?;
+    if ancestor.canonicalize().map_err(|error| fail(format!("unable to resolve desktop profile parent: {error}")))?.starts_with(&runtime) {
+        return Err(fail("desktop profile cannot be inside the immutable runtime"));
+    }
+    fs::create_dir_all(&profile).map_err(|error| fail(format!("unable to create desktop profile: {error}")))?;
+    let profile = profile.canonicalize().map_err(|error| fail(format!("unable to resolve desktop profile: {error}")))?;
+    if profile.starts_with(runtime) {
+        return Err(fail("desktop profile cannot be inside the immutable runtime"));
+    }
+    // WebView2 reads this documented override during environment creation.
+    // Set it before Tauri starts threads or creates any configured windows.
+    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", profile);
+    Ok(())
+}
+
 fn command_with_no_window(program: &Path) -> Command {
     let mut command = Command::new(program);
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -257,6 +290,8 @@ fn cancel_job(job_id: String) -> Result<(), String> {
 }
 
 fn main() {
+    #[cfg(windows)]
+    configure_webview_data().expect("unable to configure DubFlow desktop profile");
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job])
         .run(tauri::generate_context!())
@@ -266,6 +301,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_profiles_preserve_runtime_identity_and_refuse_invalid_roots() {
+        let local = std::env::temp_dir().join("DubFlow profile [spaces]");
+        let original = webview_data_root(&local, "0.1.0-rc.film").unwrap();
+        assert!(original.starts_with(local.join("DubFlow/control/webview2")));
+        assert_eq!(original, webview_data_root(&local, "0.1.0-rc.film").unwrap());
+        assert_ne!(original.to_string_lossy().to_lowercase(),
+            webview_data_root(&local, "0.1.0-rc.Film").unwrap().to_string_lossy().to_lowercase());
+        assert_ne!(original, webview_data_root(&local, "0.1.0-rc.next").unwrap());
+        assert!(webview_data_root(Path::new("relative"), "0.1.0").is_err());
+        for version in ["", "../escape", "a\\escape", "a:b", "a\n"] {
+            assert!(webview_data_root(&local, version).is_err());
+        }
+        assert!(webview_data_root(&local, &"x".repeat(65)).is_err());
+        assert!(webview_data_root(&local, &"x".repeat(64)).is_ok());
+    }
 
     #[test]
     fn voice_versions_keep_separate_outputs_and_resume_the_same_directory() {

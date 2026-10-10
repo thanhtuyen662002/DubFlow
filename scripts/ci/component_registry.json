@@ -976,6 +976,7 @@
       "roots": [
         "packaging/release",
         "scripts/release/production_smoke.py",
+        "scripts/release/desktop_runtime_smoke.py",
         "tests/release",
         "docs/release",
         ".github/workflows/release.yml"

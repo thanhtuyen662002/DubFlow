@@ -523,3 +523,36 @@ that the previously unexecuted path passed. Required exact successor/head/base
 lanes and staged/installed actual process overlap must rerun. Public schemas,
 SQLite, models and artifact formats remain unchanged; immutable job/runtime
 pins and coherent rollback apply to this changed supervisor as above.
+
+## Native browser data and immutable release inventory
+
+Actual e50 installation completed, but normal desktop startup created
+`app/bin/DubFlow.exe.WebView2/EBWebView` caches under the immutable release.
+The strict installed inventory correctly rejected these unmanifested files
+before real-film qualification. The older profile and failed receipt remain
+evidence; startup success alone did not establish a trusted runtime.
+
+Before Tauri initializes windows or threads, the Windows host now sets the
+documented `WEBVIEW2_USER_DATA_FOLDER` override to
+`LOCALAPPDATA/DubFlow/control/webview2/<hex-release-version>`. Absolute writable
+roots are required; the canonical browser profile must be outside the runtime.
+Hexadecimal UTF-8 version bytes preserve case-sensitive version identity on
+Windows. Each version retains its own disposable browser data. This directory
+is neither canonical project storage nor supervisor-owned durable job state.
+
+Windows release qualification must observe actual WebView2 files there and
+run the unchanged full manifest verifier with the installed owned interpreter
+after normal startup. It records inventory, source and interpreter bindings;
+this is initialization evidence, not interactive GUI or film-acting approval.
+The exact installed executable owns the process check and shutdown.
+
+No public schema, migration, model, dependency, job producer or artifact format
+changes. Existing jobs keep their original runtime pins. No old profile is
+copied, rewritten or deleted. Rollback keeps the coherent retained runtime and
+its corresponding profile; older runtimes retain their original startup
+behavior. No cache whitelist or trust waiver is permitted. All required
+successor HEAD/current-base lanes and actual installed qualification must rerun.
+
+WebView2 override semantics and writable user-data placement:
+https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl
+and https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder.
