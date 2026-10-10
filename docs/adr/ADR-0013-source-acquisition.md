@@ -847,3 +847,37 @@ reproduce the old lifecycle/path refusal while preserving standard/local output.
 Subprocess framing and Windows long-private-work tests are deterministic scope;
 actual successor native acquisition and all four exact-head/current-base CI
 lanes still require fresh evidence. Full167/168/175 acceptance remains open.
+
+## Bounded private HTTP checkpoints during an active transfer
+
+The actual8ad native full-film pause retained85,983,232 bytes, but reopening
+redownloaded from byte0: the worker can be stopped during a blocking read,
+before its finally block writes a resume receipt. Persist a private receipt
+after the first chunk, then every16 MiB or5 seconds at a read boundary. Flush
+and fsync the media prefix before atomically writing its SHA256/byte count and
+strong HTTP ETag receipt, before reporting progress. Hash the running prefix
+incrementally; do not rehash the growing object at every checkpoint.
+
+A stopped worker may leave an uncommitted tail. On reopen, authenticate the
+recorded prefix and original locator digest, then require the matching strong
+validator and exact HTTP range. Only after that response is admitted may the
+private tail be truncated and replaced. Refused/changed validators preserve
+the old export, prefix, tail and receipt. Unbound or corrupted prefixes still
+restart safely; no file length, URL or unverified prefix authorizes splicing.
+
+Receipt schema1 already contains these fields; size_bytes now explicitly
+identifies the committed prefix, which may be shorter than the private file.
+No public schema, source identity, worker envelope, queue, dependency or
+producer recipe changes. Existing admissions retain their original immutable
+runtime; the corrected successor requires a fresh admission. Old runtimes
+may safely restart a longer private file from0 and never infer prefix reuse.
+Rollback retains canonical/standard exports; no durable-record migration or
+old-runtime rebinding is performed.
+
+The actual same8ad film also exposed a separate Matroska timing refusal:
+owned ffprobe finds H264/AC3 and a container duration, but neither AV stream
+has duration/duration_ts. Container duration does not establish each selected
+stream's extent. This checkpoint repair does not waive timing validation;
+Matroska timing and fresh packaged native range-recovery remain acceptance
+work. A deterministic real killed downloader/local HTTP range test covers
+process loss independently of optional live-provider qualification.

@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 from typing import BinaryIO, Callable, Mapping, Protocol
 from urllib.parse import urljoin, urlsplit
 from urllib.error import HTTPError, URLError
@@ -29,6 +30,8 @@ from .source_adapter import MediaCandidate, SourceError, SourceErrorCode
 MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024 * 1024  # 32 GiB safety ceiling per item.
 MAX_REDIRECTS = 5
 MAX_CHUNK_BYTES = 1024 * 1024
+_CHECKPOINT_BYTES = 16 * 1024 * 1024
+_CHECKPOINT_SECONDS = 5.0
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CONTENT_RANGE = re.compile(r"^bytes (\d+)-(\d+)/(\d+|\*)$", re.IGNORECASE)
 
@@ -391,15 +394,26 @@ class MediaMaterializer:
         _reject_links(receipt)
         locator_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
         validator = None
+        prefix_sha256 = None
+        physical_size = start
         if start:
             try:
                 if receipt.is_file() and receipt.stat().st_size <= 4096:
                     record = json.loads(receipt.read_text(encoding="utf-8"))
                     if (isinstance(record, dict) and record.get("schema_version") == 1
                         and record.get("locator_sha256") == locator_hash
-                        and record.get("size_bytes") == start
-                        and record.get("sha256") == _file_digest(part, self.chunk_bytes)):
-                        validator = _strong_etag(record.get("etag"))
+                        and type(record.get("size_bytes")) is int
+                        and 0 < record["size_bytes"] <= min(start, self.max_bytes)):
+                        # A killed worker may leave bytes after the last fsynced
+                        # checkpoint. Authenticate only the committed prefix.
+                        prefix = hashlib.sha256()
+                        with part.open("rb") as existing:
+                            _hash_stream(existing, prefix, record["size_bytes"], self.chunk_bytes)
+                        if prefix.hexdigest() == record.get("sha256"):
+                            validator = _strong_etag(record.get("etag"))
+                            if validator is not None:
+                                start = record["size_bytes"]
+                                prefix_sha256 = record["sha256"]
             except (OSError, ValueError, UnicodeError):
                 validator = None
             # Legacy unbound partials are only safe if the caller pins the
@@ -477,16 +491,26 @@ class MediaMaterializer:
             digest = hashlib.sha256()
             resumed = bool(start)
             if start:
-                if not part.exists() or part.stat().st_size != start:
+                if not part.exists() or part.stat().st_size != physical_size:
                     raise DownloadError(DownloadErrorCode.RESUME_INVALID, "partial file size changed before resume")
                 with part.open("rb") as existing:
                     _hash_stream(existing, digest, start, self.chunk_bytes)
-            mode = "ab" if start else "wb"
+                if prefix_sha256 is not None and digest.hexdigest() != prefix_sha256:
+                    raise DownloadError(DownloadErrorCode.RESUME_INVALID, "committed prefix changed before resume")
+            mode = "r+b" if start else "wb"
             copied = start
             if progress is not None:
                 progress(copied, total)
             with part.open(mode) as out:
+                if start:
+                    # Keep private tail bytes intact through every HTTP/pin
+                    # refusal. Discard them only after a checked response.
+                    out.truncate(start)
+                    out.seek(start)
                 wrote_body = True
+                checkpoint_bytes = start
+                checkpoint_time = time.monotonic()
+                first_checkpoint = True
                 while True:
                     if cancel and cancel():
                         raise DownloadError(DownloadErrorCode.CANCELLED, "download cancelled at a safe boundary")
@@ -500,6 +524,17 @@ class MediaMaterializer:
                         raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "download exceeds the configured size limit")
                     digest.update(chunk)
                     out.write(chunk)
+                    now = time.monotonic()
+                    if (first_checkpoint or copied - checkpoint_bytes >= _CHECKPOINT_BYTES
+                            or now - checkpoint_time >= _CHECKPOINT_SECONDS):
+                        # Native pause/crash may terminate us during the next
+                        # blocking network read, before finally can run.
+                        out.flush()
+                        os.fsync(out.fileno())
+                        _write_receipt(receipt, {"schema_version": 1, "locator_sha256": locator_hash,
+                            "size_bytes": copied, "sha256": digest.hexdigest(), "etag": checkpoint_etag})
+                        checkpoint_bytes, checkpoint_time = copied, now
+                        first_checkpoint = False
                     if progress is not None:
                         progress(copied, total)
                 out.flush()
@@ -521,6 +556,8 @@ class MediaMaterializer:
         finally:
             if wrote_body and part.is_file():
                 try:
+                    with part.open("r+b") as retained:
+                        os.fsync(retained.fileno())
                     _write_receipt(receipt, {"schema_version": 1, "locator_sha256": locator_hash,
                         "size_bytes": part.stat().st_size, "sha256": _file_digest(part, self.chunk_bytes), "etag": checkpoint_etag})
                 except OSError:

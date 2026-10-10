@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import hashlib
+import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
+import queue
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -37,6 +41,83 @@ def endpoint(handle):
 
 
 class HttpTransportTests(unittest.TestCase):
+    def test_actual_killed_downloader_resumes_fsynced_prefix_over_http(self):
+        chunk = 1024 * 1024
+        committed = 17 * chunk  # First chunk plus the next16 MiB checkpoint.
+        stopped_at = 18 * chunk  # Actual uncommitted tail after that checkpoint.
+        payload = bytes(range(256)) * (20 * chunk // 256)
+        released = threading.Event()
+        calls = []
+
+        def handle(request):
+            range_value = request.headers.get("Range")
+            calls.append((range_value, request.headers.get("If-Range")))
+            start = int(range_value.removeprefix("bytes=").removesuffix("-")) if range_value else 0
+            request.send_response(206 if range_value else 200)
+            request.send_header("Content-Length", str(len(payload) - start))
+            request.send_header("ETag", '"fixture-version-1"')
+            if range_value:
+                request.send_header("Content-Range", f"bytes {start}-{len(payload)-1}/{len(payload)}")
+            request.end_headers()
+            try:
+                if not range_value:
+                    request.wfile.write(payload[:stopped_at])
+                    request.wfile.flush()
+                    released.wait(15)
+                    start = stopped_at
+                request.wfile.write(payload[start:])
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # Expected after the actual owning process was killed.
+
+        with endpoint(handle) as url, tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "media.mp4"
+            destination.write_bytes(b"previous-good-export")
+            repo = Path(__file__).resolve().parents[2]
+            code = "\n".join((
+                "import sys; from pathlib import Path",
+                "sys.path.insert(0, " + repr(str(repo)) + ")",
+                "from engine.dubflow.download.materializer import MediaMaterializer",
+                "from engine.dubflow.download.source_adapter import MediaCandidate",
+                "def progress(done, total):",
+                f"    if done == {stopped_at}: print('COMMITTED', flush=True)",
+                f"MediaMaterializer(chunk_bytes={chunk}).download(MediaCandidate('media',sys.argv[1],'progressive','video/mp4'),Path(sys.argv[2]),progress=progress)",
+            ))
+            process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", code, url, str(destination)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+            observed = queue.Queue(maxsize=1)
+            reader = threading.Thread(target=lambda: observed.put(process.stdout.readline()), daemon=True)
+            reader.start()
+            try:
+                self.assertEqual(observed.get(timeout=10), "COMMITTED\n")
+                self.assertIsNone(process.poll())
+                part = destination.with_name("media.mp4.part")
+                receipt = part.with_name(part.name + ".resume.json")
+                checkpoint = json.loads(receipt.read_text())
+                self.assertEqual(checkpoint["size_bytes"], committed)
+                self.assertEqual(checkpoint["sha256"], hashlib.sha256(payload[:committed]).hexdigest())
+                process.kill()  # No finally, cooperative cancel or injected receipt.
+                process.wait(timeout=10)
+                self.assertNotEqual(process.returncode, 0)
+                released.set()
+                self.assertEqual(part.read_bytes(), payload[:stopped_at])
+                self.assertEqual(json.loads(receipt.read_text()), checkpoint)
+                self.assertEqual(destination.read_bytes(), b"previous-good-export")
+                result = MediaMaterializer().download(MediaCandidate("media", url, "progressive", "video/mp4"), destination)
+                self.assertTrue(result.resumed)
+                self.assertEqual(calls, [(None, None), (f"bytes={committed}-", '"fixture-version-1"')])
+                self.assertEqual(destination.read_bytes(), payload)
+                self.assertEqual(result.sha256, hashlib.sha256(payload).hexdigest())
+                self.assertFalse(receipt.exists())
+            finally:
+                released.set()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=10)
+                reader.join(timeout=2)
+                process.stdout.close()
+                process.stderr.close()
+
     def test_real_range_refusal_restarts_once_and_verifies_publication(self):
         payload = b"complete-current-object"
         calls = []

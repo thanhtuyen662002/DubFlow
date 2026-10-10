@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from io import BytesIO
 from pathlib import Path
 import tempfile
@@ -160,6 +161,53 @@ class MaterializerTests(unittest.TestCase):
             self.assertEqual(context.exception.code, DownloadErrorCode.RESUME_INVALID)
             self.assertEqual(destination.read_bytes(), b"existing")
             self.assertEqual(destination.with_name("media.mp4.part").read_bytes(), b"01234")
+
+    def test_committed_prefix_resumes_without_uncommitted_tail(self) -> None:
+        for etag, status in (('"v1"', 206), ('"v2"', 206), ('"v2"', 200)):
+            with self.subTest(etag=etag, status=status), tempfile.TemporaryDirectory() as temp:
+                destination = Path(temp) / "media.mp4"
+                destination.write_bytes(b"old-export")
+                part = destination.with_name("media.mp4.part")
+                part.write_bytes(b"01234uncommitted-tail")
+                candidate = MediaCandidate("media", "https://cdn.example.test/media.mp4", "progressive", "video/mp4")
+                receipt = part.with_name(part.name + ".resume.json")
+                original = json.dumps({"schema_version": 1, "locator_sha256": hashlib.sha256(candidate.locator.encode()).hexdigest(),
+                    "size_bytes": 5, "sha256": hashlib.sha256(b"01234").hexdigest(), "etag": '"v1"'})
+                receipt.write_text(original)
+                body = b"56789" if status == 206 else b"new-object"
+                headers = {"content-length": str(len(body)), "etag": etag}
+                if status == 206:
+                    headers["content-range"] = "bytes 5-9/10"
+                transport = FakeTransport([response(status, body, headers)])
+                if status == 206 and etag == '"v2"':
+                    with self.assertRaises(DownloadError) as context:
+                        MediaMaterializer(transport).download(candidate, destination)
+                    self.assertEqual(context.exception.code, DownloadErrorCode.RESUME_INVALID)
+                    self.assertEqual(part.read_bytes(), b"01234uncommitted-tail")
+                    self.assertEqual(receipt.read_text(), original)
+                    self.assertEqual(destination.read_bytes(), b"old-export")
+                else:
+                    result = MediaMaterializer(transport).download(candidate, destination)
+                    self.assertEqual(result.resumed, status == 206)
+                    self.assertEqual(destination.read_bytes(), b"0123456789" if status == 206 else body)
+                    self.assertFalse(receipt.exists())
+                self.assertEqual(transport.calls[0][1]["Range"], "bytes=5-")
+                self.assertEqual(transport.calls[0][1]["If-Range"], '"v1"')
+
+    def test_tampered_committed_prefix_is_never_used_for_range_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "media.mp4"
+            part = destination.with_name("media.mp4.part")
+            part.write_bytes(b"XXXXXuncommitted-tail")
+            candidate = MediaCandidate("media", "https://cdn.example.test/media.mp4", "progressive", "video/mp4")
+            part.with_name(part.name + ".resume.json").write_text(json.dumps({
+                "schema_version": 1, "locator_sha256": hashlib.sha256(candidate.locator.encode()).hexdigest(),
+                "size_bytes": 5, "sha256": hashlib.sha256(b"01234").hexdigest(), "etag": '"v1"'}))
+            transport = FakeTransport([response(200, b"new-object", {"content-length": "10", "etag": '"v1"'})])
+            result = MediaMaterializer(transport).download(candidate, destination)
+            self.assertNotIn("Range", transport.calls[0][1])
+            self.assertFalse(result.resumed)
+            self.assertEqual(destination.read_bytes(), b"new-object")
 
     def test_tampered_partial_restarts_even_with_valid_remote_etag(self) -> None:
         transport = FakeTransport([
