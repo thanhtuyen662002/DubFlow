@@ -27,6 +27,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod execution_lock;
 use execution_lock::JobExecutionGuard;
+mod worker_tree;
+use worker_tree::WorkerTree;
 
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
@@ -2073,11 +2075,26 @@ fn run_worker_attempt(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = process.spawn().map_err(|error| SupervisorError::Worker {
+    let mut child = process.spawn().map_err(|error| SupervisorError::Worker {
         code: "WORKER_SPAWN_FAILED".into(),
         condition: error.to_string(),
         retryable: true,
     })?;
+    // Own descendants before stdin can start ASR/TTS/FFmpeg. The private
+    // Windows job handle also closes when this supervisor is hard-killed.
+    let worker_tree = match WorkerTree::attach(&child) {
+        Ok(tree) => tree,
+        Err(error) => {
+            // No command has been sent; refuse without leaving an unowned child.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(SupervisorError::Worker {
+                code: "WORKER_CONTAINMENT_FAILED".into(),
+                condition: format!("unable to own worker process tree: {error}"),
+                retryable: false,
+            });
+        }
+    };
     let child = Arc::new(Mutex::new(child));
     control.set_child(child.clone());
     let setup_result: SupervisorResult<(ChildStdout, ChildStderr)> = (|| {
@@ -2103,6 +2120,7 @@ fn run_worker_attempt(
     let (stdout_pipe, stderr_pipe) = match setup_result {
         Ok(pipes) => pipes,
         Err(error) => {
+            drop(worker_tree);
             let _ = control.terminate();
             control.clear_child();
             return Err(error);
@@ -2151,7 +2169,13 @@ fn run_worker_attempt(
                 let envelope = match Envelope::from_line(&line) {
                     Ok(envelope) => envelope,
                     Err(error) => {
-                        return abort_worker(control, &child, stderr_thread, error.into())
+                        return abort_worker(
+                            control,
+                            &child,
+                            stderr_thread,
+                            error.into(),
+                            worker_tree,
+                        )
                     }
                 };
                 if envelope.job_id != spec.job_id || envelope.stage_id != STAGE_ID {
@@ -2162,10 +2186,11 @@ fn run_worker_attempt(
                         SupervisorError::Invalid(
                             "worker envelope job/stage identity mismatch".into(),
                         ),
+                        worker_tree,
                     );
                 }
                 if let Err(error) = validator.accept(&envelope) {
-                    return abort_worker(control, &child, stderr_thread, error.into());
+                    return abort_worker(control, &child, stderr_thread, error.into(), worker_tree);
                 }
                 last_message_at = Instant::now();
                 match envelope.payload {
@@ -2190,7 +2215,13 @@ fn run_worker_attempt(
                             reusable,
                             now_ms(),
                         ) {
-                            return abort_worker(control, &child, stderr_thread, error.into());
+                            return abort_worker(
+                                control,
+                                &child,
+                                stderr_thread,
+                                error.into(),
+                                worker_tree,
+                            );
                         }
                         let _ = tx.send(InternalMessage::Output(json!({"event":"checkpoint", "job_id":spec.job_id, "stage_id":STAGE_ID, "checkpoint_id":checkpoint_id, "reusable":reusable, "artifact_hash":artifact_hash, "attempt":attempt})));
                     }
@@ -2212,6 +2243,7 @@ fn run_worker_attempt(
                             SupervisorError::Invalid(
                                 "worker emitted an invalid command/cancel message".into(),
                             ),
+                            worker_tree,
                         )
                     }
                 }
@@ -2227,12 +2259,14 @@ fn run_worker_attempt(
                         condition: error.to_string(),
                         retryable: true,
                     },
+                    worker_tree,
                 )
             }
             Err(RecvTimeoutError::Timeout) => {
                 if control.cancelled.load(Ordering::Acquire)
                     || matches!(store.job_status(&spec.job_id), Ok(JobStatus::Cancelled))
                 {
+                    drop(worker_tree);
                     let _ = control.terminate();
                     let _ = child.lock().map(|mut child_guard| child_guard.wait());
                     control.clear_child();
@@ -2242,6 +2276,7 @@ fn run_worker_attempt(
                 if last_message_at.elapsed() < HEARTBEAT_TIMEOUT {
                     continue;
                 }
+                drop(worker_tree);
                 let _ = control.terminate();
                 let _ = child.lock().map(|mut child_guard| child_guard.wait());
                 control.clear_child();
@@ -2265,6 +2300,8 @@ fn run_worker_attempt(
             .map_err(|_| SupervisorError::Invalid("child lock poisoned".into()))?;
         child_guard.wait()?
     };
+    // Retire remaining descendants before joining readers of inherited pipes.
+    drop(worker_tree);
     let stderr = stderr_thread
         .join()
         .unwrap_or_else(|_| Ok(String::new()))
@@ -2312,7 +2349,9 @@ fn abort_worker(
     child: &Arc<Mutex<Child>>,
     stderr_thread: thread::JoinHandle<io::Result<String>>,
     error: SupervisorError,
+    worker_tree: WorkerTree,
 ) -> SupervisorResult<WorkerOutcome> {
+    drop(worker_tree);
     let _ = control.terminate();
     if let Ok(mut child_guard) = child.lock() {
         let _ = child_guard.wait();

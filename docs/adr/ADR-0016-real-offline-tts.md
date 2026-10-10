@@ -579,3 +579,45 @@ changed decode policy from previous generations. Existing jobs retain their
 original producer/runtime; rollback uses that coherent retained release.
 All successor HEAD/current-base required lanes and actual packaged stereo
 qualification must rerun. Full #166/#175 acceptance remains required.
+
+## Windows worker subtree lifetime after native parent loss
+
+Actual current78b packaged no-sidecar portrait qualification generated11/11
+TrucLy cues and preserved completed replay, but a separate parent-only hard
+kill exposed unowned descendants. After two fsynced speech checkpoints, killing
+the native supervisor left its worker alive at5s and10s; terminal was observed
+by15.015s using retained Win32 handles. Private speech checkpoints increased
+2 to11. A broken heartbeat pipe stopped only the heartbeat thread. Existing
+recovery smoke killed the whole tree, so it did not prove parent-death safety.
+
+The native Windows worker attempt now creates an anonymous, non-inherited Job
+Object with KILL_ON_JOB_CLOSE and assigns the existing child process handle
+before sending its initial run command. The supervisor retains the sole job
+handle through execution, validation and cancellation. Normal cleanup or native
+parent death closes it and terminates associated worker descendants. No
+breakaway flag, broad process-name kill, time-based ownership or worker SQLite
+mutation is introduced. If containment cannot be established, the unstarted
+child is killed/waited and the native boundary returns nonretryable
+WORKER_CONTAINMENT_FAILED. Other job trees retain independent ownership.
+
+Windows tests exercise real kernel handles for worker/grandchild termination
+on guard drop and parent-only hard kill, plus an unrelated live neighbor and
+the x64 limits ABI. The existing Windows Release full native-app test step
+must execute those named tests; Linux testing does not qualify this Windows
+boundary. Non-Windows process behavior is unchanged by this Windows repair.
+Local Rust metadata checks are not execution evidence. A fresh packaged native
+real-media parent-only kill and same-runtime checkpoint restart must rerun;
+whole-tree cleanup alone cannot satisfy that qualification.
+
+No dependency, lockfile, public worker/timeline/artifact contract, durable
+migration, model or TTS producer version changes. Updated app/source/runtime
+producer pins require fresh successor jobs. Old78b profiles, failed lifetime
+receipts and valid outputs remain immutable; old jobs are never repinned to
+the successor. Rollback retains its coherent original runtime/database and its
+original lifetime limitations. All four successor HEAD/current-tested-base
+lanes and full166/175 acceptance remain required before merge/publication.
+
+Win32 ownership/inheritance/closure semantics:
+https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
+https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw
+https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject.
