@@ -40,6 +40,7 @@ def prepare(root):
 def page_report(root):
     return {"status": "passed", "cases": ["recorded"] * 6,
             "generic_playlist_cases": ["recorded"] * 6, "generic_inspection": {"status": "passed"},
+            "generic_missing_identity": {"status": "passed"},
             "python": str(root / "runtime/python.exe"), "production_qualified": False}
 
 
@@ -116,7 +117,8 @@ class RuntimeSmokeTests(unittest.TestCase):
             prepare(root)
             for change in ({"python": str(root.parent / "foreign/python.exe")},
                            {"status": "failed"}, {"cases": ["recorded"] * 5},
-                           {"generic_playlist_cases": []}, {"generic_inspection": {"status": "failed"}}):
+                           {"generic_playlist_cases": []}, {"generic_inspection": {"status": "failed"}},
+                           {"generic_missing_identity": {}}, {"generic_missing_identity": {"status": "failed"}}):
                 with self.subTest(change=change), patch.object(smoke, "verify_bundle"), patch.object(smoke, "source_runtime_health", return_value={"sdk_sha256": "c" * 64}), patch.object(smoke, "qualify_sdk_pages", return_value={**page_report(root), **change}), patch.object(smoke, "provider_from_verified_bundle", return_value=generic_factory(root)):
                     with self.assertRaisesRegex(ValueError, "owned interpreter"):
                         smoke.qualify(root, "a" * 40)

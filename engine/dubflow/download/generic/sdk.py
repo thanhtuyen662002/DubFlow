@@ -11,6 +11,7 @@ from ..source_adapter import SourceError, SourceErrorCode, SourceIdentity, Sourc
 MAX_ITEMS = 10_000
 MAX_PAGE = 100
 RECIPE = "anonymous-generic-sdk-v1"
+ENUMERATION_RECIPE = "anonymous-generic-paging-resolve-v2"
 _CREDENTIAL_QUERY = {"token", "access_token", "auth", "authorization", "cookie", "password", "secret", "signature", "sig", "api_key", "session", "sessionid"}
 
 
@@ -67,12 +68,36 @@ class GenericSdkTransport:
             value["description"] = " ".join(description.split()) or None
         return value
 
+    def _complete_entry(self, entry: dict) -> dict:
+        if entry.get("id") is not None and (entry.get("ie_key") is not None or entry.get("extractor_key") is not None):
+            return entry
+        # Some real playlist extractors emit only a URL/extractor pair. Resolve
+        # selected slots through the same anonymous boundary; never lookahead.
+        for key, maximum in (("id", 512), ("title", 1024), ("ie_key", 128), ("extractor_key", 128)):
+            if entry.get(key) is not None:
+                _text(entry[key], maximum=maximum)
+        try:
+            url = source_url(entry.get("webpage_url") or entry.get("url"))
+        except SourceError:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "generic playlist source URL is invalid", provider_id="generic") from None
+        resolved = self._sdk.inspect_url(url, provider_id="generic")
+        if not isinstance(resolved, dict):
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "generic SDK metadata is malformed", provider_id="generic")
+        sdk_identity(resolved)
+        if entry.get("id") is not None and entry["id"] != resolved.get("id"):
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "playlist video ID changed during inspection", provider_id="generic")
+        extractor = entry.get("ie_key") or entry.get("extractor_key")
+        resolved_extractor = resolved.get("ie_key") or resolved.get("extractor_key")
+        if extractor is not None and extractor.casefold() != "generic" and extractor.casefold() != resolved_extractor.casefold():
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "playlist video extractor changed during inspection", provider_id="generic")
+        return resolved
+
     def enumerate_playlist(self, url: str, *, cursor: str | None, page_size: int) -> SourcePage:
         if type(page_size) is not int or not 1 <= page_size <= MAX_PAGE:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "playlist page size must be between 1 and 100", provider_id="generic")
         url = source_url(url)
         binding = sha256(url.encode()).hexdigest()
-        recipe = sha256(json.dumps({"recipe": RECIPE, "pins": self._sdk.pins}, sort_keys=True).encode()).hexdigest()
+        recipe = sha256(json.dumps({"recipe": ENUMERATION_RECIPE, "pins": self._sdk.pins}, sort_keys=True).encode()).hexdigest()
         offset = 0
         if cursor is not None:
             try:
@@ -103,13 +128,22 @@ class GenericSdkTransport:
                     continue
                 if not isinstance(entry, dict) or entry.get("invalid") is True:
                     raise ValueError("invalid entry")
-                identity = sdk_identity(entry)
                 availability = entry.get("availability")
                 if availability is not None:
                     availability = _text(availability, maximum=64)
                 if availability in {"private", "premium_only", "subscriber_only", "needs_auth"}:
-                    failures.append(SourcePageFailure(identity.source_id, SourceErrorCode.PRIVATE, "playlist video requires authorized access"))
+                    try:
+                        private_id = sdk_identity(entry).source_id
+                    except SourceError:
+                        private_id = fallback
+                    failures.append(SourcePageFailure(private_id, SourceErrorCode.PRIVATE, "playlist video requires authorized access"))
                     continue
+                try:
+                    entry = self._complete_entry(entry)
+                except SourceError as error:
+                    failures.append(SourcePageFailure(fallback, error.code, error.condition, error.retryable))
+                    continue
+                identity = sdk_identity(entry)
                 title = _text(entry.get("title", entry.get("id")), maximum=1024)
                 items.append(SourceItem(identity, title))
             except (SourceError, ValueError, TypeError):

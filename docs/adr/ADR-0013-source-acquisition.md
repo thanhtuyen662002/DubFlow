@@ -420,6 +420,40 @@ scope and explicitly leaves browser sessions, live sources and durable desktop
 scans unqualified. This is qualification evidence only; public source/worker
 contracts, producer pins, SQLite and old artifacts/cursors are unchanged.
 
+## Public URL-only flat playlist entries
+
+The actual pinned SDK's CCC playlist extractor returns selected entries with a
+public URL and extractor key but no ID or title. The exact858 live three-page
+probe refused all six entries, while anonymous full inspection of the first URL
+returned its stable ID and media candidates. These entries need metadata
+resolution before SourceItem admission; a missing flat ID is not a deleted item.
+
+Generic enumeration resolves only selected entries missing an ID or extractor
+namespace through the existing owned anonymous SDK inspection boundary. Known
+flat identities remain lazy, and lookahead is never resolved. Public URL and
+credential-query validation precedes each resolution. Known private entries
+are refused without inspection. A resolved known ID or non-generic extractor
+cannot change. Typed inspection failures retain their code/retryability as
+per-item failures; siblings and cursor progression continue. Page records contain
+identity/title only, with no signed media locators or headers.
+
+Source identity recipe `anonymous-generic-sdk-v1` remains unchanged so full
+inspection, flat selection and later download agree. Enumeration recipe becomes
+`anonymous-generic-paging-resolve-v2`; old mapping cursors return
+CHECKPOINT_INVALID on the new adapter before SDK/network work. Retained old
+runtime versions resume their original scans. A new runtime starts an explicit
+new scan with identity deduplication; no existing cursor, SQLite row, artifact,
+job producer or public schema is rewritten. Rollback preserves old exports and
+local-file processing, and may again refuse URL-only flat entries.
+
+Focused deterministic regressions cover selected-only resolution, lookahead,
+private/credential refusals, per-item network failure and identity substitution.
+The actual pinned-SDK qualification additionally resolves two consecutive
+two-item URL-only pages with recorded extractors and network forbidden. The
+required staged/installed Windows source smoke requires this evidence. Live
+public webpage evidence remains separate and does not qualify durable desktop
+scans, browser authentication or the full #167/#175 product gate.
+
 ## Public Bilibili descriptions at the strict metadata boundary
 
 The actual public SDK returned the requested `BV1o4411M71o_p2`, but the adapter

@@ -63,6 +63,7 @@ def qualify(root: Path, expected_source_sha: str) -> dict:
         helper_sha256=inventory[BUNDLE_HELPER].sha256, descriptor_sha256=inventory[BUNDLE_PROFILE].sha256)
     if (pages["status"] != "passed" or len(pages["cases"]) != 6 or len(pages.get("generic_playlist_cases", [])) != 6
             or pages.get("generic_inspection", {}).get("status") != "passed"
+            or pages.get("generic_missing_identity", {}).get("status") != "passed"
             or Path(pages["python"]).resolve() != (root / "runtime/python.exe").resolve()):
         raise ValueError("SDK page qualification did not run in the owned interpreter")
     return {"schema_version": 1, "source_sha": manifest.source_sha, "version": manifest.version,

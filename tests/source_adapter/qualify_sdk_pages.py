@@ -115,6 +115,7 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
     # Exercise the same real SDK's flat URL entries and full video resolution.
     # The recorded extractors never contact a site or call another downloader.
     generic_pages, generic_cases, resolved_videos = [], [], []
+    missing_identity = False
 
     class RecordedPlaylistIE(InfoExtractor):
         _VALID_URL = r"https://video\.example\.test/list/(?P<id>[0-9]+)"
@@ -127,7 +128,8 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
                         yield None
                     else:
                         yield self.url_result(f"https://video.example.test/watch/{n}",
-                            ie="RecordedVideo", video_id=str(n), video_title=f"Video {n}")
+                            ie="RecordedVideo", video_id=None if missing_identity else str(n),
+                            video_title=None if missing_identity else f"Video {n}")
             return self.playlist_result(OnDemandPagedList(page, 30), self._match_id(url), "recorded playlist")
 
     class RecordedVideoIE(InfoExtractor):
@@ -181,6 +183,31 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
         pass
     else:
         raise ValueError("generic helper accepted a provider session")
+    from engine.dubflow.download.generic.sdk import ENUMERATION_RECIPE, GenericSdkTransport, sdk_identity
+    class RecordedBoundary:
+        pins = {"python": hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+                "helper": helper_hash, "sdk_archive": expected}
+        def enumerate_url(self, url, *, provider_id, offset, page_size):
+            return helper.enumerate_page({"provider_id":provider_id,"url":url,"offset":offset,"page_size":page_size},generic_downloader)
+        def inspect_url(self, url, *, provider_id):
+            return helper.inspect({"provider_id":provider_id,"url":url},generic_downloader)
+    missing_identity, population, poison = True, 10002, False
+    generic_pages.clear()
+    resolved_videos.clear()
+    transport = GenericSdkTransport(RecordedBoundary())
+    first = transport.enumerate_playlist("https://video.example.test/list/123",cursor=None,page_size=2)
+    if resolved_videos != ["0","1"] or generic_pages != [0] or first.completed:
+        raise ValueError("missing-ID generic page did not resolve only selected slots")
+    second = transport.enumerate_playlist("https://video.example.test/list/123",cursor=first.next_cursor,page_size=2)
+    selected = [*first.items,*second.items]
+    if (resolved_videos != ["0","1","2","3"] or generic_pages != [0,0] or first.failures or second.failures
+            or any(item.media_candidates for item in selected)
+            or [item.identity for item in selected] != [sdk_identity({"id":str(n),"ie_key":"RecordedVideo",
+                "url":f"https://video.example.test/watch/{n}"}) for n in range(4)]):
+        raise ValueError("missing-ID generic page lost stable identity, bounded resolution or cursor progression")
+    missing_report = {"status":"passed","page_count":2,"selected_ids":["0","1","2","3"],
+        "resolved_videos":list(resolved_videos),"lookahead_resolved":False,
+        "source_identity_preserved":True,"mapping_recipe":ENUMERATION_RECIPE}
     if helper_bytes != bounded_bytes(helper_path, 1024 * 1024):
         raise ValueError("helper changed during qualification")
     if descriptor_bytes != bounded_bytes(descriptor_path, 16 * 1024):
@@ -199,6 +226,7 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
               "generic_inspection": {"status": "passed", "extractor_key": video["extractor_key"],
                                      "source_id": video["id"], "resolved_videos": list(resolved_videos),
                                      "provider_session_refusal": "passed"},
+              "generic_missing_identity": missing_report,
               "live_bilibili": "NOT_RUN", "live_douyin": "NOT_RUN",
               "durable_desktop_scan": "NOT_RUN", "production_qualified": False}
     return report
@@ -210,6 +238,7 @@ def main():
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(root))
     helper = root / "engine/dubflow/download/authenticated_native.py"
     descriptor = root / "engine/dubflow/download/assets/yt-dlp-sdk-v1.json"
     report = qualify_sdk_pages(args.sdk_archive, helper, descriptor,
