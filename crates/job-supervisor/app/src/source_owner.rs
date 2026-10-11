@@ -62,7 +62,8 @@ impl SourceOwner {
             extern "C" {
                 fn flock(fd: i32, operation: i32) -> i32;
             }
-            // LOCK_EX | LOCK_NB. Closing the descriptor releases ownership.
+            // LOCK_EX | LOCK_NB. flock belongs to the open-file description,
+            // which a concurrent fork can retain until exec even with CLOEXEC.
             if unsafe { flock(file.as_raw_fd(), 2 | 4) } != 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -72,5 +73,48 @@ impl SourceOwner {
         write!(file, "{{\"schema_version\":1,\"pid\":{},\"started_at_ms\":{},\"scope\":\"source-database\"}}\n", std::process::id(), started_ms)?;
         file.sync_all()?;
         Ok(Self { _file: file })
+    }
+}
+
+impl Drop for SourceOwner {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            extern "C" {
+                fn flock(fd: i32, operation: i32) -> i32;
+            }
+            // Release this owner's claim before close. Otherwise a duplicate
+            // descriptor in a concurrently forked child can keep the lock
+            // alive after graceful supervisor retirement. Closing that old
+            // descriptor later cannot unlock a successor's independent claim.
+            unsafe {
+                flock(self._file.as_raw_fd(), 8); // LOCK_UN
+            }
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graceful_owner_release_survives_a_retained_duplicate_descriptor() {
+        let directory = std::env::temp_dir().join(format!("dubflow-source-owner-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("duplicate-release.lock");
+        let owner = SourceOwner::acquire(&path, 1).unwrap();
+        let retained = owner._file.try_clone().unwrap();
+        assert!(SourceOwner::acquire(&path, 2).is_err());
+        drop(owner);
+        let successor = SourceOwner::acquire(&path, 3).unwrap();
+        assert!(SourceOwner::acquire(&path, 4).is_err());
+        drop(retained);
+        assert!(SourceOwner::acquire(&path, 5).is_err());
+        drop(successor);
+        drop(SourceOwner::acquire(&path, 6).unwrap());
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&directory).unwrap();
     }
 }
