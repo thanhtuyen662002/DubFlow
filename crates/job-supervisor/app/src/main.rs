@@ -33,6 +33,7 @@ mod source_owner;
 mod source_server;
 mod review_pin;
 mod review_assets;
+mod review_document;
 
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";

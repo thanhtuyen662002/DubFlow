@@ -83,12 +83,17 @@ fn regular(path: &Path) -> SupervisorResult<File> {
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(invalid("cue path cannot contain parent traversal"));
     }
+    if !fs::symlink_metadata(path)?.file_type().is_file() {
+        return Err(invalid("cue asset is not a regular file"));
+    }
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(0x20000); // O_NOFOLLOW for the final component.
+        // O_NOFOLLOW | O_NONBLOCK: a raced FIFO must not block the supervisor
+        // before the open handle's regular-file check. Regular files ignore it.
+        options.custom_flags(0x20000 | 0x800);
     }
     #[cfg(windows)]
     {
@@ -544,5 +549,28 @@ mod tests {
         assert!(store.accept(&root, &source, &pin).is_err());
         fs::remove_file(&store.root).unwrap();
         assert_eq!(fs::read(&source).unwrap(), bytes);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fifo_candidate_refuses_with_a_bounded_observation() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        unsafe extern "C" {
+            fn mkfifo(path: *const std::ffi::c_char, mode: std::ffi::c_uint) -> std::ffi::c_int;
+        }
+        let (_fixture, store, root) = fixture();
+        let source = root.join("unexpected producer pipe.wav");
+        let name = CString::new(source.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (_, pin) = wave(26, 1, false);
+        let (send, receive) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _ = send.send(store.accept(&root, &source, &pin).is_err());
+        });
+        assert_eq!(receive.recv_timeout(Duration::from_secs(2)).unwrap(), true);
+        handle.join().unwrap();
     }
 }
