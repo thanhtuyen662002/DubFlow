@@ -57,6 +57,23 @@ the new coherent store is authoritative. This does not claim power-loss
 durability of every Windows filesystem. Artifact replacement validation and
 prior valid graph retirement remain separate supervisor integration work.
 
+## Completed-export read adapter
+
+The supervisor supplies a trusted completed-manifest hash and job ID. The
+read-only adapter verifies used timeline/QC/TTS JSON hashes, sizes, versions and
+controlled paths, retaining their pins as input provenance for later artifact
+registration. It derives assigned voice from the strict TTS document's pinned
+provenance, including default requests with no explicit voice. TTS segment IDs
+and original slot ranges must match canonical cues; requested voice and warning
+order never substitute for those identities.
+
+Preview paths belong to the pinned TTS descriptors. Playback must separately
+verify the selected bounded WAV's complete content hash, PCM header and frame
+count. Metadata loading does not scan a long MP4 or all speech files. An absent
+speech file is a bound actionable warning, while other findings and canonical
+exports remain available. These helpers do not themselves expose native IPC,
+perform playback, register durable artifact nodes, or regenerate media.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only

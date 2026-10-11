@@ -9,6 +9,7 @@ from .production import (
 )
 from .store import ReviewStore
 from .wire import LegacyReviewPayload, read_review_snapshot
+from .export import BoundReview, build_review_from_export, validate_review_preview
 
 __all__ = [
     "ReviewError",
@@ -19,4 +20,7 @@ __all__ = [
     "build_review_snapshot",
     "LegacyReviewPayload",
     "read_review_snapshot",
+    "BoundReview",
+    "build_review_from_export",
+    "validate_review_preview",
 ]

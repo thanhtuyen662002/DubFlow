@@ -285,7 +285,7 @@ def _warning_finding(job_id: str, warning: str, *, cue: Mapping[str, Any] | None
         translated or source or "Production warning",
         str(cue["speaker_id"]) if cue and cue.get("speaker_id") else None,
         str(cue["voice_id"]) if cue and cue.get("voice_id") else None,
-        None,
+        str(cue["output_preview"]) if cue and cue.get("output_preview") else None,
         confidence,
         stages,
         cue_id,
