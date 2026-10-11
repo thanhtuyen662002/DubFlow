@@ -38,7 +38,7 @@
         "speaker": {"type": ["string", "null"], "maxLength": 256},
         "voice": {"type": ["string", "null"], "maxLength": 256},
         "output_preview": {"type": ["string", "null"], "maxLength": 4096},
-        "confidence": {"type": ["string", "null"], "pattern": "^(0|0\\.[0-9]+|1(?:\\.0+)?)$"},
+        "confidence": {"type": ["string", "null"], "maxLength": 128, "pattern": "^(0|0\\.[0-9]+|1(?:\\.0+)?)$"},
         "affected_stages": {"$ref": "#/$defs/stages"},
         "cue_id": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
         "warning": {"type": ["string", "null"], "maxLength": 4096},

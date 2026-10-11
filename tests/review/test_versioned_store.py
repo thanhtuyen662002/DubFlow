@@ -240,6 +240,38 @@ class VersionedReviewTests(unittest.TestCase):
         snapshot = build_review_snapshot("job-review", cues=CUES, warnings=(WARNING, WARNING))
         self.assertEqual(len(snapshot.findings), 1)
 
+    def test_one_cue_multiple_findings_share_correction_and_undo(self):
+        snapshot = build_review_snapshot("job-review", cues=CUES,
+            warnings=(WARNING, {"code": "TRANSLATION_ANOMALY", "message": "Check phrase", "cue_id": CUES[1]["cue_id"]},
+                      {"code": "TRANSLATION_ANOMALY", "message": "Other cue", "cue_id": CUES[0]["cue_id"]}))
+        with TemporaryDirectory(prefix="dubflow-review-related-") as directory:
+            store = ReviewStore(Path(directory) / "review.json")
+            store.initialize(snapshot)
+            updated, _ = store.commit_correction(snapshot, snapshot.findings[0].finding_id, translation="Shared correction", voice="voice-b")
+            affected = [item for item in updated.findings if item.cue_id == CUES[1]["cue_id"]]
+            self.assertEqual(len(affected), 2)
+            self.assertTrue(all(item.translated_text == "Shared correction" and item.voice == "voice-b" for item in affected))
+            self.assertEqual(updated.findings[2], snapshot.findings[2])
+            self.assertEqual(store.undo(updated).findings, snapshot.findings)
+
+    def test_conflicting_same_cue_mapping_and_tampered_undo_scope_refuse(self):
+        original = self.snapshot()
+        other = replace(original.findings[0], finding_id="another-finding", translated_text="Contradictory")
+        with TemporaryDirectory(prefix="dubflow-review-mapping-") as directory:
+            store = ReviewStore(Path(directory) / "review.json")
+            with self.assertRaisesRegex(ReviewError, "disagree"):
+                store.initialize(replace(original, findings=original.findings + (other,)))
+            self.assertFalse(store.path.exists())
+            store.initialize(original)
+            first, _ = store.commit_correction(original, original.findings[0].finding_id, translation="First")
+            document = json.loads(store.path.read_text(encoding="utf-8"))
+            document["undo"][0]["before"]["cue_id"] = "wrong-cue"
+            store.path.write_text(json.dumps(document), encoding="utf-8")
+            before = store.path.read_bytes()
+            with self.assertRaisesRegex(ReviewError, "canonical cue"):
+                store.undo(first)
+            self.assertEqual(store.path.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

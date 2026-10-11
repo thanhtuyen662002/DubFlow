@@ -16,6 +16,27 @@ MAX_STORE_BYTES = 64 * 1024 * 1024
 MAX_UNDO = 256
 
 
+def _cue_scope(finding: ReviewFinding) -> tuple[Any, ...]:
+    return (finding.start_ticks, finding.end_ticks, finding.source_text, finding.translated_text,
+            finding.speaker, finding.voice)
+
+
+def _validate_cue_consistency(snapshot: ReviewSnapshot) -> None:
+    scopes = {}
+    for finding in snapshot.findings:
+        if finding.cue_id is None:
+            continue
+        scope = _cue_scope(finding)
+        if finding.cue_id in scopes and scopes[finding.cue_id] != scope:
+            raise ReviewError("findings disagree on canonical cue content/mapping")
+        scopes[finding.cue_id] = scope
+
+
+def _apply_cue_content(snapshot: ReviewSnapshot, cue: ReviewFinding) -> tuple[ReviewFinding, ...]:
+    return tuple(replace(item, translated_text=cue.translated_text, voice=cue.voice)
+                 if item.cue_id == cue.cue_id else item for item in snapshot.findings)
+
+
 class ReviewStore:
     def __init__(self, path: str | Path) -> None:
         candidate = Path(path).expanduser().absolute()
@@ -80,6 +101,7 @@ class ReviewStore:
             raise ReviewError("v1 review is display-only; explicit original-job mapping is required")
         if snapshot.job_id != job_id:
             raise ReviewError("review snapshot belongs to another job")
+        _validate_cue_consistency(snapshot)
         if not isinstance(undo, list) or len(undo) > MAX_UNDO:
             raise ReviewError("review undo stack is invalid")
         finding_ids = {finding.finding_id for finding in snapshot.findings}
@@ -101,6 +123,7 @@ class ReviewStore:
         with self._writer():
             if self.path.exists():
                 raise ReviewError("review store already exists")
+            _validate_cue_consistency(snapshot)
             self._atomic_write({"store_version": 1, "snapshot": snapshot.to_dict(), "undo": []})
 
     def commit_correction(self, snapshot: ReviewSnapshot, finding_id: str, *, translation: str | None = None,
@@ -123,7 +146,7 @@ class ReviewStore:
             if len(history) >= MAX_UNDO:
                 raise ReviewError("review undo depth limit reached")
             plan = RegenerationPlan(finding_id, stages, ("asr", "ocr"), tuple("replacement:" + stage for stage in stages))
-            updated = tuple(replacement if item.finding_id == finding_id else item for item in current.findings)
+            updated = _apply_cue_content(current, replacement)
             next_snapshot = replace(current, revision=current.revision + 1, findings=updated, last_plan=plan)
             history = history + [{"before": selected.to_dict(), "last_plan": current.last_plan.to_dict() if current.last_plan else None}]
             self._atomic_write({"store_version": 1, "snapshot": next_snapshot.to_dict(), "undo": history})
@@ -137,7 +160,10 @@ class ReviewStore:
             if not history:
                 raise ReviewError("no review correction to undo")
             previous = finding_from_dict(history[-1]["before"])
-            findings = tuple(previous if item.finding_id == previous.finding_id else item for item in current.findings)
+            selected = next(item for item in current.findings if item.finding_id == previous.finding_id)
+            if previous.cue_id is None or previous.cue_id != selected.cue_id or previous.start_ticks != selected.start_ticks or previous.end_ticks != selected.end_ticks or previous.source_text != selected.source_text:
+                raise ReviewError("undo cannot change canonical cue identity/range/source")
+            findings = _apply_cue_content(current, previous)
             restored = replace(current, revision=current.revision + 1, findings=findings,
                                last_plan=plan_from_dict(history[-1]["last_plan"]))
             self._atomic_write({"store_version": 1, "snapshot": restored.to_dict(), "undo": history[:-1]})

@@ -17,11 +17,18 @@ invented; it cannot authorize a correction. A future explicit migration must
 bind it to the original pinned job/timeline and produce a separate v2 artifact,
 retaining the original v1 bytes. The malformed historical Draft payload with
 v1 plus job/revision/plan fields is rejected, not silently relabelled.
+The desktop keeps ticks as strings/BigInt and rejects revisions above its exact
+integer range rather than rounding a stale-client token. Confidence precision
+is bounded to 128 characters in proposed v2; released v1 is unchanged.
 
 Only a bound cue can be corrected. Translation and voice edits derive their
 downstream closure from the changed fields, independently of warning category.
 These plans are policy data, not proof that regeneration was executed or that
 replacement media passed validation. ADR-0010 governs actual artifact reuse.
+Multiple findings for one canonical cue share corrected text/voice. Conflicting
+cue content/ranges fail admission; a compact delta can therefore restore all
+related findings without overwriting diagnostics or unrelated cues. Undo cannot
+change cue identity, source text or canonical range.
 
 The supervisor-owned review store is a separate versioned envelope containing
 one v2 snapshot and compact undo deltas. Workers may emit an immutable snapshot;

@@ -81,7 +81,7 @@ def _confidence(value: object) -> str:
     if isinstance(value, bool):
         raise ReviewError("confidence must be a finite decimal")
     if isinstance(value, str):
-        if not _DECIMAL.fullmatch(value):
+        if len(value) > 128 or not _DECIMAL.fullmatch(value):
             raise ReviewError("confidence must be in [0, 1]")
         parsed = Decimal(value)
     elif isinstance(value, (int, float)):
