@@ -186,6 +186,49 @@ refer directly to worker-writable generations. Graph pointer, accepted Review
 state and undo history must then move atomically; composition alone is not that
 transaction, downstream render/QC/export qualification or completion of #174.
 
+## Optional native Review graph state (Draft integration)
+
+The production supervisor will own Review graph revisions in its existing
+local control database. `0003_review_graph.sql` is an append-only, explicitly
+enabled feature migration: `review_schema_migrations` version1 is independent
+of the existing core `schema_migrations` version2. It adds namespaced tables
+and a namespaced original-artifact/job index without changing released
+job/stage/artifact columns or the core version.
+Existing schema2 runtimes can still open their normal job state; they ignore
+this optional feature. Unknown Review versions and partial/unregistered Review
+tables require explicit recovery rather than implicit repair. Read-only access
+never creates tables. The native mutation command explicitly enables the schema.
+
+Each immutable revision stores a bounded admitted snapshot and graph-pin
+document together. A head binds the original completed manifest artifact/hash.
+An immediate SQLite transaction inserts the revision and changes the head;
+the expected job, exact decimal u64 revision, snapshot hash, graph hash and
+original manifest hash must all match. Undo follows an explicit prior-valid
+revision, retains its graph bytes and inserts a new monotonic revision so ABA
+cannot authorize an old client. Snapshot, graph and undo linkage move together.
+No previous version or physical artifact is removed by these state operations.
+
+The state layer is a trusted-supervisor API, not a worker/browser JSON endpoint.
+It hashes and bounds opaque admitted documents; the native caller must validate
+their closed schemas, snapshot revision/content and graph identity, canonical
+cue/model/producer provenance, and every physical candidate before calling it.
+Undo must restore exactly the target snapshot content except its new revision;
+its canonical serialization can grow at most32 bytes, and graph bytes remain
+identical. Metadata history is bounded to64MiB per job and256 pending undos.
+Correction admission reserves the bytes needed for all pending undos rather
+than accepting a correction that exhausts the metadata budget. A failed CAS,
+quota check or SQL statement leaves both the head and version history intact.
+
+Legacy file-based Review stores are not automatically imported or dual-written.
+An explicit future migration must prove original-job/cue/graph bindings and
+preserve the old bytes. This additive database foundation does not itself
+admit worker-writable files, copy accepted media, retire a graph, expose native
+IPC or qualify undo on installed media. Accepted files must be separately
+copied, flushed and validated before the transaction; pre-commit orphan files
+remain private recovery evidence. Updater/GC retention must preserve the current
+graph and its pending undo targets before this feature can be shipped. No
+destructive reverse migration is needed for ordinary schema2 rollback readers.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only

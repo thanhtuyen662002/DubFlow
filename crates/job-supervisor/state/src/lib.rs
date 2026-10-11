@@ -3,6 +3,8 @@
 //! This crate is the only owner of the SQLite connection. Workers communicate
 //! through the versioned protocol and never receive a database handle.
 
+pub mod review_graph;
+
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
