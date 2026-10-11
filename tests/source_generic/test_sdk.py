@@ -206,6 +206,23 @@ class GenericSdkTests(unittest.TestCase):
         self.assertEqual((len(page.items), len(page.failures), page.completed), (1, 7, True))
         self.assertNotIn("synthetic-secret", json.dumps(page.to_dict()))
 
+    def test_surrogate_metadata_is_an_item_failure_and_preserves_cursor(self):
+        for field in ("id", "title", "availability", "ie_key"):
+            for poison in ("bad\ud800", "bad\udfff"):
+                with self.subTest(field=field, poison=ascii(poison)):
+                    sdk = RecordedSDK([entry(1), entry(2, **{field: poison}),
+                                       entry(3, title="Healthy 🎬"), entry(4)])
+                    adapter = self.adapter(sdk)
+                    page = adapter.enumerate_channel("https://video.example.test/list/1", page_size=3)
+                    self.assertEqual([item.identity for item in page.items], [sdk_identity(entry(1)), sdk_identity(entry(3))])
+                    self.assertEqual([failure.code for failure in page.failures], [SourceErrorCode.SOURCE_CHANGED])
+                    self.assertEqual(page.items[1].title, "Healthy 🎬")
+                    self.assertEqual(json.loads(page.next_cursor)["offset"], 3)
+                    json.dumps(page.to_dict(), ensure_ascii=False).encode("utf-8")
+                    final = adapter.enumerate_channel("https://video.example.test/list/1", cursor=page.next_cursor, page_size=3)
+                    self.assertEqual([item.identity for item in final.items], [sdk_identity(entry(4))])
+                    self.assertTrue(final.completed)
+
     def test_source_credentials_refused_without_echoing_or_network(self):
         sdk = RecordedSDK()
         for url in ("https://user:synthetic-secret@host/video", "https://host/video?ACCESS_TOKEN=synthetic-secret", "file:///outside", "https://host:bad/video"):

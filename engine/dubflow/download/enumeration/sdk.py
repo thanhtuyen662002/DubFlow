@@ -77,14 +77,15 @@ def sdk_page(transport, provider: str, channel: str, *, cursor: str | None, page
             continue
         availability = entry.get("availability")
         if availability is not None and (not isinstance(availability, str) or len(availability) > 64
-                or any(ord(ch) < 32 or ord(ch) == 127 for ch in availability)):
+                or any(ord(ch) < 32 or ord(ch) == 127 or 0xD800 <= ord(ch) <= 0xDFFF for ch in availability)):
             failures.append(SourcePageFailure(identifier, SourceErrorCode.SOURCE_CHANGED, "channel video availability is invalid"))
             continue
         if availability in {"private", "premium_only", "subscriber_only", "needs_auth"}:
             failures.append(SourcePageFailure(identifier, SourceErrorCode.PRIVATE, "channel video requires authorized access"))
             continue
         title = entry.get("title", identifier)
-        if not isinstance(title, str) or not title.strip() or len(title) > 1024 or any(ord(ch) < 32 or ord(ch) == 127 for ch in title):
+        if (not isinstance(title, str) or not title.strip() or len(title) > 1024
+                or any(ord(ch) < 32 or ord(ch) == 127 or 0xD800 <= ord(ch) <= 0xDFFF for ch in title)):
             failures.append(SourcePageFailure(identifier, SourceErrorCode.SOURCE_CHANGED, "channel video metadata is invalid"))
             continue
         items.append(SourceItem(SourceIdentity(provider, identifier, f"https://www.{provider}.com/video/{identifier}"), title))

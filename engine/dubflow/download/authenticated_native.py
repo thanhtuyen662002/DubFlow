@@ -180,7 +180,8 @@ def enumerate_page(request, youtube_dl):
             for key, bound in fields:
                 value = entry.get(key)
                 if value is not None:
-                    if not isinstance(value, str) or not value or len(value) > bound or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+                    if (not isinstance(value, str) or not value or len(value) > bound
+                            or any(ord(ch) < 32 or ord(ch) == 127 or 0xD800 <= ord(ch) <= 0xDFFF for ch in value)):
                         item = {"invalid": True}
                         break
                     item[key] = value

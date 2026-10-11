@@ -27,7 +27,8 @@ def source_url(value: str) -> str:
 
 
 def _text(value, *, maximum: int) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+    if (not isinstance(value, str) or not value.strip() or len(value) > maximum
+            or any(ord(ch) < 32 or ord(ch) == 127 or 0xD800 <= ord(ch) <= 0xDFFF for ch in value)):
         raise ValueError("invalid bounded metadata")
     return value.strip()
 

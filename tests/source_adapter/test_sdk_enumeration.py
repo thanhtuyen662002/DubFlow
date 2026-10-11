@@ -120,6 +120,47 @@ class SDKEnumerationTests(unittest.TestCase):
         self.assertEqual(len(page.failures), 5)
         self.assertTrue(page.completed)
 
+    def test_surrogate_metadata_is_an_item_failure_and_preserves_cursor(self):
+        for field in ("title", "availability"):
+            for poison in ("bad\ud800", "bad\udfff"):
+                with self.subTest(field=field, poison=ascii(poison)):
+                    sdk = RecordedSDK([video(1), {**video(2), field: poison},
+                                       {**video(3), "title": "Healthy 🎬"}, video(4)])
+                    page = sdk_page(sdk, "bilibili", "123", cursor=None, page_size=3)
+                    self.assertEqual([item.identity.source_id for item in page.items],
+                                     [video(1)["id"], video(3)["id"]])
+                    self.assertEqual([(item.source_id, item.code) for item in page.failures],
+                                     [(video(2)["id"], SourceErrorCode.SOURCE_CHANGED)])
+                    self.assertEqual(page.items[1].title, "Healthy 🎬")
+                    self.assertEqual(json.loads(page.next_cursor)["offset"], 3)
+                    json.dumps(page.to_dict(), ensure_ascii=False).encode("utf-8")
+                    final = sdk_page(sdk, "bilibili", "123", cursor=page.next_cursor, page_size=3)
+                    self.assertEqual([item.identity.source_id for item in final.items], [video(4)["id"]])
+                    self.assertTrue(final.completed)
+
+    def test_native_surrogate_metadata_preserves_healthy_neighbors_and_lookahead(self):
+        for provider in ("bilibili", "generic"):
+            fields = ("id", "title", "availability")
+            if provider == "generic":
+                fields += ("ie_key", "extractor_key", "url", "webpage_url")
+            for field in fields:
+                for poison in ("bad\ud800", "bad\udfff"):
+                    with self.subTest(provider=provider, field=field, poison=ascii(poison)):
+                        values = [video(1), {**video(2), field: poison},
+                                  {**video(3), "title": "Healthy 🎬"}, video(4)]
+                        class Downloader:
+                            def __init__(self, options): self.cookiejar = Mock()
+                            def __enter__(self): return self
+                            def __exit__(self, *args): pass
+                            def extract_info(self, url, download):
+                                return {"_type": "playlist", "entries": iter(values)}
+                        url = channel_url("bilibili", "123") if provider == "bilibili" else "https://video.example.test/list/1"
+                        result = enumerate_page({"provider_id": provider, "url": url,
+                                                 "offset": 0, "page_size": 3}, Downloader)
+                        self.assertEqual(result["entries"], [values[0], {"invalid": True}, values[2]])
+                        self.assertTrue(result["has_more"])
+                        json.dumps(result, ensure_ascii=False).encode("utf-8")
+
     def test_channel_and_page_bounds_fail_before_provider_request(self):
         sdk = RecordedSDK([])
         for ref in ("https://space.bilibili.com.evil.test/123/video", "https://secret@space.bilibili.com/123/video",
