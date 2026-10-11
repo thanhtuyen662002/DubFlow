@@ -1,8 +1,9 @@
-//! Private native PCM admission for a future semantic Review graph caller.
+//! Private native object storage for a future semantic Review graph caller.
 //!
 //! This API takes supervisor-derived roots and already admitted cue pins, never
 //! browser paths. It neither admits producer/model provenance nor writes SQLite.
-//! An accepted copy is returned only after hash, size and PCM verification. A
+//! Audio requires hash, size and PCM verification. JSON preserves exact bytes
+//! and requires unambiguous syntax; document semantics need prior admission. A
 //! later graph transaction must retain these objects and all pending undo assets.
 use super::{review_pin::plain, SupervisorError, SupervisorResult, ID_COUNTER};
 use sha2::{Digest, Sha256};
@@ -12,11 +13,20 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 const MAX_CUE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 const BUFFER_BYTES: usize = 32 * 1024;
 const MAX_RIFF_CHUNKS: usize = 1024;
 
 fn invalid(message: &str) -> SupervisorError {
     SupervisorError::Invalid(message.into())
+}
+
+fn valid_hash(hash: &str) -> bool {
+    hash.len() == 71
+        && hash.starts_with("sha256:")
+        && hash[7..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,11 +40,7 @@ pub(super) struct PcmPin {
 
 impl PcmPin {
     fn validate(&self) -> SupervisorResult<()> {
-        if self.sha256.len() != 71
-            || !self.sha256.starts_with("sha256:")
-            || !self.sha256[7..]
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        if !valid_hash(&self.sha256)
             || !(44..=MAX_CUE_BYTES).contains(&self.size_bytes)
             || !(8000..=192000).contains(&self.sample_rate)
             || !(1..=2).contains(&self.channels)
@@ -55,6 +61,14 @@ impl PcmPin {
 pub(super) struct AcceptedCueAudio {
     pub(super) path: PathBuf,
     pub(super) pin: PcmPin,
+}
+
+/// Exact-byte storage identity, not a schema/provenance admission token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AcceptedJsonDocument {
+    pub(super) path: PathBuf,
+    pub(super) sha256: String,
+    pub(super) size_bytes: u64,
 }
 
 pub(super) struct AcceptedAudioStore {
@@ -218,6 +232,32 @@ fn pcm(file: &mut File, pin: &PcmPin) -> SupervisorResult<()> {
     Ok(())
 }
 
+fn json_syntax(raw: &str) -> SupervisorResult<()> {
+    if !super::review_document::decode(raw, MAX_DOCUMENT_BYTES as usize)?.is_object() {
+        return Err(invalid("accepted JSON document requires an object root"));
+    }
+    Ok(())
+}
+
+fn read_json_file(file: &mut File, hash: &str, size: u64) -> SupervisorResult<String> {
+    if !valid_hash(hash) || !(1..=MAX_DOCUMENT_BYTES).contains(&size) {
+        return Err(invalid("invalid bounded JSON document pin"));
+    }
+    if file.metadata()?.len() != size {
+        return Err(invalid("accepted JSON document size changed"));
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    // A concurrently grown regular file cannot cause an unbounded read.
+    file.take(size + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != size || format!("sha256:{:x}", Sha256::digest(&bytes)) != hash {
+        return Err(invalid("accepted JSON document checksum or size changed"));
+    }
+    let raw = String::from_utf8(bytes).map_err(|_| invalid("accepted JSON is not UTF-8"))?;
+    json_syntax(&raw)?;
+    Ok(raw)
+}
+
 struct PrivateCopy(PathBuf);
 
 impl Drop for PrivateCopy {
@@ -251,6 +291,81 @@ impl AcceptedAudioStore {
         Ok(Self { root })
     }
 
+    fn private_copy(&self) -> SupervisorResult<(File, PrivateCopy)> {
+        plain(&self.root)?;
+        let part = self.root.join(format!(
+            ".copy-{}-{}",
+            std::process::id(),
+            ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let copy = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&part)?;
+        Ok((copy, PrivateCopy(part)))
+    }
+
+    fn publish(&self, private: &PrivateCopy, destination: &Path) -> SupervisorResult<()> {
+        // Exclusive publication cannot replace any prior accepted object. A
+        // competing publisher's unsealed/incomplete object refuses on reuse.
+        match fs::hard_link(&private.0, destination) {
+            Ok(()) => {
+                fs::remove_file(&private.0)?;
+                let mut permissions = fs::metadata(destination)?.permissions();
+                permissions.set_readonly(true);
+                fs::set_permissions(destination, permissions)?;
+                #[cfg(unix)]
+                File::open(&self.root)?.sync_all()?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(e) => return Err(e.into()),
+        }
+        Ok(())
+    }
+
+    /// The graph caller supplies already semantically admitted metadata bytes,
+    /// never a browser/worker path. Syntax alone does not authorize graph reuse.
+    pub(super) fn accept_json(&self, raw: &str) -> SupervisorResult<AcceptedJsonDocument> {
+        json_syntax(raw)?;
+        let hash = format!("sha256:{:x}", Sha256::digest(raw.as_bytes()));
+        let size = raw.len() as u64;
+        let (mut copy, private) = self.private_copy()?;
+        copy.write_all(raw.as_bytes())?;
+        copy.sync_all()?;
+        read_json_file(&mut copy, &hash, size)?;
+        drop(copy);
+        let destination = self.root.join(format!("{}.json", &hash[7..]));
+        self.publish(&private, &destination)?;
+        let accepted = AcceptedJsonDocument {
+            path: destination,
+            sha256: hash,
+            size_bytes: size,
+        };
+        self.read_json(&accepted)?;
+        Ok(accepted)
+    }
+
+    /// Every graph/undo reuse reads and validates one sealed regular-file handle.
+    /// Preserve raw UTF-8: reserialization would change producer input hashes.
+    pub(super) fn read_json(&self, accepted: &AcceptedJsonDocument) -> SupervisorResult<String> {
+        if !valid_hash(&accepted.sha256)
+            || !(1..=MAX_DOCUMENT_BYTES).contains(&accepted.size_bytes)
+            || accepted.path != self.root.join(format!("{}.json", &accepted.sha256[7..]))
+        {
+            return Err(invalid(
+                "accepted JSON path or pin differs from native identity",
+            ));
+        }
+        let mut file = regular(&accepted.path)?;
+        if !file.metadata()?.permissions().readonly() {
+            return Err(invalid(
+                "accepted JSON is no longer sealed; explicit recovery required",
+            ));
+        }
+        read_json_file(&mut file, &accepted.sha256, accepted.size_bytes)
+    }
+
     /// Copy one bounded cue from the supervisor's private candidate root.
     /// Only the copied bytes are admitted. No candidate pathname is returned.
     pub(super) fn accept(
@@ -274,17 +389,7 @@ impl AcceptedAudioStore {
         if source.metadata()?.len() != pin.size_bytes {
             return Err(invalid("cue candidate size changed before copy"));
         }
-        let part = self.root.join(format!(
-            ".copy-{}-{}",
-            std::process::id(),
-            ID_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut copy = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&part)?;
-        let private = PrivateCopy(part);
+        let (mut copy, private) = self.private_copy()?;
         stream_pin(&mut source, Some(&mut copy), pin)?;
         copy.sync_all()?;
         stream_pin(&mut copy, None, pin)?;
@@ -292,20 +397,7 @@ impl AcceptedAudioStore {
         drop(copy);
 
         let destination = self.root.join(format!("{}.wav", &pin.sha256[7..]));
-        // Hard-link publication is exclusive and on the same local volume.
-        // Unlike rename on Unix it cannot replace a prior accepted object.
-        match fs::hard_link(&private.0, &destination) {
-            Ok(()) => {
-                fs::remove_file(&private.0)?;
-                let mut permissions = fs::metadata(&destination)?.permissions();
-                permissions.set_readonly(true);
-                fs::set_permissions(&destination, permissions)?;
-                #[cfg(unix)]
-                File::open(&self.root)?.sync_all()?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
-            Err(e) => return Err(e.into()),
-        }
+        self.publish(&private, &destination)?;
         let accepted = AcceptedCueAudio {
             path: destination,
             pin: pin.clone(),
@@ -410,6 +502,103 @@ mod tests {
             channels,
             frame_count,
         }
+    }
+
+    #[test]
+    fn json_documents_preserve_exact_bytes_wide_numbers_and_reuse_sealed_objects() {
+        let (_fixture, store, _) = fixture();
+        let raw = "{\n  \"revision\":9007199254740994,\"text\":\"Ngồi yên.\"\n}\n";
+        let first = store.accept_json(raw).unwrap();
+        assert_eq!(first.size_bytes, raw.len() as u64);
+        assert_eq!(
+            first.sha256,
+            format!("sha256:{:x}", Sha256::digest(raw.as_bytes()))
+        );
+        assert_eq!(store.read_json(&first).unwrap(), raw);
+        assert_eq!(store.accept_json(raw).unwrap(), first);
+        assert!(fs::metadata(&first.path).unwrap().permissions().readonly());
+        // Equivalent JSON with different bytes has a distinct producer hash.
+        let compact = "{\"revision\":9007199254740994,\"text\":\"Ngồi yên.\"}";
+        let second = store.accept_json(compact).unwrap();
+        assert_ne!(first.path, second.path);
+        assert_eq!(store.read_json(&second).unwrap(), compact);
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn corrupt_or_unsealed_json_is_retained_and_never_silently_repaired() {
+        let (_fixture, store, _) = fixture();
+        let raw = r#"{"cue":"original"}"#;
+        let accepted = store.accept_json(raw).unwrap();
+        let mut permissions = fs::metadata(&accepted.path).unwrap().permissions();
+        #[cfg(windows)]
+        permissions.set_readonly(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o600);
+        }
+        fs::set_permissions(&accepted.path, permissions.clone()).unwrap();
+        assert!(store.read_json(&accepted).is_err());
+        assert!(store.accept_json(raw).is_err());
+        assert_eq!(fs::read_to_string(&accepted.path).unwrap(), raw);
+        let corrupt = r#"{"cue":"tampered"}"#;
+        assert_eq!(corrupt.len(), raw.len());
+        fs::write(&accepted.path, corrupt).unwrap();
+        permissions.set_readonly(true);
+        fs::set_permissions(&accepted.path, permissions).unwrap();
+        assert!(store.read_json(&accepted).is_err());
+        assert!(store.accept_json(raw).is_err());
+        assert_eq!(fs::read_to_string(&accepted.path).unwrap(), corrupt);
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn ambiguous_or_oversized_json_refuses_before_publication() {
+        let (_fixture, store, _) = fixture();
+        for raw in [
+            "",
+            "[]",
+            "null",
+            "{",
+            "{} {}",
+            r#"{"a":1,"a":2}"#,
+            r#"{"nested":{"a":1,"a":2}}"#,
+        ] {
+            assert!(store.accept_json(raw).is_err());
+        }
+        let oversized = format!(
+            "{{\"payload\":\"{}\"}}",
+            "x".repeat(MAX_DOCUMENT_BYTES as usize)
+        );
+        assert!(store.accept_json(&oversized).is_err());
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn json_pin_substitution_and_destination_collision_refuse() {
+        let (_fixture, store, _) = fixture();
+        let raw = r#"{"cue":"approved"}"#;
+        let accepted = store.accept_json(raw).unwrap();
+        for field in 0..4 {
+            let mut changed = accepted.clone();
+            match field {
+                0 => changed.sha256 = "sha256:invalid".into(),
+                1 => changed.size_bytes += 1,
+                2 => changed.path = changed.path.with_extension("wav"),
+                _ => changed.size_bytes = MAX_DOCUMENT_BYTES + 1,
+            }
+            assert!(store.read_json(&changed).is_err());
+        }
+        let other = r#"{"cue":"other"}"#;
+        let destination = store
+            .root
+            .join(format!("{:x}.json", Sha256::digest(other.as_bytes())));
+        fs::create_dir(&destination).unwrap();
+        assert!(store.accept_json(other).is_err());
+        assert!(destination.is_dir());
+        assert_eq!(store.read_json(&accepted).unwrap(), raw);
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 2);
     }
 
     #[test]

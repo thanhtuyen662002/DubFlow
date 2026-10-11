@@ -351,6 +351,28 @@ qualify GUI regeneration/undo. The small fixture uses actual Python request
 preparation/read/schema checks for two synthetic requests, wide revisions and
 different exact bases; it is not real model/media qualification.
 
+## Immutable prepared JSON documents (Draft integration)
+
+The native accepted-object store also retains graph-prepared JSON documents as
+exact UTF-8 bytes under their SHA256 identity. The graph caller must admit the
+TTS/spoken/timeline/QC contract and producer bindings before calling this API.
+Storage checks object-root JSON syntax, rejects duplicate keys/trailing values,
+bounds each document to64MiB and preserves the producer's exact encoding and
+wide integer literals. Syntax is not semantic graph admission.
+
+Publication shares the PCM store's create-new private copy, verified exact
+bytes, synced file, exclusive hard link and readonly seal. Existing accepted
+objects are never overwritten or silently repaired. Every metadata reuse or
+undo reads a single sealed regular-file handle, bounded against concurrent
+growth, and revalidates size/hash/UTF-8/syntax. The stored native pathname and
+hash must agree. Only an owned unpublished private copy can be removed on an
+error path; accepted objects remain available for explicit recovery.
+
+This internal API enables immutable retargeted documents without changing
+their encoding, but does not retarget a TTS artifact, validate model authority,
+publish a graph, write SQLite, dispatch a worker or expose a UI mutation.
+Native semantic graph orchestration and pending-undo retention remain required.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only
