@@ -155,6 +155,13 @@ fn active(db: &Connection, job: &str) -> Result<Option<ReviewGraphState>> {
     .transpose()
 }
 
+fn observe<T>(db: &Connection, reader: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)?;
+    let value = reader(&tx)?;
+    tx.commit()?;
+    Ok(value)
+}
+
 fn expected(db: &Connection, token: &ReviewToken) -> Result<ReviewGraphState> {
     validate_id(&token.job_id, "job_id", MAX_ID_CHARS)?;
     require_schema(db)?;
@@ -290,10 +297,12 @@ impl DurableStore {
     /// Observation never initializes/migrates the optional feature.
     pub fn review_graph_state(&self, job: &str) -> Result<Option<ReviewGraphState>> {
         validate_id(job, "job_id", MAX_ID_CHARS)?;
-        if schema(&self.connection)?.is_none() {
-            return Ok(None);
-        }
-        active(&self.connection, job)
+        observe(&self.connection, |db| {
+            if schema(db)?.is_none() {
+                return Ok(None);
+            }
+            active(db, job)
+        })
     }
 
     /// The caller has validated the completed manifest, snapshot and graph.
@@ -367,19 +376,21 @@ impl DurableStore {
     /// Return immutable prior graph for native validation before undo. CAS is
     /// checked again when mutation runs; this reader authorizes no file reuse.
     pub fn review_undo_target(&self, token: &ReviewToken) -> Result<Option<ReviewGraphState>> {
-        let current = expected(&self.connection, token)?;
-        current
-            .undo_target_revision
-            .map(|r| {
-                version(
-                    &self.connection,
-                    &token.job_id,
-                    &r.to_string(),
-                    &current.original_artifact_id,
-                    &token.original_manifest_sha256,
-                )
-            })
-            .transpose()
+        observe(&self.connection, |db| {
+            let current = expected(db, token)?;
+            current
+                .undo_target_revision
+                .map(|r| {
+                    version(
+                        db,
+                        &token.job_id,
+                        &r.to_string(),
+                        &current.original_artifact_id,
+                        &token.original_manifest_sha256,
+                    )
+                })
+                .transpose()
+        })
     }
 
     /// Native caller verifies target media and restores exactly its snapshot
@@ -666,6 +677,31 @@ mod tests {
                 .token
                 .revision,
             1
+        );
+    }
+
+    #[test]
+    fn observation_keeps_one_schema_snapshot_across_concurrent_enable() {
+        let (fixture, writer, hash) = fixture();
+        let reader = DurableStore::open_read_only(fixture.0.join("jobs.sqlite3")).unwrap();
+        observe(&reader.connection, |db| {
+            assert_eq!(schema(db)?, None);
+            initial(&writer, &hash);
+            // This is the read wrapper used by both public observations. The
+            // newer tables must not turn the captured absence into a false
+            // partial-schema error while the writer commits the full feature.
+            assert_eq!(schema(db)?, None);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            reader
+                .review_graph_state("job-r")
+                .unwrap()
+                .unwrap()
+                .token
+                .revision,
+            0
         );
     }
 

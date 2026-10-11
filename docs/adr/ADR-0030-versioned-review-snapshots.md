@@ -198,6 +198,10 @@ Existing schema2 runtimes can still open their normal job state; they ignore
 this optional feature. Unknown Review versions and partial/unregistered Review
 tables require explicit recovery rather than implicit repair. Read-only access
 never creates tables. The native mutation command explicitly enables the schema.
+Read observations use one deferred SQLite snapshot for feature-schema discovery,
+head/version lookup and original-export binding. Concurrent feature enablement
+cannot mix earlier absent metadata with later tables into a false partial-schema
+diagnostic. Read transactions require no writer reservation or migration.
 
 Each immutable revision stores a bounded admitted snapshot and graph-pin
 document together. A head binds the original completed manifest artifact/hash.
