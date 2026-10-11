@@ -2,6 +2,40 @@
   "schema_version": 1,
   "components": [
     {
+      "id": "supervisor-workspace",
+      "roots": [
+        "crates/job-supervisor/Cargo.toml",
+        "crates/job-supervisor/Cargo.lock",
+        "crates/job-supervisor/app",
+        "contracts/job_status",
+        "scripts/ci/component_registry.json",
+        "tests/ci/test_supervisor_workspace.py"
+      ],
+      "commands": [
+        [
+          "python",
+          "tests/ci/test_supervisor_workspace.py"
+        ],
+        [
+          "cargo",
+          "metadata",
+          "--manifest-path",
+          "crates/job-supervisor/Cargo.toml",
+          "--format-version",
+          "1",
+          "--locked"
+        ],
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/Cargo.toml",
+          "--workspace",
+          "--locked"
+        ]
+      ]
+    },
+    {
       "id": "media-contracts",
       "roots": [
         "contracts/timeline",
@@ -396,6 +430,17 @@
         [
           "python",
           "-m",
+          "pip",
+          "install",
+          "--only-binary=:all:",
+          "--no-deps",
+          "--require-hashes",
+          "-r",
+          "tests/audio_mix/requirements-ci.txt"
+        ],
+        [
+          "python",
+          "-m",
           "unittest",
           "discover",
           "-s",
@@ -450,6 +495,15 @@
       "roots": [
         "contracts/source",
         "engine/dubflow/download/source_adapter.py",
+        "engine/dubflow/download/sessions.py",
+        "engine/dubflow/download/authenticated.py",
+        "engine/dubflow/download/enumeration/sdk.py",
+        "engine/dubflow/download/generic/provider_transport.py",
+          "engine/dubflow/download/authenticated_native.py",
+          "engine/dubflow/download/runtime.py",
+          "engine/dubflow/download/assets",
+          "scripts/release/source_runtime_smoke.py",
+          "scripts/release/source_session_smoke.py",
         "tests/source_adapter"
       ],
       "commands": [
@@ -507,6 +561,7 @@
       "id": "source-materializer",
       "roots": [
         "engine/dubflow/download/materializer.py",
+        "engine/dubflow/download/stream_materializer.py",
         "engine/dubflow/download/provider_transport.py",
         "tests/source_materializer"
       ],
@@ -723,6 +778,24 @@
       ]
     },
     {
+      "id": "native-source-controller",
+      "roots": [
+        "crates/job-supervisor/app/src/source_server.rs",
+        "crates/job-supervisor/app/src/source_owner.rs",
+        "crates/job-supervisor/app/src/main.rs",
+        "crates/job-supervisor/app/Cargo.toml"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/app/Cargo.toml",
+          "--locked"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "engine/dubflow/download/acquisition_queue.py",
@@ -820,7 +893,7 @@
         [
           "node",
           "--experimental-strip-types",
-      "tests/review/review.test.mjs"
+          "tests/review/review.test.mjs"
         ]
       ]
     },
@@ -929,7 +1002,12 @@
     {
       "id": "release-bundle",
       "roots": [
+        "scripts/release/source_session_smoke.py",
         "packaging/release",
+        "scripts/release/production_smoke.py",
+        "scripts/release/duration_rewrite_smoke.py",
+        "scripts/release/source_clock_smoke.py",
+        "scripts/release/desktop_runtime_smoke.py",
         "tests/release",
         "docs/release",
         ".github/workflows/release.yml"
@@ -942,6 +1020,60 @@
           "discover",
           "-s",
           "tests/release",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
+      "id": "production-b2-dubbing",
+      "roots": [
+        "engine/dubflow/tts",
+        "engine/dubflow/worker",
+        "models/manifests",
+        "models/voices",
+        "tests/production",
+        "tests/integration/production_local_file"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "pip",
+          "install",
+          "--only-binary=:all:",
+          "--no-deps",
+          "--require-hashes",
+          "-r",
+          "tests/audio_mix/requirements-ci.txt"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/production/tts",
+          "-p",
+          "test_*.py"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/production/worker",
+          "-p",
+          "test_*.py"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/integration/production_local_file",
           "-p",
           "test_*.py"
         ]

@@ -23,6 +23,64 @@ struct StartJobResponse {
     output_dir: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct VoiceChoice {
+    voice_id: String,
+    name: String,
+    gender: String,
+    accent: String,
+    style: String,
+    description: String,
+    voice_version: String,
+    approved: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct VoiceCatalog {
+    default_voice_id: String,
+    voices: Vec<VoiceChoice>,
+}
+
+#[derive(Deserialize)]
+struct VoiceManifest {
+    schema_version: u32,
+    backend: String,
+    voice_id: String,
+    approved: bool,
+    voices: Vec<VoiceChoice>,
+}
+
+fn valid_voice_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 96 &&
+        value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn load_voice_catalog(root: &Path) -> Result<VoiceCatalog, String> {
+    let path = root.join("app/models/manifests/production-vieneu-v1.json");
+    if fs::metadata(&path).map_err(|_| fail("Danh mục giọng chưa được cài đặt"))?.len() > 128 * 1024 {
+        return Err(fail("Danh mục giọng quá lớn"));
+    }
+    let text = fs::read_to_string(path).map_err(|error| fail(format!("Không đọc được danh mục giọng: {error}")))?;
+    let manifest: VoiceManifest = serde_json::from_str(&text).map_err(|_| fail("Danh mục giọng không hợp lệ"))?;
+    let mut ids = std::collections::HashSet::new();
+    if manifest.schema_version != 1 || manifest.backend != "vieneu-v3-turbo-onnx-v1" || !manifest.approved
+        || manifest.voices.is_empty() || manifest.voices.len() > 64
+        || manifest.voices.iter().any(|voice| {
+            !valid_voice_id(&voice.voice_id) || !ids.insert(voice.voice_id.clone()) || !voice.approved ||
+            [&voice.name, &voice.gender, &voice.accent, &voice.style, &voice.description, &voice.voice_version]
+                .iter().any(|value| value.is_empty() || value.chars().count() > 160 || value.chars().any(char::is_control))
+        }) || !ids.contains(&manifest.voice_id)
+    {
+        return Err(fail("Danh mục giọng không hợp lệ"));
+    }
+    Ok(VoiceCatalog { default_voice_id: manifest.voice_id, voices: manifest.voices })
+}
+
+#[tauri::command]
+fn voice_catalog() -> Result<VoiceCatalog, String> {
+    load_voice_catalog(&version_root()?)
+}
+
 #[derive(Debug, Deserialize)]
 struct StatusEnvelope {
     status: Value,
@@ -34,7 +92,7 @@ fn fail(message: impl Into<String>) -> String {
 }
 
 fn validate_id(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > 128 || value.chars().any(|character| character.is_control()) || value.bytes().any(|byte| byte == b'/' || byte == b'\\') {
+    if value.is_empty() || value.len() > 128 || value == "." || value == ".." || value.chars().any(|character| character.is_control()) || value.bytes().any(|byte| byte == b'/' || byte == b'\\') {
         return Err(fail("job_id is invalid"));
     }
     Ok(())
@@ -66,6 +124,39 @@ fn control_root() -> Result<PathBuf, String> {
     Ok(root)
 }
 
+fn webview_data_root(local_app_data: &Path, version: &str) -> Result<PathBuf, String> {
+    if !local_app_data.is_absolute() || version.is_empty() || version.len() > 64
+        || !version.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+    {
+        return Err(fail("desktop profile root or release version is invalid"));
+    }
+    // Preserve version identity even on case-insensitive Windows filesystems.
+    let encoded: String = version.bytes().map(|byte| format!("{byte:02x}")).collect();
+    Ok(local_app_data.join("DubFlow/control/webview2").join(encoded))
+}
+
+#[cfg(windows)]
+fn configure_webview_data() -> Result<(), String> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .ok_or_else(|| fail("LOCALAPPDATA is unavailable"))?;
+    let profile = webview_data_root(Path::new(&local_app_data), &release_info().version)?;
+    let runtime = version_root()?.canonicalize().map_err(|error| fail(format!("unable to resolve desktop runtime: {error}")))?;
+    let ancestor = profile.ancestors().find(|path| path.exists())
+        .ok_or_else(|| fail("desktop profile has no available parent"))?;
+    if ancestor.canonicalize().map_err(|error| fail(format!("unable to resolve desktop profile parent: {error}")))?.starts_with(&runtime) {
+        return Err(fail("desktop profile cannot be inside the immutable runtime"));
+    }
+    fs::create_dir_all(&profile).map_err(|error| fail(format!("unable to create desktop profile: {error}")))?;
+    let profile = profile.canonicalize().map_err(|error| fail(format!("unable to resolve desktop profile: {error}")))?;
+    if profile.starts_with(runtime) {
+        return Err(fail("desktop profile cannot be inside the immutable runtime"));
+    }
+    // WebView2 reads this documented override during environment creation.
+    // Set it before Tauri starts threads or creates any configured windows.
+    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", profile);
+    Ok(())
+}
+
 fn command_with_no_window(program: &Path) -> Command {
     let mut command = Command::new(program);
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -93,6 +184,19 @@ fn status_path(root: &Path, job_id: &str) -> Result<PathBuf, String> {
     Ok(root.join("control").join("jobs").join(format!("{job_id}.json")))
 }
 
+fn default_job_output(source: &Path, job_id: &str) -> Result<PathBuf, String> {
+    validate_id(job_id)?;
+    // Encode the complete ID: Windows folds path case and reserves some names.
+    // Chunk at 64 bytes so even a maximum-length ID fits each path component.
+    let mut output = source.parent().unwrap_or(Path::new(".")).join("DubFlow Output")
+        .join(format!("{} - vi", source.file_stem().and_then(|name| name.to_str()).unwrap_or("video")));
+    for (index, chunk) in job_id.as_bytes().chunks(64).enumerate() {
+        let encoded: String = chunk.iter().map(|byte| format!("{byte:02x}")).collect();
+        output = output.join(if index == 0 { format!("run-{encoded}") } else { encoded });
+    }
+    Ok(output)
+}
+
 #[tauri::command]
 fn release_info() -> ReleaseInfo {
     ReleaseInfo {
@@ -116,15 +220,26 @@ fn pick_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
+    let selected_voice = if enable_dubbing.unwrap_or(false) {
+        let catalog = load_voice_catalog(&root)?;
+        let selected = tts_voice_id.ok_or_else(|| fail("Hãy chọn giọng trước khi lồng tiếng"))?;
+        if !catalog.voices.iter().any(|voice| voice.voice_id == selected) {
+            return Err(fail("Giọng đã chọn không có trong phiên bản này"));
+        }
+        Some(selected)
+    } else {
+        None
+    };
     let control = control_root()?;
     let status = status_path(&control, &job_id)?;
-    let output = output_dir
-        .map(|value| PathBuf::from(value))
-        .unwrap_or_else(|| source.parent().unwrap_or(Path::new(".")).join("DubFlow Output").join(format!("{} - vi", source.file_stem().and_then(|name| name.to_str()).unwrap_or("video"))));
+    let output = match output_dir {
+        Some(value) => PathBuf::from(value),
+        None => default_job_output(&source, &job_id)?,
+    };
     if !output.is_absolute() {
         return Err(fail("output_dir must be an absolute path"));
     }
@@ -132,12 +247,15 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>) ->
     let model_root = control.join("models");
     let supervisor = supervisor_binary(&root)?;
     let mut command = command_with_no_window(&supervisor);
-    let args = [
+    let mut args = vec![
         "run".to_owned(), "--root".to_owned(), root.to_string_lossy().into_owned(), "--job-id".to_owned(), job_id.clone(),
         "--source".to_owned(), source.to_string_lossy().into_owned(), "--output-dir".to_owned(), output.to_string_lossy().into_owned(),
         "--data-root".to_owned(), control.to_string_lossy().into_owned(), "--model-root".to_owned(), model_root.to_string_lossy().into_owned(),
         "--status-path".to_owned(), status.to_string_lossy().into_owned(),
     ];
+    if let Some(voice_id) = selected_voice {
+        args.extend(["--enable-dubbing".into(), "--tts-voice-id".into(), voice_id]);
+    }
     command.args(args);
     command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;
     Ok(StartJobResponse { job_id, status_path: status.to_string_lossy().into_owned(), output_dir: output.to_string_lossy().into_owned() })
@@ -172,8 +290,77 @@ fn cancel_job(job_id: String) -> Result<(), String> {
 }
 
 fn main() {
+    #[cfg(windows)]
+    configure_webview_data().expect("unable to configure DubFlow desktop profile");
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![release_info, pick_files, start_job, job_status, cancel_job])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_profiles_preserve_runtime_identity_and_refuse_invalid_roots() {
+        let local = std::env::temp_dir().join("DubFlow profile [spaces]");
+        let original = webview_data_root(&local, "0.1.0-rc.film").unwrap();
+        assert!(original.starts_with(local.join("DubFlow/control/webview2")));
+        assert_eq!(original, webview_data_root(&local, "0.1.0-rc.film").unwrap());
+        assert_ne!(original.to_string_lossy().to_lowercase(),
+            webview_data_root(&local, "0.1.0-rc.Film").unwrap().to_string_lossy().to_lowercase());
+        assert_ne!(original, webview_data_root(&local, "0.1.0-rc.next").unwrap());
+        assert!(webview_data_root(Path::new("relative"), "0.1.0").is_err());
+        for version in ["", "../escape", "a\\escape", "a:b", "a\n"] {
+            assert!(webview_data_root(&local, version).is_err());
+        }
+        assert!(webview_data_root(&local, &"x".repeat(65)).is_err());
+        assert!(webview_data_root(&local, &"x".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn voice_versions_keep_separate_outputs_and_resume_the_same_directory() {
+        let source = std::env::temp_dir().join("video [spaces].mp4");
+        let original = default_job_output(&source, "job-original").unwrap();
+        let variant = default_job_output(&source, "job-variant").unwrap();
+        assert_ne!(original, variant);
+        assert_eq!(original, default_job_output(&source, "job-original").unwrap());
+        let upper = default_job_output(&source, "JOB-original").unwrap();
+        assert_ne!(original.to_string_lossy().to_lowercase(), upper.to_string_lossy().to_lowercase());
+        assert_ne!(original, source.parent().unwrap().join("DubFlow Output/video [spaces] - vi"));
+        for id in ["", ".", "..", "../escape", "job\\escape"] {
+            assert!(default_job_output(&source, id).is_err());
+        }
+        for id in ["CON".to_owned(), "x".repeat(128)] {
+            let output = default_job_output(&source, &id).unwrap();
+            assert!(output.starts_with(source.parent().unwrap().join("DubFlow Output")));
+            assert!(output.components().all(|part| part.as_os_str().to_string_lossy().len() <= 132));
+        }
+    }
+
+    #[test]
+    fn catalog_reads_the_installed_app_payload_and_rejects_unknown_or_duplicate_ids() {
+        let root = std::env::temp_dir().join(format!("dubflow-voice-catalog-test-{}", std::process::id()));
+        let path = root.join("app/models/manifests/production-vieneu-v1.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = include_str!("../../../../models/manifests/production-vieneu-v1.json");
+        fs::write(&path, source).unwrap();
+        let catalog = load_voice_catalog(&root).unwrap();
+        assert_eq!(catalog.voices.len(), 25);
+        assert!(catalog.voices.iter().any(|voice| voice.voice_id == catalog.default_voice_id));
+        let mut changed: Value = serde_json::from_str(source).unwrap();
+        changed["voice_id"] = json!("missing");
+        fs::write(&path, changed.to_string()).unwrap();
+        assert!(load_voice_catalog(&root).is_err());
+        changed["voice_id"] = json!(catalog.default_voice_id);
+        changed["voices"][1] = changed["voices"][0].clone();
+        fs::write(&path, changed.to_string()).unwrap();
+        assert!(load_voice_catalog(&root).is_err());
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+        fs::remove_dir(root.join("app/models")).unwrap();
+        fs::remove_dir(root.join("app")).unwrap();
+        fs::remove_dir(&root).unwrap();
+    }
 }

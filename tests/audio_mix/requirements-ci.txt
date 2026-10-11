@@ -1,0 +1,4 @@
+# Official PyPI NumPy2.2.6 CPython3.12 wheels for applicable Linux/Windows CI.
+numpy==2.2.6 \
+    --hash=sha256:fd83c01228a688733f1ded5201c678f0c53ecc1006ffbc404db9f7a899ac6249 \
+    --hash=sha256:c1f9540be57940698ed329904db803cf7a402f3fc200bfe599334c9bd84a40b2

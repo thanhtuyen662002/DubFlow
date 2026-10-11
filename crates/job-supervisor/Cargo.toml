@@ -2,7 +2,14 @@
 resolver = "2"
 members = [
     "app",
+    "invalidation",
+    "liveness",
+    "locking",
+    "model_refs",
     "protocol",
+    "resources",
+    "scheduler",
     "source_queue",
     "state",
+    "storage",
 ]

@@ -12,12 +12,13 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const MIGRATION_VERSION: i64 = 1;
+const MIGRATION_VERSION: i64 = 2;
 const MAX_ID_CHARS: usize = 128;
 const MAX_KIND_CHARS: usize = 128;
 const MAX_ERROR_CHARS: usize = 4096;
 const MAX_RETRY_ATTEMPTS: u8 = 255;
 const MIGRATION_SQL: &str = include_str!("../../../../migrations/0001_job_state.sql");
+const START_REQUEST_MIGRATION_SQL: &str = include_str!("../../../../migrations/0002_job_start_requests.sql");
 
 #[derive(Debug)]
 pub enum StateError {
@@ -129,6 +130,15 @@ pub struct ArtifactRecord {
     pub reusable: bool,
 }
 
+/// Durable history for status projection, read without advancing an attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StageHistory {
+    pub attempt: u8,
+    pub max_attempts: u8,
+    pub retry_condition: Option<String>,
+    pub checkpoint_id: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryEvent {
     RecoveredArtifact { artifact_id: String, hash: String },
@@ -166,10 +176,11 @@ impl DurableStore {
         let current: Option<i64> = self.connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))?;
         let current = current.unwrap_or(0);
         if current > MIGRATION_VERSION { return Err(StateError::UnsupportedMigration(current)); }
-        if current < MIGRATION_VERSION {
+        for (version, sql) in [(1, MIGRATION_SQL), (2, START_REQUEST_MIGRATION_SQL)] {
+            if current >= version { continue; }
             let tx = self.connection.unchecked_transaction()?;
-            tx.execute_batch(MIGRATION_SQL)?;
-            tx.execute("INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?1, 0)", params![MIGRATION_VERSION])?;
+            tx.execute_batch(sql)?;
+            tx.execute("INSERT INTO schema_migrations(version, applied_at_ms) VALUES (?1, 0)", params![version])?;
             tx.commit()?;
         }
         Ok(())
@@ -197,6 +208,25 @@ impl DurableStore {
         Ok(())
     }
 
+    /// Admit the immutable start request in the same transaction as its job.
+    /// There is intentionally no update/upsert API for a caller to rebind it.
+    pub fn create_job_with_start_request(&self, job_id: &str, source_uri: &str, request_json: &str, now_ms: u64) -> Result<()> {
+        validate_id(job_id, "job_id", MAX_ID_CHARS)?;
+        validate_non_empty(source_uri, "source_uri", 4096)?;
+        validate_non_empty(request_json, "start request", 16384)?;
+        let now = to_i64(now_ms, "now_ms")?;
+        let tx = self.connection.unchecked_transaction()?;
+        tx.execute("INSERT INTO jobs(job_id, source_uri, status, created_at_ms, updated_at_ms) VALUES (?1, ?2, 'queued', ?3, ?3)", params![job_id, source_uri, now])?;
+        tx.execute("INSERT INTO job_start_requests(job_id, request_json, created_at_ms) VALUES (?1, ?2, ?3)", params![job_id, request_json, now])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn job_start_request(&self, job_id: &str) -> Result<Option<String>> {
+        self.require_job(job_id)?;
+        Ok(self.connection.query_row("SELECT request_json FROM job_start_requests WHERE job_id = ?1", params![job_id], |row| row.get(0)).optional()?)
+    }
+
     pub fn job_status(&self, job_id: &str) -> Result<JobStatus> {
         self.connection.query_row("SELECT status FROM jobs WHERE job_id = ?1", params![job_id], |row| row.get::<_, String>(0))
             .optional()?.ok_or_else(|| StateError::NotFound { entity: "job", id: job_id.into() }).and_then(JobStatus::parse)
@@ -205,6 +235,15 @@ impl DurableStore {
     pub fn stage_status(&self, job_id: &str, stage_id: &str) -> Result<StageStatus> {
         self.connection.query_row("SELECT status FROM stages WHERE job_id = ?1 AND stage_id = ?2", params![job_id, stage_id], |row| row.get::<_, String>(0))
             .optional()?.ok_or_else(|| StateError::NotFound { entity: "stage", id: format!("{job_id}/{stage_id}") }).and_then(StageStatus::parse)
+    }
+
+    pub fn stage_history(&self, job_id: &str, stage_id: &str) -> Result<StageHistory> {
+        self.connection.query_row(
+            "SELECT attempt, max_attempts, retry_condition, checkpoint_id FROM stages WHERE job_id = ?1 AND stage_id = ?2",
+            params![job_id, stage_id],
+            |row| Ok(StageHistory { attempt: row.get(0)?, max_attempts: row.get(1)?,
+                retry_condition: row.get(2)?, checkpoint_id: row.get(3)? }),
+        ).optional()?.ok_or_else(|| StateError::NotFound { entity: "stage", id: format!("{job_id}/{stage_id}") })
     }
 
     pub fn artifact(&self, artifact_id: &str) -> Result<ArtifactRecord> {
@@ -529,6 +568,20 @@ impl DurableStore {
         Ok(events)
     }
 
+    /// The supervisor must hold exclusive execution ownership for this job.
+    pub fn recover_job_after_restart(&self, job_id: &str, now_ms: u64) -> Result<u64> {
+        self.require_job(job_id)?;
+        let now = to_i64(now_ms, "now_ms")?;
+        let tx = self.connection.unchecked_transaction()?;
+        let stages = tx.execute("UPDATE stages SET status = 'recovering', last_error = 'PROCESS_RESTART' WHERE job_id = ?1 AND status = 'running' AND EXISTS (SELECT 1 FROM jobs WHERE job_id = ?1 AND status <> 'cancelled')", params![job_id])?;
+        tx.execute("UPDATE jobs SET status = 'recovering', updated_at_ms = ?2, last_error = 'PROCESS_RESTART' WHERE job_id = ?1 AND status = 'running'", params![job_id, now])?;
+        tx.execute("UPDATE jobs SET status = 'recovering', updated_at_ms = ?2, last_error = 'PROCESS_RESTART' WHERE job_id = ?1 AND status NOT IN ('recovering', 'cancelled') AND EXISTS (SELECT 1 FROM stages WHERE job_id = ?1 AND status = 'recovering' AND last_error = 'PROCESS_RESTART')", params![job_id, now])?;
+        tx.commit()?;
+        Ok(stages as u64)
+    }
+
+    /// Requires exclusive ownership of the whole store, not merely one job.
+    /// Production per-job execution uses `recover_job_after_restart` instead.
     pub fn recover_after_restart(&self, now_ms: u64) -> Result<u64> {
         let now = to_i64(now_ms, "now_ms")?;
         let tx = self.connection.unchecked_transaction()?;
@@ -605,7 +658,8 @@ fn quarantine_path(path: &Path, artifact_id: &str) -> PathBuf {
     let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("artifact");
     path.with_file_name(format!("{file_name}.{artifact_id}.quarantine"))
 }
-fn hash_file(path: &Path) -> io::Result<(String, u64)> {
+/// Bounded streaming content identity for supervisor-owned inputs/artifacts.
+pub fn hash_file(path: &Path) -> io::Result<(String, u64)> {
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -642,10 +696,45 @@ mod tests {
     #[test]
     fn migration_creates_state() {
         let store = DurableStore::open_in_memory().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(store.schema_version().unwrap(), 2);
         setup(&store);
         assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Queued);
         assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Pending);
+    }
+
+    #[test]
+    fn migration_two_preserves_historical_jobs_without_inventing_options() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, applied_at_ms INTEGER NOT NULL);").unwrap();
+        connection.execute_batch(MIGRATION_SQL).unwrap();
+        connection.execute("INSERT INTO schema_migrations(version, applied_at_ms) VALUES (1, 0)", []).unwrap();
+        connection.execute("INSERT INTO jobs(job_id, source_uri, status, created_at_ms, updated_at_ms) VALUES ('legacy', 'file:///original.mp4', 'paused', 1, 1)", []).unwrap();
+        let store = DurableStore::from_connection(connection).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 2);
+        assert_eq!(store.job_status("legacy").unwrap(), JobStatus::Paused);
+        assert_eq!(store.job_start_request("legacy").unwrap(), None);
+        store.apply_migrations().unwrap();
+        assert_eq!(store.schema_version().unwrap(), 2);
+    }
+
+    #[test]
+    fn start_request_is_atomic_immutable_and_survives_restart() {
+        let path = temp_path("start-request", "sqlite");
+        {
+            let store = DurableStore::open(&path).unwrap();
+            store.create_job_with_start_request("voice-job", "file:///source.mp4", "{\"voice\":\"original\"}", 1).unwrap();
+            assert!(store.create_job_with_start_request("voice-job", "file:///different.mp4", "{\"voice\":\"different\"}", 2).is_err());
+            assert!(store.create_job_with_start_request("oversized", "file:///source.mp4", &"x".repeat(16385), 3).is_err());
+            assert!(matches!(store.job_status("oversized"), Err(StateError::NotFound { .. })));
+        }
+        {
+            let store = DurableStore::open(&path).unwrap();
+            assert_eq!(store.job_start_request("voice-job").unwrap().as_deref(), Some("{\"voice\":\"original\"}"));
+            assert_eq!(store.job_status("voice-job").unwrap(), JobStatus::Queued);
+        }
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
     }
 
     #[test]
@@ -824,6 +913,72 @@ mod tests {
         {
             let store = DurableStore::open(&path).unwrap();
             assert_eq!(store.start_stage("job-1", "analysis", 6).unwrap(), 2);
+        }
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn owned_job_recovery_preserves_live_neighbors_and_never_revives_cancelled_jobs() {
+        let store = DurableStore::open_in_memory().unwrap();
+        setup(&store);
+        store.create_job("job-2", "file:///other-source.mp4", 1).unwrap();
+        store.create_stage("job-2", "analysis", "analysis", 3).unwrap();
+        for id in ["job-1", "job-2"] {
+            store.start_job(id, 2).unwrap();
+            store.start_stage(id, "analysis", 3).unwrap();
+        }
+        store.record_checkpoint("job-1", "analysis", "transcript", None, true, 4).unwrap();
+        let neighbor = store.stage_history("job-1", "analysis").unwrap();
+        assert_eq!(store.recover_job_after_restart("job-2", 5).unwrap(), 1);
+        assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Running);
+        assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Running);
+        assert_eq!(store.stage_history("job-1", "analysis").unwrap(), neighbor);
+        assert_eq!(store.job_status("job-2").unwrap(), JobStatus::Recovering);
+        assert_eq!(store.start_stage("job-2", "analysis", 6).unwrap(), 2);
+        store.cancel_job("job-2", "user cancellation", 7).unwrap();
+        assert_eq!(store.recover_job_after_restart("job-2", 8).unwrap(), 0);
+        assert_eq!(store.job_status("job-2").unwrap(), JobStatus::Cancelled);
+        assert_eq!(store.stage_status("job-2", "analysis").unwrap(), StageStatus::Cancelled);
+        assert!(matches!(store.recover_job_after_restart("missing", 9), Err(StateError::NotFound { .. })));
+        assert_eq!(store.stage_history("job-1", "analysis").unwrap(), neighbor);
+    }
+
+    #[test]
+    fn stage_history_survives_restart_failure_retry_and_completion() {
+        let path = temp_path("stage-history", "sqlite");
+        {
+            let store = DurableStore::open(&path).unwrap();
+            setup(&store);
+            assert_eq!(store.stage_history("job-1", "analysis").unwrap(), StageHistory {
+                attempt: 0, max_attempts: 3, retry_condition: None, checkpoint_id: None });
+            store.start_job("job-1", 2).unwrap();
+            store.start_stage("job-1", "analysis", 3).unwrap();
+            store.record_checkpoint("job-1", "analysis", "transcript", None, true, 4).unwrap();
+        }
+        {
+            let store = DurableStore::open(&path).unwrap();
+            store.recover_after_restart(5).unwrap();
+            let saved = store.stage_history("job-1", "analysis").unwrap();
+            assert_eq!(saved.attempt, 1);
+            assert_eq!(saved.checkpoint_id.as_deref(), Some("transcript"));
+            assert_eq!(store.stage_history("job-1", "analysis").unwrap(), saved);
+            store.start_stage("job-1", "analysis", 6).unwrap();
+            store.fail_stage("job-1", "analysis", "timeout", true, 7).unwrap();
+            store.retry_stage("job-1", "analysis", "smaller chunk", 8).unwrap();
+            assert_eq!(store.stage_history("job-1", "analysis").unwrap().attempt, 2);
+            store.start_stage("job-1", "analysis", 9).unwrap();
+            store.record_checkpoint("job-1", "analysis", "qc", None, true, 10).unwrap();
+            store.complete_stage("job-1", "analysis", 11).unwrap();
+            store.complete_job("job-1", 12).unwrap();
+        }
+        {
+            let store = DurableStore::open(&path).unwrap();
+            assert_eq!(store.stage_history("job-1", "analysis").unwrap(), StageHistory {
+                attempt: 3, max_attempts: 3, retry_condition: Some("smaller chunk".into()), checkpoint_id: Some("qc".into()) });
+            assert!(matches!(store.stage_history("job-1", "missing"), Err(StateError::NotFound { .. })));
+            assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Succeeded);
         }
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("sqlite-wal"));

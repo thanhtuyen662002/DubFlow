@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-argos-language-routes-v1",
+  "runtime_version": "1.11.0",
+  "runtime_components": {"ctranslate2": "4.8.2", "sentencepiece": "0.2.2"},
+  "distribution": "download-on-first-use",
+  "license_policy": "package terms and training attribution require release review",
+  "publication_status": "qualification-pending",
+  "routes": {"en": ["en-vi"], "zh": ["zh-en", "en-vi"], "zh-CN": ["zh-en", "en-vi"], "zh-TW": ["zh-en", "en-vi"], "vi": []},
+  "artifacts": [
+    {"id": "zh-en", "path": "translation/packages/translate-zh_en-1_9.argosmodel", "url": "https://argos-net.com/v1/translate-zh_en-1_9.argosmodel", "sha256": "62e7af5a3a48b530e47b7b3e5c78c2de79073ecd815750d2bf3ab35b4a67da2d", "size_bytes": 74481402, "zip_root": "translate-zh_en-1_9", "tree_sha256": "f9d3bb4635b51a6a4bb8ec0d9ffd18a11e4033e10294ea477470a8fc7a71a77d", "from_code": "zh", "to_code": "en", "package_version": "1.9"},
+    {"id": "en-vi", "path": "translation/packages/translate-en_vi-1_9.argosmodel", "url": "https://argos-net.com/v1/translate-en_vi-1_9.argosmodel", "sha256": "86957101aa4099aa9a1a7492e41987d938d3cf0fdaf4fb684c0797a9d567dd16", "size_bytes": 67770159, "zip_root": "translate-en_vi-1_9", "tree_sha256": "1fb1799eae5c11375e0817caf506de7b9a66f9228ae03cf05ff49f72147336b6", "from_code": "en", "to_code": "vi", "package_version": "1.9"}
+  ]
+}

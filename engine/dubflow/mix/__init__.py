@@ -20,5 +20,6 @@ from .adapter import (
     parse_mix_json,
     validate_mix_document,
 )
+from .streaming import FileSource, FileSegment, StreamLimits, StreamingAudioMixer
 
 __all__ = [name for name in globals() if not name.startswith("_")]
