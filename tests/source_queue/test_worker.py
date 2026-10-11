@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import http.server
 import io
 import json
 import os
@@ -16,7 +17,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from engine.dubflow.download.enumeration import worker
-from engine.dubflow.download.materializer import DownloadResult
+from engine.dubflow.download.materializer import DownloadResult, MediaMaterializer
 from engine.dubflow.download.source_adapter import (
     MediaCandidate, SourceError, SourceErrorCode, SourceIdentity, SourceItem,
     SourcePage, SourcePageFailure, SubtitleCandidate,
@@ -113,6 +114,47 @@ class SourceWorkerTests(unittest.TestCase):
         with self.assertRaises(SourceError):
             session.retry_probe(self.retry_args(session))
         self.adapter.probe_download_access.assert_not_called()
+
+    def test_real_http_probe_failure_keeps_typed_condition_without_packet_or_replay(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            status_code = 503
+            requests = 0
+            def do_GET(self):
+                type(self).requests += 1
+                self.send_response(type(self).status_code)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            def log_message(self, *_):
+                pass
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        materializer = MediaMaterializer()
+        candidate = MediaCandidate("video", f"http://127.0.0.1:{server.server_port}/media.mp4?token=private",
+            "progressive", "video/mp4")
+        self.adapter.inspect.return_value = SourceItem(SourceIdentity("generic", "one", "https://example.test/one"), "one",
+            media_candidates=(candidate,))
+        self.adapter.probe_download_access.side_effect = lambda selected: materializer.probe_access(selected.media_candidates[0])
+        try:
+            for status, code, retryable in ((401, SourceErrorCode.AUTH_REQUIRED, False),
+                    (429, SourceErrorCode.RATE_LIMITED, True), (503, SourceErrorCode.NETWORK, True)):
+                Handler.status_code = status
+                session = self.session()
+                with self.subTest(status=status), self.assertRaises(SourceError) as failure:
+                    session.retry_probe(self.retry_args(session))
+                self.assertEqual(failure.exception.code, code)
+                self.assertEqual(failure.exception.retryable, retryable)
+                self.assertNotIn("private", str(failure.exception))
+                self.assertNotIn("127.0.0.1", str(failure.exception))
+                self.assertEqual(list(self.work.iterdir()), [])
+                with self.assertRaises(SourceError):
+                    session.retry_probe(self.retry_args(session, dispatch_revision=2))
+            self.assertEqual(Handler.requests, 3)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
 
     def test_retry_refuses_budget_terminal_codes_extra_args_and_stale_binding(self):
         for change in ({"retry_count": 2}, {"retry_count": True}, {"error_code": "NOT_FOUND"},
