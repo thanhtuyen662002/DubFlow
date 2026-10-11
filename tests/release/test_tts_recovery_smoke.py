@@ -128,6 +128,7 @@ def tts2_evidence(output: Path, source_hash: str):
     from engine.dubflow.tts import LocalTtsAdapter, TtsConfig, TtsInput, TtsProvenance, DeterministicFixtureEngine, approved_default_voice
     from engine.dubflow.worker.b2_audio import _dubbing_windows, _input_hash
     from engine.dubflow.worker.tts_checkpoints import TtsCheckpointStore
+    from engine.dubflow.worker.tts_rewrites import SpokenTextStore
     generation = output / ".dubflow-work/b2-audio/recipe/generation"
     canonical = [{"cue_id": "cue-1", "start_ms": 0, "end_ms": 1000, "source_text": "Hello",
                   "translated_text": "Xin chào", "confidence": 1.0}]
@@ -140,20 +141,62 @@ def tts2_evidence(output: Path, source_hash: str):
     digest = "sha256:" + sha256(payload).hexdigest()
     config = TtsConfig(max_attempts=1)
     voice = replace(approved_default_voice(), voice_id="fixture")
-    provenance = TtsProvenance("qualification-fixture", "3.4.0", "vieneu-v3-turbo-onnx-v1", "fixture", "timeline-v1",
+    provenance = TtsProvenance("qualification-fixture", "3.5.0", "vieneu-v3-turbo-onnx-v1", "fixture", "timeline-v1",
         config.content_hash(), digest, voice.model_id, voice.model_version, voice.model_hash, voice.content_hash(),
         voice.voice_id, voice.voice_version, config.requested_profile, "fixture", config.resource)
     store = TtsCheckpointStore(generation / "tts", identity="1" * 64)
     cue = TtsInput("cue-1", "cue-1", "Xin chào", TimePoint(0, base), TimePoint(1000, base), render_window_end=TimePoint(1000, base))
+    spoken = SpokenTextStore(generation / "tts", identity="1" * 64, segments=(cue,))
+    def commit(value):
+        spoken.commit(value)
+        store.commit(value)
     speech = LocalTtsAdapter(DeterministicFixtureEngine(), config=config, voice=voice, provenance=provenance,
-        output_dir=generation / "tts").synthesize((cue,), input_hash=digest, on_checkpoint=store.commit)
+        output_dir=generation / "tts").synthesize((cue,), input_hash=digest, on_checkpoint=commit)
     tts_path = generation / "tts_document.json"
     tts_path.write_bytes(speech.to_bytes())
     placement_path = generation / "dubbing_placement.json"
     placement_path.write_bytes(payload)
     (output / "editable").mkdir(exist_ok=True)
     (output / "editable/dubbing_placement.json").write_bytes(payload)
+    spoken_payload = (json.dumps(spoken.document(speech), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    (generation / "dubbing_spoken_text.json").write_bytes(spoken_payload)
+    (output / "editable/dubbing_spoken_text.json").write_bytes(spoken_payload)
     return speech, tts_path, {"schema_version": 1, "path": str(placement_path), "sha256": digest}, canonical
+
+
+class SpokenTextEvidenceTests(unittest.TestCase):
+    def test_source_recipe_wave_and_editable_spoken_evidence_are_required(self):
+        for defect in (None, "missing", "editable", "text", "origin", "recipe", "audio", "boolean", "duplicate", "oversized", "per-cue"):
+            with self.subTest(defect=defect), TemporaryDirectory() as directory:
+                output = Path(directory)
+                speech, tts_path, placement, canonical = tts2_evidence(output, "sha256:" + "a" * 64)
+                path = tts_path.with_name("dubbing_spoken_text.json")
+                copied = output / "editable/dubbing_spoken_text.json"
+                metadata = {"schema_version": 1, "path": str(path), "sha256": "sha256:" + sha256(path.read_bytes()).hexdigest()}
+                manifest = {"audio": {"tts_document": str(tts_path), "dubbing_spoken_text": metadata,
+                    "dubbing_placement": placement}, "cues": canonical, "language": {"source_language": "und"}}
+                if defect == "missing": path.unlink()
+                elif defect == "editable": copied.write_bytes(b"changed")
+                elif defect == "per-cue":
+                    next((tts_path.parent / "tts/spoken_text").glob("*.json")).write_bytes(b"{}")
+                elif defect:
+                    value = json.loads(path.read_bytes())
+                    if defect == "text": value["entries"][0]["spoken_text"] = "Đổi đại từ hoặc nghĩa"
+                    elif defect == "origin": value["entries"][0]["original_input"]["text"] = "Đã sửa bản gốc"
+                    elif defect == "recipe": value["recipe_hash"] = "sha256:" + "b" * 64
+                    elif defect == "audio": value["entries"][0]["audio_hash"] = "sha256:" + "b" * 64
+                    elif defect == "boolean": value["schema_version"] = True
+                    raw = (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+                    if defect == "duplicate": raw = b'{"recipe":"duplicate",' + raw[1:]
+                    elif defect == "oversized": raw = b" " * 131073
+                    path.write_bytes(raw)
+                    copied.write_bytes(raw)
+                    metadata["sha256"] = "sha256:" + sha256(raw).hexdigest()
+                if defect is None:
+                    smoke._verify_dubbing_spoken_text(output, manifest, speech.to_dict(), identity="1" * 64)
+                else:
+                    with self.assertRaisesRegex(smoke.SmokeError, "spoken-text verification failed"):
+                        smoke._verify_dubbing_spoken_text(output, manifest, speech.to_dict(), identity="1" * 64)
 
 
 class StereoDubEvidenceTests(unittest.TestCase):
@@ -184,10 +227,12 @@ class StereoDubEvidenceTests(unittest.TestCase):
                 mix_path = output / "mix_document.json"
                 mix_path.write_text(json.dumps(mix), encoding="utf-8")
                 _, tts_path, placement, canonical = tts2_evidence(output, mix["original_audio"]["content_hash"])
+                spoken_path = tts_path.with_name("dubbing_spoken_text.json")
                 (output / "job_manifest.json").write_text(json.dumps({"audio": {"mode": "dubbed",
                     "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
-                    "mix_document": str(mix_path), "mix_provenance": provenance, "dubbing_placement": placement},
-                    "cues": canonical, "warnings": []}), encoding="utf-8")
+                    "mix_document": str(mix_path), "mix_provenance": provenance, "dubbing_placement": placement,
+                    "dubbing_spoken_text": {"schema_version": 1, "path": str(spoken_path), "sha256": "sha256:" + sha256(spoken_path.read_bytes()).hexdigest()}},
+                    "cues": canonical, "language": {"source_language": "und"}, "warnings": []}), encoding="utf-8")
                 probe = {"format": {"duration": "1"}, "streams": [
                     {"codec_type": "video", "codec_name": "h264", "width": 320, "height": 180},
                     {"codec_type": "audio", "codec_name": "aac", "channels": channels}]}

@@ -37,12 +37,14 @@ from engine.dubflow.tts.neural_vits import ENGINE_ID, ONNX_RUNTIME_VERSION, RUNT
 from engine.dubflow.tts.neural_vits import _child, _read_json, _digest
 from engine.dubflow.tts import vieneu
 from .tts_checkpoints import TtsCheckpointStore
+from .tts_rewrites import BoundedDurationRewriteEngine, SpokenTextStore
 
 
 BASE_TIME = TimeBase(1, 1000)
 DUBBING_WINDOW_RECIPE = "source-intercue-postroll-2000ms-gap120ms-v1"
 MAX_POSTROLL_MS = 2000
 NEXT_CUE_GUARD_MS = 120
+B2_TTS_PRODUCER_VERSION = "3.5.0"
 
 
 def tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
@@ -60,7 +62,7 @@ def _tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
         return "legacy-profile-without-neural-recipe"
     metadata = _child(app_root, relative)
     source = Path(__file__).parents[1] / "tts"
-    paths = (metadata, source / "adapter.py", source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py", Path(__file__).with_name("tts_checkpoints.py"))
+    paths = (metadata, source / "adapter.py", source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py", Path(__file__).with_name("tts_checkpoints.py"), Path(__file__).with_name("tts_rewrites.py"))
     return sha256("".join(_digest(path) for path in paths).encode()).hexdigest()
 
 
@@ -93,6 +95,7 @@ class B2AudioResult:
     mix_document: MixDocument
     voice: VoiceProfile
     placement_document_path: Path | None = None
+    spoken_text_document_path: Path | None = None
 
     @property
     def final_mix_path(self) -> Path:
@@ -237,7 +240,7 @@ def run_b2_audio(
         if recipe.get("backend") == vieneu.ENGINE_ID:
             pack, voice = vieneu.load_vieneu_voice(app_root, model_root or root / "model-cache", profile_path, voice_id=tts_voice_id)
             engine = vieneu.VieNeuVietnameseTtsEngine(pack, ffmpeg_path=media.ffmpeg_path)
-            backend_id, producer_version, runtime_id = vieneu.ENGINE_ID, vieneu.PRODUCER_VERSION, vieneu.RUNTIME_ID
+            backend_id, producer_version, runtime_id = vieneu.ENGINE_ID, B2_TTS_PRODUCER_VERSION, vieneu.RUNTIME_ID
             resources = TtsResourceProfile(max_threads=2, max_memory_mb=2048, max_batch_items=1)
         elif recipe.get("backend") == ENGINE_ID:
             if tts_voice_id is not None and tts_voice_id != recipe.get("voice_id"):
@@ -330,16 +333,33 @@ def run_b2_audio(
             "recipe": tts_recipe_identity(Path(app_root), Path(profile_path))},
             sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         checkpoints = TtsCheckpointStore(tts_dir, identity=checkpoint_identity)
+        spoken_store = None
+        reusable = checkpoints.load(segments)
+        on_checkpoint = checkpoints.commit
+        if backend_id == vieneu.ENGINE_ID:
+            spoken_store = SpokenTextStore(tts_dir, identity=checkpoint_identity, segments=segments)
+            engine = BoundedDurationRewriteEngine(engine, spoken_store)
+            reusable = spoken_store.filter_checkpoints(reusable)
+
+            def on_checkpoint(checkpoint):
+                # The adapter has already validated and atomically published the
+                # waveform. Evidence precedes the reusable checkpoint; an orphan
+                # receipt cannot authorize reuse when the checkpoint is absent.
+                spoken_store.commit(checkpoint)
+                checkpoints.commit(checkpoint)
+
         tts_document = LocalTtsAdapter(
             engine,
             config=tts_config,
             provenance=provenance,
             voice=voice,
             output_dir=tts_dir,
-        ).synthesize(segments, input_hash=input_hash, checkpoints=checkpoints.load(segments),
-                     on_checkpoint=checkpoints.commit)
+        ).synthesize(segments, input_hash=input_hash, checkpoints=reusable,
+                     on_checkpoint=on_checkpoint)
         if checkpoints.warnings:
             tts_document = replace(tts_document, warnings=tts_document.warnings + tuple(checkpoints.warnings))
+        if spoken_store is not None and spoken_store.warnings:
+            tts_document = replace(tts_document, warnings=tts_document.warnings + tuple(spoken_store.warnings))
     except TtsStageError as error:
         raise B2AudioError("TTS_FAILED", str(error), retryable=error.retryable) from error
     except Exception as error:
@@ -352,10 +372,18 @@ def run_b2_audio(
             close()
 
     tts_document_path = root / "tts_document.json"
+    spoken_text_document_path = None
     try:
         _atomic_bytes(tts_document_path, tts_document.to_bytes())
+        if spoken_store is not None:
+            spoken_text_document_path = root / "dubbing_spoken_text.json"
+            _atomic_bytes(spoken_text_document_path,
+                          (json.dumps(spoken_store.document(tts_document), ensure_ascii=False,
+                                      sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8"))
     except OSError as error:
         raise B2AudioError("TTS_ARTIFACT_WRITE_FAILED", str(error), retryable=True) from error
+    except (ValueError, TypeError, KeyError) as error:
+        raise B2AudioError("TTS_SPOKEN_TEXT_EVIDENCE_INVALID", str(error), retryable=False) from error
     try:
         artifacts_by_id = {artifact.segment_id: artifact for artifact in tts_document.artifacts}
         segments_for_mix: list[FileSegment] = []
@@ -407,7 +435,7 @@ def run_b2_audio(
         _atomic_bytes(mix_document_path, (mix_document.to_json() + "\n").encode("utf-8"))
     except OSError as error:
         raise B2AudioError("MIX_ARTIFACT_WRITE_FAILED", str(error), retryable=True) from error
-    return B2AudioResult(source_audio_path, tts_document_path, mix_document_path, tts_document, mix_document, voice, placement_document_path)
+    return B2AudioResult(source_audio_path, tts_document_path, mix_document_path, tts_document, mix_document, voice, placement_document_path, spoken_text_document_path)
 
 
 __all__ = ["B2AudioError", "B2AudioResult", "BASE_TIME", "run_b2_audio", "mix_recipe_identity"]

@@ -322,6 +322,53 @@ def _verify_dubbing_placement(output_dir: Path, manifest: dict, speech: dict) ->
         raise SmokeError("packaged dubbing placement/TTS2 verification failed: " + str(error)) from error
 
 
+def _verify_dubbing_spoken_text(output_dir: Path, manifest: dict, speech: dict, *, identity: str) -> None:
+    from engine.dubflow.asr import TimeBase, TimePoint
+    from engine.dubflow.tts import TtsInput, TtsError
+    from engine.dubflow.worker.tts_rewrites import validate_spoken_text_document, _encoded, _unique
+    try:
+        audio = manifest["audio"]
+        metadata = audio["dubbing_spoken_text"]
+        if (set(metadata) != {"schema_version", "path", "sha256"}
+                or type(metadata["schema_version"]) is not int or metadata["schema_version"] != 1):
+            raise ValueError("invalid spoken-text descriptor")
+        tts_path = Path(audio["tts_document"])
+        path = Path(metadata["path"])
+        if path.parent != tts_path.parent or path.name != "dubbing_spoken_text.json":
+            raise ValueError("spoken-text evidence escaped its generation")
+        bound = 65536 * (len(speech["artifacts"]) + 1)
+        with path.open("rb") as stream:
+            raw = stream.read(bound + 1)
+        if len(raw) > bound or "sha256:" + hashlib.sha256(raw).hexdigest() != metadata["sha256"]:
+            raise ValueError("spoken-text size/hash differs")
+        value = json.loads(raw, object_pairs_hook=_unique)
+        if raw != _encoded(value) + b"\n":
+            raise ValueError("spoken-text document bytes are not canonical")
+        placement = _json(Path(audio["dubbing_placement"]["path"]))
+        windows = {window["cue_id"]: window for window in placement["windows"]}
+        base = TimeBase(1, 1000)
+        source_language = manifest["language"]["source_language"]
+        segments = tuple(TtsInput(cue["cue_id"], cue["cue_id"], cue["translated_text"],
+            TimePoint(cue["start_ms"], base), TimePoint(cue["end_ms"], base),
+            source_language=source_language, confidence=cue["confidence"],
+            render_window_end=TimePoint(int(windows[cue["cue_id"]]["render_window_end"]["ticks"]), base))
+            for cue in manifest["cues"])
+        validate_spoken_text_document(value, tts_path.read_bytes(), segments, identity=identity)
+        copied = output_dir / "editable/dubbing_spoken_text.json"
+        with copied.open("rb") as stream:
+            if "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest() != metadata["sha256"]:
+                raise ValueError("editable spoken-text evidence differs")
+        for entry in value["entries"]:
+            name = hashlib.sha256(entry["original_input"]["segment_id"].encode()).hexdigest() + ".json"
+            with (tts_path.parent / "tts/spoken_text" / name).open("rb") as stream:
+                payload = stream.read(65537)
+            expected = {**entry, "record_hash": hashlib.sha256(_encoded(entry)).hexdigest()}
+            if len(payload) > 65536 or _encoded(json.loads(payload, object_pairs_hook=_unique)) != _encoded(expected):
+                raise ValueError("spoken-text per-cue receipt differs")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, TtsError) as error:
+        raise SmokeError("packaged B2 spoken-text verification failed: " + str(error)) from error
+
+
 def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int, *, expect_dubbing: bool = False, expect_voice_id: str | None = None, expect_audio: bool = True) -> dict[str, Any]:
     final = output_dir / "final_vi.mp4"
     required = [
@@ -351,7 +398,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
             raise SmokeError(f"B2 manifest does not prove the app-owned voice path: {audio!r}")
         tts_document = _json(Path(audio["tts_document"]))
         provenance = tts_document.get("provenance", {})
-        if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.4.0":
+        if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.5.0":
             raise SmokeError(f"B2 TTS receipt differs from the selected native producer: {provenance!r}")
         if expect_voice_id is not None and provenance.get("voice_id") != expect_voice_id:
             raise SmokeError("packaged TTS did not preserve the explicitly selected preset")
@@ -360,6 +407,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         if not isinstance(tts_artifacts, list) or not tts_artifacts:
             raise SmokeError("packaged TTS has no committed per-cue artifacts")
         tts_root = Path(audio["tts_document"]).parent / "tts"
+        checkpoint_identity = None
         for artifact in tts_artifacts:
             path = Path(artifact["path"])
             if path.parent != tts_root or not re.fullmatch(r"tts-[a-f0-9]{32}\.wav", path.name):
@@ -377,11 +425,15 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
                         not re.fullmatch(r"[a-f0-9]{64}", checkpoint.get("identity", "")) or
                         checkpoint.get("artifact") != artifact or checkpoint.get("artifact_record_hash") != metadata_hash):
                     raise ValueError("record differs from TTS artifact")
+                if checkpoint_identity is not None and checkpoint_identity != checkpoint["identity"]:
+                    raise ValueError("checkpoint generation identity differs")
+                checkpoint_identity = checkpoint["identity"]
                 with path.open("rb") as stream:
                     if "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest() != artifact["content_hash"]:
                         raise ValueError("checkpoint waveform hash differs")
             except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
                 raise SmokeError("packaged TTS per-cue checkpoint verification failed") from error
+        _verify_dubbing_spoken_text(output_dir, manifest, tts_document, identity=checkpoint_identity)
         mix_document = _json(Path(audio["mix_document"]))
         mix_provenance = mix_document.get("provenance", {})
         if (mix_provenance.get("backend_id") != "pcm-stream-duck-v1" or
@@ -1095,6 +1147,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     profile_marker = data_root / "models" / ".profile-ready"
     if not profile_marker.is_file() or profile_marker.stat().st_size <= 0:
         raise SmokeError(f"model profile did not become ready: {profile_marker}")
+    duration_rewrite = None
+    if args.enable_dubbing:
+        rewrite_report = work_root / "duration-rewrite-report.json"
+        source_sha = _json(root / "release-manifest.json")["source_sha"]
+        _run([str(root / "runtime/python.exe"), "-I", "-S", "-B",
+              str(Path(__file__).with_name("duration_rewrite_smoke.py")), "--root", str(root),
+              "--model-root", str(data_root / "models"), "--work-root", str(work_root / "duration-rewrite"),
+              "--expected-source-sha", source_sha, "--report", str(rewrite_report)], timeout=min(args.timeout, 900))
+        duration_rewrite = _json(rewrite_report)
+        if (duration_rewrite.get("source_sha") != source_sha or duration_rewrite.get("producer_version") != "3.5.0"
+                or duration_rewrite.get("verified_release_tree") is not True or len(duration_rewrite.get("cases", [])) != 2):
+            raise SmokeError("packaged bounded duration rewrite evidence differs")
 
     return {
         "schema_version": 1,
@@ -1105,6 +1169,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "tts_checkpoint_recovery": tts_recovery,
         "visible_dubbing_downgrades": visible_downgrades,
         "live_job_execution_ownership": execution_ownership,
+        "bounded_duration_rewrite": duration_rewrite,
         "corrupt_job_state": bad_status["status"],
         "corrupt_media_failure": corrupt_failure,
         "good_job": good_output_report,

@@ -540,20 +540,30 @@ class VoiceVersionQualificationTests(unittest.TestCase):
             (editable/'dubbing_placement.json').write_bytes(placement_bytes)
             config = TtsConfig(max_attempts=1)
             voice = replace(approved_default_voice(),voice_id='vi-truc-ly-vieneu3-v1')
-            tts_provenance = TtsProvenance('qualification-fixture','3.4.0','vieneu-v3-turbo-onnx-v1','fixture',
+            tts_provenance = TtsProvenance('qualification-fixture','3.5.0','vieneu-v3-turbo-onnx-v1','fixture',
                 'timeline-v1',config.content_hash(),placement_digest,voice.model_id,voice.model_version,voice.model_hash,
                 voice.content_hash(),voice.voice_id,voice.voice_version,config.requested_profile,'fixture',config.resource)
             cue = TtsInput('cue-1','cue-1','Xin chào',TimePoint(0,base),TimePoint(1000,base),render_window_end=TimePoint(1000,base))
             store = TtsCheckpointStore(tts_root,identity='2'*64)
+            from engine.dubflow.worker.tts_rewrites import SpokenTextStore
+            spoken = SpokenTextStore(tts_root, identity='2'*64, segments=(cue,))
+            def commit(value):
+                spoken.commit(value)
+                store.commit(value)
             speech = LocalTtsAdapter(DeterministicFixtureEngine(),config=config,voice=voice,provenance=tts_provenance,
-                output_dir=tts_root).synthesize((cue,),input_hash=placement_digest,on_checkpoint=store.commit)
+                output_dir=tts_root).synthesize((cue,),input_hash=placement_digest,on_checkpoint=commit)
             tts_artifact = speech.artifacts[0].to_dict()
             record = tts_root / "checkpoints" / (hashlib.sha256(b"cue-1").hexdigest() + ".json")
             tts_path.write_bytes(speech.to_bytes())
+            spoken_path = root / 'dubbing_spoken_text.json'
+            spoken_bytes = (json.dumps(spoken.document(speech), ensure_ascii=False, sort_keys=True, separators=(',', ':')) + '\n').encode()
+            spoken_path.write_bytes(spoken_bytes)
+            (editable / 'dubbing_spoken_text.json').write_bytes(spoken_bytes)
             manifest = {"audio": {"mode": "dubbed", "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
                                    "mix_document": str(mix_path), "mix_provenance": provenance,
-                                   "dubbing_placement": {"schema_version": 1, "path": str(root/'dubbing_placement.json'), "sha256": placement_digest}},
-                        "cues": canonical,"warnings": []}
+                                   "dubbing_placement": {"schema_version": 1, "path": str(root/'dubbing_placement.json'), "sha256": placement_digest},
+                                   "dubbing_spoken_text": {"schema_version": 1, "path": str(spoken_path), "sha256": 'sha256:' + hashlib.sha256(spoken_bytes).hexdigest()}},
+                        "cues": canonical, "language": {"source_language": "und"}, "warnings": []}
             (root / "job_manifest.json").write_text(json.dumps(manifest))
             probe = {"streams": [{"codec_type": "video", "codec_name": "h264"}, {"codec_type": "audio", "codec_name": "aac", "channels": 2}],
                      "format": {"duration": "3"}}
@@ -563,12 +573,13 @@ class VoiceVersionQualificationTests(unittest.TestCase):
                 self.assertEqual(report["streaming_mix"]["producer_version"], "2.0.1")
                 self.assertEqual(report["streaming_mix"]["tts_checkpoint_records_verified"], 1)
                 current_tts = json.loads(tts_path.read_text())
+                current_tts_bytes = tts_path.read_bytes()
                 historical_tts = json.loads(tts_path.read_text())
                 historical_tts["provenance"]["producer_version"] = "3.1.0"
                 tts_path.write_text(json.dumps(historical_tts))
                 with self.assertRaisesRegex(production_smoke.SmokeError, "selected native producer"):
                     production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True)
-                tts_path.write_text(json.dumps(current_tts))
+                tts_path.write_bytes(current_tts_bytes)
                 saved_record = record.read_bytes()
                 record.write_bytes(b"{")
                 with self.assertRaisesRegex(production_smoke.SmokeError, "per-cue checkpoint"):

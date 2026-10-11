@@ -1004,6 +1004,11 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 audio_metadata["dubbing_placement"] = {"schema_version": 1, "path": str(b2_audio.placement_document_path),
                     "sha256": _sha256(b2_audio.placement_document_path)}
                 warnings.extend(warning for warning in b2_audio.tts_document.warnings if warning.startswith("TTS_INTERCUE_GAP_USED:"))
+            if b2_audio.spoken_text_document_path is not None:
+                audio_metadata["dubbing_spoken_text"] = {"schema_version": 1,
+                    "path": str(b2_audio.spoken_text_document_path), "sha256": _sha256(b2_audio.spoken_text_document_path)}
+                warnings.extend(warning for warning in b2_audio.tts_document.warnings
+                                if warning.startswith(("TTS_DURATION_REWRITE_APPLIED:", "TTS_SPOKEN_TEXT_CHECKPOINT_INVALID:")))
             _write_stage(
                 checkpoint,
                 checkpoint_path,
@@ -1127,6 +1132,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         editable_names.update({"source_audio.wav", "dialogue_stem.wav", "final_mix.wav"})
         if b2_audio.placement_document_path is not None:
             editable_names.add("dubbing_placement.json")
+        if b2_audio.spoken_text_document_path is not None:
+            editable_names.add("dubbing_spoken_text.json")
     if editable_dir.exists():
         for path in editable_dir.iterdir():
             export_publication.plain(path.absolute())
@@ -1145,6 +1152,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         ]
         if b2_audio.placement_document_path is not None:
             editable_audio.append((b2_audio.placement_document_path, "dubbing_placement.json", _sha256(b2_audio.placement_document_path)))
+        if b2_audio.spoken_text_document_path is not None:
+            editable_audio.append((b2_audio.spoken_text_document_path, "dubbing_spoken_text.json", _sha256(b2_audio.spoken_text_document_path)))
         for source, name, expected_hash in editable_audio:
             target = editable_dir / name
             _copy_editable_artifact(source, target, expected_hash=expected_hash)
@@ -1165,6 +1174,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         if b2_audio.placement_document_path is not None:
             artifacts["dubbing_placement"] = b2_audio.placement_document_path
             artifacts["editable_dubbing_placement"] = editable_dir / "dubbing_placement.json"
+        if b2_audio.spoken_text_document_path is not None:
+            artifacts["dubbing_spoken_text"] = b2_audio.spoken_text_document_path
+            artifacts["editable_dubbing_spoken_text"] = editable_dir / "dubbing_spoken_text.json"
     manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=translation_provenance, asr=transcript.asr_evidence)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.checkpoint("qc", _sha256(qc_path))
