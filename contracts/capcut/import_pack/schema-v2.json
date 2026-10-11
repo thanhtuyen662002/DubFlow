@@ -68,7 +68,10 @@
             "video",
             "original_audio",
             "dub_audio",
-            "subtitle"
+            "mixed_audio",
+            "subtitle",
+            "timeline",
+            "metadata"
           ]
         },
         "relative_path": {
@@ -97,7 +100,9 @@
         "track_id",
         "kind",
         "order",
-        "asset_ids"
+        "asset_ids",
+        "role",
+        "enabled_by_default"
       ],
       "properties": {
         "track_id": {
@@ -132,7 +137,12 @@
             "null"
           ],
           "maxLength": 32
-        }
+        },
+        "role": {
+          "enum": ["video", "original_audio", "dub_audio", "mixed_audio", "subtitle"]
+        },
+        "enabled_by_default": {"type": "boolean"},
+        "mute_embedded_audio": {"type": "boolean"}
       }
     },
     "timeline": {
