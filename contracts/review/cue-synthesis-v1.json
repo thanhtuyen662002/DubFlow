@@ -1,0 +1,428 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dubflow/review/cue-synthesis-v1",
+  "title": "Private supervisor-bound single-cue synthesis input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "job_id",
+    "revision",
+    "finding_id",
+    "cue_id",
+    "manifest_sha256",
+    "before_snapshot_sha256",
+    "after_snapshot_sha256",
+    "tts_input",
+    "producer_pin",
+    "config",
+    "voice"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_cue_synthesis_input"
+    },
+    "job_id": {
+      "$ref": "#/$defs/id"
+    },
+    "revision": {
+      "$ref": "#/$defs/positive"
+    },
+    "finding_id": {
+      "$ref": "#/$defs/id"
+    },
+    "cue_id": {
+      "$ref": "#/$defs/id"
+    },
+    "manifest_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "before_snapshot_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "after_snapshot_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "tts_input": {
+      "$ref": "#/$defs/input"
+    },
+    "producer_pin": {
+      "$ref": "#/$defs/producer"
+    },
+    "config": {
+      "$ref": "#/$defs/config"
+    },
+    "voice": {
+      "$ref": "#/$defs/voice"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,256}$"
+    },
+    "positive": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 19
+    },
+    "ticks": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "maxLength": 19
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_threads",
+        "max_memory_mb",
+        "max_batch_items"
+      ],
+      "properties": {
+        "max_threads": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_memory_mb": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_batch_items": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema_version",
+        "ticks",
+        "time_base"
+      ],
+      "properties": {
+        "kind": {
+          "const": "time_point"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "ticks": {
+          "$ref": "#/$defs/ticks"
+        },
+        "time_base": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "numerator",
+            "denominator"
+          ],
+          "properties": {
+            "numerator": {
+              "$ref": "#/$defs/positive"
+            },
+            "denominator": {
+              "$ref": "#/$defs/positive"
+            }
+          }
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segment_id",
+        "source_utterance_id",
+        "text",
+        "normalized_text",
+        "start",
+        "end",
+        "source_language",
+        "target_language",
+        "confidence"
+      ],
+      "properties": {
+        "segment_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_utterance_id": {
+          "$ref": "#/$defs/text"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "normalized_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "start": {
+          "$ref": "#/$defs/point"
+        },
+        "end": {
+          "$ref": "#/$defs/point"
+        },
+        "render_window_end": {
+          "$ref": "#/$defs/point"
+        },
+        "source_language": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 3
+        },
+        "target_language": {
+          "const": "vi"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer",
+        "producer_version",
+        "backend_id",
+        "runtime",
+        "timeline_contract",
+        "config_hash",
+        "model_id",
+        "model_version",
+        "model_hash",
+        "voice_hash",
+        "voice_id",
+        "voice_version",
+        "requested_profile",
+        "hardware_profile",
+        "resource"
+      ],
+      "properties": {
+        "producer": {
+          "$ref": "#/$defs/text"
+        },
+        "producer_version": {
+          "$ref": "#/$defs/text"
+        },
+        "backend_id": {
+          "$ref": "#/$defs/text"
+        },
+        "runtime": {
+          "$ref": "#/$defs/text"
+        },
+        "timeline_contract": {
+          "const": "timeline-v1"
+        },
+        "config_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_id": {
+          "$ref": "#/$defs/text"
+        },
+        "model_version": {
+          "$ref": "#/$defs/text"
+        },
+        "model_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "voice_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "voice_id": {
+          "$ref": "#/$defs/text"
+        },
+        "voice_version": {
+          "$ref": "#/$defs/text"
+        },
+        "requested_profile": {
+          "$ref": "#/$defs/text"
+        },
+        "hardware_profile": {
+          "$ref": "#/$defs/text"
+        },
+        "resource": {
+          "$ref": "#/$defs/resource"
+        },
+        "fallback_reason": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sample_rate",
+        "channels",
+        "bits_per_sample",
+        "requested_profile",
+        "max_attempts",
+        "max_segments_per_chunk",
+        "max_text_chars",
+        "max_wave_bytes",
+        "min_rms_milli",
+        "max_clip_fraction_ppm",
+        "max_duration_error_ticks",
+        "min_speed_ratio_milli",
+        "max_speed_ratio_milli",
+        "resource"
+      ],
+      "properties": {
+        "sample_rate": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bits_per_sample": {
+          "const": 16
+        },
+        "requested_profile": {
+          "enum": [
+            "auto",
+            "cpu",
+            "gpu",
+            "fixture"
+          ]
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_segments_per_chunk": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_text_chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_wave_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_rms_milli": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_clip_fraction_ppm": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_duration_error_ticks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_speed_ratio_milli": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_speed_ratio_milli": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resource": {
+          "$ref": "#/$defs/resource"
+        }
+      }
+    },
+    "voice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "voice_id",
+        "voice_version",
+        "language",
+        "display_name",
+        "model_id",
+        "model_version",
+        "model_hash",
+        "manifest_hash",
+        "license_id",
+        "approved",
+        "credential_required",
+        "network_required",
+        "speaking_rate_milli",
+        "pitch_style",
+        "emotion_mode",
+        "default"
+      ],
+      "properties": {
+        "voice_id": {
+          "$ref": "#/$defs/text"
+        },
+        "voice_version": {
+          "$ref": "#/$defs/text"
+        },
+        "language": {
+          "const": "vi"
+        },
+        "display_name": {
+          "$ref": "#/$defs/text"
+        },
+        "model_id": {
+          "$ref": "#/$defs/text"
+        },
+        "model_version": {
+          "$ref": "#/$defs/text"
+        },
+        "model_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "manifest_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "license_id": {
+          "$ref": "#/$defs/text"
+        },
+        "approved": {
+          "const": true
+        },
+        "credential_required": {
+          "const": false
+        },
+        "network_required": {
+          "const": false
+        },
+        "speaking_rate_milli": {
+          "type": "integer",
+          "minimum": 500,
+          "maximum": 2000
+        },
+        "pitch_style": {
+          "$ref": "#/$defs/text"
+        },
+        "emotion_mode": {
+          "$ref": "#/$defs/text"
+        },
+        "default": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

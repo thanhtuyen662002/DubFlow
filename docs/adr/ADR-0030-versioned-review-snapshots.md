@@ -120,6 +120,72 @@ remain usable. This first integration is read-only: correction controls are
 disabled until supervisor-owned CAS and validated artifact replacement/undo
 are integrated and qualified. It does not complete #174 or #175.
 
+## Single-cue synthesis admission (Draft integration)
+
+A new private `review_cue_synthesis_input` schema1 binds the native-admitted
+manifest, before/after snapshot hashes, exact next revision, one canonical cue,
+its source utterance/range/render window, explicit target voice, and complete
+producer/model/runtime/config/resource pins. Its SHA256 covers canonical UTF8
+JSON (sorted keys, no whitespace, non-ASCII text retained, non-finite numbers
+refused); the TTS adapter uses that exact request hash as input provenance and
+checkpoint identity. The worker reads only bytes pinned by a supervisor command.
+Wide revisions are decimal strings. There are no browser paths or mutable
+default voice selections in this request.
+
+Preparation permits only the selected cue's translated text/voice to change;
+all source mapping, confidence, diagnostics and other findings remain intact.
+Producer/model/runtime/config changes fail with explicit migration-required
+evidence. An unchanged voice also retains its exact profile/version. The B1
+subtitle-only path and absent voices need separate handling; this adapter does
+not invent a voice. Workers produce private candidates without SQLite mutation;
+native CAS, physical validation, graph commit and undo remain separate work.
+
+This additive private format changes no released TTS/mix/public snapshot/worker
+schema. Old runtimes that lack this command retain their current exports; unknown
+requests fail without mutation, and no implicit durable-store migration occurs.
+Mixed-voice generations must retain separate original/replacement TTS document
+pins rather than relabel every old WAV with the newly selected voice. This Draft
+adapter and fixture synthesis do not qualify actual targeted production replay.
+
+The owned isolated `synthesis_worker.py` entry point admits only the currently
+installed B2 VieNeu producer/config and the exact verified explicit voice. An
+older producer fails with compatibility-required evidence. It synthesizes one
+cue into a request-hash generation, with an OS writer lock, pinned immutable
+input and the existing per-cue TTS/spoken-text checkpoints. Resume validates
+both receipts and waveform bytes; missing or corrupt evidence rebuilds only
+that candidate. The existing bounded lexical duration policy retains separate
+spoken-text evidence. The worker closes native inference on success/failure.
+It writes existing TTS and spoken-text documents in private storage only;
+these files have no graph pointer and cannot authorize retirement by themselves.
+The supervisor must independently pin and validate both before any later graph
+transaction. A partial document write remains a resumable private candidate.
+
+## Per-cue audio composition v1 (Draft integration)
+
+The private composition identity binds the admitted source manifest and Review
+snapshot, original source WAV/range, canonical inputs, one TTS-document hash
+assignment per cue, and the original mix producer/config/resource pin. Each
+assigned TTS document retains its own voice/model/producer provenance. Several
+successive edits can therefore coexist without relabelling unrelated waveforms.
+The canonical UTF8 JSON SHA256 is the downstream mix input identity. Unknown or
+missing cue assignments, conflicting document roots, changed source/WAV bytes,
+noncanonical mapping and unadmitted producer/config changes fail explicitly.
+
+Replacement admission reconstructs the exact next request from the active cue
+and before/after snapshots. A replacement must contain exactly one successful
+artifact with matching request provenance. The existing AUD-0 streaming adapter
+mixes the new assignment into private, checkpointable candidates; it invokes no
+ASR/OCR/TTS and revalidates every admitted source/document/WAV before and after.
+Explicit prior TTS failures retain the original source fallback for their cues.
+
+This additive private identity changes no released TTS/mix/public snapshot or
+worker schema and implicitly migrates no durable state. Native graph CAS and
+physical publication remain required. The supervisor must copy/pin validated
+candidates into separate immutable accepted storage rather than make a graph
+refer directly to worker-writable generations. Graph pointer, accepted Review
+state and undo history must then move atomically; composition alone is not that
+transaction, downstream render/QC/export qualification or completion of #174.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only

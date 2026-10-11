@@ -4,6 +4,7 @@ This is a restricted schema assertion helper, not a general JSON Schema library.
 Unsupported keywords fail explicitly; external/network references are forbidden.
 """
 import json
+import math
 from pathlib import Path
 import re
 
@@ -37,6 +38,7 @@ def _validate(value, spec, document, path, location, depth):
         types = spec["type"] if isinstance(spec["type"], list) else [spec["type"]]
         matches = {"object": isinstance(value, dict), "array": isinstance(value, list),
                    "string": isinstance(value, str), "integer": type(value) is int,
+                   "number": type(value) in (int, float) and math.isfinite(value),
                    "null": value is None, "boolean": type(value) is bool}
         assert all(item in matches for item in types), "unsupported JSON type"
         assert any(matches[item] for item in types), location + ": type mismatch"
@@ -57,7 +59,7 @@ def _validate(value, spec, document, path, location, depth):
         assert len(value) <= spec.get("maxLength", len(value)), location + ": too long"
         if "pattern" in spec:
             assert re.search(spec["pattern"], value) is not None, location + ": pattern mismatch"
-    if type(value) is int:
+    if type(value) in (int, float):
         assert value >= spec.get("minimum", value), location + ": below minimum"
         assert value <= spec.get("maximum", value), location + ": above maximum"
     if isinstance(value, list):
