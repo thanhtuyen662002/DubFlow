@@ -2,7 +2,7 @@
 # Keep this file pinned: the release workflow installs it into the bundled
 # app-owned runtime and never resolves packages from the user's system Python.
 faster-whisper==1.2.1
-# PyAV 19 removed av.open(metadata_errors=...) used by faster-whisper 1.2.1.
+# Faster-Whisper 1.2.1 requires av.open(metadata_errors=...). PyAV 19 removes it.
 av==16.1.0
 argostranslate==1.11.0
 # Native translation/tokenization affect cached output and route identity.
@@ -12,6 +12,13 @@ sentencepiece==0.2.2
 # the app-owned runtime is complete even when pip's resolver changes.
 packaging==25.0
 cryptography==46.0.1
-# Streaming PCM mixer uses bounded native integer arrays. Same pin as the
-# separately qualified real-voice runtime; no system Python at product runtime.
+# Real offline Vietnamese speech; never substitute character tone synthesis.
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8
+# Shared pin for preset speech and bounded streaming PCM arrays.
 numpy==2.2.6
+onnxruntime==1.30.0
+# CPU fp32 preset synthesis; no remote model code or GPU is required.
+vieneu @ https://files.pythonhosted.org/packages/fc/9c/e7b624412b8a734d6b1cd8ca6209f88a309464b05393c40f2e316ec90885/vieneu-3.8.3-py3-none-any.whl#sha256=7388d166e65746f5bb075bf8094d324f8131a82393680b712260d6f2f983ef06
+sea-g2p==0.9.1
+tokenizers==0.23.2

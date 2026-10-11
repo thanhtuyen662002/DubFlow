@@ -131,7 +131,7 @@ class FileSegment:
     @classmethod
     def from_tts_artifact(cls, artifact):
         return cls(artifact.segment_id, artifact.source_utterance_id, artifact.slot_start,
-                   artifact.slot_end, Path(artifact.path), artifact.content_hash,
+                   artifact.actual_end if getattr(artifact, "render_window_end", None) is not None else artifact.slot_end, Path(artifact.path), artifact.content_hash,
                    confidence=artifact.confidence, fallback_used=artifact.fallback_used)
 
 

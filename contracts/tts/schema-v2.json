@@ -1,0 +1,498 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/tts/schema-v2.json",
+  "title": "DubFlow Vietnamese TTS document v2 with explicit render windows",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "source_kind",
+    "target_language",
+    "source_segment_ids",
+    "artifacts",
+    "chunks",
+    "provenance",
+    "failures",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "kind": {
+      "const": "tts_document"
+    },
+    "source_kind": {
+      "const": "translation"
+    },
+    "target_language": {
+      "const": "vi"
+    },
+    "source_segment_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "uniqueItems": true
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "chunks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/chunk"
+      }
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/failure"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "properties": {
+        "numerator": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "denominator": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      }
+    },
+    "time_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema_version",
+        "ticks",
+        "time_base"
+      ],
+      "properties": {
+        "kind": {
+          "const": "time_point"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "ticks": {
+          "type": "string",
+          "pattern": "^(0|-?[1-9][0-9]*)$"
+        },
+        "time_base": {
+          "$ref": "#/$defs/time_base"
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_threads",
+        "max_memory_mb",
+        "max_batch_items"
+      ],
+      "properties": {
+        "max_threads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "max_memory_mb": {
+          "type": "integer",
+          "minimum": 32,
+          "maximum": 1048576
+        },
+        "max_batch_items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sample_count",
+        "frame_count",
+        "rms_milli",
+        "peak",
+        "clipped_samples",
+        "content_hash"
+      ],
+      "properties": {
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frame_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rms_milli": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "peak": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "clipped_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content_hash": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segment_id",
+        "source_utterance_id",
+        "path",
+        "content_hash",
+        "format",
+        "sample_rate",
+        "channels",
+        "bits_per_sample",
+        "frame_count",
+        "slot_start",
+        "slot_end",
+        "actual_end",
+        "fit_mode",
+        "speed_ratio_milli",
+        "metrics",
+        "artifact_hash",
+        "confidence",
+        "warnings",
+        "fallback_used",
+        "render_window_end"
+      ],
+      "properties": {
+        "segment_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "source_utterance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "content_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "format": {
+          "const": "wav"
+        },
+        "sample_rate": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "bits_per_sample": {
+          "const": 16
+        },
+        "frame_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "slot_start": {
+          "$ref": "#/$defs/time_point"
+        },
+        "slot_end": {
+          "$ref": "#/$defs/time_point"
+        },
+        "actual_end": {
+          "$ref": "#/$defs/time_point"
+        },
+        "fit_mode": {
+          "enum": [
+            "native",
+            "trimmed_silence",
+            "speed_adjusted",
+            "padded"
+          ]
+        },
+        "speed_ratio_milli": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 3000
+        },
+        "metrics": {
+          "$ref": "#/$defs/metrics"
+        },
+        "artifact_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "fallback_used": {
+          "type": "boolean"
+        },
+        "render_window_end": {
+          "$ref": "#/$defs/time_point"
+        }
+      }
+    },
+    "chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chunk_id",
+        "index",
+        "segment_ids",
+        "status",
+        "attempt"
+      ],
+      "properties": {
+        "chunk_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "segment_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "uniqueItems": true
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "skipped"
+          ]
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "error_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "artifact_hashes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sha256"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer",
+        "producer_version",
+        "backend_id",
+        "runtime",
+        "timeline_contract",
+        "config_hash",
+        "input_hash",
+        "model_id",
+        "model_version",
+        "model_hash",
+        "voice_hash",
+        "voice_id",
+        "voice_version",
+        "requested_profile",
+        "hardware_profile",
+        "resource"
+      ],
+      "properties": {
+        "producer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "producer_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "backend_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "runtime": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "timeline_contract": {
+          "const": "timeline-v1"
+        },
+        "config_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "input_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "voice_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "voice_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "voice_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "requested_profile": {
+          "enum": [
+            "auto",
+            "cpu",
+            "gpu",
+            "fixture"
+          ]
+        },
+        "hardware_profile": {
+          "enum": [
+            "cpu",
+            "gpu",
+            "fixture",
+            "mixed"
+          ]
+        },
+        "resource": {
+          "$ref": "#/$defs/resource"
+        },
+        "fallback_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "segment_id",
+        "retryable",
+        "attempt",
+        "condition",
+        "fallback_used"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "segment_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "fallback_used": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
