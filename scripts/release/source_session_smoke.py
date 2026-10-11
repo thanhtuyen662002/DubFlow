@@ -30,6 +30,16 @@ def _failure():
     return ValueError("native protected-session qualification failed")
 
 
+def _plaintext_absent(data: Path, secret: str):
+    # Call only after the native owner has successfully exited. Windows source
+    # ownership deliberately forbids reading its lock while the owner is live.
+    # Do not skip that file or any other owned metadata from the secret audit.
+    for path in data.rglob("*"):
+        if path.is_file() and (path.stat().st_size > 4 * 1024 * 1024
+                or secret.split("=")[-1].encode() in path.read_bytes()):
+            raise _failure()
+
+
 def _event(raw: bytes, secret: str) -> dict:
     if not raw or len(raw) > MAX_LINE or not raw.endswith(b"\n") or secret.split("=")[-1].encode() in raw:
         raise _failure()
@@ -194,9 +204,13 @@ def _owned_factory(root: Path, data: Path, manifest_hash: str, secret: str):
             raise _failure()
 
 
-def qualify_source_sessions(root: Path, manifest_sha256: str, expected_source_sha: str) -> dict:
+def _require_windows():
     if os.name != "nt":
         raise ValueError("Windows native session qualification requires Windows")
+
+
+def qualify_source_sessions(root: Path, manifest_sha256: str, expected_source_sha: str) -> dict:
+    _require_windows()
     root = root.resolve(strict=True)
     if not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256) or not re.fullmatch(r"[0-9a-f]{40}", expected_source_sha):
         raise _failure()
@@ -217,11 +231,9 @@ def qualify_source_sessions(root: Path, manifest_sha256: str, expected_source_sh
             for provider in ("bilibili", "douyin"):
                 native.operation(provider, "status", "missing")
                 native.operation(provider, "save", "ready", headers={"Cookie": secret}, expires_at=int(time.time()) + 3600)
-            for path in data.rglob("*"):
-                if path.is_file() and (path.stat().st_size > 4 * 1024 * 1024 or secret.split("=")[-1].encode() in path.read_bytes()):
-                    raise _failure()
             native.close()
             native = None
+            _plaintext_absent(data, secret)
             _owned_factory(root, data, manifest_sha256, secret)
             native = _Native(root, data, manifest_sha256, secret)
             for provider in ("bilibili", "douyin"):
@@ -248,9 +260,7 @@ def qualify_source_sessions(root: Path, manifest_sha256: str, expected_source_sh
                 native.operation(provider, "status", "missing")
             native.close()
             native = None
-            for path in data.rglob("*"):
-                if path.is_file() and (path.stat().st_size > 4 * 1024 * 1024 or secret.split("=")[-1].encode() in path.read_bytes()):
-                    raise _failure()
+            _plaintext_absent(data, secret)
             if list(protected.glob("*.session.json")):
                 raise _failure()
         finally:
