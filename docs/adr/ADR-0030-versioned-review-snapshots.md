@@ -373,6 +373,31 @@ their encoding, but does not retarget a TTS artifact, validate model authority,
 publish a graph, write SQLite, dispatch a worker or expose a UI mutation.
 Native semantic graph orchestration and pending-undo retention remain required.
 
+## Prepared cue documents after native WAV acceptance (Draft integration)
+
+The owned read-only adapter prepares one TTS document and spoken-text sidecar
+after the native supervisor accepts its WAV. It re-reads the exact admitted
+request, binds the successful single cue's producer/input/model/voice/config,
+source utterance, confidence, rational slot/window and PCM identity, and verifies
+the accepted sealed WAV. The shared candidate checkpoint-identity function binds
+the sidecar's original/spoken text and lexical rewrite evidence to the pinned
+recipe. A copied file or caller-supplied descriptor alone grants no authority.
+
+Retargeting changes only the TTS artifact's WAV path and the sidecar's dependent
+exact TTS-document hash. Producer/chunk/artifact hashes and all other semantic
+fields remain unchanged; TTS artifact hashing excludes storage path. Prepared
+documents are revalidated and returned as bounded immutable bytes for native
+JSON storage. The adapter never reads a mutable candidate path, writes files,
+executes inference or mutates the active graph. A v1 TTS document without a
+render window retains v1; v1 cannot bind a request that requires a render window.
+No version or recipe is upgraded silently.
+
+Upstream producer/quality admission, native WAV revalidation before CAS, complete
+mix/render/QC/export regeneration and retained-undo graph publication remain the
+supervisor caller's requirements. Real-model metadata adapter evidence uses two
+previous actual installed169 candidates with QA-only copies. It does not prove
+native Windows accepted-object storage, installed GUI edit/undo or4h behavior.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only

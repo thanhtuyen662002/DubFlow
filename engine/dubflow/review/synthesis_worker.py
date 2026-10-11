@@ -103,6 +103,13 @@ def load_production_cue_engine(request: CueSynthesisInput, *, app_root: Path,
     return vieneu.VieNeuVietnameseTtsEngine(pack, ffmpeg_path=ffmpeg_path)
 
 
+def cue_checkpoint_identity(request: CueSynthesisInput, recipe_identity: str) -> str:
+    if not isinstance(recipe_identity, str) or not 1 <= len(recipe_identity) <= 256:
+        raise ReviewError("cue synthesis recipe identity is invalid")
+    return hashlib.sha256(json.dumps({"request": request.input_hash, "recipe": recipe_identity},
+                                     sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def synthesize_cue_candidate(raw: bytes, *, expected_hash: str, output_root: Path,
                              engine_factory: Callable[[CueSynthesisInput], object],
                              recipe_identity: str) -> CueCandidate:
@@ -114,8 +121,7 @@ def synthesize_cue_candidate(raw: bytes, *, expected_hash: str, output_root: Pat
     QC, export publication or retirement of the previous valid artifact graph.
     """
     request = read_cue_synthesis_input(raw, expected_hash=expected_hash)
-    if not isinstance(recipe_identity, str) or not 1 <= len(recipe_identity) <= 256:
-        raise ReviewError("cue synthesis recipe identity is invalid")
+    identity = cue_checkpoint_identity(request, recipe_identity)
     generation = Path(output_root).absolute() / ("cue-" + request.input_hash.removeprefix("sha256:"))
     plain(generation)
     generation.mkdir(parents=True, exist_ok=True)
@@ -128,8 +134,6 @@ def synthesize_cue_candidate(raw: bytes, *, expected_hash: str, output_root: Pat
                     raise ReviewError("cue candidate generation has another request")
         else:
             _atomic(input_path, raw)
-        identity = hashlib.sha256(json.dumps({"request": request.input_hash, "recipe": recipe_identity},
-                                             sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         audio = generation / "tts"
         checkpoints = TtsCheckpointStore(audio, identity=identity)
         spoken = SpokenTextStore(audio, identity=identity, segments=(request.segment,))
