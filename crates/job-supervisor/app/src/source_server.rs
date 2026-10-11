@@ -2552,7 +2552,10 @@ while True:
   mode_path=work/'download-mode.json';mode=json.loads(mode_path.read_text()) if mode_path.exists() else 'complete'
   partial=work/'recorded-media.part';resumed=args['resume'] and partial.exists()
   binding={key:args[key] for key in ('producer_fingerprint','dispatch_revision','identity_key','source_id','source_url')}
-  partial.write_bytes(b'abcd')
+  if resumed:
+   prefix=partial.read_bytes();assert prefix==b'abcd'
+   (work/'recorded-resume-prefix.json').write_text(json.dumps({**binding,'size_bytes':len(prefix),'sha256':hashlib.sha256(prefix).hexdigest()}))
+  else:partial.write_bytes(b'abcd')
   packet({'schema_version':1,'kind':'source-download-progress',**binding,'downloaded_bytes':4,'total_bytes':8})
   if mode=='pause':
    sys.stdin.buffer.readline();sys.exit(0)
@@ -2895,6 +2898,9 @@ while True:
         let work = failed_download(&mut server);
         let original = server.queue.scan("scan").unwrap();
         let old_item = server.queue.item("scan", "generic:one").unwrap();
+        let partial = work.join("recorded-media.part");
+        let prefix_stamp = fs::metadata(&partial).unwrap().modified().unwrap();
+        assert_eq!(fs::read(&partial).unwrap(), b"abcd");
         fs::write(
             work.join("download-mode.json"),
             serde_json::to_vec("complete").unwrap(),
@@ -2905,6 +2911,11 @@ while True:
         assert!(reserved.dispatch_revision > original.dispatch_revision);
         assert_eq!(reserved.failed_count, original.failed_count);
         assert_eq!(server.queue.item("scan", "generic:one").unwrap(), old_item);
+        assert_eq!(fs::read(&partial).unwrap(), b"abcd");
+        assert_eq!(
+            fs::metadata(&partial).unwrap().modified().unwrap(),
+            prefix_stamp
+        );
         let authorized = recovery_event(&mut server).unwrap().unwrap();
         assert_eq!(authorized["event"], "source_retry_authorized");
         assert_eq!(authorized["retry_count"], 1);
@@ -2913,7 +2924,11 @@ while True:
         assert!(current.dispatch_revision > original.dispatch_revision);
         assert_eq!(item.status, ItemStatus::Downloading);
         assert_eq!(current.producer_fingerprint, original.producer_fingerprint);
-        assert_eq!(fs::read(work.join("recorded-media.part")).unwrap(), b"abcd");
+        assert_eq!(fs::read(&partial).unwrap(), b"abcd");
+        assert_eq!(
+            fs::metadata(&partial).unwrap().modified().unwrap(),
+            prefix_stamp
+        );
         assert!(server
             .queue
             .update_item_progress_checked(
@@ -2924,6 +2939,17 @@ while True:
             )
             .is_err());
         assert_eq!(finish_download(&mut server)["resumed"], true);
+        let observed: Value =
+            serde_json::from_slice(&fs::read(work.join("recorded-resume-prefix.json")).unwrap())
+                .unwrap();
+        assert_eq!(observed["identity_key"], "generic:one");
+        assert_eq!(
+            observed["producer_fingerprint"],
+            current.producer_fingerprint
+        );
+        assert_eq!(observed["dispatch_revision"], current.dispatch_revision);
+        assert_eq!(observed["size_bytes"], 4);
+        assert_eq!(observed["sha256"], hex_digest(b"abcd"));
         let committed = server.queue.item("scan", "generic:one").unwrap();
         assert_eq!(committed.retry_count, 1);
         assert_eq!(committed.status, ItemStatus::Downloaded);
