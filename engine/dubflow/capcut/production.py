@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .draft.adapter import DraftBackend, DraftResult, DraftStatus, VersionedDraftAdapter
+from .detection import discover_capcut_installation
 from .import_pack import ImportPackAsset, ImportPackError, ImportPackRequest, ImportPackResult, create_import_pack, validate_import_pack
 
 
@@ -98,12 +99,18 @@ def create_production_pack(
         if controlled_capcut_root is None and installed_capcut_version in supported_capcut_versions:
             direct = DraftResult(DraftStatus.FALLBACK_IMPORT_PACK, None, pack.root.resolve(), "CAPCUT_CONTROLLED_DIRECTORY_REQUIRED")
         else:
-            direct = VersionedDraftAdapter(set(supported_capcut_versions)).generate_or_fallback(
-                installed_version=installed_capcut_version,
-                pack_root=pack.root,
-                controlled_root=controlled_capcut_root or output_root / "capcut-controlled",
-                backend=draft_backend if draft_backend is not None else _UnavailableDraftBackend(),
-            )
+            try:
+                direct = VersionedDraftAdapter(set(supported_capcut_versions)).generate_or_fallback(
+                    installed_version=installed_capcut_version,
+                    pack_root=pack.root,
+                    controlled_root=controlled_capcut_root or output_root / "capcut-controlled",
+                    backend=draft_backend if draft_backend is not None else _UnavailableDraftBackend(),
+                )
+            except Exception as error:
+                # The optional adapter can fail before its internal try block
+                # (e.g. mkdir permission or a malformed compatibility matrix).
+                direct = DraftResult(DraftStatus.FALLBACK_IMPORT_PACK, None, pack.root.resolve(),
+                                     "CAPCUT_HANDOFF_FAILED:" + type(error).__name__)
     return ProductionPackResult(pack, _manifest_hash(pack.root), direct)
 
 
@@ -233,16 +240,16 @@ class _UnavailableDraftBackend:
 
 
 def detect_capcut_version(env: Mapping[str, str] | None = None) -> str | None:
-    """Read an explicitly supplied version hint without probing arbitrary paths.
+    """Return an unambiguous native registration version, or an explicit hint.
 
-    The desktop may supply a version obtained from a permission-safe native
-    registry adapter.  Environment input is intentionally opt-in for tests and
-    enterprise packaging; absent/blank values mean that direct handoff is
-    unavailable and the portable pack remains the advertised result.
+    Explicit environment mappings remain a test/enterprise hint, not installed
+    evidence. The normal path uses read-only native discovery and never trusts
+    the ambient process environment. Build components are preserved exactly.
     """
 
-    values = env if env is not None else os.environ
-    value = values.get("DUBFLOW_CAPCUT_VERSION")
+    if env is None:
+        return discover_capcut_installation().version
+    value = env.get("DUBFLOW_CAPCUT_VERSION")
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
