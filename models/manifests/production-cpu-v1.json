@@ -4,6 +4,20 @@
   "description": "Pinned CPU local-file Vietnamese localization profile.",
   "distribution": "download-on-first-use",
   "license_policy": "upstream-terms-must-be-reviewed-by-distributor",
+  "tts_voice_pack": {
+    "id": "vi-builtin-v1",
+    "path": "models/voices/vi-builtin-v1.json",
+    "version": "1.0.0",
+    "language": "vi",
+    "display_name": "DubFlow Vietnamese Built-in",
+    "model_id": "dubflow-vi-builtin-v1",
+    "model_version": "1.0.0",
+    "license_id": "dubflow-builtin-voice-1.0",
+    "approved": true,
+    "default": true,
+    "sha256": "sha256:f2bd5d89f7336b215b949bed42a38215e3d9ed00a1641c68bc65e519efb2048e",
+    "size_bytes": 850
+  },
   "artifacts": [
     {
       "id": "asr-config",

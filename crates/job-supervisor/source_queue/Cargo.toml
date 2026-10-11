@@ -1,0 +1,15 @@
+[package]
+name = "dubflow-source-queue"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Supervisor-owned durable source enumeration queue for DubFlow"
+license = "MIT"
+publish = false
+
+[lib]
+name = "dubflow_source_queue"
+path = "src/lib.rs"
+
+[dependencies]
+rusqlite = { version = "=0.31.0", features = ["bundled"] }

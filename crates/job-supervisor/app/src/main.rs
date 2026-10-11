@@ -24,6 +24,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod source_owner;
+mod source_server;
+
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
 const MAX_ATTEMPTS: u8 = 3;
@@ -528,6 +531,11 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("source-serve")) {
+        return source_server::run(std::env::args_os().skip(2)).map_err(|_| {
+            SupervisorError::Invalid("source service stopped; inspect its scoped events".into())
+        });
+    }
     let mode = parse_cli(std::env::args_os().skip(1))?;
     let (root, data_root, db, model_root) = match mode {
         CliMode::Run {

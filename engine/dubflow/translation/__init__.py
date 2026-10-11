@@ -5,6 +5,7 @@ from .adapter import (
     TRANSLATION_CONTRACT_VERSION,
     DeterministicFixtureBackend,
     LocalTranslationAdapter,
+    RoutedTranslationAdapter,
     TranslationAdapter,
     SourceSegment,
     TranslationBackend,
@@ -23,6 +24,7 @@ from .adapter import (
     TranslationStageError,
     TranslatedSegment,
     parse_translation_json,
+    resolve_source_language,
     validate_translation_document,
 )
 
@@ -31,6 +33,7 @@ __all__ = [
     "TRANSLATION_CONTRACT_VERSION",
     "DeterministicFixtureBackend",
     "LocalTranslationAdapter",
+    "RoutedTranslationAdapter",
     "TranslationAdapter",
     "SourceSegment",
     "TranslationBackend",
@@ -49,5 +52,6 @@ __all__ = [
     "TranslationStageError",
     "TranslatedSegment",
     "parse_translation_json",
+    "resolve_source_language",
     "validate_translation_document",
 ]

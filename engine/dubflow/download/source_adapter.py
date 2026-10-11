@@ -61,13 +61,20 @@ def canonicalize_url(value: str) -> str:
     """
 
     value = _text(value, "url", limit=MAX_URL)
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+        # Accessing ``port`` performs additional validation and can raise for
+        # a non-numeric or out-of-range port.  Convert both parser failures to
+        # the contract's structured INVALID_INPUT error instead of leaking a
+        # raw ValueError into a batch queue.
+        port = parts.port
+    except ValueError as error:
+        raise SourceError(SourceErrorCode.INVALID_INPUT, "source URL is malformed") from error
     if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
         raise SourceError(SourceErrorCode.INVALID_INPUT, "source URL must be http(s) with a host")
     if parts.username is not None or parts.password is not None:
         raise SourceError(SourceErrorCode.INVALID_INPUT, "source URL must not contain credentials")
     host = parts.hostname.lower().rstrip(".")
-    port = parts.port
     if port is not None and not ((parts.scheme.lower() == "http" and port == 80) or (parts.scheme.lower() == "https" and port == 443)):
         host = f"{host}:{port}"
     path = posixpath.normpath(parts.path or "/")
@@ -234,14 +241,23 @@ class SourcePage:
     items: tuple[SourceItem, ...]
     next_cursor: str | None
     completed: bool
+    failures: tuple["SourcePageFailure", ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.items) > 1000:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "source page is too large")
+        if len(self.failures) > 1000:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "source page failure list is too large")
+        if not all(isinstance(item, SourceItem) for item in self.items):
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "source page contains an invalid item")
+        if not all(isinstance(item, SourcePageFailure) for item in self.failures):
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "source page contains an invalid failure")
         if self.next_cursor is not None:
             _text(self.next_cursor, "next_cursor", limit=MAX_CURSOR)
         if type(self.completed) is not bool:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "completed must be boolean")
+        if not self.completed and self.next_cursor is None:
+            raise SourceError(SourceErrorCode.CHECKPOINT_INVALID, "incomplete pages must provide a next cursor")
         if self.completed and self.next_cursor is not None:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "completed pages cannot have a next cursor")
 
@@ -249,8 +265,34 @@ class SourcePage:
         return {
             "schema_version": SOURCE_CONTRACT_VERSION,
             "items": [item.to_dict() for item in self.items],
+            "failures": [item.to_dict() for item in self.failures],
             "next_cursor": self.next_cursor,
             "completed": self.completed,
+        }
+
+
+@dataclass(frozen=True)
+class SourcePageFailure:
+    """A per-item enumeration failure that must not poison the whole page."""
+
+    source_id: str
+    code: SourceErrorCode
+    condition: str
+    retryable: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_id", _text(self.source_id, "source_id", limit=512))
+        object.__setattr__(self, "code", SourceErrorCode(self.code))
+        object.__setattr__(self, "condition", _text(self.condition, "condition", limit=MAX_TEXT))
+        if type(self.retryable) is not bool:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "page failure retryable must be boolean")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "source_id": self.source_id,
+            "code": self.code.value,
+            "condition": self.condition,
+            "retryable": self.retryable,
         }
 
 
@@ -290,10 +332,17 @@ class SourceError(ValueError):
 class SourceAdapter(Protocol):
     provider_id: str
 
+    @classmethod
+    def can_handle(cls, source_ref: str) -> bool:
+        ...
+
     def inspect(self, source_ref: str) -> SourceItem:
         ...
 
     def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50) -> SourcePage:
+        ...
+
+    def download(self, item: SourceItem, destination: str, **kwargs: object) -> object:
         ...
 
 
@@ -336,6 +385,13 @@ class FixtureSourceAdapter:
         if key is None or key not in self._items:
             raise SourceError(SourceErrorCode.NOT_FOUND, "fixture source was not found", provider_id=self.provider_id, source_id=value)
         return self._items[key]
+
+    @classmethod
+    def can_handle(cls, source_ref: str) -> bool:
+        return isinstance(source_ref, str) and bool(source_ref.strip())
+
+    def download(self, item: SourceItem, destination: str, **kwargs: object) -> object:
+        raise SourceError(SourceErrorCode.UNSUPPORTED, "fixture adapter does not materialize media", provider_id=self.provider_id, source_id=item.identity.source_id)
 
     def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50) -> SourcePage:
         channel = _text(channel_id, "channel_id", limit=512)

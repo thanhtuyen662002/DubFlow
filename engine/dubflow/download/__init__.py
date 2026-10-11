@@ -9,9 +9,12 @@ from .source_adapter import (
     SourceIdentity,
     SourceItem,
     SourcePage,
+    SourcePageFailure,
     SubtitleCandidate,
     canonicalize_url,
 )
+from .materializer import DownloadError, DownloadErrorCode, DownloadResult, MediaMaterializer, UrllibHttpTransport
+from .generic import GenericUrlAdapter, YtDlpTransport
 
 __all__ = [
     "FixtureSourceAdapter",
@@ -22,6 +25,14 @@ __all__ = [
     "SourceIdentity",
     "SourceItem",
     "SourcePage",
+    "SourcePageFailure",
     "SubtitleCandidate",
     "canonicalize_url",
+    "DownloadError",
+    "DownloadErrorCode",
+    "DownloadResult",
+    "GenericUrlAdapter",
+    "MediaMaterializer",
+    "UrllibHttpTransport",
+    "YtDlpTransport",
 ]
