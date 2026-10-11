@@ -160,7 +160,7 @@ mod tests {
         let manifest = root.join("job_manifest.json");
         fs::write(
             &manifest,
-            br#"{"schema_version":1,"kind":"dubflow_localization_job","job_id":"job-pin"}"#,
+            br#"{"schema_version":1,"kind":"dubflow_localization_job","job_id":"job-pin","note":"a"}"#,
         )
         .unwrap();
         let store = DurableStore::open_in_memory().unwrap();
@@ -207,7 +207,9 @@ mod tests {
             pin["manifest_sha256"],
             format!("sha256:{:x}", Sha256::digest(fs::read(&path).unwrap()))
         );
-        fs::write(path, br#"{"schema_version":1,"kind":"dubflow_localization_job","job_id":"job-pin","tampered":true}"#).unwrap();
+        let original_size = fs::metadata(&path).unwrap().len();
+        fs::write(&path, br#"{"schema_version":1,"kind":"dubflow_localization_job","job_id":"job-pin","note":"b"}"#).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), original_size);
         assert!(trusted_pin(&store, "job-pin").is_err());
         assert_eq!(store.job_status("job-pin").unwrap(), JobStatus::Succeeded);
     }
