@@ -29,6 +29,8 @@ mod execution_lock;
 use execution_lock::JobExecutionGuard;
 mod worker_tree;
 use worker_tree::WorkerTree;
+mod source_owner;
+mod source_server;
 
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
@@ -603,6 +605,11 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("source-serve")) {
+        return source_server::run(std::env::args_os().skip(2)).map_err(|_| {
+            SupervisorError::Invalid("source service stopped; inspect its scoped events".into())
+        });
+    }
     let mode = parse_cli(std::env::args_os().skip(1))?;
     let (root, data_root, db, model_root) = match mode {
         CliMode::Run {

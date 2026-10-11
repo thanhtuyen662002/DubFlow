@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
+from pathlib import Path
+from unittest.mock import Mock
 
 from engine.dubflow.download.bilibili import BilibiliSourceAdapter, BilibiliTransportError, normalize_source_ref
 from engine.dubflow.download.source_adapter import SourceError, SourceErrorCode
+from engine.dubflow.download.bilibili.adapter import BilibiliDownloadChoice
+from engine.dubflow.download.provider_transport import _map_payload
 
 
 PAYLOAD = {
@@ -73,6 +78,57 @@ class BilibiliAdapterTests(unittest.TestCase):
             BilibiliSourceAdapter(transport).inspect("https://example.test/video/BV1AbC2345")
         self.assertEqual(context.exception.code, SourceErrorCode.INVALID_INPUT)
         self.assertEqual(transport.refs, [])
+
+    def test_split_download_passes_the_selected_audio_to_muxer(self) -> None:
+        muxer = Mock()
+        adapter = BilibiliSourceAdapter(RecordedTransport(), stream_materializer=muxer)
+        item = adapter.inspect("BV1AbC2345")
+        choice = adapter.select_download(item)
+        adapter.download(item, Path("/unused/final.mp4"), cancel=lambda: False)
+        self.assertEqual(muxer.download.call_args.args[0], choice.candidate)
+        self.assertEqual(muxer.download.call_args.kwargs["audio"], choice.audio_candidate)
+        self.assertIsNotNone(choice.audio_candidate)
+
+    def test_split_video_without_runtime_is_not_published_silent(self) -> None:
+        materializer = Mock()
+        adapter = BilibiliSourceAdapter(RecordedTransport(), materializer=materializer)
+        with self.assertRaises(SourceError) as context:
+            adapter.download(adapter.inspect("BV1AbC2345"), Path("/unused/final.mp4"))
+        self.assertEqual(context.exception.code, SourceErrorCode.UNSUPPORTED)
+        materializer.download.assert_not_called()
+
+    def test_combined_choice_does_not_replace_its_audio_with_a_companion(self) -> None:
+        payload = deepcopy(PAYLOAD)
+        payload["data"]["durl"] = [{"url": "https://cdn.example.test/combined.mp4"}]
+        adapter = BilibiliSourceAdapter(RecordedTransport(payload))
+        choice = adapter.select_download(adapter.inspect("BV1AbC2345"), prefer_progressive=True)
+        self.assertTrue(choice.candidate.has_audio)
+        self.assertIsNone(choice.audio_candidate)
+
+    def test_extractor_video_only_never_becomes_combined_progressive(self) -> None:
+        raw = {"id": "BV1AbC2345", "title": "source", "formats": [
+            {"format_id": "v", "url": "https://cdn.example.test/v.mp4", "vcodec": "h264", "acodec": "none", "height": 1080},
+            {"format_id": "a", "url": "https://cdn.example.test/a.m4a", "vcodec": "none", "acodec": "aac"},
+            {"format_id": "av", "url": "https://cdn.example.test/av.mp4", "vcodec": "h264", "acodec": "aac", "height": 360},
+        ]}
+        normalized = _map_payload("bilibili", raw, "BV1AbC2345")
+        self.assertEqual(normalized["durl"], [{"url": "https://cdn.example.test/av.mp4", "width": None, "height": 360}])
+        adapter = BilibiliSourceAdapter(RecordedTransport({"data": normalized}))
+        item = adapter.inspect("BV1AbC2345")
+        choice = adapter.select_download(item)
+        self.assertFalse(choice.candidate.has_audio)
+        self.assertIsNotNone(choice.audio_candidate)
+        self.assertTrue(adapter.select_download(item, prefer_progressive=True).candidate.has_audio)
+
+    def test_foreign_choice_is_rejected_before_downloading(self) -> None:
+        muxer = Mock()
+        adapter = BilibiliSourceAdapter(RecordedTransport(), stream_materializer=muxer)
+        item = adapter.inspect("BV1AbC2345")
+        choice = BilibiliDownloadChoice("BVwrong000", item.media_candidates[0], item.media_candidates[1])
+        with self.assertRaises(SourceError) as context:
+            adapter.download(item, Path("/unused/final.mp4"), choice=choice)
+        self.assertEqual(context.exception.code, SourceErrorCode.INVALID_INPUT)
+        muxer.download.assert_not_called()
 
 
 if __name__ == "__main__":

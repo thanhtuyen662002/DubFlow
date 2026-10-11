@@ -46,8 +46,48 @@ jobs:
         run: python tests/soak/runner.py --release-evidence --output tests/soak/release-evidence.json
       - name: Run chaos assertions
         run: python -m unittest discover -s tests/chaos -p 'test_*.py'
+      - name: Verify interrupted source acquisition and atomic publication
+        run: python -m unittest discover -s tests/source_materializer -p 'test_*.py' -v
       - name: Install pinned numerical dependency for PCM rehearsal
         run: |
           python -m pip install --only-binary=:all: --no-deps --require-hashes -r tests/audio_mix/requirements-ci.txt
       - name: Rehearse actual generated PCM hard process exit and recovery
         run: python tests/audio_mix/qualify_streaming.py --development --seconds 12 --work "$RUNNER_TEMP/streaming-pcm" --report "$RUNNER_TEMP/streaming-pcm.json"
+
+  source_session_windows:
+    name: Windows source session boundary
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha || github.sha }}
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Verify exact Windows source SHA
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SHA) { throw "Expected $env:EXPECTED_SHA but checked out $actual" }
+      - name: Exercise durable source SQLite on native Windows
+        shell: pwsh
+        run: |
+          cargo test --manifest-path crates/job-supervisor/source_queue/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Native source SQLite dispatch/migration tests failed' }
+          cargo test --manifest-path crates/job-supervisor/app/Cargo.toml --locked source_server::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Native source supervisor ownership/stdio/restart tests failed' }
+          python -m unittest discover -s tests/source_queue -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'Native source worker protocol/control tests failed' }
+      - name: Exercise real user DPAPI and private extractor stdio
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests/source_adapter -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'Native source session boundary failed' }
+          python -m unittest discover -s tests/source_generic -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'Bounded native extractor boundary failed' }

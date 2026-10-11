@@ -17,6 +17,14 @@ import run_integration as selector
 
 
 class ComponentSelectionTests(unittest.TestCase):
+    def test_native_source_changes_select_executable_rust_evidence(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next(item for item in registry["components"] if item["id"] == "native-source-controller")
+        for path in ("crates/job-supervisor/app/src/source_server.rs", "crates/job-supervisor/app/src/source_owner.rs"):
+            with self.subTest(path=path):
+                self.assertTrue(selector.component_affected(component, {path}))
+        self.assertIn(["cargo", "test", "--manifest-path", "crates/job-supervisor/app/Cargo.toml", "--locked"], component["commands"])
+
     def setUp(self) -> None:
         self.component = {"id": "tts", "roots": ["engine/dubflow/tts"]}
 
@@ -63,6 +71,24 @@ class ComponentSelectionTests(unittest.TestCase):
 
     def test_unrelated_component_remains_unselected(self) -> None:
         self.assertFalse(selector.component_affected(self.component, {"engine/dubflow/asr/adapter.py"}))
+
+    def test_sdk_page_changes_select_their_source_adapter_regressions(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        components = {component["id"]: component for component in registry["components"]}
+        source = components["source-adapter"]
+        self.assertIn(
+            ["python", "-m", "unittest", "discover", "-s", "tests/source_adapter", "-p", "test_*.py"],
+            source["commands"],
+        )
+        for path in (
+            "engine/dubflow/download/enumeration/sdk.py",
+            "engine/dubflow/download/generic/provider_transport.py",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(selector.component_affected(source, {path}))
+        self.assertTrue(selector.component_affected(
+            components["source-queue"], {"engine/dubflow/download/enumeration/sdk.py"},
+        ))
 
     def test_main_executes_registered_commands_after_control_change(self) -> None:
         component = {**self.component, "commands": [["example-test-command"]]}
