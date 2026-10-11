@@ -20,23 +20,36 @@ from engine.dubflow.review.production import ReviewError
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("snapshot", "preview", "audio-v1"))
+    parser.add_argument("action", choices=("snapshot", "preview", "audio-v1", "original-v1"))
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--manifest-sha256", required=True)
     parser.add_argument("--cue-id")
     parser.add_argument("--finding-id")
     parser.add_argument("--revision", type=int)
+    parser.add_argument("--native-gate", action="store_true")
     args = parser.parse_args(argv)
     try:
         if not sys.flags.isolated or not sys.flags.no_site or not sys.dont_write_bytecode:
             raise ReviewError("review command requires owned Python -I -S -B")
-        if (args.action != "snapshot") != (args.cue_id is not None):
+        if args.native_gate:
+            if args.action != "original-v1" or sys.stdin.buffer.read(1) != b"\x01":
+                raise ReviewError("original seed requires the native execution gate")
+        if (args.action in ("preview", "audio-v1")) != (args.cue_id is not None):
             raise ReviewError("only preview/audio requires a cue ID")
         if (args.action == "audio-v1") != (args.finding_id is not None and args.revision is not None):
             raise ReviewError("only audio-v1 requires finding/revision binding")
         if args.action != "audio-v1" and (args.finding_id is not None or args.revision is not None):
             raise ReviewError("unexpected audio binding")
+        if args.action == "original-v1":
+            from engine.dubflow.review.original_seed import original_seed
+            result = original_seed(args.manifest, expected_job_id=args.job_id,
+                                   expected_manifest_sha256=args.manifest_sha256)
+            encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            if len(encoded.encode("utf-8")) > MAX_JSON_BYTES:
+                raise ReviewError("original seed response exceeds JSON byte limit")
+            sys.stdout.buffer.write((encoded + "\n").encode("utf-8"))
+            return 0
         bound = build_review_from_export(args.manifest, expected_job_id=args.job_id,
                                          expected_manifest_sha256=args.manifest_sha256)
         if args.action == "audio-v1":

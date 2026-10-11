@@ -20,3 +20,11 @@ unaffected valid artifacts until replacement validation succeeds.
 Generic warnings are valid input when advanced QC is unavailable. Quick Mode
 continues with a focused risk list; it never turns the absence of Review Center
 into a full manual-review requirement.
+
+`original-seed-v1.json` is the owned metadata adapter packet, bound to a
+native completed export. `bound-original-graph-v1.json` is the distinct
+supervisor-owned revision-zero envelope: exact source graph bytes and sealed
+native copies of the original manifest plus all consumed JSON documents.
+B1 stores three documents; B2 stores seven. This format grants no model or media
+admission and cannot enable correction/undo. Unknown versions need an explicit
+compatibility reader; existing released display payloads remain usable.

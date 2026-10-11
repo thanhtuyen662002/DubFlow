@@ -92,7 +92,7 @@ fn directory(path: &Path) -> SupervisorResult<()> {
     Ok(())
 }
 
-fn regular(path: &Path) -> SupervisorResult<File> {
+pub(super) fn regular(path: &Path) -> SupervisorResult<File> {
     plain(path)?;
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(invalid("cue path cannot contain parent traversal"));
@@ -270,7 +270,7 @@ impl Drop for PrivateCopy {
 
 impl AcceptedAudioStore {
     /// The caller resolves the durable data root from supervisor configuration.
-    pub(super) fn new(data_root: &Path, job_id: &str) -> SupervisorResult<Self> {
+    fn root(data_root: &Path, job_id: &str, create: bool) -> SupervisorResult<Self> {
         super::validate_job_id(job_id)?;
         plain(data_root)?;
         if !data_root.is_dir() {
@@ -284,11 +284,30 @@ impl AcceptedAudioStore {
             ));
         }
         let assets = control.join("review-assets");
-        directory(&assets)?;
+        if create {
+            directory(&assets)?;
+        } else {
+            plain(&assets)?;
+        }
         // A digest namespace supports colon-bearing contract IDs on Windows.
         let root = assets.join(format!("{:x}", Sha256::digest(job_id.as_bytes())));
-        directory(&root)?;
+        if create {
+            directory(&root)?;
+        } else {
+            plain(&root)?;
+        }
+        if !assets.is_dir() || !root.is_dir() {
+            return Err(invalid("accepted store is missing"));
+        }
         Ok(Self { root })
+    }
+
+    pub(super) fn new(data_root: &Path, job_id: &str) -> SupervisorResult<Self> {
+        Self::root(data_root, job_id, true)
+    }
+
+    pub(super) fn open_existing(data_root: &Path, job_id: &str) -> SupervisorResult<Self> {
+        Self::root(data_root, job_id, false)
     }
 
     fn private_copy(&self) -> SupervisorResult<(File, PrivateCopy)> {

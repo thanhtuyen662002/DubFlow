@@ -398,6 +398,59 @@ supervisor caller's requirements. Real-model metadata adapter evidence uses two
 previous actual installed169 candidates with QA-only copies. It does not prove
 native Windows accepted-object storage, installed GUI edit/undo or4h behavior.
 
+## Native original-state initialization and archived read (Draft integration)
+
+The internal CLI `review-original` reads an existing supervisor database;
+creating revision zero requires explicit `--initialize-original` and the native
+job execution lock. Job, succeeded stage, immutable start request, current
+attempt, original artifact ID, manifest pathname, committed size/hash and
+manifest job/version come from the supervisor. Browser-supplied manifests or
+metadata cannot initialize a graph. No system Python fallback is available.
+
+The owned isolated Python adapter reconstructs the current CPU producer's
+original B1/B2 metadata only. B1 needs canonical timeline and passed QC. B2 also
+requires exact original TTS, placement, spoken-text and mix documents, source
+IDs/order, canonical inputs, pinned producer and the known placement recipe.
+Missing legacy evidence or unknown producer recipes requires an explicit
+compatibility adapter; it never invents a render window or upgrades an existing
+job. The released display-only reader remains available.
+
+Native admission binds snapshot revision zero, rational source ranges, source
+and translated text, speaker, measured confidence/source, original voice and
+non-null preview paths to those verified original documents. The original
+snapshot cannot contain a prior correction plan. Each consumed JSON and their
+combined archive are bounded to64MiB; the snapshot/graph combined state has its
+separate64MiB limit. Media bytes, inference and long ASR/OCR scans are excluded.
+
+Before creating the SQL head, native storage archives the exact manifest and
+each consumed JSON under their sealed content identity. The v1 bound-original
+envelope retains the source graph as an exact string; floats and producer
+encoding are not reserialized into a different provenance hash. The graph stores
+native accepted-object descriptors, not mutable export paths as its only route
+to metadata. Original paths remain audit/provenance and future media bindings.
+
+Reopening revision zero uses only the sealed archive and durable job/start/
+artifact records. It requires neither original export JSON nor an installed
+Python interpreter. Reads do not create directories or migrate schemas. Every
+archived document is size/hash/syntax/seal checked again; missing/corrupt archives,
+unknown feature/root formats or an already corrected generation refuse without
+overwriting a head or silently repairing objects. Core SQLite version2 and the
+optional Review feature version1 remain unchanged; no released migration is
+edited. Unpublished copies may remain for explicit later orphan recovery.
+
+The original graph preserves explicit revalidate-before-reuse media policy and
+explicit-release-admission producer policy. Display preview paths are metadata,
+not physical playback admission. This CLI returns correction_ready=false and
+does not enable regeneration, media publication, model upgrades or undo. The
+future active graph reader must separately admit original/corrected physical
+assets and release/model pins before those operations.
+
+Synthetic native tests cover completed-job binding, exact archive bytes,
+read-only recovery after original metadata deletion, other-job isolation,
+substituted seed fields, changed exports, corrupt objects, unknown formats and
+bounded owned-adapter process outcomes. Actual real-media adapter evidence is
+separate from installed Windows native archive/GUI and4h qualification.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only

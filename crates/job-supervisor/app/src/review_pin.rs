@@ -34,7 +34,14 @@ pub(super) fn plain(path: &Path) -> SupervisorResult<()> {
     Ok(())
 }
 
-fn trusted_pin(store: &DurableStore, job_id: &str) -> SupervisorResult<Value> {
+pub(super) struct CommittedExport {
+    pub(super) pin: Value,
+    pub(super) manifest: Value,
+    pub(super) artifact_id: String,
+    pub(super) manifest_raw: String,
+}
+
+fn export_binding(store: &DurableStore, job_id: &str) -> SupervisorResult<(Value, String)> {
     super::validate_job_id(job_id)?;
     if !job_id
         .bytes()
@@ -81,29 +88,73 @@ fn trusted_pin(store: &DurableStore, job_id: &str) -> SupervisorResult<Value> {
     {
         return Err(invalid("manifest is not the current committed export"));
     }
+    let hash = artifact
+        .content_hash
+        .as_deref()
+        .ok_or_else(|| invalid("manifest hash is not committed"))?;
+    Ok((
+        json!({"schema_version":1,"kind":"review_export_pin","job_id":job_id,
+        "manifest_path":manifest_path,"manifest_sha256":hash,"manifest_size_bytes":size,"attempt":attempt}),
+        artifact.artifact_id,
+    ))
+}
+
+fn admit_manifest(
+    pin: Value,
+    artifact_id: String,
+    raw: String,
+) -> SupervisorResult<CommittedExport> {
+    if raw.len() as u64 != pin["manifest_size_bytes"].as_u64().unwrap()
+        || pin["manifest_sha256"] != format!("sha256:{:x}", Sha256::digest(raw.as_bytes()))
+    {
+        return Err(invalid("committed review manifest bytes changed"));
+    }
+    let document = super::review_document::decode(&raw, MANIFEST_LIMIT as usize)?;
+    if document.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || document.get("kind").and_then(Value::as_str) != Some("dubflow_localization_job")
+        || document["job_id"] != pin["job_id"]
+    {
+        return Err(invalid("committed manifest identity/version is invalid"));
+    }
+    Ok(CommittedExport {
+        pin,
+        manifest: document,
+        artifact_id,
+        manifest_raw: raw,
+    })
+}
+
+/// Recovery still binds the exact archive to current durable job/start/artifact
+/// records. A missing original output cannot grant caller-supplied authority.
+pub(super) fn archived_export(
+    store: &DurableStore,
+    job: &str,
+    raw: String,
+) -> SupervisorResult<CommittedExport> {
+    let (pin, artifact_id) = export_binding(store, job)?;
+    admit_manifest(pin, artifact_id, raw)
+}
+
+pub(super) fn committed_export(
+    store: &DurableStore,
+    job_id: &str,
+) -> SupervisorResult<CommittedExport> {
+    let (pin, artifact_id) = export_binding(store, job_id)?;
+    let manifest_path = PathBuf::from(pin["manifest_path"].as_str().unwrap());
     plain(&manifest_path)?;
     if !fs::symlink_metadata(&manifest_path)?.file_type().is_file() {
         return Err(invalid("manifest is not a regular file"));
     }
     let mut bytes = Vec::new();
-    fs::File::open(&manifest_path)?
+    super::review_assets::regular(&manifest_path)?
         .take(MANIFEST_LIMIT + 1)
         .read_to_end(&mut bytes)?;
-    let hash = format!("sha256:{:x}", Sha256::digest(&bytes));
-    if bytes.len() as u64 != size || artifact.content_hash.as_deref() != Some(hash.as_str()) {
-        return Err(invalid("committed review manifest bytes changed"));
-    }
-    let document: Value = serde_json::from_slice(&bytes)?;
-    if document.get("schema_version").and_then(Value::as_u64) != Some(1)
-        || document.get("kind").and_then(Value::as_str) != Some("dubflow_localization_job")
-        || document.get("job_id").and_then(Value::as_str) != Some(job_id)
-    {
-        return Err(invalid("committed manifest identity/version is invalid"));
-    }
-    Ok(
-        json!({"schema_version":1,"kind":"review_export_pin","job_id":job_id,
-              "manifest_path":manifest_path,"manifest_sha256":hash,"manifest_size_bytes":size,"attempt":attempt}),
-    )
+    let raw = String::from_utf8(bytes).map_err(|_| invalid("manifest is not UTF-8"))?;
+    admit_manifest(pin, artifact_id, raw)
+}
+
+fn trusted_pin(store: &DurableStore, job_id: &str) -> SupervisorResult<Value> {
+    Ok(committed_export(store, job_id)?.pin)
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {

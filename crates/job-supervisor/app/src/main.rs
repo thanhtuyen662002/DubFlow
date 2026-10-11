@@ -35,6 +35,7 @@ mod review_pin;
 mod review_assets;
 mod review_document;
 mod review_request;
+mod review_seed;
 
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
@@ -609,6 +610,9 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-original")) {
+        return review_seed::run(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-pin")) {
         return review_pin::run(std::env::args_os().skip(2));
     }
