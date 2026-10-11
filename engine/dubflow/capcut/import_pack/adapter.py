@@ -134,7 +134,11 @@ def _copy_asset(source: Path, target: Path, *, size: int, expected_hash: str, ro
     _plain_under(root, target)
     retained = target.stat().st_size if target.exists() else 0
     if retained > size:
-        raise ImportPackError("retained asset exceeds its pinned size")
+        # Only this recognized private asset is repaired. Source and final
+        # exports remain untouched; its retained prefix is verified below.
+        with target.open("r+b") as damaged:
+            damaged.truncate(size)
+        retained = size
     digest = sha256()
     with source.open("rb") as original:
         if retained:
@@ -397,7 +401,7 @@ def validate_import_pack(root: Path) -> dict[str, object]:
             raise ImportPackError("manifest asset kind/hash is invalid")
         asset_kinds[asset_id] = asset["kind"]
         relative = asset["relative_path"]
-        if not isinstance(relative, str) or Path(relative).is_absolute() or ".." in Path(relative).parts or "\\" in relative:
+        if not isinstance(relative, str) or Path(relative).is_absolute() or ".." in Path(relative).parts or "\\" in relative or ":" in relative or any(ord(character) < 32 for character in relative):
             raise ImportPackError("manifest contains an unsafe relative path")
         path = root / Path(relative)
         _plain_under(root, path)

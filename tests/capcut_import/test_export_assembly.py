@@ -3,6 +3,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -132,6 +133,17 @@ class CanonicalPackAssemblyTests(unittest.TestCase):
         with self.assertRaisesRegex(ImportPackError, "enabled together"):
             validate_import_pack(pack.root)
 
+    def test_v2_path_schema_accepts_real_manifest_shape_and_rejects_escape_paths(self) -> None:
+        schema = json.loads((Path(__file__).resolve().parents[2] / "contracts/capcut/import_pack/schema-v2.json").read_text(encoding="utf-8"))
+        pattern = schema["$defs"]["asset"]["properties"]["relative_path"]["pattern"]
+        manifest = create_pack_from_export(self.manifest, self.root / "pack").pack.manifest
+        for asset in manifest["assets"]:
+            self.assertIsNotNone(re.fullmatch(pattern, asset["relative_path"]), asset["relative_path"])
+        self.assertIsNotNone(re.fullmatch(pattern, "media/x00.mp4"))
+        for path in ("/absolute.mp4", "../escape.mp4", "audio/../../escape.wav", "C:drive.mp4",
+                     "audio\\backslash.wav", "audio/file.wav:ads", "subtitles/control\x00.srt"):
+            self.assertIsNone(re.fullmatch(pattern, path), path)
+
 
 class PackCopyRecoveryTests(unittest.TestCase):
     def test_interrupted_copy_resumes_proven_prefix_and_recovers_bad_private_tail(self) -> None:
@@ -169,6 +181,8 @@ class PackCopyRecoveryTests(unittest.TestCase):
             with retained.open("r+b") as stream:
                 stream.seek(5)
                 stream.write(b"XXX")
+                stream.seek(0, 2)
+                stream.write(b"oversized corrupt private tail")
             with patch("engine.dubflow.capcut.import_pack.adapter._COPY_BYTES", 4):
                 pack = create_import_pack(request, output)
             self.assertEqual((pack.root / "media/source.mp4").read_bytes(), source.read_bytes())
