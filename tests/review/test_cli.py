@@ -40,7 +40,30 @@ class ReviewCliTests(unittest.TestCase):
             value = json.loads(preview.stdout)
             assert_schema(value, "preview-v1.json")
             self.assertEqual(value["content_hash"], sha(value["path"]))
+            finding = next(item for item in payload["findings"] if item["cue_id"] == "cue-a" and item["output_preview"])
+            audio = self.command(path, "audio-v1", "--cue-id", "cue-a", "--finding-id", finding["finding_id"], "--revision", "0")
+            self.assertEqual(audio.returncode, 0, audio.stderr)
+            self.assertEqual(audio.stdout, Path(value["path"]).read_bytes())
+            self.assertEqual(audio.stderr, b"")
             self.assertEqual(before, {role: sha(item["path"]) for role, item in manifest["artifacts"].items()})
+
+    def test_binary_audio_refuses_stale_or_wrong_binding_and_corrupt_bytes(self):
+        with TemporaryDirectory(prefix="dubflow-review-cli-audio-") as directory:
+            path, _ = export_helpers.ExportReviewTests().fixture(directory, tts=True)
+            snapshot = json.loads(self.command(path).stdout)
+            finding = next(item for item in snapshot["findings"] if item["cue_id"] == "cue-a" and item["output_preview"])
+            for cue, identifier, revision in (("other-cue", finding["finding_id"], "0"),
+                                              ("cue-a", "other-finding", "0"),
+                                              ("cue-a", finding["finding_id"], "1"),
+                                              ("cue-a", finding["finding_id"], "-1")):
+                result = self.command(path, "audio-v1", "--cue-id", cue, "--finding-id", identifier, "--revision", revision)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, b"")
+            preview = Path(finding["output_preview"])
+            raw = bytearray(preview.read_bytes()); raw[-1] ^= 1; preview.write_bytes(raw)
+            result = self.command(path, "audio-v1", "--cue-id", "cue-a", "--finding-id", finding["finding_id"], "--revision", "0")
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, b"")
 
     def test_failed_pin_and_unknown_or_corrupt_preview_never_return_success(self):
         with TemporaryDirectory(prefix="dubflow-review-cli-refuse-") as directory:
@@ -64,7 +87,10 @@ class ReviewCliTests(unittest.TestCase):
         with TemporaryDirectory(prefix="dubflow-review-cli-runtime-") as directory:
             path, _ = export_helpers.ExportReviewTests().fixture(directory)
             for result in (self.command(path, isolated=False), self.command(path, "preview"),
-                           self.command(path, "snapshot", "--cue-id", "cue-a")):
+                           self.command(path, "snapshot", "--cue-id", "cue-a"),
+                           self.command(path, "audio-v1", "--cue-id", "cue-a"),
+                           self.command(path, "preview", "--cue-id", "cue-a", "--revision", "0"),
+                           self.command(path, "snapshot", "--finding-id", "cue-a")):
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(result.stdout, b"")
                 self.assertEqual(json.loads(result.stderr)["code"], "REVIEW_INPUT_INVALID")

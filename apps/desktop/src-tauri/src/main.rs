@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+mod review;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -293,7 +294,9 @@ fn main() {
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job])
+        .manage(review::ReviewHost::default())
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job,
+            review::review_snapshot_v1, review::review_audio_v1, review::review_cancel_v1])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
 }

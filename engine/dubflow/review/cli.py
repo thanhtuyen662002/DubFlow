@@ -14,25 +14,38 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from engine.dubflow.review.export import (MAX_JSON_BYTES, build_review_from_export,
-                                        validate_review_preview)
+                                        validate_review_preview, read_review_preview_bytes)
 from engine.dubflow.review.production import ReviewError
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("snapshot", "preview"))
+    parser.add_argument("action", choices=("snapshot", "preview", "audio-v1"))
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--manifest-sha256", required=True)
     parser.add_argument("--cue-id")
+    parser.add_argument("--finding-id")
+    parser.add_argument("--revision", type=int)
     args = parser.parse_args(argv)
     try:
         if not sys.flags.isolated or not sys.flags.no_site or not sys.dont_write_bytecode:
             raise ReviewError("review command requires owned Python -I -S -B")
-        if (args.action == "preview") != (args.cue_id is not None):
-            raise ReviewError("only preview requires a cue ID")
+        if (args.action != "snapshot") != (args.cue_id is not None):
+            raise ReviewError("only preview/audio requires a cue ID")
+        if (args.action == "audio-v1") != (args.finding_id is not None and args.revision is not None):
+            raise ReviewError("only audio-v1 requires finding/revision binding")
+        if args.action != "audio-v1" and (args.finding_id is not None or args.revision is not None):
+            raise ReviewError("unexpected audio binding")
         bound = build_review_from_export(args.manifest, expected_job_id=args.job_id,
                                          expected_manifest_sha256=args.manifest_sha256)
+        if args.action == "audio-v1":
+            finding = next((item for item in bound.snapshot.findings if item.finding_id == args.finding_id), None)
+            if args.revision != bound.snapshot.revision or finding is None or finding.cue_id != args.cue_id or finding.start_ticks is None or finding.output_preview is None:
+                raise ReviewError("audio request does not match current revision/finding/cue")
+            raw = read_review_preview_bytes(bound, args.cue_id)
+            sys.stdout.buffer.write(raw)
+            return 0
         if args.action == "snapshot":
             result = bound.snapshot.to_dict()
         else:

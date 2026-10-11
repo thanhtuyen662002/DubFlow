@@ -5,6 +5,7 @@ import { createReviewSnapshot, groupFindings, ReviewController } from "../../app
 import { readReviewPayload, previewProductionCorrection, reviewRangeLabel } from "../../apps/desktop/src/features/review/wire.ts";
 import { correctionRequest, acceptCorrectionResponse } from "../../apps/desktop/src/features/review/session.ts";
 import { ReviewConnection } from "../../apps/desktop/src/features/review/connection.ts";
+import { nativeReviewTransport } from "../../apps/desktop/src/features/review/transport.ts";
 
 const finding = {
   finding_id: "cue-1",
@@ -221,4 +222,52 @@ assert.equal(mutations.length, 3);
 mutations[2].resolve({ ...actual.first, job_id: "job-new" });
 await newMutation;
 assert.equal(serial.snapshot().revision, 1);
-console.log("legacy review tests and Python-to-desktop v2 reader/preview tests passed");
+// Native transport binds one opaque host session and never passes a path/hash.
+const nativeCalls = [], nativeReplies = [];
+let nativeId = 0, played = 0, playingSignal, completePlay;
+const native = nativeReviewTransport((command, args) => {
+  nativeCalls.push({ command, args });
+  if (command === "review_cancel_v1") return Promise.resolve();
+  return new Promise((resolve, reject) => nativeReplies.push({ command, args, resolve, reject }));
+}, async (_bytes, signal) => { played++; playingSignal = signal; await new Promise(resolve => { completePlay = resolve; }); },
+() => "native-request-" + String(++nativeId).padStart(16, "0"));
+const nativeConnection = new ReviewConnection(native);
+const nativeLoad = nativeConnection.load("job-review");
+nativeReplies[0].resolve({ schema_version: 1, kind: "review_desktop_session", session_id: nativeReplies[0].args.requestId, snapshot: previewSnapshot });
+await nativeLoad;
+const nativeViewSignal = new AbortController();
+const nativePreview = nativeConnection.actions().preview(cueRequest, nativeViewSignal.signal);
+assert.deepEqual(Object.keys(nativeReplies[1].args).sort(), ["request", "requestId", "sessionId"]);
+assert.deepEqual(nativeReplies[1].args.request, cueRequest);
+assert.equal(nativeReplies[1].args.sessionId, nativeReplies[0].args.requestId);
+nativeViewSignal.abort();
+assert(nativeCalls.some(call => call.command === "review_cancel_v1" && call.args.requestId === nativeReplies[1].args.requestId));
+nativeReplies[1].resolve(new ArrayBuffer(44));
+await assert.rejects(nativePreview, { name: "AbortError" });
+assert.equal(played, 0);
+const liveAudio = nativeConnection.actions().preview(cueRequest, new AbortController().signal);
+nativeReplies[2].resolve(new ArrayBuffer(44));
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(played, 1);
+nativeConnection.clear();
+assert.equal(playingSignal.aborted, true);
+assert(nativeCalls.some(call => call.command === "review_cancel_v1" && call.args.requestId === nativeReplies[0].args.requestId));
+completePlay();
+await assert.rejects(liveAudio, { name: "AbortError" });
+const reloadedNative = nativeConnection.load("job-review");
+nativeReplies[3].resolve({ schema_version: 1, kind: "review_desktop_session", session_id: nativeReplies[3].args.requestId, snapshot: previewSnapshot });
+await reloadedNative;
+const malformedAudio = nativeConnection.actions().preview(cueRequest, new AbortController().signal);
+nativeReplies[4].resolve([82, 73, 70, 70]);
+await assert.rejects(malformedAudio, /invalid review audio/);
+assert.equal(played, 1);
+nativeConnection.dispose();
+const badSession = nativeConnection.load("job-review");
+await assert.rejects(badSession, /disposed/);
+const badNativeConnection = new ReviewConnection(native);
+const badSessionReply = badNativeConnection.load("job-review");
+nativeReplies[5].resolve({ schema_version: 1, kind: "review_desktop_session", session_id: "another-session", snapshot: previewSnapshot });
+await assert.rejects(badSessionReply, /invalid review session/);
+assert(nativeCalls.some(call => call.command === "review_cancel_v1" && call.args.requestId === nativeReplies[5].args.requestId));
+badNativeConnection.dispose();
+console.log("legacy review, Python-to-desktop v2 and native session/audio cancellation tests passed");

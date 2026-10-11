@@ -8,8 +8,8 @@ While a cue has unsaved changes, group/finding/page navigation is disabled until
 the user saves or explicitly discards the edit. Keyboard selection retains focus
 when the finding list is rebuilt.
 
-Import `review.css` from the host page. No desktop main or native command is
-wired by this component alone. All imported text is written as text, never HTML.
+The desktop build includes `review.css`; other hosts must include it themselves.
+All imported text is written as text, never HTML.
 
 The host supplies voices compatible with the job's pinned model/producer.
 An assigned voice absent from that list is retained until explicitly changed;
@@ -43,9 +43,27 @@ required before another mutation, including for callers outside the DOM view.
 Only one correction may be submitted per loaded selection at a time. A refused
 duplicate never reaches the transport or clears the pending edit. An old job's
 late failure cannot unlock or invalidate a newer job's pending correction.
-This is an adapter boundary; production Tauri command wiring and native playback
-remain separate work. Native preview must verify the committed artifact graph for
-the requested revision; a metadata correction never certifies new audio bytes.
+Native preview must verify the committed artifact graph for the requested
+revision; a metadata correction never certifies new audio bytes.
+
+## Optional production read-only panel
+
+`host.ts` mounts a persistent panel for the selected completed job. It opens
+on demand and survives unrelated queue polls. `transport.ts` uses versioned
+Tauri snapshot/audio/cancel commands. Native admission retains the supervisor's
+committed export pin in a bounded session, checks that it still matches before
+audio delivery, and calls the owned isolated Python reader. Binary `audio-v1`
+output is the same bounded WAV buffer whose whole hash/header/frame count was
+validated; no returned file path is reopened for playback.
+
+The webview plays only an in-memory Blob, releases its URL, and stops playback
+on finding/job/reload/disposal changes. Abort also cancels native subprocess
+work; native deadlines/output/concurrency/session limits bound stale work.
+An expired, corrupt, legacy or unavailable optional review reports an explicit
+reload/error while preserving the queue and standard exports. Revision0 is
+read-only: correction controls remain disabled until supervisor-owned durable
+correction, physical replacement and undo are integrated. Source wiring and
+component tests do not qualify installed GUI playback or full174 acceptance.
 
 ## Local browser QA
 

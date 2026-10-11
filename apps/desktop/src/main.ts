@@ -3,6 +3,8 @@ import { connectDesktopShell } from "./shell/desktop_shell.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, voiceLabel, type VoiceCatalog } from "./features/voices/model.ts";
 import type { JobStatus } from "./features/job_status/status.ts";
+import { mountDesktopReview } from "./features/review/host.ts";
+import { nativeReviewTransport } from "./features/review/transport.ts";
 
 type ReleaseInfo = { version: string; channel: string; backend: string };
 
@@ -42,6 +44,11 @@ const summary = $("#queue-summary");
 const queueState = $("#queue-state");
 const queueList = $("#queue-list");
 const detail = $("#job-detail");
+const reviewContainer = document.createElement("section");
+reviewContainer.hidden = true;
+reviewContainer.className = "desktop-review-panel";
+$(".workspace").after(reviewContainer);
+const reviewPanel = mountDesktopReview(reviewContainer, nativeReviewTransport(invoke));
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const voiceSelect = $<HTMLSelectElement>("#tts-voice");
@@ -107,6 +114,7 @@ function renderVoiceControls(job: QueueJob | undefined): void {
 function render(model: Parameters<Parameters<typeof connectDesktopShell>[1]>[0]): void {
   const { view } = model;
   renderVoiceControls(view.selected ?? undefined);
+  reviewPanel.select(view.selected ? { id: view.selected.id, completed: view.selected.status.state === "COMPLETED" } : null);
   const total = view.summary.total;
   summary.textContent = `${total} video${total === 1 ? "" : "s"}`;
   queueState.textContent = total === 0 ? "Sẵn sàng" : `${view.summary.queued} đang chờ`;
@@ -291,6 +299,7 @@ for (const filter of [genderFilter, accentFilter, styleFilter]) {
 }
 void invoke<unknown>("voice_catalog").then((data) => {
   voiceCatalog = parseVoiceCatalog(data);
+  reviewPanel.setVoices(voiceCatalog.voices.map(voice => ({ voice_id: voice.voice_id, label: voiceLabel(voice) })));
   for (const [select, key] of [[genderFilter, "gender"], [accentFilter, "accent"], [styleFilter, "style"]] as const) {
     for (const value of new Set(voiceCatalog.voices.map((voice) => voice[key]))) {
       const option = document.createElement("option");
@@ -317,4 +326,4 @@ void invoke<ReleaseInfo>("release_info")
     $("#release-version").textContent = "development";
   });
 
-window.addEventListener("beforeunload", () => shell.dispose());
+window.addEventListener("beforeunload", () => { reviewPanel.destroy(); shell.dispose(); });

@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -146,7 +147,7 @@ def build_review_from_export(manifest_path: str | Path, *, expected_job_id: str,
     return BoundReview(snapshot, tuple(pins), str(output), provenance, json.dumps(previews, sort_keys=True))
 
 
-def validate_review_preview(review: BoundReview, cue_id: str) -> Path:
+def _review_preview(review: BoundReview, cue_id: str) -> tuple[Path, bytes]:
     artifact = json.loads(review.previews_json).get(cue_id)
     if not isinstance(artifact, Mapping):
         raise ReviewError("cue has no validated TTS preview descriptor")
@@ -156,21 +157,19 @@ def validate_review_preview(review: BoundReview, cue_id: str) -> Path:
     frames = 0
     try:
         with path.open("rb") as source:
-            # TTS content_hash covers the entire WAV, including its header.
-            digest = hashlib.sha256()
-            total = 0
-            while payload := source.read(131072):
-                total += len(payload)
-                if total > MAX_PREVIEW_BYTES:
-                    raise ReviewError("TTS preview exceeds bounded playback size")
-                digest.update(payload)
-            if "sha256:" + digest.hexdigest() != artifact["content_hash"]:
+            # Verify and return the same bounded bytes. A later filesystem read
+            # must never substitute unverified audio after this admission.
+            raw = source.read(MAX_PREVIEW_BYTES + 1)
+            if len(raw) > MAX_PREVIEW_BYTES:
+                raise ReviewError("TTS preview exceeds bounded playback size")
+            if "sha256:" + hashlib.sha256(raw).hexdigest() != artifact["content_hash"]:
                 raise ReviewError("TTS preview WAV content changed")
-            source.seek(0)
-            with wave.open(source, "rb") as reader:
+            with wave.open(io.BytesIO(raw), "rb") as reader:
                 if reader.getcomptype() != "NONE" or reader.getnchannels() != artifact["channels"] or reader.getsampwidth() != 2 or reader.getframerate() != artifact["sample_rate"] or reader.getnframes() != artifact["frame_count"]:
                     raise ReviewError("TTS preview PCM header changed")
                 while payload := reader.readframes(32768):
+                    if len(payload) % (2 * artifact["channels"]):
+                        raise ReviewError("TTS preview PCM frame is truncated")
                     frames += len(payload) // (2 * artifact["channels"])
                     if frames * 2 * artifact["channels"] > MAX_PREVIEW_BYTES:
                         raise ReviewError("TTS preview exceeds bounded playback size")
@@ -178,4 +177,14 @@ def validate_review_preview(review: BoundReview, cue_id: str) -> Path:
         raise ReviewError("TTS preview is unreadable: " + str(error)) from error
     if frames != artifact["frame_count"]:
         raise ReviewError("TTS preview PCM frame count changed")
-    return path
+    return path, raw
+
+
+def validate_review_preview(review: BoundReview, cue_id: str) -> Path:
+    """Legacy descriptor admission; callers must not play a later path read."""
+    return _review_preview(review, cue_id)[0]
+
+
+def read_review_preview_bytes(review: BoundReview, cue_id: str) -> bytes:
+    """Return only the complete WAV buffer admitted by its pinned descriptor."""
+    return _review_preview(review, cue_id)[1]

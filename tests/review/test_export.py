@@ -5,11 +5,13 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import wave
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
 from engine.dubflow.review import ReviewError, build_review_from_export, validate_review_preview
+from engine.dubflow.review.export import read_review_preview_bytes
 from schema_assertions import assert_schema
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -132,6 +134,24 @@ class ExportReviewTests(unittest.TestCase):
             preview.write_bytes(raw)
             with self.assertRaisesRegex(ReviewError, "WAV content changed"):
                 validate_review_preview(bound, "cue-a")
+
+    def test_audio_delivery_uses_the_same_hash_verified_buffer_after_path_changes(self):
+        with TemporaryDirectory(prefix="dubflow-review-delivery-") as directory:
+            path, _ = self.fixture(directory, tts=True)
+            bound = self.build(path)
+            preview = validate_review_preview(bound, "cue-a")
+            original = preview.read_bytes()
+            open_wave = wave.open
+
+            def change_path_after_read(buffer, mode):
+                altered = bytearray(original); altered[-1] ^= 1
+                preview.write_bytes(altered)
+                return open_wave(buffer, mode)
+
+            with patch("engine.dubflow.review.export.wave.open", side_effect=change_path_after_read):
+                self.assertEqual(read_review_preview_bytes(bound, "cue-a"), original)
+            with self.assertRaisesRegex(ReviewError, "WAV content changed"):
+                read_review_preview_bytes(bound, "cue-a")
 
     def test_unbounded_or_outside_canonical_cues_refuse(self):
         with TemporaryDirectory(prefix="dubflow-review-range-") as directory:

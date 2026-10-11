@@ -60,7 +60,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
     dirty = false;
     const root = el("section", undefined, "review-center");
     root.setAttribute("aria-label", "Review Center"); root.setAttribute("aria-busy", String(busy));
-    root.append(el("h2", "Kiểm tra và sửa lời thoại"));
+    root.append(el("h2", actions.correct ? "Kiểm tra và sửa lời thoại" : "Kiểm tra lời thoại"));
     root.append(el("p", payload.schema_version === 2 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.revision}` :
       "Bản review cũ: chỉ xem nội dung, chưa có mốc thời gian xác thực."));
     const status = el("p", message, "review-status"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); root.append(status);
@@ -128,7 +128,8 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
       for (const candidate of voices) { const option = el("option", candidate.label); option.value = candidate.voice_id; voice.append(option); }
       voice.value = item.voice ?? "";
       const voiceLabel = el("label", "Giọng cho câu này"); voiceLabel.htmlFor = voice.id;
-      const planText = el("p", "Sửa bản dịch hoặc chọn giọng để xem các bước cần chạy lại.", "review-plan");
+      const planText = el("p", canEdit ? "Sửa bản dịch hoặc chọn giọng để xem các bước cần chạy lại." :
+        "Chỉ xem lời thoại. Chức năng sửa câu chưa sẵn sàng trong phiên bản này.", "review-plan");
       planText.setAttribute("role", "status");
       const submit = el("button", "Xác nhận sửa câu này"); submit.type = "submit"; submit.disabled = true;
       const discard = el("button", "Bỏ thay đổi chưa lưu"); discard.type = "button"; discard.disabled = true;

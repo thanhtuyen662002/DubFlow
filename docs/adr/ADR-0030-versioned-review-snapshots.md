@@ -93,6 +93,33 @@ messages. Unsupported/legacy/missing/corrupt inputs leave the original job and
 exports untouched. This command does not grant a writer lease or qualify
 desktop playback, correction execution or durable graph replacement.
 
+## Read-only desktop transport v1
+
+The desktop uses optional `review_snapshot_v1`, `review_audio_v1` and
+`review_cancel_v1` commands. Native snapshot admission pins the completed
+SQLite export and retains that pin in a bounded, expiring in-memory session.
+Audio requests carry only session/job/revision/finding/cue identities. The
+native host rereads the committed pin and requires equality with the session;
+it never treats browser paths or hashes as authority. The owned Python CLI's
+private `audio-v1` command binds the finding and revision, reads one bounded WAV
+buffer, verifies its complete hash/PCM header/frame count, then returns those
+same bytes. The native host does not reopen a verified filesystem path.
+
+Tauri returns a raw buffer to an in-memory `audio/wav` Blob. The CSP permits
+only `blob:` media in addition to same-origin media, without enabling file
+assets or external network sources. Selection/reload/disposal cancels readers,
+stops playback and releases object URLs. Commands run off the UI thread with
+finite process/output limits, four active readers, eight sessions, and bounded
+cancellation tombstones for abort-before-registration races. Expired sessions
+require explicit reload. No model, downloader or render is invoked.
+
+This transport changes no public snapshot/worker/durable schema. Existing
+snapshot/preview CLI actions retain their format. Older hosts/runtimes lacking
+the optional commands report review unavailability; queue and standard exports
+remain usable. This first integration is read-only: correction controls are
+disabled until supervisor-owned CAS and validated artifact replacement/undo
+are integrated and qualified. It does not complete #174 or #175.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only
