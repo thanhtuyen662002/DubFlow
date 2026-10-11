@@ -620,7 +620,9 @@ mod tests {
         std::fs::create_dir_all(root.join("control")).unwrap();
         let generation = root.join("private generation");
         std::fs::create_dir_all(generation.join("tts")).unwrap();
-        let path = generation.join(format!("tts-{}.wav", "a".repeat(32)));
+        let path = generation
+            .join("tts")
+            .join(format!("tts-{}.wav", "a".repeat(32)));
         let rate = input["config"]["sample_rate"].as_u64().unwrap() as u32;
         let channels = input["config"]["channels"].as_u64().unwrap() as u16;
         let frames = 16u64;
