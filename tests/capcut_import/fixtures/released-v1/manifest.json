@@ -1,0 +1,26 @@
+{
+  "assets": [
+    {
+      "asset_id": "source-video",
+      "content_hash": "sha256:721c85e0b5ab56e09023e5dbed1b12d7c3a7b9008ba4ac7326c6d404b117f9f4",
+      "format": "mp4",
+      "kind": "video",
+      "relative_path": "media/legacy-video.mp4",
+      "size_bytes": "36"
+    }
+  ],
+  "kind": "capcut_import_pack",
+  "pack_id": "released-v1",
+  "schema_version": 1,
+  "tracks": [
+    {
+      "asset_ids": [
+        "source-video"
+      ],
+      "kind": "video",
+      "language": null,
+      "order": 0,
+      "track_id": "video-0"
+    }
+  ]
+}

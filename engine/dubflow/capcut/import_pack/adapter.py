@@ -11,8 +11,14 @@ import shutil
 import tempfile
 from typing import Any, Mapping
 
+from engine.dubflow.media.adapter import MediaAdapterError, Rational, rescale_ticks
 
-PACK_VERSION = 1
+
+PACK_VERSION = 2
+LEGACY_PACK_VERSION = 1
+_I64_MAX = (1 << 63) - 1
+_U64_MAX = (1 << 64) - 1
+_DECIMAL = re.compile(r"^(0|[1-9][0-9]*)$")
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _FILENAME = re.compile(r"^[^\x00-\x1f\\/:*?\"<>|]{1,128}$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -52,11 +58,8 @@ class ImportPackRequest:
     dub_audio_path: Path | None = None
     original_audio_path: Path | None = None
     subtitle_format: str | None = None
-    # Canonical timeline mapping is kept as integer ticks.  The adapter does
-    # not reinterpret frame indices or floating-point seconds; callers may
-    # provide cue/track mappings produced by the worker.  An empty mapping is
-    # still emitted for video-only jobs so every production pack has the same
-    # portable contract shape.
+    # A supplied canonical mapping produces v2 with decimal-string ticks.
+    # Legacy callers without a mapping still produce v1; no timing is invented.
     timeline: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -97,51 +100,82 @@ def _asset(asset_id: str, kind: str, source: Path, destination: Path, root: Path
     }
 
 
-def _timeline(value: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Return a strict, JSON-safe integer-tick timeline descriptor."""
+def _integer(value: Any, name: str, *, maximum: int = _I64_MAX, minimum: int = 0) -> int:
+    if isinstance(value, str) and len(value) <= 20 and _DECIMAL.fullmatch(value):
+        value = int(value)
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return value
 
-    if value is None:
-        return {
-            "time_base": {"numerator": 1, "denominator": 1000},
-            "duration_ticks": None,
-            "cues": [],
-        }
+
+def _cue_tick(cue: Mapping[str, Any], edge: str, base: Rational) -> int:
+    ticks_key, ms_key = f"{edge}_ticks", f"{edge}_ms"
+    ticks = _integer(cue[ticks_key], ticks_key) if ticks_key in cue else None
+    if ms_key in cue:
+        milliseconds = _integer(cue[ms_key], ms_key)
+        converted = rescale_ticks(milliseconds, Rational(1, 1000), base,
+                                  rounding="floor" if edge == "start" else "ceil", name=ms_key)
+        if ticks is not None and ticks != converted:
+            raise ValueError(f"conflicting {ticks_key} and {ms_key}")
+        ticks = converted
+    if ticks is None:
+        raise ValueError(f"{ticks_key} is missing")
+    return ticks
+
+
+def _timeline(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize exact rational timing, covering millisecond aliases outward."""
+
     try:
+        if not isinstance(value, Mapping):
+            raise ValueError("timeline is missing")
+        if set(value) - {"time_base", "duration_ticks", "cues"}:
+            raise ValueError("timeline contains unknown fields")
         time_base = value.get("time_base")
-        if not isinstance(time_base, Mapping):
+        if not isinstance(time_base, Mapping) or set(time_base) != {"numerator", "denominator"}:
             raise ValueError("time_base is missing")
-        numerator = time_base.get("numerator")
-        denominator = time_base.get("denominator")
-        if type(numerator) is not int or type(denominator) is not int or numerator <= 0 or denominator <= 0:
-            raise ValueError("time_base must contain positive integer numerator/denominator")
+        base = Rational(_integer(time_base["numerator"], "numerator", maximum=_U64_MAX, minimum=1),
+                        _integer(time_base["denominator"], "denominator", maximum=_U64_MAX, minimum=1))
         duration = value.get("duration_ticks")
-        if duration is not None and (type(duration) is not int or duration < 0):
-            raise ValueError("duration_ticks must be a non-negative integer or null")
+        if duration is not None:
+            duration = _integer(duration, "duration_ticks")
         cues = value.get("cues", [])
         if not isinstance(cues, list) or len(cues) > 100_000:
             raise ValueError("cues must be a bounded array")
         normalized: list[dict[str, Any]] = []
+        cue_ids: set[str] = set()
         for cue in cues:
             if not isinstance(cue, Mapping):
                 raise ValueError("timeline cue must be an object")
+            if set(cue) - {"cue_id", "start_ticks", "end_ticks", "start_ms", "end_ms", "asset_ids", "track_id", "speaker_id", "voice_id"}:
+                raise ValueError("timeline cue contains unknown fields")
             cue_id = cue.get("cue_id")
-            start = cue.get("start_ticks", cue.get("start_ms"))
-            end = cue.get("end_ticks", cue.get("end_ms"))
             if not isinstance(cue_id, str) or not cue_id or len(cue_id) > 256:
                 raise ValueError("timeline cue id is invalid")
-            if type(start) is not int or type(end) is not int or start < 0 or end <= start:
+            if cue_id in cue_ids:
+                raise ValueError("timeline contains duplicate cue id")
+            cue_ids.add(cue_id)
+            start, end = _cue_tick(cue, "start", base), _cue_tick(cue, "end", base)
+            if end <= start or (duration is not None and end > duration):
                 raise ValueError("timeline cue range is invalid")
-            item: dict[str, Any] = {"cue_id": cue_id, "start_ticks": start, "end_ticks": end}
-            for key in ("asset_ids", "track_id", "speaker_id", "voice_id"):
+            item: dict[str, Any] = {"cue_id": cue_id, "start_ticks": str(start), "end_ticks": str(end)}
+            if "asset_ids" in cue:
+                ids = cue["asset_ids"]
+                if not isinstance(ids, list) or len(ids) > 32:
+                    raise ValueError("cue asset_ids must be a bounded list")
+                item["asset_ids"] = [_id(asset_id, "cue asset_id") for asset_id in ids]
+            for key in ("track_id", "speaker_id", "voice_id"):
                 if key in cue:
+                    if not isinstance(cue[key], str) or not cue[key] or len(cue[key]) > 128:
+                        raise ValueError(f"cue {key} is invalid")
                     item[key] = cue[key]
             normalized.append(item)
         return {
-            "time_base": {"numerator": numerator, "denominator": denominator},
-            "duration_ticks": duration,
+            "time_base": {"numerator": str(base.numerator), "denominator": str(base.denominator)},
+            "duration_ticks": str(duration) if duration is not None else None,
             "cues": normalized,
         }
-    except (AttributeError, TypeError, ValueError) as error:
+    except (AttributeError, TypeError, ValueError, MediaAdapterError) as error:
         raise ImportPackError(f"timeline is invalid: {error}") from error
 
 
@@ -155,7 +189,11 @@ def _manifest(pack_id: str, assets: list[dict[str, object]], timeline: Mapping[s
         tracks.append({"track_id": "audio-0", "kind": "audio", "order": 1, "asset_ids": audio, "language": None})
     if subtitle:
         tracks.append({"track_id": "subtitle-0", "kind": "subtitle", "order": 2, "asset_ids": subtitle, "language": "vi"})
-    return {"schema_version": PACK_VERSION, "kind": "capcut_import_pack", "pack_id": pack_id, "assets": assets, "tracks": tracks, "timeline": _timeline(timeline)}
+    manifest = {"schema_version": PACK_VERSION if timeline is not None else LEGACY_PACK_VERSION,
+                "kind": "capcut_import_pack", "pack_id": pack_id, "assets": assets, "tracks": tracks}
+    if timeline is not None:
+        manifest["timeline"] = _timeline(timeline)
+    return manifest
 
 
 def create_import_pack(request: ImportPackRequest, output_root: Path) -> ImportPackResult:
@@ -190,16 +228,19 @@ def validate_import_pack(root: Path) -> dict[str, object]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ImportPackError("manifest is unreadable") from exc
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != PACK_VERSION or manifest.get("kind") != "capcut_import_pack":
+    if not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int or manifest.get("schema_version") not in {LEGACY_PACK_VERSION, PACK_VERSION} or manifest.get("kind") != "capcut_import_pack":
         raise ImportPackError("unsupported import pack manifest")
     assets = manifest.get("assets")
     tracks = manifest.get("tracks")
     timeline = manifest.get("timeline")
     if not isinstance(assets, list) or not assets or not isinstance(tracks, list) or not tracks:
         raise ImportPackError("manifest assets/tracks are invalid")
-    _timeline(timeline if isinstance(timeline, Mapping) else None)
-    if not isinstance(timeline, Mapping):
-        raise ImportPackError("manifest timeline is missing")
+    if manifest["schema_version"] == PACK_VERSION:
+        if _timeline(timeline) != timeline:
+            raise ImportPackError("v2 timeline must use normalized decimal-string ticks")
+    elif timeline is not None:
+        # Read pre-v2 draft packs without rewriting their published manifest.
+        _timeline(timeline)
     asset_ids: set[str] = set()
     for asset in assets:
         if not isinstance(asset, dict) or not all(key in asset for key in ("asset_id", "kind", "relative_path", "content_hash", "size_bytes", "format")):

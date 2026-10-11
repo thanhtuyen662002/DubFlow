@@ -31,7 +31,8 @@ class ProductionImportPackTests(unittest.TestCase):
             )
             self.assertTrue(result.pack.root.is_dir())
             self.assertTrue((result.pack.root / "manifest.json").is_file())
-            self.assertEqual(result.pack.manifest["timeline"]["duration_ticks"], 1000)
+            self.assertEqual(result.pack.manifest["schema_version"], 2)
+            self.assertEqual(result.pack.manifest["timeline"]["duration_ticks"], "1000")
             moved = root / "moved" / "pack"
             moved.parent.mkdir()
             result.pack.root.rename(moved)

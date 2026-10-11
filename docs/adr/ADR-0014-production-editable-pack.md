@@ -27,11 +27,11 @@ artifacts untouched. CapCut is never the canonical project format.
 
 ## Compatibility and migration
 
-Import-pack schema v1 now requires `timeline` for newly published packs. The
-Python validator rejects old packs without it at the production boundary; a
-future migration tool may add a zero-cue timeline to archived packs without
-rewriting media. Existing direct-draft consumers continue to consume the
-validated pack manifest hash.
+The earlier proposed v1 timeline requirement is superseded by ADR-0029.
+Released v1 packs remain readable without modification. Producers with a
+canonical mapping publish version 2 with required, exact decimal-string ticks;
+legacy callers without a mapping continue to emit v1. No clock is fabricated
+for archived packs. Direct-draft consumers bind the original manifest hash.
 
 ## Consequences
 
