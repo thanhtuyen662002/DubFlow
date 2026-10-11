@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dubflow/review/preview-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "cue_id", "path", "content_hash", "size_bytes", "sample_rate", "channels", "frame_count"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_tts_preview"},
+    "job_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+    "cue_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+    "path": {"type": "string", "minLength": 1},
+    "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "size_bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+    "sample_rate": {"type": "integer", "minimum": 1},
+    "channels": {"type": "integer", "minimum": 1, "maximum": 8},
+    "frame_count": {"type": "integer", "minimum": 1}
+  }
+}

@@ -74,6 +74,16 @@ speech file is a bound actionable warning, while other findings and canonical
 exports remain available. These helpers do not themselves expose native IPC,
 perform playback, register durable artifact nodes, or regenerate media.
 
+The read-only CLI requires the owned isolated runtime flags `-I -S -B`, a
+trusted manifest hash and matching job ID. Snapshot output uses public schema2;
+the selected verified WAV descriptor uses independent preview-v1. Responses
+and inputs are bounded; validation failure emits only bounded error data and
+an unsuccessful exit, never a playable path. This optional adapter performs no
+durable write. Native callers must additionally own the trusted job pin and
+enforce child-process/output limits. A returned preview pin still needs the
+native playback admission policy; it does not make a filesystem path an
+unrestricted webview asset URL. Existing v1 snapshots/exports need no migration.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only
