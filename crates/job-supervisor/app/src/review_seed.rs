@@ -5,7 +5,7 @@ use super::review_assets::{AcceptedAudioStore, AcceptedJsonDocument};
 use super::review_document::{closed, decode, identity, AdmittedSnapshot};
 use super::review_pin::{archived_export, committed_export, plain, CommittedExport};
 use super::{SupervisorError, SupervisorResult};
-use dubflow_job_state::{DurableStore, ReviewGraphState};
+use dubflow_job_state::{review_graph::ReviewGraphState, DurableStore};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -873,7 +873,7 @@ mod tests {
         let recovered = read_original(&reader, &f.root, &stored).unwrap();
         assert_eq!(recovered.documents, seed.documents);
         assert_eq!(reader.schema_version().unwrap(), 2);
-        assert_eq!(reader.job_status("other-job").unwrap(), JobStatus::Created);
+        assert_eq!(reader.job_status("other-job").unwrap(), JobStatus::Queued);
         assert!(reader.review_graph_state("other-job").unwrap().is_none());
         assert!(committed_export(&reader, "job-seed").is_err());
         assert!(archived_export(
