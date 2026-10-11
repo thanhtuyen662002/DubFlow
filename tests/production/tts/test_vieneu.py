@@ -51,7 +51,7 @@ class VieNeuPackTests(unittest.TestCase):
             with patch("engine.dubflow.models.runtime.urllib.request.urlopen", side_effect=AssertionError("offline cache must not download")):
                 pack, voice = load_vieneu_voice(app, cache, selected)
             self.assertEqual(pack.sample_rate, 48000)
-            self.assertEqual(pack.voice_name, "Ngọc Huyền")
+            self.assertEqual(pack.voice_name, "Trúc Ly")
             self.assertEqual(voice.license_id, "Apache-2.0")
             next(item for item in profile["voices"] if item["voice_id"] == profile["voice_id"])["voice_version"] = "1.0.1"
             metadata.write_text(json.dumps(profile), encoding="utf-8")

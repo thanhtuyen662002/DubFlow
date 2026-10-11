@@ -10,8 +10,8 @@
     "numpy": "2.2.6",
     "tokenizers": "0.23.2"
   },
-  "voice_id": "vi-ngoc-huyen-vieneu3-v1",
-  "voice_name": "Ngọc Huyền",
+  "voice_id": "vi-truc-ly-vieneu3-v1",
+  "voice_name": "Trúc Ly",
   "voice_version": "1.0.0",
   "model_id": "vieneu-v3-turbo-fp32",
   "model_version": "61b85e3-moss-ceff0d0-sdk3.8.3",

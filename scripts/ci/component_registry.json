@@ -977,6 +977,7 @@
         "packaging/release",
         "scripts/release/production_smoke.py",
         "scripts/release/duration_rewrite_smoke.py",
+        "scripts/release/source_clock_smoke.py",
         "scripts/release/desktop_runtime_smoke.py",
         "tests/release",
         "docs/release",

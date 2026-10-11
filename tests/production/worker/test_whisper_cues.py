@@ -118,7 +118,9 @@ class WordAlignedCuesTests(unittest.TestCase):
             for change in ({"asr_evidence": None}, {"schema_version": 2}):
                 self.assertIsNone(worker._language_checkpoint(result.cues, {**document, **change}, "auto"))
             self.assertEqual(set(cue.to_dict()), {"cue_id", "start_ms", "end_ms", "source_text", "translated_text", "confidence"})
-            manifest_path = worker._write_manifest(root, SimpleNamespace(job_id="qa", source_path=audio_path, target_language="vi", enable_dubbing=False), SimpleNamespace(to_dict=lambda: {}), result.cues, {}, (), asr=result.asr_evidence)
+            from engine.dubflow.media.adapter import MediaStream, Rational
+            probe = SimpleNamespace(video=MediaStream(0, "video", "h264", Rational(1, 16000), 0, 16000, 16000), to_dict=lambda: {})
+            manifest_path = worker._write_manifest(root, SimpleNamespace(job_id="qa", source_path=audio_path, target_language="vi", enable_dubbing=False), probe, result.cues, {}, (), asr=result.asr_evidence)
             self.assertEqual(json.loads(manifest_path.read_text())["asr"], result.asr_evidence)
         self.assertTrue(calls[0]["local_files_only"])
         self.assertTrue(calls[1]["word_timestamps"])

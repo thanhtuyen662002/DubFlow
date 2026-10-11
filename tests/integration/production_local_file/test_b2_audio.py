@@ -13,12 +13,14 @@ from types import SimpleNamespace
 from engine.dubflow.worker.b2_audio import B2AudioError, run_b2_audio, tts_recipe_identity, mix_recipe_identity, _dubbing_windows
 from engine.dubflow.mix import streaming
 from engine.dubflow.media import FfmpegMediaAdapter, Rational
+from engine.dubflow.media.adapter import MediaStream
 from engine.dubflow.tts.adapter import TtsError
 from engine.dubflow.tts import DeterministicFixtureEngine, approved_default_voice
 from engine.dubflow.worker.production_job import TextCue
 
 
 ROOT = Path(__file__).resolve().parents[3]
+VIDEO_STREAM = MediaStream(0, "video", "h264", Rational(1, 1000), 0, 3000, 3000)
 
 
 class HermeticDecodedAudioAdapter:
@@ -51,7 +53,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             b1.write_bytes(b"already-valid-B1-fixture")
             with self.assertRaises(B2AudioError) as caught:
                 run_b2_audio(media=HermeticDecodedAudioAdapter(), source_path=root / "stereo.mp4",
-                    source_probe=SimpleNamespace(has_audio=True), source_language="en", app_root=ROOT,
+                    source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
                     profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2",
                     translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),))
             self.assertEqual(caught.exception.code, "TTS_SPOKEN_TEXT_EVIDENCE_INVALID")
@@ -78,7 +80,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             root = Path(directory)
             # Actual PCM and streaming mixer; the decoder and TTS are fixtures.
             result = run_b2_audio(media=HermeticDecodedAudioAdapter(), source_path=root / "stereo.mp4",
-                source_probe=SimpleNamespace(has_audio=True), source_language="en", app_root=ROOT,
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
                 profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2",
                 translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),))
             self.assertEqual(result.mix_document.source_layout, "stereo-source")
@@ -157,7 +159,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             return_value=(SimpleNamespace(sample_rate=16000, channels=1), approved_default_voice())):
             root = Path(directory)
             options = dict(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
-                source_probe=SimpleNamespace(has_audio=True), source_language="en", app_root=ROOT,
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
                 profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2",
                 translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),
                                  TextCue("cue-2", 1200, 2200, "World", "Thế giới", 0.9)))
@@ -199,7 +201,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             result = run_b2_audio(
                 media=HermeticDecodedAudioAdapter(),
                 source_path=root / "portrait.mp4",
-                source_probe=SimpleNamespace(has_audio=True),
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM),
                 translated_cues=(
                     TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),
                     TextCue("cue-2", 1200, 2200, "World", "thế giới", 0.9),
@@ -236,7 +238,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
                 self.assertNotEqual(mix_recipe_identity(), old_recipe)
                 changed = run_b2_audio(
                     media=HermeticDecodedAudioAdapter(), source_path=root / "portrait.mp4",
-                    source_probe=SimpleNamespace(has_audio=True),
+                    source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM),
                     translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),
                                      TextCue("cue-2", 1200, 2200, "World", "thế giới", 0.9)),
                     source_language="en", app_root=ROOT,
@@ -266,7 +268,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
                     with self.assertRaises(B2AudioError) as raised:
                         run_b2_audio(
                             media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
-                            source_probe=SimpleNamespace(has_audio=True),
+                            source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM),
                             translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào", 0.95),),
                             source_language="en", app_root=ROOT,
                             profile_path=ROOT / "models/manifests/production-cpu-v1.json",

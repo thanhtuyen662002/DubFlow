@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from engine.dubflow.media import (
     Rational,
     parse_ffprobe_json,
 )
+from engine.dubflow.media.adapter import audio_origin_samples
 
 
 def _probe_document() -> dict[str, object]:
@@ -275,6 +277,38 @@ class MediaCommandTests(unittest.TestCase):
         for invalid in (0, 8.0, MediaTimeline(Rational(1, 1000), 0, 0, 0)):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(MediaAdapterError, "MEDIA_DURATION_INVALID"):
                 adapter.render(self.source, self.root / "invalid.mp4", video_duration=invalid)
+
+    def test_source_origin_rescaling_signed_fractional_and_unknown(self):
+        video = parse_ffprobe_json(json.dumps(_probe_document()), source_path=self.source).video
+        for pts, expected in ((1024, 4000), (-1, -4), (1, 3)):
+            origin = replace(video, start_pts=pts, time_base=Rational(1, 12288))
+            self.assertEqual(audio_origin_samples(origin, 48000), expected)
+        for invalid in (replace(video, start_pts=None), replace(video, time_base=None),
+                        replace(video, codec_type="audio"), None):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(MediaAdapterError, "MEDIA_TIMELINE_INVALID"):
+                audio_origin_samples(invalid, 48000)
+
+    def test_analysis_and_render_share_first_video_origin_before_subtitle_filter(self):
+        document = _probe_document()
+        document["streams"][0].update(time_base="1/12288", start_pts=1024)
+        document["streams"][1]["start_pts"] = 72944
+        probe = parse_ffprobe_json(json.dumps(document), source_path=self.source)
+        runner = RecordingRunner()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        adapter.extract_audio(self.source, self.root / "aligned.wav", video_stream=probe.video, sample_rate=48000, channels=2)
+        call = runner.calls[-1]
+        self.assertIn("-copyts", call)
+        self.assertEqual(call[call.index("-af") + 1], "aresample=48000:async=1:first_pts=4000")
+        for dubbed in (False, True):
+            adapter.render(self.source, self.root / "aligned.mp4", subtitle_path=self.subtitle,
+                source_probe=probe, audio_path=self.audio if dubbed else None,
+                preserve_original_audio=not dubbed, burn_in_subtitles=True, overwrite=True)
+            call = runner.calls[-1]
+            self.assertIn("-copyts", call)
+            self.assertTrue(call[call.index("-vf") + 1].startswith("setpts=PTS-STARTPTS,subtitles="))
+            if not dubbed:
+                self.assertEqual(call[call.index("-af") + 1], "aresample=48000:async=1:first_pts=4000,asetpts=PTS-STARTPTS")
+
 
     def test_burn_in_escapes_filter_path_without_shelling(self) -> None:
         runner = RecordingRunner()

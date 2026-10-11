@@ -1148,6 +1148,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if not profile_marker.is_file() or profile_marker.stat().st_size <= 0:
         raise SmokeError(f"model profile did not become ready: {profile_marker}")
     duration_rewrite = None
+    clock_report = work_root / "source-clock-report.json"
+    source_sha = _json(root / "release-manifest.json")["source_sha"]
+    _run([str(root / "runtime/python.exe"), "-I", "-S", "-B",
+          str(Path(__file__).with_name("source_clock_smoke.py")), "--root", str(root),
+          "--work-root", str(work_root / "source-clock"), "--expected-source-sha", source_sha,
+          "--report", str(clock_report)], timeout=min(args.timeout, 600))
+    source_clock = _json(clock_report)
+    if (source_clock.get("source_sha") != source_sha or source_clock.get("verified_release_tree") is not True
+            or source_clock.get("recipe") != "source-video-origin-pcm-v1" or len(source_clock.get("cases", [])) != 4):
+        raise SmokeError("packaged source clock evidence differs")
     if args.enable_dubbing:
         rewrite_report = work_root / "duration-rewrite-report.json"
         source_sha = _json(root / "release-manifest.json")["source_sha"]
@@ -1170,6 +1180,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "visible_dubbing_downgrades": visible_downgrades,
         "live_job_execution_ownership": execution_ownership,
         "bounded_duration_rewrite": duration_rewrite,
+        "source_clock": source_clock,
         "corrupt_job_state": bad_status["status"],
         "corrupt_media_failure": corrupt_failure,
         "good_job": good_output_report,

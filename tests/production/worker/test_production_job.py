@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import io
 import os
 from pathlib import Path
@@ -26,6 +27,20 @@ from engine.dubflow.worker.protocol import Envelope, MessageType
 
 
 class ProductionWorkerTests(unittest.TestCase):
+    def test_audio_recipe_identity_binds_source_clock_and_refuses_unknown_origin(self):
+        source = Path("source.mp4").absolute()
+        probe = parse_ffprobe_json(json.dumps({"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264",
+            "time_base": "1/12288", "start_pts": 1024, "duration_ts": 2231296}]}), source_path=source)
+        first = worker._audio_decode_identity("source-hash", probe)
+        altered = replace(probe, streams=(replace(probe.video, start_pts=0),))
+        self.assertNotEqual(first, worker._audio_decode_identity("source-hash", altered))
+        self.assertNotEqual(first, worker._audio_decode_identity("other-source", probe))
+        mapping = worker._source_clock_mapping(probe)
+        self.assertEqual(mapping["analysis_source_origin_samples"], "1333")
+        self.assertEqual(mapping["source_video_origin"]["ticks"], "1024")
+        with self.assertRaisesRegex(MediaAdapterError, "MEDIA_TIMELINE_INVALID"):
+            worker._audio_decode_identity("source-hash", replace(probe, streams=(replace(probe.video, start_pts=None),)))
+
     def test_render_duration_preserves_source_integer_base_before_canonical_fallback(self):
         probe = SimpleNamespace(video=SimpleNamespace(time_base=Rational(1001, 30000), duration_ticks=241), duration_ticks=8042)
         duration = worker._source_render_duration(probe)

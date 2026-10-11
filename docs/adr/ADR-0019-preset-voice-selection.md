@@ -100,8 +100,17 @@ browses the 11 upstream `tự nhiên` presets and labels that filter
 `Đối thoại phim · tự nhiên`; gender and region filters remain available.
 `Tất cả phong cách` exposes the complete 25-preset catalog. Filtering retains
 the saved selected voice even when it falls outside the visible style group,
-and never alters an admitted/recovered job. Ngọc Huyền remains the manifest's
-natural default until a user explicitly selects another preset.
+and never alters an admitted/recovered job.
+
+On 2026-10-11 the owner heard two retained Trúc Ly samples from an actual
+installed native film run and explicitly requested Trúc Ly as the default.
+The manifest now selects `vi-truc-ly-vieneu3-v1` for new requests without an
+explicit voice. All 25 presets, including the former Ngọc Huyền default,
+remain selectable. Existing explicit choices and immutable admitted producer
+bindings stay unchanged. The manifest hash changes, invalidating new private
+TTS generations without downloading new weights or relabeling old audio.
+This records the owner's listening preference for those samples; full film
+quality, synchronization and production qualification remain separate.
 
 This is a browsing preference over existing metadata. Model/preset identity,
 producer/runtime pins, public contracts and synthesis parameters are unchanged;

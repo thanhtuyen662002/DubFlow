@@ -60,8 +60,10 @@ reclamation still need qualification; process separation is not a security sandb
 ### Current selected candidate: VieNeu v3 Turbo
 
 The user rejected the VAIS1000 listening samples. New B2 jobs select the
-Ngọc Huyền preset in `production-vieneu-v1.json`, subject to comparative
-listening preference. CPU fp32 ONNX uses SDK 3.8.3, sea-g2p 0.9.1, ONNX Runtime
+Trúc Ly preset in `production-vieneu-v1.json`, selected by the owner after
+listening to two actual installed film-dialogue samples on 2026-10-11.
+All 25 presets remain available; admitted jobs retain their explicit choice.
+CPU fp32 ONNX uses SDK 3.8.3, sea-g2p 0.9.1, ONNX Runtime
 1.30.0, tokenizers 0.23.2 and NumPy 2.2.6. No GPU, Torch or downloaded model
 Python code is needed for this preset inference path. The complete SDK wheel's
 declared transitive packages are installed by the release requirements and

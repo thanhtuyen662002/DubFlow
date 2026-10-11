@@ -70,6 +70,7 @@ def _prepare_worker_import_path() -> None:
 _prepare_worker_import_path()
 
 from engine.dubflow.media import CANONICAL_TIME_BASE, FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult, MediaTimeline
+from engine.dubflow.media.adapter import AUDIO_DECODE_RECIPE, audio_origin_samples
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
 from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.translation.adapter import SourceSegment, TranslationError, resolve_source_language
@@ -781,7 +782,8 @@ def _write_manifest(
         "schema_version": SCHEMA_VERSION,
         "kind": "dubflow_localization_job",
         "job_id": config.job_id,
-        "source": {"path": str(config.source_path), "sha256": _sha256(config.source_path), "probe": probe.to_dict()},
+        "source": {"path": str(config.source_path), "sha256": _sha256(config.source_path), "probe": probe.to_dict(),
+                   "clock_mapping": _source_clock_mapping(probe)},
         "target_language": config.target_language,
         "dubbing": {"enabled": config.enable_dubbing, "requested_voice_id": getattr(config, "tts_voice_id", None)},
         "cues": [cue.to_dict() for cue in cues],
@@ -858,6 +860,22 @@ def _source_render_duration(probe: MediaProbeResult) -> MediaTimeline | None:
     return MediaTimeline(CANONICAL_TIME_BASE, 0, ticks, ticks) if ticks is not None and ticks > 0 else None
 
 
+def _source_clock_mapping(probe: MediaProbeResult) -> dict[str, Any]:
+    video = probe.video
+    audio_origin_samples(video, 16_000)  # Never guess from duration, FPS or container floats.
+    return {"schema_version": 1, "recipe": AUDIO_DECODE_RECIPE,
+            "source_video_origin": {"ticks": str(video.start_pts),
+                                    "time_base": {"numerator": str(video.time_base.numerator), "denominator": str(video.time_base.denominator)}},
+            "output_video_origin_ticks": "0", "pcm_origin_rounding": "floor",
+            "analysis_sample_rate": 16_000, "analysis_source_origin_samples": str(audio_origin_samples(video, 16_000))}
+
+
+def _audio_decode_identity(source_hash: str, probe: MediaProbeResult) -> str:
+    return sha256(json.dumps({"source_hash": source_hash, "clock_mapping": _source_clock_mapping(probe),
+                             "channels": 1, "adapter": _sha256(Path(__file__).parents[1] / "media" / "adapter.py")},
+                            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -> dict[str, Any]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     work_dir = config.output_dir / ".dubflow-work"
@@ -897,6 +915,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     emitter.checkpoint("probe", source_hash)
 
     audio_path = work_dir / "analysis.wav"
+    audio_identity = _audio_decode_identity(source_hash, probe)
     media = FfmpegMediaAdapter(config.ffmpeg_path, trusted_root=config.media_runtime_root)
     sidecar = _load_sidecar(config.source_path)
     if sidecar is None or config.source_language == "auto":
@@ -904,15 +923,15 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             if sidecar is not None:
                 raise ProductionJobError("SOURCE_LANGUAGE_UNRESOLVED", "sidecar without audio requires an explicit source language")
             raise ProductionJobError("AUDIO_STREAM_MISSING", "ASR requires an audio stream when no sidecar captions are present")
-        if not _stage_ready(checkpoint, "audio", (audio_path,)):
+        if checkpoint["stages"].get("audio", {}).get("input_hash") != audio_identity or not _stage_ready(checkpoint, "audio", (audio_path,)):
             emitter.progress(0.08, "Đang trích xuất audio")
-            media.extract_audio(config.source_path, audio_path, overwrite=True)
-            _write_stage(checkpoint, checkpoint_path, "audio", {"path": str(audio_path), "sha256": _sha256(audio_path)})
+            media.extract_audio(config.source_path, audio_path, video_stream=probe.video, overwrite=True)
+            _write_stage(checkpoint, checkpoint_path, "audio", {"path": str(audio_path), "sha256": _sha256(audio_path), "input_hash": audio_identity, "clock_mapping": _source_clock_mapping(probe)})
             emitter.checkpoint("audio", _sha256(audio_path))
 
     transcript_path = work_dir / "transcript.json"
     from engine.dubflow.worker.whisper_cues import ASR_RECIPE
-    transcript_input = "sha256:" + sha256(json.dumps({"source_hash": source_hash, "requested_language": config.source_language, "sidecar_cues": [cue.to_dict() for cue in sidecar] if sidecar is not None else None, "asr_profile_hash": _sha256(profile_path), "recipe": ASR_RECIPE}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    transcript_input = "sha256:" + sha256(json.dumps({"source_hash": source_hash, "audio_decode_identity": audio_identity, "requested_language": config.source_language, "sidecar_cues": [cue.to_dict() for cue in sidecar] if sidecar is not None else None, "asr_profile_hash": _sha256(profile_path), "recipe": ASR_RECIPE}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     transcript = None
     if _stage_ready(checkpoint, "transcript", (transcript_path,)):
         transcript_document = json.loads(transcript_path.read_text(encoding="utf-8"))
@@ -972,7 +991,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         try:
             from engine.dubflow.worker.b2_audio import tts_recipe_identity, mix_recipe_identity
             selected_voice = getattr(config, "tts_voice_id", None)
-            generation_identity = sha256((translation_input + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice)).encode()).hexdigest()
+            generation_identity = sha256((translation_input + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice)).encode()).hexdigest()
             b2_audio = run_b2_audio(
                 media=media,
                 source_path=config.source_path,
@@ -1060,6 +1079,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 subtitle_path=ass_path,
                 audio_path=audio_path,
                 video_duration=video_duration,
+                source_probe=probe,
                 preserve_original_audio=audio_path is None,
                 burn_in_subtitles=config.burn_in_subtitles,
                 overwrite=True,
@@ -1081,6 +1101,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 subtitle_path=ass_path,
                 preserve_original_audio=True,
                 video_duration=video_duration,
+                source_probe=probe,
                 burn_in_subtitles=config.burn_in_subtitles,
                 overwrite=True,
             )
@@ -1116,6 +1137,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             subtitle_path=ass_path,
             preserve_original_audio=True,
             video_duration=video_duration,
+            source_probe=probe,
             burn_in_subtitles=config.burn_in_subtitles,
             overwrite=True,
         )
@@ -1158,7 +1180,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             target = editable_dir / name
             _copy_editable_artifact(source, target, expected_hash=expected_hash)
     timeline_path = editable_dir / "timeline.json"
-    _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": [cue.to_dict() for cue in translated]})
+    _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": [cue.to_dict() for cue in translated], "source_clock_mapping": _source_clock_mapping(probe)})
     artifacts = {"final_video": final_path, "captions_srt": srt_path, "captions_ass": ass_path, "qc_report": qc_path, "editable_timeline": timeline_path}
     if b2_audio is not None:
         artifacts.update({

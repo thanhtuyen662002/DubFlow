@@ -111,6 +111,7 @@ class Rational:
 # while all comparisons and exported timeline identities use this explicit
 # canonical base through exact rational rescaling.
 CANONICAL_TIME_BASE = Rational(1, 1000)
+AUDIO_DECODE_RECIPE = "source-video-origin-pcm-v1"
 
 
 def _round_fraction(value: Fraction, mode: str, name: str) -> int:
@@ -289,6 +290,20 @@ class MediaTimeline:
             "duration_ticks": self.duration_ticks,
             "end_pts": self.end_pts,
         }
+
+
+def audio_origin_samples(video: MediaStream, sample_rate: int) -> int:
+    """Map the first video PTS to PCM with explicit floor rounding.
+
+    The exact source point stays in probe/provenance. Flooring introduces less
+    than one output sample of error; it also works for negative/non-integral
+    origins without truncation toward zero or float timestamp identity.
+    """
+    if not isinstance(video, MediaStream) or not video.is_video or video.time_base is None or video.start_pts is None:
+        raise MediaAdapterError("MEDIA_TIMELINE_INVALID", "source video origin requires its integer PTS and time base")
+    if type(sample_rate) is not int or not 8_000 <= sample_rate <= 384_000:
+        raise MediaAdapterError("AUDIO_CONFIG_INVALID", "sample_rate must be between 8000 and 384000")
+    return rescale_ticks(video.start_pts, video.time_base, Rational(1, sample_rate), rounding="floor", name="video audio origin")
 
 
 @dataclass(frozen=True)
@@ -593,6 +608,7 @@ class FfmpegMediaAdapter:
         *,
         sample_rate: int = 16_000,
         channels: int = 1,
+        video_stream: MediaStream | None = None,
         overwrite: bool = False,
     ) -> Path:
         source = _validate_input_file(source_path, "source_path")
@@ -601,12 +617,19 @@ class FfmpegMediaAdapter:
             raise MediaAdapterError("AUDIO_CONFIG_INVALID", "sample_rate must be between 8000 and 384000")
         if type(channels) is not int or not 1 <= channels <= 8:
             raise MediaAdapterError("AUDIO_CONFIG_INVALID", "channels must be between 1 and 8")
+        args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+        if video_stream is not None:
+            origin = audio_origin_samples(video_stream, sample_rate)
+            args.append("-copyts")
+        args.extend(("-i", os.fspath(source), "-map", "0:a:0?", "-vn"))
+        if video_stream is not None:
+            # Preserve gaps, trim pre-video audio and compensate timestamp
+            # discontinuities while streaming PCM. WAV itself starts at zero.
+            args.extend(("-af", f"aresample={sample_rate}:async=1:first_pts={origin}"))
+        args.extend(("-ac", str(channels), "-ar", str(sample_rate), "-c:a", "pcm_s16le"))
         return self._write_atomic(
             output,
-            (
-                "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", os.fspath(source),
-                "-map", "0:a:0?", "-vn", "-ac", str(channels), "-ar", str(sample_rate), "-c:a", "pcm_s16le",
-            ),
+            tuple(args),
             missing_code="AUDIO_STREAM_MISSING",
             output_format="wav",
         )
@@ -701,6 +724,7 @@ class FfmpegMediaAdapter:
         subtitle_path: str | Path | None = None,
         audio_path: str | Path | None = None,
         video_duration: MediaTimeline | None = None,
+        source_probe: MediaProbeResult | None = None,
         preserve_original_audio: bool = True,
         burn_in_subtitles: bool = False,
         overwrite: bool = False,
@@ -720,7 +744,15 @@ class FfmpegMediaAdapter:
 
         subtitle_staging: Path | None = None
         try:
-            args: list[str] = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", os.fspath(source)]
+            args: list[str] = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+            video_filters: list[str] = []
+            if source_probe is not None:
+                if not isinstance(source_probe, MediaProbeResult) or source_probe.source_path.resolve() != source:
+                    raise MediaAdapterError("MEDIA_TIMELINE_INVALID", "render probe must describe the actual source")
+                audio_origin_samples(source_probe.video, 48_000)  # Require known source origin even for silent video.
+                args.append("-copyts")
+                video_filters.append("setpts=PTS-STARTPTS")
+            args.extend(("-i", os.fspath(source)))
             if audio is not None:
                 args.extend(("-i", os.fspath(audio)))
             if subtitle is not None and not burn_in_subtitles:
@@ -755,7 +787,14 @@ class FfmpegMediaAdapter:
                         _diagnostic(str(error)),
                         retryable=True,
                     ) from error
-                args.extend(("-vf", f"subtitles={subtitle_staging.name}"))
+                video_filters.append(f"subtitles={subtitle_staging.name}")
+
+            if video_filters:
+                args.extend(("-vf", ",".join(video_filters)))
+            if source_probe is not None and audio is None and preserve_original_audio and source_probe.has_audio:
+                rate = source_probe.audio[0].sample_rate
+                origin = audio_origin_samples(source_probe.video, rate)
+                args.extend(("-af", f"aresample={rate}:async=1:first_pts={origin},asetpts=PTS-STARTPTS"))
 
             args.extend(("-map", "0:v:0"))
             if audio is not None:
