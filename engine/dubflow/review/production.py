@@ -30,6 +30,33 @@ _TICKS = re.compile(r"^(0|[1-9][0-9]*)$")
 _DECIMAL = re.compile(r"^(0|0\.[0-9]+|1(?:\.0+)?)$")
 _I64_MAX = (1 << 63) - 1
 
+# Correction roots are determined by the changed artifact, independently of
+# the diagnostic that brought the cue to the user's attention. QC/export are
+# descendants and cannot retain a prior PASS after content changes.
+_CORRECTION_EDGES = {
+    "translation": ("subtitles", "tts"),
+    "subtitles": ("render",),
+    "tts": ("mix",),
+    "mix": ("render",),
+    "render": ("qc",),
+    "qc": ("export",),
+}
+_CORRECTION_ORDER = ("translation", "subtitles", "tts", "mix", "render", "qc", "export")
+
+
+def _correction_stages(*, translation_changed: bool, voice_changed: bool) -> tuple[str, ...]:
+    roots = ({"translation"} if translation_changed else set()) | ({"tts"} if voice_changed else set())
+    if not roots:
+        raise ReviewError("a correction must change translation or voice")
+    affected = set(roots)
+    pending = list(roots)
+    while pending:
+        for descendant in _CORRECTION_EDGES.get(pending.pop(), ()):
+            if descendant not in affected:
+                affected.add(descendant)
+                pending.append(descendant)
+    return tuple(stage for stage in _CORRECTION_ORDER if stage in affected)
+
 
 class ReviewError(ValueError):
     pass
@@ -263,8 +290,10 @@ class ReviewStore:
         if translation is None and voice is None:
             raise ReviewError("a correction must change translation or voice")
         replacement = ReviewFinding(selected.finding_id, selected.reason, selected.start_ticks, selected.end_ticks, selected.source_text, translation.strip() if translation is not None else selected.translated_text, selected.speaker, voice if voice is not None else selected.voice, selected.output_preview, selected.confidence, selected.affected_stages)
+        stages = _correction_stages(translation_changed=replacement.translated_text != selected.translated_text,
+                                    voice_changed=replacement.voice != selected.voice)
         updated = tuple(replacement if item.finding_id == finding_id else item for item in current.findings)
-        plan = RegenerationPlan(finding_id, selected.affected_stages, ("asr", "ocr", "review:" + finding_id), tuple("replacement:" + stage for stage in selected.affected_stages))
+        plan = RegenerationPlan(finding_id, stages, ("asr", "ocr"), tuple("replacement:" + stage for stage in stages))
         next_snapshot = ReviewSnapshot(current.job_id, current.revision + 1, updated, plan)
         self._atomic_write(next_snapshot.to_dict())
         return next_snapshot, plan

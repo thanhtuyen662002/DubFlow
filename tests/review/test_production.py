@@ -4,10 +4,53 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from engine.dubflow.review import ReviewError, ReviewStore, build_review_snapshot
+from engine.dubflow.review import ReviewError, ReviewFinding, ReviewSnapshot, ReviewStore, build_review_snapshot
 
 
 class ProductionReviewTests(unittest.TestCase):
+    def initialized(self, directory: str, reason: str):
+        # The diagnostic deliberately names a different root than the edit.
+        finding = ReviewFinding("cue-a", reason, "1000", "2000", "Hello", "Original",
+                                "speaker-a", "voice-a", None, "0.3", ("render", "qc"))
+        snapshot = ReviewSnapshot("job-review", 0, (finding,))
+        store = ReviewStore(Path(directory) / "review.json")
+        store._atomic_write(snapshot.to_dict())
+        return store, snapshot
+
+    def test_translation_edit_on_tts_failure_invalidates_subtitles_qc_and_export(self) -> None:
+        with TemporaryDirectory(prefix="dubflow-review-") as directory:
+            store, snapshot = self.initialized(directory, "TTS_FAILURE")
+            updated, plan = store.commit_correction(snapshot, "cue-a", translation="Corrected")
+            self.assertEqual(plan.stages_to_rerun, ("translation", "subtitles", "tts", "mix", "render", "qc", "export"))
+            self.assertEqual(plan.preserved_artifacts, ("asr", "ocr"))
+            self.assertNotIn("review:cue-a", plan.preserved_artifacts)
+            self.assertEqual(updated.findings[0].source_text, snapshot.findings[0].source_text)
+
+    def test_voice_edit_on_translation_warning_preserves_translation_and_subtitles(self) -> None:
+        with TemporaryDirectory(prefix="dubflow-review-") as directory:
+            store, snapshot = self.initialized(directory, "TRANSLATION_ANOMALY")
+            updated, plan = store.commit_correction(snapshot, "cue-a", voice="voice-b")
+            self.assertEqual(plan.stages_to_rerun, ("tts", "mix", "render", "qc", "export"))
+            self.assertEqual(updated.findings[0].translated_text, snapshot.findings[0].translated_text)
+            self.assertTrue(plan.retain_previous_until_validated)
+
+    def test_combined_edit_has_one_ordered_downstream_closure(self) -> None:
+        with TemporaryDirectory(prefix="dubflow-review-") as directory:
+            store, snapshot = self.initialized(directory, "SYNC_QC_WARNING")
+            _, plan = store.commit_correction(snapshot, "cue-a", translation="Corrected", voice="voice-b")
+            self.assertEqual(plan.stages_to_rerun, ("translation", "subtitles", "tts", "mix", "render", "qc", "export"))
+            self.assertEqual(len(set(plan.replacement_artifacts)), len(plan.replacement_artifacts))
+            self.assertFalse(plan.requires_full_manual_review)
+
+    def test_noop_correction_is_refused_without_new_revision_or_history(self) -> None:
+        with TemporaryDirectory(prefix="dubflow-review-") as directory:
+            store, snapshot = self.initialized(directory, "TRANSLATION_ANOMALY")
+            before = store.path.read_bytes()
+            with self.assertRaisesRegex(ReviewError, "must change"):
+                store.commit_correction(snapshot, "cue-a", translation="  Original  ", voice="voice-a")
+            self.assertEqual(store.path.read_bytes(), before)
+            self.assertFalse(store.history_path.exists())
+
     def test_snapshot_maps_warnings_to_tick_bound_findings(self) -> None:
         snapshot = build_review_snapshot(
             "job-review",
