@@ -18,6 +18,15 @@ encoder because the redistributed LGPL build does not contain GPL-only
 outputs are created as private sibling `.partial` files and atomically
 published only after FFmpeg exits successfully and writes non-empty bytes.
 
+The production worker supplies the probed video stream to audio extraction.
+`source-video-origin-pcm-v1` preserves input timestamps and aligns PCM zero
+to the exact first video point rescaled with floor rounding. Late audio is
+padded, early audio trimmed and timestamp gaps retained. Rendering with the
+source probe normalizes the first video frame and audio to the same origin
+before subtitle burn-in. Unknown source origins are refused. Legacy adapter
+calls without this optional metadata retain their earlier behavior; they do
+not establish source alignment. Checkpoint compatibility is in ADR0028.
+
 Burn-in subtitles are copied to a private safe basename and FFmpeg runs from
 the output directory. This avoids passing a drive-qualified or user-named path
 through the subtitles filter grammar while retaining shell-free argv.
@@ -25,3 +34,9 @@ through the subtitles filter grammar while retaining shell-free argv.
 The module intentionally has no fixture backend or model selection. ASR,
 translation and TTS workers inject their own app-owned model adapters and use
 these operations for media I/O.
+
+For a source without audio, `create_silent_audio` provides a bounded stereo
+PCM bed when the worker already has valid dialogue captions. Its sample count
+comes from integer source duration/time-base, and it validates the WAV before
+atomic publication. It never supplies dialogue text. QC and mix provenance
+identify this generated silence; see ADR0024 for compatibility and recovery.

@@ -45,3 +45,12 @@ h2 { margin: 0; font-size: 17px; }
 .detail-card dt { color: #8996b3; font-size: 12px; }
 .detail-card dd { margin: 2px 0 8px; overflow-wrap: anywhere; font-size: 13px; }
 .hint { margin: 10px 0 0; line-height: 1.45; }
+.voice-controls { min-width: 0; margin: 20px 0 0; padding: 14px; border: 1px solid #3c4c70; border-radius: 8px; }
+.voice-controls legend { padding: 0 6px; font-size: 14px; }
+.voice-controls label { display: block; margin: 8px 0; font-size: 13px; }
+.voice-controls .dubbing-toggle { display: flex; gap: 8px; align-items: center; }
+.voice-controls input { accent-color: #648cff; }
+.voice-controls select { width: 100%; margin-top: 5px; padding: 8px 5px; font: inherit; color: #edf2ff; background: #1a2337; border: 1px solid #3c4c70; border-radius: 5px; }
+.voice-controls:disabled { opacity: .65; }
+.voice-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+.voice-filters label:last-child { grid-column: 1 / -1; }

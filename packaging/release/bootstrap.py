@@ -17,6 +17,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 from typing import Any, Callable, Sequence
 import uuid
 
@@ -187,7 +188,27 @@ def verify_bundle(bundle_root: Path | str, manifest: ReleaseManifest) -> None:
 
 
 def _write_progress(path: Path, payload: dict[str, Any]) -> None:
-    _atomic_write(path, (json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"))
+    try:
+        _atomic_write(path, (json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"))
+    except PermissionError as exc:
+        if not _windows_progress_contention(exc):
+            raise
+        # A progress observer may deny DELETE sharing on Windows. The next
+        # snapshot describes new copy work; never retry this locked snapshot.
+        # Resume rehashes staged files regardless of this advisory list.
+
+
+def _windows_progress_contention(error: PermissionError) -> bool:
+    return os.name == "nt" and getattr(error, "winerror", None) in {5, 32, 33}
+
+
+def _remove_progress(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError as exc:
+        if not _windows_progress_contention(exc):
+            raise
+        # A stale observer snapshot cannot overrule verified activation state.
 
 
 def _copy_bundle(
@@ -291,7 +312,7 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
             verify_bundle(version_path, manifest)
         except BootstrapInstallError as exc:
             raise BootstrapInstallError("INSTALLED_VERSION_INVALID", str(exc)) from exc
-        progress_path.unlink(missing_ok=True)
+        _remove_progress(progress_path)
     else:
         staging = versions / f".{manifest.version}.staging"
         if _is_link(staging):
@@ -332,7 +353,16 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
             if not completed.issubset(expected_paths):
                 raise BootstrapInstallError("RESUME_STATE_INVALID", "resume state contains an unrecognized artifact path")
 
-        def save_progress(done: set[str], *, status: str = "staging", error: str | None = None) -> None:
+        last_progress_count = 0
+        last_progress_at = 0.0
+
+        def save_progress(done: set[str], *, status: str = "staging", error: str | None = None, force: bool = False) -> None:
+            nonlocal last_progress_count, last_progress_at
+            now = time.monotonic()
+            if not force and status == "staging" and len(done) - last_progress_count < 64 and now - last_progress_at < 1.0:
+                return
+            # Bound attempts even while a reader keeps the old file open.
+            last_progress_count, last_progress_at = len(done), now
             payload: dict[str, Any] = {
                 "schema_version": STATE_SCHEMA_VERSION,
                 "status": status,
@@ -345,7 +375,7 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
                 payload["error"] = error[:4096]
             _write_progress(progress_path, payload)
 
-        save_progress(completed)
+        save_progress(completed, force=True)
         try:
             for partial in staging.rglob("*.partial"):
                 if _is_link(partial):
@@ -353,9 +383,10 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
                 if partial.is_file():
                     partial.unlink()
             _copy_bundle(root, staging, manifest, source_manifest_hash, completed, save_progress)
+            save_progress(completed, force=True)
             verify_bundle(staging, manifest)
             os.replace(staging, version_path)
-            progress_path.unlink(missing_ok=True)
+            _remove_progress(progress_path)
         except BaseException as exc:
             try:
                 save_progress(completed, status="failed", error=str(exc))

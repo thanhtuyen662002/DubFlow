@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tsc --noEmit && node scripts/build.mjs && esbuild src/main.ts --bundle --format=iife --outfile=dist/main.js",
     "dev": "vite --host 127.0.0.1 --port 1420",
-    "test": "node --experimental-strip-types test/queue.test.mjs",
+    "test": "node --experimental-strip-types test/queue.test.mjs && node --experimental-strip-types test/voices.test.mjs",
     "tauri:build": "tauri build --no-bundle --ci"
   },
   "dependencies": {
