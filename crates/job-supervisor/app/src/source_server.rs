@@ -352,9 +352,31 @@ fn reject_reparse(metadata: &fs::Metadata) -> Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(transparent)]
+struct SessionHeaders(std::collections::BTreeMap<String, String>);
+
+// Requests can appear in debug tooling; the capability must remain opaque.
+impl std::fmt::Debug for SessionHeaders {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[protected session headers redacted]")
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
+    SessionSave {
+        provider_id: String,
+        headers: SessionHeaders,
+        expires_at: u64,
+    },
+    SessionStatus {
+        provider_id: String,
+    },
+    SessionClear {
+        provider_id: String,
+    },
     StartVideo {
         scan_id: String,
         provider_id: String,
@@ -507,6 +529,15 @@ fn owned_supervisor(root: &Path, executable: &Path) -> Result<()> {
 #[derive(Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 enum Packet {
+    #[serde(rename = "source-session")]
+    Session {
+        schema_version: u32,
+        job_id: String,
+        stage_id: String,
+        provider_id: String,
+        operation: String,
+        state: String,
+    },
     #[serde(rename = "source-ready")]
     Ready {
         schema_version: u32,
@@ -1013,8 +1044,31 @@ fn launch_in_work(runtime: &Runtime, spec: Spec, selected_work: Option<PathBuf>)
     if !work.starts_with(&runtime.data) {
         return Err(invalid());
     }
-    let mut command = owned_worker_command(runtime);
-    let mut child = command.spawn()?;
+    let (child, events) = spawn_owned_worker(runtime)?;
+    let mut active = Active {
+        spec,
+        work,
+        child,
+        events,
+        validator: StreamValidator::new(35000, 0)?,
+        sequence: 1,
+        original: None,
+        last_seen: Instant::now(),
+        download: None,
+    };
+    let mut preparation = json!({"bundle_root":super::external_runtime_path(runtime.root.clone()), "work_root":super::external_runtime_path(active.work.clone()), "data_root":super::external_runtime_path(runtime.data.clone()), "manifest_sha256":runtime.manifest_hash, "provider_id":active.spec.provider, "source_ref":active.spec.reference, "page_size":active.spec.page_size});
+    if active.spec.single_video {
+        preparation["source_mode"] = json!("video");
+    }
+    active.send(Payload::Command {
+        command: "source_prepare".into(),
+        args_json: serde_json::to_string(&preparation)?,
+    })?;
+    Ok(active)
+}
+
+fn spawn_owned_worker(runtime: &Runtime) -> Result<(Child, Receiver<Wire>)> {
+    let mut child = owned_worker_command(runtime).spawn()?;
     let stdout = child.stdout.take().ok_or_else(invalid)?;
     let stderr = child.stderr.take().ok_or_else(invalid)?;
     let (tx, events) = mpsc::sync_channel(16);
@@ -1037,26 +1091,7 @@ fn launch_in_work(runtime: &Runtime, spec: Spec, selected_work: Option<PathBuf>)
     thread::spawn(move || {
         let _ = io::copy(&mut BufReader::new(stderr), &mut io::sink());
     });
-    let mut active = Active {
-        spec,
-        work,
-        child,
-        events,
-        validator: StreamValidator::new(35000, 0)?,
-        sequence: 1,
-        original: None,
-        last_seen: Instant::now(),
-        download: None,
-    };
-    let mut preparation = json!({"bundle_root":super::external_runtime_path(runtime.root.clone()), "work_root":super::external_runtime_path(active.work.clone()), "manifest_sha256":runtime.manifest_hash, "provider_id":active.spec.provider, "source_ref":active.spec.reference, "page_size":active.spec.page_size});
-    if active.spec.single_video {
-        preparation["source_mode"] = json!("video");
-    }
-    active.send(Payload::Command {
-        command: "source_prepare".into(),
-        args_json: serde_json::to_string(&preparation)?,
-    })?;
-    Ok(active)
+    Ok((child, events))
 }
 
 fn owned_worker_command(runtime: &Runtime) -> Command {
@@ -1096,10 +1131,206 @@ fn scan_value(record: &ScanRecord) -> Value {
         "discovered_count":record.discovered_count, "completed_count":record.completed_count, "failed_count":record.failed_count})
 }
 
+struct SessionActive {
+    id: String,
+    provider: String,
+    operation: String,
+    work: PathBuf,
+    child: Child,
+    events: Receiver<Wire>,
+    validator: StreamValidator,
+    started: Instant,
+    last_seen: Instant,
+    completed_at: Option<Instant>,
+    receipt: Option<Value>,
+}
+
+impl SessionActive {
+    fn launch(
+        runtime: &Runtime,
+        provider: String,
+        operation: &str,
+        headers: Option<SessionHeaders>,
+        expires_at: Option<u64>,
+    ) -> Result<Self> {
+        if !["bilibili", "douyin"].contains(&provider.as_str())
+            || !["save", "status", "clear"].contains(&operation)
+            || (operation == "save") != (headers.is_some() && expires_at.is_some())
+            || (operation != "save" && (headers.is_some() || expires_at.is_some()))
+        {
+            return Err(invalid());
+        }
+        if let Some(values) = headers.as_ref() {
+            let now = super::now_ms() / 1000;
+            let expiry = expires_at.ok_or_else(invalid)?;
+            if values.0.len() != 1 || expiry <= now || expiry > now.saturating_add(86400) {
+                return Err(invalid());
+            }
+            let (name, value) = values.0.iter().next().ok_or_else(invalid)?;
+            if !name.eq_ignore_ascii_case("cookie")
+                || value.is_empty()
+                || 6 + value.len() > 2048
+                || !value.bytes().all(|b| (32..=126).contains(&b))
+            {
+                return Err(invalid());
+            }
+        }
+        let id = format!(
+            "session-{}-{}",
+            std::process::id(),
+            super::ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let work = runtime
+            .data
+            .join("source-work/session-operations")
+            .join(&id);
+        reject_links(&work)?;
+        fs::create_dir_all(&work)?;
+        reject_links(&work)?;
+        let work = work.canonicalize()?;
+        if !work.starts_with(&runtime.data) {
+            return Err(invalid());
+        }
+        let (child, events) = spawn_owned_worker(runtime)?;
+        let mut active = Self {
+            id,
+            provider,
+            operation: operation.into(),
+            work,
+            child,
+            events,
+            validator: StreamValidator::new(35000, 0)?,
+            started: Instant::now(),
+            last_seen: Instant::now(),
+            completed_at: None,
+            receipt: None,
+        };
+        let mut args = json!({"bundle_root":super::external_runtime_path(runtime.root.clone()),
+            "work_root":super::external_runtime_path(active.work.clone()),
+            "data_root":super::external_runtime_path(runtime.data.clone()),
+            "manifest_sha256":runtime.manifest_hash, "provider_id":active.provider,
+            "operation":operation});
+        if let Some(headers) = headers {
+            args["headers"] = serde_json::to_value(headers)?;
+            args["expires_at"] = json!(expires_at.ok_or_else(invalid)?);
+        }
+        let envelope = Envelope::new(
+            MessageType::Command,
+            "native-session-1",
+            &active.id,
+            STAGE,
+            1,
+            Payload::Command {
+                command: "source_session".into(),
+                args_json: serde_json::to_string(&args)?,
+            },
+        )?;
+        let stdin = active.child.stdin.as_mut().ok_or_else(invalid)?;
+        stdin.write_all(&envelope.to_line()?)?;
+        stdin.flush()?;
+        Ok(active)
+    }
+
+    fn observe(&mut self, wire: Wire) -> Result<Option<String>> {
+        if matches!(&wire, Wire::Closed) && self.completed_at.is_some() {
+            return Ok(None);
+        }
+        let envelope = match wire {
+            Wire::Message(value) => value,
+            _ => return Err(invalid()),
+        };
+        self.validator.accept(&envelope)?;
+        if envelope.job_id != self.id || envelope.stage_id != STAGE {
+            return Err(invalid());
+        }
+        match envelope.payload {
+            Payload::Heartbeat { .. } if self.completed_at.is_none() => (),
+            Payload::Checkpoint {
+                checkpoint_id,
+                reusable: true,
+                artifact_hash: Some(hash),
+            } if self.receipt.is_none() && self.completed_at.is_none() => {
+                let (schema, job, stage, provider, operation, state) =
+                    match packet(&self.work, &checkpoint_id, &hash)? {
+                        Packet::Session {
+                            schema_version,
+                            job_id,
+                            stage_id,
+                            provider_id,
+                            operation,
+                            state,
+                        } => (
+                            schema_version,
+                            job_id,
+                            stage_id,
+                            provider_id,
+                            operation,
+                            state,
+                        ),
+                        _ => return Err(invalid()),
+                    };
+                let allowed = match self.operation.as_str() {
+                    "save" => state == "ready",
+                    "clear" => state == "missing",
+                    "status" => {
+                        ["ready", "missing", "expired_or_unavailable"].contains(&state.as_str())
+                    }
+                    _ => false,
+                };
+                if schema != 1
+                    || job != self.id
+                    || stage != STAGE
+                    || provider != self.provider
+                    || operation != self.operation
+                    || !allowed
+                {
+                    return Err(invalid());
+                }
+                self.receipt = Some(json!({"event":"source_session", "provider_id":provider,
+                                         "operation":operation, "state":state}));
+                fs::remove_file(self.work.join(checkpoint_id))?;
+            }
+            Payload::Shutdown {
+                status: ShutdownStatus::Completed,
+            } if self.receipt.is_some() && self.completed_at.is_none() => {
+                self.child.stdin.take();
+                self.completed_at = Some(Instant::now());
+            }
+            Payload::Failure { code, .. }
+                if self.completed_at.is_none()
+                    && [
+                        "AUTH_REQUIRED",
+                        "INVALID_INPUT",
+                        "CHECKPOINT_INVALID",
+                        "UNSUPPORTED",
+                        "SOURCE_WORKER_FAILED",
+                        "SOURCE_WORKER_REQUEST_INVALID",
+                    ]
+                    .contains(&code.as_str()) =>
+            {
+                return Ok(Some(code));
+            }
+            _ => return Err(invalid()),
+        }
+        self.last_seen = Instant::now();
+        Ok(None)
+    }
+}
+
+impl Drop for SessionActive {
+    fn drop(&mut self) {
+        self.child.stdin.take();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = fs::remove_dir(&self.work);
+    }
+}
+
 struct Server {
     runtime: Runtime,
     queue: SourceQueue,
     active: Option<Active>,
+    session: Option<SessionActive>,
     _owner: SourceOwner,
 }
 impl Server {
@@ -1124,6 +1355,7 @@ impl Server {
             runtime,
             queue,
             active: None,
+            session: None,
             _owner: owner,
         })
     }
@@ -1264,7 +1496,21 @@ impl Server {
         Ok(scan_value(&record))
     }
     fn request(&mut self, request: Request) -> Result<(Value, bool)> {
+        if self.session.is_some() && !matches!(&request, Request::Shutdown) {
+            return Err(invalid());
+        }
         let value = match request {
+            Request::SessionSave {
+                provider_id,
+                headers,
+                expires_at,
+            } => self.start_session(provider_id, "save", Some(headers), Some(expires_at))?,
+            Request::SessionStatus { provider_id } => {
+                self.start_session(provider_id, "status", None, None)?
+            }
+            Request::SessionClear { provider_id } => {
+                self.start_session(provider_id, "clear", None, None)?
+            }
             Request::StartVideo {
                 scan_id,
                 provider_id,
@@ -1378,6 +1624,7 @@ impl Server {
         Ok((value, false))
     }
     fn shutdown(&mut self) -> Result<()> {
+        self.session.take();
         if self.active.as_ref().is_some_and(|a| a.download.is_some()) {
             let id = self.active.as_ref().ok_or_else(invalid)?.spec.id.clone();
             self.halt_download(&id, false)?;
@@ -1392,6 +1639,63 @@ impl Server {
             active.stop()?;
         }
         Ok(())
+    }
+    fn start_session(
+        &mut self,
+        provider: String,
+        operation: &str,
+        headers: Option<SessionHeaders>,
+        expires_at: Option<u64>,
+    ) -> Result<Value> {
+        if self.active.is_some() || self.session.is_some() {
+            return Err(invalid());
+        }
+        let value = json!({"event":"source_session_preparing", "provider_id":provider,
+                          "operation":operation});
+        self.session = Some(SessionActive::launch(
+            &self.runtime,
+            provider,
+            operation,
+            headers,
+            expires_at,
+        )?);
+        Ok(value)
+    }
+    fn fail_session(&mut self, code: &str) -> Value {
+        let provider = self.session.as_ref().map(|s| s.provider.clone());
+        let operation = self.session.as_ref().map(|s| s.operation.clone());
+        self.session.take();
+        json!({"event":"source_session_error", "provider_id":provider, "operation":operation,
+               "code":code, "retryable":false, "automatic_retry":false})
+    }
+    fn poll_session(&mut self) -> Result<Option<Value>> {
+        let Some(active) = self.session.as_mut() else {
+            return Ok(None);
+        };
+        if let Ok(wire) = active.events.try_recv() {
+            if let Some(code) = active.observe(wire)? {
+                return Ok(Some(self.fail_session(&code)));
+            }
+        }
+        if active.last_seen.elapsed() > Duration::from_secs(35)
+            || active.started.elapsed() > Duration::from_secs(180)
+        {
+            return Err(invalid());
+        }
+        if let Some(completed) = active.completed_at {
+            if let Some(status) = active.child.try_wait()? {
+                if !status.success() {
+                    return Err(invalid());
+                }
+                let value = active.receipt.take().ok_or_else(invalid)?;
+                self.session.take();
+                return Ok(Some(value));
+            }
+            if completed.elapsed() > Duration::from_secs(3) {
+                return Err(invalid());
+            }
+        }
+        Ok(None)
     }
     fn download_packet(&mut self, document: Packet, packet_file: String) -> Result<Option<Value>> {
         let active = self.active.as_mut().ok_or_else(invalid)?;
@@ -1919,6 +2223,14 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
                 super::emit_value(&mut output, value)?;
             }
         }
+        match server.poll_session() {
+            Ok(Some(value)) => super::emit_value(&mut output, value)?,
+            Ok(None) => (),
+            Err(_) => {
+                let value = server.fail_session("SOURCE_SESSION_STOPPED");
+                super::emit_value(&mut output, value)?;
+            }
+        }
         if server
             .active
             .as_ref()
@@ -1979,6 +2291,27 @@ mod tests {
 first=json.loads(sys.stdin.buffer.readline())
 args=first['payload']['args']; work=pathlib.Path(args['work_root'])
 require_eof=pathlib.Path(__file__).with_name('require-native-eof').exists()
+if first['payload']['command']=='source_session':
+ mode_path=pathlib.Path(__file__).with_name('session-mode')
+ mode=mode_path.read_text() if mode_path.exists() else 'complete'
+ sequence=0
+ def session_emit(kind,payload):
+  global sequence
+  sequence+=1
+  sys.stdout.buffer.write((json.dumps({'schema_version':1,'message_type':kind,'message_id':'session-'+str(sequence),'job_id':first['job_id'],'stage_id':'source-enumeration','sequence':sequence,'payload':payload})+'\n').encode());sys.stdout.buffer.flush()
+ if mode=='auth-failed':
+  session_emit('failure',{'code':'AUTH_REQUIRED','retryable':False,'attempt':1,'condition':'opaque auth condition'})
+  session_emit('shutdown',{'status':'failed'});sys.exit(2)
+ if mode!='no-packet':
+  value={'schema_version':1,'kind':'source-session','job_id':first['job_id'],'stage_id':'source-enumeration','provider_id':args['provider_id'],'operation':args['operation'],'state':'ready' if args['operation']=='save' else 'missing'}
+  if mode=='foreign-provider':value['provider_id']='generic'
+  if mode=='extra-headers':value['headers']={'Cookie':'must-be-rejected'}
+  raw=json.dumps(value).encode();name='source-packet-'+uuid.uuid4().hex+'.json';(work/name).write_bytes(raw)
+  session_emit('checkpoint',{'checkpoint_id':name,'artifact_hash':'sha256:'+hashlib.sha256(raw).hexdigest(),'reusable':True})
+ session_emit('shutdown',{'status':'completed'})
+ assert sys.stdin.buffer.read()==b''
+ if mode=='no-exit':time.sleep(30)
+ sys.exit(2 if mode=='bad-exit' else 0)
 producer={'recipe':'owned-source-page-worker-v1','source_contract_version':1,'manifest_sha256':args['manifest_sha256'],'source_sha':'b'*40,'release_version':'0.1.0-test','provider_id':args['provider_id'],'source_ref':args['source_ref'],'page_size':args['page_size']}
 single_video=args.get('source_mode')=='video'
 if single_video:producer.update(recipe='owned-source-page-worker-v2',source_mode='video')
@@ -2041,6 +2374,165 @@ while True:
                 .to_string_lossy()
                 .starts_with("dubflow-source-native-"));
             fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    fn pump_session(server: &mut Server) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            match server.poll_session() {
+                Ok(Some(value)) => return value,
+                Err(_) => return server.fail_session("SOURCE_SESSION_STOPPED"),
+                Ok(None) => (),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "recorded session worker did not retire"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn native_session_requests_redact_cookie_and_refuse_unknown_fields() {
+        let request: Request = serde_json::from_value(json!({"command":"session_save",
+            "provider_id":"bilibili", "headers":{"Cookie":"sid=private-fixture"},
+            "expires_at":123}))
+        .unwrap();
+        assert!(!format!("{request:?}").contains("private-fixture"));
+        for value in [
+            json!({"command":"session_status", "provider_id":"bilibili", "headers":{"Cookie":"private"}}),
+            json!({"command":"session_clear", "provider_id":"bilibili", "path":"arbitrary"}),
+            json!({"command":"session_save", "provider_id":"bilibili", "headers":{"Cookie":"private"}, "expires_at":-1}),
+        ] {
+            assert!(serde_json::from_value::<Request>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn native_session_refuses_generic_malformed_expiry_and_header_before_launch() {
+        let temp = Temporary::new();
+        let runtime = temp.runtime(); // No runnable interpreter: refusal precedes spawn.
+        let mut server = Server::open(runtime).unwrap();
+        assert!(server
+            .request(Request::SessionStatus {
+                provider_id: "generic".into()
+            })
+            .is_err());
+        for (header, value, expiry) in [
+            (
+                "Authorization",
+                "private",
+                super::super::now_ms() / 1000 + 3600,
+            ),
+            (
+                "Cookie",
+                "sid=private\n",
+                super::super::now_ms() / 1000 + 3600,
+            ),
+            ("Cookie", "sid=private", 1),
+            ("Cookie", "sid=private", u64::MAX),
+        ] {
+            let headers = SessionHeaders([(header.into(), value.into())].into_iter().collect());
+            assert!(server
+                .request(Request::SessionSave {
+                    provider_id: "bilibili".into(),
+                    headers,
+                    expires_at: expiry
+                })
+                .is_err());
+        }
+        assert!(server.session.is_none());
+        assert!(!server.runtime.data.join("control/source-sessions").exists());
+    }
+
+    #[test]
+    fn native_recorded_session_waits_for_successful_exit_and_excludes_active_source_work() {
+        let temp = Temporary::new();
+        let mut server = Server::open(temp.recorded_runtime()).unwrap();
+        let headers = SessionHeaders(
+            [("Cookie".into(), "sid=private-fixture".into())]
+                .into_iter()
+                .collect(),
+        );
+        server
+            .request(Request::SessionSave {
+                provider_id: "bilibili".into(),
+                headers,
+                expires_at: super::super::now_ms() / 1000 + 3600,
+            })
+            .unwrap();
+        assert!(server
+            .request(Request::StartVideo {
+                scan_id: "scan".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/one".into()
+            })
+            .is_err());
+        assert!(server
+            .request(Request::SessionClear {
+                provider_id: "bilibili".into()
+            })
+            .is_err());
+        assert_eq!(
+            pump_session(&mut server),
+            json!({"event":"source_session", "provider_id":"bilibili", "operation":"save", "state":"ready"})
+        );
+        assert!(server.session.is_none());
+        assert!(server.queue.scan("scan").is_err());
+        server
+            .request(Request::StartVideo {
+                scan_id: "scan".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/one".into(),
+            })
+            .unwrap();
+        assert!(server
+            .request(Request::SessionClear {
+                provider_id: "bilibili".into()
+            })
+            .is_err());
+        server.shutdown().unwrap();
+    }
+
+    #[test]
+    fn native_recorded_session_rejects_bad_packets_exit_and_unbounded_retirement() {
+        for mode in [
+            "no-packet",
+            "foreign-provider",
+            "extra-headers",
+            "bad-exit",
+            "no-exit",
+            "auth-failed",
+        ] {
+            let temp = Temporary::new();
+            let runtime = temp.recorded_runtime();
+            fs::write(runtime.worker.with_file_name("session-mode"), mode).unwrap();
+            let mut server = Server::open(runtime).unwrap();
+            server
+                .request(Request::SessionStatus {
+                    provider_id: "douyin".into(),
+                })
+                .unwrap();
+            let value = pump_session(&mut server);
+            assert_eq!(value["event"], "source_session_error", "{mode}");
+            assert_eq!(
+                value["code"],
+                if mode == "auth-failed" {
+                    "AUTH_REQUIRED"
+                } else {
+                    "SOURCE_SESSION_STOPPED"
+                }
+            );
+            assert!(server.session.is_none());
+            assert!(!value.to_string().contains("must-be-rejected"));
+            fs::remove_file(server.runtime.worker.with_file_name("session-mode")).unwrap();
+            server
+                .request(Request::SessionClear {
+                    provider_id: "douyin".into(),
+                })
+                .unwrap();
+            assert_eq!(pump_session(&mut server)["state"], "missing");
         }
     }
     fn producer() -> Producer {

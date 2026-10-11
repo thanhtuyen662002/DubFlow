@@ -15,6 +15,10 @@ from packaging.release.bootstrap import verify_bundle
 from packaging.release.manifest import ReleaseManifest
 from engine.dubflow.download.runtime import BUNDLE_HELPER, BUNDLE_PROFILE, provider_from_verified_bundle, source_runtime_health
 
+SESSION_CASES = ["native_save_both_providers", "native_owner_reopen", "owned_factory_capability",
+                 "provider_entropy_refusal", "ciphertext_tamper_refusal", "native_clear_both_providers",
+                 "generic_session_refusal", "malformed_session_refusal", "plaintext_absent"]
+
 
 def qualify_sdk_pages(*args, **kwargs):
     path = Path(__file__).resolve().parents[2] / "tests/source_adapter/qualify_sdk_pages.py"
@@ -22,6 +26,14 @@ def qualify_sdk_pages(*args, **kwargs):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.qualify_sdk_pages(*args, **kwargs)
+
+
+def qualify_source_sessions(*args, **kwargs):
+    path = Path(__file__).with_name("source_session_smoke.py")
+    spec = importlib.util.spec_from_file_location("source_session_qualification", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.qualify_source_sessions(*args, **kwargs)
 
 
 def qualify(root: Path, expected_source_sha: str) -> dict:
@@ -66,10 +78,22 @@ def qualify(root: Path, expected_source_sha: str) -> dict:
             or pages.get("generic_missing_identity", {}).get("status") != "passed"
             or Path(pages["python"]).resolve() != (root / "runtime/python.exe").resolve()):
         raise ValueError("SDK page qualification did not run in the owned interpreter")
+    manifest_hash = hashlib.sha256(raw).hexdigest()
+    sessions = qualify_source_sessions(root, manifest_hash, expected_source_sha)
+    if (sessions.get("status") != "passed"
+            or sessions.get("scope") != "native-windows-protected-session-boundary"
+            or sessions.get("source_sha") != expected_source_sha
+            or sessions.get("manifest_sha256") != manifest_hash
+            or sessions.get("supervisor_sha256") != inventory["app/bin/dubflow-supervisor.exe"].sha256
+            or sessions.get("synthetic_credentials_only") is not True
+            or type(sessions.get("network_requests")) is not int or sessions["network_requests"] != 0
+            or sessions.get("cases") != SESSION_CASES):
+        raise ValueError("native protected-session qualification is incomplete")
     return {"schema_version": 1, "source_sha": manifest.source_sha, "version": manifest.version,
             "release_channel": manifest.release_channel, "manifest_sha256": hashlib.sha256(raw).hexdigest(),
             "scope": "source-sdk-runtime-health", "verified_release_tree": True, "health": health,
             "offline_sdk_pages": pages,
+            "native_protected_sessions": sessions,
             "generic_factory": {"status": "passed", "provider_id": generic.provider_id,
                                 "python": str(native.python), "producer_pins": native.pins},
             "live_source_acquisition": "not_run", "browser_session": "not_run",

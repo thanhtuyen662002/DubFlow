@@ -32,6 +32,7 @@ from packaging.release.bootstrap import verify_bundle
 from packaging.release.manifest import ReleaseManifest
 from engine.dubflow.download.materializer import DownloadResult, MAX_DOWNLOAD_BYTES, _reject_links
 from engine.dubflow.download.runtime import provider_from_verified_bundle
+from engine.dubflow.download.sessions import ProtectedSessionBridge, PROVIDERS
 from engine.dubflow.download.source_adapter import SOURCE_CONTRACT_VERSION, SourceError, SourceErrorCode, SourceItem, SourcePage
 from engine.dubflow.download.generic.sdk import source_url
 from engine.dubflow.download.enumeration.sdk import channel_url
@@ -92,6 +93,98 @@ def _public_reference(value: str) -> str:
     return url
 
 
+def _verified_runtime(args: dict) -> tuple[Path, Path, ReleaseManifest, str]:
+    root, work = _absolute(args["bundle_root"]), _absolute(args["work_root"])
+    if work == root or root in work.parents:
+        raise _invalid()
+    _owned_interpreter(root)
+    manifest_path = root / "release-manifest.json"
+    _reject_links(manifest_path)
+    with manifest_path.open("rb") as stream:
+        raw = stream.read(MAX_MANIFEST + 1)
+    manifest_hash = _digest(args["manifest_sha256"])
+    if len(raw) > MAX_MANIFEST or sha256(raw).hexdigest() != manifest_hash:
+        raise SourceError(SourceErrorCode.CHECKPOINT_INVALID, "source release manifest differs from admission pins", action="repair_runtime")
+    manifest = ReleaseManifest.from_mapping(json.loads(raw))
+    verify_bundle(root, manifest)
+    return root, work, manifest, manifest_hash
+
+
+def _session_root(args: dict, root: Path, work: Path) -> Path:
+    # The native owner admits data_root; no caller-selected credential filename.
+    data = _absolute(args["data_root"])
+    if data == root or root in data.parents or data == work or data not in work.parents:
+        raise _invalid()
+    protected = data / "control/source-sessions"
+    if protected == root or root in protected.parents:
+        raise _invalid()
+    _reject_links(protected)
+    return protected
+
+
+def _publish(work: Path, document: dict, job_id: str) -> tuple[str, str]:
+    raw = json.dumps({**document, "job_id": job_id, "stage_id": STAGE_ID},
+        sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode()
+    if len(raw) > MAX_PACKET:
+        raise SourceError(SourceErrorCode.UNSUPPORTED, "source packet exceeds its budget")
+    _reject_links(work)
+    filename = "source-packet-" + uuid.uuid4().hex + ".json"
+    target = work / filename
+    temporary = target.with_suffix(".partial")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if target.exists():
+            raise SourceError(SourceErrorCode.CHECKPOINT_INVALID, "source packet identity already exists")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return filename, "sha256:" + sha256(raw).hexdigest()
+
+
+class SessionOperation:
+    """One private protected-session operation, with no queue/database handle."""
+
+    def __init__(self, args: dict):
+        expected = {"bundle_root", "work_root", "data_root", "manifest_sha256", "provider_id", "operation"}
+        if isinstance(args, dict) and args.get("operation") == "save":
+            expected |= {"headers", "expires_at"}
+        _keys(args, expected)
+        provider, operation = args["provider_id"], args["operation"]
+        if (not isinstance(provider, str) or provider not in PROVIDERS
+                or not isinstance(operation, str) or operation not in {"save", "status", "clear"}):
+            raise _invalid()
+        root, work, _, _ = _verified_runtime(args)
+        self.work = work
+        protected = _session_root(args, root, work)
+        bridge = ProtectedSessionBridge(protected)
+        if operation == "save":
+            bridge.save(provider, args["headers"], expires_at=args["expires_at"])
+            state = "ready"
+        elif operation == "clear":
+            bridge.clear(provider)
+            state = "missing"
+        else:
+            path = protected / (provider + ".session.json")
+            _reject_links(path)
+            state = "missing"
+            if path.exists():
+                try:
+                    bridge.get_opaque_headers(provider)
+                    state = "ready"
+                except SourceError as error:
+                    if error.code is not SourceErrorCode.AUTH_REQUIRED:
+                        raise
+                    state = "expired_or_unavailable"
+        self.document = {"schema_version": 1, "kind": "source-session", "provider_id": provider,
+                         "operation": operation, "state": state}
+
+    def publish(self, job_id: str) -> tuple[str, str]:
+        return _publish(self.work, self.document, job_id)
+
+
 class SourceSession:
     """Verify once at admission; each page keeps this exact producer/request.
 
@@ -102,7 +195,10 @@ class SourceSession:
 
     def __init__(self, args: dict):
         self.single_video = isinstance(args, dict) and "source_mode" in args
-        _keys(args, _PREPARE | {"source_mode"} if self.single_video else _PREPARE)
+        expected = _PREPARE | ({"source_mode"} if self.single_video else set())
+        if isinstance(args, dict) and "data_root" in args:
+            expected |= {"data_root"}
+        _keys(args, expected)
         if self.single_video and args["source_mode"] != "video":
             raise _invalid()
         provider = args["provider_id"]
@@ -113,21 +209,21 @@ class SourceSession:
         if self.single_video and args["page_size"] != 1:
             raise _invalid()
         reference = _public_reference(args["source_ref"]) if provider == "generic" or self.single_video else channel_url(provider, args["source_ref"])
-        root, work = _absolute(args["bundle_root"]), _absolute(args["work_root"])
-        if work == root or root in work.parents:
-            raise _invalid()
-        _owned_interpreter(root)
-        manifest_path = root / "release-manifest.json"
-        _reject_links(manifest_path)
-        with manifest_path.open("rb") as stream:
-            raw = stream.read(MAX_MANIFEST + 1)
-        manifest_hash = _digest(args["manifest_sha256"])
-        if len(raw) > MAX_MANIFEST or sha256(raw).hexdigest() != manifest_hash:
-            raise SourceError(SourceErrorCode.CHECKPOINT_INVALID, "source release manifest differs from admission pins", action="repair_runtime")
-        manifest = ReleaseManifest.from_mapping(json.loads(raw))
-        verify_bundle(root, manifest)  # Signature policy, links, inventory equality and every file hash.
+        root, work, manifest, manifest_hash = _verified_runtime(args)
         artifacts = [item.to_dict() for item in manifest.artifacts]
-        self.adapter = provider_from_verified_bundle(root, artifacts=artifacts, provider_id=provider)
+        options = {}
+        if "data_root" in args:
+            protected = _session_root(args, root, work)
+            if provider in PROVIDERS:
+                record = protected / (provider + ".session.json")
+                _reject_links(record)
+                if record.exists():
+                    bridge = ProtectedSessionBridge(protected)
+                    # A stale saved session is an actionable auth condition;
+                    # never silently downgrade an explicit protected capability.
+                    bridge.get_opaque_headers(provider)
+                    options["session_bridge"] = bridge
+        self.adapter = provider_from_verified_bundle(root, artifacts=artifacts, provider_id=provider, **options)
         self.work_root, self.root = work, root
         self.provider, self.reference, self.page_size = provider, reference, args["page_size"]
         self.identity = {"recipe": "owned-source-page-worker-v2" if self.single_video else RECIPE, "source_contract_version": SOURCE_CONTRACT_VERSION,
@@ -249,25 +345,7 @@ class SourceSession:
             "resumed": result.resumed, "downloaded_bytes": observed[0], "total_bytes": observed[1]}
 
     def publish(self, document: dict, job_id: str) -> tuple[str, str]:
-        raw = json.dumps({**document, "job_id": job_id, "stage_id": STAGE_ID},
-            sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode()
-        if len(raw) > MAX_PACKET:
-            raise SourceError(SourceErrorCode.UNSUPPORTED, "source page packet exceeds its budget")
-        _reject_links(self.work_root)
-        filename = "source-packet-" + uuid.uuid4().hex + ".json"
-        target = self.work_root / filename
-        temporary = target.with_suffix(".partial")
-        try:
-            with temporary.open("xb") as stream:
-                stream.write(raw)
-                stream.flush()
-                os.fsync(stream.fileno())
-            if target.exists():
-                raise SourceError(SourceErrorCode.CHECKPOINT_INVALID, "source packet identity already exists")
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return filename, "sha256:" + sha256(raw).hexdigest()
+        return _publish(self.work_root, document, job_id)
 
 
 class _Emitter:
@@ -324,7 +402,7 @@ def main() -> int:
     controls = None
     try:
         first = _request(stdin.readline(MAX_LINE_BYTES + 1), validator)
-        if first.message_type is not MessageType.COMMAND or first.payload["command"] != "source_prepare":
+        if first.message_type is not MessageType.COMMAND or first.payload["command"] not in {"source_prepare", "source_session"}:
             raise _invalid()
         emitter = _Emitter(first.job_id, stdout)
         pending = queue.Queue(maxsize=4)
@@ -348,7 +426,7 @@ def main() -> int:
                             "reusable": True})
                         emitter.send(MessageType.SHUTDOWN, {"status": "cancelled"})
                         os._exit(0)
-                    if request.payload["command"] not in {"source_page", "source_download"}:
+                    if first.payload["command"] == "source_session" or request.payload["command"] not in {"source_page", "source_download"}:
                         raise _invalid()
                     pending.put_nowait(request)
             except Exception:
@@ -358,6 +436,11 @@ def main() -> int:
         controls = threading.Thread(target=read_controls, daemon=True)
         controls.start()
         threading.Thread(target=emitter.heartbeat, daemon=True).start()
+        if first.payload["command"] == "source_session":
+            operation = SessionOperation(first.payload["args"])
+            emitter.checkpoint(operation.publish(first.job_id))
+            emitter.send(MessageType.SHUTDOWN, {"status": "completed"})
+            return 0
         session = SourceSession(first.payload["args"])
         emitter.checkpoint(session.publish(session.ready(), first.job_id))
         while not emitter.finished.is_set():

@@ -2,6 +2,58 @@
 
 Status: Accepted
 
+## Native protected-session capability
+
+`source-serve` now admits additive `session_save`, `session_status` and
+`session_clear` requests for Bilibili and Douyin. The native lifetime OS owner
+serializes these operations with enumeration/materialization. An active source
+producer refuses session operations; a session operation refuses further work
+until it completes, while shutdown remains available. Generic acquisition is
+anonymous. Cookie headers are bounded to 2048 printable ASCII bytes and enter
+the isolated inventory-verified owned worker only through private stdin.
+Request debug formatting redacts them; argv, producer identity, SQLite, packets
+and public events never receive plaintext. No browser credentials are extracted
+by this boundary; the authorized host supplies the opaque headers.
+
+The worker derives `control/source-sessions` from the admitted external data
+root and rejects linked paths or work outside that root. It reuses current-user
+DPAPI and provider entropy from the existing session adapter, with maximum
+24-hour expiry. Status is only `ready`, `missing` or `expired_or_unavailable`.
+The private version-1 session packet contains provider/operation/state and the
+existing job/stage binding. Native validation requires one hash-bound packet,
+matching fields, a completed terminal envelope and observed process exit 0
+before exposing success. Heartbeat loss, a 180-second operation deadline,
+unexpected packets and a worker that does not retire within three seconds
+produce redacted failures. Parent EOF/shutdown closes or kills only this owned
+worker; the database ownership handle remains held until retirement.
+
+Source preparation accepts an optional admitted `data_root` capability. An
+existing provider record is decrypted/validated before the verified factory
+receives its bridge. Missing records preserve anonymous public acquisition;
+tampered/expired/unavailable records raise actionable `AUTH_REQUIRED` rather
+than silently bypassing the supplied capability. Factory/adapter credentials
+remain outside the unchanged source producer recipes and fingerprints.
+Credential updates do not authorize automatic retry of failed queue items.
+
+Compatibility: source contract 1, worker envelope 1, producer recipes 1/2,
+admission artifacts and SQLite schema 2 remain unchanged. These private
+commands and the optional preparation field are additive only within a pinned
+matching supervisor/worker release. Older native releases reject the new
+requests and keep their existing anonymous behavior; do not send the new
+preparation field to an older worker. Rollback retains original runtime pins,
+scans, admissions and encrypted records. No migration, repinning or ciphertext
+rewrite is performed, and rolling back must not downgrade protected acquisition
+of a newly admitted job to another producer.
+
+Deterministic tests cover capability containment/redaction, generic refusal,
+unavailable sessions, active-work exclusion, malformed private packets,
+nonzero exit and bounded retirement. Windows Release's existing staged and
+installed SDK reports additionally require actual native save/reopen/status/
+clear, actual owned factory decryption, provider-entropy and tamper refusal,
+and plaintext absence using synthetic QA-only cookies without network access.
+These proofs do not qualify browser capture, live authenticated providers, the
+desktop login flow or full source/product acceptance.
+
 ## Explicit single-video admission and producer recipe 2
 
 Native `start_video` admits one public generic, Bilibili or Douyin video URL.

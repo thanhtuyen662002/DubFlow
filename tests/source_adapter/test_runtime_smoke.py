@@ -25,6 +25,7 @@ def manifest():
     return ReleaseManifest("0.1.0-source-smoke", "a" * 40, "3.12.10", "v1", "windows", "x86_64",
                            "2026-10-08T00:00:00Z", "candidate", False, "none", "none", "",
                            (ReleaseArtifact("recorded", "runtime/python.exe", 1, "0" * 64),
+                            ReleaseArtifact("supervisor", "app/bin/dubflow-supervisor.exe", 1, "d" * 64),
                             ReleaseArtifact("helper", smoke.BUNDLE_HELPER, 1, "b" * 64),
                             ReleaseArtifact("descriptor", smoke.BUNDLE_PROFILE, len(PROFILE_BYTES), PROFILE_SHA),
                             ReleaseArtifact("sdk", "runtime/source/" + PROFILE["filename"], 1, "c" * 64)))
@@ -56,6 +57,28 @@ def generic_factory(root):
 
 
 class RuntimeSmokeTests(unittest.TestCase):
+    def setUp(self):
+        def session_report(root, manifest_hash, source_sha):
+            return {"status": "passed", "scope": "native-windows-protected-session-boundary",
+                    "source_sha": source_sha, "manifest_sha256": manifest_hash,
+                    "supervisor_sha256": "d" * 64,
+                    "synthetic_credentials_only": True, "network_requests": 0,
+                    "cases": list(smoke.SESSION_CASES)}
+        patcher = patch.object(smoke, "qualify_source_sessions", side_effect=session_report)
+        self.sessions = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_native_session_failure_or_wrong_binding_cannot_pass_runtime_report(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prepare(root)
+            for result in ({"status": "failed"}, {"status": "passed", "source_sha": "b" * 40}):
+                self.sessions.side_effect = None
+                self.sessions.return_value = result
+                with self.subTest(result=result), patch.object(smoke, "verify_bundle"), patch.object(smoke, "source_runtime_health", return_value={"sdk_sha256": "c" * 64}), patch.object(smoke, "qualify_sdk_pages", return_value=page_report(root)), patch.object(smoke, "provider_from_verified_bundle", return_value=generic_factory(root)):
+                    with self.assertRaisesRegex(ValueError, "native protected-session"):
+                        smoke.qualify(root, "a" * 40)
+
     def test_wrong_source_or_failed_tree_verification_cannot_execute_sdk(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

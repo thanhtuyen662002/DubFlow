@@ -66,6 +66,122 @@ class SourceWorkerTests(unittest.TestCase):
             "identity_key": identity.identity_key, "source_id": identity.source_id,
             "source_url": identity.canonical_url, "resume": True, **changes}
 
+    def session_scope(self):
+        data = Path(self.directory.name) / "data"
+        work = data / "source-work/operation"
+        work.mkdir(parents=True)
+        protected = data / "control/source-sessions"
+        protected.mkdir(parents=True)
+        return data, work, protected
+
+    def test_saved_provider_capability_reaches_factory_without_identity_or_packet_credentials(self):
+        data, work, protected = self.session_scope()
+        (protected / "bilibili.session.json").write_text("recorded encrypted capability", encoding="utf-8")
+        with patch.object(worker, "ProtectedSessionBridge") as factory:
+            factory.return_value.get_opaque_headers.return_value = {"Cookie": "sid=private-fixture"}
+            session = self.session(provider_id="bilibili", source_ref="123", data_root=str(data), work_root=str(work))
+            factory.assert_called_once_with(protected.resolve())
+            self.assertIs(self.factory.call_args.kwargs["session_bridge"], factory.return_value)
+            anonymous = self.session(provider_id="bilibili", source_ref="123")
+            self.assertEqual(session.fingerprint, anonymous.fingerprint)
+            name, _ = session.publish(session.ready(), "scan")
+            raw = (work / name).read_bytes()
+            for excluded in (b"private-fixture", b"Cookie", str(data).encode(), str(protected).encode()):
+                self.assertNotIn(excluded, raw)
+
+    def test_missing_or_generic_sessions_remain_anonymous_but_saved_unavailable_session_refuses(self):
+        data, work, protected = self.session_scope()
+        with patch.object(worker, "ProtectedSessionBridge") as factory:
+            for provider, reference in (("generic", self.args["source_ref"]), ("douyin", "123")):
+                self.session(provider_id=provider, source_ref=reference, data_root=str(data), work_root=str(work))
+                self.assertNotIn("session_bridge", self.factory.call_args.kwargs)
+            (protected / "generic.session.json").write_text("must never be read")
+            self.session(data_root=str(data), work_root=str(work))
+            factory.assert_not_called()
+            (protected / "bilibili.session.json").write_text("tampered")
+            factory.return_value.get_opaque_headers.side_effect = SourceError(SourceErrorCode.AUTH_REQUIRED, "unavailable")
+            self.factory.reset_mock()
+            with self.assertRaises(SourceError) as failure:
+                self.session(provider_id="bilibili", source_ref="123", data_root=str(data), work_root=str(work))
+            self.assertEqual(failure.exception.code, SourceErrorCode.AUTH_REQUIRED)
+            self.factory.assert_not_called()
+
+    def test_session_capability_requires_admitted_data_and_contained_work_without_caller_filename(self):
+        data, work, _ = self.session_scope()
+        for changes in ({"data_root": str(self.root)}, {"data_root": str(work)},
+                        {"data_root": str(data), "work_root": str(self.work)},
+                        {"data_root": str(data), "session_root": str(data)},
+                        {"data_root": "relative"}):
+            with self.subTest(changes=changes), self.assertRaises(SourceError):
+                self.session(**changes)
+        self.factory.assert_not_called()
+
+    def test_session_operations_only_publish_nonsecret_state_and_refuse_extra_fields(self):
+        data, work, protected = self.session_scope()
+        args = {key: self.args[key] for key in ("bundle_root", "manifest_sha256")}
+        args.update(data_root=str(data), work_root=str(work), provider_id="bilibili", operation="save",
+                    headers={"Cookie": "sid=private-fixture"}, expires_at=123)
+        with patch.object(worker, "ProtectedSessionBridge") as factory:
+            saved = worker.SessionOperation(args)
+            factory.return_value.save.assert_called_once_with("bilibili", args["headers"], expires_at=123)
+            name, _ = saved.publish("session")
+            raw = (work / name).read_bytes()
+            self.assertEqual(json.loads(raw)["state"], "ready")
+            self.assertNotIn(b"private-fixture", raw)
+            self.assertNotIn(b"headers", raw)
+            clean = {key: value for key, value in args.items() if key not in {"headers", "expires_at"}}
+            missing = worker.SessionOperation({**clean, "operation": "status"})
+            self.assertEqual(missing.document["state"], "missing")
+            (protected / "bilibili.session.json").write_text("encrypted fixture")
+            factory.return_value.get_opaque_headers.side_effect = SourceError(SourceErrorCode.AUTH_REQUIRED, "private diagnostic")
+            stale = worker.SessionOperation({**clean, "operation": "status"})
+            self.assertEqual(stale.document["state"], "expired_or_unavailable")
+            cleared = worker.SessionOperation({**clean, "operation": "clear"})
+            self.assertEqual(cleared.document["state"], "missing")
+            factory.return_value.clear.assert_called_once_with("bilibili")
+            for changes in ({"provider_id": "generic"}, {"operation": "unknown"},
+                            {"session_root": str(protected)}, {"operation": "status"}):
+                with self.subTest(changes=changes), self.assertRaises(SourceError):
+                    worker.SessionOperation({**args, **changes})
+
+    @unittest.skipUnless(os.name == "nt", "actual current-user DPAPI requires Windows")
+    def test_actual_windows_protected_operation_reopen_factory_tamper_expiry_and_clear(self):
+        import base64
+        import time
+        data, work, protected = self.session_scope()
+        args = {key: self.args[key] for key in ("bundle_root", "manifest_sha256")}
+        args.update(data_root=str(data), work_root=str(work), provider_id="bilibili")
+        cookie = "qa_sid=actual-dpapi-private-fixture"
+        saved = worker.SessionOperation({**args, "operation": "save", "headers": {"Cookie": cookie}, "expires_at": int(time.time()) + 3600})
+        self.assertEqual(saved.document["state"], "ready")
+        path = protected / "bilibili.session.json"
+        raw = path.read_bytes()
+        self.assertNotIn(b"actual-dpapi-private-fixture", raw)
+        self.assertEqual(set(json.loads(raw)), {"schema_version", "ciphertext"})
+        reopened = worker.SessionOperation({**args, "operation": "status"})
+        self.assertEqual(reopened.document["state"], "ready")
+        self.session(provider_id="bilibili", source_ref="123", data_root=str(data), work_root=str(work))
+        bridge = self.factory.call_args.kwargs["session_bridge"]
+        self.assertEqual(bridge.get_opaque_headers("bilibili"), {"Cookie": cookie})
+        (protected / "douyin.session.json").write_bytes(raw)
+        self.assertEqual(worker.SessionOperation({**args, "provider_id": "douyin", "operation": "status"}).document["state"], "expired_or_unavailable")
+        record = json.loads(raw)
+        ciphertext = bytearray(base64.b64decode(record["ciphertext"]))
+        ciphertext[len(ciphertext)//2] ^= 1
+        record["ciphertext"] = base64.b64encode(ciphertext).decode()
+        path.write_text(json.dumps(record), encoding="utf-8")
+        self.assertEqual(worker.SessionOperation({**args, "operation": "status"}).document["state"], "expired_or_unavailable")
+        with self.assertRaises(SourceError) as failure:
+            self.session(provider_id="bilibili", source_ref="123", data_root=str(data), work_root=str(work))
+        self.assertEqual(failure.exception.code, SourceErrorCode.AUTH_REQUIRED)
+        old_clock = int(time.time()) - 1000
+        expired = worker.ProtectedSessionBridge(protected, clock=lambda: old_clock)
+        expired.save("bilibili", {"Cookie": cookie}, expires_at=old_clock + 500)
+        self.assertEqual(worker.SessionOperation({**args, "operation": "status"}).document["state"], "expired_or_unavailable")
+        for provider in ("bilibili", "douyin"):
+            worker.SessionOperation({**args, "provider_id": provider, "operation": "clear"})
+        self.assertEqual(list(protected.iterdir()), [])
+
     def test_selected_download_reinspects_identity_and_publishes_only_private_media_receipt(self):
         session = self.session()
         item = SourceItem(SourceIdentity("generic", "one", "https://example.test/one"), "one",

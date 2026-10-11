@@ -193,3 +193,34 @@ The worker is intentionally a child process.  It never receives a SQLite
 handle and it cannot make a durable state transition by itself.  A cancelled
 worker is terminated by the supervisor and the job is durably marked
 `cancelled`; a hung worker is killed after the protocol heartbeat deadline.
+
+## Protected source sessions
+
+The installed `source-serve` controller accepts private stdin JSON commands:
+
+- `session_save`: `provider_id` (`bilibili` or `douyin`), `headers` (one Cookie
+  header, at most 2048 printable ASCII bytes), and integer Unix `expires_at`
+  (future, at most 24 hours).
+- `session_status`: only `provider_id`.
+- `session_clear`: only `provider_id`.
+
+Use the existing admitted `--data-root`; callers cannot select a credential
+filename. The owned worker writes only current-user DPAPI ciphertext beneath
+`control/source-sessions`. Never put headers into argv, URLs, diagnostics,
+SQLite or manifests. Request debug output is redacted. The host supplies the
+headers through its private control pipe; browser capture/login UI is separate.
+
+Each accepted operation emits `source_session_preparing`, then `source_session`
+with `provider_id`, `operation` and `state` (`ready`, `missing`, or status-only
+`expired_or_unavailable`) after the validated worker actually exits successfully.
+Worker/protocol/deadline failures emit `source_session_error` with a typed code
+and no automatic retry. Invalid requests emit `SOURCE_REQUEST_REJECTED`.
+Operations are refused while source work is active; shutdown remains available
+during session work. Generic sources stay anonymous. Existing saved provider
+records are connected to the verified adapter on new worker preparation;
+expired or unavailable records require authentication before acquisition.
+
+This API needs the matching pinned native/worker release. Older installed
+releases retain their previous protocol and acquisition behavior. Windows
+Release requires synthetic-cookie native/DPAPI and owned-factory proofs in both
+staged and installed source-runtime reports; this is not live-login approval.
