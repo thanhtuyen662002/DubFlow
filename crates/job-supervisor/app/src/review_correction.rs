@@ -1,6 +1,6 @@
-//! Native original-cue request preparation. No inference or graph publication.
+//! Native original-cue preparation and private synthesis. No graph publication.
 //! The command only accepts a native stale-client token and cue edit values.
-use super::review_assets::{AcceptedAudioStore, AcceptedJsonDocument};
+use super::review_assets::{AcceptedAudioStore, AcceptedJsonDocument, PcmPin};
 use super::review_document::{closed, decode, tick, AdmittedSnapshot, ReviewMode};
 use super::review_request::{BoundCueRequest, CueRequestPins};
 use super::review_runtime::AdmittedRuntime;
@@ -8,8 +8,9 @@ use super::review_seed::{collect, read_original};
 use super::{SupervisorError, SupervisorResult};
 use dubflow_job_state::{review_graph::ReviewGraphState, DurableStore};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -93,6 +94,14 @@ fn unchanged(store: &DurableStore, state: &ReviewGraphState) -> SupervisorResult
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
+    run_inner(&mut args, false)
+}
+
+pub(super) fn run_synthesis(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
+    run_inner(&mut args, true)
+}
+
+fn run_inner(mut args: impl Iterator<Item = OsString>, synthesize: bool) -> SupervisorResult<()> {
     let mut values = std::collections::HashMap::new();
     while let Some(flag) = args.next() {
         let flag = flag
@@ -212,12 +221,304 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<
     let accepted = assets.accept_json(request.raw())?;
     unchanged(&store, &state)?;
     let _original = read_original(&store, &data, &state)?;
+    if synthesize {
+        let result = synthesize_accepted(&runtime, &assets, &data, job, &request, &accepted)?;
+        assets.read_json(&context)?;
+        assets.read_json(&accepted)?;
+        unchanged(&store, &state)?;
+        let _original = read_original(&store, &data, &state)?;
+        return super::emit_value(
+            &mut std::io::stdout().lock(),
+            json!({"schema_version":1,"kind":"review_synthesized_original_cue",
+            "job_id":job,"revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,"graph_sha256":state.token.graph_sha256,
+            "finding_id":finding,"context":descriptor(&context),"request":descriptor(&accepted),"release_sha256":runtime.release_hash,
+            "proposal":decode(after.json(),LIMIT)?,"accepted_cue":result,"model_weights_verified":true,"correction_ready":false}),
+        );
+    }
     super::emit_value(
         &mut std::io::stdout().lock(),
         json!({"schema_version":1,"kind":"review_prepared_original_cue",
         "job_id":job,"revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,"graph_sha256":state.token.graph_sha256,
         "finding_id":finding,"context":descriptor(&context),"request":descriptor(&accepted),"release_sha256":runtime.release_hash,
         "proposal":decode(after.json(),LIMIT)?,"model_weights_verified":false,"correction_ready":false}),
+    )
+}
+
+const CUE_PACKET_LIMIT: usize = 256 * 1024;
+const CUE_DOCUMENT_LIMIT: usize = 64 * 1024;
+
+fn digest(raw: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(raw.as_bytes()))
+}
+
+fn document(packet: &Value, json_key: &str, hash_key: &str) -> SupervisorResult<String> {
+    let raw = packet[json_key]
+        .as_str()
+        .filter(|r| !r.is_empty() && r.len() <= CUE_DOCUMENT_LIMIT)
+        .ok_or_else(|| invalid("single-cue producer document exceeds its bound"))?;
+    if !decode(raw, CUE_DOCUMENT_LIMIT)?.is_object() || packet[hash_key] != digest(raw) {
+        return Err(invalid("single-cue document hash or syntax differs"));
+    }
+    Ok(raw.to_string())
+}
+
+struct CandidateDocuments {
+    tts: String,
+    spoken: String,
+    recipe: String,
+    path: PathBuf,
+    pin: PcmPin,
+}
+
+fn admit_candidate(
+    raw: &str,
+    request: &BoundCueRequest,
+    generation: &Path,
+) -> SupervisorResult<CandidateDocuments> {
+    let packet = decode(raw, CUE_PACKET_LIMIT)?;
+    closed(
+        &packet,
+        &[
+            "schema_version",
+            "kind",
+            "request_sha256",
+            "recipe_identity",
+            "tts_document_json",
+            "tts_document_sha256",
+            "spoken_text_json",
+            "spoken_text_sha256",
+            "model_weights_verified",
+        ],
+    )?;
+    let recipe = packet["recipe_identity"]
+        .as_str()
+        .filter(|r| {
+            r.len() == 64
+                && r.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+        .ok_or_else(|| invalid("owned cue recipe identity is invalid"))?;
+    if packet["schema_version"].as_u64() != Some(1)
+        || packet["kind"] != "review_cue_candidate"
+        || packet["request_sha256"] != request.input_hash()
+        || packet["model_weights_verified"] != true
+    {
+        return Err(invalid(
+            "candidate does not bind the native request and admitted weights",
+        ));
+    }
+    let tts = document(&packet, "tts_document_json", "tts_document_sha256")?;
+    let spoken = document(&packet, "spoken_text_json", "spoken_text_sha256")?;
+    let value = decode(&tts, CUE_DOCUMENT_LIMIT)?;
+    let input = decode(request.raw(), 32768)?;
+    let mut provenance = input["producer_pin"].clone();
+    provenance
+        .as_object_mut()
+        .ok_or_else(|| invalid("missing native producer pin"))?
+        .insert("input_hash".into(), request.input_hash().into());
+    let artifacts = value["artifacts"]
+        .as_array()
+        .filter(|a| a.len() == 1)
+        .ok_or_else(|| invalid("candidate must contain exactly one artifact"))?;
+    let artifact = &artifacts[0];
+    let segment = &input["tts_input"];
+    if !matches!(value["schema_version"].as_u64(), Some(1 | 2))
+        || value["provenance"] != provenance
+        || value["source_segment_ids"] != json!([input["cue_id"]])
+        || value["failures"] != json!([])
+        || artifact["segment_id"] != input["cue_id"]
+        || artifact["source_utterance_id"] != segment["source_utterance_id"]
+        || artifact["slot_start"] != segment["start"]
+        || artifact["slot_end"] != segment["end"]
+        || artifact["render_window_end"] != segment["render_window_end"]
+        || artifact["confidence"] != segment["confidence"]
+        || artifact["fallback_used"] != false
+        || artifact["sample_rate"] != input["config"]["sample_rate"]
+        || artifact["channels"] != input["config"]["channels"]
+        || artifact["bits_per_sample"] != 16
+        || artifact["format"] != "wav"
+    {
+        return Err(invalid(
+            "candidate substitutes native producer, cue, timing, voice or PCM pins",
+        ));
+    }
+    let path = PathBuf::from(
+        artifact["path"]
+            .as_str()
+            .ok_or_else(|| invalid("candidate lacks a waveform path"))?,
+    );
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    if path.parent() != Some(generation.join("tts").as_path())
+        || name.len() != 40
+        || !name.starts_with("tts-")
+        || !name.ends_with(".wav")
+        || !name[4..36]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid(
+            "candidate waveform escapes its native private generation",
+        ));
+    }
+    let file = super::review_assets::regular(&path)?;
+    let pin = PcmPin {
+        sha256: artifact["content_hash"]
+            .as_str()
+            .ok_or_else(|| invalid("candidate waveform lacks a hash"))?
+            .into(),
+        size_bytes: file.metadata()?.len(),
+        sample_rate: artifact["sample_rate"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| invalid("bad cue sample rate"))?,
+        channels: artifact["channels"]
+            .as_u64()
+            .and_then(|n| u16::try_from(n).ok())
+            .ok_or_else(|| invalid("bad cue channels"))?,
+        frame_count: artifact["frame_count"]
+            .as_u64()
+            .ok_or_else(|| invalid("bad cue frame count"))?,
+    };
+    if pin.size_bytes
+        > input["config"]["max_wave_bytes"]
+            .as_u64()
+            .ok_or_else(|| invalid("missing waveform bound"))?
+    {
+        return Err(invalid("candidate waveform exceeds the pinned config"));
+    }
+    Ok(CandidateDocuments {
+        tts,
+        spoken,
+        recipe: recipe.into(),
+        path,
+        pin,
+    })
+}
+
+fn private_root(data: &Path, job: &str) -> SupervisorResult<PathBuf> {
+    let root = data.join("control/review-candidates");
+    let job_root = root.join(format!("{:x}", Sha256::digest(job.as_bytes())));
+    for path in [&root, &job_root, &job_root.join("temp")] {
+        super::review_pin::plain(path.parent().unwrap())?;
+        match std::fs::create_dir(path) {
+            Ok(()) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(e) => return Err(e.into()),
+        }
+        super::review_pin::plain(path)?;
+        if !path.is_dir() {
+            return Err(invalid("private cue root is not a plain directory"));
+        }
+    }
+    Ok(job_root)
+}
+
+fn cue_command(runtime: &AdmittedRuntime, entry: &Path, scratch: &Path) -> Command {
+    let mut command = Command::new(&runtime.python);
+    command.args([
+        OsString::from("-I"),
+        OsString::from("-S"),
+        OsString::from("-B"),
+        entry.as_os_str().to_owned(),
+    ]);
+    command
+        .env("TEMP", scratch)
+        .env("TMP", scratch)
+        .env("TMPDIR", scratch);
+    command
+}
+
+fn synthesize_accepted(
+    runtime: &AdmittedRuntime,
+    assets: &AcceptedAudioStore,
+    data: &Path,
+    job: &str,
+    request: &BoundCueRequest,
+    object: &AcceptedJsonDocument,
+) -> SupervisorResult<Value> {
+    let (entry, model_root) = runtime.cue_execution()?;
+    let output = private_root(data, job)?;
+    let scratch = output.join("temp");
+    assets.read_json(object)?;
+    let mut command = cue_command(runtime, &entry, &scratch);
+    command.args([
+        OsString::from("produce"),
+        OsString::from("--request"),
+        object.path.as_os_str().to_owned(),
+        OsString::from("--request-sha256"),
+        OsString::from(request.input_hash()),
+        OsString::from("--app-root"),
+        runtime.root.join("app").into_os_string(),
+        OsString::from("--model-root"),
+        model_root.into_os_string(),
+        OsString::from("--profile"),
+        runtime.profile.as_os_str().to_owned(),
+        OsString::from("--ffmpeg"),
+        runtime.ffmpeg.as_os_str().to_owned(),
+        OsString::from("--output-root"),
+        output.as_os_str().to_owned(),
+    ]);
+    let raw = collect(command, Duration::from_secs(300), CUE_PACKET_LIMIT)?;
+    let generation = output.join(format!("cue-{}", &request.input_hash()[7..]));
+    let candidate = admit_candidate(&raw, request, &generation)?;
+    let audio = assets.accept(&generation, &candidate.path, &candidate.pin)?;
+    let wave = json!({"path":audio.path,"root":audio.path.parent().unwrap(),"sha256":audio.pin.sha256,"size_bytes":audio.pin.size_bytes,
+        "sample_rate":audio.pin.sample_rate,"channels":audio.pin.channels,"frame_count":audio.pin.frame_count});
+    let context=assets.accept_json(&serde_json::to_string(&json!({"schema_version":1,"kind":"review_native_accepted_cue_context",
+        "request_json":request.raw(),"request_sha256":request.input_hash(),"candidate_tts_json":candidate.tts,
+        "candidate_spoken_text_json":candidate.spoken,"recipe_identity":candidate.recipe,"accepted_wave":wave}))?)?;
+    let mut command = cue_command(runtime, &entry, &scratch);
+    command.args([
+        OsString::from("accept"),
+        OsString::from("--context"),
+        context.path.as_os_str().to_owned(),
+        OsString::from("--context-sha256"),
+        OsString::from(&context.sha256),
+    ]);
+    let raw = collect(command, Duration::from_secs(60), CUE_PACKET_LIMIT)?;
+    let packet = decode(&raw, CUE_PACKET_LIMIT)?;
+    closed(
+        &packet,
+        &[
+            "schema_version",
+            "kind",
+            "request_sha256",
+            "tts_document_json",
+            "tts_document_sha256",
+            "spoken_text_json",
+            "spoken_text_sha256",
+        ],
+    )?;
+    if packet["schema_version"].as_u64() != Some(1)
+        || packet["kind"] != "review_accepted_cue_documents"
+        || packet["request_sha256"] != request.input_hash()
+    {
+        return Err(invalid("accepted cue documents differ from native request"));
+    }
+    let tts = document(&packet, "tts_document_json", "tts_document_sha256")?;
+    let spoken = document(&packet, "spoken_text_json", "spoken_text_sha256")?;
+    let mut expected_tts = decode(&candidate.tts, CUE_DOCUMENT_LIMIT)?;
+    expected_tts["artifacts"][0]["path"] = audio.path.to_string_lossy().into_owned().into();
+    let mut expected_spoken = decode(&candidate.spoken, CUE_DOCUMENT_LIMIT)?;
+    expected_spoken["tts_document_hash"] = digest(&tts).into();
+    if decode(&tts, CUE_DOCUMENT_LIMIT)? != expected_tts
+        || decode(&spoken, CUE_DOCUMENT_LIMIT)? != expected_spoken
+    {
+        return Err(invalid(
+            "accepted adapter changed fields beyond WAV path/document hash",
+        ));
+    }
+    assets.verify(&audio)?;
+    assets.read_json(object)?;
+    assets.read_json(&context)?;
+    let tts = assets.accept_json(&tts)?;
+    let spoken = assets.accept_json(&spoken)?;
+    assets.read_json(&tts)?;
+    assets.read_json(&spoken)?;
+    assets.verify(&audio)?;
+    Ok(
+        json!({"audio":wave,"tts_document":descriptor(&tts),"spoken_text":descriptor(&spoken),"recipe_identity":candidate.recipe,
+        "accept_context":descriptor(&context),"active_graph_published":false}),
     )
 }
 
@@ -234,6 +535,7 @@ mod tests {
             vec!["--job-id", "a", "--job-id", "b"],
             vec!["--revision", "00"],
         ] {
+            assert!(run_synthesis(args.iter().map(|arg| OsString::from(*arg))).is_err());
             assert!(run(args.into_iter().map(OsString::from)).is_err());
         }
     }
@@ -302,5 +604,102 @@ mod tests {
             }
             assert!(admit(&value, &f, case).is_err(), "case{modify}");
         }
+    }
+
+    #[test]
+    fn candidate_admission_and_native_copy_bind_exact_cue_and_private_waveform() {
+        let f = fixture();
+        let case = &f["cases"][0];
+        let request = admit(&packet(&f, case), &f, case).unwrap();
+        let input = decode(request.raw(), 32768).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "dubflow-native-cue-candidate-{}-{}",
+            std::process::id(),
+            super::super::ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("control")).unwrap();
+        let generation = root.join("private generation");
+        std::fs::create_dir_all(generation.join("tts")).unwrap();
+        let path = generation.join(format!("tts-{}.wav", "a".repeat(32)));
+        let rate = input["config"]["sample_rate"].as_u64().unwrap() as u32;
+        let channels = input["config"]["channels"].as_u64().unwrap() as u16;
+        let frames = 16u64;
+        let size = frames as usize * channels as usize * 2;
+        let mut wave = b"RIFF".to_vec();
+        wave.extend_from_slice(&(36 + size as u32).to_le_bytes());
+        wave.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0");
+        wave.extend_from_slice(&channels.to_le_bytes());
+        wave.extend_from_slice(&rate.to_le_bytes());
+        wave.extend_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
+        wave.extend_from_slice(&(channels * 2).to_le_bytes());
+        wave.extend_from_slice(&16u16.to_le_bytes());
+        wave.extend_from_slice(b"data");
+        wave.extend_from_slice(&(size as u32).to_le_bytes());
+        wave.extend(std::iter::repeat(1u8).take(size));
+        std::fs::write(&path, &wave).unwrap();
+        let mut provenance = input["producer_pin"].clone();
+        provenance["input_hash"] = request.input_hash().into();
+        let segment = &input["tts_input"];
+        let tts = json!({"schema_version":2,"provenance":provenance,"source_segment_ids":[input["cue_id"]],"failures":[],
+            "artifacts":[{"segment_id":input["cue_id"],"source_utterance_id":segment["source_utterance_id"],"slot_start":segment["start"],"slot_end":segment["end"],
+            "render_window_end":segment["render_window_end"],"confidence":segment["confidence"],"fallback_used":false,"sample_rate":rate,"channels":channels,
+            "bits_per_sample":16,"format":"wav","path":path,"frame_count":frames,"content_hash":format!("sha256:{:x}",Sha256::digest(&wave))}]});
+        let mut candidate = json!({"schema_version":1,"kind":"review_cue_candidate","request_sha256":request.input_hash(),"recipe_identity":"a".repeat(64),
+            "tts_document_json":tts.to_string(),"tts_document_sha256":digest(&tts.to_string()),"spoken_text_json":"{}","spoken_text_sha256":digest("{}"),"model_weights_verified":true});
+        let admitted = admit_candidate(&candidate.to_string(), &request, &generation).unwrap();
+        let assets = AcceptedAudioStore::new(&root, "job-native-candidate").unwrap();
+        let accepted = assets
+            .accept(&generation, &admitted.path, &admitted.pin)
+            .unwrap();
+        assets.verify(&accepted).unwrap();
+        for change in 0..7 {
+            let mut changed = candidate.clone();
+            match change {
+                0 => changed["request_sha256"] = format!("sha256:{}", "c".repeat(64)).into(),
+                1 => changed["model_weights_verified"] = false.into(),
+                2 => changed["tts_document_sha256"] = format!("sha256:{}", "c".repeat(64)).into(),
+                3 => changed["recipe_identity"] = "unbound".into(),
+                _ => {
+                    let mut data = tts.clone();
+                    match change {
+                        4 => {
+                            data["provenance"]["model_hash"] =
+                                format!("sha256:{}", "c".repeat(64)).into()
+                        }
+                        5 => data["artifacts"][0]["source_utterance_id"] = "another-source".into(),
+                        _ => {
+                            data["artifacts"][0]["path"] = root
+                                .join("outside.wav")
+                                .to_string_lossy()
+                                .into_owned()
+                                .into()
+                        }
+                    }
+                    changed["tts_document_json"] = data.to_string().into();
+                    changed["tts_document_sha256"] = digest(&data.to_string()).into();
+                }
+            }
+            assert!(
+                admit_candidate(&changed.to_string(), &request, &generation).is_err(),
+                "case{change}"
+            );
+        }
+        candidate["spoken_text_json"] = "{\"duplicate\":1,\"duplicate\":2}".into();
+        candidate["spoken_text_sha256"] =
+            digest(candidate["spoken_text_json"].as_str().unwrap()).into();
+        assert!(admit_candidate(&candidate.to_string(), &request, &generation).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assets.verify(&accepted).unwrap();
+        let mut permissions = std::fs::metadata(&accepted.path).unwrap().permissions();
+        #[cfg(windows)]
+        permissions.set_readonly(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o600);
+        }
+        std::fs::set_permissions(&accepted.path, permissions).unwrap();
+        assert!(root.starts_with(std::env::temp_dir()));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

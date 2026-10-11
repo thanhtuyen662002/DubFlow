@@ -615,6 +615,9 @@ fn run() -> SupervisorResult<()> {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-prepare-cue")) {
         return review_correction::run(std::env::args_os().skip(2));
     }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-synthesize-cue")) {
+        return review_correction::run_synthesis(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-original")) {
         return review_seed::run(std::env::args_os().skip(2));
     }

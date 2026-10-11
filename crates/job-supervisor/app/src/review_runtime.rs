@@ -147,6 +147,9 @@ pub(super) struct AdmittedRuntime {
     pub(super) catalog: Value,
     pub(super) catalog_hash: String,
     pub(super) release_hash: String,
+    model_root: PathBuf,
+    pub(super) ffmpeg: PathBuf,
+    inventory: HashMap<String, Value>,
 }
 
 impl AdmittedRuntime {
@@ -391,7 +394,42 @@ impl AdmittedRuntime {
             catalog,
             catalog_hash: hash(&catalog_raw),
             release_hash: hash(&raw),
+            model_root: super::absolute_path(
+                producer["model_root"]
+                    .as_str()
+                    .ok_or_else(|| invalid("missing original model root"))?,
+                "original model root",
+            )?,
+            ffmpeg: super::first_existing(&[
+                root.join("runtime/media/ffmpeg.exe"),
+                root.join("runtime/ffmpeg/ffmpeg.exe"),
+            ])
+            .ok_or_else(|| invalid("original media executable unavailable"))?,
+            inventory,
         })
+    }
+
+    pub(super) fn cue_execution(&self) -> SupervisorResult<(PathBuf, PathBuf)> {
+        let name = "app/engine/dubflow/review/cue_execution.py";
+        let entry = self.root.join(name);
+        let pin = self.inventory.get(name).ok_or_else(|| {
+            invalid(
+                "original producer lacks physical cue execution; explicit compatibility required",
+            )
+        })?;
+        fingerprint(&entry, pin, false, 64 * 1024 * 1024)?;
+        plain(&self.model_root)?;
+        if !self.model_root.is_dir()
+            || self
+                .model_root
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+        {
+            return Err(invalid(
+                "original model root unavailable; restore it explicitly before Review",
+            ));
+        }
+        Ok((entry, self.model_root.clone()))
     }
 
     /// Bind the owned adapter's target profile to this original catalog. Model
@@ -456,6 +494,7 @@ mod tests {
             ("runtime/Lib/empty.py",vec![]),
             ("app/engine/dubflow/worker/production_job.py",b"# owned producer".to_vec()),
             ("app/engine/dubflow/review/cue_plan.py",b"# owned cue adapter".to_vec()),
+            ("app/engine/dubflow/review/cue_execution.py",b"# owned physical cue adapter".to_vec()),
             ("app/models/manifests/production-cpu-v1.json",br#"{"tts_neural_profile":"models/manifests/production-vieneu-v1.json"}"#.to_vec()),
             ("app/models/manifests/production-vieneu-v1.json",json!({"schema_version":1,"model_id":"test-model",
                 "model_version":"1","model_tree_sha256":"a".repeat(64),"license_id":"Apache-2.0","voice_id":"voice-a",
@@ -499,6 +538,36 @@ mod tests {
         assert_eq!(voice["manifest_hash"], admitted.catalog_hash);
         assert_eq!(voice["model_hash"], format!("sha256:{}", "a".repeat(64)));
         assert!(admitted.voice("foreign-voice").is_err());
+        assert!(!f.root.join("unprovisioned-models").exists());
+    }
+
+    #[test]
+    fn physical_cue_entry_and_model_root_remain_original_and_never_provisioned() {
+        let f = fixture();
+        let runtime = AdmittedRuntime::from_producer(&f.producer, &f.root).unwrap();
+        assert!(runtime.cue_execution().is_err());
+        let model_root = f.root.join("unprovisioned-models");
+        assert!(!model_root.exists());
+        fs::create_dir(&model_root).unwrap();
+        let (entry, observed) = runtime.cue_execution().unwrap();
+        assert_eq!(observed, model_root);
+        assert_eq!(
+            entry,
+            f.root.join("app/engine/dubflow/review/cue_execution.py")
+        );
+        assert_eq!(runtime.ffmpeg, f.root.join("runtime/media/ffmpeg.exe"));
+        fs::write(entry, b"changed physical adapter").unwrap();
+        assert!(runtime.cue_execution().is_err());
+    }
+
+    #[test]
+    fn releases_without_physical_cue_adapter_require_explicit_compatibility() {
+        let f = fixture();
+        let mut runtime = AdmittedRuntime::from_producer(&f.producer, &f.root).unwrap();
+        runtime
+            .inventory
+            .remove("app/engine/dubflow/review/cue_execution.py");
+        assert!(runtime.cue_execution().is_err());
         assert!(!f.root.join("unprovisioned-models").exists());
     }
 

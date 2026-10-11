@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Owned retargeted single-cue document packet v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "request_sha256", "tts_document_json", "tts_document_sha256", "spoken_text_json", "spoken_text_sha256"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_accepted_cue_documents"},
+    "request_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "tts_document_json": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "tts_document_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "spoken_text_json": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "spoken_text_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

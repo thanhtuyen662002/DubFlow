@@ -34,3 +34,14 @@ for the owned request adapter. `prepared-cue-request-v1.json` returns a prepared
 request bound to that context. Native admission must independently bind catalog,
 original input and stale-client token. These are preparation formats only:
 model weights and replacement media remain unverified and no graph is published.
+
+`cue-candidate-v1.json` is emitted only by the admitted owned producer after
+read-only verification of the original physical model pack. Native code binds
+its exact request, cue, provenance, metadata hashes and private waveform scope,
+then copies and verifies PCM into sealed immutable storage.
+`native-accepted-cue-context-v1.json` carries native-owned request/candidate
+bytes and that accepted waveform pin to the metadata adapter.
+`accepted-cue-documents-v1.json` changes only the WAV path and dependent document
+hash. Native code independently checks those field changes and revalidates all
+accepted objects. None of these formats publishes an active playback graph or
+qualifies mix/render/QC/export replacement and undo.

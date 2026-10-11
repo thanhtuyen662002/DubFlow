@@ -507,6 +507,47 @@ actual producer/model admission and full4h regeneration qualification.
 
 ## Required evidence
 
+### Original physical single-cue dispatch
+
+The opt-in native `review-synthesize-cue` command repeats the original head and
+request admission, then uses only the model root recorded in the immutable job
+start and the admitted owned media executable. It requires the physical cue
+adapter in the original release inventory. Missing roots/adapters need explicit
+restoration/compatibility; Review never installs, downloads or repairs models.
+
+Before inference the isolated owned worker validates catalog/config/producer
+pins and every file of the already installed VieNeu pack with streamed bounded
+hashes. Missing, foreign, partial, linked/nonregular, changed-size/checksum or
+changed inventory data refuses. It verifies the physical preset roster and
+constructs the existing production engine without the provisioning loader.
+Model verification is a bounded read, not an atomic filesystem sandbox against
+malicious concurrent same-user changes. Subsequent engine/PCM validation still
+applies; no synthetic pack can qualify real inference or Windows integration.
+
+Native process-tree containment precedes the byte gate and the executable
+defers app/dependency imports until that gate. Production has a 300-second
+observation bound, 256KiB stdout and 4096-byte stderr bounds; model hashing has
+a shared 180-second deadline. Retargeting has a separate 60-second bound. Scratch
+paths derive from the native job data root and child temporary environments
+point there; caller/browser paths cannot choose a producer/model/request/output.
+The worker owns checkpointable private candidate files, never SQLite.
+
+Native code binds the returned single-cue document to exact request/provenance,
+source mapping/timing/window/confidence/config, confines waveform reads to the
+private generation and verifies copied PCM bytes/header/frame count before
+sealing an immutable accepted object. An owned metadata adapter validates full
+TTS/spoken semantics and retargets only WAV path/dependent document hash. Native
+code independently verifies those changes and rechecks accepted audio/documents,
+the request, original archive and unchanged head before returning descriptors.
+
+The response reports model_weights_verified=true only after that physical
+producer path, active_graph_published=false and correction_ready=false. No SQL
+generation mutation occurs. Complete immutable mix/render/QC/export, published
+snapshot derivation, final CAS/undo and B1 remain required. Retention/quota and
+orphan/scratch recovery must cover all preparation, candidate and accepted
+objects before this feature becomes user-facing. Core2/optional Review1 are
+unchanged; the existing display/export path remains usable on refusal.
+
 Tests validate actual emitted JSON against the declared schemas, v1 read-only
 compatibility, unknown-version rejection, sparse/reordered warning cue binding,
 unknown confidence, two corrections/two undos, stale-client refusal, replacement

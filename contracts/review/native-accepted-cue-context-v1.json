@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native immutable single-cue acceptance context v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "request_json", "request_sha256", "candidate_tts_json", "candidate_spoken_text_json", "recipe_identity", "accepted_wave"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_accepted_cue_context"},
+    "request_json": {"type": "string", "minLength": 1, "maxLength": 32768},
+    "request_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "candidate_tts_json": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "candidate_spoken_text_json": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "recipe_identity": {"type": "string", "minLength": 1, "maxLength": 256},
+    "accepted_wave": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "root", "sha256", "size_bytes", "sample_rate", "channels", "frame_count"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1}, "root": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 44, "maximum": 67108864},
+        "sample_rate": {"type": "integer", "minimum": 8000, "maximum": 96000},
+        "channels": {"type": "integer", "minimum": 1, "maximum": 2},
+        "frame_count": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
