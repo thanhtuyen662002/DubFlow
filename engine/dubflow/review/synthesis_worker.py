@@ -79,20 +79,27 @@ def _atomic(path: Path, raw: bytes) -> None:
         Path(name).unlink(missing_ok=True)
 
 
-def load_production_cue_engine(request: CueSynthesisInput, *, app_root: Path,
-                               model_root: Path, profile_path: Path, ffmpeg_path: Path):
-    """Admit the current installed producer; older jobs need explicit compatibility."""
-    provenance = request.provenance
+def production_cue_config() -> TtsConfig:
+    return TtsConfig(sample_rate=48000, channels=1, requested_profile="cpu", max_attempts=1,
+                     max_text_chars=512, max_duration_error_ticks=80,
+                     min_speed_ratio_milli=800, max_speed_ratio_milli=1300,
+                     resource=ResourceProfile(max_threads=2, max_memory_mb=2048, max_batch_items=1))
+
+
+def admit_production_cue(provenance, config: TtsConfig) -> None:
+    """Pure producer/config admission; it does not verify installed model bytes."""
     if (provenance.producer, provenance.producer_version, provenance.backend_id, provenance.runtime,
         provenance.hardware_profile, provenance.fallback_reason) != (
         "dubflow-production-tts", B2_TTS_PRODUCER_VERSION, vieneu.ENGINE_ID, vieneu.RUNTIME_ID, "cpu", None):
         raise ReviewError("installed cue producer differs from pinned job; compatibility admission required")
-    expected = TtsConfig(sample_rate=48000, channels=1, requested_profile="cpu", max_attempts=1,
-                         max_text_chars=512, max_duration_error_ticks=80,
-                         min_speed_ratio_milli=800, max_speed_ratio_milli=1300,
-                         resource=ResourceProfile(max_threads=2, max_memory_mb=2048, max_batch_items=1))
-    if request.config != expected:
+    if config != production_cue_config():
         raise ReviewError("installed cue configuration differs from pinned job")
+
+
+def load_production_cue_engine(request: CueSynthesisInput, *, app_root: Path,
+                               model_root: Path, profile_path: Path, ffmpeg_path: Path):
+    """Admit the current installed producer; older jobs need explicit compatibility."""
+    admit_production_cue(request.provenance, request.config)
     for path in (app_root, model_root, profile_path, ffmpeg_path):
         plain(Path(path).absolute())
     if not Path(ffmpeg_path).is_file():

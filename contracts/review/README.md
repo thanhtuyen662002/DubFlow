@@ -28,3 +28,9 @@ native copies of the original manifest plus all consumed JSON documents.
 B1 stores three documents; B2 stores seven. This format grants no model or media
 admission and cannot enable correction/undo. Unknown versions need an explicit
 compatibility reader; existing released display payloads remain usable.
+
+`original-cue-context-v1.json` binds exact native before/after/source-graph bytes
+for the owned request adapter. `prepared-cue-request-v1.json` returns a prepared
+request bound to that context. Native admission must independently bind catalog,
+original input and stale-client token. These are preparation formats only:
+model weights and replacement media remain unverified and no graph is published.

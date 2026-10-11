@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native original cue planning context v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "manifest_sha256", "before_snapshot_json", "after_snapshot_json", "source_graph_json"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_original_cue_context"},
+    "manifest_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "before_snapshot_json": {"type": "string", "minLength": 1, "maxLength": 67108864},
+    "after_snapshot_json": {"type": "string", "minLength": 1, "maxLength": 67108864},
+    "source_graph_json": {"type": "string", "minLength": 1, "maxLength": 67108864}
+  }
+}

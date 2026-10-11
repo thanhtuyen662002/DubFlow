@@ -64,9 +64,9 @@ fn metadata_raw(export: &CommittedExport, role: &str) -> SupervisorResult<String
     Ok(raw)
 }
 
-struct AdmittedSeed {
-    snapshot: AdmittedSnapshot,
-    graph: String,
+pub(super) struct AdmittedSeed {
+    pub(super) snapshot: AdmittedSnapshot,
+    pub(super) graph: String,
     documents: HashMap<String, String>,
 }
 
@@ -406,7 +406,7 @@ fn accepted_descriptor(value: &Value) -> SupervisorResult<AcceptedJsonDocument> 
 
 /// Read-only recovery uses sealed exact bytes and the durable original binding,
 /// never mutable export paths or an adapter that could regenerate anything.
-fn read_original(
+pub(super) fn read_original(
     store: &DurableStore,
     data: &Path,
     state: &ReviewGraphState,
@@ -536,7 +536,11 @@ impl Drop for AdapterProcess {
 
 // The original metadata adapter never spawns descendants. Windows containment
 // still precedes the byte gate; error/timeout/cap paths terminate and reap it.
-fn collect(mut command: Command, timeout: Duration, limit: usize) -> SupervisorResult<String> {
+pub(super) fn collect(
+    mut command: Command,
+    timeout: Duration,
+    limit: usize,
+) -> SupervisorResult<String> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

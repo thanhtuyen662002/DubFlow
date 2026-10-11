@@ -451,6 +451,60 @@ substituted seed fields, changed exports, corrupt objects, unknown formats and
 bounded owned-adapter process outcomes. Actual real-media adapter evidence is
 separate from installed Windows native archive/GUI and4h qualification.
 
+## Native original-cue request preparation (Draft integration)
+
+The internal `review-prepare-cue` command accepts only configured roots, job/
+finding identities, text/voice edits and the complete native revision/snapshot/
+graph token. It acquires the job execution lock, reads supported SQLite through
+a read-only connection, checks the stale-client token and re-admits the sealed
+original state. It currently prepares revision-zero B2 requests; B1 needs its
+subtitle regeneration path and corrected generations need the active reader.
+Neither path invents TTS authority or replaces an existing graph.
+
+Before Python imports, a native boundary requires the original runtime root,
+release-manifest fingerprint, Python/production-worker/media fingerprints and
+model-manifest roster from the immutable job start record. It hashes the entire
+listed app/runtime import trees, refuses missing/extra/linked/nonregular files,
+ambiguous portable/case-insensitive paths and changed bytes, then fences the
+actual inventory and release/entry-point pins again. Catalog/config metadata is
+bound to this original release; runtime admission does not verify model weights.
+The tree walk has a bounded observation deadline and no provisioning side effect.
+
+Legacy jobs lacking those pins, an unavailable original root or a release without
+the cue adapter require explicit compatibility. A newly installed release is
+never substituted silently. Such jobs retain their display/canonical exports;
+this draft boundary does not yet provide every historical compatibility route.
+
+Native code retains exact before/after/source-graph strings in a sealed context
+object, preserving producer floats/encoding. The owned `-I -S -B` adapter waits
+for the native containment byte gate, reconstructs the current pinned CPU config
+and selected approved VieNeu preset metadata, validates the full model inventory
+recipe without reading/downloading weights, and prepares the exact single-cue
+request. Original source mapping, producer/runtime/model/config/resource and
+unrelated findings remain unchanged. Only voice identity/version/hash may change
+when the selected voice changes; unchanged voices cannot acquire new profiles.
+
+Native admission independently derives the target voice from its verified
+catalog and binds the returned request to original source input, complete
+producer/model/config pins, native before/after hashes, context identity and exact
+request bytes/hash. Prepared context/request objects use the immutable JSON
+store; SQLite and the active graph remain unchanged. The job head and original
+archive are reread before returning. A later producer must still physically
+verify models and re-admit the request before inference.
+
+The response explicitly reports model_weights_verified=false and
+correction_ready=false. Request preparation is not synthesis, validated
+mix/render/QC/export replacement or undo. Failed preparation may leave sealed
+unreferenced request/context objects for explicit orphan recovery; it never
+repairs/replaces earlier accepted objects. Core2/optional Review1 stay unchanged.
+
+Synthetic native tests exercise producer inventory drift/rosters/root binding,
+preparation packet substitution and exact Python request bytes. Owned-runtime
+Python tests also exercise real isolated CLI gate/UTF8 output, pinned catalog
+changes, stale/wrong contexts and unrelated-cue refusal. Real original169
+metadata request evidence remains separate from installed Windows/native graph,
+actual producer/model admission and full4h regeneration qualification.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only
