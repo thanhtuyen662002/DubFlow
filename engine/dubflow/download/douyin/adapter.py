@@ -307,6 +307,13 @@ class DouyinSourceAdapter:
             raise SourceError(SourceErrorCode.UNSUPPORTED, "Douyin item has no video download candidate", provider_id=self.provider_id, source_id=item.identity.source_id)
         return max(candidates, key=lambda candidate: ((candidate.width or 0) * (candidate.height or 0), candidate.height or 0, candidate.candidate_id))
 
+    def probe_download_access(self, item: SourceItem) -> int:
+        if item.identity.provider_id != self.provider_id:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "recovery item belongs to another provider")
+        selected = self.select_download(item)
+        audio = None if selected.has_audio else next((value for value in item.media_candidates if value.mime_type.startswith("audio/")), None)
+        return self._materializer.probe_access(selected, audio)
+
     def download(self, item: SourceItem, destination: str | Path, *, candidate: MediaCandidate | None = None, **kwargs: object) -> DownloadResult:
         if item.identity.provider_id != self.provider_id:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "download item belongs to another provider", provider_id=self.provider_id)
@@ -333,7 +340,7 @@ class DouyinSourceAdapter:
                 DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK,
                 DownloadErrorCode.UNSUPPORTED: SourceErrorCode.UNSUPPORTED,
             }
-            raise SourceError(mapping.get(error.code, SourceErrorCode.NETWORK), "Douyin media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
+            raise SourceError(mapping.get(error.code, SourceErrorCode.SOURCE_CHANGED), "Douyin media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
 
 
 __all__ = ["BrowserSessionBridge", "DouyinSourceAdapter", "DouyinTransportError", "normalize_source_ref"]

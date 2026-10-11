@@ -411,6 +411,10 @@ enum Request {
         identity_key: String,
         resume: bool,
     },
+    RetryDownload {
+        scan_id: String,
+        identity_key: String,
+    },
     PauseDownload {
         scan_id: String,
     },
@@ -529,6 +533,21 @@ fn owned_supervisor(root: &Path, executable: &Path) -> Result<()> {
 #[derive(Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 enum Packet {
+    #[serde(rename = "source-retry-access")]
+    RetryAccess {
+        schema_version: u32,
+        job_id: String,
+        stage_id: String,
+        producer_fingerprint: String,
+        dispatch_revision: u64,
+        identity_key: String,
+        source_id: String,
+        source_url: String,
+        previous_error_code: String,
+        retry_count: u8,
+        condition: String,
+        probed_streams: u8,
+    },
     #[serde(rename = "source-session")]
     Session {
         schema_version: u32,
@@ -747,6 +766,7 @@ struct Active {
 }
 
 struct DownloadDispatch {
+    retry_pending: Option<Instant>,
     original: ScanRecord,
     item: SourceQueueItem,
     origin_revision: u64,
@@ -1360,6 +1380,15 @@ impl Server {
         })
     }
     fn start_download(&mut self, id: String, identity: String, resume: bool) -> Result<Value> {
+        self.prepare_download(id, identity, resume, false)
+    }
+    fn prepare_download(
+        &mut self,
+        id: String,
+        identity: String,
+        resume: bool,
+        retry: bool,
+    ) -> Result<Value> {
         if self.active.is_some() || !identifier(&id) || !bounded_text(&identity, 1024) {
             return Err(invalid());
         }
@@ -1379,11 +1408,17 @@ impl Server {
         };
         producer.validate(&self.runtime, &spec)?;
         let mut item = self.queue.item(&id, &identity)?;
-        if item.status != ItemStatus::Discovered
-            && !(resume && item.status == ItemStatus::Downloading)
-        {
-            // Failed/cancelled items are not automatic retries. A changed
-            // protected/network condition needs a separate explicit decision.
+        if if retry {
+            item.status != ItemStatus::Failed
+                || item.retry_count >= 2
+                || !matches!(
+                    item.error_code.as_deref(),
+                    Some("NETWORK" | "AUTH_REQUIRED" | "RATE_LIMITED")
+                )
+        } else {
+            item.status != ItemStatus::Discovered
+                && !(resume && item.status == ItemStatus::Downloading)
+        } {
             return Err(invalid());
         }
         public_url(&item.source_url)?;
@@ -1402,11 +1437,35 @@ impl Server {
             item.total_bytes,
             None,
         );
-        let original =
+        // Failed rows remain unchanged until a bound actual access receipt.
+        let original = if retry {
+            // Reserve a unique durable preflight generation. Keep every item
+            // field and its retry budget unchanged; a cancelled/failed probe
+            // must never authorize a later probe with the same revision.
+            let retained = ItemProgress {
+                status: item.status,
+                retry_count: item.retry_count,
+                downloaded_bytes: item.downloaded_bytes,
+                total_bytes: item.total_bytes,
+                error_code: item.error_code.clone(),
+                error_message: item.error_message.clone(),
+                media_path: item.media_path.clone(),
+                content_hash: item.content_hash.clone(),
+            };
             self.queue
-                .update_item_progress_checked(&record, &item, &progress, super::now_ms())?;
-        apply_progress(&mut item, &progress);
+                .update_item_progress_checked(&record, &item, &retained, super::now_ms())?
+        } else {
+            let updated = self.queue.update_item_progress_checked(
+                &record,
+                &item,
+                &progress,
+                super::now_ms(),
+            )?;
+            apply_progress(&mut item, &progress);
+            updated
+        };
         active.download = Some(DownloadDispatch {
+            retry_pending: retry.then(Instant::now),
             origin_revision: original.dispatch_revision,
             original,
             item,
@@ -1416,7 +1475,9 @@ impl Server {
             verifier: None,
         });
         self.active = Some(active);
-        Ok(json!({"event":"source_download_preparing", "scan_id":id, "identity_key":identity}))
+        Ok(
+            json!({"event":if retry {"source_retry_preparing"} else {"source_download_preparing"}, "scan_id":id, "identity_key":identity}),
+        )
     }
     fn halt_download(&mut self, id: &str, cancel: bool) -> Result<Value> {
         let active = self.active.as_mut().ok_or_else(invalid)?;
@@ -1424,6 +1485,13 @@ impl Server {
             return Err(invalid());
         }
         let download = active.download.as_mut().ok_or_else(invalid)?;
+        if download.retry_pending.is_some() {
+            let identity = download.item.identity_key.clone();
+            let mut active = self.active.take().ok_or_else(invalid)?;
+            active.stop()?;
+            return Ok(json!({"event":"source_retry_stopped", "scan_id":id,
+                "identity_key":identity, "retained_private_media":true}));
+        }
         let progress = observed_progress(
             &download.item,
             if cancel {
@@ -1614,6 +1682,10 @@ impl Server {
                 identity_key,
                 resume,
             } => self.start_download(scan_id, identity_key, resume)?,
+            Request::RetryDownload {
+                scan_id,
+                identity_key,
+            } => self.prepare_download(scan_id, identity_key, true, true)?,
             Request::PauseDownload { scan_id } => self.halt_download(&scan_id, false)?,
             Request::CancelDownload { scan_id } => self.halt_download(&scan_id, true)?,
             Request::Shutdown => {
@@ -1697,12 +1769,112 @@ impl Server {
         }
         Ok(None)
     }
+    fn retry_packet(&mut self, document: Packet, packet_file: String) -> Result<Option<Value>> {
+        let active = self.active.as_mut().ok_or_else(invalid)?;
+        let download = active.download.as_mut().ok_or_else(invalid)?;
+        let (
+            schema,
+            job,
+            stage,
+            fingerprint,
+            revision,
+            identity,
+            source,
+            url,
+            code,
+            retries,
+            condition,
+            streams,
+        ) = match document {
+            Packet::RetryAccess {
+                schema_version,
+                job_id,
+                stage_id,
+                producer_fingerprint,
+                dispatch_revision,
+                identity_key,
+                source_id,
+                source_url,
+                previous_error_code,
+                retry_count,
+                condition,
+                probed_streams,
+            } => (
+                schema_version,
+                job_id,
+                stage_id,
+                producer_fingerprint,
+                dispatch_revision,
+                identity_key,
+                source_id,
+                source_url,
+                previous_error_code,
+                retry_count,
+                condition,
+                probed_streams,
+            ),
+            _ => return Err(invalid()),
+        };
+        if download.retry_pending.is_none()
+            || active.original.as_ref() != Some(&download.original)
+            || schema != 1
+            || job != active.spec.id
+            || stage != STAGE
+            || Some(&fingerprint) != download.original.producer_fingerprint.as_ref()
+            || revision != download.origin_revision
+            || identity != download.item.identity_key
+            || source != download.item.source_id
+            || url != download.item.source_url
+            || Some(code.as_str()) != download.item.error_code.as_deref()
+            || retries != download.item.retry_count
+            || retries >= 2
+            || download.item.status != ItemStatus::Failed
+            || condition != "selected_http_access_restored"
+            || !(1..=2).contains(&streams)
+            || !["NETWORK", "AUTH_REQUIRED", "RATE_LIMITED"].contains(&code.as_str())
+        {
+            return Err(invalid());
+        }
+        public_url(&url)?;
+        let mut progress = observed_progress(
+            &download.item,
+            ItemStatus::Downloading,
+            download.item.downloaded_bytes,
+            download.item.total_bytes,
+            None,
+        );
+        progress.retry_count = retries.checked_add(1).ok_or_else(invalid)?;
+        let record = self.queue.update_item_progress_checked(
+            &download.original,
+            &download.item,
+            &progress,
+            super::now_ms(),
+        )?;
+        apply_progress(&mut download.item, &progress);
+        download.original = record.clone();
+        download.origin_revision = record.dispatch_revision;
+        download.retry_pending = None;
+        active.original = Some(record.clone());
+        // Only the checked decision creates a new materialization generation.
+        // The original producer's private stream prefixes remain in place.
+        fs::remove_file(active.work.join(packet_file))?;
+        active.send(Payload::Command { command: "source_download".into(), args_json: serde_json::to_string(&json!({
+            "producer_fingerprint":record.producer_fingerprint, "dispatch_revision":record.dispatch_revision,
+            "identity_key":identity, "source_id":source, "source_url":url, "resume":true}))? })?;
+        Ok(Some(
+            json!({"event":"source_retry_authorized", "scan_id":job, "identity_key":identity,
+            "retry_count":progress.retry_count, "condition":condition}),
+        ))
+    }
     fn download_packet(&mut self, document: Packet, packet_file: String) -> Result<Option<Value>> {
         let active = self.active.as_mut().ok_or_else(invalid)?;
         if active.original.is_none() {
             return Err(invalid());
         }
         let download = active.download.as_mut().ok_or_else(invalid)?;
+        if download.retry_pending.is_some() {
+            return Err(invalid());
+        }
         if download.final_receipt.is_some() {
             return Err(invalid());
         }
@@ -1838,6 +2010,14 @@ impl Server {
         ))
     }
     fn poll_download(&mut self) -> Result<Option<Value>> {
+        if self.active.as_ref().is_some_and(|a| {
+            a.download.as_ref().is_some_and(|d| {
+                d.retry_pending
+                    .is_some_and(|started| started.elapsed() > Duration::from_secs(180))
+            })
+        }) {
+            return Err(invalid());
+        }
         let Some(active) = self.active.as_mut() else {
             return Ok(None);
         };
@@ -1913,6 +2093,14 @@ impl Server {
     fn fail_download(&mut self, code: &str, retryable: bool) -> Result<Value> {
         let active = self.active.as_mut().ok_or_else(invalid)?;
         let download = active.download.as_mut().ok_or_else(invalid)?;
+        if download.retry_pending.is_some() {
+            let value = json!({"event":"source_retry_refused", "scan_id":active.spec.id,
+                "identity_key":download.item.identity_key, "code":code, "retryable":retryable,
+                "automatic_retry":false, "retained_private_media":true});
+            let mut active = self.active.take().ok_or_else(invalid)?;
+            active.stop()?;
+            return Ok(value);
+        }
         let progress = observed_progress(
             &download.item,
             ItemStatus::Failed,
@@ -1962,6 +2150,9 @@ impl Server {
                 artifact_hash: Some(hash),
             } => {
                 let document = packet(&active.work, &checkpoint_id, &hash)?;
+                if matches!(&document, Packet::RetryAccess { .. }) {
+                    return self.retry_packet(document, checkpoint_id);
+                }
                 if matches!(
                     &document,
                     Packet::DownloadProgress { .. } | Packet::Download { .. }
@@ -2026,10 +2217,21 @@ impl Server {
                 // Only a checked durable commit authorizes deletion and UI update.
                 fs::remove_file(active.work.join(&checkpoint_id))?;
                 if let Some(download) = active.download.as_ref() {
-                    active.send(Payload::Command { command: "source_download".into(), args_json: serde_json::to_string(&json!({
-                        "producer_fingerprint":record.producer_fingerprint, "dispatch_revision":download.origin_revision,
-                        "identity_key":download.item.identity_key, "source_id":download.item.source_id,
-                        "source_url":download.item.source_url, "resume":download.resume}))? })?;
+                    let mut args = json!({"producer_fingerprint":record.producer_fingerprint,
+                        "dispatch_revision":download.origin_revision, "identity_key":download.item.identity_key,
+                        "source_id":download.item.source_id, "source_url":download.item.source_url});
+                    let command = if download.retry_pending.is_some() {
+                        args["error_code"] = json!(download.item.error_code);
+                        args["retry_count"] = json!(download.item.retry_count);
+                        "source_retry_probe"
+                    } else {
+                        args["resume"] = json!(download.resume);
+                        "source_download"
+                    };
+                    active.send(Payload::Command {
+                        command: command.into(),
+                        args_json: serde_json::to_string(&args)?,
+                    })?;
                     active.original = Some(record.clone());
                 } else if record.status == ScanStatus::Running {
                     active.dispatch(record.clone())?;
@@ -2333,6 +2535,19 @@ while True:
  request=json.loads(line)
  if request['message_type']=='cancel':sys.exit(0)
  args=request['payload']['args']
+ if request['payload']['command']=='source_retry_probe':
+  mode_path=work/'retry-mode.json';mode=json.loads(mode_path.read_text()) if mode_path.exists() else 'complete'
+  if mode=='hang':time.sleep(30)
+  if mode=='refuse':
+   emit('failure',{'code':'NETWORK','retryable':True,'attempt':1,'condition':'recorded endpoint still unavailable'})
+   emit('shutdown',{'status':'failed'});sys.exit(2)
+  binding={key:args[key] for key in ('producer_fingerprint','dispatch_revision','identity_key','source_id','source_url')}
+  value={'schema_version':1,'kind':'source-retry-access',**binding,'previous_error_code':args['error_code'],'retry_count':args['retry_count'],'condition':'selected_http_access_restored','probed_streams':1}
+  if mode=='bad-revision':value['dispatch_revision']+=1
+  if mode=='fake-condition':value['condition']='metadata_only'
+  if mode=='extra-secret':value['headers']={'Cookie':'must-not-be-admitted'}
+  if mode=='progress-before-probe':value={'schema_version':1,'kind':'source-download-progress',**binding,'downloaded_bytes':4,'total_bytes':8}
+  packet(value);continue
  if request['payload']['command']=='source_download':
   mode_path=work/'download-mode.json';mode=json.loads(mode_path.read_text()) if mode_path.exists() else 'complete'
   partial=work/'recorded-media.part';resumed=args['resume'] and partial.exists()
@@ -2635,6 +2850,295 @@ while True:
         pump(server); // Actual final packet -> native streaming verification.
         pump(server); // Actual successful child exit.
         finish_verification(server).unwrap()
+    }
+
+    fn failed_download(server: &mut Server) -> PathBuf {
+        let work = begin_download(server, "generic:one", "fail", false);
+        pump(server);
+        pump(server);
+        assert_eq!(
+            server.queue.item("scan", "generic:one").unwrap().status,
+            ItemStatus::Failed
+        );
+        work
+    }
+    fn begin_retry(server: &mut Server, mode: &str) {
+        server
+            .request(Request::RetryDownload {
+                scan_id: "scan".into(),
+                identity_key: "generic:one".into(),
+            })
+            .unwrap();
+        let work = &server.active.as_ref().unwrap().work;
+        fs::write(
+            work.join("retry-mode.json"),
+            serde_json::to_vec(mode).unwrap(),
+        )
+        .unwrap();
+        pump(server); // Actual ready and original-pin preflight dispatch.
+    }
+    fn recovery_event(server: &mut Server) -> Result<Option<Value>> {
+        let wire = server
+            .active
+            .as_ref()
+            .unwrap()
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        server.event(wire)
+    }
+
+    #[test]
+    fn native_retry_requires_access_then_advances_generation_and_resumes_original_parts() {
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        let work = failed_download(&mut server);
+        let original = server.queue.scan("scan").unwrap();
+        let old_item = server.queue.item("scan", "generic:one").unwrap();
+        fs::write(
+            work.join("download-mode.json"),
+            serde_json::to_vec("complete").unwrap(),
+        )
+        .unwrap();
+        begin_retry(&mut server, "complete");
+        let reserved = server.queue.scan("scan").unwrap();
+        assert!(reserved.dispatch_revision > original.dispatch_revision);
+        assert_eq!(reserved.failed_count, original.failed_count);
+        assert_eq!(server.queue.item("scan", "generic:one").unwrap(), old_item);
+        let authorized = recovery_event(&mut server).unwrap().unwrap();
+        assert_eq!(authorized["event"], "source_retry_authorized");
+        assert_eq!(authorized["retry_count"], 1);
+        let current = server.queue.scan("scan").unwrap();
+        let item = server.queue.item("scan", "generic:one").unwrap();
+        assert!(current.dispatch_revision > original.dispatch_revision);
+        assert_eq!(item.status, ItemStatus::Downloading);
+        assert_eq!(current.producer_fingerprint, original.producer_fingerprint);
+        assert_eq!(fs::read(work.join("recorded-media.part")).unwrap(), b"abcd");
+        assert!(server
+            .queue
+            .update_item_progress_checked(
+                &original,
+                &old_item,
+                &observed_progress(&old_item, ItemStatus::Downloaded, 8, Some(8), None),
+                super::super::now_ms()
+            )
+            .is_err());
+        assert_eq!(finish_download(&mut server)["resumed"], true);
+        let committed = server.queue.item("scan", "generic:one").unwrap();
+        assert_eq!(committed.retry_count, 1);
+        assert_eq!(committed.status, ItemStatus::Downloaded);
+        drop(server);
+        let reopened = Server::open(temp.recorded_runtime()).unwrap();
+        assert_eq!(
+            reopened.queue.item("scan", "generic:one").unwrap(),
+            committed
+        );
+    }
+
+    #[test]
+    fn native_retry_budget_survives_failure_reopen_and_leaves_siblings_runnable() {
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        failed_download(&mut server);
+        for count in 1..=2 {
+            begin_retry(&mut server, "complete");
+            assert_eq!(
+                recovery_event(&mut server).unwrap().unwrap()["retry_count"],
+                count
+            );
+            pump(&mut server); // Materialization progress after checked decision.
+            pump(&mut server); // A second real scripted failure consumes the attempt.
+            assert_eq!(
+                server
+                    .queue
+                    .item("scan", "generic:one")
+                    .unwrap()
+                    .retry_count,
+                count
+            );
+            assert_eq!(
+                server.queue.item("scan", "generic:one").unwrap().status,
+                ItemStatus::Failed
+            );
+            drop(server);
+            server = Server::open(temp.recorded_runtime()).unwrap();
+        }
+        let original = server.queue.scan("scan").unwrap();
+        let item = server.queue.item("scan", "generic:one").unwrap();
+        assert!(server
+            .request(Request::RetryDownload {
+                scan_id: "scan".into(),
+                identity_key: "generic:one".into()
+            })
+            .is_err());
+        assert!(server
+            .start_download("scan".into(), "generic:one".into(), true)
+            .is_err());
+        assert!(server.active.is_none());
+        assert_eq!(server.queue.scan("scan").unwrap(), original);
+        begin_download(&mut server, "generic:two", "complete", false);
+        assert_eq!(finish_download(&mut server)["event"], "source_downloaded");
+        assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+    }
+
+    #[test]
+    fn native_retry_refuses_failed_probe_bad_packets_and_timeout_without_mutation() {
+        for mode in [
+            "refuse",
+            "bad-revision",
+            "fake-condition",
+            "extra-secret",
+            "progress-before-probe",
+            "hang",
+        ] {
+            let temp = Temporary::new();
+            let mut server = download_server(&temp);
+            let work = failed_download(&mut server);
+            let original = server.queue.scan("scan").unwrap();
+            let item = server.queue.item("scan", "generic:one").unwrap();
+            begin_retry(&mut server, mode);
+            let reserved = server.queue.scan("scan").unwrap();
+            assert!(reserved.dispatch_revision > original.dispatch_revision);
+            let value = if mode == "hang" {
+                server
+                    .active
+                    .as_mut()
+                    .unwrap()
+                    .download
+                    .as_mut()
+                    .unwrap()
+                    .retry_pending = Some(Instant::now() - Duration::from_secs(181));
+                assert!(server.poll_download().is_err());
+                server.fail_active()
+            } else {
+                match recovery_event(&mut server) {
+                    Ok(Some(value)) => value,
+                    Err(_) => server.fail_active(),
+                    _ => panic!("Recovery must refuse recorded invalid conditions"),
+                }
+            };
+            assert_eq!(value["event"], "source_retry_refused", "{mode}");
+            assert!(server.active.is_none());
+            assert_eq!(server.queue.scan("scan").unwrap(), reserved);
+            assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+            assert_eq!(fs::read(work.join("recorded-media.part")).unwrap(), b"abcd");
+        }
+    }
+
+    #[test]
+    fn native_retry_stale_store_and_stop_preserve_failed_state_and_counter() {
+        for stop in [false, true] {
+            let temp = Temporary::new();
+            let mut server = download_server(&temp);
+            failed_download(&mut server);
+            let original = server.queue.scan("scan").unwrap();
+            let item = server.queue.item("scan", "generic:one").unwrap();
+            begin_retry(&mut server, "complete");
+            let reserved = server.queue.scan("scan").unwrap();
+            assert!(reserved.dispatch_revision > original.dispatch_revision);
+            if stop {
+                assert_eq!(
+                    server.halt_download("scan", true).unwrap()["event"],
+                    "source_retry_stopped"
+                );
+                assert_eq!(server.queue.scan("scan").unwrap(), reserved);
+            } else {
+                let replacement = server
+                    .queue
+                    .update_item_progress_checked(
+                        &reserved,
+                        &item,
+                        &observed_progress(
+                            &item,
+                            ItemStatus::Failed,
+                            item.downloaded_bytes,
+                            item.total_bytes,
+                            Some("NETWORK"),
+                        ),
+                        super::super::now_ms(),
+                    )
+                    .unwrap();
+                assert!(recovery_event(&mut server).is_err());
+                assert_eq!(server.fail_active()["event"], "source_retry_refused");
+                assert_eq!(server.queue.scan("scan").unwrap(), replacement);
+            }
+            assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+            assert!(server.active.is_none());
+        }
+    }
+
+    #[test]
+    fn native_retry_refuses_terminal_wrong_runtime_and_caller_asserted_conditions() {
+        for extra in ["retry_count", "condition", "resume", "headers"] {
+            let mut request =
+                json!({"command":"retry_download", "scan_id":"scan", "identity_key":"generic:one"});
+            request[extra] = json!("untrusted");
+            assert!(serde_json::from_value::<Request>(request).is_err());
+        }
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        assert!(server
+            .prepare_download("scan".into(), "generic:one".into(), true, true)
+            .is_err());
+        failed_download(&mut server);
+        let original = server.queue.scan("scan").unwrap();
+        let item = server.queue.item("scan", "generic:one").unwrap();
+        server.runtime.manifest_hash = "f".repeat(64);
+        assert!(server
+            .prepare_download("scan".into(), "generic:one".into(), true, true)
+            .is_err());
+        assert!(server.active.is_none());
+        assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+        assert_eq!(server.queue.scan("scan").unwrap(), original);
+    }
+
+    #[test]
+    fn native_retry_cancelled_probe_receipt_cannot_authorize_a_new_probe() {
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        let work = failed_download(&mut server);
+        begin_retry(&mut server, "complete");
+        let old_revision = server.queue.scan("scan").unwrap().dispatch_revision;
+        let wire = server
+            .active
+            .as_ref()
+            .unwrap()
+            .events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let (name, old_packet) = match wire {
+            Wire::Message(Envelope {
+                payload:
+                    Payload::Checkpoint {
+                        checkpoint_id,
+                        artifact_hash: Some(hash),
+                        ..
+                    },
+                ..
+            }) => {
+                let value = packet(&work, &checkpoint_id, &hash).unwrap();
+                (checkpoint_id, value)
+            }
+            _ => panic!("A real recorded preflight receipt is required"),
+        };
+        server.halt_download("scan", true).unwrap();
+        fs::write(
+            work.join("download-mode.json"),
+            serde_json::to_vec("complete").unwrap(),
+        )
+        .unwrap();
+        begin_retry(&mut server, "complete");
+        let new_snapshot = server.queue.scan("scan").unwrap();
+        let item = server.queue.item("scan", "generic:one").unwrap();
+        assert!(new_snapshot.dispatch_revision > old_revision);
+        assert!(server.retry_packet(old_packet, name).is_err());
+        assert_eq!(server.queue.scan("scan").unwrap(), new_snapshot);
+        assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+        assert_eq!(
+            recovery_event(&mut server).unwrap().unwrap()["retry_count"],
+            1
+        );
+        assert_eq!(finish_download(&mut server)["event"], "source_downloaded");
     }
 
     #[test]

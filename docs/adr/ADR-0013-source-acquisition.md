@@ -966,3 +966,50 @@ native admissions pin the complete original manifest/source code. Existing
 scans resume their original runtime; a corrected successor starts a fresh
 admission. Rollback may reproduce the old Matroska refusal but preserves
 canonical media/standard exports; no old record is rebound or migrated.
+
+## Explicit selected-item retry after observed media access recovery
+
+The installed failed-item API previously exposed retryability but had no way
+to authorize a new attempt. Add private `retry_download` for original-pin failed
+NETWORK/AUTH_REQUIRED/RATE_LIMITED items, with two additional materialization
+attempts maximum. The native supervisor alone checks the producer, scan/item
+snapshot and persisted retry_count; ordinary download/resume cannot bypass a
+failed row or reset its counter. Unsupported/identity/runtime failures remain
+repair/new-scan actions, without an automatic loop.
+
+Admission reserves a unique checked dispatch revision while retaining all
+failed item fields and its counter, then uses the same verified owned worker.
+This prevents a cancelled/refused probe receipt from authorizing a later probe.
+An additive `source_retry_probe` command carries only original public
+identity, producer, failed revision, error class and counter. Fresh inspection
+must reproduce the exact original identity, then the actual provider adapter
+selects the same default video/audio objects as download. Its approved public
+media transport issues bounded Range0-0/identity requests, reads one byte per
+selected complete object and closes both responses. HTTP auth/rate-limit/error,
+empty/read failure, HTML/encoded responses, invalid ranges, segmented manifests
+and missing audio refuse the decision. Probes never alter private stream files.
+This is a restored-access observation after a failed request; mere metadata,
+caller claims, cookie rewrite or elapsed time does not establish that condition.
+It cannot promise subsequent server health or validate a complete media stream.
+
+The worker publishes one nonsecret hashed `source-retry-access` packet bound
+to original job/stage/producer/item/revision/error/counter. Native checks all
+fields and the unchanged original snapshot, then atomically increments the
+existing counter, transitions Failed to Downloading and advances the checked
+dispatch revision. Only this new generation can dispatch resumable acquisition
+from its existing producer-scoped private work. Final successful exit, streaming
+SHA, file identity and checked no-replace publication remain mandatory. Failed
+preflight or cancellation leaves the row/count/parts intact; materialization
+failure after authorization consumes the attempt. A180s absolute preflight
+deadline supplements heartbeats. Restart preserves the count; late packets and
+other failed siblings cannot authorize or overwrite this item.
+
+This adds private commands/packets only, retaining public source1, worker
+envelope1, producer recipes and SQLite schema2. No durable migration is needed:
+retry_count already persists, and no credential/locator fingerprint is stored.
+Immutable old native/worker releases keep their original jobs and may refuse
+this command. The successor's exact manifest/source needs a fresh admission;
+old scans are never rebound. Rollback preserves standard/canonical output and
+private prefixes while restoring the earlier API. Deterministic recorded HTTP,
+actual-child native CAS/reopen/budget/isolation evidence is separate from real
+packaged/live-provider and complete167/168/175 acceptance.

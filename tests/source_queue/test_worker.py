@@ -74,6 +74,70 @@ class SourceWorkerTests(unittest.TestCase):
         protected.mkdir(parents=True)
         return data, work, protected
 
+    def retry_args(self, session, **changes):
+        args = self.download_args(session)
+        del args["resume"]
+        return {**args, "error_code": "NETWORK", "retry_count": 0, **changes}
+
+    def test_retry_requires_actual_selected_access_and_excludes_tokens_from_receipt(self):
+        session = self.session()
+        item = SourceItem(SourceIdentity("generic", "one", "https://example.test/one"), "one",
+            media_candidates=(MediaCandidate("video", "https://cdn.example.test/video?token=private", "progressive", "video/mp4"),))
+        self.adapter.inspect.return_value = item
+        self.adapter.probe_download_access.return_value = 1
+        document = session.retry_probe(self.retry_args(session))
+        self.adapter.probe_download_access.assert_called_once_with(item)
+        self.assertEqual(document["condition"], "selected_http_access_restored")
+        self.assertEqual(document["retry_count"], 0)
+        self.assertEqual(document["dispatch_revision"], 1)
+        name, _ = session.publish(document, "scan")
+        raw = (self.work / name).read_bytes()
+        self.assertNotIn(b"private", raw)
+        self.assertNotIn(b"headers", raw)
+        with self.assertRaises(SourceError):
+            session.retry_probe(self.retry_args(session, dispatch_revision=2))
+        with self.assertRaises(SourceError):
+            session.download(self.download_args(session))
+        self.assertEqual(self.adapter.inspect.call_count, 1)
+
+    def test_failed_access_or_changed_identity_never_publishes_recovery(self):
+        item = SourceItem(SourceIdentity("generic", "one", "https://example.test/one"), "one")
+        self.adapter.inspect.return_value = item
+        self.adapter.probe_download_access.side_effect = SourceError(SourceErrorCode.NETWORK, "recorded media endpoint remains unavailable")
+        with self.assertRaises(SourceError):
+            self.session().retry_probe(self.retry_args(self.session()))
+        self.assertEqual(list(self.work.iterdir()), [])
+        self.adapter.probe_download_access.reset_mock()
+        self.adapter.inspect.return_value = SourceItem(SourceIdentity("generic", "other", "https://example.test/other"), "other")
+        session = self.session()
+        with self.assertRaises(SourceError):
+            session.retry_probe(self.retry_args(session))
+        self.adapter.probe_download_access.assert_not_called()
+
+    def test_retry_refuses_budget_terminal_codes_extra_args_and_stale_binding(self):
+        for change in ({"retry_count": 2}, {"retry_count": True}, {"error_code": "NOT_FOUND"},
+                       {"error_code": "SOURCE_CHANGED"}, {"resume": True},
+                       {"producer_fingerprint": "b" * 64}, {"dispatch_revision": -1}):
+            session = self.session()
+            with self.subTest(change=change), self.assertRaises(SourceError):
+                session.retry_probe(self.retry_args(session, **change))
+        self.adapter.inspect.assert_not_called()
+
+    def test_authorized_retry_requires_new_revision_for_materialization(self):
+        session = self.session()
+        item = SourceItem(SourceIdentity("generic", "one", "https://example.test/one"), "one")
+        self.adapter.inspect.return_value = item
+        self.adapter.probe_download_access.return_value = 1
+        session.retry_probe(self.retry_args(session))
+        payload = b"recorded private media"
+        def download(item, destination, **kwargs):
+            destination.write_bytes(payload)
+            return DownloadResult(destination, len(payload), sha256(payload).hexdigest(), True)
+        self.adapter.download.side_effect = download
+        result = session.download(self.download_args(session, dispatch_revision=2))
+        self.assertEqual(result["dispatch_revision"], 2)
+        self.assertEqual(self.adapter.inspect.call_count, 2)
+
     def test_saved_provider_capability_reaches_factory_without_identity_or_packet_credentials(self):
         data, work, protected = self.session_scope()
         (protected / "bilibili.session.json").write_text("recorded encrypted capability", encoding="utf-8")

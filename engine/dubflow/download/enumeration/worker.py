@@ -47,6 +47,7 @@ _SHA = re.compile(r"[0-9a-f]{64}")
 _PREPARE = {"bundle_root", "work_root", "manifest_sha256", "provider_id", "source_ref", "page_size"}
 _PAGE = {"producer_fingerprint", "dispatch_revision", "cursor"}
 _DOWNLOAD = {"producer_fingerprint", "dispatch_revision", "identity_key", "source_id", "source_url", "resume"}
+_RETRY = (_DOWNLOAD - {"resume"}) | {"error_code", "retry_count"}
 _PRIVATE_QUERY = {"x_amz_credential", "x_amz_security_token", "x_amz_signature",
     "x_goog_credential", "x_goog_signature", "awsaccesskeyid", "client_secret", "oauth_token", "oauth_verifier"}
 
@@ -235,6 +236,7 @@ class SourceSession:
         self.fingerprint = sha256(json.dumps(self.identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
         self.last_revision: int | None = None
         self.completed = False
+        self.retry_probe_used = False
 
     def ready(self) -> dict:
         return {"schema_version": 1, "kind": "source-ready", "producer": dict(self.identity),
@@ -287,18 +289,27 @@ class SourceSession:
             "page": {"schema_version": SOURCE_CONTRACT_VERSION, "items": items,
                 "failures": failures, "next_cursor": page.next_cursor, "completed": page.completed}}
 
-    def download(self, args: dict, *, progress=None, cancel=None) -> dict:
-        """Reinspect one original identity and materialize only private media.
+    def retry_probe(self, args: dict) -> dict:
+        _keys(args, _RETRY)
+        if (self.completed or self.retry_probe_used or self.last_revision is not None
+                or args["error_code"] not in {"NETWORK", "AUTH_REQUIRED", "RATE_LIMITED"}
+                or type(args["retry_count"]) is not int or not 0 <= args["retry_count"] < 2):
+            raise _invalid()
+        self.retry_probe_used = True
+        item, reference = self._selected_item(args)
+        count = self.adapter.probe_download_access(item)
+        if type(count) is not int or count not in {1, 2}:
+            raise _invalid()
+        return {"schema_version": 1, "kind": "source-retry-access", "producer_fingerprint": self.fingerprint,
+                "dispatch_revision": args["dispatch_revision"], "identity_key": args["identity_key"],
+                "source_id": args["source_id"], "source_url": reference, "previous_error_code": args["error_code"],
+                "retry_count": args["retry_count"], "condition": "selected_http_access_restored", "probed_streams": count}
 
-        Progress is observed selected-stream bytes, not a durable media receipt.
-        Only the supervisor can authorize a final producer-bound queue commit.
-        """
-        _keys(args, _DOWNLOAD)
+    def _selected_item(self, args: dict):
         revision = args["dispatch_revision"]
         if (self.completed or _digest(args["producer_fingerprint"]) != self.fingerprint
                 or type(revision) is not int or not 0 <= revision < (1 << 63) - 1
-                or (self.last_revision is not None and revision <= self.last_revision)
-                or type(args["resume"]) is not bool):
+                or (self.last_revision is not None and revision <= self.last_revision)):
             raise _invalid()
         for key, limit in (("identity_key", 1024), ("source_id", 512)):
             value = args[key]
@@ -313,6 +324,19 @@ class SourceSession:
                 or item.identity.identity_key != args["identity_key"]
                 or _public_reference(item.identity.canonical_url) != reference):
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "selected source identity changed before materialization")
+        return item, reference
+
+    def download(self, args: dict, *, progress=None, cancel=None) -> dict:
+        """Reinspect one original identity and materialize only private media.
+
+        Progress is observed selected-stream bytes, not a durable media receipt.
+        Only the supervisor can authorize a final producer-bound queue commit.
+        """
+        _keys(args, _DOWNLOAD)
+        if type(args["resume"]) is not bool:
+            raise _invalid()
+        item, reference = self._selected_item(args)
+        revision = args["dispatch_revision"]
         binding = {"producer_fingerprint": self.fingerprint, "dispatch_revision": revision,
             "identity_key": args["identity_key"], "source_id": args["source_id"], "source_url": reference}
         observed = [0, None]
@@ -426,7 +450,7 @@ def main() -> int:
                             "reusable": True})
                         emitter.send(MessageType.SHUTDOWN, {"status": "cancelled"})
                         os._exit(0)
-                    if first.payload["command"] == "source_session" or request.payload["command"] not in {"source_page", "source_download"}:
+                    if first.payload["command"] == "source_session" or request.payload["command"] not in {"source_page", "source_download", "source_retry_probe"}:
                         raise _invalid()
                     pending.put_nowait(request)
             except Exception:
@@ -457,10 +481,12 @@ def main() -> int:
                         last_progress[0] = now
 
                 document = session.download(request.payload["args"], progress=publish_progress)
+            elif request.payload["command"] == "source_retry_probe":
+                document = session.retry_probe(request.payload["args"])
             else:
                 document = session.page(request.payload["args"])
             emitter.checkpoint(session.publish(document, first.job_id))
-            if document["kind"] == "source-download" or document["page"]["completed"]:
+            if document["kind"] == "source-download" or (document["kind"] == "source-page" and document["page"]["completed"]):
                 emitter.send(MessageType.SHUTDOWN, {"status": "completed"})
                 return 0
         return 0

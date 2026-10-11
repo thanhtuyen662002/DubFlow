@@ -224,3 +224,31 @@ This API needs the matching pinned native/worker release. Older installed
 releases retain their previous protocol and acquisition behavior. Windows
 Release requires synthetic-cookie native/DPAPI and owned-factory proofs in both
 staged and installed source-runtime reports; this is not live-login approval.
+
+## Explicit failed-download recovery
+
+`retry_download` accepts only `scan_id` and `identity_key`. It is available for
+failed `NETWORK`, `AUTH_REQUIRED` or `RATE_LIMITED` materialization under the
+original admitted producer, at most twice in addition to the initial attempt.
+Use `session_save` first when authentication needs repair. Ordinary `download`
+cannot retry a failed row, and a caller cannot supply its own retry count or
+assert that a condition changed. Terminal identity/runtime failures require
+repair or a new admitted scan.
+
+`source_retry_preparing` reserves a unique checked dispatch revision while
+retaining every item field and its retry counter. The same owned
+worker freshly inspects the original public identity and reads one byte from
+every default selected complete HTTP video/audio object through the approved
+provider transport. A successful typed, hashed, generation-bound receipt lets
+native code emit `source_retry_authorized`, increment the durable retry count
+and start original-pin resumable materialization with a new dispatch revision.
+This proves access at the time of the probe, not a completed or healthy video.
+The final download still requires its usual successful exit, hash and publication.
+
+Failed/malformed/stale preflight emits `source_retry_refused`, leaving the failed
+row, counter and private parts intact. Preflight has a 180-second total deadline;
+pause/cancel emits `source_retry_stopped` without consuming an attempt. Failure
+after authorization consumes that attempt. Restart retains the consumed count
+and rejects callbacks from previous generations. Other selected items remain
+available. This private additive command requires a coherent native/worker
+release; it does not repin old scans or change SQLite schema 2.

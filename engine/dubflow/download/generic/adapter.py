@@ -425,6 +425,20 @@ class GenericUrlAdapter:
             return enumerate_playlist(channel_id, cursor=cursor, page_size=page_size)
         raise SourceError(SourceErrorCode.UNSUPPORTED, "generic URL enumeration requires a playlist-capable extractor", provider_id=self.provider_id)
 
+    def _select_download(self, item: SourceItem, candidate_id: str | None = None):
+        candidates = [candidate for candidate in item.media_candidates if candidate.mime_type.startswith("video/") and (candidate_id is None or candidate.candidate_id == candidate_id)]
+        if not candidates:
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "requested generic media candidate was not found", provider_id=self.provider_id, source_id=item.identity.source_id)
+        candidates.sort(key=lambda candidate: (-((candidate.width or 0) * (candidate.height or 0)), -(candidate.height or 0), not candidate.has_audio, candidate.candidate_id))
+        selected = candidates[0]
+        audio = None if selected.has_audio else next((candidate for candidate in item.media_candidates if candidate.mime_type.startswith("audio/") and candidate.has_audio), None)
+        return selected, audio
+
+    def probe_download_access(self, item: SourceItem) -> int:
+        if item.identity.provider_id != self.provider_id:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "recovery item belongs to another provider")
+        return self._materializer.probe_access(*self._select_download(item))
+
     def download(self, item: SourceItem, destination: str | Path, *, candidate_id: str | None = None, **kwargs: object) -> DownloadResult:
         if item.identity.provider_id != self.provider_id:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "generic download received another provider identity", provider_id=self.provider_id)
@@ -433,13 +447,8 @@ class GenericUrlAdapter:
             if fresh.identity.identity_key != item.identity.identity_key:
                 raise SourceError(SourceErrorCode.SOURCE_CHANGED, "playlist video identity changed before download", provider_id=self.provider_id)
             item = fresh
-        candidates = [candidate for candidate in item.media_candidates if candidate.mime_type.startswith("video/") and (candidate_id is None or candidate.candidate_id == candidate_id)]
-        if not candidates:
-            raise SourceError(SourceErrorCode.UNSUPPORTED, "requested generic media candidate was not found", provider_id=self.provider_id, source_id=item.identity.source_id)
+        selected, audio = self._select_download(item, candidate_id)
         try:
-            candidates.sort(key=lambda candidate: (-((candidate.width or 0) * (candidate.height or 0)), -(candidate.height or 0), not candidate.has_audio, candidate.candidate_id))
-            selected = candidates[0]
-            audio = None if selected.has_audio else next((candidate for candidate in item.media_candidates if candidate.mime_type.startswith("audio/") and candidate.has_audio), None)
             if self._stream_materializer is not None:
                 return self._stream_materializer.download(selected, destination, audio=audio, **kwargs)
             if not selected.has_audio:
@@ -453,7 +462,7 @@ class GenericUrlAdapter:
                 DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK,
                 DownloadErrorCode.UNSUPPORTED: SourceErrorCode.UNSUPPORTED,
             }
-            raise SourceError(mapping.get(error.code, SourceErrorCode.NETWORK), "generic media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
+            raise SourceError(mapping.get(error.code, SourceErrorCode.SOURCE_CHANGED), "generic media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
 
 
 __all__ = ["DirectUrlTransport", "GenericUrlAdapter", "GenericTransport", "SubprocessYtDlpRunner", "YtDlpRunner", "YtDlpTransport"]

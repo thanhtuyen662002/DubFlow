@@ -294,6 +294,70 @@ class MediaMaterializer:
         self.max_bytes = max_bytes
         self.chunk_bytes = chunk_bytes
 
+    def probe_access(self, video: MediaCandidate, audio: MediaCandidate | None = None) -> int:
+        """Check restored access without modifying retained download state.
+
+        A successful inspection alone cannot establish media endpoint health.
+        Read exactly one byte from each selected complete HTTP object and close
+        it. This authorizes a bounded attempt, never media publication.
+        """
+        candidates = (video,) if audio is None else (video, audio)
+        if (not isinstance(video, MediaCandidate) or not video.mime_type.startswith("video/")
+                or (audio is None and not video.has_audio)
+                or (audio is not None and (not isinstance(audio, MediaCandidate)
+                    or not audio.mime_type.startswith("audio/") or not audio.has_audio))):
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "selected recovery streams are unavailable")
+        for candidate in candidates:
+            try:
+                url = validate_http_url(candidate.locator)
+            except DownloadError:
+                raise SourceError(SourceErrorCode.INVALID_INPUT, "selected recovery locator was refused") from None
+            if (candidate.kind not in {"progressive", "dash"}
+                    or urlsplit(url).path.lower().endswith((".mpd", ".m3u8"))
+                    or candidate.mime_type not in {"video/mp4", "audio/mp4", "video/webm", "audio/webm"}):
+                raise SourceError(SourceErrorCode.UNSUPPORTED, "selected recovery stream is not a complete HTTP object")
+            response = None
+            try:
+                response = self.transport.open(url, headers={"Range": "bytes=0-0", "Accept-Encoding": "identity"})
+                validate_http_url(response.url)
+                if response.status in {401, 403}:
+                    raise SourceError(SourceErrorCode.AUTH_REQUIRED, "selected recovery stream remains unavailable", action="authenticate")
+                if response.status == 429:
+                    raise SourceError(SourceErrorCode.RATE_LIMITED, "selected recovery stream remains rate limited", retryable=True)
+                if response.status >= 500:
+                    raise SourceError(SourceErrorCode.NETWORK, "selected recovery stream remains unavailable", retryable=True)
+                if response.status not in {200, 206}:
+                    raise SourceError(SourceErrorCode.SOURCE_CHANGED, "selected recovery stream response was refused")
+                encoding = _header(response.headers, "content-encoding")
+                content_type = _header(response.headers, "content-type")
+                if (encoding and encoding.lower() != "identity") or (content_type and content_type.split(";", 1)[0].strip().lower()
+                        not in {candidate.mime_type, "application/octet-stream", "binary/octet-stream"}):
+                    raise SourceError(SourceErrorCode.SOURCE_CHANGED, "selected recovery response is not a media object")
+                if response.status == 206:
+                    raw_range = _header(response.headers, "content-range") or ""
+                    if len(raw_range) > 128:
+                        raise SourceError(SourceErrorCode.SOURCE_CHANGED, "selected recovery range exceeds its bound")
+                    match = _CONTENT_RANGE.fullmatch(raw_range)
+                    if (match is None or int(match[1]) != 0 or int(match[2]) < 0
+                            or match[3] == "*" or not 0 < int(match[3]) <= self.max_bytes
+                            or int(match[2]) >= int(match[3])):
+                        raise SourceError(SourceErrorCode.SOURCE_CHANGED, "selected recovery range was refused")
+                observed = response.body.read(1)
+                if not isinstance(observed, bytes) or len(observed) != 1:
+                    raise SourceError(SourceErrorCode.NETWORK, "selected recovery stream returned no data", retryable=True)
+            except DownloadError as error:
+                mapping = {DownloadErrorCode.AUTH_REQUIRED: SourceErrorCode.AUTH_REQUIRED,
+                           DownloadErrorCode.RATE_LIMITED: SourceErrorCode.RATE_LIMITED,
+                           DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK}
+                raise SourceError(mapping.get(error.code, SourceErrorCode.SOURCE_CHANGED),
+                    "selected recovery stream access failed", retryable=error.retryable) from None
+            except (OSError, HTTPException, TimeoutError):
+                raise SourceError(SourceErrorCode.NETWORK, "selected recovery stream read failed", retryable=True) from None
+            finally:
+                if response is not None:
+                    response.close()
+        return len(candidates)
+
     def download(
         self,
         candidate: MediaCandidate,

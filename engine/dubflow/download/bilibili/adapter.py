@@ -356,6 +356,12 @@ class BilibiliSourceAdapter:
         selected = candidates[0]
         return BilibiliDownloadChoice(item.identity.source_id, selected, None if selected.has_audio else audio)
 
+    def probe_download_access(self, item: SourceItem) -> int:
+        if item.identity.provider_id != self.provider_id:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "recovery item belongs to another provider")
+        selected = self.select_download(item)
+        return self._materializer.probe_access(selected.candidate, selected.audio_candidate)
+
     def download(self, item: SourceItem, destination: str | Path, *, choice: BilibiliDownloadChoice | None = None, **kwargs: object) -> DownloadResult:
         if item.identity.provider_id != self.provider_id:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "download item belongs to another provider", provider_id=self.provider_id)
@@ -384,7 +390,7 @@ class BilibiliSourceAdapter:
                 DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK,
                 DownloadErrorCode.UNSUPPORTED: SourceErrorCode.UNSUPPORTED,
             }
-            raise SourceError(mapping.get(error.code, SourceErrorCode.NETWORK), "Bilibili media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
+            raise SourceError(mapping.get(error.code, SourceErrorCode.SOURCE_CHANGED), "Bilibili media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
 
 
 __all__ = ["BilibiliDownloadChoice", "BilibiliSourceAdapter", "BilibiliTransportError", "normalize_source_ref"]
