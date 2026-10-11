@@ -32,6 +32,7 @@ use worker_tree::WorkerTree;
 mod source_owner;
 mod source_server;
 mod review_pin;
+mod review_assets;
 
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";

@@ -14,7 +14,7 @@ fn invalid(message: &str) -> SupervisorError {
     SupervisorError::Invalid(message.into())
 }
 
-fn plain(path: &Path) -> SupervisorResult<()> {
+pub(super) fn plain(path: &Path) -> SupervisorResult<()> {
     if !path.is_absolute() {
         return Err(invalid("review path must be absolute"));
     }

@@ -233,6 +233,41 @@ remain private recovery evidence. Updater/GC retention must preserve the current
 graph and its pending undo targets before this feature can be shipped. No
 destructive reverse migration is needed for ordinary schema2 rollback readers.
 
+## Private native accepted-cue storage (Draft integration)
+
+The supervisor has an internal PCM-copy API under its durable control root:
+`control/review-assets/<sha256(job-id)>/<sha256(wav)>.wav`. A job digest avoids
+unsafe filesystem interpretations of otherwise valid colon-bearing contract
+IDs. Callers supply roots resolved by native configuration and semantically
+admitted cue pins, not browser-provided paths. This storage API validates the
+physical pin only; cue identity, canonical timing and producer/model/voice
+provenance still require the native graph caller's closed-schema admission.
+
+One candidate is copied from a single open handle into a create-new private
+file using a32KiB buffer. SHA256, exact bytes and bounded16-bit PCM RIFF chunks
+must match before the file is flushed and exclusively published by a same-volume
+hard link. The accepted object is sealed readonly and revalidated before being
+returned. It is a separate copy, so later worker candidate changes do not modify
+it. Existing hash-named objects are revalidated and never overwritten or silently
+repaired. Symlinks/reparse points, traversal, oversized/truncated files, duplicate
+format/data chunks and PCM parameter mismatches are refused. Ancillary RIFF
+chunks are bounded and hash-covered. The currently supported cue file limit is
+64MiB; this is not a whole long-form mix-storage API.
+
+Only a create-new-owned private partial file can be removed on failure. Original
+exports, candidates and previous accepted objects remain intact. A publication
+error may retain a private orphan for explicit recovery, but creates no graph
+head. Unix flushes the containing directory; Windows package/fault evidence is
+still required before making power-loss guarantees for this copy API. Readonly
+is a supervisor lifecycle rule, not a sandbox against another process running
+with the user's filesystem permissions; graph reuse/undo must revalidate pins.
+
+This foundation does not expose a CLI/IPC mutation command, alter SQLite,
+regenerate models, rewrite TTS document paths or update the active graph.
+Native semantic graph admission, object/document binding, atomic graph CAS,
+pending-undo retention and installed GUI edit/undo remain required before this
+path can be enabled in the product.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only
