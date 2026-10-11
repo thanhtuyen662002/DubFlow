@@ -28,6 +28,22 @@ class RecordedTransport:
 
 
 class DouyinCreatorTests(unittest.TestCase):
+    def test_unpaired_surrogate_title_keeps_neighbor_identities_and_valid_emoji(self):
+        for bad in ("bad\ud800title", "bad\udffftitle"):
+            with self.subTest(title=ascii(bad)):
+                transport = RecordedTransport(page([
+                    {"id": "123456", "title": "Before"},
+                    {"id": "234567", "title": bad},
+                    {"id": "345678", "title": "After \U0001f600"},
+                ]))
+                result = creator_page(transport, URL, cursor=None, page_size=3)
+                self.assertEqual([item.identity.source_id for item in result.items], ["123456", "345678"])
+                self.assertEqual([(item.source_id, item.code) for item in result.failures],
+                                 [("234567", SourceErrorCode.SOURCE_CHANGED)])
+                self.assertEqual(result.items[-1].title, "After \U0001f600")
+                for item in result.items:
+                    item.title.encode("utf-8", errors="strict")
+
     def test_provider_cursor_resume_after_process_reopen_and_partial_page(self):
         first_transport = RecordedTransport(page([{"id": "123456", "title": "First"}, None], more=True, position=900))
         first = sdk_page(first_transport, "douyin", URL, cursor=None, page_size=100, session={"Cookie": "synthetic-secret"})

@@ -58,7 +58,8 @@ def _entry(value):
     if title is None or title == "":
         title = identifier
     if (not isinstance(title, str) or len(title) > 4096
-            or any((ord(ch) < 32 and ch not in "\r\n\t") or ord(ch) == 127 for ch in title)):
+            or any((ord(ch) < 32 and ch not in "\r\n\t") or ord(ch) == 127
+                   or 0xD800 <= ord(ch) <= 0xDFFF for ch in title)):
         return {"id": identifier, "error_code": "SOURCE_CHANGED"}
     title = " ".join(title.split()) or identifier
     return {"id": identifier, "title": title if len(title) <= 1024 else title[:1023] + "…"}

@@ -74,7 +74,8 @@ def creator_page(transport, url: str, *, cursor: str | None, page_size: int, ses
             continue
         title = entry.get("title")
         if (set(entry) != {"id", "title"} or not isinstance(title, str) or not title.strip()
-                or len(title) > 1024 or any(ord(ch) < 32 or ord(ch) == 127 for ch in title)):
+                or len(title) > 1024 or any(ord(ch) < 32 or ord(ch) == 127
+                    or 0xD800 <= ord(ch) <= 0xDFFF for ch in title)):
             failures.append(SourcePageFailure(identifier, SourceErrorCode.SOURCE_CHANGED, "creator item metadata is malformed"))
             continue
         items.append(SourceItem(SourceIdentity("douyin", identifier, f"https://www.douyin.com/video/{identifier}"), title))

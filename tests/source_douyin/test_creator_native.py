@@ -48,6 +48,22 @@ class Downloader:
 
 
 class DouyinNativePageTests(unittest.TestCase):
+    def test_unpaired_surrogate_titles_are_item_failures_and_valid_emoji_survives(self):
+        for bad in ("bad\ud800title", "bad\udffftitle"):
+            with self.subTest(title=ascii(bad)):
+                response = raw_page([
+                    {"aweme_id": "123456", "desc": "Before"},
+                    {"aweme_id": "234567", "desc": bad},
+                    {"aweme_id": "345678", "desc": "After \U0001f600"},
+                ])
+                result = native.parse_page(json.dumps(response, ensure_ascii=True).encode(), page_size=3)
+                self.assertEqual(result["entries"], [
+                    {"id": "123456", "title": "Before"},
+                    {"id": "234567", "error_code": "SOURCE_CHANGED"},
+                    {"id": "345678", "title": "After \U0001f600"},
+                ])
+                json.dumps(result, ensure_ascii=False).encode("utf-8")
+
     def test_pinned_upstream_signature_vector_and_standard_sm3(self):
         self.assertEqual(signature._sm3(b"abc"), "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0")
         saved = random.getstate()
