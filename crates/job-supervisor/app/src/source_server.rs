@@ -2945,7 +2945,7 @@ while True:
         assert_eq!(observed["identity_key"], "generic:one");
         assert_eq!(
             observed["producer_fingerprint"],
-            current.producer_fingerprint
+            current.producer_fingerprint.as_deref().unwrap()
         );
         assert_eq!(observed["dispatch_revision"], current.dispatch_revision);
         assert_eq!(observed["size_bytes"], 4);
