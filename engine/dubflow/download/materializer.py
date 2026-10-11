@@ -11,11 +11,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from http.client import HTTPException
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
-import shutil
+import tempfile
+import time
 from typing import BinaryIO, Callable, Mapping, Protocol
 from urllib.parse import urljoin, urlsplit
 from urllib.error import HTTPError, URLError
@@ -27,6 +30,8 @@ from .source_adapter import MediaCandidate, SourceError, SourceErrorCode
 MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024 * 1024  # 32 GiB safety ceiling per item.
 MAX_REDIRECTS = 5
 MAX_CHUNK_BYTES = 1024 * 1024
+_CHECKPOINT_BYTES = 16 * 1024 * 1024
+_CHECKPOINT_SECONDS = 5.0
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CONTENT_RANGE = re.compile(r"^bytes (\d+)-(\d+)/(\d+|\*)$", re.IGNORECASE)
 
@@ -123,10 +128,16 @@ class UrllibHttpTransport:
                     if hop >= self.max_redirects:
                         raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "redirect limit exceeded") from error
                     redirected = validate_http_url(urljoin(current, location))
-                    if urlsplit(redirected).hostname != urlsplit(current).hostname:
+                    if _origin(redirected) != _origin(current):
                         request_headers = {key: value for key, value in request_headers.items() if key.lower() not in {"authorization", "cookie", "proxy-authorization"}}
                     current = redirected
                     continue
+                if error.code == 416:
+                    # urllib raises for a range refusal. Return the live
+                    # response so the materializer can close it and make its
+                    # single, condition-changing retry without Range.
+                    return HttpResponse(416, _headers(error.headers), error, current)
+                error.close()
                 if error.code in {401, 403}:
                     raise DownloadError(DownloadErrorCode.AUTH_REQUIRED, "media endpoint requires authentication", action="authenticate") from error
                 if error.code == 429:
@@ -145,12 +156,18 @@ class UrllibHttpTransport:
                 if hop >= self.max_redirects:
                     raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "redirect limit exceeded")
                 redirected = validate_http_url(urljoin(current, location))
-                if urlsplit(redirected).hostname != urlsplit(current).hostname:
+                if _origin(redirected) != _origin(current):
                     request_headers = {key: value for key, value in request_headers.items() if key.lower() not in {"authorization", "cookie", "proxy-authorization"}}
                 current = redirected
                 continue
             return HttpResponse(status, _headers(response.headers), response, current)
         raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "redirect limit exceeded")
+
+
+def _origin(url: str) -> tuple[str, str | None, int]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, parts.hostname, parts.port or (443 if scheme == "https" else 80)
 
 
 def _headers(headers: object) -> dict[str, str]:
@@ -194,11 +211,11 @@ def _validate_destination(destination: Path, root: Path | None) -> tuple[Path, P
         raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "destination must be an absolute path")
     if destination.name in {"", ".", ".."} or any(part in {"", ".", ".."} for part in destination.parts):
         raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "destination contains an unsafe path component")
-    if destination.exists() and destination.is_symlink():
-        raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "destination must not be a symbolic link")
+    _reject_links(destination)
     if root is not None:
         if not root.is_absolute():
             raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "download root must be absolute")
+        _reject_links(root)
         root_resolved = root.resolve()
         destination_resolved = destination.resolve(strict=False)
         try:
@@ -210,9 +227,48 @@ def _validate_destination(destination: Path, root: Path | None) -> tuple[Path, P
     except OSError as error:
         raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "unable to create destination directory") from error
     part = destination.with_name(destination.name + ".part")
-    if part.exists() and part.is_symlink():
-        raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "partial destination must not be a symbolic link")
+    _reject_links(part)
     return destination, part
+
+
+def _reject_links(path: Path) -> None:
+    for entry in (path, *path.parents):
+        if entry.is_symlink() or (getattr(entry, "is_junction", lambda: False)()):
+            raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "download path contains a link or junction")
+    if path.exists() and not (path.is_file() or path.is_dir()):
+        raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "download path is not a regular file or directory")
+
+
+def _file_digest(path: Path, chunk_bytes: int = MAX_CHUNK_BYTES) -> str:
+    _reject_links(path)
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(chunk_bytes), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_receipt(path: Path, payload: Mapping[str, object]) -> None:
+    _reject_links(path)
+    temporary = None
+    try:
+        descriptor, name = tempfile.mkstemp(prefix=".download-receipt-", dir=path.parent)
+        temporary = Path(name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        _reject_links(path)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _strong_etag(value: str | None) -> str | None:
+    if isinstance(value, str) and 2 <= len(value) <= 1024 and value.startswith('"') and value.endswith('"') and not any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        return value
+    return None
 
 
 @dataclass(frozen=True)
@@ -248,6 +304,7 @@ class MediaMaterializer:
         expected_size: int | None = None,
         resume: bool = True,
         cancel: Callable[[], bool] | None = None,
+        progress: Callable[[int, int | None], None] | None = None,
     ) -> DownloadResult:
         if not isinstance(candidate, MediaCandidate):
             raise DownloadError(DownloadErrorCode.INVALID_SOURCE, "candidate is invalid")
@@ -258,13 +315,15 @@ class MediaMaterializer:
         if expected_size is not None and (type(expected_size) is not int or not 0 <= expected_size <= self.max_bytes):
             raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "expected size is outside the bounded range")
         destination_path, part_path = _validate_destination(Path(destination), None if root is None else Path(root))
+        if progress is not None and not callable(progress):
+            raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "download progress observer is invalid")
         if candidate.kind == "local":
-            result = self._copy_local(candidate.locator, destination_path, part_path, expected_sha256, expected_size, resume, cancel)
+            result = self._copy_local(candidate.locator, destination_path, part_path, expected_sha256, expected_size, resume, cancel, progress)
         else:
-            result = self._download_http(candidate.locator, destination_path, part_path, expected_sha256, expected_size, resume, cancel)
+            result = self._download_http(candidate.locator, destination_path, part_path, expected_sha256, expected_size, resume, cancel, progress)
         return result
 
-    def _copy_local(self, locator: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None) -> DownloadResult:
+    def _copy_local(self, locator: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None, progress: Callable[[int, int | None], None] | None) -> DownloadResult:
         source = Path(locator)
         if not source.is_absolute() or not source.is_file() or source.is_symlink():
             raise DownloadError(DownloadErrorCode.INVALID_SOURCE, "local media source is unavailable or unsafe")
@@ -280,13 +339,28 @@ class MediaMaterializer:
         mode = "ab" if start else "wb"
         digest = hashlib.sha256()
         if start:
-            with part.open("rb") as existing:
-                _hash_stream(existing, digest, start, self.chunk_bytes)
-            resumed = True
+            # A same-sized source can change between attempts. Never splice a
+            # private prefix from another version into the current source.
+            with part.open("rb") as existing, source.open("rb") as original:
+                remaining = start
+                while remaining:
+                    chunk = existing.read(min(self.chunk_bytes, remaining))
+                    if not chunk or chunk != original.read(len(chunk)):
+                        start = 0
+                        break
+                    remaining -= len(chunk)
+            if start:
+                with part.open("rb") as existing:
+                    _hash_stream(existing, digest, start, self.chunk_bytes)
+                resumed = True
+            mode = "ab" if start else "wb"
+        source_stamp = source.stat()
         try:
             with source.open("rb") as src, part.open(mode) as out:
                 src.seek(start)
                 copied = start
+                if progress is not None:
+                    progress(copied, source_size)
                 while True:
                     if cancel and cancel():
                         raise DownloadError(DownloadErrorCode.CANCELLED, "download cancelled at a safe boundary")
@@ -298,20 +372,61 @@ class MediaMaterializer:
                         raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "download exceeds the configured size limit")
                     digest.update(chunk)
                     out.write(chunk)
+                    if progress is not None:
+                        progress(copied, source_size)
                 out.flush()
                 os.fsync(out.fileno())
+            after = source.stat()
+            if (source_stamp.st_size, source_stamp.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "local source changed during copy")
         except DownloadError:
             raise
         except OSError as error:
             raise DownloadError(DownloadErrorCode.NETWORK, "local media read failed", retryable=True, action="retry") from error
+        if cancel and cancel():
+            raise DownloadError(DownloadErrorCode.CANCELLED, "local copy cancelled before publication")
         return self._publish(part, destination, copied, digest.hexdigest(), expected_sha256, expected_size, resumed)
 
-    def _download_http(self, locator: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None) -> DownloadResult:
+    def _download_http(self, locator: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None, progress: Callable[[int, int | None], None] | None) -> DownloadResult:
         url = validate_http_url(locator)
         start = part.stat().st_size if resume and part.exists() else 0
+        receipt = part.with_name(part.name + ".resume.json")
+        _reject_links(receipt)
+        locator_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        validator = None
+        prefix_sha256 = None
+        physical_size = start
+        if start:
+            try:
+                if receipt.is_file() and receipt.stat().st_size <= 4096:
+                    record = json.loads(receipt.read_text(encoding="utf-8"))
+                    if (isinstance(record, dict) and record.get("schema_version") == 1
+                        and record.get("locator_sha256") == locator_hash
+                        and type(record.get("size_bytes")) is int
+                        and 0 < record["size_bytes"] <= min(start, self.max_bytes)):
+                        # A killed worker may leave bytes after the last fsynced
+                        # checkpoint. Authenticate only the committed prefix.
+                        prefix = hashlib.sha256()
+                        with part.open("rb") as existing:
+                            _hash_stream(existing, prefix, record["size_bytes"], self.chunk_bytes)
+                        if prefix.hexdigest() == record.get("sha256"):
+                            validator = _strong_etag(record.get("etag"))
+                            if validator is not None:
+                                start = record["size_bytes"]
+                                prefix_sha256 = record["sha256"]
+            except (OSError, ValueError, UnicodeError):
+                validator = None
+            # Legacy unbound partials are only safe if the caller pins the
+            # final bytes. A length or signed URL alone is not such a pin.
+            if validator is None and expected_sha256 is None:
+                start = 0
         headers = {"Accept-Encoding": "identity"}
         if start:
             headers["Range"] = f"bytes={start}-"
+            if validator is not None:
+                headers["If-Range"] = validator
+        checkpoint_etag = None
+        wrote_body = False
         try:
             response = self.transport.open(url, headers=headers)
         except DownloadError:
@@ -340,10 +455,22 @@ class MediaMaterializer:
                 match = _CONTENT_RANGE.fullmatch(content_range or "")
                 if not match or int(match.group(1)) != start:
                     raise DownloadError(DownloadErrorCode.RESUME_INVALID, "server returned an invalid content range")
+                if int(match.group(2)) < start:
+                    raise DownloadError(DownloadErrorCode.RESUME_INVALID, "server returned an inverted content range")
                 total_text = match.group(3)
                 total = None if total_text == "*" else int(total_text)
+                if total is not None and int(match.group(2)) >= total:
+                    raise DownloadError(DownloadErrorCode.RESUME_INVALID, "content range exceeds its total")
+                if start and validator is not None and _strong_etag(_header(response.headers, "etag")) != validator:
+                    raise DownloadError(DownloadErrorCode.RESUME_INVALID, "range validator changed or is missing")
             else:
                 total = None
+            encoding = _header(response.headers, "content-encoding")
+            if encoding is not None and encoding.lower() != "identity":
+                raise DownloadError(DownloadErrorCode.RESUME_INVALID, "encoded responses cannot preserve byte ranges")
+            # A range accepted only because the caller pins the final hash
+            # cannot authenticate the old prefix using the new response ETag.
+            checkpoint_etag = _strong_etag(_header(response.headers, "etag")) if not start or validator is not None else None
             length_text = _header(response.headers, "content-length")
             length = None
             if length_text is not None:
@@ -353,6 +480,8 @@ class MediaMaterializer:
                     raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "media endpoint returned an invalid content length") from error
                 if length < 0:
                     raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, "media endpoint returned a negative content length")
+                if status == 206 and length != int(match.group(2)) - start + 1:
+                    raise DownloadError(DownloadErrorCode.RESUME_INVALID, "content length contradicts the byte range")
             if total is None and length is not None:
                 total = start + length if status == 206 else length
             if total is not None and total > self.max_bytes:
@@ -362,13 +491,26 @@ class MediaMaterializer:
             digest = hashlib.sha256()
             resumed = bool(start)
             if start:
-                if not part.exists() or part.stat().st_size != start:
+                if not part.exists() or part.stat().st_size != physical_size:
                     raise DownloadError(DownloadErrorCode.RESUME_INVALID, "partial file size changed before resume")
                 with part.open("rb") as existing:
                     _hash_stream(existing, digest, start, self.chunk_bytes)
-            mode = "ab" if start else "wb"
+                if prefix_sha256 is not None and digest.hexdigest() != prefix_sha256:
+                    raise DownloadError(DownloadErrorCode.RESUME_INVALID, "committed prefix changed before resume")
+            mode = "r+b" if start else "wb"
             copied = start
+            if progress is not None:
+                progress(copied, total)
             with part.open(mode) as out:
+                if start:
+                    # Keep private tail bytes intact through every HTTP/pin
+                    # refusal. Discard them only after a checked response.
+                    out.truncate(start)
+                    out.seek(start)
+                wrote_body = True
+                checkpoint_bytes = start
+                checkpoint_time = time.monotonic()
+                first_checkpoint = True
                 while True:
                     if cancel and cancel():
                         raise DownloadError(DownloadErrorCode.CANCELLED, "download cancelled at a safe boundary")
@@ -382,16 +524,46 @@ class MediaMaterializer:
                         raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "download exceeds the configured size limit")
                     digest.update(chunk)
                     out.write(chunk)
+                    now = time.monotonic()
+                    if (first_checkpoint or copied - checkpoint_bytes >= _CHECKPOINT_BYTES
+                            or now - checkpoint_time >= _CHECKPOINT_SECONDS):
+                        # Native pause/crash may terminate us during the next
+                        # blocking network read, before finally can run.
+                        out.flush()
+                        os.fsync(out.fileno())
+                        _write_receipt(receipt, {"schema_version": 1, "locator_sha256": locator_hash,
+                            "size_bytes": copied, "sha256": digest.hexdigest(), "etag": checkpoint_etag})
+                        checkpoint_bytes, checkpoint_time = copied, now
+                        first_checkpoint = False
+                    if progress is not None:
+                        progress(copied, total)
                 out.flush()
                 os.fsync(out.fileno())
             if total is not None and copied != total:
                 raise DownloadError(DownloadErrorCode.NETWORK, "media response ended before its declared size", retryable=True, action="retry")
-            return self._publish(part, destination, copied, digest.hexdigest(), expected_sha256, expected_size, resumed)
+            if cancel and cancel():
+                raise DownloadError(DownloadErrorCode.CANCELLED, "download cancelled before publication")
+            result = self._publish(part, destination, copied, digest.hexdigest(), expected_sha256, expected_size, resumed)
+            try:
+                receipt.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return result
         except DownloadError:
             raise
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, HTTPException) as error:
             raise DownloadError(DownloadErrorCode.NETWORK, "media response could not be written", retryable=True, action="retry") from error
         finally:
+            if wrote_body and part.is_file():
+                try:
+                    with part.open("r+b") as retained:
+                        os.fsync(retained.fileno())
+                    _write_receipt(receipt, {"schema_version": 1, "locator_sha256": locator_hash,
+                        "size_bytes": part.stat().st_size, "sha256": _file_digest(part, self.chunk_bytes), "etag": checkpoint_etag})
+                except OSError:
+                    # Missing receipts cause a safe full restart. Preserve the
+                    # original download/storage error and the usable final file.
+                    pass
             try:
                 response.close()
             except Exception:
@@ -402,8 +574,7 @@ class MediaMaterializer:
             raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "download size does not match the expected size")
         if expected_sha256 is not None and digest != expected_sha256.lower():
             raise DownloadError(DownloadErrorCode.CHECKSUM_MISMATCH, "download content hash does not match the expected hash")
-        if destination.exists() and destination.is_symlink():
-            raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "destination became a symbolic link before publish")
+        _reject_links(destination)
         try:
             os.replace(part, destination)
         except OSError as error:

@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
 from pathlib import Path
 from typing import Any, Mapping, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from engine.dubflow.download.source_adapter import (
     MediaCandidate,
@@ -23,15 +23,19 @@ from engine.dubflow.download.source_adapter import (
     SourceErrorCode,
     SourceIdentity,
     SourceItem,
+    SourcePage,
     SubtitleCandidate,
 )
 from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, DownloadResult, MediaMaterializer
 from engine.dubflow.download.provider_transport import YtDlpProviderTransport
+from engine.dubflow.download.sessions import ProtectedSessionBridge
+from engine.dubflow.download.stream_materializer import StreamMaterializer
 
 
 TICKS_PER_SECOND = 90_000
 _BVID = re.compile(r"^BV[0-9A-Za-z]{6,32}$")
 _AVID = re.compile(r"^(?:av)?[0-9]{1,20}$", re.IGNORECASE)
+_PART_REF = re.compile(r"^(BV[0-9A-Za-z]{6,32}|av[0-9]{1,20})_p([0-9]{1,5})$", re.IGNORECASE)
 _VIDEO_PATH = re.compile(r"/(?:video/)?(BV[0-9A-Za-z]{6,32}|av[0-9]{1,20})(?:/|$)", re.IGNORECASE)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv", "www.b23.tv"}
@@ -61,11 +65,16 @@ class BilibiliDownloadChoice:
 
 
 def normalize_source_ref(source_ref: str) -> str:
-    """Return a stable BVID/AV source id from a URL or provider id."""
+    """Return a stable video/part id; explicit later parts never become part 1."""
 
     if not isinstance(source_ref, str) or not source_ref.strip() or len(source_ref) > 4096:
         raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili source reference is invalid", provider_id="bilibili")
     value = source_ref.strip()
+    part_ref = _PART_REF.fullmatch(value)
+    if part_ref:
+        base = part_ref[1]
+        base = "BV" + base[2:] if base.upper().startswith("BV") else base.lower()
+        return _with_part(base, _part_number(part_ref[2]))
     if _BVID.fullmatch(value):
         return value
     if _AVID.fullmatch(value):
@@ -81,7 +90,38 @@ def normalize_source_ref(source_ref: str) -> str:
     if match is None:
         raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili URL does not contain a video id", provider_id="bilibili")
     value = match.group(1)
-    return value if value.upper().startswith("BV") else "av" + value.lower().removeprefix("av")
+    base = "BV" + value[2:] if value.upper().startswith("BV") else "av" + value.lower().removeprefix("av")
+    try:
+        selectors = [item for key, item in parse_qsl(parts.query, keep_blank_values=True,
+                     errors="strict", max_num_fields=64) if key == "p"]
+    except ValueError:
+        raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili part query is invalid", provider_id="bilibili") from None
+    if len(selectors) > 1:
+        raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili part query is ambiguous", provider_id="bilibili")
+    return _with_part(base, _part_number(selectors[0]) if selectors else 1)
+
+
+def _part_number(value: str) -> int:
+    if not re.fullmatch(r"[0-9]{1,5}", value) or not 1 <= int(value) <= 10_000:
+        raise SourceError(SourceErrorCode.INVALID_INPUT, "Bilibili part must be between 1 and 10000", provider_id="bilibili")
+    return int(value)
+
+
+def _with_part(base: str, part: int) -> str:
+    return base if part == 1 else f"{base}_p{part}"
+
+
+def source_parts(source_ref: str) -> tuple[str, int]:
+    value = normalize_source_ref(source_ref)
+    if "_p" in value:
+        base, part = value.rsplit("_p", 1)
+        return base, int(part)
+    return value, 1
+
+
+def canonical_source_url(source_ref: str) -> str:
+    base, part = source_parts(source_ref)
+    return f"https://www.bilibili.com/video/{base}" + (f"?p={part}" if part != 1 else "")
 
 
 def _text(value: Any, name: str, *, limit: int = 4096, required: bool = True) -> str | None:
@@ -90,6 +130,20 @@ def _text(value: Any, name: str, *, limit: int = 4096, required: bool = True) ->
     if not isinstance(value, str) or not value.strip() or len(value) > limit or _CONTROL.search(value):
         raise SourceError(SourceErrorCode.SOURCE_CHANGED, f"Bilibili field {name} is missing or malformed", provider_id="bilibili")
     return value.strip()
+
+
+def _description(value: Any) -> str | None:
+    if value is None:
+        return None
+    # Provider descriptions commonly contain paragraphs. Normalize only their
+    # presentation whitespace to the existing single-line SourceItem contract;
+    # validate the raw size before normalization and reject other controls.
+    if not isinstance(value, str) or len(value) > 16_384:
+        raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Bilibili field desc is malformed", provider_id="bilibili")
+    normalized = re.sub(r"[\r\n\t]+", " ", value)
+    if _CONTROL.search(normalized):
+        raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Bilibili field desc is malformed", provider_id="bilibili")
+    return normalized.strip() or None
 
 
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
@@ -168,8 +222,8 @@ def _media_candidates(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
                 MediaCandidate(
                     f"dash-video-{index}",
                     _https_url(locator, "dash.video.url"),
-                    "dash",
-                    "video/mp4",
+                    item.get("kind", "dash"),
+                    item.get("mime_type", "video/mp4"),
                     int(item["width"]) if isinstance(item.get("width"), int) else None,
                     int(item["height"]) if isinstance(item.get("height"), int) else None,
                     False,
@@ -181,14 +235,16 @@ def _media_candidates(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
                 item = _mapping(raw, f"dash.audio[{index}]")
                 locator = item.get("baseUrl", item.get("base_url", item.get("url")))
                 if locator is not None:
-                    result.append(MediaCandidate(f"dash-audio-{index}", _https_url(locator, "dash.audio.url"), "dash", "audio/mp4", has_audio=True))
+                    result.append(MediaCandidate(f"dash-audio-{index}", _https_url(locator, "dash.audio.url"), item.get("kind", "dash"), item.get("mime_type", "audio/mp4"), has_audio=True))
     progressive = data.get("durl", data.get("download_url"))
     if isinstance(progressive, list):
         for index, raw in enumerate(progressive[:256]):
             item = _mapping(raw, f"durl[{index}]")
             locator = item.get("url", item.get("baseUrl"))
             if locator is not None:
-                result.append(MediaCandidate(f"progressive-{index}", _https_url(locator, "durl.url"), "progressive", "video/mp4", has_audio=True))
+                result.append(MediaCandidate(f"progressive-{index}", _https_url(locator, "durl.url"), "progressive", "video/mp4",
+                    item.get("width") if type(item.get("width")) is int and item["width"] > 0 else None,
+                    item.get("height") if type(item.get("height")) is int and item["height"] > 0 else None, has_audio=True))
     elif progressive is not None:
         result.append(MediaCandidate("progressive-0", _https_url(progressive, "download_url"), "progressive", "video/mp4", has_audio=True))
     # App-owned yt-dlp transports may expose normalized formats instead of
@@ -209,13 +265,18 @@ def _media_candidates(data: Mapping[str, Any]) -> tuple[MediaCandidate, ...]:
 class BilibiliSourceAdapter:
     provider_id = "bilibili"
 
-    def __init__(self, transport: BilibiliTransport | None = None, *, ytdlp_executable: str | Path | None = None, materializer: MediaMaterializer | None = None) -> None:
+    def __init__(self, transport: BilibiliTransport | None = None, *, ytdlp_executable: str | Path | None = None,
+                 ytdlp_root: str | Path | None = None, ytdlp_sha256: str | None = None,
+                 materializer: MediaMaterializer | None = None, stream_materializer: StreamMaterializer | None = None,
+                 session_bridge: ProtectedSessionBridge | None = None) -> None:
         if transport is None:
             if ytdlp_executable is None:
                 raise ValueError("a Bilibili transport or app-owned yt-dlp executable is required")
-            transport = YtDlpProviderTransport(self.provider_id, ytdlp_executable)
+            transport = YtDlpProviderTransport(self.provider_id, ytdlp_executable, trusted_root=ytdlp_root, expected_sha256=ytdlp_sha256)
         self._transport = transport
         self._materializer = materializer or MediaMaterializer()
+        self._stream_materializer = stream_materializer
+        self._session_bridge = session_bridge
 
     @classmethod
     def can_handle(cls, source_ref: str) -> bool:
@@ -228,7 +289,11 @@ class BilibiliSourceAdapter:
     def inspect(self, source_ref: str) -> SourceItem:
         source_id = normalize_source_ref(source_ref)
         try:
-            payload = self._transport.fetch_video(source_id)
+            if self._session_bridge is None:
+                payload = self._transport.fetch_video(source_id)
+            else:
+                headers = self._session_bridge.get_opaque_headers(self.provider_id)
+                payload = self._transport.fetch_video(source_id, headers)
         except BilibiliTransportError as exc:
             status = exc.status
             if status in {401, 403}:
@@ -254,10 +319,15 @@ class BilibiliSourceAdapter:
         data = _mapping(payload.get("data"), "data")
         bvid = data.get("bvid")
         aid = data.get("aid")
-        actual_id = str(bvid) if isinstance(bvid, str) and _BVID.fullmatch(bvid) else ("av" + str(aid) if isinstance(aid, int) and aid > 0 else source_id)
+        requested_base, requested_part = source_parts(source_id)
+        reported_part = data.get("part", 1)
+        if type(reported_part) is not int or not 1 <= reported_part <= 10_000 or reported_part != requested_part:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Bilibili returned another or unverified video part", provider_id=self.provider_id, source_id=source_id)
+        actual_base = str(bvid) if isinstance(bvid, str) and _BVID.fullmatch(bvid) else ("av" + str(aid) if type(aid) is int and aid > 0 else requested_base)
+        actual_id = _with_part(actual_base, reported_part)
         title = _text(data.get("title"), "title")
-        description = _text(data.get("desc"), "desc", limit=16_384, required=False)
-        canonical = f"https://www.bilibili.com/video/{actual_id}"
+        description = _description(data.get("desc"))
+        canonical = canonical_source_url(actual_id)
         return SourceItem(
             identity=SourceIdentity(self.provider_id, actual_id, canonical),
             title=title or actual_id,
@@ -267,8 +337,12 @@ class BilibiliSourceAdapter:
             subtitle_candidates=_subtitle_candidates(data),
         )
 
-    def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50):
-        raise SourceError(SourceErrorCode.UNSUPPORTED, "Bilibili channel enumeration requires the durable enumeration adapter", provider_id=self.provider_id)
+    def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50) -> SourcePage:
+        fetch = getattr(self._transport, "fetch_channel", None)
+        if not callable(fetch):
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "Bilibili channel enumeration requires the pinned SDK runtime", provider_id=self.provider_id)
+        session = self._session_bridge.get_opaque_headers(self.provider_id) if self._session_bridge is not None else None
+        return fetch(channel_id, cursor=cursor, page_size=page_size, session=session)
 
     def select_download(self, item: SourceItem, *, prefer_progressive: bool = False) -> BilibiliDownloadChoice:
         """Choose the highest-resolution video and a matching audio stream."""
@@ -279,11 +353,28 @@ class BilibiliSourceAdapter:
         preferred_kind = "progressive" if prefer_progressive else "dash"
         candidates.sort(key=lambda candidate: (candidate.kind != preferred_kind, -((candidate.width or 0) * (candidate.height or 0)), -(candidate.height or 0), candidate.candidate_id))
         audio = next((candidate for candidate in item.media_candidates if candidate.mime_type.startswith("audio/")), None)
-        return BilibiliDownloadChoice(item.identity.source_id, candidates[0], audio)
+        selected = candidates[0]
+        return BilibiliDownloadChoice(item.identity.source_id, selected, None if selected.has_audio else audio)
 
     def download(self, item: SourceItem, destination: str | Path, *, choice: BilibiliDownloadChoice | None = None, **kwargs: object) -> DownloadResult:
+        if item.identity.provider_id != self.provider_id:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "download item belongs to another provider", provider_id=self.provider_id)
+        # Enumeration deliberately returns identities without expiring signed
+        # media URLs. Inspect only the selected item immediately before download.
+        if not item.media_candidates and choice is None:
+            inspected = self.inspect(item.identity.source_id)
+            if inspected.identity.identity_key != item.identity.identity_key:
+                raise SourceError(SourceErrorCode.SOURCE_CHANGED, "enumerated video identity changed before download", provider_id=self.provider_id)
+            item = inspected
         selected = choice or self.select_download(item)
+        if (selected.source_id != item.identity.source_id or selected.candidate not in item.media_candidates
+            or (selected.audio_candidate is not None and selected.audio_candidate not in item.media_candidates)):
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "download choice belongs to another source", provider_id=self.provider_id, source_id=item.identity.source_id)
         try:
+            if self._stream_materializer is not None:
+                return self._stream_materializer.download(selected.candidate, destination, audio=selected.audio_candidate, **kwargs)
+            if not selected.candidate.has_audio:
+                raise DownloadError(DownloadErrorCode.UNSUPPORTED, "selected streams require the app-owned source muxer")
             return self._materializer.download(selected.candidate, destination, **kwargs)
         except DownloadError as error:
             mapping = {

@@ -12,16 +12,26 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
+import tempfile
+import threading
+import time
 from typing import Any, Mapping, Protocol, Sequence
 from urllib.parse import unquote, urlsplit
 
-from ..materializer import DownloadError, DownloadErrorCode, DownloadResult, HttpTransport, MediaMaterializer, UrllibHttpTransport, validate_http_url
+from ..materializer import DownloadError, DownloadErrorCode, DownloadResult, HttpTransport, MediaMaterializer, UrllibHttpTransport, _reject_links, validate_http_url
 from ..source_adapter import MediaCandidate, PageCursor, SourceAdapter, SourceError, SourceErrorCode, SourceIdentity, SourceItem, SourcePage, SubtitleCandidate, canonicalize_url
+from ..stream_materializer import StreamMaterializer
+from .windows_job import WindowsSourceJob
 
 
 TICKS_PER_SECOND = 90_000
+MAX_METADATA_BYTES = 4 * 1024 * 1024
+MAX_DIAGNOSTIC_BYTES = 64 * 1024
+MAX_EXTRACTOR_BYTES = 256 * 1024 * 1024
 
 
 class GenericTransport(Protocol):
@@ -36,30 +46,126 @@ class YtDlpRunner(Protocol):
 
 class SubprocessYtDlpRunner:
     def run(self, argv: Sequence[str], *, timeout_s: float) -> tuple[int, str, str]:
+        return self._run(argv, timeout_s=timeout_s)
+
+    def run_with_input(self, argv: Sequence[str], *, timeout_s: float, stdin_bytes: bytes) -> tuple[int, str, str]:
+        if not isinstance(stdin_bytes, bytes) or not 0 < len(stdin_bytes) <= 4096:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "extractor private request exceeds its input budget")
+        return self._run(argv, timeout_s=timeout_s, stdin_bytes=stdin_bytes)
+
+    def _run(self, argv: Sequence[str], *, timeout_s: float, stdin_bytes: bytes | None = None) -> tuple[int, str, str]:
+        if not 0 < timeout_s <= 1800:
+            raise ValueError("timeout_s must be in (0, 1800]")
+        process = None
+        writer = None
+        owner = None
         try:
-            completed = subprocess.run(list(argv), capture_output=True, text=True, timeout=timeout_s, check=False, shell=False)
-        except (OSError, subprocess.SubprocessError) as error:
+            # Disk-backed private handles avoid unbounded communicate() buffers.
+            # Nothing from these raw metadata/diagnostic files is logged.
+            with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                process = subprocess.Popen(list(argv), stdin=subprocess.PIPE if stdin_bytes else subprocess.DEVNULL, stdout=stdout,
+                    stderr=stderr, shell=False, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                owner = WindowsSourceJob(process)
+                if stdin_bytes:
+                    def write_request():
+                        try:
+                            process.stdin.write(stdin_bytes)
+                            process.stdin.flush()
+                        except (OSError, ValueError):
+                            pass  # Early exit/timeout still returns a bounded process result.
+                        finally:
+                            try:
+                                process.stdin.close()
+                            except OSError:
+                                pass
+                    writer = threading.Thread(target=write_request, daemon=True)
+                    writer.start()
+                deadline = time.monotonic() + timeout_s
+                while process.poll() is None:
+                    self._check_output(stdout, stderr)
+                    if time.monotonic() >= deadline:
+                        raise SourceError(SourceErrorCode.NETWORK, "yt-dlp inspection timed out", retryable=True, action="retry_with_changed_conditions")
+                    time.sleep(0.05)
+                self._check_output(stdout, stderr)
+                stdout.seek(0)
+                stderr.seek(max(0, os.fstat(stderr.fileno()).st_size - 4096))
+                return process.returncode, stdout.read(MAX_METADATA_BYTES + 1).decode("utf-8", errors="replace"), stderr.read(4096).decode("utf-8", errors="replace")
+        except OSError as error:
             raise SourceError(SourceErrorCode.NETWORK, "yt-dlp process could not be started", retryable=True, action="retry") from error
-        return completed.returncode, completed.stdout[:4 * 1024 * 1024], completed.stderr[:4096]
+        finally:
+            try:
+                if process is not None:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+            finally:
+                if owner is not None:
+                    owner.close()
+                if writer is not None:
+                    writer.join(timeout=5)
+
+    @staticmethod
+    def _check_output(stdout, stderr) -> None:
+        if os.fstat(stdout.fileno()).st_size > MAX_METADATA_BYTES or os.fstat(stderr.fileno()).st_size > MAX_DIAGNOSTIC_BYTES:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "yt-dlp output exceeded its bounded inspection budget", action="update_extractor")
 
 
 class YtDlpTransport:
     """App-owned yt-dlp JSON boundary.  It never invokes a shell."""
 
-    def __init__(self, executable: str | Path, *, runner: YtDlpRunner | None = None, timeout_s: float = 180.0) -> None:
+    def __init__(self, executable: str | Path, *, trusted_root: str | Path | None = None,
+                 expected_sha256: str | None = None, runner: YtDlpRunner | None = None, timeout_s: float = 180.0) -> None:
         path = Path(executable)
-        if not path.is_absolute() or not path.is_file() or path.is_symlink():
-            raise SourceError(SourceErrorCode.UNSUPPORTED, "yt-dlp executable is not an app-owned regular file", provider_id="generic")
+        root = None if trusted_root is None else Path(trusted_root)
+        if root is None or not root.is_absolute() or not root.is_dir() or not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "yt-dlp requires an approved runtime root and checksum pin", provider_id="generic", action="repair_runtime")
+        try:
+            _reject_links(root)
+            _reject_links(path)
+            if not path.is_absolute() or not path.is_file():
+                raise ValueError("not a regular absolute executable")
+            path.resolve().relative_to(root.resolve())
+        except (DownloadError, ValueError, OSError) as error:
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "yt-dlp executable is outside its trusted runtime", provider_id="generic", action="repair_runtime") from error
         if not 0 < timeout_s <= 1800:
             raise ValueError("timeout_s must be in (0, 1800]")
         self.executable = path
+        self.trusted_root = root
+        self.expected_sha256 = expected_sha256
         self.runner = runner or SubprocessYtDlpRunner()
         self.timeout_s = timeout_s
+        self._verify_extractor()
+
+    def _verify_extractor(self) -> None:
+        try:
+            _reject_links(self.trusted_root)
+            _reject_links(self.executable)
+            self.executable.resolve().relative_to(self.trusted_root.resolve())
+            before = self.executable.stat()
+            if not 0 < before.st_size <= MAX_EXTRACTOR_BYTES:
+                raise ValueError("extractor size out of range")
+            digest = hashlib.sha256()
+            read_bytes = 0
+            with self.executable.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(64 * 1024), b""):
+                    read_bytes += len(chunk)
+                    if read_bytes > MAX_EXTRACTOR_BYTES:
+                        raise ValueError("extractor grew beyond its size budget")
+                    digest.update(chunk)
+            after = self.executable.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or digest.hexdigest() != self.expected_sha256:
+                raise ValueError("extractor checksum mismatch")
+        except (OSError, ValueError, DownloadError) as error:
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "app-owned extractor checksum verification failed", provider_id="generic", action="repair_runtime") from error
 
     def inspect_url(self, source_url: str) -> Mapping[str, Any]:
         url = validate_http_url(source_url)
-        argv = (str(self.executable), "--dump-single-json", "--no-warnings", "--skip-download", "--no-playlist", url)
+        self._verify_extractor()
+        argv = (str(self.executable), "--dump-single-json", "--no-warnings", "--skip-download", "--no-playlist",
+                "--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-js-runtimes", "--no-remote-components", "--", url)
         return_code, stdout, stderr = self.runner.run(argv, timeout_s=self.timeout_s)
+        if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > MAX_METADATA_BYTES or not isinstance(stderr, str) or len(stderr.encode("utf-8")) > MAX_DIAGNOSTIC_BYTES:
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "yt-dlp output exceeded its bounded inspection budget", provider_id="generic", action="update_extractor")
         if return_code != 0:
             raw_message = stderr if isinstance(stderr, str) else ""
             message = _safe_process_error(raw_message)
@@ -216,12 +322,14 @@ def _candidate(raw: Mapping[str, Any], index: int) -> MediaCandidate | None:
         locator = validate_http_url(locator)
     except DownloadError as error:
         raise SourceError(SourceErrorCode.SOURCE_CHANGED, "generic media candidate URL is malformed", provider_id="generic") from error
-    mime = str(raw.get("mime_type", raw.get("vcodec", "video/mp4")))[:128]
+    audio_only = raw.get("vcodec") == "none" and raw.get("acodec") not in {None, "none"}
+    container = "webm" if raw.get("ext") == "webm" else "mp4"
+    mime = str(raw.get("mime_type", ("audio/" if audio_only else "video/") + container))[:128]
     protocol = str(raw.get("protocol", "https"))
     kind = "hls" if protocol in {"m3u8", "m3u8_native"} or "m3u8" in locator.lower() else ("dash" if protocol == "http_dash_segments" or ".mpd" in locator.lower() else "progressive")
     width = raw.get("width") if type(raw.get("width")) is int and raw.get("width") > 0 else None
     height = raw.get("height") if type(raw.get("height")) is int and raw.get("height") > 0 else None
-    has_audio = raw.get("acodec") not in {None, "none"}
+    has_audio = "acodec" not in raw or raw.get("acodec") not in {None, "none"}
     return MediaCandidate(str(raw.get("format_id", f"format-{index}")), locator, kind, mime if "/" in mime else "video/mp4", width, height, bool(has_audio))
 
 
@@ -250,9 +358,10 @@ def _subtitles(raw: Mapping[str, Any]) -> tuple[SubtitleCandidate, ...]:
 class GenericUrlAdapter:
     provider_id = "generic"
 
-    def __init__(self, transport: GenericTransport | None = None, *, materializer: MediaMaterializer | None = None) -> None:
+    def __init__(self, transport: GenericTransport | None = None, *, materializer: MediaMaterializer | None = None, stream_materializer: StreamMaterializer | None = None) -> None:
         self._transport = transport or DirectUrlTransport()
         self._materializer = materializer or MediaMaterializer()
+        self._stream_materializer = stream_materializer
 
     @classmethod
     def can_handle(cls, source_ref: str) -> bool:
@@ -311,14 +420,31 @@ class GenericUrlAdapter:
         )
 
     def enumerate_channel(self, channel_id: str, *, cursor: str | None = None, page_size: int = 50) -> SourcePage:
+        enumerate_playlist = getattr(self._transport, "enumerate_playlist", None)
+        if callable(enumerate_playlist):
+            return enumerate_playlist(channel_id, cursor=cursor, page_size=page_size)
         raise SourceError(SourceErrorCode.UNSUPPORTED, "generic URL enumeration requires a playlist-capable extractor", provider_id=self.provider_id)
 
     def download(self, item: SourceItem, destination: str | Path, *, candidate_id: str | None = None, **kwargs: object) -> DownloadResult:
-        candidates = [candidate for candidate in item.media_candidates if candidate_id is None or candidate.candidate_id == candidate_id]
+        if item.identity.provider_id != self.provider_id:
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "generic download received another provider identity", provider_id=self.provider_id)
+        if not item.media_candidates:
+            fresh = self.inspect(item.identity.canonical_url)
+            if fresh.identity.identity_key != item.identity.identity_key:
+                raise SourceError(SourceErrorCode.SOURCE_CHANGED, "playlist video identity changed before download", provider_id=self.provider_id)
+            item = fresh
+        candidates = [candidate for candidate in item.media_candidates if candidate.mime_type.startswith("video/") and (candidate_id is None or candidate.candidate_id == candidate_id)]
         if not candidates:
             raise SourceError(SourceErrorCode.UNSUPPORTED, "requested generic media candidate was not found", provider_id=self.provider_id, source_id=item.identity.source_id)
         try:
-            return self._materializer.download(candidates[0], destination, **kwargs)
+            candidates.sort(key=lambda candidate: (-((candidate.width or 0) * (candidate.height or 0)), -(candidate.height or 0), not candidate.has_audio, candidate.candidate_id))
+            selected = candidates[0]
+            audio = None if selected.has_audio else next((candidate for candidate in item.media_candidates if candidate.mime_type.startswith("audio/") and candidate.has_audio), None)
+            if self._stream_materializer is not None:
+                return self._stream_materializer.download(selected, destination, audio=audio, **kwargs)
+            if not selected.has_audio:
+                raise DownloadError(DownloadErrorCode.UNSUPPORTED, "selected streams require the app-owned source muxer")
+            return self._materializer.download(selected, destination, **kwargs)
         except DownloadError as error:
             mapping = {
                 DownloadErrorCode.AUTH_REQUIRED: SourceErrorCode.AUTH_REQUIRED,
