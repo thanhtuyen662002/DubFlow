@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dubflow/review/export-pin-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "manifest_path", "manifest_sha256", "manifest_size_bytes", "attempt"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_export_pin"},
+    "job_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
+    "manifest_path": {"type": "string", "minLength": 1},
+    "manifest_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "manifest_size_bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+    "attempt": {"type": "integer", "minimum": 1, "maximum": 3}
+  }
+}

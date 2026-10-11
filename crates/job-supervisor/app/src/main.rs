@@ -31,6 +31,7 @@ mod worker_tree;
 use worker_tree::WorkerTree;
 mod source_owner;
 mod source_server;
+mod review_pin;
 
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
@@ -605,6 +606,9 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-pin")) {
+        return review_pin::run(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("source-serve")) {
         return source_server::run(std::env::args_os().skip(2)).map_err(|_| {
             SupervisorError::Invalid("source service stopped; inspect its scoped events".into())

@@ -6,6 +6,9 @@ canonical rational time base, explicit cue binding, nullable global range and
 unknown confidence, and diagnostic/confidence provenance. Dispatch by version.
 V1 can be displayed; missing original-job mapping cannot authorize regeneration.
 `store-v1.json` is a distinct supervisor-owned atomic snapshot/undo envelope.
+`preview-v1.json` describes one hash-verified PCM WAV from the isolated reader.
+`export-pin-v1.json` carries the native supervisor's committed manifest identity;
+only existing succeeded jobs with immutable output binding can supply this pin.
 See ADR-0030 for compatibility, recovery limits and pending production evidence.
 
 Review findings are explainable downstream data. Bound items carry a canonical

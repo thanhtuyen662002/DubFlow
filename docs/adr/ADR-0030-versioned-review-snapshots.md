@@ -84,6 +84,15 @@ enforce child-process/output limits. A returned preview pin still needs the
 native playback admission policy; it does not make a filesystem path an
 unrestricted webview asset URL. Existing v1 snapshots/exports need no migration.
 
+The standalone native `review-pin` read uses an existing supported SQLite schema
+through a SQLite-enforced read-only connection, without creation or migration. It
+requires a succeeded job/stage, the latest committed manifest artifact, its
+immutable start-request output binding and exact bounded current bytes matching
+the persisted hash/size. Export-pin-v1 is separate from snapshots and worker
+messages. Unsupported/legacy/missing/corrupt inputs leave the original job and
+exports untouched. This command does not grant a writer lease or qualify
+desktop playback, correction execution or durable graph replacement.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only
