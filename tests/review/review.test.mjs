@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createReviewSnapshot, groupFindings, ReviewController } from "../../apps/desktop/src/features/review/model.ts";
 import { readReviewPayload, previewProductionCorrection, reviewRangeLabel } from "../../apps/desktop/src/features/review/wire.ts";
+import { correctionRequest, acceptCorrectionResponse } from "../../apps/desktop/src/features/review/session.ts";
+import { ReviewConnection } from "../../apps/desktop/src/features/review/connection.ts";
 
 const finding = {
   finding_id: "cue-1",
@@ -47,7 +49,7 @@ const producer = [
   " first,translation_plan=store.commit_correction(snapshot,'finding-a',translation='Corrected')",
   " restored=store.undo(first)",
   " second,voice_plan=store.commit_correction(restored,'finding-a',voice='voice-b')",
-  " print(json.dumps({'snapshot':snapshot.to_dict(),'edited':second.to_dict(),'translation_plan':translation_plan.to_dict(),'voice_plan':voice_plan.to_dict()}))",
+  " print(json.dumps({'snapshot':snapshot.to_dict(),'first':first.to_dict(),'edited':second.to_dict(),'translation_plan':translation_plan.to_dict(),'voice_plan':voice_plan.to_dict()}))",
 ].join("\n");
 const generated = spawnSync(process.env.DUBFLOW_TEST_PYTHON ?? "python", ["-I", "-S", "-B", "-c", producer],
   { encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024 });
@@ -59,6 +61,20 @@ assert.equal(payload.findings[0].range.start_ticks, "9007199254740993");
 assert.equal(BigInt(payload.findings[0].range.start_ticks), 9007199254740993n);
 assert.deepEqual(readReviewPayload(actual.edited).last_plan, actual.voice_plan);
 assert.deepEqual(previewProductionCorrection(payload, { finding_id: "finding-a", translation: "Corrected" }), actual.translation_plan);
+const request = correctionRequest(payload, { finding_id: "finding-a", translation: " Corrected " });
+assert.equal(request.job_id, "job-review");
+assert.equal(request.revision, 0);
+assert.equal(request.cue_id, "cue-a");
+assert.equal(request.correction.translation, "Corrected");
+assert.deepEqual(acceptCorrectionResponse(payload, request, actual.first, actual.translation_plan), readReviewPayload(actual.first));
+for (const change of [value => { value.job_id = "other-job"; }, value => { value.revision += 1; },
+  value => { value.findings[0].source_text = "Changed source"; }, value => { value.findings[1].warning = "Changed warning"; },
+  value => { value.findings[0].range.end_ticks = "9007199254742993"; }, value => { value.findings[0].voice = "voice-b"; }]) {
+  const invalid = structuredClone(actual.first); change(invalid);
+  assert.throws(() => acceptCorrectionResponse(payload, request, invalid, actual.translation_plan), /does not match/);
+}
+assert.throws(() => acceptCorrectionResponse(payload, { ...request, revision: 3 }, actual.first, actual.translation_plan), /request changed/);
+assert.throws(() => acceptCorrectionResponse(payload, request, actual.first, actual.voice_plan), /plan changed/);
 assert.deepEqual(previewProductionCorrection(payload, { finding_id: "finding-a", voice: "voice-b" }), actual.voice_plan);
 assert.deepEqual(previewProductionCorrection(payload, { finding_id: "finding-a", translation: "Corrected", voice: "voice-b" }), actual.translation_plan);
 assert.throws(() => previewProductionCorrection(payload, { finding_id: "finding-a", translation: " Original ", voice: " voice-a " }), /must change/);
@@ -87,4 +103,122 @@ assert.throws(() => readReviewPayload(contradictory), /disagree/);
 const fourHours = readReviewPayload({ ...actual.snapshot, time_base: { numerator: "1", denominator: "48000" },
   findings: [{ ...actual.snapshot.findings[0], range: { start_ticks: "691200000", end_ticks: "691248000" } }] });
 assert.equal(reviewRangeLabel(fourHours, fourHours.findings[0]), "04:00:00.000 – 04:00:01.000");
+
+// A host adapter must not mix a late job reply or stale action with the selection.
+let previewCalls = 0, correctionCalls = 0;
+const connection = new ReviewConnection({
+  async snapshot() { return actual.snapshot; },
+  async preview(request, signal) { assert.equal(signal.aborted, false); assert.equal(request.cue_id, "cue-a"); previewCalls++; },
+  async correct(value, signal) { assert.equal(signal.aborted, false); assert.deepEqual(value, request); correctionCalls++; return actual.first; },
+});
+const loaded = await connection.load("job-review");
+assert.deepEqual(loaded, payload);
+loaded.findings[0].source_text = "A caller cannot mutate the pinned connection";
+assert.equal(connection.snapshot().findings[0].source_text, payload.findings[0].source_text);
+const actions = connection.actions();
+const cueRequest = { job_id: "job-review", revision: 0, finding_id: "finding-a", cue_id: "cue-a" };
+for (const invalid of [{ ...cueRequest, job_id: "other-job" }, { ...cueRequest, revision: 1 },
+  { ...cueRequest, finding_id: "missing" }, { ...cueRequest, cue_id: "wrong-cue" }]) {
+  await assert.rejects(actions.preview(invalid, new AbortController().signal), /does not match/);
+}
+assert.equal(previewCalls, 0);
+await actions.correct(request);
+assert.equal(correctionCalls, 1);
+assert.deepEqual(connection.snapshot(), readReviewPayload(actual.first));
+await assert.rejects(actions.preview(cueRequest, new AbortController().signal), /does not match/);
+connection.clear();
+await assert.rejects(actions.correct(request), { name: "AbortError" });
+assert.equal(correctionCalls, 1);
+
+const loads = [];
+const switching = new ReviewConnection({ snapshot(job, signal) { return new Promise((resolve, reject) => loads.push({ job, signal, resolve, reject })); },
+  async preview() { throw new Error("must not invoke preview without a selected snapshot"); } });
+const oldLoad = switching.load("job-old");
+const newLoad = switching.load("job-new");
+assert.equal(loads[0].signal.aborted, true);
+loads[1].resolve({ ...actual.snapshot, job_id: "job-new" });
+assert.equal((await newLoad).job_id, "job-new");
+loads[0].resolve({ malformed: "even malformed stale data must not replace the selection" });
+assert.equal(await oldLoad, null);
+assert.equal(switching.snapshot().job_id, "job-new");
+const failedOld = switching.load("job-failing");
+const latest = switching.load("job-latest");
+loads[2].reject(new Error("old backend failure"));
+assert.equal(await failedOld, null);
+loads[3].resolve({ ...actual.snapshot, job_id: "job-latest" });
+assert.equal((await latest).job_id, "job-latest");
+switching.dispose();
+await assert.rejects(switching.load("job-review"), /disposed/);
+
+let releasedPreview, activePreviewSignal;
+const listening = new ReviewConnection({ async snapshot() { return actual.snapshot; },
+  preview(_request, signal) { activePreviewSignal = signal; return new Promise(resolve => { releasedPreview = resolve; }); } });
+await listening.load("job-review");
+// The producer's cue has no WAV descriptor. A native handler must not be called.
+await assert.rejects(listening.actions().preview(cueRequest, new AbortController().signal), /no validated preview/);
+const previewSnapshot = structuredClone(actual.snapshot);
+previewSnapshot.findings[0].output_preview = "opaque:validated-native-preview";
+const cancellable = new ReviewConnection({ async snapshot() { return previewSnapshot; },
+  preview(_request, signal) { activePreviewSignal = signal; return new Promise(resolve => { releasedPreview = resolve; }); } });
+await cancellable.load("job-review");
+const viewAbort = new AbortController();
+const pendingPreview = cancellable.actions().preview(cueRequest, viewAbort.signal);
+viewAbort.abort();
+assert.equal(activePreviewSignal.aborted, true);
+releasedPreview();
+await assert.rejects(pendingPreview, { name: "AbortError" });
+const pendingJobPreview = cancellable.actions().preview(cueRequest, new AbortController().signal);
+cancellable.clear();
+assert.equal(activePreviewSignal.aborted, true);
+releasedPreview();
+await assert.rejects(pendingJobPreview, { name: "AbortError" });
+const wrongJob = new ReviewConnection({ async snapshot() { return actual.snapshot; }, async preview() {} });
+await assert.rejects(wrongJob.load("job-other"), /does not belong/);
+assert.equal(wrongJob.snapshot(), null);
+let uncertainCalls = 0;
+const uncertain = new ReviewConnection({ async snapshot() { return actual.snapshot; }, async preview() {},
+  async correct() { uncertainCalls++; throw new Error("response was lost after submission"); } });
+await uncertain.load("job-review");
+const uncertainActions = uncertain.actions();
+await assert.rejects(uncertainActions.correct(request), /response was lost/);
+assert.equal(uncertain.snapshot(), null);
+await assert.rejects(uncertainActions.correct(request), { name: "AbortError" });
+assert.equal(uncertainCalls, 1);
+await uncertain.load("job-review");
+await assert.rejects(uncertainActions.correct(request), { name: "AbortError" });
+const mismatch = new ReviewConnection({ async snapshot() { return actual.snapshot; }, async preview() {},
+  async correct() { return { ...actual.first, job_id: "other-job" }; } });
+await mismatch.load("job-review");
+await assert.rejects(mismatch.actions().correct(request), /does not match/);
+assert.equal(mismatch.snapshot(), null);
+// Two callers must not submit the same revision while a correction is pending.
+const mutations = [];
+const serial = new ReviewConnection({ async snapshot(job) { return { ...actual.snapshot, job_id: job }; }, async preview() {},
+  correct(value, signal) { return new Promise((resolve, reject) => mutations.push({ value, signal, resolve, reject })); } });
+await serial.load("job-review");
+const serialActions = serial.actions();
+const pendingCorrection = serialActions.correct(request);
+await assert.rejects(serialActions.correct(request), /already in progress/);
+assert.equal(mutations.length, 1);
+assert.equal(serial.snapshot().revision, 0);
+mutations[0].resolve(actual.first);
+await pendingCorrection;
+assert.deepEqual(serial.snapshot(), readReviewPayload(actual.first));
+// A cancelled old write's late error must not clear or unlock a newer selection.
+await serial.load("job-review");
+const oldMutation = serial.actions().correct(request);
+const oldRefusal = assert.rejects(oldMutation, /late old failure/);
+const newSnapshot = await serial.load("job-new");
+assert.equal(mutations[1].signal.aborted, true);
+const newRequest = correctionRequest(newSnapshot, { finding_id: "finding-a", translation: "Corrected" });
+const newActions = serial.actions();
+const newMutation = newActions.correct(newRequest);
+mutations[1].reject(new Error("late old failure"));
+await oldRefusal;
+assert.equal(serial.snapshot().job_id, "job-new");
+await assert.rejects(newActions.correct(newRequest), /already in progress/);
+assert.equal(mutations.length, 3);
+mutations[2].resolve({ ...actual.first, job_id: "job-new" });
+await newMutation;
+assert.equal(serial.snapshot().revision, 1);
 console.log("legacy review tests and Python-to-desktop v2 reader/preview tests passed");
