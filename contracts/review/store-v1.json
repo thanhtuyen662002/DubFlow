@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/review/store-v1.json",
+  "title": "DubFlow supervisor review store v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["store_version", "snapshot", "undo"],
+  "properties": {
+    "store_version": {"const": 1},
+    "snapshot": {"$ref": "schema-v2.json"},
+    "undo": {
+      "type": "array", "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["before", "last_plan"],
+        "properties": {
+          "before": {"$ref": "schema-v2.json#/$defs/finding"},
+          "last_plan": {"$ref": "schema-v2.json#/$defs/plan"}
+        }
+      }
+    }
+  }
+}

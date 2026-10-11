@@ -1,6 +1,14 @@
-# Review Center contract v1
+# Review Center contracts
 
-Review findings are explainable downstream data. Each item carries a canonical
+`schema-v1.json` is the released display payload and remains unchanged.
+`schema-v2.json` is the proposed production snapshot with job/revision,
+canonical rational time base, explicit cue binding, nullable global range and
+unknown confidence, and diagnostic/confidence provenance. Dispatch by version.
+V1 can be displayed; missing original-job mapping cannot authorize regeneration.
+`store-v1.json` is a distinct supervisor-owned atomic snapshot/undo envelope.
+See ADR-0030 for compatibility, recovery limits and pending production evidence.
+
+Review findings are explainable downstream data. Bound items carry a canonical
 integer-tick range, source/translated text, speaker/voice assignment, output
 preview, confidence and the exact downstream stage IDs that may be rerun.
 Editing one cue produces a previewable regeneration plan and preserves all

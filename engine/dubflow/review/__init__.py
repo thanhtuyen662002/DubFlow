@@ -5,9 +5,10 @@ from .production import (
     ReviewFinding,
     ReviewSnapshot,
     RegenerationPlan,
-    ReviewStore,
     build_review_snapshot,
 )
+from .store import ReviewStore
+from .wire import LegacyReviewPayload, read_review_snapshot
 
 __all__ = [
     "ReviewError",
@@ -16,4 +17,6 @@ __all__ = [
     "RegenerationPlan",
     "ReviewStore",
     "build_review_snapshot",
+    "LegacyReviewPayload",
+    "read_review_snapshot",
 ]

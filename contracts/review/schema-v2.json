@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/review/schema-v2.json",
+  "title": "DubFlow production review snapshot v2",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "job_id", "revision", "time_base", "findings", "last_plan"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "job_id": {"$ref": "#/$defs/id"},
+    "revision": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "time_base": {
+      "type": "object", "additionalProperties": false, "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": {"type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 19},
+        "denominator": {"type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 19}
+      }
+    },
+    "findings": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/finding"}},
+    "last_plan": {"$ref": "#/$defs/plan"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+    "ticks": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 19},
+    "stages": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+    "range": {
+      "type": ["object", "null"], "additionalProperties": false, "required": ["start_ticks", "end_ticks"],
+      "properties": {"start_ticks": {"$ref": "#/$defs/ticks"}, "end_ticks": {"$ref": "#/$defs/ticks"}}
+    },
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["finding_id", "reason", "range", "source_text", "translated_text", "speaker", "voice", "output_preview", "confidence", "affected_stages", "cue_id", "warning", "confidence_source"],
+      "properties": {
+        "finding_id": {"$ref": "#/$defs/id"},
+        "reason": {"enum": ["ASR_OCR_CONFLICT", "SPEAKER_UNCERTAINTY", "TRANSLATION_ANOMALY", "TTS_FAILURE", "INPAINT_RISK", "SYNC_QC_WARNING"]},
+        "range": {"$ref": "#/$defs/range"},
+        "source_text": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "translated_text": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "speaker": {"type": ["string", "null"], "maxLength": 256},
+        "voice": {"type": ["string", "null"], "maxLength": 256},
+        "output_preview": {"type": ["string", "null"], "maxLength": 4096},
+        "confidence": {"type": ["string", "null"], "pattern": "^(0|0\\.[0-9]+|1(?:\\.0+)?)$"},
+        "affected_stages": {"$ref": "#/$defs/stages"},
+        "cue_id": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+        "warning": {"type": ["string", "null"], "maxLength": 4096},
+        "confidence_source": {"type": ["string", "null"], "maxLength": 256}
+      }
+    },
+    "plan": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["finding_id", "stages_to_rerun", "preserved_artifacts", "replacement_artifacts", "retain_previous_until_validated", "requires_full_manual_review"],
+      "properties": {
+        "finding_id": {"$ref": "#/$defs/id"},
+        "stages_to_rerun": {"$ref": "#/$defs/stages"},
+        "preserved_artifacts": {"$ref": "#/$defs/stages"},
+        "replacement_artifacts": {"$ref": "#/$defs/stages"},
+        "retain_previous_until_validated": {"const": true},
+        "requires_full_manual_review": {"const": false}
+      }
+    }
+  }
+}
