@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from engine.dubflow.download.generic import GenericUrlAdapter, YtDlpTransport
 from engine.dubflow.download.materializer import HttpResponse, MediaMaterializer
@@ -61,13 +63,15 @@ class GenericAdapterTests(unittest.TestCase):
             executable = Path(temp) / "yt-dlp.exe"
             executable.write_bytes(b"fixture")
             runner = Runner(payload='{"id":"x","title":"X"}')
-            payload = YtDlpTransport(executable, runner=runner).inspect_url("https://video.example.test/watch/1")
+            pin = hashlib.sha256(b"fixture").hexdigest()
+            payload = YtDlpTransport(executable, trusted_root=Path(temp), expected_sha256=pin, runner=runner).inspect_url("https://video.example.test/watch/1")
             self.assertEqual(payload["id"], "x")
             self.assertEqual(runner.argv[1:5], ("--dump-single-json", "--no-warnings", "--skip-download", "--no-playlist"))
             self.assertEqual(runner.argv[-1], "https://video.example.test/watch/1")
+            self.assertEqual(runner.argv[5:-1], ("--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-js-runtimes", "--no-remote-components", "--"))
 
             failing = Runner(code=1, error="Cookie: secret-token private video")
-            transport = YtDlpTransport(executable, runner=failing)
+            transport = YtDlpTransport(executable, trusted_root=Path(temp), expected_sha256=pin, runner=failing)
             with self.assertRaises(SourceError) as context:
                 transport.inspect_url("https://video.example.test/watch/1")
             self.assertEqual(context.exception.code, SourceErrorCode.AUTH_REQUIRED)
@@ -78,6 +82,31 @@ class GenericAdapterTests(unittest.TestCase):
         with self.assertRaises(SourceError) as context:
             adapter.enumerate_channel("playlist")
         self.assertEqual(context.exception.code, SourceErrorCode.UNSUPPORTED)
+
+    def test_audio_first_metadata_selects_video_and_preserves_companion(self) -> None:
+        payload = {"id": "split", "formats": [
+            {"format_id": "audio", "url": "https://cdn.example.test/a.m4a", "vcodec": "none", "acodec": "aac"},
+            {"format_id": "small", "url": "https://cdn.example.test/small.mp4", "vcodec": "h264", "acodec": "aac", "height": 360, "width": 640},
+            {"format_id": "large", "url": "https://cdn.example.test/large.mp4", "vcodec": "h264", "acodec": "none", "height": 1080, "width": 1920},
+        ]}
+        muxer = Mock()
+        adapter = GenericUrlAdapter(MetadataTransport(payload), stream_materializer=muxer)
+        item = adapter.inspect("https://video.example.test/watch/split")
+        self.assertEqual(item.media_candidates[0].mime_type, "audio/mp4")
+        adapter.download(item, Path("/unused/final.mp4"))
+        self.assertEqual(muxer.download.call_args.args[0].candidate_id, "large")
+        self.assertEqual(muxer.download.call_args.kwargs["audio"].candidate_id, "audio")
+        adapter.download(item, Path("/unused/final.mp4"), candidate_id="small")
+        self.assertEqual(muxer.download.call_args.args[0].candidate_id, "small")
+        self.assertIsNone(muxer.download.call_args.kwargs["audio"])
+
+    def test_video_only_without_runtime_is_explicitly_unsupported(self) -> None:
+        materializer = Mock()
+        adapter = GenericUrlAdapter(MetadataTransport({"id": "x", "url": "https://cdn.example.test/v.mp4", "vcodec": "h264", "acodec": "none"}), materializer=materializer)
+        with self.assertRaises(SourceError) as context:
+            adapter.download(adapter.inspect("https://video.example.test/x"), Path("/unused/final.mp4"))
+        self.assertEqual(context.exception.code, SourceErrorCode.UNSUPPORTED)
+        materializer.download.assert_not_called()
 
 
 if __name__ == "__main__":

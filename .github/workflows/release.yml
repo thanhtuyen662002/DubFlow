@@ -103,6 +103,62 @@ jobs:
             Pop-Location
           }
 
+      - name: Test Windows native source boundaries
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          $nativeSourceLog = Join-Path $env:RUNNER_TEMP 'dubflow-native-source-tests.log'
+          cargo test --manifest-path crates/job-supervisor/app/Cargo.toml --target-dir crates/job-supervisor/app/target --locked --release source_server::tests:: -- --nocapture --color never 2>&1 | Tee-Object -FilePath $nativeSourceLog
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native source boundary tests failed' }
+          $nativeSourceEvidence = Get-Content -LiteralPath $nativeSourceLog -Raw
+          foreach ($nativeSourceTest in @(
+            'native_worker_observes_normal_paths_after_canonical_windows_launch',
+            'native_inventory_refuses_identical_directory_junction',
+            'native_final_inventory_refuses_post_hash_missing_extra_or_resized_files',
+            'native_final_inventory_refuses_post_hash_directory_junction',
+            'native_full_nested_inventory_is_verified_without_skipping_files',
+            'native_recorded_stdio_commits_pauses_and_restarts_from_page_n',
+            'native_recorded_download_commits_verified_owned_media_and_reopens',
+            'native_single_video_commits_original_mode_and_download_after_reopen',
+            'native_single_video_refuses_mode_rebinding_and_private_reference',
+            'native_download_pause_preserves_parts_and_refuses_old_dispatch_on_resume',
+            'native_download_failure_and_cancel_leave_siblings_executable',
+            'native_interrupted_download_reopens_with_new_epoch_and_original_producer',
+            'native_download_refuses_false_hash_and_unsuccessful_worker_exit',
+            'native_download_recovers_verified_publication_after_rejected_commit',
+            'native_download_refuses_foreign_packet_without_mutating_progress',
+            'native_verified_media_refuses_replaced_path_after_hash'
+          )) {
+            $nativeSourcePattern = '(?m)^test source_server::tests::' + [regex]::Escape($nativeSourceTest) + ' \.\.\. ok\r?$'
+            if ($nativeSourceEvidence -notmatch $nativeSourcePattern) { throw "Missing Windows native evidence: $nativeSourceTest" }
+          }
+          $sourceQueueLog = Join-Path $env:RUNNER_TEMP 'dubflow-source-queue-tests.log'
+          cargo test --manifest-path crates/job-supervisor/source_queue/Cargo.toml --target-dir crates/job-supervisor/app/target --locked --release -- --color never 2>&1 | Tee-Object -FilePath $sourceQueueLog
+          if ($LASTEXITCODE -ne 0) { throw 'Windows source queue transaction tests failed' }
+          $sourceQueueEvidence = Get-Content -LiteralPath $sourceQueueLog -Raw
+          foreach ($sourceQueueTest in @(
+            'indexed_item_is_scoped_and_returns_the_current_complete_snapshot',
+            'bound_items_refuse_unchecked_writes_and_alias',
+            'checked_item_commit_is_single_use_and_preserves_completed_enumeration',
+            'checked_items_refuse_changed_producer_scope_and_original_item',
+            'same_clock_pause_resume_and_competing_item_commit_refuse_late_callbacks',
+            'recovered_item_dispatch_requires_a_new_supervisor_snapshot',
+            'completed_enumeration_recovery_invalidates_inflight_item_dispatch',
+            'exhausted_completed_item_recovery_preserves_other_running_scans',
+            'paused_cancelled_progress_and_count_failure_preserve_items_atomically',
+            'item_revision_write_failure_and_exhaustion_roll_back_all_mutations'
+          )) {
+            $sourceQueuePattern = '(?m)^test tests::' + [regex]::Escape($sourceQueueTest) + ' \.\.\. ok\r?$'
+            if ($sourceQueueEvidence -notmatch $sourceQueuePattern) { throw "Missing Windows source queue evidence: $sourceQueueTest" }
+          }
+          $mediaLifetimeLog = Join-Path $env:RUNNER_TEMP 'dubflow-source-media-lifetime-tests.log'
+          python -m unittest discover -s tests/source_materializer -p test_stream_materializer.py -v 2>&1 | Tee-Object -FilePath $mediaLifetimeLog
+          if ($LASTEXITCODE -ne 0) { throw 'Windows source media lifetime tests failed' }
+          $mediaLifetimeEvidence = Get-Content -LiteralPath $mediaLifetimeLog -Raw
+          if ($mediaLifetimeEvidence -notmatch '(?m)^test_windows_parent_loss_retires_owned_media_process_tree \(.*\) \.\.\. ok\r?$') {
+            throw 'Missing Windows media process-tree parent-loss evidence'
+          }
+
       - name: Download and verify app-owned FFmpeg runtime
         shell: pwsh
         run: |
@@ -123,6 +179,12 @@ jobs:
           Copy-Item -LiteralPath $ffmpeg.FullName -Destination (Join-Path $mediaRoot 'ffmpeg.exe')
           Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $mediaRoot 'ffprobe.exe')
           & (Join-Path $mediaRoot 'ffmpeg.exe') -version | Select-Object -First 1
+
+      - name: Provision reviewed source SDK into owned runtime
+        shell: pwsh
+        run: |
+          & (Join-Path $env:pythonLocation 'python.exe') -B -m engine.dubflow.download.runtime --runtime-root $env:pythonLocation
+          if ($LASTEXITCODE -ne 0) { throw 'Reviewed source SDK provisioning failed' }
 
       - name: Validate release source and build qualification bundle
         shell: pwsh
@@ -148,6 +210,14 @@ jobs:
             '--source-date-epoch', $env:SOURCE_DATE_EPOCH
           )
           python @args
+
+      - name: Verify staged source SDK with owned Python
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "dist/qualification/DubFlow-$env:RELEASE_VERSION-windows-x64-staging"
+          & (Join-Path $stage 'runtime/python.exe') -I -S -B scripts/release/source_runtime_smoke.py `
+            --root $stage --expected-source-sha $env:SOURCE_SHA --report dist/qualification/source-sdk-smoke.json
+          if ($LASTEXITCODE -ne 0) { throw 'Staged source SDK/runtime qualification failed' }
 
       - name: Run real CPU pipeline qualification smoke
         shell: pwsh
@@ -263,6 +333,9 @@ jobs:
           $check = & $launcher --self-check | ConvertFrom-Json
           if (-not $check.ready) { throw "Installed self-check failed: $($check | ConvertTo-Json -Compress)" }
           $installedRoot = Join-Path $env:LOCALAPPDATA "DubFlow/versions/$env:RELEASE_VERSION"
+          & (Join-Path $installedRoot 'runtime/python.exe') -I -S -B scripts/release/source_runtime_smoke.py `
+            --root $installedRoot --expected-source-sha $env:SOURCE_SHA --report dist/installed-source-sdk-smoke.json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed source SDK/runtime qualification failed' }
           # Keep the installed qualification independent from the staging
           # smoke above.  Reusing its durable job store with the same smoke
           # IDs would correctly return COMPLETED without recreating artifacts
@@ -293,6 +366,16 @@ jobs:
             launch_smoke = 'passed'
           }) -Force
           $evidence | Add-Member -NotePropertyName installed_pipeline_smoke -NotePropertyValue 'passed' -Force
+          $evidence | Add-Member -NotePropertyName source_sdk_runtime -NotePropertyValue ([ordered]@{
+            scope = 'source-sdk-runtime-health'
+            staged_report = 'dist/qualification/source-sdk-smoke.json'
+            installed_report = 'dist/installed-source-sdk-smoke.json'
+            staged = 'passed'
+            installed = 'passed'
+            live_source_acquisition = 'not_run'
+            browser_session = 'not_run'
+            durable_intake_enumeration = 'not_run'
+          }) -Force
           $evidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $evidencePath -Encoding utf8NoBOM
 
       - name: Upload downloadable build artifact
@@ -306,7 +389,9 @@ jobs:
             dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-release.sha256
             dist/DubFlow-${{ env.RELEASE_VERSION }}-release-evidence.json
             dist/qualification/pipeline-smoke.json
+            dist/qualification/source-sdk-smoke.json
             dist/installed-pipeline-smoke.json
+            dist/installed-source-sdk-smoke.json
             dist/qualification/streaming-pcm.json
             dist/installed-streaming-pcm.json
           if-no-files-found: error

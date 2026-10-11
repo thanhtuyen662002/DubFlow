@@ -493,6 +493,15 @@
       "roots": [
         "contracts/source",
         "engine/dubflow/download/source_adapter.py",
+        "engine/dubflow/download/sessions.py",
+        "engine/dubflow/download/authenticated.py",
+        "engine/dubflow/download/enumeration/sdk.py",
+        "engine/dubflow/download/generic/provider_transport.py",
+          "engine/dubflow/download/authenticated_native.py",
+          "engine/dubflow/download/runtime.py",
+          "engine/dubflow/download/assets",
+          "scripts/release/source_runtime_smoke.py",
+          "scripts/release/source_session_smoke.py",
         "tests/source_adapter"
       ],
       "commands": [
@@ -550,6 +559,7 @@
       "id": "source-materializer",
       "roots": [
         "engine/dubflow/download/materializer.py",
+        "engine/dubflow/download/stream_materializer.py",
         "engine/dubflow/download/provider_transport.py",
         "tests/source_materializer"
       ],
@@ -766,6 +776,24 @@
       ]
     },
     {
+      "id": "native-source-controller",
+      "roots": [
+        "crates/job-supervisor/app/src/source_server.rs",
+        "crates/job-supervisor/app/src/source_owner.rs",
+        "crates/job-supervisor/app/src/main.rs",
+        "crates/job-supervisor/app/Cargo.toml"
+      ],
+      "commands": [
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "crates/job-supervisor/app/Cargo.toml",
+          "--locked"
+        ]
+      ]
+    },
+    {
       "id": "source-queue",
       "roots": [
         "engine/dubflow/download/acquisition_queue.py",
@@ -972,6 +1000,7 @@
     {
       "id": "release-bundle",
       "roots": [
+        "scripts/release/source_session_smoke.py",
         "packaging/release",
         "tests/release",
         "docs/release",
