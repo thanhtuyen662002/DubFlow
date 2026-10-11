@@ -323,6 +323,34 @@ qualification. These functions are internal proposals only: no CLI/IPC mutation
 or active graph is enabled until original-cue/document/model/physical bindings,
 native state CAS and undo asset retention are wired and qualified.
 
+## Native cue-request binding (Draft integration)
+
+The internal request boundary binds an owned-adapter packet to the native before
+and logical-after snapshots, original export hash, selected plan/finding/cue,
+exact next decimal revision and immutable canonical TTS input. Original input,
+previous producer, configuration and target voice must come from native graph
+and verified release/model catalog pins; caller JSON does not establish that
+authority. An unchanged voice cannot acquire a new version/profile silently.
+Only voice identity/version/profile hash may change. Producer/runtime/model,
+configuration/resource/fallback stay pinned. The prior input hash remains
+original-graph provenance; the request receives its new exact-byte input hash.
+
+Canonical time points are compared as reduced rational values using u128
+numerators, without floating seconds or overflow-prone cross-products. Equivalent
+reduced bases may represent the same source cue; request start/end/window fields
+must still retain the original input representation. Source identity, language,
+confidence and render window cannot be substituted. The native bound packet
+retains exact adapter bytes and hashes those bytes for worker dispatch.
+
+This boundary checks provenance/timing and bounded closed fields. The separately
+owned contract adapter must validate NFC text normalization, language/confidence
+semantics and canonical packet encoding before dispatch; the physical output
+graph must separately validate produced media. The binding API does not execute
+a producer, accept model downloads, create graph authority, write SQLite or
+qualify GUI regeneration/undo. The small fixture uses actual Python request
+preparation/read/schema checks for two synthetic requests, wide revisions and
+different exact bases; it is not real model/media qualification.
+
 ## Required evidence
 
 Tests validate actual emitted JSON against the declared schemas, v1 read-only

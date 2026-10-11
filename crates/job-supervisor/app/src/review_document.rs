@@ -24,6 +24,16 @@ fn invalid(message: &str) -> SupervisorError {
     SupervisorError::Invalid(message.into())
 }
 
+pub(super) fn decode(raw: &str, limit: usize) -> SupervisorResult<Value> {
+    if raw.is_empty() || raw.len() > limit.min(MAX_BYTES) {
+        return Err(invalid("Review JSON exceeds byte limit"));
+    }
+    let mut decoder = serde_json::Deserializer::from_str(raw);
+    let Strict(value) = Strict::deserialize(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
+}
+
 // serde_json::Value alone silently overwrites repeated object keys. Preserve
 // that ambiguity as an error at every depth, including nullable nested plans.
 struct Strict(Value);
@@ -79,7 +89,10 @@ impl<'de> Visitor<'de> for StrictVisitor {
     }
 }
 
-fn closed<'a>(value: &'a Value, keys: &[&str]) -> SupervisorResult<&'a Map<String, Value>> {
+pub(super) fn closed<'a>(
+    value: &'a Value,
+    keys: &[&str],
+) -> SupervisorResult<&'a Map<String, Value>> {
     let object = value
         .as_object()
         .ok_or_else(|| invalid("Review field must be an object"))?;
@@ -89,7 +102,7 @@ fn closed<'a>(value: &'a Value, keys: &[&str]) -> SupervisorResult<&'a Map<Strin
     Ok(object)
 }
 
-fn text(value: &Value, limit: usize) -> SupervisorResult<&str> {
+pub(super) fn text(value: &Value, limit: usize) -> SupervisorResult<&str> {
     let s = value
         .as_str()
         .ok_or_else(|| invalid("Review text must be a string"))?;
@@ -105,7 +118,7 @@ fn text(value: &Value, limit: usize) -> SupervisorResult<&str> {
     Ok(s)
 }
 
-fn identity(value: &Value) -> SupervisorResult<&str> {
+pub(super) fn identity(value: &Value) -> SupervisorResult<&str> {
     let s = text(value, 256)?;
     if !s
         .bytes()
@@ -124,7 +137,7 @@ fn optional_text(value: &Value, limit: usize) -> SupervisorResult<Option<&str>> 
     }
 }
 
-fn tick(value: &Value, positive: bool) -> SupervisorResult<u64> {
+pub(super) fn tick(value: &Value, positive: bool) -> SupervisorResult<u64> {
     let s = value
         .as_str()
         .ok_or_else(|| invalid("Review ticks must be decimal strings"))?;
@@ -305,7 +318,7 @@ fn validate(value: &Value, job: &str, revision: u64) -> SupervisorResult<()> {
     Ok(())
 }
 
-fn canonical(value: &Value, out: &mut String) -> SupervisorResult<()> {
+pub(super) fn canonical(value: &Value, out: &mut String) -> SupervisorResult<()> {
     match value {
         Value::Object(object) => {
             out.push('{');
@@ -356,9 +369,7 @@ impl AdmittedSnapshot {
         if raw.is_empty() || raw.len() > MAX_BYTES {
             return Err(invalid("Review JSON exceeds byte limit"));
         }
-        let mut decoder = serde_json::Deserializer::from_str(raw);
-        let Strict(value) = Strict::deserialize(&mut decoder)?;
-        decoder.end()?;
+        let value = decode(raw, MAX_BYTES)?;
         validate(&value, job, revision)?;
         let mut encoded = String::new();
         canonical(&value, &mut encoded)?;
@@ -375,6 +386,25 @@ impl AdmittedSnapshot {
     }
     pub(super) fn job(&self) -> &str {
         self.value["job_id"].as_str().unwrap()
+    }
+
+    pub(super) fn finding(&self, id: &str) -> SupervisorResult<&Value> {
+        self.value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["finding_id"] == id)
+            .ok_or_else(|| invalid("unknown Review finding"))
+    }
+
+    pub(super) fn time_base(&self) -> &Value {
+        &self.value["time_base"]
+    }
+
+    pub(super) fn plan_finding_id(&self) -> SupervisorResult<&str> {
+        self.value["last_plan"]["finding_id"]
+            .as_str()
+            .ok_or_else(|| invalid("correction plan is missing"))
     }
 
     fn next_revision(&self) -> SupervisorResult<u64> {
