@@ -34,6 +34,9 @@ def sdk_page(transport, provider: str, channel: str, *, cursor: str | None, page
     if type(page_size) is not int or not 1 <= page_size <= MAX_PAGE:
         raise SourceError(SourceErrorCode.INVALID_INPUT, "channel page size must be between 1 and 100", provider_id=provider)
     url = channel_url(provider, channel)
+    if provider == "douyin":
+        from ..douyin.creator import creator_page
+        return creator_page(transport, url, cursor=cursor, page_size=page_size, session=session)
     # SDK/helper bytes are pinned by the verified runtime. A new recipe cannot
     # resume an old offset under changed extraction behavior.
     recipe = sha256(json.dumps({"recipe": "flat-sdk-channel-v1", "pins": transport.pins}, sort_keys=True).encode()).hexdigest()

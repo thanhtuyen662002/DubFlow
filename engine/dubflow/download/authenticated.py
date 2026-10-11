@@ -15,10 +15,18 @@ from .source_adapter import SourceError, SourceErrorCode
 
 class AuthenticatedYtDlpTransport:
     def __init__(self, *, runtime_root: str | Path, python: str | Path, helper: str | Path,
-                 sdk_archive: str | Path, pins: Mapping[str, str], timeout_s: float = 180):
+                 sdk_archive: str | Path, pins: Mapping[str, str], timeout_s: float = 180,
+                 douyin_creator: str | Path | None = None, douyin_signer: str | Path | None = None):
         self.root = Path(runtime_root)
         self.python, self.helper, self.sdk_archive = Path(python), Path(helper), Path(sdk_archive)
         self.paths = {"python": self.python, "helper": self.helper, "sdk_archive": self.sdk_archive}
+        if (douyin_creator is None) != (douyin_signer is None):
+            raise ValueError("both owned Douyin provider modules are required")
+        if douyin_creator is not None:
+            self.paths.update(douyin_creator=Path(douyin_creator), douyin_signer=Path(douyin_signer))
+            if (self.paths["douyin_creator"] != self.helper.parent / "douyin/creator_native.py"
+                    or self.paths["douyin_signer"] != self.helper.parent / "douyin/request_signature.py"):
+                raise ValueError("Douyin modules must belong to the owned helper namespace")
         self.pins = dict(pins)
         self.timeout_s = timeout_s
         if not 0 < timeout_s <= 1800 or set(self.pins) != set(self.paths):
@@ -38,7 +46,7 @@ class AuthenticatedYtDlpTransport:
                     raise ValueError("missing producer pin")
                 path.resolve().relative_to(self.root.resolve())
                 before = path.stat()
-                maximum = 1024 * 1024 if key == "helper" else 256 * 1024 * 1024
+                maximum = 1024 * 1024 if key in {"helper", "douyin_creator", "douyin_signer"} else 256 * 1024 * 1024
                 if not 0 < before.st_size <= maximum:
                     raise ValueError("producer exceeds size budget")
                 digest, count = hashlib.sha256(), 0
@@ -98,3 +106,15 @@ class AuthenticatedYtDlpTransport:
             return value
         except (ValueError, TypeError) as error:
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "authenticated extractor returned invalid metadata", provider_id=provider_id) from error
+
+    def enumerate_douyin_page(self, url: str, *, position: int, page_size: int,
+                             headers: Mapping[str, str] | None = None):
+        if (type(position) is not int or not 0 <= position <= 2**63 - 1
+                or type(page_size) is not int or not 1 <= page_size <= 20):
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "invalid Douyin creator page bounds", provider_id="douyin")
+        if not {"douyin_creator", "douyin_signer"}.issubset(self.paths):
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "owned Douyin creator backend is not installed", provider_id="douyin")
+        return self._invoke({"schema_version": 1, "operation": "douyin_creator", "provider_id": "douyin",
+            "url": url, "position": position, "page_size": page_size,
+            "headers": validated_session_headers(headers, provider="douyin") if headers else {},
+            "douyin_modules": {"creator": self.pins["douyin_creator"], "signature": self.pins["douyin_signer"]}}, provider_id="douyin")

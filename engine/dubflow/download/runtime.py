@@ -30,6 +30,10 @@ from .stream_materializer import FfmpegStreamMuxer, StreamMaterializer
 PROFILE_PATH = Path(__file__).parent / "assets/yt-dlp-sdk-v1.json"
 BUNDLE_PROFILE = "app/engine/dubflow/download/assets/yt-dlp-sdk-v1.json"
 BUNDLE_HELPER = "app/engine/dubflow/download/authenticated_native.py"
+BUNDLE_DOUYIN_CREATOR = "app/engine/dubflow/download/douyin/creator_native.py"
+BUNDLE_DOUYIN_SIGNER = "app/engine/dubflow/download/douyin/request_signature.py"
+BUNDLE_DOUYIN_LICENSE = "app/docs/licenses/f2-apache-2.0.txt"
+BUNDLE_DOUYIN_NOTICE = "app/docs/licenses/f2-douyin-request-signature.md"
 MAX_PROFILE_BYTES = 16 * 1024
 MAX_SDK_BYTES = 16 * 1024 * 1024
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -183,8 +187,19 @@ def provider_from_verified_bundle(bundle_root: str | Path, *, artifacts: Sequenc
         helper, helper_sha = pin(BUNDLE_HELPER, 1024 * 1024)
         ffmpeg, ffmpeg_sha = pin("runtime/media/ffmpeg.exe", 512 * 1024 * 1024)
         ffprobe, ffprobe_sha = pin("runtime/media/ffprobe.exe", 512 * 1024 * 1024)
+        provider_modules, pins = {}, {"python": python_sha, "helper": helper_sha, "sdk_archive": sdk_sha}
+        if provider_id == "douyin":
+            for key, name in {"douyin_creator": BUNDLE_DOUYIN_CREATOR, "douyin_signer": BUNDLE_DOUYIN_SIGNER}.items():
+                provider_modules[key], pins[key] = pin(name, 1024 * 1024)
+            license_path, _ = pin(BUNDLE_DOUYIN_LICENSE, 64 * 1024)
+            # Inventory pins the actual bytes. Canonical text also checks the
+            # upstream notice across Git's Windows CRLF/Unix LF checkouts.
+            license_text_sha = hashlib.sha256(license_path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+            if license_text_sha != "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4":
+                raise ValueError("Douyin signer license notice differs from reviewed upstream")
+            pin(BUNDLE_DOUYIN_NOTICE, 64 * 1024)
         transport = AuthenticatedYtDlpTransport(runtime_root=root, python=python, helper=helper,
-            sdk_archive=sdk, pins={"python": python_sha, "helper": helper_sha, "sdk_archive": sdk_sha})
+            sdk_archive=sdk, pins=pins, **provider_modules)
         muxer = FfmpegStreamMuxer(ffmpeg, ffprobe, trusted_root=root,
             ffmpeg_sha256=ffmpeg_sha, ffprobe_sha256=ffprobe_sha)
         materializer = MediaMaterializer(PublicProviderHttpTransport(provider_id, profile["public_http_headers"]))

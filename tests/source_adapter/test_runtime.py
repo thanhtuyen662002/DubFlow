@@ -48,6 +48,9 @@ def bundle(root):
     profile_path, profile, sdk = recorded_profile(root)
     files = {runtime.BUNDLE_PROFILE: profile_path.read_bytes(), runtime.BUNDLE_HELPER: b"recorded helper",
              "runtime/python.exe": b"recorded Python", "runtime/source/"+profile["filename"]: sdk,
+             runtime.BUNDLE_DOUYIN_CREATOR: b"recorded creator", runtime.BUNDLE_DOUYIN_SIGNER: b"recorded signer",
+             runtime.BUNDLE_DOUYIN_LICENSE: (Path(__file__).resolve().parents[2] / "docs/licenses/f2-apache-2.0.txt").read_bytes(),
+             runtime.BUNDLE_DOUYIN_NOTICE: b"recorded license attribution",
              "runtime/media/ffmpeg.exe": b"recorded FFmpeg", "runtime/media/ffprobe.exe": b"recorded FFprobe"}
     artifacts = []
     for name, data in files.items():
@@ -123,9 +126,28 @@ class SourceRuntimeTests(unittest.TestCase):
                     old = path.read_bytes()
                     path.write_bytes(b"x" * len(old))
                     with self.assertRaises(SourceError) as error:
-                        runtime.provider_from_verified_bundle(root, artifacts=inventory, provider_id="bilibili")
+                        runtime.provider_from_verified_bundle(root, artifacts=inventory, provider_id="douyin")
                     self.assertEqual(error.exception.code, SourceErrorCode.UNSUPPORTED)
                     path.write_bytes(old)
+
+    def test_douyin_license_original_text_survives_crlf_but_modified_notice_is_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            inventory = bundle(root)
+            item = next(value for value in inventory if value["path"] == runtime.BUNDLE_DOUYIN_LICENSE)
+            path = root / item["path"]
+            original = path.read_bytes().replace(b"\r\n", b"\n")
+            for data in (original, original.replace(b"\n", b"\r\n")):
+                path.write_bytes(data)
+                item.update(sha256=hashlib.sha256(data).hexdigest(), size_bytes=str(len(data)))
+                adapter = runtime.provider_from_verified_bundle(root, artifacts=inventory, provider_id="douyin")
+                self.assertIn("douyin_signer", adapter._transport._authenticated.pins)
+            changed = original.replace(b"Apache License", b"Changed Notice", 1)
+            path.write_bytes(changed)
+            item.update(sha256=hashlib.sha256(changed).hexdigest(), size_bytes=str(len(changed)))
+            with self.assertRaises(SourceError) as error:
+                runtime.provider_from_verified_bundle(root, artifacts=inventory, provider_id="douyin")
+            self.assertEqual(error.exception.code, SourceErrorCode.UNSUPPORTED)
 
     def test_missing_duplicate_and_wrong_reviewed_sdk_inventory_rejected(self):
         with tempfile.TemporaryDirectory() as temp:

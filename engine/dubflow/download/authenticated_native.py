@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import http.cookiejar
 from http.cookies import SimpleCookie
+import hashlib
 import json
+from pathlib import Path
+import re
+import stat
 import sys
 import time
+import types
 from itertools import islice
 from urllib.parse import urlsplit
 
@@ -85,6 +90,44 @@ def inspect(request, youtube_dl):
         if not isinstance(raw, dict) or raw.get("_type") in {"playlist", "multi_video"}:
             raise ValueError("unexpected provider metadata")
         return public_metadata(raw, generic=provider == "generic")
+
+
+def douyin_creator_page(request, youtube_dl):
+    if set(request) != {"schema_version", "operation", "provider_id", "url", "position", "page_size", "headers", "douyin_modules"}:
+        raise ValueError("invalid Douyin creator request schema")
+    # Fixed provider modules, verified bytes executed from memory. No import
+    # path supplied by stdin can grant code execution or system dependencies.
+    pins = request.get("douyin_modules")
+    if not isinstance(pins, dict) or set(pins) != {"creator", "signature"}:
+        raise NotImplementedError("missing owned Douyin provider pins")
+    modules = {}
+    for key, filename in {"creator": "creator_native.py", "signature": "request_signature.py"}.items():
+        pin = pins[key]
+        if not isinstance(pin, str) or not re.fullmatch(r"[0-9a-f]{64}", pin):
+            raise NotImplementedError("invalid owned Douyin provider pins")
+        path = Path(__file__).absolute().parent / "douyin" / filename
+        for candidate in (path, *path.parents):
+            info = candidate.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+                raise NotImplementedError("linked owned Douyin provider module")
+        before = path.stat()
+        with path.open("rb") as stream:
+            data = stream.read(1024 * 1024 + 1)
+        after = path.stat()
+        if (not data or len(data) > 1024 * 1024 or hashlib.sha256(data).hexdigest() != pin
+                or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)):
+            raise NotImplementedError("owned Douyin provider module changed")
+        module = types.ModuleType("dubflow_pinned_douyin_" + key)
+        exec(compile(data, str(path), "exec"), module.__dict__)
+        modules[key] = module
+    provider, url, cookies = provider_request(request)
+    if provider != "douyin":
+        raise ValueError("Douyin creator operation requires its provider")
+    with youtube_dl(downloader_options()) as downloader:
+        for cookie in cookies:
+            downloader.cookiejar.set_cookie(cookie)
+        return modules["creator"].fetch_page(downloader, url, position=request.get("position"),
+            page_size=request.get("page_size"), signer=modules["signature"].ABogus)
 
 
 def enumerate_page(request, youtube_dl):
@@ -181,10 +224,10 @@ def main():
         if len(payload) > 4096:
             return 2
         request = json.loads(payload)
-        if not isinstance(request, dict) or request.get("schema_version") != 1 or len(sys.argv) != 2:
+        if not isinstance(request, dict) or type(request.get("schema_version")) is not int or request["schema_version"] != 1 or len(sys.argv) != 2:
             return 2
         operation = request.get("operation", "inspect")
-        if operation not in {"inspect", "health_check", "enumerate"}:
+        if operation not in {"inspect", "health_check", "enumerate", "douyin_creator"}:
             return 2
         if operation == "health_check" and set(request) != {"schema_version", "operation"}:
             return 2
@@ -204,11 +247,16 @@ def main():
                           "isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site)}
         elif operation == "enumerate":
             result = enumerate_page(request, yt_dlp.YoutubeDL)
+        elif operation == "douyin_creator":
+            result = douyin_creator_page(request, yt_dlp.YoutubeDL)
         else:
             result = inspect(request, yt_dlp.YoutubeDL)
         sys.stdout.write(json.dumps(result, ensure_ascii=True))
         return 0
     except Exception as error:
+        native_code = getattr(error, "native_exit_code", None)
+        if type(native_code) is int and native_code in {2, 3, 4, 5, 6, 7}:
+            return native_code
         # Classification is bounded; raw errors can contain cookie/token URLs.
         text = str(error)[:4096].lower()
         if isinstance(error, NotImplementedError):
