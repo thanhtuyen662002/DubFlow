@@ -129,6 +129,37 @@ class CueExecutionTests(unittest.TestCase):
         return [os.environ.get("DUBFLOW_TEST_PYTHON",sys.executable),"-I","-S","-B",
             str(plans.REPO/"engine/dubflow/review/cue_execution.py"),*args]
 
+    def test_isolated_entry_resolves_runtime_dependency_before_app_namespace(self):
+        with TemporaryDirectory(prefix="dubflow-review-import-order-") as directory:
+            runtime = Path(directory) / "runtime"
+            dependency = runtime / "Lib/site-packages/packaging"
+            dependency.mkdir(parents=True)
+            (dependency / "__init__.py").write_text("", encoding="utf-8")
+            (dependency / "version.py").write_text("origin = 'owned-runtime'\n", encoding="utf-8")
+            code = """
+import importlib.util
+from pathlib import Path
+import sys
+entry = Path(sys.argv[1])
+runtime = Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location('isolated_cue_entry', entry)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+# Only this isolated fixture models a Windows bundle; no installed runtime changes.
+sys.executable = str(runtime / 'python.exe')
+module._imports()
+import packaging.version
+from engine.dubflow.review.wire import decode_review_json
+assert packaging.version.origin == 'owned-runtime'
+assert Path(packaging.version.__file__).resolve() == runtime / 'Lib/site-packages/packaging/version.py'
+assert decode_review_json('{"schema_version":1}') == {'schema_version':1}
+"""
+            result = subprocess.run([self.command()[0],"-I","-S","-B","-c",code,
+                str(plans.REPO/"engine/dubflow/review/cue_execution.py"),str(runtime)],
+                capture_output=True,timeout=20)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,b"")
+
     def test_native_gate_and_bad_context_pin_refuse_before_reading_models_or_output(self):
         with TemporaryDirectory(prefix="dubflow-review-execution-cli-") as directory:
             path=Path(directory)/"context.json";path.write_bytes(b"{}")

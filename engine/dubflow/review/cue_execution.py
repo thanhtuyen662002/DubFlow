@@ -16,8 +16,9 @@ MAX_DOCUMENT = 64 * 1024
 def _imports():
     # Called only after the native containment gate by the executable entry.
     if __package__ in (None, ""):
+        # The app's packaging/ namespace must not shadow runtime dependencies.
         sys.path.append(str(Path(sys.executable).resolve().parent / "Lib" / "site-packages"))
-        sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+        sys.path.append(str(Path(__file__).resolve().parents[3]))
 
 
 def candidate_packet(request, candidate, recipe_identity: str) -> dict:
