@@ -640,12 +640,74 @@ under local control. Only the current create-new-owned partial can be removed
 on an ordinary failure. Other orphans need explicit recovery; no implicit GC or
 eviction can discard pending undo references.
 
-This API is intentionally not connected to `review-mix-cue` or the desktop yet:
-that command continues to report `retained_audio=false`. Its caller must still
-admit the actual OS/storage observation and stable volume through ADR0005,
-register an existing versioned locator, retarget admitted mix metadata, and
-retain every pending undo dependency before final graph CAS. A physical path
-descriptor is not a durable locator or semantic/provenance admission token.
+#### Native Windows volume and retained locator admission
+
+The additive opt-in native command `review-retain-mix-cue` accepts the same
+revision/finding/edit arguments as `review-mix-cue`; it accepts no extra path,
+volume label, storage marker or quota argument from the browser. Before owned
+producer execution it observes the immutable job's output root with Win32
+`GetVolumePathNameW`, `GetVolumeNameForVolumeMountPointW`, `GetDriveTypeW`,
+`GetVolumeInformationW` and `GetDiskFreeSpaceExW`. It binds a canonical local
+root hint and normalized OS volume GUID before expensive work. Missing,
+nonplain, network, removable, non-NTFS, read-only, unknown-capacity and
+hard-link-incapable roots refuse this optional command. The native error-mode
+guard preserves/restores thread flags and suppresses critical-error dialogs.
+Standard export and the older private mix command remain available.
+
+Retention re-probes the initial volume identity before opening the output-wide
+writer lease, after opening it, before each copy's admission and after every
+physical verification. Copy admission uses **bytes available to the calling
+user**, respecting OS quota; total volume free bytes cannot authorize a write.
+This private command has a 32GiB aggregate output-root quota and 2GiB free-space
+reserve. All old/undo/partial objects count and nothing is implicitly evicted.
+The three admitted full mix roles share a cooperative720-second retention
+deadline. Failed partial generations remain counted recovery objects, never a
+successful graph. A changed/missing root cannot fall back to control storage.
+
+Each accepted PCM object receives the existing ADR0005 `ArtifactLocator`, using
+the canonical storage crate rather than a parallel path/locator validator:
+schema1, `windows-volume-guid:<uuid>`, root kind output, validated relative path,
+content SHA-256 and byte size. Descriptors serialize wide counts as canonical
+decimal strings. Absolute paths are transient hints. Every reuse verifies
+locator equality plus native bounded streamed checksum/PCM/sealedness; a new
+copy is independent of mutable worker candidate files. Reopen creates no
+replacement root/lock and refuses changed locator pins or absent media.
+
+The new response kind is `review_retained_mixed_original_cue` schema1. Its
+private mix reports `retained_audio=true` only after all three retained roles
+are verified together, and returns their physical locators separately. It
+still reports `mix_metadata_retargeted=false`, `active_graph_published=false`
+and `correction_ready=false`: sealed original candidate mix/composition JSON
+still refer to the private producer generation. No desktop edit is enabled
+until those semantics are retargeted/admitted and a complete render/QC/export
+graph and undo references are validated before native CAS. The preexisting
+command's response and behavior remain unchanged. This additive private
+response does not migrate producer contracts, SQLite or old jobs.
+
+OS observations and plain-path checks are cooperative, not an atomic filesystem
+sandbox against a same-user remount/race, and cannot interrupt blocked kernel
+I/O. The volume mount manager can return a different GUID alias; a mismatch
+requires explicit recovery rather than treating a drive letter as identity.
+This first native provider deliberately excludes removable/network storage;
+future providers require their own admission and product qualification. These
+constraints, physical fixture tests and a successful Windows build do not
+qualify process-death/power-loss durability, real six-hour media or installed
+GUI/undo behavior. Older binaries ignore the retained namespace/command;
+rollback preserves existing originals and leaves private objects for recovery.
+
+Win32 reference signatures and semantics:
+- https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamew
+- https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumenameforvolumemountpointw
+- https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationw
+- https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexw
+- https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setthreaderrormode
+
+The preexisting `review-mix-cue` command and desktop remain unchanged; that
+command continues to report `retained_audio=false`. The new opt-in command
+above connects native OS/volume admission and existing versioned locators only.
+Its caller must still retarget admitted mix metadata and retain every pending
+undo dependency before final graph CAS. A physical path descriptor alone is
+not a durable locator or semantic/provenance admission token.
 Filesystem observation and I/O deadlines are cooperative; they cannot promise
 to interrupt a blocked NAS/OS operation. Windows volume, process-death and
 power-loss qualification remain required. This code does not claim them from

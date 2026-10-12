@@ -94,21 +94,26 @@ fn unchanged(store: &DurableStore, state: &ReviewGraphState) -> SupervisorResult
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, false, false)
+    run_inner(&mut args, false, false, false)
 }
 
 pub(super) fn run_synthesis(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, false)
+    run_inner(&mut args, true, false, false)
 }
 
 pub(super) fn run_mix(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, true)
+    run_inner(&mut args, true, true, false)
+}
+
+pub(super) fn run_retained_mix(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
+    run_inner(&mut args, true, true, true)
 }
 
 fn run_inner(
     mut args: impl Iterator<Item = OsString>,
     synthesize: bool,
     mix: bool,
+    retain: bool,
 ) -> SupervisorResult<()> {
     let mut values = std::collections::HashMap::new();
     while let Some(flag) = args.next() {
@@ -179,6 +184,13 @@ fn run_inner(
         ));
     }
     let seed = read_original(&store, &data, &state)?;
+    let retained_output = if retain {
+        Some(super::review_retention::NativeOutputPin::read(
+            &seed.output_root,
+        )?)
+    } else {
+        None
+    };
     let graph = decode(&seed.graph, LIMIT)?;
     if graph["mode"] != "b2" {
         return Err(invalid(
@@ -245,6 +257,7 @@ fn run_inner(
                 after.json(),
                 &request,
                 &result,
+                retained_output.as_ref(),
             )?)
         } else {
             None
@@ -253,7 +266,7 @@ fn run_inner(
         assets.read_json(&accepted)?;
         unchanged(&store, &state)?;
         let _original = read_original(&store, &data, &state)?;
-        let mut packet = json!({"schema_version":1,"kind":if mix {"review_mixed_original_cue"} else {"review_synthesized_original_cue"},
+        let mut packet = json!({"schema_version":1,"kind":if retain {"review_retained_mixed_original_cue"} else if mix {"review_mixed_original_cue"} else {"review_synthesized_original_cue"},
             "job_id":job,"revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,"graph_sha256":state.token.graph_sha256,
             "finding_id":finding,"context":descriptor(&context),"request":descriptor(&accepted),"release_sha256":runtime.release_hash,
             "proposal":decode(after.json(),LIMIT)?,"accepted_cue":result,"model_weights_verified":true,"correction_ready":false});
@@ -477,6 +490,7 @@ fn mix_private(
     after: &str,
     request: &BoundCueRequest,
     cue: &Value,
+    retained_output: Option<&super::review_retention::NativeOutputPin>,
 ) -> SupervisorResult<Value> {
     let bound = decode(&state.graph_json, LIMIT)?;
     let graph_raw = bound["source_graph_json"]
@@ -528,6 +542,7 @@ fn mix_private(
     let mix = decode(&mix_raw, LIMIT)?;
     let generation = output.join(format!("mix-{}", &composition_hash[7..]));
     let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let mut admitted_audio = Vec::new();
     for (role, name) in [
         ("original_audio", "original.wav"),
         ("dialogue_stem", "dialogue.wav"),
@@ -576,6 +591,7 @@ fn mix_private(
                 .ok_or_else(|| invalid("bad private mix frame count"))?,
         };
         super::review_assets::verify_private_mix_audio(&generation, &path, &pin, deadline)?;
+        admitted_audio.push((role, path, pin));
     }
     for object in [
         &context,
@@ -588,6 +604,36 @@ fn mix_private(
     }
     let composition = assets.accept_json(&composition_raw)?;
     let document = assets.accept_json(&mix_raw)?;
+    if let Some(output_pin) = retained_output {
+        // Output comes from the immutable native job seed, never an extra
+        // browser/worker flag. The output-wide quota includes old undo objects
+        // and interrupted copies. Refusal preserves every original artifact.
+        let retained = super::review_retention::NativeMixStore::new(
+            output_pin,
+            &state.token.job_id,
+            super::review_assets::MixStorageBudget {
+                maximum_bytes: 32 * 1024 * 1024 * 1024,
+                minimum_free_bytes: 2 * 1024 * 1024 * 1024,
+            },
+        )?;
+        let retention_deadline = std::time::Instant::now() + Duration::from_secs(720);
+        let mut located = Vec::new();
+        for (role, path, pin) in admitted_audio {
+            let object = retained.accept(&generation, &path, &pin, retention_deadline)?;
+            located.push((role, object));
+        }
+        // Recheck all roles together after the last copy before reporting any
+        // success. These are private physical locators, not published metadata.
+        for (_, object) in &located {
+            retained.verify(object, retention_deadline)?;
+        }
+        return Ok(
+            json!({"context":descriptor(&context),"composition":descriptor(&composition),"mix_document":descriptor(&document),
+            "private_audio_verified":true,"retained_audio":true,"active_graph_published":false,
+            "mix_metadata_retargeted":false,
+            "retained_mix_audio":located.iter().map(|(role,object)|json!({"role":role,"audio":object.descriptor()})).collect::<Vec<_>>()}),
+        );
+    }
     Ok(
         json!({"context":descriptor(&context),"composition":descriptor(&composition),"mix_document":descriptor(&document),
         "private_audio_verified":true,"retained_audio":false,"active_graph_published":false}),
