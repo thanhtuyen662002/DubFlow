@@ -721,6 +721,36 @@ recovery. No automatic migration, relabeling or destructive reverse migration
 is performed. Full mix/render/QC/export, active graph publication, real undo,
 B1 and installed long-form acceptance remain incomplete.
 
+### Private retained mix metadata preparation
+
+An additive read-only adapter consumes native-retained-mix-context schema1:
+exact candidate mix bytes/hash, admitted composition hash, native job/output
+root/volume pins and the three retained role descriptors. It checks the closed
+context, canonical decimal PCM counts, ordered roles, job namespace, content
+hashes and full-mix layout against the admitted candidate. Only the three mix
+artifact paths change; all producer/source/input provenance, timing, metrics,
+chunks, confidence, warnings and failures retain their original semantics.
+The composition remains unchanged: its source and per-cue pins describe the
+inputs used to produce these exact audio bytes, not the publication location.
+
+This transformation deliberately performs no media I/O, inference or SQLite
+mutation. A missing mutable candidate generation cannot invalidate already
+retained audio. Its private schema1 result binds the exact context and new mix
+document hashes and explicitly requires native_media_revalidation_required.
+Caller JSON never grants storage authority. Before sealing/graph CAS, native
+code must independently admit path-only differences against its original
+candidate, validate existing canonical locators and revalidate all retained
+physical media under the original job/volume token. No desktop or native
+command uses this new adapter yet. Original producer/runtime/model pins are
+unchanged; a later dispatcher must explicitly admit the compatible metadata
+consumer rather than silently replacing an old producer with current code.
+
+These formats are additive/private, retain mix schema1 and leave prior exact
+bytes/hashes readable. They neither rewrite old assets nor migrate SQLite or
+updater contracts. Rollback ignores the unreferenced prepared document and
+preserves the current original export/graph. Fixture metadata/schema/CLI tests
+only qualify this transformation, not physical media, GUI, final CAS or undo.
+
 ### Original physical single-cue dispatch
 
 The opt-in native `review-synthesize-cue` command repeats the original head and

@@ -151,7 +151,7 @@ module._imports()
 import packaging.version
 from engine.dubflow.review.wire import decode_review_json
 assert packaging.version.origin == 'owned-runtime'
-assert Path(packaging.version.__file__).resolve() == runtime / 'Lib/site-packages/packaging/version.py'
+assert Path(packaging.version.__file__).resolve() == (runtime / 'Lib/site-packages/packaging/version.py').resolve()
 assert decode_review_json('{"schema_version":1}') == {'schema_version':1}
 """
             result = subprocess.run([self.command()[0],"-I","-S","-B","-c",code,

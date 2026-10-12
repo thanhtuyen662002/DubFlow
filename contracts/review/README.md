@@ -55,3 +55,14 @@ implicitly. `mix-candidate-v1.json` is the owned checkpointable private AUD-0
 producer packet. Native admission binds all assignments/source/producer, hashes
 and PCM headers. Its verified private audio is not immutable retained media and
 cannot publish an active graph or qualify render/export/QC/undo.
+
+`native-retained-mix-context-v1.json` carries exact admitted candidate mix bytes,
+composition hash and native retained role descriptors. The read-only metadata
+adapter emits `retained-mix-document-v1.json`, changing only the three artifact
+paths while preserving producer/source/timing/chunk/confidence/quality evidence.
+It does not inspect media or establish locator/volume authority from JSON.
+Native code must independently bind the context, admit path-only differences,
+validate canonical locators and revalidate all physical media before graph CAS.
+Its result requires `native_media_revalidation_required=true` and never claims
+publication. These private additive formats have no implicit legacy migration;
+current desktop and native retention command are not wired to them yet.
