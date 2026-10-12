@@ -622,15 +622,26 @@ fn mix_private(
             let object = retained.accept(&generation, &path, &pin, retention_deadline)?;
             located.push((role, object));
         }
-        // Recheck all roles together after the last copy before reporting any
-        // success. These are private physical locators, not published metadata.
+        // Native path-only retargeting preserves the admitted producer/source
+        // semantics and independently revalidates every canonical physical pin.
+        let retained_raw = retained.retarget_admitted_document(
+            &mix_raw,
+            &composition_hash,
+            &located,
+            retention_deadline,
+        )?;
+        let retained_document = assets.accept_json(&retained_raw)?;
+        assets.read_json(&retained_document)?;
+        // Recheck all roles after sealing metadata. These are private retained
+        // objects, not an active playback graph or a SQLite transaction.
         for (_, object) in &located {
             retained.verify(object, retention_deadline)?;
         }
         return Ok(
-            json!({"context":descriptor(&context),"composition":descriptor(&composition),"mix_document":descriptor(&document),
+            json!({"context":descriptor(&context),"composition":descriptor(&composition),
+            "candidate_mix_document":descriptor(&document),"mix_document":descriptor(&retained_document),
             "private_audio_verified":true,"retained_audio":true,"active_graph_published":false,
-            "mix_metadata_retargeted":false,
+            "mix_metadata_retargeted":true,
             "retained_mix_audio":located.iter().map(|(role,object)|json!({"role":role,"audio":object.descriptor()})).collect::<Vec<_>>()}),
         );
     }

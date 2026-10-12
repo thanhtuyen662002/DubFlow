@@ -64,5 +64,9 @@ It does not inspect media or establish locator/volume authority from JSON.
 Native code must independently bind the context, admit path-only differences,
 validate canonical locators and revalidate all physical media before graph CAS.
 Its result requires `native_media_revalidation_required=true` and never claims
-publication. These private additive formats have no implicit legacy migration;
-current desktop and native retention command are not wired to them yet.
+publication. These private additive formats have no implicit legacy migration.
+The native retention command uses its own path-only transformation over typed
+retained objects, independently revalidates physical pins, and seals the new mix
+document. It keeps the candidate document separate. The Python adapter serves as
+a deterministic oracle; it is not a replacement producer or a native authority.
+The desktop and active graph are not wired to these private retained documents.

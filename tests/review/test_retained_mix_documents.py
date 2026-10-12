@@ -73,6 +73,11 @@ class RetainedMixDocumentTests(unittest.TestCase):
             self.assertTrue(result["native_media_revalidation_required"])
             self.assertEqual(list(Path(root).iterdir()), [])
 
+    def test_native_oracle_fixture_matches_current_metadata_adapter(self):
+        fixture = json.loads((REPO / "tests/review/native_retained_mix_document_v1.json").read_text(encoding="utf-8"))
+        entry = fixture["windows" if os.name == "nt" else "posix"]
+        self.assertEqual(prepare_retained_mix_document(_encode(entry["context"], MAX_PACKET)), entry["prepared"])
+
     def test_role_volume_job_path_hash_and_pcm_substitutions_refuse(self):
         with TemporaryDirectory(prefix="dubflow-retained-pins-") as root:
             context = self.context(root)

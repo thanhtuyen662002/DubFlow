@@ -210,6 +210,79 @@ impl LocatedMixAudio {
     }
 }
 
+// The caller has already admitted producer/source/composition semantics. This
+// private transformation cannot admit physical media or publish a graph. Its
+// production entry below verifies typed native objects before calling it.
+fn retarget_metadata(
+    admitted: &str,
+    composition_hash: &str,
+    objects: &[(&str, LocatedMixAudio)],
+) -> SupervisorResult<String> {
+    use super::review_document::{canonical, decode};
+    const ROLES: [&str; 3] = ["original_audio", "dialogue_stem", "final_mix"];
+    let mut mix = decode(admitted, 64 * 1024 * 1024)?;
+    if mix["schema_version"].as_u64() != Some(1)
+        || mix["kind"] != "audio_mix_document"
+        || mix["provenance"]["input_hash"] != composition_hash
+        || mix["sample_rate"].as_u64() != Some(48000)
+        || mix["channels"].as_u64() != Some(2)
+        || objects.len() != ROLES.len()
+        || objects
+            .iter()
+            .zip(ROLES)
+            .any(|((role, _), expected)| *role != expected)
+    {
+        return Err(invalid(
+            "retained mix differs from its admitted composition or roles",
+        ));
+    }
+    let frames = mix["original_audio"]["frame_count"].as_u64();
+    for (role, object) in objects {
+        let pin = &object.audio.pin;
+        let artifact = &mix[*role];
+        let path = object
+            .audio
+            .path
+            .to_str()
+            .filter(|p| !p.is_empty() && p.len() <= 4096)
+            .ok_or_else(|| {
+                invalid("retained mix path cannot be represented by its artifact contract")
+            })?;
+        if pin.sample_rate != 48000
+            || pin.channels != 2
+            || !(1..=48000 * 6 * 3600).contains(&pin.frame_count)
+            || !(44..=u64::from(u32::MAX) + 8).contains(&pin.size_bytes)
+            || pin
+                .frame_count
+                .checked_mul(4)
+                .and_then(|n| n.checked_add(44))
+                .is_none_or(|minimum| minimum > pin.size_bytes)
+            || frames != Some(pin.frame_count)
+            || artifact["kind"] != *role
+            || artifact["format"] != "wav"
+            || artifact["bits_per_sample"].as_u64() != Some(16)
+            || artifact["sample_rate"].as_u64() != Some(u64::from(pin.sample_rate))
+            || artifact["channels"].as_u64() != Some(u64::from(pin.channels))
+            || artifact["frame_count"].as_u64() != Some(pin.frame_count)
+            || artifact["content_hash"] != pin.sha256
+            || artifact["metrics"]["content_hash"] != artifact["content_hash"]
+            || artifact["metrics"]["frame_count"] != artifact["frame_count"]
+        {
+            return Err(invalid(
+                "retained mix substitutes admitted role content, metrics or PCM layout",
+            ));
+        }
+        // All other fields, including wide source ticks and producer/model
+        // pins, keep their admitted values. No mutable producer path is read.
+        mix[*role]["path"] = json!(path);
+    }
+    let mut result = String::new();
+    canonical(&mix, &mut result)?;
+    result.push('\n');
+    decode(&result, 64 * 1024 * 1024)?;
+    Ok(result)
+}
+
 pub(super) struct NativeMixStore {
     root: PathBuf,
     volume_id: String,
@@ -352,6 +425,21 @@ impl NativeMixStore {
         )?;
         Ok(())
     }
+
+    /// Bind metadata only to this native store's canonical locators and sealed
+    /// physical media. Neither caller JSON nor a Python result grants authority.
+    pub(super) fn retarget_admitted_document(
+        &self,
+        admitted: &str,
+        composition_hash: &str,
+        objects: &[(&str, LocatedMixAudio)],
+        deadline: Instant,
+    ) -> SupervisorResult<String> {
+        for (_, object) in objects {
+            self.verify(object, deadline)?;
+        }
+        retarget_metadata(admitted, composition_hash, objects)
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +447,116 @@ mod tests {
     use super::*;
     const GUID: &str = r"\\?\Volume{01234567-89AB-CDEF-0123-456789abcdef}\";
     const HARD_LINKS: u32 = 0x0040_0000;
+
+    fn metadata_fixture() -> (Value, Vec<(&'static str, LocatedMixAudio)>) {
+        let fixture = super::super::review_document::decode(
+            include_str!("../../../../tests/review/native_retained_mix_document_v1.json"),
+            1024 * 1024,
+        )
+        .unwrap();
+        let fixture = fixture[if cfg!(windows) { "windows" } else { "posix" }].clone();
+        let objects = ["original_audio", "dialogue_stem", "final_mix"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, role)| {
+                let pin = &fixture["context"]["retained_mix_audio"][i]["audio"];
+                // A typed metadata fixture for the private pure function only.
+                // Never pass these fake descriptors as native physical proof.
+                (
+                    role,
+                    LocatedMixAudio {
+                        audio: RetainedMixAudio {
+                            path: pin["path_hint"].as_str().unwrap().into(),
+                            pin: PcmPin {
+                                sha256: pin["locator"]["content_hash"].as_str().unwrap().into(),
+                                size_bytes: pin["locator"]["size_bytes"]
+                                    .as_str()
+                                    .unwrap()
+                                    .parse()
+                                    .unwrap(),
+                                sample_rate: 48000,
+                                channels: 2,
+                                frame_count: pin["frame_count"].as_str().unwrap().parse().unwrap(),
+                            },
+                        },
+                        locator: ArtifactLocator {
+                            schema_version: 1,
+                            root_kind: RootKind::Output,
+                            volume_id: pin["locator"]["volume_id"].as_str().unwrap().into(),
+                            relative_path: pin["locator"]["relative_path"].as_str().unwrap().into(),
+                            content_hash: pin["locator"]["content_hash"].as_str().unwrap().into(),
+                            size_bytes: pin["locator"]["size_bytes"]
+                                .as_str()
+                                .unwrap()
+                                .parse()
+                                .unwrap(),
+                        },
+                    },
+                )
+            })
+            .collect();
+        (fixture, objects)
+    }
+
+    #[test]
+    fn retained_metadata_matches_owned_oracle_and_changes_only_three_paths() {
+        use super::super::review_document::decode;
+        let (fixture, objects) = metadata_fixture();
+        let source = fixture["context"]["candidate_mix_json"].as_str().unwrap();
+        let composition = fixture["context"]["composition_sha256"].as_str().unwrap();
+        let raw = retarget_metadata(source, composition, &objects).unwrap();
+        let actual = decode(&raw, 64 * 1024 * 1024).unwrap();
+        let oracle = decode(
+            fixture["prepared"]["mix_document_json"].as_str().unwrap(),
+            64 * 1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(actual, oracle);
+        let mut expected = decode(source, 64 * 1024 * 1024).unwrap();
+        for (role, object) in &objects {
+            expected[*role]["path"] = json!(object.audio.path);
+        }
+        assert_eq!(actual, expected); // Every semantic field survives unchanged.
+        assert_ne!(raw, source);
+        assert_eq!(
+            raw,
+            retarget_metadata(source, composition, &objects).unwrap()
+        );
+    }
+
+    #[test]
+    fn retained_metadata_refuses_role_content_pcm_and_composition_substitution() {
+        let (fixture, objects) = metadata_fixture();
+        let source = fixture["context"]["candidate_mix_json"].as_str().unwrap();
+        let composition = fixture["context"]["composition_sha256"].as_str().unwrap();
+        assert!(retarget_metadata(source, "foreign", &objects).is_err());
+        assert!(retarget_metadata(source, composition, &objects[..2]).is_err());
+        for change in 0..9 {
+            let mut altered = objects.clone();
+            match change {
+                0 => altered.reverse(),
+                1 => altered[1].0 = "original_audio",
+                2 => altered[0].1.audio.pin.sha256 = format!("sha256:{}", "0".repeat(64)),
+                3 => altered[0].1.audio.pin.frame_count += 1,
+                4 => altered[0].1.audio.pin.channels = 1,
+                5 => altered[0].1.audio.pin.sample_rate = 16000,
+                6 => altered[0].1.audio.pin.size_bytes = 44,
+                7 => altered[0].1.audio.pin.size_bytes = u64::MAX,
+                _ => altered[0].1.audio.path = "".into(),
+            }
+            assert!(
+                retarget_metadata(source, composition, &altered).is_err(),
+                "case{change}"
+            );
+        }
+        let mut repeated = source.to_owned();
+        repeated = repeated.replacen(
+            "\"schema_version\":1",
+            "\"schema_version\":1,\"schema_version\":1",
+            1,
+        );
+        assert!(retarget_metadata(&repeated, composition, &objects).is_err());
+    }
 
     #[test]
     fn volume_identity_and_quota_space_are_os_values_not_path_hints() {
@@ -509,6 +707,38 @@ mod tests {
         let reopened =
             NativeMixStore::open_existing(&native, "job-physical-locator", budget).unwrap();
         reopened.verify(&object, deadline).unwrap();
+        // Four-frame synthetic metadata exercises physical binding only. It
+        // does not qualify a full producer, long media or an active graph.
+        let (fixture, _) = metadata_fixture();
+        let mut source = super::super::review_document::decode(
+            fixture["context"]["candidate_mix_json"].as_str().unwrap(),
+            64 * 1024 * 1024,
+        )
+        .unwrap();
+        let roles = ["original_audio", "dialogue_stem", "final_mix"];
+        for role in roles {
+            source[role]["content_hash"] = json!(pcm.sha256);
+            source[role]["frame_count"] = json!(pcm.frame_count);
+            source[role]["metrics"]["content_hash"] = json!(pcm.sha256);
+            source[role]["metrics"]["frame_count"] = json!(pcm.frame_count);
+            source[role]["metrics"]["sample_count"] = json!(pcm.frame_count * 2);
+        }
+        let source_raw = serde_json::to_string(&source).unwrap();
+        let composition = fixture["context"]["composition_sha256"].as_str().unwrap();
+        let retained_roles: Vec<_> = roles
+            .into_iter()
+            .map(|role| (role, object.clone()))
+            .collect();
+        let retargeted = reopened
+            .retarget_admitted_document(&source_raw, composition, &retained_roles, deadline)
+            .unwrap();
+        for role in roles {
+            source[role]["path"] = json!(object.audio.path);
+        }
+        assert_eq!(
+            super::super::review_document::decode(&retargeted, 64 * 1024 * 1024).unwrap(),
+            source
+        );
         for change in 0..6 {
             let mut foreign = object.clone();
             match change {
@@ -523,6 +753,11 @@ mod tests {
                 _ => foreign.locator.schema_version += 1,
             }
             assert!(reopened.verify(&foreign, deadline).is_err());
+            let mut foreign_roles = retained_roles.clone();
+            foreign_roles[0].1 = foreign;
+            assert!(reopened
+                .retarget_admitted_document(&source_raw, composition, &foreign_roles, deadline,)
+                .is_err());
         }
         assert!(reopened.verify(&object, Instant::now()).is_err());
         let foreign_volume = NativeOutputPin {
@@ -545,6 +780,9 @@ mod tests {
         sealed.set_readonly(true);
         fs::set_permissions(&object.audio.path, sealed).unwrap();
         assert!(reopened.verify(&object, deadline).is_err());
+        assert!(reopened
+            .retarget_admitted_document(&source_raw, composition, &retained_roles, deadline,)
+            .is_err());
         drop(reopened);
         let mut cleanup = fs::metadata(&object.audio.path).unwrap().permissions();
         cleanup.set_readonly(false);

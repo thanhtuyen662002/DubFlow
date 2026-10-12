@@ -740,10 +740,21 @@ document hashes and explicitly requires native_media_revalidation_required.
 Caller JSON never grants storage authority. Before sealing/graph CAS, native
 code must independently admit path-only differences against its original
 candidate, validate existing canonical locators and revalidate all retained
-physical media under the original job/volume token. No desktop or native
-command uses this new adapter yet. Original producer/runtime/model pins are
-unchanged; a later dispatcher must explicitly admit the compatible metadata
-consumer rather than silently replacing an old producer with current code.
+physical media under the original job/volume token. The native retention
+command performs that path-only transformation directly over typed native
+objects, using the strict decoder/canonical serializer. It revalidates all
+three canonical locators/physical media before sealing and again after sealing
+the retained mix document. The result separates candidate_mix_document from
+the retained mix_document and sets mix_metadata_retargeted=true only after
+those operations pass. Active graph publication remains false. The older
+non-retaining mix command is unchanged.
+
+The Python adapter is a deterministic oracle, not a dispatched replacement
+producer or an admission token. Windows/POSIX metadata fixtures compare the
+native transformation against it without claiming physical volume authority.
+Original producer/runtime/model pins are unchanged; no new Python helper is
+silently substituted into an old pinned runtime. Desktop use and native active
+graph CAS still require complete downstream media/export/QC admission.
 
 These formats are additive/private, retain mix schema1 and leave prior exact
 bytes/hashes readable. They neither rewrite old assets nor migrate SQLite or
