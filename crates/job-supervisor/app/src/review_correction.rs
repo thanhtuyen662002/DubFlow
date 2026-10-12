@@ -94,14 +94,22 @@ fn unchanged(store: &DurableStore, state: &ReviewGraphState) -> SupervisorResult
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, false)
+    run_inner(&mut args, false, false)
 }
 
 pub(super) fn run_synthesis(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true)
+    run_inner(&mut args, true, false)
 }
 
-fn run_inner(mut args: impl Iterator<Item = OsString>, synthesize: bool) -> SupervisorResult<()> {
+pub(super) fn run_mix(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
+    run_inner(&mut args, true, true)
+}
+
+fn run_inner(
+    mut args: impl Iterator<Item = OsString>,
+    synthesize: bool,
+    mix: bool,
+) -> SupervisorResult<()> {
     let mut values = std::collections::HashMap::new();
     while let Some(flag) = args.next() {
         let flag = flag
@@ -184,6 +192,9 @@ fn run_inner(mut args: impl Iterator<Item = OsString>, synthesize: bool) -> Supe
         .as_str()
         .ok_or_else(|| invalid("correction lacks an assigned voice"))?;
     let runtime = AdmittedRuntime::read(&store, job, &root)?;
+    if mix {
+        runtime.mix_execution()?;
+    }
     let target_voice = runtime.voice(selected)?;
     let assets = AcceptedAudioStore::open_existing(&data, job)?;
     let context = json!({"schema_version":1,"kind":"review_original_cue_context","manifest_sha256":state.token.original_manifest_sha256,
@@ -223,17 +234,35 @@ fn run_inner(mut args: impl Iterator<Item = OsString>, synthesize: bool) -> Supe
     let _original = read_original(&store, &data, &state)?;
     if synthesize {
         let result = synthesize_accepted(&runtime, &assets, &data, job, &request, &accepted)?;
+        let mixed = if mix {
+            Some(mix_private(
+                &runtime,
+                &assets,
+                &data,
+                job,
+                &state,
+                after.json(),
+                &request,
+                &result,
+            )?)
+        } else {
+            None
+        };
         assets.read_json(&context)?;
         assets.read_json(&accepted)?;
         unchanged(&store, &state)?;
         let _original = read_original(&store, &data, &state)?;
-        return super::emit_value(
-            &mut std::io::stdout().lock(),
-            json!({"schema_version":1,"kind":"review_synthesized_original_cue",
+        let mut packet = json!({"schema_version":1,"kind":if mix {"review_mixed_original_cue"} else {"review_synthesized_original_cue"},
             "job_id":job,"revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,"graph_sha256":state.token.graph_sha256,
             "finding_id":finding,"context":descriptor(&context),"request":descriptor(&accepted),"release_sha256":runtime.release_hash,
-            "proposal":decode(after.json(),LIMIT)?,"accepted_cue":result,"model_weights_verified":true,"correction_ready":false}),
-        );
+            "proposal":decode(after.json(),LIMIT)?,"accepted_cue":result,"model_weights_verified":true,"correction_ready":false});
+        if let Some(candidate) = mixed {
+            packet
+                .as_object_mut()
+                .unwrap()
+                .insert("private_mix".into(), candidate);
+        }
+        return super::emit_value(&mut std::io::stdout().lock(), packet);
     }
     super::emit_value(
         &mut std::io::stdout().lock(),
@@ -246,6 +275,328 @@ fn run_inner(mut args: impl Iterator<Item = OsString>, synthesize: bool) -> Supe
 
 const CUE_PACKET_LIMIT: usize = 256 * 1024;
 const CUE_DOCUMENT_LIMIT: usize = 64 * 1024;
+
+fn accepted_json(
+    value: &Value,
+    assets: &AcceptedAudioStore,
+) -> SupervisorResult<AcceptedJsonDocument> {
+    closed(value, &["path", "sha256", "size_bytes"])?;
+    let object = AcceptedJsonDocument {
+        path: PathBuf::from(
+            value["path"]
+                .as_str()
+                .ok_or_else(|| invalid("missing accepted metadata path"))?,
+        ),
+        sha256: value["sha256"]
+            .as_str()
+            .ok_or_else(|| invalid("missing accepted metadata hash"))?
+            .into(),
+        size_bytes: value["size_bytes"]
+            .as_u64()
+            .ok_or_else(|| invalid("bad accepted metadata size"))?,
+    };
+    assets.read_json(&object)?;
+    Ok(object)
+}
+
+fn mix_descriptor(object: &AcceptedJsonDocument, waves: &Path) -> Value {
+    json!({"path":object.path,"sha256":object.sha256,"size_bytes":object.size_bytes,
+        "artifact_root":waves,"metadata_root":object.path.parent().unwrap()})
+}
+
+fn admit_mix_metadata(
+    raw: &str,
+    context: &Value,
+    context_hash: &str,
+    template: &Value,
+) -> SupervisorResult<(String, String)> {
+    let packet = decode(raw, LIMIT)?;
+    closed(
+        &packet,
+        &[
+            "schema_version",
+            "kind",
+            "context_sha256",
+            "composition_json",
+            "composition_sha256",
+            "mix_document_json",
+            "mix_document_sha256",
+            "active_graph_published",
+        ],
+    )?;
+    if packet["schema_version"].as_u64() != Some(1)
+        || packet["kind"] != "review_private_mix_candidate"
+        || packet["context_sha256"] != context_hash
+        || packet["active_graph_published"] != false
+    {
+        return Err(invalid(
+            "mix candidate differs from native context or claims publication",
+        ));
+    }
+    let exact = |key: &str, hash: &str| -> SupervisorResult<String> {
+        let text = packet[key]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= LIMIT)
+            .ok_or_else(|| invalid("private mix metadata exceeds its bound"))?;
+        if packet[hash] != digest(text) {
+            return Err(invalid("private mix metadata checksum changed"));
+        }
+        Ok(text.into())
+    };
+    let composition_raw = exact("composition_json", "composition_sha256")?;
+    let mix_raw = exact("mix_document_json", "mix_document_sha256")?;
+    let composition = decode(&composition_raw, LIMIT)?;
+    closed(
+        &composition,
+        &[
+            "schema_version",
+            "kind",
+            "job_id",
+            "manifest_sha256",
+            "review_snapshot_sha256",
+            "source",
+            "documents",
+            "cues",
+            "mix_producer_pin",
+        ],
+    )?;
+    let graph = decode(
+        context["source_graph_json"]
+            .as_str()
+            .ok_or_else(|| invalid("missing original graph"))?,
+        LIMIT,
+    )?;
+    let request = decode(
+        context["request_json"]
+            .as_str()
+            .ok_or_else(|| invalid("missing cue request"))?,
+        CUE_DOCUMENT_LIMIT,
+    )?;
+    let mut documents = vec![
+        context["original_tts_document"].clone(),
+        context["accepted_tts_document"].clone(),
+    ];
+    documents.sort_by(|a, b| a["sha256"].as_str().cmp(&b["sha256"].as_str()));
+    documents.dedup();
+    let inputs = graph["canonical_inputs"]
+        .as_array()
+        .filter(|v| !v.is_empty() && v.len() <= 10000)
+        .ok_or_else(|| invalid("missing bounded canonical mix inputs"))?;
+    let cues:Vec<Value>=inputs.iter().map(|item| {
+        let selected=item["segment_id"]==request["cue_id"];
+        json!({"tts_input":if selected {&request["tts_input"]} else {item},
+            "document_sha256":if selected {&context["accepted_tts_document"]["sha256"]} else {&context["original_tts_document"]["sha256"]}})
+    }).collect();
+    let source = json!({"path":context["source_audio"]["path"],"sha256":context["source_audio"]["sha256"],
+        "start":template["source_start"],"end":template["source_end"],"source_id":template["source_id"],"layout":template["source_layout"]});
+    let mut producer = template["provenance"]
+        .as_object()
+        .ok_or_else(|| invalid("missing original mix producer"))?
+        .clone();
+    producer.remove("input_hash");
+    producer.remove("source_hash");
+    if composition["schema_version"].as_u64() != Some(2)
+        || composition["kind"] != "review_audio_composition"
+        || composition["job_id"] != graph["job_id"]
+        || composition["manifest_sha256"] != context["manifest_sha256"]
+        || composition["review_snapshot_sha256"] != request["after_snapshot_sha256"]
+        || composition["source"] != source
+        || composition["documents"] != json!(documents)
+        || composition["cues"] != json!(cues)
+        || composition["mix_producer_pin"] != json!(producer)
+    {
+        return Err(invalid(
+            "mix composition substitutes source, snapshot, assignments or producer",
+        ));
+    }
+    let mix = decode(&mix_raw, LIMIT)?;
+    let mut expected_provenance = template["provenance"].clone();
+    expected_provenance["input_hash"] = packet["composition_sha256"].clone();
+    expected_provenance["source_hash"] = context["source_audio"]["sha256"].clone();
+    let mut segments = template["segments"]
+        .as_array()
+        .ok_or_else(|| invalid("missing original mix segments"))?
+        .clone();
+    for segment in &mut segments {
+        if segment["segment_id"] == request["cue_id"] {
+            segment["status"] = "completed".into();
+            segment["fallback_used"] = false.into();
+        }
+    }
+    let failed: std::collections::BTreeSet<&str> = segments
+        .iter()
+        .filter(|s| s["status"] != "completed")
+        .filter_map(|s| s["segment_id"].as_str())
+        .collect();
+    let failures = mix["failures"]
+        .as_array()
+        .ok_or_else(|| invalid("missing private mix failure evidence"))?;
+    let failed_output: std::collections::BTreeSet<&str> = failures
+        .iter()
+        .filter_map(|f| f["segment_id"].as_str())
+        .collect();
+    if failed != failed_output || failures.len() != failed_output.len() {
+        return Err(invalid("private mix loses or invents per-cue failures"));
+    }
+    if mix["schema_version"] != template["schema_version"]
+        || mix["kind"] != "audio_mix_document"
+        || mix["source_kind"] != "source_audio"
+        || mix["target_language"] != "vi"
+        || mix["provenance"] != expected_provenance
+        || mix["segment_ids"] != template["segment_ids"]
+        || mix["segments"] != json!(segments)
+        || [
+            "source_id",
+            "source_layout",
+            "source_start",
+            "source_end",
+            "sample_rate",
+            "channels",
+        ]
+        .iter()
+        .any(|key| mix[*key] != template[*key])
+        || mix["failures"].as_array().map_or(true, |failures| {
+            failures
+                .iter()
+                .any(|f| f["segment_id"] == request["cue_id"])
+        })
+    {
+        return Err(invalid(
+            "mix candidate substitutes original source, producer or unrelated cue evidence",
+        ));
+    }
+    Ok((composition_raw, mix_raw))
+}
+
+fn mix_private(
+    runtime: &AdmittedRuntime,
+    assets: &AcceptedAudioStore,
+    data: &Path,
+    job: &str,
+    state: &ReviewGraphState,
+    after: &str,
+    request: &BoundCueRequest,
+    cue: &Value,
+) -> SupervisorResult<Value> {
+    let bound = decode(&state.graph_json, LIMIT)?;
+    let graph_raw = bound["source_graph_json"]
+        .as_str()
+        .ok_or_else(|| invalid("missing native original graph"))?;
+    let graph = decode(graph_raw, LIMIT)?;
+    let original = &bound["accepted_documents"];
+    let manifest_object = accepted_json(&original["job_manifest"], assets)?;
+    let manifest = decode(&assets.read_json(&manifest_object)?, LIMIT)?;
+    let speech = accepted_json(&original["tts_document"], assets)?;
+    let template_object = accepted_json(&original["mix_document"], assets)?;
+    let template = decode(&assets.read_json(&template_object)?, LIMIT)?;
+    let accepted = accepted_json(&cue["tts_document"], assets)?;
+    let source_root = PathBuf::from(
+        graph["documents"]["tts_document"]["path"]
+            .as_str()
+            .ok_or_else(|| invalid("missing original export root"))?,
+    )
+    .parent()
+    .ok_or_else(|| invalid("missing export parent"))?
+    .to_path_buf();
+    let wave_path = PathBuf::from(
+        cue["audio"]["path"]
+            .as_str()
+            .ok_or_else(|| invalid("missing accepted cue audio"))?,
+    );
+    let mut source = manifest["artifacts"]["source_audio"].clone();
+    closed(&source, &["path", "sha256", "size_bytes"])?;
+    source.as_object_mut().unwrap().insert(
+        "artifact_root".into(),
+        source_root.to_string_lossy().into_owned().into(),
+    );
+    let context_value = json!({"schema_version":1,"kind":"review_native_mix_context","manifest_sha256":state.token.original_manifest_sha256,
+        "before_snapshot_json":state.snapshot_json,"after_snapshot_json":after,"source_graph_json":graph_raw,
+        "request_json":request.raw(),"request_sha256":request.input_hash(),"source_audio":source,
+        "original_tts_document":mix_descriptor(&speech,&source_root),"mix_template":mix_descriptor(&template_object,&source_root),
+        "accepted_tts_document":mix_descriptor(&accepted,wave_path.parent().unwrap())});
+    let context = assets.accept_json(&serde_json::to_string(&context_value)?)?;
+    let output = private_root(data, job)?;
+    let mut command = cue_command(runtime, &runtime.mix_execution()?, &output.join("temp"));
+    command.args([
+        OsString::from("--context"),
+        context.path.as_os_str().to_owned(),
+        OsString::from("--context-sha256"),
+        OsString::from(&context.sha256),
+        OsString::from("--output-root"),
+        output.as_os_str().to_owned(),
+    ]);
+    let raw = collect(command, Duration::from_secs(45 * 60), LIMIT)?;
+    let (composition_raw, mix_raw) =
+        admit_mix_metadata(&raw, &context_value, &context.sha256, &template)?;
+    let composition_hash = digest(&composition_raw);
+    let mix = decode(&mix_raw, LIMIT)?;
+    let generation = output.join(format!("mix-{}", &composition_hash[7..]));
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    for (role, name) in [
+        ("original_audio", "original.wav"),
+        ("dialogue_stem", "dialogue.wav"),
+        ("final_mix", "final.wav"),
+    ] {
+        let artifact = &mix[role];
+        let path = PathBuf::from(
+            artifact["path"]
+                .as_str()
+                .ok_or_else(|| invalid("private mix lacks a waveform path"))?,
+        );
+        let parent = path
+            .parent()
+            .ok_or_else(|| invalid("private mix lacks a parent"))?;
+        let stream = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if parent.parent() != Some(generation.as_path())
+            || path.file_name().and_then(|n| n.to_str()) != Some(name)
+            || stream.len() != 71
+            || !stream.starts_with("stream-")
+            || !stream[7..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || artifact["kind"] != role
+            || artifact["format"] != "wav"
+            || artifact["bits_per_sample"].as_u64() != Some(16)
+            || artifact["sample_rate"].as_u64() != Some(48000)
+            || artifact["channels"].as_u64() != Some(2)
+            || artifact["frame_count"] != template["original_audio"]["frame_count"]
+            || artifact["metrics"]["content_hash"] != artifact["content_hash"]
+            || artifact["metrics"]["frame_count"] != artifact["frame_count"]
+        {
+            return Err(invalid(
+                "private mix escapes its generation or changes PCM/metrics",
+            ));
+        }
+        let pin = PcmPin {
+            sha256: artifact["content_hash"]
+                .as_str()
+                .ok_or_else(|| invalid("missing private mix hash"))?
+                .into(),
+            size_bytes: super::review_assets::regular(&path)?.metadata()?.len(),
+            sample_rate: 48000,
+            channels: 2,
+            frame_count: artifact["frame_count"]
+                .as_u64()
+                .ok_or_else(|| invalid("bad private mix frame count"))?,
+        };
+        super::review_assets::verify_private_mix_audio(&generation, &path, &pin, deadline)?;
+    }
+    for object in [
+        &context,
+        &speech,
+        &template_object,
+        &accepted,
+        &manifest_object,
+    ] {
+        assets.read_json(object)?;
+    }
+    let composition = assets.accept_json(&composition_raw)?;
+    let document = assets.accept_json(&mix_raw)?;
+    Ok(
+        json!({"context":descriptor(&context),"composition":descriptor(&composition),"mix_document":descriptor(&document),
+        "private_audio_verified":true,"retained_audio":false,"active_graph_published":false}),
+    )
+}
 
 fn digest(raw: &str) -> String {
     format!("sha256:{:x}", Sha256::digest(raw.as_bytes()))
@@ -526,6 +877,50 @@ fn synthesize_accepted(
 mod tests {
     use super::*;
     #[test]
+    fn private_mix_metadata_binds_actual_python_packet_and_all_unrelated_assignments() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../tests/review/native_mix_candidate_v1.json"
+        ))
+        .unwrap();
+        let context = &fixture["context"];
+        let template = &fixture["template"];
+        let hash = fixture["context_sha256"].as_str().unwrap();
+        let good = &fixture["packet"];
+        admit_mix_metadata(&good.to_string(), context, hash, template).unwrap();
+        for case in 0..8 {
+            let mut bad = good.clone();
+            if case == 0 {
+                bad["context_sha256"] = "sha256:foreign".into();
+            } else if case == 1 {
+                bad["active_graph_published"] = true.into();
+            } else if case == 2 {
+                bad["schema_version"] = 2.into();
+            } else if case < 7 {
+                let mut composition =
+                    decode(bad["composition_json"].as_str().unwrap(), LIMIT).unwrap();
+                match case {
+                    3 => composition["source"]["sha256"] = "sha256:foreign".into(),
+                    4 => composition["cues"][0]["document_sha256"] = "sha256:foreign".into(),
+                    5 => composition["review_snapshot_sha256"] = "sha256:foreign".into(),
+                    _ => composition["mix_producer_pin"]["runtime_id"] = "foreign".into(),
+                }
+                let raw = composition.to_string();
+                bad["composition_sha256"] = digest(&raw).into();
+                bad["composition_json"] = raw.into();
+            } else {
+                let mut mix = decode(bad["mix_document_json"].as_str().unwrap(), LIMIT).unwrap();
+                mix["segments"][0]["status"] = "failed".into();
+                let raw = mix.to_string();
+                bad["mix_document_sha256"] = digest(&raw).into();
+                bad["mix_document_json"] = raw.into();
+            }
+            assert!(
+                admit_mix_metadata(&bad.to_string(), context, hash, template).is_err(),
+                "case{case}"
+            );
+        }
+    }
+    #[test]
     fn original_cue_arguments_require_complete_token_and_never_accept_browser_paths() {
         for args in [
             vec![],
@@ -536,6 +931,7 @@ mod tests {
             vec!["--revision", "00"],
         ] {
             assert!(run_synthesis(args.iter().map(|arg| OsString::from(*arg))).is_err());
+            assert!(run_mix(args.iter().map(|arg| OsString::from(*arg))).is_err());
             assert!(run(args.into_iter().map(OsString::from)).is_err());
         }
     }

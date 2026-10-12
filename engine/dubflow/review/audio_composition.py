@@ -31,24 +31,31 @@ class PinnedDocument:
     sha256: str
     size_bytes: int
     artifact_root: Path
+    metadata_root: Path | None = None
 
     def __post_init__(self):
         path, root = Path(self.path).absolute(), Path(self.artifact_root).absolute()
-        streaming._plain(path); streaming._plain(root)
-        if not path.is_relative_to(root):
+        metadata = Path(self.metadata_root).absolute() if self.metadata_root is not None else root
+        streaming._plain(path); streaming._plain(root); streaming._plain(metadata)
+        if not path.is_relative_to(metadata):
             raise ReviewError("audio document is outside its admitted artifact root")
         _hash(self.sha256)
         if type(self.size_bytes) is not int or not 1 <= self.size_bytes <= MAX_JSON_BYTES:
             raise ReviewError("audio document byte count is invalid")
         object.__setattr__(self, "path", path); object.__setattr__(self, "artifact_root", root)
+        if self.metadata_root is not None:
+            object.__setattr__(self, "metadata_root", metadata)
 
     def read(self) -> bytes:
         streaming._plain(self.path)
         return _json_bytes(self.path, self.sha256, self.size_bytes)
 
     def to_dict(self) -> dict:
-        return {"path": str(self.path), "sha256": self.sha256, "size_bytes": self.size_bytes,
-                "artifact_root": str(self.artifact_root)}
+        value = {"path": str(self.path), "sha256": self.sha256, "size_bytes": self.size_bytes,
+                 "artifact_root": str(self.artifact_root)}
+        if self.metadata_root is not None:
+            value["metadata_root"] = str(self.metadata_root)
+        return value
 
 
 @dataclass(frozen=True)
@@ -108,7 +115,8 @@ class AudioComposition:
 
     def to_dict(self) -> dict:
         documents = {item.document.sha256: item.document for item in self.cues}
-        return {"schema_version": 1, "kind": "review_audio_composition", "job_id": self.snapshot.job_id,
+        version = 2 if any(item.metadata_root is not None for item in documents.values()) else 1
+        return {"schema_version": version, "kind": "review_audio_composition", "job_id": self.snapshot.job_id,
                 "manifest_sha256": self.manifest_sha256,
                 "review_snapshot_sha256": _digest(_encode(self.snapshot.to_dict(), MAX_JSON_BYTES)),
                 "source": {"path": str(self.source.path), "sha256": self.source_sha256,

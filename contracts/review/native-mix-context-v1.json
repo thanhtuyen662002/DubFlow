@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native private mix context v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "manifest_sha256",
+    "before_snapshot_json",
+    "after_snapshot_json",
+    "source_graph_json",
+    "request_json",
+    "request_sha256",
+    "source_audio",
+    "original_tts_document",
+    "mix_template",
+    "accepted_tts_document"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_native_mix_context"
+    },
+    "manifest_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "before_snapshot_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "after_snapshot_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "source_graph_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "request_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+    },
+    "request_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "source_audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "artifact_root"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sha256": {
+          "$ref": "cue-synthesis-v1.json#/$defs/hash"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 44,
+          "maximum": 4294967303
+        },
+        "artifact_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    },
+    "original_tts_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "artifact_root",
+        "metadata_root"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sha256": {
+          "$ref": "cue-synthesis-v1.json#/$defs/hash"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "artifact_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "metadata_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    },
+    "mix_template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "artifact_root",
+        "metadata_root"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sha256": {
+          "$ref": "cue-synthesis-v1.json#/$defs/hash"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "artifact_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "metadata_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    },
+    "accepted_tts_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "artifact_root",
+        "metadata_root"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sha256": {
+          "$ref": "cue-synthesis-v1.json#/$defs/hash"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "artifact_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "metadata_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    }
+  }
+}

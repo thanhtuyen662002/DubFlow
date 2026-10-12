@@ -432,6 +432,16 @@ impl AdmittedRuntime {
         Ok((entry, self.model_root.clone()))
     }
 
+    pub(super) fn mix_execution(&self) -> SupervisorResult<PathBuf> {
+        let name = "app/engine/dubflow/review/mix_execution.py";
+        let pin = self.inventory.get(name).ok_or_else(|| {
+            invalid("original producer lacks private mix adapter; explicit compatibility required")
+        })?;
+        let entry = self.root.join(name);
+        fingerprint(&entry, pin, false, 64 * 1024 * 1024)?;
+        Ok(entry)
+    }
+
     /// Bind the owned adapter's target profile to this original catalog. Model
     /// weights remain unverified until the later physical producer loader.
     pub(super) fn voice(&self, id: &str) -> SupervisorResult<Value> {
@@ -495,6 +505,7 @@ mod tests {
             ("app/engine/dubflow/worker/production_job.py",b"# owned producer".to_vec()),
             ("app/engine/dubflow/review/cue_plan.py",b"# owned cue adapter".to_vec()),
             ("app/engine/dubflow/review/cue_execution.py",b"# owned physical cue adapter".to_vec()),
+            ("app/engine/dubflow/review/mix_execution.py",b"# owned private mix adapter".to_vec()),
             ("app/models/manifests/production-cpu-v1.json",br#"{"tts_neural_profile":"models/manifests/production-vieneu-v1.json"}"#.to_vec()),
             ("app/models/manifests/production-vieneu-v1.json",json!({"schema_version":1,"model_id":"test-model",
                 "model_version":"1","model_tree_sha256":"a".repeat(64),"license_id":"Apache-2.0","voice_id":"voice-a",
@@ -569,6 +580,24 @@ mod tests {
             .remove("app/engine/dubflow/review/cue_execution.py");
         assert!(runtime.cue_execution().is_err());
         assert!(!f.root.join("unprovisioned-models").exists());
+    }
+
+    #[test]
+    fn private_mix_entry_requires_original_inventory_and_no_model_provisioning() {
+        let f = fixture();
+        let mut runtime = AdmittedRuntime::from_producer(&f.producer, &f.root).unwrap();
+        let entry = runtime.mix_execution().unwrap();
+        assert_eq!(
+            entry,
+            f.root.join("app/engine/dubflow/review/mix_execution.py")
+        );
+        assert!(!f.root.join("unprovisioned-models").exists());
+        fs::write(entry, b"changed private mix adapter").unwrap();
+        assert!(runtime.mix_execution().is_err());
+        runtime
+            .inventory
+            .remove("app/engine/dubflow/review/mix_execution.py");
+        assert!(runtime.mix_execution().is_err());
     }
 
     #[cfg(windows)]

@@ -45,3 +45,13 @@ bytes and that accepted waveform pin to the metadata adapter.
 hash. Native code independently checks those field changes and revalidates all
 accepted objects. None of these formats publishes an active playback graph or
 qualifies mix/render/QC/export replacement and undo.
+
+`native-mix-context-v1.json` binds native original snapshots/graph/request,
+sealed original and accepted cue documents, source PCM and distinct admitted
+metadata/waveform roots. `audio-composition-v2.json` represents those separate
+roots; unchanged v1 compositions keep their original encoding and hashes.
+Readers must explicitly support v2; no v1 object or SQLite generation migrates
+implicitly. `mix-candidate-v1.json` is the owned checkpointable private AUD-0
+producer packet. Native admission binds all assignments/source/producer, hashes
+and PCM headers. Its verified private audio is not immutable retained media and
+cannot publish an active graph or qualify render/export/QC/undo.

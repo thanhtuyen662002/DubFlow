@@ -232,6 +232,69 @@ fn pcm(file: &mut File, pin: &PcmPin) -> SupervisorResult<()> {
     Ok(())
 }
 
+/// Stream-verify a private full-length stereo candidate. This grants no retained
+/// object identity: publication/undo must first copy into a quota-managed store.
+pub(super) fn verify_private_mix_audio(
+    root: &Path,
+    path: &Path,
+    pin: &PcmPin,
+    deadline: std::time::Instant,
+) -> SupervisorResult<()> {
+    if !path.is_absolute()
+        || !root.is_absolute()
+        || !path.starts_with(root)
+        || !valid_hash(&pin.sha256)
+        || pin.sample_rate != 48000
+        || pin.channels != 2
+        || !(1..=48000 * 6 * 3600).contains(&pin.frame_count)
+        || !(44..=u64::from(u32::MAX) + 8).contains(&pin.size_bytes)
+        || pin
+            .frame_count
+            .checked_mul(4)
+            .filter(|n| *n <= pin.size_bytes - 44)
+            .is_none()
+    {
+        return Err(invalid("invalid private six-hour stereo mix pin"));
+    }
+    let mut file = regular(path)?;
+    let before = file.metadata()?;
+    if before.len() != pin.size_bytes {
+        return Err(invalid("private mix size changed"));
+    }
+    let mut digest = Sha256::new();
+    let mut bytes = 0u64;
+    let mut buffer = [0u8; BUFFER_BYTES];
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(invalid(
+                "private mix verification exceeded its shared deadline",
+            ));
+        }
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        bytes += count as u64;
+        if bytes > pin.size_bytes {
+            return Err(invalid("private mix grew beyond its pin"));
+        }
+        digest.update(&buffer[..count]);
+    }
+    if bytes != pin.size_bytes || format!("sha256:{:x}", digest.finalize()) != pin.sha256 {
+        return Err(invalid("private mix checksum or size changed"));
+    }
+    pcm(&mut file, pin)?;
+    plain(path)?;
+    let after = file.metadata()?;
+    if after.len() != before.len()
+        || after.modified()? != before.modified()?
+        || fs::metadata(path)?.modified()? != before.modified()?
+    {
+        return Err(invalid("private mix changed during verification"));
+    }
+    Ok(())
+}
+
 fn json_syntax(raw: &str) -> SupervisorResult<()> {
     if !super::review_document::decode(raw, MAX_DOCUMENT_BYTES as usize)?.is_object() {
         return Err(invalid("accepted JSON document requires an object root"));
@@ -511,6 +574,42 @@ mod tests {
         bytes[4..8].copy_from_slice(&riff.to_le_bytes());
         let pin = pin(&bytes, frames, channels);
         (bytes, pin)
+    }
+
+    #[test]
+    fn private_full_mix_verifies_stereo_pcm_without_accepting_or_publishing_it() {
+        let (_fixture, store, root) = fixture();
+        let (bytes, pin) = wave(4800, 2, true);
+        let path = root.join("final.wav");
+        fs::write(&path, &bytes).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        verify_private_mix_audio(&root, &path, &pin, deadline).unwrap();
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 0);
+        assert!(!fs::metadata(&path).unwrap().permissions().readonly());
+        assert!(verify_private_mix_audio(&root, &path, &pin, std::time::Instant::now()).is_err());
+        for changed in [
+            PcmPin {
+                channels: 1,
+                ..pin.clone()
+            },
+            PcmPin {
+                frame_count: 48000 * 6 * 3600 + 1,
+                ..pin.clone()
+            },
+            PcmPin {
+                frame_count: pin.frame_count - 1,
+                ..pin.clone()
+            },
+        ] {
+            assert!(verify_private_mix_audio(&root, &path, &changed, deadline).is_err());
+        }
+        let foreign = root.parent().unwrap().join("outside.wav");
+        fs::write(&foreign, &bytes).unwrap();
+        assert!(verify_private_mix_audio(&root, &foreign, &pin, deadline).is_err());
+        let mut bad = bytes;
+        *bad.last_mut().unwrap() ^= 1;
+        fs::write(&path, bad).unwrap();
+        assert!(verify_private_mix_audio(&root, &path, &pin, deadline).is_err());
     }
 
     fn pin(bytes: &[u8], frame_count: u64, channels: u16) -> PcmPin {

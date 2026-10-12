@@ -507,6 +507,40 @@ actual producer/model admission and full4h regeneration qualification.
 
 ## Required evidence
 
+### Private full-mix compatibility
+
+The opt-in `review-mix-cue` command uses the same closed stale-client/edit input
+and read-only original B2 admission. It prepares and synthesizes exactly the
+selected cue, preserving the checkpointable producer, then supplies a sealed
+native mix context to an isolated owned producer. That context separates exact
+archived JSON roots from original/accepted waveform roots; broad common-parent
+paths never grant media authority. Original producer releases lacking this
+physical adapter require explicit compatibility before inference.
+
+Private audio-composition v2 adds explicit metadata_root to every document.
+Existing v1 compositions and hashes are unchanged; v2 readers must be selected
+explicitly. No active graph or SQLite schema migration is introduced. The
+original bound graph remains v1 and is reread after production; future graph
+publication must retain immutable waveform dependencies and record exact v2
+composition provenance rather than relabeling original per-cue voice documents.
+
+The worker reuses canonical source PCM and every unrelated speech artifact,
+runs the existing block/checkpoint AUD-0 mixer and returns exact composition/mix
+bytes. It never calls ASR/OCR/translation/TTS or opens SQLite. Native code binds
+context/request/snapshot/source/assignments/producer and independently streams
+all three full-length PCM hashes and checks exact headers/frame counts/scope.
+Mix production has a45minute process-tree observation bound; physical admission
+shares180seconds with32KiB buffers and a six-hour48k stereo RIFF size bound.
+Those ceilings are resource guards, not executed six-hour qualification.
+
+The response reports private_audio_verified=true, retained_audio=false,
+active_graph_published=false and correction_ready=false. Candidate WAVs remain
+mutable checkpoint files: they cannot authorize an active playback graph or undo.
+Quota/retention/orphan cleanup, accepted large media, full render/QC/editable
+exports, published snapshot derivation, final CAS/undo, B1 and installed4h
+acceptance remain required. Same-user concurrent file mutation is observed with
+size/hash/mtime checks; it is not a malicious-writer filesystem sandbox.
+
 ### Original physical single-cue dispatch
 
 The opt-in native `review-synthesize-cue` command repeats the original head and
