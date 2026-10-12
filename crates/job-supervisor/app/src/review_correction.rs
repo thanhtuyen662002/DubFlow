@@ -209,6 +209,13 @@ fn run_inner(
     }
     let target_voice = runtime.voice(selected)?;
     let assets = AcceptedAudioStore::open_existing(&data, job)?;
+    // The opt-in successor prepares the matching timeline before inference.
+    // This is private metadata; it cannot publish a partial mix/render graph.
+    let corrected_timeline = if retain {
+        Some(assets.accept_json(&seed.corrected_timeline(&after)?)?)
+    } else {
+        None
+    };
     let context = json!({"schema_version":1,"kind":"review_original_cue_context","manifest_sha256":state.token.original_manifest_sha256,
         "before_snapshot_json":seed.snapshot.json(),"after_snapshot_json":after.json(),"source_graph_json":seed.graph});
     let context = assets.accept_json(&serde_json::to_string(&context)?)?;
@@ -266,10 +273,19 @@ fn run_inner(
         assets.read_json(&accepted)?;
         unchanged(&store, &state)?;
         let _original = read_original(&store, &data, &state)?;
+        if let Some(timeline) = &corrected_timeline {
+            assets.read_json(timeline)?;
+        }
         let mut packet = json!({"schema_version":1,"kind":if retain {"review_retained_mixed_original_cue"} else if mix {"review_mixed_original_cue"} else {"review_synthesized_original_cue"},
             "job_id":job,"revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,"graph_sha256":state.token.graph_sha256,
             "finding_id":finding,"context":descriptor(&context),"request":descriptor(&accepted),"release_sha256":runtime.release_hash,
             "proposal":decode(after.json(),LIMIT)?,"accepted_cue":result,"model_weights_verified":true,"correction_ready":false});
+        if let Some(timeline) = &corrected_timeline {
+            packet
+                .as_object_mut()
+                .unwrap()
+                .insert("corrected_timeline".into(), descriptor(timeline));
+        }
         if let Some(candidate) = mixed {
             packet
                 .as_object_mut()

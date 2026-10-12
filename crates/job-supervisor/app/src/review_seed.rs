@@ -93,6 +93,19 @@ fn export_output_root(export: &CommittedExport) -> SupervisorResult<PathBuf> {
 }
 
 impl AdmittedSeed {
+    pub(super) fn corrected_timeline(&self, after: &AdmittedSnapshot) -> SupervisorResult<String> {
+        let mode = if decode(&self.graph, LIMIT)?["mode"] == "b2" {
+            super::review_document::ReviewMode::Dubbed
+        } else {
+            super::review_document::ReviewMode::Subtitles
+        };
+        let timeline = self
+            .documents
+            .get("editable_timeline")
+            .ok_or_else(|| invalid("archived original timeline is missing"))?;
+        super::review_timeline::derive(timeline, &self.snapshot, after, mode)
+    }
+
     fn read(raw: &str, export: &CommittedExport) -> SupervisorResult<Self> {
         let packet = decode(raw, LIMIT)?;
         let graph = decode(

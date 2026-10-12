@@ -20,6 +20,31 @@ does not bind an arbitrary caller's hash, write files/SQLite, render, publish a
 graph or authorize undo. Native source/archive admission, complete validated
 replacement outputs, retained media and CAS remain required before UI enablement.
 
+## Native corrected timeline preparation
+
+The opt-in retained-mix successor also derives a sealed private timeline from
+the already archived original timeline and native before/after snapshots. The
+native transformation independently re-derives the exact correction proposal,
+checks all mapped findings against original source/text/rational ranges, and
+changes only the selected translation. Cues without findings, source clock,
+duration and measured confidence retain their original values. Voice-only
+edits retain exact original timeline bytes and therefore subtitle cache identity.
+Wide rational calculations use integer quotient/remainder without floating
+seconds; fractional millisecond cue mappings are refused rather than rounded.
+
+The closed existing timeline v1 shape is required; legacy/unknown shapes need
+explicit compatibility only for this new opt-in preparation. Other commands
+and original exports keep their existing behavior. The private response adds
+`corrected_timeline` as a sealed metadata descriptor, not a published artifact.
+Internal B1 derivation has subtitle/render/QC/export descendants without TTS or
+mix, but no B1 execution command is enabled by this helper. B2 preparation still
+uses the original immutable model/runtime/catalog pins. No schema migration,
+ASR/OCR rerun, worker/model dispatch change or active SQLite graph occurs.
+
+Corrected subtitle/video/QC/standard and editable export production, native
+complete-graph admission/CAS, undo and installed qualification remain required.
+An authored native oracle test or a sealed timeline is not that qualification.
+
 ## Decision
 
 The released review v1 payload remains unchanged: only `schema_version` and
