@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from functools import total_ordering
 from hashlib import sha256
 import json
 import os
@@ -14,7 +15,10 @@ import tempfile
 from typing import Protocol
 
 
-_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+_VERSION = re.compile(
+    r"^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})"
+    r"(?:\.(0|[1-9][0-9]{0,9}))?$"
+)
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -27,21 +31,34 @@ class DraftStatus(str, Enum):
     FALLBACK_IMPORT_PACK = "FALLBACK_IMPORT_PACK"
 
 
-@dataclass(frozen=True, order=True)
+@total_ordering
+@dataclass(frozen=True)
 class CapCutVersion:
     major: int
     minor: int
     patch: int
+    build: int | None = None
 
     @classmethod
     def parse(cls, value: str) -> "CapCutVersion":
         match = _VERSION.fullmatch(value)
         if not match:
-            raise DirectDraftError("CapCut version must be semantic major.minor.patch")
-        return cls(*(int(part) for part in match.groups()))
+            raise DirectDraftError("CapCut version must be exact major.minor.patch[.build]")
+        major, minor, patch, build = match.groups()
+        return cls(int(major), int(minor), int(patch), None if build is None else int(build))
 
     def __str__(self) -> str:
-        return f"{self.major}.{self.minor}.{self.patch}"
+        base = f"{self.major}.{self.minor}.{self.patch}"
+        return base if self.build is None else f"{base}.{self.build}"
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, CapCutVersion):
+            return NotImplemented
+        # A buildless legacy version is distinct from every concrete build.
+        # Ordering is retained for callers, never used to authorize compatibility.
+        return (self.major, self.minor, self.patch, -1 if self.build is None else self.build) < (
+            other.major, other.minor, other.patch, -1 if other.build is None else other.build
+        )
 
 
 @dataclass(frozen=True)

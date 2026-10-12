@@ -141,3 +141,21 @@ path. Verification is session-local; restored queue paths must be checked
 again. A manual recheck detects edits/removal without rewriting job state or
 discarding the completed video. Native compilation, installed Windows worker
 and GUI usability remain separate required evidence for this integration.
+
+## Exact vendor build identity
+
+The draft boundary accepts bounded `major.minor.patch` and
+`major.minor.patch.build` identities, matching native registration discovery.
+It preserves the fourth component in compatibility lookup, generated metadata
+and output names. A buildless version never authorizes a four-component build;
+neighboring builds require their own explicit qualification. Legacy three-part
+entries retain their identity and format. Existing pinned jobs and portable
+pack schemas are unchanged; no in-place migration is needed. Rollback retains
+the portable fallback for four-part versions a previous adapter cannot parse.
+
+Deterministic fixture tests establish exact version transport and reject a
+backend that truncates a tested build. They do not establish native project
+compatibility. The production matrix remains empty until a generated project
+under a controlled user-selected directory has actually been opened, inspected
+and exported with the exact installed vendor build. Vendor-created QA project
+observations alone do not qualify an adapter-generated handoff.
