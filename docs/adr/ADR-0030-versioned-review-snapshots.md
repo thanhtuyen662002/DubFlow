@@ -3,6 +3,23 @@
 Status: Proposed by #174 / PR #185. Production integration and installed
 qualification remain required before acceptance.
 
+## Corrected canonical timeline derivation (Draft integration)
+
+The private pure timeline adapter consumes native-admitted original timeline
+v1 bytes and exact before/after snapshots. It verifies every bound finding
+against the original source text, translation and rational cue interval, then
+changes only the selected translation. All other cues, source clock mapping,
+timing and original confidence remain intact. Human translation edits do not
+claim improved ASR confidence. Voice-only edits return the original timeline
+bytes, preserving subtitle cache identity. B1 has no voice and cannot become
+B2 through this path. The existing logical downstream plan remains conservative;
+actual B1 execution must exclude unavailable TTS/mix stages explicitly.
+
+No released timeline format changes or implicit migration occurs. The adapter
+does not bind an arbitrary caller's hash, write files/SQLite, render, publish a
+graph or authorize undo. Native source/archive admission, complete validated
+replacement outputs, retained media and CAS remain required before UI enablement.
+
 ## Decision
 
 The released review v1 payload remains unchanged: only `schema_version` and
