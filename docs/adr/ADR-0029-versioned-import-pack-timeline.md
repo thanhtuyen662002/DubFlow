@@ -159,3 +159,12 @@ compatibility. The production matrix remains empty until a generated project
 under a controlled user-selected directory has actually been opened, inspected
 and exported with the exact installed vendor build. Vendor-created QA project
 observations alone do not qualify an adapter-generated handoff.
+
+The immutable direct-draft envelope v1 admits only three-component versions.
+Successor envelope v2 transports bounded exact three/four-component identities.
+New fixture producers emit v2. Readers accept both, reject a four-component v1
+identity, unknown schema versions/fields and a resource inventory differing from
+the pinned pack. Archived v1 objects are read without migration or rewriting;
+existing jobs retain their producer/model/contract pins. A v1-only rollback
+refuses v2 and returns the portable import pack. No durable database migration
+or installed vendor-format compatibility is implied by envelope v2.

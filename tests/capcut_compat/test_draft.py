@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import re
 import tempfile
 import unittest
 
 from engine.dubflow.capcut.draft import DraftStatus, DirectDraftError, FixtureDraftBackend, VersionedDraftAdapter
-from engine.dubflow.capcut.draft.adapter import CapCutVersion
+from engine.dubflow.capcut.draft.adapter import CapCutVersion, _validate_draft
 from engine.dubflow.capcut.import_pack import ImportPackRequest, create_import_pack
 
 
@@ -79,6 +80,63 @@ class DraftAdapterTests(unittest.TestCase):
             self.assertEqual(result.status, DraftStatus.FALLBACK_IMPORT_PACK)
             self.assertIn("tested version", result.reason)
             self.assertEqual(list((root / "controlled").iterdir()), [])
+
+    def test_emitted_envelopes_match_published_version_contracts_and_retain_v1(self) -> None:
+        contracts = Path(__file__).resolve().parents[2] / "contracts/capcut/draft"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack = self.make_pack(root)
+            output = root / "draft.json"
+            for version in ("4.2.0", "9.5.0.4050"):
+                parsed = CapCutVersion.parse(version)
+                FixtureDraftBackend().generate(version=parsed, pack_root=pack, output_path=output)
+                value = json.loads(output.read_text(encoding="utf-8"))
+                schema = json.loads((contracts / "schema-v2.json").read_text(encoding="utf-8"))
+                self.assertEqual(value["schema_version"], schema["properties"]["schema_version"]["const"])
+                self.assertEqual(set(value), set(schema["required"]))
+                self.assertIsNotNone(re.fullmatch(schema["properties"]["capcut_version"]["pattern"], value["capcut_version"]))
+                _validate_draft(output, version=parsed, pack_root=pack)
+                # Old v1 remains readable only for its published version shape.
+                value["schema_version"] = 1
+                output.write_text(json.dumps(value), encoding="utf-8")
+                before = output.read_bytes()
+                legacy = json.loads((contracts / "schema-v1.json").read_text(encoding="utf-8"))
+                if re.fullmatch(legacy["properties"]["capcut_version"]["pattern"], version):
+                    _validate_draft(output, version=parsed, pack_root=pack)
+                else:
+                    with self.assertRaisesRegex(DirectDraftError, "v1 cannot represent"):
+                        _validate_draft(output, version=parsed, pack_root=pack)
+                self.assertEqual(output.read_bytes(), before)
+
+    def test_backend_schema_or_asset_substitution_refuses_with_pack_preserved(self) -> None:
+        class MutatingBackend(FixtureDraftBackend):
+            def generate(self, *, version, pack_root, output_path):
+                super().generate(version=version, pack_root=pack_root, output_path=output_path)
+                value = json.loads(output_path.read_text(encoding="utf-8"))
+                if case == "unknown":
+                    value["schema_version"] = 3
+                elif case == "boolean":
+                    value["schema_version"] = True
+                elif case == "extra":
+                    value["unadmitted"] = "field"
+                elif case == "asset":
+                    value["assets"] = ["media/foreign.mp4"]
+                else:
+                    value["assets"] *= 2
+                output_path.write_text(json.dumps(value), encoding="utf-8")
+
+        for case in ("unknown", "boolean", "extra", "asset", "duplicate"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                pack = self.make_pack(root)
+                before = {path.relative_to(pack): path.read_bytes() for path in pack.rglob("*") if path.is_file()}
+                result = VersionedDraftAdapter({"9.5.0.4050"}).generate_or_fallback(
+                    installed_version="9.5.0.4050", pack_root=pack,
+                    controlled_root=root / "controlled", backend=MutatingBackend(),
+                )
+                self.assertEqual(result.status, DraftStatus.FALLBACK_IMPORT_PACK)
+                self.assertEqual(list((root / "controlled").iterdir()), [])
+                self.assertEqual(before, {path.relative_to(pack): path.read_bytes() for path in pack.rglob("*") if path.is_file()})
 
     def test_version_comparison_retains_build_identity_and_legacy_ordering(self) -> None:
         versions = [CapCutVersion.parse(v) for v in ("9.5.0.4051", "9.5.0", "9.5.0.0", "9.5.0.4050", "4.2.0")]

@@ -98,13 +98,26 @@ def _validate_draft(path: Path, *, version: CapCutVersion, pack_root: Path) -> N
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise DirectDraftError("direct draft is not valid JSON") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != 1 or value.get("kind") != "capcut_direct_draft" or value.get("capcut_version") != str(version):
+    if not isinstance(value, dict) or value.get("kind") != "capcut_direct_draft" or value.get("capcut_version") != str(version):
         raise DirectDraftError("direct draft metadata does not match the tested version")
+    fields = {"schema_version", "kind", "capcut_version", "pack_manifest_hash", "assets"}
+    schema = value.get("schema_version")
+    if set(value) != fields or type(schema) is not int or schema not in (1, 2):
+        raise DirectDraftError("direct draft envelope schema is unsupported")
+    # Published v1 admits exactly three components. Never silently extend it
+    # for a concrete build or rewrite an archived object during validation.
+    if schema == 1 and version.build is not None:
+        raise DirectDraftError("direct draft v1 cannot represent an exact build")
     if value.get("pack_manifest_hash") != _manifest_hash(pack_root) or not _HASH.fullmatch(str(value.get("pack_manifest_hash"))):
         raise DirectDraftError("direct draft does not bind the import pack manifest")
     assets = value.get("assets")
-    if not isinstance(assets, list) or not assets:
-        raise DirectDraftError("direct draft has no assets")
+    if not isinstance(assets, list) or not 1 <= len(assets) <= 256 or any(
+        not isinstance(asset, str) or not 1 <= len(asset) <= 4096 for asset in assets
+    ):
+        raise DirectDraftError("direct draft asset inventory is invalid")
+    expected_assets = [item["relative_path"] for item in json.loads((pack_root / "manifest.json").read_text(encoding="utf-8"))["assets"]]
+    if assets != expected_assets:
+        raise DirectDraftError("direct draft asset inventory differs from the pinned pack")
 
 
 class FixtureDraftBackend:
@@ -119,7 +132,7 @@ class FixtureDraftBackend:
         output_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "kind": "capcut_direct_draft",
                     "capcut_version": str(version),
                     "pack_manifest_hash": _manifest_hash(pack_root),
