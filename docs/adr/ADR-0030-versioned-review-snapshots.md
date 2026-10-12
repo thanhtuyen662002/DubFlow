@@ -511,15 +511,26 @@ actual producer/model admission and full4h regeneration qualification.
 
 Windows journal replacement may return access/sharing denial while a temporary
 reader/scanner holds the destination. The private Review caller permits at most
-three attempts only for the exact native composition/stream checkpoint replacement
+three attempts at each already-fsynced block's journal replacement only for the exact native composition/stream checkpoint replacement
 (Win32 errors5/32). Before each retry, a bounded native DELETE-sharing probe must
 actually succeed; waiting alone never authorizes retry. Readonly/linked/foreign,
 nonjournal, other I/O, missing and persistent refusals retain the prior checkpoint
 and return failure. No ACL/permission repair, deletion, producer/model replacement
-or SQLite mutation occurs. The unchanged mixer re-admits inputs and its committed
-prefixes on resume. PCM/config/producer/journal contracts remain unchanged; the new
+or SQLite mutation occurs. A Review-specific saver retries only that journal write,
+with the same already-fsynced block state; it never redoes a full mixer call. The
+unchanged mixer re-admits inputs and its committed prefixes on resume.
+PCM/config/producer/journal contracts remain unchanged; the new
 caller code is pinned by its physical release inventory. Older jobs retain their
 original release/producer and are never patched or rebound silently.
+
+Private cue metadata identifies the validated artifact rather than whether this
+particular invocation inferred or reused it. Verified single-cue chunks remain
+completed; the exact operational reused-checkpoint notice is recorded separately
+in a private execution-observation v1 file. All quality/fallback warnings and
+producer/model/input pins remain in the accepted TTS/spoken documents. Repeating
+the same correction therefore preserves exact document/composition hashes and
+reuses the complete mix. This introduces no durable graph/SQL or producer-model
+migration; old physical release roots remain unchanged and pinned.
 
 The opt-in `review-mix-cue` command uses the same closed stale-client/edit input
 and read-only original B2 admission. It prepares and synthesizes exactly the

@@ -11,7 +11,8 @@ import json
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from engine.dubflow.mix import FileSegment, FileSource, MixConfig, MixDocument, ResourceProfile, StreamingAudioMixer
+from engine.dubflow.mix import FileSegment, FileSource, MixConfig, MixDocument, ResourceProfile
+from .mix_io import ReviewStreamingAudioMixer as StreamingAudioMixer
 from engine.dubflow.mix import streaming
 from engine.dubflow.mix.adapter import MixProvenance, parse_mix_json
 from engine.dubflow.tts import ResourceProfile as TtsResourceProfile, TtsInput, TtsProvenance, parse_tts_json
@@ -217,7 +218,7 @@ def mix_audio_candidate(composition: AudioComposition, *, output_root: Path) -> 
                 if _cue(item.document, parsed[item.document.sha256], item.canonical_input) != item:
                     raise ReviewError("composition TTS assignment changed")
         validate_inputs()
-        document = StreamingAudioMixer(config=config, output_dir=root).mix(composition.source,
+        document = StreamingAudioMixer(config=config, output_dir=root, generation_root=root).mix(composition.source,
                 tuple(item.segment for item in composition.cues), input_hash=composition.input_hash)
         validate_inputs()
         if document.provenance.source_hash != composition.source_sha256 or document.provenance.input_hash != composition.input_hash:

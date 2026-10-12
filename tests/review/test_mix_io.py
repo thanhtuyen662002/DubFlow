@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from engine.dubflow.mix.adapter import MixError
-from engine.dubflow.review.mix_io import MAX_ATTEMPTS, PROBE_DELAYS, recover_mix_io
+from engine.dubflow.review.mix_io import MAX_ATTEMPTS, PROBE_DELAYS, ReviewStreamingAudioMixer, recover_mix_io
 
 
 class MixIoRecoveryTests(unittest.TestCase):
@@ -73,6 +73,37 @@ class MixIoRecoveryTests(unittest.TestCase):
             operation = Mock(side_effect=RuntimeError('inference refusal'))
             with self.assertRaises(RuntimeError): recover_mix_io(operation, generation_root=generation, ready_probe=probe)
             operation.assert_called_once(); probe.assert_not_called()
+
+    def test_journal_retry_keeps_the_same_fsynced_block_state(self):
+        from engine.dubflow.mix import MixConfig
+        with TemporaryDirectory(prefix='dubflow-review-mix-io-') as root:
+            generation, journal, _, error = self.fixture(root)
+            mixer = ReviewStreamingAudioMixer(config=MixConfig(), output_dir=generation, generation_root=generation)
+            state = {'phase': 'dialogue', 'committed_block': 'unchanged'}
+            with (patch('engine.dubflow.mix.streaming.StreamingAudioMixer._save', side_effect=[error.__cause__, None]) as save,
+                  patch('engine.dubflow.review.mix_io._delete_available', return_value=True)):
+                # Bind the native probe through the existing recovery default;
+                # mocks observe the exact same state, never another mixer run.
+                with patch('engine.dubflow.review.mix_io.recover_mix_io', side_effect=lambda operation, **kw:
+                           recover_mix_io(operation, ready_probe=lambda path: True, **kw)):
+                    mixer._save(journal.parent, state)
+            self.assertEqual(save.call_count, 2)
+            self.assertTrue(all(call.args == (journal.parent, state) for call in save.call_args_list))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows sharing semantics')
+    def test_windows_saver_recovers_after_actual_reader_closes(self):
+        import threading
+        from engine.dubflow.mix import MixConfig
+        with TemporaryDirectory(prefix='dubflow-review-mix-io-') as root:
+            generation, journal, _, _ = self.fixture(root)
+            mixer = ReviewStreamingAudioMixer(config=MixConfig(), output_dir=generation, generation_root=generation)
+            reader = journal.open('rb')
+            release = threading.Timer(0.05, reader.close); release.start()
+            state = {'phase': 'dialogue', 'block_count': 1, 'stages': {'dialogue': []}}
+            try: mixer._save(journal.parent, state)
+            finally: release.join(); reader.close()
+            import json
+            self.assertEqual(json.loads(journal.read_bytes()), state)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows sharing semantics')
     def test_windows_read_handle_release_is_observed_before_retry(self):

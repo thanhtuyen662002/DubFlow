@@ -48,6 +48,8 @@ class CueSynthesisWorkerTests(unittest.TestCase):
             self.assertEqual(engine.segments[0].normalized_text, "Ngồi yên.")
             self.assertEqual(engine.closed, 1)
             original_audio = Path(result.document.artifacts[0].path).read_bytes()
+            original_document = result.document_path.read_bytes()
+            original_spoken = result.spoken_text_path.read_bytes()
             speech = json.loads(result.spoken_text_path.read_bytes())
             self.assertEqual(speech["entries"][0]["spoken_text"], "Ngồi yên.")
             resumed = self.run_candidate(request, root, engine)
@@ -55,6 +57,11 @@ class CueSynthesisWorkerTests(unittest.TestCase):
             self.assertEqual(engine.closed, 2)
             self.assertEqual(Path(resumed.document.artifacts[0].path).read_bytes(), original_audio)
             self.assertEqual(resumed.document.provenance, request.provenance)
+            self.assertEqual(resumed.document_path.read_bytes(), original_document)
+            self.assertEqual(resumed.spoken_text_path.read_bytes(), original_spoken)
+            observation = json.loads((resumed.document_path.parent / "execution_observation_v1.json").read_bytes())
+            self.assertEqual(observation["chunks"][0]["status"], "skipped")
+            self.assertTrue(any("reused TTS checkpoint" in warning for warning in observation["warnings"]))
 
     def test_corrupt_checkpoint_wave_rebuilds_only_that_cue(self):
         with TemporaryDirectory(prefix="dubflow-review-candidate-corrupt-") as directory:

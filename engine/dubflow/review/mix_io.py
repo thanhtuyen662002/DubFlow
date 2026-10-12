@@ -14,6 +14,7 @@ from typing import Callable, TypeVar
 
 from engine.dubflow.mix import streaming
 from engine.dubflow.mix.adapter import MixError
+from engine.dubflow.mix.streaming import StreamingAudioMixer
 
 T = TypeVar('T')
 MAX_ATTEMPTS = 3
@@ -85,3 +86,22 @@ def recover_mix_io(operation: Callable[[], T], *, generation_root: Path,
             else:
                 raise
     raise AssertionError('unreachable bounded mix retry')
+
+
+class ReviewStreamingAudioMixer(StreamingAudioMixer):
+    """Retry the refused journal write at its already-fsynced block boundary."""
+
+    def __init__(self, *, generation_root: Path, **kwargs):
+        super().__init__(**kwargs)
+        self.review_generation_root = Path(generation_root)
+
+    def _save(self, root, state):
+        if root.parent != self.review_generation_root:
+            raise MixError('MIX_IO_FAILED', 'Review journal escaped its native composition root')
+        parent_save = super()._save
+        def save():
+            try:
+                return parent_save(root, state)
+            except OSError as error:
+                raise MixError('MIX_IO_FAILED', 'private journal replacement refused; committed prefixes retained') from error
+        return recover_mix_io(save, generation_root=self.review_generation_root)

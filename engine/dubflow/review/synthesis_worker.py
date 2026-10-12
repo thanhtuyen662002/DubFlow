@@ -160,6 +160,18 @@ def synthesize_cue_candidate(raw: bytes, *, expected_hash: str, output_root: Pat
             document.failures or document.provenance != request.provenance):
             raise ReviewError("cue candidate did not produce exactly one validated pinned artifact")
         document = replace(document, warnings=document.warnings + tuple(checkpoints.warnings) + tuple(spoken.warnings))
+        # A verified artifact is complete on both inference and checkpoint reuse.
+        # Execution observations must not change accepted document/composition
+        # hashes and force another full-length mix for the same correction.
+        observation = {"schema_version":1,"kind":"review_cue_execution_observation",
+                       "request_sha256":request.input_hash,"recipe_identity":recipe_identity,
+                       "chunks":[dict(chunk) for chunk in document.chunks],"warnings":list(document.warnings)}
+        _atomic(generation / "execution_observation_v1.json",
+                (json.dumps(observation,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False)+"\n").encode())
+        reused_warning = "reused TTS checkpoint for " + request.segment.segment_id
+        document = replace(document,
+                chunks=tuple({**chunk,"status":"completed"} if chunk["status"] == "skipped" else dict(chunk) for chunk in document.chunks),
+                warnings=tuple(warning for warning in document.warnings if warning != reused_warning))
         speech = spoken.document(document)
         validate_spoken_text_document(speech, document.to_bytes(), (request.segment,), identity=identity)
         speech_path, document_path = generation / "spoken_text.json", generation / "tts_document.json"
