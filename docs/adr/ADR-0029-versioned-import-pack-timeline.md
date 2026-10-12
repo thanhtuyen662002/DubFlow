@@ -168,3 +168,11 @@ the pinned pack. Archived v1 objects are read without migration or rewriting;
 existing jobs retain their producer/model/contract pins. A v1-only rollback
 refuses v2 and returns the portable import pack. No durable database migration
 or installed vendor-format compatibility is implied by envelope v2.
+
+Envelope admission is bounded to 16 MiB and rejects duplicate JSON keys,
+invalid UTF-8/non-JSON constants and nonregular/reparse output. This bound
+covers all 256 schema-bounded asset paths, including escaped Unicode. A repeated
+schema_version must not select v1 for one reader and v2 for another. Refusal
+keeps the prior validated draft and all portable/canonical resources, and
+cleans only the current private partial file. Valid v1/v2 bytes remain readable;
+no schema rewrite, automatic migration or new supported vendor build is added.

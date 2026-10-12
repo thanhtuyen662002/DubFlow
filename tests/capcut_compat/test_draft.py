@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from engine.dubflow.capcut.draft import DraftStatus, DirectDraftError, FixtureDraftBackend, VersionedDraftAdapter
-from engine.dubflow.capcut.draft.adapter import CapCutVersion, _validate_draft
+from engine.dubflow.capcut.draft.adapter import CapCutVersion, _validate_draft, _MAX_ENVELOPE_BYTES
 from engine.dubflow.capcut.import_pack import ImportPackRequest, create_import_pack
 
 
@@ -33,6 +33,73 @@ class DraftAdapterTests(unittest.TestCase):
             self.assertEqual(result.status, DraftStatus.FALLBACK_IMPORT_PACK)
             self.assertEqual(result.reason, "CAPCUT_VERSION_UNSUPPORTED")
             self.assertFalse((root / "controlled").exists())
+
+    def test_duplicate_envelope_fields_fall_back_and_preserve_prior_output(self) -> None:
+        class DuplicateBackend(FixtureDraftBackend):
+            def generate(self, **kwargs):
+                super().generate(**kwargs)
+                path = kwargs["output_path"]
+                raw = path.read_text(encoding="utf-8")
+                path.write_text(raw.replace('"schema_version": 2', '"schema_version": 1, "schema_version": 2'), encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); pack = self.make_pack(root)
+            adapter = VersionedDraftAdapter({"9.5.0.4050"})
+            previous = adapter.generate_or_fallback(installed_version="9.5.0.4050", pack_root=pack,
+                controlled_root=root / "controlled", backend=FixtureDraftBackend())
+            before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+            result = adapter.generate_or_fallback(installed_version="9.5.0.4050", pack_root=pack,
+                controlled_root=root / "controlled", backend=DuplicateBackend())
+            self.assertEqual(result.status, DraftStatus.FALLBACK_IMPORT_PACK)
+            self.assertIsNone(result.path)
+            self.assertIn("not valid JSON", result.reason)
+            self.assertEqual({p: p.read_bytes() for p in root.rglob("*") if p.is_file()}, before)
+            self.assertTrue(previous.path.is_file())
+
+    def test_oversized_valid_json_is_refused_before_promotion(self) -> None:
+        class OversizedBackend(FixtureDraftBackend):
+            def generate(self, **kwargs):
+                super().generate(**kwargs)
+                path = kwargs["output_path"]
+                remaining = _MAX_ENVELOPE_BYTES + 1 - path.stat().st_size
+                with path.open("ab") as stream:
+                    while remaining:
+                        count = min(65536, remaining)
+                        stream.write(b" " * count); remaining -= count
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); pack = self.make_pack(root)
+            before = {p: p.read_bytes() for p in pack.rglob("*") if p.is_file()}
+            result = VersionedDraftAdapter({"9.5.0.4050"}).generate_or_fallback(
+                installed_version="9.5.0.4050", pack_root=pack,
+                controlled_root=root / "controlled", backend=OversizedBackend())
+            self.assertEqual(result.status, DraftStatus.FALLBACK_IMPORT_PACK)
+            self.assertIn("byte limit", result.reason)
+            self.assertEqual(list((root / "controlled").iterdir()), [])
+            self.assertEqual({p: p.read_bytes() for p in pack.rglob("*") if p.is_file()}, before)
+
+    def test_nonregular_envelopes_do_not_authorize_direct_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); pack = self.make_pack(root)
+            version = CapCutVersion.parse("9.5.0.4050")
+            with self.assertRaisesRegex(DirectDraftError, "plain regular"):
+                _validate_draft(root, version=version, pack_root=pack)
+
+    def test_linked_envelopes_do_not_authorize_direct_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); pack = self.make_pack(root)
+            version = CapCutVersion.parse("9.5.0.4050")
+            valid = root / "valid.json"
+            FixtureDraftBackend().generate(version=version, pack_root=pack, output_path=valid)
+            before = valid.read_bytes()
+            linked = root / "linked.json"
+            try:
+                linked.symlink_to(valid)
+            except OSError as error:
+                self.skipTest("Windows symlink privilege unavailable: " + str(error.errno))
+            with self.assertRaisesRegex(DirectDraftError, "plain regular"):
+                _validate_draft(linked, version=version, pack_root=pack)
+            self.assertEqual(valid.read_bytes(), before)
 
     def test_four_component_build_identity_is_preserved(self) -> None:
         # Fixture admission checks version transport only, not vendor compatibility.

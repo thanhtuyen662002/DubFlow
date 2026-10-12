@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 from typing import Protocol
 
@@ -20,6 +21,7 @@ _VERSION = re.compile(
     r"(?:\.(0|[1-9][0-9]{0,9}))?$"
 )
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_MAX_ENVELOPE_BYTES = 16 * 1024 * 1024
 
 
 class DirectDraftError(ValueError):
@@ -92,11 +94,32 @@ def _manifest_hash(pack_root: Path) -> str:
 
 
 def _validate_draft(path: Path, *, version: CapCutVersion, pack_root: Path) -> None:
-    if not path.is_file():
-        raise DirectDraftError("direct draft was not created")
+    def unique_fields(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("duplicate direct draft field")
+            result[key] = item
+        return result
+
+    def reject_constant(value):
+        raise ValueError("non-JSON numeric constant in direct draft")
+
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        metadata = path.lstat()
+        if (not stat.S_ISREG(metadata.st_mode) or
+                getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise DirectDraftError("direct draft must be a plain regular file")
+        if not 1 <= metadata.st_size <= _MAX_ENVELOPE_BYTES:
+            raise DirectDraftError("direct draft exceeds its envelope byte limit")
+        with path.open("rb") as stream:
+            raw = stream.read(_MAX_ENVELOPE_BYTES + 1)
+        if not 1 <= len(raw) <= _MAX_ENVELOPE_BYTES:
+            raise DirectDraftError("direct draft exceeds its envelope byte limit")
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_fields, parse_constant=reject_constant)
+    except DirectDraftError:
+        raise
+    except (OSError, ValueError) as exc:
         raise DirectDraftError("direct draft is not valid JSON") from exc
     if not isinstance(value, dict) or value.get("kind") != "capcut_direct_draft" or value.get("capcut_version") != str(version):
         raise DirectDraftError("direct draft metadata does not match the tested version")
