@@ -7,15 +7,17 @@
 //! later graph transaction must retain these objects and all pending undo assets.
 use super::{review_pin::plain, SupervisorError, SupervisorResult, ID_COUNTER};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 const MAX_CUE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 const BUFFER_BYTES: usize = 32 * 1024;
 const MAX_RIFF_CHUNKS: usize = 1024;
+const MAX_MIX_STORE_ENTRIES: usize = 4096;
 
 fn invalid(message: &str) -> SupervisorError {
     SupervisorError::Invalid(message.into())
@@ -52,6 +54,23 @@ impl PcmPin {
                 .is_none()
         {
             return Err(invalid("invalid bounded cue PCM pin"));
+        }
+        Ok(())
+    }
+
+    fn validate_mix(&self) -> SupervisorResult<()> {
+        if !valid_hash(&self.sha256)
+            || self.sample_rate != 48000
+            || self.channels != 2
+            || !(1..=48000 * 6 * 3600).contains(&self.frame_count)
+            || !(44..=u64::from(u32::MAX) + 8).contains(&self.size_bytes)
+            || self
+                .frame_count
+                .checked_mul(4)
+                .filter(|n| *n <= self.size_bytes - 44)
+                .is_none()
+        {
+            return Err(invalid("invalid private six-hour stereo mix pin"));
         }
         Ok(())
     }
@@ -130,16 +149,29 @@ pub(super) fn regular(path: &Path) -> SupervisorResult<File> {
     Ok(file)
 }
 
-fn stream_pin(
+fn stream_pin(source: &mut File, target: Option<&mut File>, pin: &PcmPin) -> SupervisorResult<()> {
+    stream_pin_before(source, target, pin, None)
+}
+
+fn time_left(deadline: Option<Instant>) -> SupervisorResult<()> {
+    if deadline.is_some_and(|value| Instant::now() >= value) {
+        return Err(invalid("mix storage exceeded its shared deadline"));
+    }
+    Ok(())
+}
+
+fn stream_pin_before(
     source: &mut File,
     mut target: Option<&mut File>,
     pin: &PcmPin,
+    deadline: Option<Instant>,
 ) -> SupervisorResult<()> {
     source.seek(SeekFrom::Start(0))?;
     let mut digest = Sha256::new();
     let mut bytes = 0u64;
     let mut buffer = [0u8; BUFFER_BYTES];
     loop {
+        time_left(deadline)?;
         let count = source.read(&mut buffer)?;
         if count == 0 {
             break;
@@ -240,49 +272,16 @@ pub(super) fn verify_private_mix_audio(
     pin: &PcmPin,
     deadline: std::time::Instant,
 ) -> SupervisorResult<()> {
-    if !path.is_absolute()
-        || !root.is_absolute()
-        || !path.starts_with(root)
-        || !valid_hash(&pin.sha256)
-        || pin.sample_rate != 48000
-        || pin.channels != 2
-        || !(1..=48000 * 6 * 3600).contains(&pin.frame_count)
-        || !(44..=u64::from(u32::MAX) + 8).contains(&pin.size_bytes)
-        || pin
-            .frame_count
-            .checked_mul(4)
-            .filter(|n| *n <= pin.size_bytes - 44)
-            .is_none()
-    {
-        return Err(invalid("invalid private six-hour stereo mix pin"));
+    pin.validate_mix()?;
+    if !path.is_absolute() || !root.is_absolute() || !path.starts_with(root) {
+        return Err(invalid("mix waveform is outside its admitted root"));
     }
     let mut file = regular(path)?;
     let before = file.metadata()?;
     if before.len() != pin.size_bytes {
         return Err(invalid("private mix size changed"));
     }
-    let mut digest = Sha256::new();
-    let mut bytes = 0u64;
-    let mut buffer = [0u8; BUFFER_BYTES];
-    loop {
-        if std::time::Instant::now() >= deadline {
-            return Err(invalid(
-                "private mix verification exceeded its shared deadline",
-            ));
-        }
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        bytes += count as u64;
-        if bytes > pin.size_bytes {
-            return Err(invalid("private mix grew beyond its pin"));
-        }
-        digest.update(&buffer[..count]);
-    }
-    if bytes != pin.size_bytes || format!("sha256:{:x}", digest.finalize()) != pin.sha256 {
-        return Err(invalid("private mix checksum or size changed"));
-    }
+    stream_pin_before(&mut file, None, pin, Some(deadline))?;
     pcm(&mut file, pin)?;
     plain(path)?;
     let after = file.metadata()?;
@@ -328,6 +327,300 @@ impl Drop for PrivateCopy {
         // Only this create_new-owned file is removable. Accepted objects and
         // original/candidate resources are never deleted by an error path.
         let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Internal physical storage only. A later native caller must supply fresh
+/// space observations and ADR0005 volume/locator admission before graph use.
+/// Neither a path nor this object is a durable graph/provenance identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RetainedMixAudio {
+    pub(super) path: PathBuf,
+    pub(super) pin: PcmPin,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct MixStorageBudget {
+    /// Aggregate accepted AND orphan bytes for every job in this output root.
+    pub(super) maximum_bytes: u64,
+    pub(super) minimum_free_bytes: u64,
+}
+
+pub(super) struct RetainedMixStore {
+    namespace: PathBuf,
+    objects: AcceptedAudioStore,
+    budget: MixStorageBudget,
+    // One OS lock covers quota scan through copy/publication, across jobs and
+    // supervisor processes. Never clone the handle or unlink its empty file.
+    _lease: File,
+}
+
+fn mix_writer_lock(namespace: &Path, create: bool) -> SupervisorResult<File> {
+    let path = namespace.join(".writer.lock");
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            // Refuse a preexisting pipe/link/directory before writable open.
+            drop(regular(&path)?);
+        }
+        Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create(create)
+        .truncate(false);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(0x20000 | 0x800); // O_NOFOLLOW | O_NONBLOCK.
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT.
+    }
+    let file = options.open(&path)?;
+    plain(&path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != 0 {
+        return Err(invalid("mix writer lock is not an empty regular file"));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(invalid("mix writer lock cannot be a reparse point"));
+        }
+    }
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(invalid(
+            "another supervisor owns mix storage; wait for its checkpoint",
+        )),
+        Err(TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+impl RetainedMixStore {
+    /// output_root is resolved from native immutable job configuration. The
+    /// caller must not supply browser/worker roots or fall back to control.
+    pub(super) fn new(
+        output_root: &Path,
+        job_id: &str,
+        budget: MixStorageBudget,
+    ) -> SupervisorResult<Self> {
+        Self::open(output_root, job_id, budget, true)
+    }
+
+    /// Reopen/revalidate without creating a replacement namespace or lock.
+    pub(super) fn open_existing(
+        output_root: &Path,
+        job_id: &str,
+        budget: MixStorageBudget,
+    ) -> SupervisorResult<Self> {
+        Self::open(output_root, job_id, budget, false)
+    }
+
+    fn open(
+        output_root: &Path,
+        job_id: &str,
+        budget: MixStorageBudget,
+        create: bool,
+    ) -> SupervisorResult<Self> {
+        super::validate_job_id(job_id)?;
+        if budget.maximum_bytes == 0
+            || output_root
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+        {
+            return Err(invalid("invalid mix storage root or zero quota"));
+        }
+        plain(output_root)?;
+        if !output_root.is_dir() {
+            return Err(invalid(
+                "mix output volume is unavailable; restore it explicitly",
+            ));
+        }
+        let namespace = output_root.join(".dubflow-review-media-v1");
+        if create {
+            directory(&namespace)?;
+        } else {
+            plain(&namespace)?;
+        }
+        let lease = mix_writer_lock(&namespace, create)?;
+        let root = namespace.join(format!("{:x}", Sha256::digest(job_id.as_bytes())));
+        if create {
+            directory(&root)?;
+        } else {
+            plain(&root)?;
+            if !root.is_dir() {
+                return Err(invalid("retained mix namespace is missing"));
+            }
+        }
+        Ok(Self {
+            namespace,
+            objects: AcceptedAudioStore { root },
+            budget,
+            _lease: lease,
+        })
+    }
+
+    fn used_bytes(&self, deadline: Instant) -> SupervisorResult<u64> {
+        plain(&self.namespace)?;
+        let mut count = 0usize;
+        let mut total = 0u64;
+        let mut account = |path: &Path| -> SupervisorResult<()> {
+            time_left(Some(deadline))?;
+            count += 1;
+            if count > MAX_MIX_STORE_ENTRIES {
+                return Err(invalid(
+                    "mix object inventory limit; explicit recovery required",
+                ));
+            }
+            plain(path)?;
+            Ok(())
+        };
+        for entry in fs::read_dir(&self.namespace)? {
+            let entry = entry?;
+            let path = entry.path();
+            account(&path)?;
+            if entry.file_name() == ".writer.lock" {
+                let lock = regular(&path)?;
+                if lock.metadata()?.len() != 0 {
+                    return Err(invalid("mix writer lock changed"));
+                }
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_str().unwrap_or("");
+            if name.len() != 64
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || !entry.file_type()?.is_dir()
+            {
+                return Err(invalid(
+                    "unknown mix storage namespace; explicit recovery required",
+                ));
+            }
+            for object in fs::read_dir(&path)? {
+                let object = object?;
+                account(&object.path())?;
+                let file = regular(&object.path())?;
+                // Include .copy crash orphans, foreign regular files and all
+                // old/undo objects. Never evict a potentially referenced file.
+                total = total
+                    .checked_add(file.metadata()?.len())
+                    .ok_or_else(|| invalid("mix storage byte count overflow"))?;
+            }
+        }
+        Ok(total)
+    }
+
+    pub(super) fn accept(
+        &self,
+        candidate_root: &Path,
+        candidate: &Path,
+        pin: &PcmPin,
+        // A native OS/storage adapter, invoked after the locked quota scan.
+        // Unknown space MUST return Err; this API never assumes free capacity.
+        mut available_bytes: impl FnMut(&Path) -> SupervisorResult<u64>,
+        deadline: Instant,
+    ) -> SupervisorResult<RetainedMixAudio> {
+        pin.validate_mix()?;
+        time_left(Some(deadline))?;
+        plain(candidate_root)?;
+        if !candidate_root.is_dir()
+            || !candidate.is_absolute()
+            || !candidate.starts_with(candidate_root)
+            || candidate
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+            || candidate.starts_with(&self.namespace)
+        {
+            return Err(invalid(
+                "mix candidate is outside its private producer root",
+            ));
+        }
+        let accepted = RetainedMixAudio {
+            path: self.objects.root.join(format!("{}.wav", &pin.sha256[7..])),
+            pin: pin.clone(),
+        };
+        match fs::symlink_metadata(&accepted.path) {
+            Ok(_) => {
+                // Reuse needs no copy/extra quota, even when the volume is full.
+                // A corrupt/unsealed collision never authorizes replacement.
+                self.verify(&accepted, deadline)?;
+                return Ok(accepted);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        let used = self.used_bytes(deadline)?;
+        if used
+            .checked_add(pin.size_bytes)
+            .filter(|n| *n <= self.budget.maximum_bytes)
+            .is_none()
+        {
+            return Err(invalid(
+                "mix storage quota exhausted; preserve outputs and undo assets",
+            ));
+        }
+        let needed = pin
+            .size_bytes
+            .checked_add(self.budget.minimum_free_bytes)
+            .ok_or_else(|| invalid("mix storage reservation overflow"))?;
+        if available_bytes(&self.namespace)? < needed {
+            return Err(invalid(
+                "mix volume has insufficient free space; no control-root fallback",
+            ));
+        }
+        time_left(Some(deadline))?;
+        let mut source = regular(candidate)?;
+        if source.metadata()?.len() != pin.size_bytes {
+            return Err(invalid("mix candidate size changed before copy"));
+        }
+        let (mut copy, private) = self.objects.private_copy()?;
+        stream_pin_before(&mut source, Some(&mut copy), pin, Some(deadline))?;
+        copy.sync_all()?;
+        stream_pin_before(&mut copy, None, pin, Some(deadline))?;
+        pcm(&mut copy, pin)?;
+        time_left(Some(deadline))?;
+        drop(copy);
+        self.objects.publish(&private, &accepted.path)?;
+        self.verify(&accepted, deadline)?;
+        Ok(accepted)
+    }
+
+    /// No silent repair/eviction: every reuse/undo rechecks sealed bytes and PCM.
+    pub(super) fn verify(
+        &self,
+        accepted: &RetainedMixAudio,
+        deadline: Instant,
+    ) -> SupervisorResult<()> {
+        accepted.pin.validate_mix()?;
+        if accepted.path
+            != self
+                .objects
+                .root
+                .join(format!("{}.wav", &accepted.pin.sha256[7..]))
+        {
+            return Err(invalid(
+                "retained mix path differs from its native identity",
+            ));
+        }
+        if !regular(&accepted.path)?
+            .metadata()?
+            .permissions()
+            .readonly()
+        {
+            return Err(invalid(
+                "retained mix is no longer sealed; explicit recovery required",
+            ));
+        }
+        verify_private_mix_audio(&self.objects.root, &accepted.path, &accepted.pin, deadline)
     }
 }
 
@@ -515,22 +808,26 @@ mod tests {
         fn drop(&mut self) {
             // Windows needs readonly accepted files unsealed before fixture
             // deletion; production has no deletion/unseal operation.
-            let assets = self.0.join("control/review-assets");
-            if let Ok(jobs) = fs::read_dir(assets) {
-                for job in jobs.flatten() {
-                    if let Ok(files) = fs::read_dir(job.path()) {
-                        for entry in files.flatten() {
-                            if let Ok(metadata) = entry.metadata() {
-                                if metadata.is_file() && metadata.permissions().readonly() {
-                                    let mut permissions = metadata.permissions();
-                                    #[cfg(windows)]
-                                    permissions.set_readonly(false);
-                                    #[cfg(unix)]
-                                    {
-                                        use std::os::unix::fs::PermissionsExt;
-                                        permissions.set_mode(0o600);
+            for assets in [
+                self.0.join("control/review-assets"),
+                self.0.join(".dubflow-review-media-v1"),
+            ] {
+                if let Ok(jobs) = fs::read_dir(assets) {
+                    for job in jobs.flatten() {
+                        if let Ok(files) = fs::read_dir(job.path()) {
+                            for entry in files.flatten() {
+                                if let Ok(metadata) = entry.metadata() {
+                                    if metadata.is_file() && metadata.permissions().readonly() {
+                                        let mut permissions = metadata.permissions();
+                                        #[cfg(windows)]
+                                        permissions.set_readonly(false);
+                                        #[cfg(unix)]
+                                        {
+                                            use std::os::unix::fs::PermissionsExt;
+                                            permissions.set_mode(0o600);
+                                        }
+                                        let _ = fs::set_permissions(entry.path(), permissions);
                                     }
-                                    let _ = fs::set_permissions(entry.path(), permissions);
                                 }
                             }
                         }
@@ -620,6 +917,364 @@ mod tests {
             channels,
             frame_count,
         }
+    }
+
+    fn budget(bytes: u64) -> MixStorageBudget {
+        MixStorageBudget {
+            maximum_bytes: bytes,
+            minimum_free_bytes: 100,
+        }
+    }
+
+    fn deadline() -> Instant {
+        Instant::now() + std::time::Duration::from_secs(60)
+    }
+
+    #[test]
+    fn retained_mix_exceeds_cue_limit_with_bounded_copy_and_separate_sealed_bytes() {
+        let (fixture, cue_store, candidate) = fixture();
+        let path = candidate.join("long mix.wav");
+        // Physical >64MiB media exercises the old cue boundary, not just a
+        // fabricated large pin. Generate/hash it in bounded chunks, not a Vec.
+        let frames = MAX_CUE_BYTES / 4 + 1024;
+        let payload = frames * 4;
+        let (mut header, _) = wave(1, 2, false);
+        header.truncate(44);
+        header[4..8].copy_from_slice(&((payload + 36) as u32).to_le_bytes());
+        header[40..44].copy_from_slice(&(payload as u32).to_le_bytes());
+        let mut file = File::create(&path).unwrap();
+        let mut hash = Sha256::new();
+        file.write_all(&header).unwrap();
+        hash.update(&header);
+        let buffer = [17u8; BUFFER_BYTES];
+        let mut left = payload;
+        while left > 0 {
+            let count = left.min(BUFFER_BYTES as u64) as usize;
+            file.write_all(&buffer[..count]).unwrap();
+            hash.update(&buffer[..count]);
+            left -= count as u64;
+        }
+        file.sync_all().unwrap();
+        drop(file);
+        let pin = PcmPin {
+            sha256: format!("sha256:{:x}", hash.finalize()),
+            size_bytes: payload + 44,
+            sample_rate: 48000,
+            channels: 2,
+            frame_count: frames,
+        };
+        assert!(cue_store.accept(&candidate, &path, &pin).is_err());
+        let store = RetainedMixStore::new(&fixture.0, "job:long", budget(pin.size_bytes)).unwrap();
+        let accepted = store
+            .accept(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        assert!(accepted
+            .path
+            .starts_with(fixture.0.join(".dubflow-review-media-v1")));
+        assert!(!accepted.path.starts_with(fixture.0.join("control")));
+        assert_ne!(accepted.path, path);
+        assert!(fs::metadata(&accepted.path)
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert!(!fs::metadata(&path).unwrap().permissions().readonly());
+        assert_eq!(store.used_bytes(deadline()).unwrap(), pin.size_bytes);
+        fs::write(&path, b"worker replaced candidate").unwrap();
+        store.verify(&accepted, deadline()).unwrap();
+    }
+
+    #[test]
+    fn retained_reuse_at_quota_needs_no_copy_or_space_probe_and_keeps_mtime() {
+        let (fixture, _, root) = fixture();
+        let (bytes, pin) = wave(480, 2, true);
+        let path = root.join("mix.wav");
+        fs::write(&path, &bytes).unwrap();
+        let store = RetainedMixStore::new(&fixture.0, "job-reuse", budget(pin.size_bytes)).unwrap();
+        let first = store
+            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        let mtime = fs::metadata(&first.path).unwrap().modified().unwrap();
+        assert_eq!(
+            store
+                .accept(
+                    &root,
+                    &path,
+                    &pin,
+                    |_| panic!("reuse must not reserve new bytes"),
+                    deadline()
+                )
+                .unwrap(),
+            first
+        );
+        assert_eq!(
+            fs::metadata(&first.path).unwrap().modified().unwrap(),
+            mtime
+        );
+        assert_eq!(fs::read_dir(&store.objects.root).unwrap().count(), 1);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn quota_includes_other_jobs_pending_undo_and_crash_orphans_without_eviction() {
+        let (fixture, _, root) = fixture();
+        let (bytes, pin) = wave(480, 2, false);
+        let path = root.join("mix.wav");
+        fs::write(&path, &bytes).unwrap();
+        let store =
+            RetainedMixStore::new(&fixture.0, "old-job", budget(pin.size_bytes + 10)).unwrap();
+        let old = store
+            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        let orphan = store.objects.root.join(".copy-interrupted");
+        fs::write(&orphan, b"ten bytes!").unwrap();
+        assert_eq!(store.used_bytes(deadline()).unwrap(), pin.size_bytes + 10);
+        drop(store);
+        let next =
+            RetainedMixStore::new(&fixture.0, "new-job", budget(pin.size_bytes + 10)).unwrap();
+        assert!(next
+            .accept(
+                &root,
+                &path,
+                &pin,
+                |_| panic!("quota must refuse before space probe"),
+                deadline()
+            )
+            .is_err());
+        assert_eq!(fs::read(&old.path).unwrap(), bytes);
+        assert_eq!(fs::read(&orphan).unwrap(), b"ten bytes!");
+        assert_eq!(fs::read_dir(&next.objects.root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn low_unknown_space_overflow_and_expired_deadline_never_publish_or_fall_back() {
+        let (fixture, cue_store, root) = fixture();
+        let (bytes, pin) = wave(480, 2, false);
+        let path = root.join("mix.wav");
+        fs::write(&path, &bytes).unwrap();
+        let store = RetainedMixStore::new(&fixture.0, "job-space", budget(pin.size_bytes)).unwrap();
+        assert!(store
+            .accept(&root, &path, &pin, |_| Ok(pin.size_bytes + 99), deadline())
+            .is_err());
+        assert!(store
+            .accept(
+                &root,
+                &path,
+                &pin,
+                |_| Err(invalid("space unavailable")),
+                deadline()
+            )
+            .is_err());
+        assert!(store
+            .accept(&root, &path, &pin, |_| panic!("expired"), Instant::now())
+            .is_err());
+        assert_eq!(fs::read_dir(&store.objects.root).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&cue_store.root).unwrap().count(), 0);
+        drop(store);
+        let store = RetainedMixStore::new(
+            &fixture.0,
+            "job-space",
+            MixStorageBudget {
+                maximum_bytes: u64::MAX,
+                minimum_free_bytes: u64::MAX,
+            },
+        )
+        .unwrap();
+        assert!(store
+            .accept(&root, &path, &pin, |_| panic!("overflow"), deadline())
+            .is_err());
+        assert_eq!(fs::read_dir(&store.objects.root).unwrap().count(), 0);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn exclusive_output_writer_covers_distinct_jobs_and_is_released_without_unlink() {
+        let (fixture, _, _) = fixture();
+        let store = RetainedMixStore::new(&fixture.0, "job-a", budget(10000)).unwrap();
+        assert!(RetainedMixStore::new(&fixture.0, "job-b", budget(10000)).is_err());
+        let lock = store.namespace.join(".writer.lock");
+        drop(store);
+        assert!(lock.is_file());
+        let next = RetainedMixStore::new(&fixture.0, "job-b", budget(10000)).unwrap();
+        assert_eq!(next.namespace.join(".writer.lock"), lock);
+        assert_eq!(fs::metadata(lock).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn reopen_revalidates_media_without_recreating_missing_job_or_lock() {
+        let (fixture, _, root) = fixture();
+        let namespace = fixture.0.join(".dubflow-review-media-v1");
+        assert!(RetainedMixStore::open_existing(&fixture.0, "job-open", budget(10000)).is_err());
+        assert!(!namespace.exists());
+        let (bytes, pin) = wave(480, 2, false);
+        let path = root.join("mix.wav");
+        fs::write(&path, &bytes).unwrap();
+        let store = RetainedMixStore::new(&fixture.0, "job-open", budget(10000)).unwrap();
+        let accepted = store
+            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        drop(store);
+        let opened =
+            RetainedMixStore::open_existing(&fixture.0, "job-open", budget(10000)).unwrap();
+        opened.verify(&accepted, deadline()).unwrap();
+        drop(opened);
+        let foreign_job = namespace.join(format!("{:x}", Sha256::digest(b"missing-job")));
+        assert!(RetainedMixStore::open_existing(&fixture.0, "missing-job", budget(10000)).is_err());
+        assert!(!foreign_job.exists());
+        fs::remove_file(namespace.join(".writer.lock")).unwrap();
+        assert!(RetainedMixStore::open_existing(&fixture.0, "job-open", budget(10000)).is_err());
+        assert!(!namespace.join(".writer.lock").exists());
+        assert_eq!(fs::read(&accepted.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn excessive_inventory_and_nested_orphan_refuse_without_discarding_files() {
+        let (fixture, _, root) = fixture();
+        let (bytes, pin) = wave(480, 2, false);
+        let path = root.join("mix.wav");
+        fs::write(&path, &bytes).unwrap();
+        let store = RetainedMixStore::new(&fixture.0, "job-inventory", budget(u64::MAX)).unwrap();
+        let nested = store.objects.root.join("interrupted-generation");
+        fs::create_dir(&nested).unwrap();
+        assert!(store
+            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .is_err());
+        assert!(nested.is_dir());
+        fs::remove_dir(nested).unwrap();
+        for index in 0..MAX_MIX_STORE_ENTRIES {
+            File::create(store.objects.root.join(format!(".copy-{index}"))).unwrap();
+        }
+        assert!(store
+            .accept(
+                &root,
+                &path,
+                &pin,
+                |_| panic!("bounded scan must refuse"),
+                deadline()
+            )
+            .is_err());
+        assert_eq!(
+            fs::read_dir(&store.objects.root).unwrap().count(),
+            MAX_MIX_STORE_ENTRIES
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn retained_mix_refuses_corruption_unsealed_objects_bad_pcm_and_foreign_identity() {
+        let (fixture, _, root) = fixture();
+        let (bytes, pin) = wave(480, 2, false);
+        let path = root.join("mix.wav");
+        fs::write(&path, &bytes).unwrap();
+        let store = RetainedMixStore::new(&fixture.0, "job-tamper", budget(10000)).unwrap();
+        let accepted = store
+            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        let mut changed = accepted.clone();
+        changed.path = path.clone();
+        assert!(store.verify(&changed, deadline()).is_err());
+        changed = accepted.clone();
+        changed.pin.frame_count -= 1;
+        assert!(store.verify(&changed, deadline()).is_err());
+        let mut permissions = fs::metadata(&accepted.path).unwrap().permissions();
+        #[cfg(windows)]
+        permissions.set_readonly(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o600);
+        }
+        fs::set_permissions(&accepted.path, permissions.clone()).unwrap();
+        assert!(store.verify(&accepted, deadline()).is_err());
+        assert!(store
+            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .is_err());
+        let mut corrupt = bytes.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        fs::write(&accepted.path, &corrupt).unwrap();
+        permissions.set_readonly(true);
+        fs::set_permissions(&accepted.path, permissions).unwrap();
+        assert!(store.verify(&accepted, deadline()).is_err());
+        assert!(store
+            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .is_err());
+        assert_eq!(fs::read(&accepted.path).unwrap(), corrupt);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        // A checksum-valid non-PCM candidate still cannot create an object.
+        let mut bad = bytes;
+        bad[20] = 3;
+        let bad_pin = self::pin(&bad, 480, 2);
+        fs::write(&path, &bad).unwrap();
+        assert!(store
+            .accept(&root, &path, &bad_pin, |_| Ok(u64::MAX), deadline())
+            .is_err());
+        assert_eq!(fs::read_dir(&store.objects.root).unwrap().count(), 1);
+        assert_eq!(fs::read(&path).unwrap(), bad);
+    }
+
+    #[test]
+    fn missing_or_traversed_output_is_not_created_and_foreign_candidates_refuse() {
+        let (fixture, _, root) = fixture();
+        let absent = fixture.0.join("offline output");
+        assert!(RetainedMixStore::new(&absent, "job-offline", budget(10000)).is_err());
+        assert!(!absent.exists());
+        let traversed = root.join("../producer candidate");
+        assert!(RetainedMixStore::new(&traversed, "job-path", budget(10000)).is_err());
+        assert!(RetainedMixStore::new(&fixture.0, "job-zero", budget(0)).is_err());
+        let (bytes, pin) = wave(480, 2, false);
+        let path = root.join("mix.wav");
+        fs::write(&path, bytes).unwrap();
+        let store = RetainedMixStore::new(&fixture.0, "job-path", budget(10000)).unwrap();
+        assert!(store
+            .accept(
+                &root,
+                &root.join("../producer candidate/mix.wav"),
+                &pin,
+                |_| Ok(u64::MAX),
+                deadline()
+            )
+            .is_err());
+        assert!(store
+            .accept(
+                &root,
+                &fixture.0.join("outside.wav"),
+                &pin,
+                |_| Ok(u64::MAX),
+                deadline()
+            )
+            .is_err());
+        assert_eq!(fs::read_dir(&store.objects.root).unwrap().count(), 0);
+        let unexpected = store.namespace.join("unknown");
+        fs::write(&unexpected, b"preserve").unwrap();
+        assert!(store
+            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .is_err());
+        assert_eq!(fs::read(&unexpected).unwrap(), b"preserve");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_output_candidate_or_orphan_is_never_admitted_as_retained_media() {
+        use std::os::unix::fs::symlink;
+        let (fixture, _, root) = fixture();
+        let alias = fixture.0.join("linked output");
+        symlink(&root, &alias).unwrap();
+        assert!(RetainedMixStore::new(&alias, "job-links", budget(10000)).is_err());
+        let (bytes, pin) = wave(480, 2, false);
+        let path = root.join("mix.wav");
+        fs::write(&path, &bytes).unwrap();
+        let store = RetainedMixStore::new(&fixture.0, "job-links", budget(10000)).unwrap();
+        let linked = root.join("linked.wav");
+        symlink(&path, &linked).unwrap();
+        assert!(store
+            .accept(&root, &linked, &pin, |_| Ok(u64::MAX), deadline())
+            .is_err());
+        let orphan = store.objects.root.join(".copy-linked");
+        symlink(&path, &orphan).unwrap();
+        assert!(store
+            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(orphan).unwrap();
     }
 
     #[test]

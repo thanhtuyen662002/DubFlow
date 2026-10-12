@@ -616,6 +616,49 @@ This boundary follows a reproduced Windows `CreateProcess` hang with deep TEMP;
 it is not a longer timeout, system-temp fallback or canonical path migration.
 Crash orphan retention/quota recovery remains required before public use.
 
+### Internal retained full-length PCM storage
+
+An internal native storage foundation now accepts six-hour 48kHz stereo16-bit
+RIFF PCM independently of the64MiB cue store. It copies with a32KiB buffer to
+`.dubflow-review-media-v1/<sha256(job-id)>/<sha256(wav)>.wav` on the admitted
+original output volume. Copy, exact hash/size, PCM admission, flush and exclusive
+readonly publication precede any returned physical descriptor. The candidate
+is never hard-linked as an accepted object or modified in place. Existing
+objects must pass sealed hash/size/PCM validation; corruption is never replaced
+implicitly. Identical objects reuse their bytes without a new space reservation.
+
+One nonblocking kernel writer lock covers every job's quota scan through
+publication within this output namespace. Its empty lock file is retained;
+process exit releases the OS lease without unlink/reclaim races. Aggregate
+quota includes all old/undo media and partial crash orphans. The inventory is
+bounded to4096 entries, with links, unexpected namespace directories, nested
+objects and unavailable observations refusing explicitly. Before allocating a
+copy, a native caller must provide a fresh free-space observation sufficient for
+the complete file plus its configured reserve. Unknown capacity, quota pressure,
+overflow and shared deadline exhaustion refuse; no fallback writes large media
+under local control. Only the current create-new-owned partial can be removed
+on an ordinary failure. Other orphans need explicit recovery; no implicit GC or
+eviction can discard pending undo references.
+
+This API is intentionally not connected to `review-mix-cue` or the desktop yet:
+that command continues to report `retained_audio=false`. Its caller must still
+admit the actual OS/storage observation and stable volume through ADR0005,
+register an existing versioned locator, retarget admitted mix metadata, and
+retain every pending undo dependency before final graph CAS. A physical path
+descriptor is not a durable locator or semantic/provenance admission token.
+Filesystem observation and I/O deadlines are cooperative; they cannot promise
+to interrupt a blocked NAS/OS operation. Windows volume, process-death and
+power-loss qualification remain required. This code does not claim them from
+the deterministic physical-file tests or their injected space observations.
+
+The namespace is additive and private, with no SQLite, public Review, worker,
+producer/model or updater format change. Old cue/control assets, private mix
+checkpoints and original exports are untouched. Older binaries ignore the new
+namespace and cannot publish its contents; rollback leaves them for explicit
+recovery. No automatic migration, relabeling or destructive reverse migration
+is performed. Full mix/render/QC/export, active graph publication, real undo,
+B1 and installed long-form acceptance remain incomplete.
+
 ### Original physical single-cue dispatch
 
 The opt-in native `review-synthesize-cue` command repeats the original head and
