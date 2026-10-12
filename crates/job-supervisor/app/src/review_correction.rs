@@ -234,7 +234,7 @@ fn run_inner(
     let _original = read_original(&store, &data, &state)?;
     if synthesize {
         runtime.cue_execution()?;
-        let candidates = private_root(&original_output_root(&graph)?, job)?;
+        let candidates = private_root(&seed.output_root, job)?;
         let result = synthesize_accepted(&runtime, &assets, &candidates, &request, &accepted)?;
         let mixed = if mix {
             Some(mix_private(
@@ -490,7 +490,7 @@ fn mix_private(
     let template_object = accepted_json(&original["mix_document"], assets)?;
     let template = decode(&assets.read_json(&template_object)?, LIMIT)?;
     let accepted = accepted_json(&cue["tts_document"], assets)?;
-    let source_root = original_output_root(&graph)?;
+    let source_root = original_audio_root(&graph)?;
     let wave_path = PathBuf::from(
         cue["audio"]["path"]
             .as_str()
@@ -508,7 +508,11 @@ fn mix_private(
         "original_tts_document":mix_descriptor(&speech,&source_root),"mix_template":mix_descriptor(&template_object,&source_root),
         "accepted_tts_document":mix_descriptor(&accepted,wave_path.parent().unwrap())});
     let context = assets.accept_json(&serde_json::to_string(&context_value)?)?;
-    let mut command = cue_command(runtime, &runtime.mix_execution()?, &output.join("temp"));
+    let mut command = cue_command(
+        runtime,
+        &runtime.mix_execution()?,
+        &candidate_scratch(output)?,
+    )?;
     command.args([
         OsString::from("--context"),
         context.path.as_os_str().to_owned(),
@@ -738,7 +742,7 @@ fn admit_candidate(
     })
 }
 
-fn original_output_root(graph: &Value) -> SupervisorResult<PathBuf> {
+fn original_audio_root(graph: &Value) -> SupervisorResult<PathBuf> {
     // Only a native-admitted original graph reaches this helper. Its descriptor
     // matches the completed export and immutable start's output binding.
     let document = PathBuf::from(
@@ -787,7 +791,9 @@ fn private_root(output: &Path, job: &str) -> SupervisorResult<PathBuf> {
     // metadata/cue objects. Missing output storage remains an explicit refusal.
     let root = output.join(".dubflow-review-candidates");
     let job_root = root.join(format!("{:x}", Sha256::digest(job.as_bytes())));
-    for path in [&root, &job_root, &job_root.join("temp")] {
+    let scratch = root.join("temp");
+    validate_scratch_length(&scratch, cfg!(windows))?;
+    for path in [&root, &scratch, &job_root] {
         super::review_pin::plain(path.parent().unwrap())?;
         match std::fs::create_dir(path) {
             Ok(()) => (),
@@ -802,7 +808,39 @@ fn private_root(output: &Path, job: &str) -> SupervisorResult<PathBuf> {
     Ok(job_root)
 }
 
-fn cue_command(runtime: &AdmittedRuntime, entry: &Path, scratch: &Path) -> Command {
+fn validate_scratch_length(scratch: &Path, windows: bool) -> SupervisorResult<()> {
+    // Leave room for TemporaryDirectory's prefix/random suffix and PCM names.
+    // A deep TEMP reproduced a hang inside Windows CreateProcess, before the
+    // child could enter our protocol or observe its inference timeout.
+    if windows && scratch.as_os_str().to_string_lossy().encode_utf16().count() > 200 {
+        return Err(invalid(
+            "Review temporary path is too long for Windows process startup; create a new processing version in a shorter output folder; prior export remains unchanged",
+        ));
+    }
+    Ok(())
+}
+
+fn candidate_scratch(job_root: &Path) -> SupervisorResult<PathBuf> {
+    // NativeProcess creates unique private TemporaryDirectories here. Sharing
+    // the short parent across jobs does not share media/checkpoint identity.
+    let scratch = job_root
+        .parent()
+        .ok_or_else(|| invalid("missing native candidate parent"))?
+        .join("temp");
+    super::review_pin::plain(&scratch)?;
+    if !scratch.is_dir() {
+        return Err(invalid("Review temporary storage is unavailable"));
+    }
+    validate_scratch_length(&scratch, cfg!(windows))?;
+    Ok(scratch)
+}
+
+fn cue_command(
+    runtime: &AdmittedRuntime,
+    entry: &Path,
+    scratch: &Path,
+) -> SupervisorResult<Command> {
+    validate_scratch_length(scratch, cfg!(windows))?;
     let mut command = Command::new(&runtime.python);
     command.args([
         OsString::from("-I"),
@@ -814,7 +852,7 @@ fn cue_command(runtime: &AdmittedRuntime, entry: &Path, scratch: &Path) -> Comma
         .env("TEMP", scratch)
         .env("TMP", scratch)
         .env("TMPDIR", scratch);
-    command
+    Ok(command)
 }
 
 fn synthesize_accepted(
@@ -825,9 +863,9 @@ fn synthesize_accepted(
     object: &AcceptedJsonDocument,
 ) -> SupervisorResult<Value> {
     let (entry, model_root) = runtime.cue_execution()?;
-    let scratch = output.join("temp");
+    let scratch = candidate_scratch(output)?;
     assets.read_json(object)?;
-    let mut command = cue_command(runtime, &entry, &scratch);
+    let mut command = cue_command(runtime, &entry, &scratch)?;
     command.args([
         OsString::from("produce"),
         OsString::from("--request"),
@@ -854,7 +892,7 @@ fn synthesize_accepted(
     let context=assets.accept_json(&serde_json::to_string(&json!({"schema_version":1,"kind":"review_native_accepted_cue_context",
         "request_json":request.raw(),"request_sha256":request.input_hash(),"candidate_tts_json":candidate.tts,
         "candidate_spoken_text_json":candidate.spoken,"recipe_identity":candidate.recipe,"accepted_wave":wave}))?)?;
-    let mut command = cue_command(runtime, &entry, &scratch);
+    let mut command = cue_command(runtime, &entry, &scratch)?;
     command.args([
         OsString::from("accept"),
         OsString::from("--context"),
@@ -927,16 +965,27 @@ mod tests {
         let original = output.join("original.bin");
         std::fs::write(&original, b"preserve original bytes").unwrap();
         let before = std::fs::metadata(&original).unwrap().modified().unwrap();
-        let graph = json!({"documents":{"tts_document":{"path":output.join("tts_document.json")}}});
-        assert_eq!(original_output_root(&graph).unwrap(), output);
-        let candidate =
-            private_root(&original_output_root(&graph).unwrap(), "job-placement").unwrap();
+        let audio = output.join(".dubflow-work/b2-audio/producer/config");
+        std::fs::create_dir_all(&audio).unwrap();
+        let graph = json!({"documents":{"tts_document":{"path":audio.join("tts_document.json")}}});
+        assert_eq!(original_audio_root(&graph).unwrap(), audio);
+        let candidate = private_root(&output, "job-placement").unwrap();
         assert!(candidate.starts_with(&output));
-        assert!(candidate.join("temp").is_dir());
+        assert!(!candidate.starts_with(&audio));
+        assert_eq!(std::fs::read_dir(&audio).unwrap().count(), 0);
+        assert!(candidate_scratch(&candidate).unwrap().is_dir());
+        assert_eq!(
+            candidate_scratch(&candidate).unwrap(),
+            candidate.parent().unwrap().join("temp")
+        );
         assert!(!candidate.starts_with(&control));
         assert_eq!(std::fs::read_dir(&control).unwrap().count(), 0);
         assert_eq!(private_root(&output, "job-placement").unwrap(), candidate);
         assert_ne!(private_root(&output, "other-job").unwrap(), candidate);
+        assert_eq!(
+            candidate_scratch(&private_root(&output, "other-job").unwrap()).unwrap(),
+            candidate_scratch(&candidate).unwrap()
+        );
         assert_eq!(
             std::fs::read(&original).unwrap(),
             b"preserve original bytes"
@@ -948,11 +997,11 @@ mod tests {
         let missing = base.join("unavailable output");
         assert!(private_root(&missing, "job-placement").is_err());
         assert!(!missing.exists());
-        assert!(original_output_root(
+        assert!(original_audio_root(
             &json!({"documents":{"tts_document":{"path":missing.join("tts_document.json")}}})
         )
         .is_err());
-        assert!(original_output_root(
+        assert!(original_audio_root(
             &json!({"documents":{"tts_document":{"path":"relative/tts_document.json"}}})
         )
         .is_err());
@@ -960,6 +1009,35 @@ mod tests {
         assert!(private_root(&traversal, "job-placement").is_err());
         assert!(private_root(&original, "job-placement").is_err());
         assert_eq!(std::fs::read_dir(&control).unwrap().count(), 0);
+        assert!(base
+            .canonicalize()
+            .unwrap()
+            .starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn windows_scratch_guard_counts_utf16_and_refuses_before_startup() {
+        assert!(validate_scratch_length(Path::new(&"a".repeat(200)), true).is_ok());
+        assert!(validate_scratch_length(Path::new(&"a".repeat(201)), true).is_err());
+        assert!(validate_scratch_length(Path::new(&"\u{1f3ac}".repeat(100)), true).is_ok());
+        assert!(validate_scratch_length(Path::new(&"\u{1f3ac}".repeat(101)), true).is_err());
+        assert!(validate_scratch_length(Path::new(&"a".repeat(300)), false).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn oversized_windows_output_refuses_before_creating_private_storage() {
+        let base = std::env::temp_dir().join(format!(
+            "dubflow-long-scratch-{}-{}",
+            std::process::id(),
+            super::super::ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let output = base.join("o".repeat(170));
+        std::fs::create_dir_all(&output).unwrap();
+        let error = private_root(&output, "long-output-job").unwrap_err();
+        assert!(error.to_string().contains("shorter output folder"));
+        assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
         assert!(base
             .canonicalize()
             .unwrap()
@@ -980,7 +1058,7 @@ mod tests {
         let link = base.join("linked output");
         std::os::unix::fs::symlink(&output, &link).unwrap();
         assert!(private_root(&link, "job-placement").is_err());
-        assert!(original_output_root(
+        assert!(original_audio_root(
             &json!({"documents":{"tts_document":{"path":link.join("tts_document.json")}}})
         )
         .is_err());

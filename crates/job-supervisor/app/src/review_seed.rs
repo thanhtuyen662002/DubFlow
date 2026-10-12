@@ -67,7 +67,29 @@ fn metadata_raw(export: &CommittedExport, role: &str) -> SupervisorResult<String
 pub(super) struct AdmittedSeed {
     pub(super) snapshot: AdmittedSnapshot,
     pub(super) graph: String,
+    pub(super) output_root: PathBuf,
     documents: HashMap<String, String>,
+}
+
+fn export_output_root(export: &CommittedExport) -> SupervisorResult<PathBuf> {
+    // The pin came from the immutable start/committed artifact binding, never
+    // from a document path inside a producer's nested private checkpoints.
+    let manifest = PathBuf::from(
+        export.pin["manifest_path"]
+            .as_str()
+            .ok_or_else(|| invalid("missing original manifest output binding"))?,
+    );
+    if !manifest.is_absolute()
+        || manifest
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+        || manifest.file_name() != Some(std::ffi::OsStr::new("job_manifest.json"))
+    {
+        return Err(invalid("original manifest output binding is invalid"));
+    }
+    // Archived Review metadata must remain readable while the media volume is
+    // offline. Candidate creation separately checks availability/plain storage.
+    Ok(manifest.parent().unwrap().to_path_buf())
 }
 
 impl AdmittedSeed {
@@ -351,6 +373,7 @@ impl AdmittedSeed {
         Ok(Self {
             snapshot,
             graph: graph_raw.into(),
+            output_root: export_output_root(export)?,
             documents: originals,
         })
     }
@@ -753,6 +776,10 @@ mod tests {
         }
     }
     fn fixture() -> Fixture {
+        fixture_with_metadata_subdir("")
+    }
+
+    fn fixture_with_metadata_subdir(metadata_subdir: &str) -> Fixture {
         let root = std::env::temp_dir().join(format!(
             "dubflow-review-seed-{}-{}",
             std::process::id(),
@@ -762,6 +789,8 @@ mod tests {
         fs::create_dir(root.join("control")).unwrap();
         let output = root.join("output");
         fs::create_dir(&output).unwrap();
+        let metadata_root = output.join(metadata_subdir);
+        fs::create_dir_all(&metadata_root).unwrap();
         let timeline = json!({"schema_version":1,"duration_ticks":10000,"time_base":{"numerator":1,"denominator":1000},
             "cues":[{"cue_id":"cue-a","start_ms":100,"end_ms":900,"source_text":"Hello","translated_text":"Xin chào","confidence":0.1}]});
         let mut descriptors = serde_json::Map::new();
@@ -774,7 +803,7 @@ mod tests {
         ] {
             // Producer formatting is deliberately retained exactly.
             let raw = serde_json::to_string_pretty(&value).unwrap() + "\n";
-            let path = output.join(format!("{role}.json"));
+            let path = metadata_root.join(format!("{role}.json"));
             fs::write(&path, &raw).unwrap();
             descriptors.insert(role.into(),json!({"path":path,"sha256":format!("sha256:{:x}",Sha256::digest(raw.as_bytes())),"size_bytes":raw.len()}));
         }
@@ -852,6 +881,49 @@ mod tests {
     }
 
     #[test]
+    fn nested_checkpoint_metadata_does_not_select_candidate_output_storage() {
+        let f = fixture_with_metadata_subdir(".dubflow-work/b2-audio/producer/config");
+        let original_manifest = fs::read(&f.manifest).unwrap();
+        let seed = AdmittedSeed::read(&f.packet.to_string(), &f.export).unwrap();
+        assert_eq!(seed.output_root, f.root.join("output"));
+        let metadata = Path::new(
+            f.export.manifest["artifacts"]["editable_timeline"]["path"]
+                .as_str()
+                .unwrap(),
+        );
+        assert_ne!(seed.output_root, metadata.parent().unwrap());
+        assert_eq!(fs::read(&f.manifest).unwrap(), original_manifest);
+        assert!(!seed.output_root.join(".dubflow-review-candidates").exists());
+        assert!(f.store.review_graph_state("job-seed").unwrap().is_none());
+    }
+
+    #[test]
+    fn output_placement_refuses_invalid_bindings_without_creating_storage() {
+        let mut f = fixture();
+        for path in [
+            PathBuf::from("relative/job_manifest.json"),
+            f.root.join("output/../control/job_manifest.json"),
+            f.root.join("output/tts_document.json"),
+        ] {
+            f.export.pin["manifest_path"] = path.to_string_lossy().into_owned().into();
+            assert!(export_output_root(&f.export).is_err(), "{}", path.display());
+        }
+        f.export.pin["manifest_path"] = f
+            .root
+            .join("unavailable/job_manifest.json")
+            .to_string_lossy()
+            .into_owned()
+            .into();
+        assert_eq!(
+            export_output_root(&f.export).unwrap(),
+            f.root.join("unavailable")
+        );
+        assert!(!f.root.join("unavailable").exists());
+        assert!(!f.root.join("control/.dubflow-review-candidates").exists());
+        assert!(f.store.review_graph_state("job-seed").unwrap().is_none());
+    }
+
+    #[test]
     fn original_state_retains_exact_metadata_and_reopens_without_exports_or_runtime() {
         let f = fixture();
         let seed = AdmittedSeed::read(&f.packet.to_string(), &f.export).unwrap();
@@ -872,6 +944,7 @@ mod tests {
             fs::remove_file(descriptor["path"].as_str().unwrap()).unwrap();
         }
         fs::remove_file(&f.manifest).unwrap();
+        fs::remove_dir(f.root.join("output")).unwrap();
         let reader = DurableStore::open_read_only(&f.db).unwrap();
         let stored = reader.review_graph_state("job-seed").unwrap().unwrap();
         let recovered = read_original(&reader, &f.root, &stored).unwrap();

@@ -596,6 +596,26 @@ accepted/canonical objects. Quota/orphan recovery and explicit stable-volume
 locator integration with ADR0005/#173 remain required before public use. A path
 hint alone does not qualify volume relocation, NAS atomicity or durable undo.
 
+The placement root is the parent of the native archived manifest's immutable
+`job_manifest.json` binding, not the parent of `tts_document.json`, which may
+live several checkpoint levels below the export. Original input media retains
+its separately admitted narrow artifact root. This changes private output
+placement only; it never broadens input read authority or repins the producer.
+Old nested candidates remain unchanged and are not silently moved or reused.
+Archived metadata remains readable with the output volume offline; availability
+and plain-storage checks apply before creating candidates, not while reopening
+the sealed original snapshot.
+
+Scratch uses the shared `.dubflow-review-candidates/temp` parent on that output
+volume, with uniquely created native temporary subdirectories. Job checkpoint
+and waveform namespaces retain the complete job digest. On Windows, scratch
+parents exceeding200 UTF-16 code units are refused before any child spawn,
+with an actionable shorter-output-folder message and original export preserved.
+The reserve covers native temporary prefixes, random suffixes and PCM filenames.
+This boundary follows a reproduced Windows `CreateProcess` hang with deep TEMP;
+it is not a longer timeout, system-temp fallback or canonical path migration.
+Crash orphan retention/quota recovery remains required before public use.
+
 ### Original physical single-cue dispatch
 
 The opt-in native `review-synthesize-cue` command repeats the original head and
@@ -617,8 +637,9 @@ Native process-tree containment precedes the byte gate and the executable
 defers app/dependency imports until that gate. Production has a 300-second
 observation bound, 256KiB stdout and 4096-byte stderr bounds; model hashing has
 a shared 180-second deadline. Retargeting has a separate 60-second bound. Scratch
-paths derive from the native job data root and child temporary environments
-point there; caller/browser paths cannot choose a producer/model/request/output.
+paths derive from the admitted original export's short private scratch parent
+described above and child temporary environments point there; caller/browser
+paths cannot choose a producer/model/request/output.
 The worker owns checkpointable private candidate files, never SQLite.
 
 Native code binds the returned single-cue document to exact request/provenance,
