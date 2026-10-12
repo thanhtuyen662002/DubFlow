@@ -233,13 +233,14 @@ fn run_inner(
     unchanged(&store, &state)?;
     let _original = read_original(&store, &data, &state)?;
     if synthesize {
-        let result = synthesize_accepted(&runtime, &assets, &data, job, &request, &accepted)?;
+        runtime.cue_execution()?;
+        let candidates = private_root(&original_output_root(&graph)?, job)?;
+        let result = synthesize_accepted(&runtime, &assets, &candidates, &request, &accepted)?;
         let mixed = if mix {
             Some(mix_private(
                 &runtime,
                 &assets,
-                &data,
-                job,
+                &candidates,
                 &state,
                 after.json(),
                 &request,
@@ -471,8 +472,7 @@ fn admit_mix_metadata(
 fn mix_private(
     runtime: &AdmittedRuntime,
     assets: &AcceptedAudioStore,
-    data: &Path,
-    job: &str,
+    output: &Path,
     state: &ReviewGraphState,
     after: &str,
     request: &BoundCueRequest,
@@ -490,14 +490,7 @@ fn mix_private(
     let template_object = accepted_json(&original["mix_document"], assets)?;
     let template = decode(&assets.read_json(&template_object)?, LIMIT)?;
     let accepted = accepted_json(&cue["tts_document"], assets)?;
-    let source_root = PathBuf::from(
-        graph["documents"]["tts_document"]["path"]
-            .as_str()
-            .ok_or_else(|| invalid("missing original export root"))?,
-    )
-    .parent()
-    .ok_or_else(|| invalid("missing export parent"))?
-    .to_path_buf();
+    let source_root = original_output_root(&graph)?;
     let wave_path = PathBuf::from(
         cue["audio"]["path"]
             .as_str()
@@ -515,7 +508,6 @@ fn mix_private(
         "original_tts_document":mix_descriptor(&speech,&source_root),"mix_template":mix_descriptor(&template_object,&source_root),
         "accepted_tts_document":mix_descriptor(&accepted,wave_path.parent().unwrap())});
     let context = assets.accept_json(&serde_json::to_string(&context_value)?)?;
-    let output = private_root(data, job)?;
     let mut command = cue_command(runtime, &runtime.mix_execution()?, &output.join("temp"));
     command.args([
         OsString::from("--context"),
@@ -746,8 +738,54 @@ fn admit_candidate(
     })
 }
 
-fn private_root(data: &Path, job: &str) -> SupervisorResult<PathBuf> {
-    let root = data.join("control/review-candidates");
+fn original_output_root(graph: &Value) -> SupervisorResult<PathBuf> {
+    // Only a native-admitted original graph reaches this helper. Its descriptor
+    // matches the completed export and immutable start's output binding.
+    let document = PathBuf::from(
+        graph["documents"]["tts_document"]["path"]
+            .as_str()
+            .ok_or_else(|| invalid("missing original export root"))?,
+    );
+    let root = document
+        .parent()
+        .ok_or_else(|| invalid("missing export parent"))?;
+    if !root.is_absolute()
+        || root
+            .components()
+            .any(|p| matches!(p, std::path::Component::ParentDir))
+    {
+        return Err(invalid(
+            "original output root is not an admitted absolute path",
+        ));
+    }
+    super::review_pin::plain(root)?;
+    if !root.is_dir() {
+        return Err(invalid(
+            "original output root unavailable; restore it before Review",
+        ));
+    }
+    Ok(root.to_path_buf())
+}
+
+fn private_root(output: &Path, job: &str) -> SupervisorResult<PathBuf> {
+    if !output.is_absolute()
+        || output
+            .components()
+            .any(|p| matches!(p, std::path::Component::ParentDir))
+    {
+        return Err(invalid(
+            "Review candidates require the admitted original output root",
+        ));
+    }
+    super::review_pin::plain(output)?;
+    if !output.is_dir() {
+        return Err(invalid(
+            "Review output storage unavailable; never fall back to control storage",
+        ));
+    }
+    // Full-length WAVs stay on the output volume; control keeps bounded sealed
+    // metadata/cue objects. Missing output storage remains an explicit refusal.
+    let root = output.join(".dubflow-review-candidates");
     let job_root = root.join(format!("{:x}", Sha256::digest(job.as_bytes())));
     for path in [&root, &job_root, &job_root.join("temp")] {
         super::review_pin::plain(path.parent().unwrap())?;
@@ -782,13 +820,11 @@ fn cue_command(runtime: &AdmittedRuntime, entry: &Path, scratch: &Path) -> Comma
 fn synthesize_accepted(
     runtime: &AdmittedRuntime,
     assets: &AcceptedAudioStore,
-    data: &Path,
-    job: &str,
+    output: &Path,
     request: &BoundCueRequest,
     object: &AcceptedJsonDocument,
 ) -> SupervisorResult<Value> {
     let (entry, model_root) = runtime.cue_execution()?;
-    let output = private_root(data, job)?;
     let scratch = output.join("temp");
     assets.read_json(object)?;
     let mut command = cue_command(runtime, &entry, &scratch);
@@ -876,6 +912,86 @@ fn synthesize_accepted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidates_bind_original_output_storage_and_do_not_fall_back_to_control() {
+        let base = std::env::temp_dir().join(format!(
+            "dubflow review output placement {} {}",
+            std::process::id(),
+            super::super::ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let output = base.join("original media output");
+        let control = base.join("local control");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::create_dir(&control).unwrap();
+        let original = output.join("original.bin");
+        std::fs::write(&original, b"preserve original bytes").unwrap();
+        let before = std::fs::metadata(&original).unwrap().modified().unwrap();
+        let graph = json!({"documents":{"tts_document":{"path":output.join("tts_document.json")}}});
+        assert_eq!(original_output_root(&graph).unwrap(), output);
+        let candidate =
+            private_root(&original_output_root(&graph).unwrap(), "job-placement").unwrap();
+        assert!(candidate.starts_with(&output));
+        assert!(candidate.join("temp").is_dir());
+        assert!(!candidate.starts_with(&control));
+        assert_eq!(std::fs::read_dir(&control).unwrap().count(), 0);
+        assert_eq!(private_root(&output, "job-placement").unwrap(), candidate);
+        assert_ne!(private_root(&output, "other-job").unwrap(), candidate);
+        assert_eq!(
+            std::fs::read(&original).unwrap(),
+            b"preserve original bytes"
+        );
+        assert_eq!(
+            std::fs::metadata(&original).unwrap().modified().unwrap(),
+            before
+        );
+        let missing = base.join("unavailable output");
+        assert!(private_root(&missing, "job-placement").is_err());
+        assert!(!missing.exists());
+        assert!(original_output_root(
+            &json!({"documents":{"tts_document":{"path":missing.join("tts_document.json")}}})
+        )
+        .is_err());
+        assert!(original_output_root(
+            &json!({"documents":{"tts_document":{"path":"relative/tts_document.json"}}})
+        )
+        .is_err());
+        let traversal = output.join("..").join("local control");
+        assert!(private_root(&traversal, "job-placement").is_err());
+        assert!(private_root(&original, "job-placement").is_err());
+        assert_eq!(std::fs::read_dir(&control).unwrap().count(), 0);
+        assert!(base
+            .canonicalize()
+            .unwrap()
+            .starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_output_storage_is_refused_before_candidate_creation() {
+        let base = std::env::temp_dir().join(format!(
+            "dubflow review linked output {} {}",
+            std::process::id(),
+            super::super::ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let output = base.join("actual output");
+        std::fs::create_dir_all(&output).unwrap();
+        let link = base.join("linked output");
+        std::os::unix::fs::symlink(&output, &link).unwrap();
+        assert!(private_root(&link, "job-placement").is_err());
+        assert!(original_output_root(
+            &json!({"documents":{"tts_document":{"path":link.join("tts_document.json")}}})
+        )
+        .is_err());
+        assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
+        assert!(base
+            .canonicalize()
+            .unwrap()
+            .starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     #[test]
     fn private_mix_metadata_binds_actual_python_packet_and_all_unrelated_assignments() {
         let fixture: Value = serde_json::from_str(include_str!(

@@ -541,6 +541,21 @@ exports, published snapshot derivation, final CAS/undo, B1 and installed4h
 acceptance remain required. Same-user concurrent file mutation is observed with
 size/hash/mtime checks; it is not a malicious-writer filesystem sandbox.
 
+Private candidate WAVs/scratch derive from the native-admitted original export
+output root under `.dubflow-review-candidates/<job-digest>`. Full-length stereo
+files stay on that output volume; local control continues to hold bounded sealed
+metadata and accepted cue objects. Caller/browser paths cannot select this root.
+Missing/linked/nonregular/parent-traversed output roots refuse; the supervisor
+does not create a replacement output root or fall back to local control storage.
+
+This private-placement change introduces no durable schema/graph migration or
+producer/model/release rebinding. Existing control-side candidates remain
+unmodified; no implicit move/delete or checkpoint relabeling occurs. The new
+namespace may need fresh private synthesis/mix checkpoints, preserving all prior
+accepted/canonical objects. Quota/orphan recovery and explicit stable-volume
+locator integration with ADR0005/#173 remain required before public use. A path
+hint alone does not qualify volume relocation, NAS atomicity or durable undo.
+
 ### Original physical single-cue dispatch
 
 The opt-in native `review-synthesize-cue` command repeats the original head and
