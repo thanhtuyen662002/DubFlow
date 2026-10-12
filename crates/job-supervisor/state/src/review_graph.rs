@@ -440,7 +440,10 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Barrier};
+
+    static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     struct Fixture(PathBuf);
     impl Drop for Fixture {
@@ -450,16 +453,35 @@ mod tests {
         }
     }
 
+    fn fixture_root_at(timestamp: u128, sequence: &AtomicU64) -> Fixture {
+        // Windows may return identical clock ticks to simultaneous tests.
+        // Atomic IDs separate threads; exclusive creation also refuses stale
+        // directories after PID reuse. Never open/delete another fixture's DB.
+        for _ in 0..32 {
+            let root = std::env::temp_dir().join(format!(
+                "dubflow-review-graph-{}-{}-{}",
+                std::process::id(),
+                timestamp,
+                sequence.fetch_add(1, Ordering::Relaxed)
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => return Fixture(root),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+                Err(error) => panic!("cannot allocate Review graph fixture: {error}"),
+            }
+        }
+        panic!("Review graph fixture collision limit exceeded");
+    }
+
     fn fixture() -> (Fixture, DurableStore, String) {
-        let root = std::env::temp_dir().join(format!(
-            "dubflow-review-graph-{}-{}",
-            std::process::id(),
+        let fixture = fixture_root_at(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
+                .as_nanos(),
+            &FIXTURE_SEQUENCE,
+        );
+        let root = &fixture.0;
         let path = root.join("manifest.json");
         fs::write(&path, br#"{"kind":"fixture-export","job_id":"job-r"}"#).unwrap();
         let store = DurableStore::open(root.join("jobs.sqlite3")).unwrap();
@@ -481,7 +503,74 @@ mod tests {
             .unwrap();
         let hash = store.commit_artifact("manifest", 5).unwrap();
         store.complete_job("job-r", 6).unwrap();
-        (Fixture(root), store, hash)
+        (fixture, store, hash)
+    }
+
+    #[test]
+    fn frozen_clock_parallel_fixtures_are_distinct_and_keep_preexisting_contents() {
+        let sequence = Arc::new(AtomicU64::new(0));
+        let prior = fixture_root_at(0, &sequence);
+        let sentinel = prior.0.join("prior.sqlite3");
+        fs::write(&sentinel, b"preserve existing database bytes").unwrap();
+        // Deliberately try to allocate the prior ID again with a frozen clock.
+        let prior_id = prior
+            .0
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .rsplit('-')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        sequence.store(prior_id, Ordering::Relaxed);
+        let barrier = Arc::new(Barrier::new(16));
+        let handles = (0..16)
+            .map(|index| {
+                let sequence = sequence.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let fixture = fixture_root_at(0, &sequence);
+                    let store = DurableStore::open(fixture.0.join("jobs.sqlite3")).unwrap();
+                    store
+                        .create_job_with_start_request(
+                            "job-r",
+                            "file:///fixture.mp4",
+                            r#"{"schema_version":1}"#,
+                            index,
+                        )
+                        .unwrap();
+                    drop(store);
+                    fixture
+                })
+            })
+            .collect::<Vec<_>>();
+        let fixtures = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect::<Vec<_>>();
+        let distinct = fixtures.iter().map(|f| f.0.clone()).collect::<HashSet<_>>();
+        assert_eq!(distinct.len(), 16);
+        assert!(!distinct.contains(&prior.0));
+        for fixture in &fixtures {
+            let store = DurableStore::open_read_only(fixture.0.join("jobs.sqlite3")).unwrap();
+            let count: i64 = store
+                .connection
+                .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+        assert_eq!(
+            fs::read(&sentinel).unwrap(),
+            b"preserve existing database bytes"
+        );
+        drop(fixtures);
+        assert_eq!(
+            fs::read(&sentinel).unwrap(),
+            b"preserve existing database bytes"
+        );
     }
 
     fn initial(store: &DurableStore, hash: &str) -> ReviewGraphState {
