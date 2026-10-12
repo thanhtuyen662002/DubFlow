@@ -104,13 +104,15 @@ def prepare_composition(raw: bytes):
 
 def produce_mix(raw: bytes, *, output_root: Path):
     from engine.dubflow.review.audio_composition import mix_audio_candidate
+    from engine.dubflow.review.mix_io import recover_mix_io
     from engine.dubflow.review.production import ReviewError
     from engine.dubflow.review.synthesis_input import _digest, _encode
     composition = prepare_composition(raw)
     output = Path(output_root)
     if not output.is_absolute() or ".." in output.parts:
         raise ReviewError("native private mix root must be absolute")
-    mix = mix_audio_candidate(composition, output_root=output)
+    mix = recover_mix_io(lambda: mix_audio_candidate(composition, output_root=output),
+                         generation_root=output / ('mix-' + composition.input_hash[7:]))
     composition_raw = _encode(composition.to_dict(), MAX_PACKET).decode("utf-8")
     mix_raw = mix.to_json() + "\n"
     result = {"schema_version":1, "kind":"review_private_mix_candidate", "context_sha256":_digest(raw),

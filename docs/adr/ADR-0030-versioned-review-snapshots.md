@@ -509,6 +509,18 @@ actual producer/model admission and full4h regeneration qualification.
 
 ### Private full-mix compatibility
 
+Windows journal replacement may return access/sharing denial while a temporary
+reader/scanner holds the destination. The private Review caller permits at most
+three attempts only for the exact native composition/stream checkpoint replacement
+(Win32 errors5/32). Before each retry, a bounded native DELETE-sharing probe must
+actually succeed; waiting alone never authorizes retry. Readonly/linked/foreign,
+nonjournal, other I/O, missing and persistent refusals retain the prior checkpoint
+and return failure. No ACL/permission repair, deletion, producer/model replacement
+or SQLite mutation occurs. The unchanged mixer re-admits inputs and its committed
+prefixes on resume. PCM/config/producer/journal contracts remain unchanged; the new
+caller code is pinned by its physical release inventory. Older jobs retain their
+original release/producer and are never patched or rebound silently.
+
 The opt-in `review-mix-cue` command uses the same closed stale-client/edit input
 and read-only original B2 admission. It prepares and synthesizes exactly the
 selected cue, preserving the checkpointable producer, then supplies a sealed
