@@ -218,6 +218,7 @@ fn run_inner(
             timeline: &timeline,
             mixed: None,
             output: &seed.output_root,
+            output_pin: retained_output.as_ref().unwrap(),
             candidates: &candidates,
             start_request: &start_request,
         })?;
@@ -334,6 +335,7 @@ fn run_inner(
                     timeline: corrected_timeline.as_ref().unwrap(),
                     mixed: mixed.as_ref(),
                     output: &seed.output_root,
+                    output_pin: retained_output.as_ref().unwrap(),
                     candidates: &candidates,
                     start_request: &store
                         .job_start_request(job)?

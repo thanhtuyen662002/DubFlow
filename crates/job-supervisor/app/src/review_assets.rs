@@ -339,6 +339,94 @@ pub(super) struct RetainedMixAudio {
     pub(super) pin: PcmPin,
 }
 
+/// Only an already admitted render role can choose this internal format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RetainedFileFormat {
+    Mp4,
+    Srt,
+    Ass,
+    Json,
+}
+impl RetainedFileFormat {
+    pub(super) fn extension(self) -> &'static str {
+        match self {
+            Self::Mp4 => "mp4",
+            Self::Srt => "srt",
+            Self::Ass => "ass",
+            Self::Json => "json",
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RetainedFilePin {
+    pub(super) sha256: String,
+    pub(super) size_bytes: u64,
+    pub(super) format: RetainedFileFormat,
+}
+impl RetainedFilePin {
+    fn validate(&self) -> SupervisorResult<()> {
+        let maximum = if self.format == RetainedFileFormat::Mp4 {
+            128 * 1024 * 1024 * 1024
+        } else {
+            MAX_DOCUMENT_BYTES
+        };
+        if !valid_hash(&self.sha256) || !(1..=maximum).contains(&self.size_bytes) {
+            return Err(invalid("retained render file pin exceeds its role bound"));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RetainedRenderFile {
+    pub(super) path: PathBuf,
+    pub(super) pin: RetainedFilePin,
+}
+
+fn stream_render_file(
+    source: &mut File,
+    mut target: Option<&mut File>,
+    pin: &RetainedFilePin,
+    deadline: Instant,
+    mut space_guard: Option<&mut dyn FnMut(u64) -> SupervisorResult<()>>,
+) -> SupervisorResult<()> {
+    pin.validate()?;
+    source.seek(SeekFrom::Start(0))?;
+    let mut sha = Sha256::new();
+    let mut count = 0u64;
+    let mut buffer = [0u8; BUFFER_BYTES];
+    let mut next_space_check = 0u64;
+    loop {
+        time_left(Some(deadline))?;
+        let n = source.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        count = count
+            .checked_add(n as u64)
+            .ok_or_else(|| invalid("retained render byte count overflow"))?;
+        if count > pin.size_bytes {
+            return Err(invalid("render candidate grew beyond its admitted pin"));
+        }
+        sha.update(&buffer[..n]);
+        if let Some(target) = target.as_deref_mut() {
+            let copied_before_write = count - n as u64;
+            if copied_before_write >= next_space_check {
+                if let Some(guard) = space_guard.as_deref_mut() {
+                    guard(copied_before_write)?;
+                }
+                next_space_check = copied_before_write.saturating_add(4 * 1024 * 1024);
+            }
+            target.write_all(&buffer[..n])?;
+        }
+    }
+    if count != pin.size_bytes || format!("sha256:{:x}", sha.finalize()) != pin.sha256 {
+        return Err(invalid(
+            "retained render bytes differ from their admitted pin",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct MixStorageBudget {
     /// Aggregate accepted AND orphan bytes for every job in this output root.
@@ -517,6 +605,145 @@ impl RetainedMixStore {
             }
         }
         Ok(total)
+    }
+
+    /// Same writer/quota namespace as PCM, including old/undo/crash objects.
+    /// Full media semantics and QC must be admitted by the render caller first.
+    pub(super) fn accept_file(
+        &self,
+        candidate_root: &Path,
+        candidate: &Path,
+        pin: &RetainedFilePin,
+        mut available_bytes: impl FnMut(&Path) -> SupervisorResult<u64>,
+        deadline: Instant,
+    ) -> SupervisorResult<RetainedRenderFile> {
+        pin.validate()?;
+        time_left(Some(deadline))?;
+        plain(candidate_root)?;
+        if !candidate_root.is_dir()
+            || !candidate_root.is_absolute()
+            || !candidate.is_absolute()
+            || !candidate.starts_with(candidate_root)
+            || candidate
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+            || candidate.starts_with(&self.namespace)
+        {
+            return Err(invalid(
+                "render candidate escaped its admitted private generation",
+            ));
+        }
+        let retained = RetainedRenderFile {
+            path: self.objects.root.join(format!(
+                "{}.{}",
+                &pin.sha256[7..],
+                pin.format.extension()
+            )),
+            pin: pin.clone(),
+        };
+        match fs::symlink_metadata(&retained.path) {
+            Ok(_) => {
+                self.verify_file(&retained, deadline)?;
+                return Ok(retained);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        let used = self.used_bytes(deadline)?;
+        if used
+            .checked_add(pin.size_bytes)
+            .filter(|n| *n <= self.budget.maximum_bytes)
+            .is_none()
+        {
+            return Err(invalid(
+                "Review media quota exhausted; preserve prior outputs and undo objects",
+            ));
+        }
+        let needed = pin
+            .size_bytes
+            .checked_add(self.budget.minimum_free_bytes)
+            .ok_or_else(|| invalid("render retention reservation overflow"))?;
+        if available_bytes(&self.namespace)? < needed {
+            return Err(invalid(
+                "render retention has insufficient fresh caller space; no fallback",
+            ));
+        }
+        let mut source = regular(candidate)?;
+        if source.metadata()?.len() != pin.size_bytes {
+            return Err(invalid("render candidate size changed before retention"));
+        }
+        let (mut copy, private) = self.objects.private_copy()?;
+        let mut space_guard = |copied: u64| -> SupervisorResult<()> {
+            let remaining = pin
+                .size_bytes
+                .checked_sub(copied)
+                .ok_or_else(|| invalid("render reservation accounting changed"))?;
+            let required = remaining
+                .checked_add(self.budget.minimum_free_bytes)
+                .ok_or_else(|| invalid("render reservation overflow"))?;
+            if available_bytes(&self.namespace)? < required {
+                return Err(invalid(
+                    "render retention caller space changed during copy; preserve previous outputs",
+                ));
+            }
+            Ok(())
+        };
+        stream_render_file(
+            &mut source,
+            Some(&mut copy),
+            pin,
+            deadline,
+            Some(&mut space_guard),
+        )?;
+        drop(space_guard);
+        copy.sync_all()?;
+        stream_render_file(&mut copy, None, pin, deadline, None)?;
+        if available_bytes(&self.namespace)? < self.budget.minimum_free_bytes {
+            return Err(invalid(
+                "render retention free reserve changed before sealing",
+            ));
+        }
+        time_left(Some(deadline))?;
+        drop(copy);
+        self.objects.publish(&private, &retained.path)?;
+        self.verify_file(&retained, deadline)?;
+        Ok(retained)
+    }
+
+    pub(super) fn verify_file(
+        &self,
+        retained: &RetainedRenderFile,
+        deadline: Instant,
+    ) -> SupervisorResult<()> {
+        retained.pin.validate()?;
+        time_left(Some(deadline))?;
+        if retained.path
+            != self.objects.root.join(format!(
+                "{}.{}",
+                &retained.pin.sha256[7..],
+                retained.pin.format.extension()
+            ))
+        {
+            return Err(invalid(
+                "retained render file differs from its native content/format identity",
+            ));
+        }
+        let mut file = regular(&retained.path)?;
+        let before = file.metadata()?;
+        if !before.permissions().readonly() || before.len() != retained.pin.size_bytes {
+            return Err(invalid(
+                "retained render file is unsealed or changed size; explicit recovery required",
+            ));
+        }
+        stream_render_file(&mut file, None, &retained.pin, deadline, None)?;
+        let after = regular(&retained.path)?.metadata()?;
+        if before.modified()? != after.modified()?
+            || before.len() != after.len()
+            || !after.permissions().readonly()
+        {
+            return Err(invalid("retained render changed during verification"));
+        }
+        Ok(())
     }
 
     pub(super) fn accept(
@@ -928,6 +1155,174 @@ mod tests {
 
     fn deadline() -> Instant {
         Instant::now() + std::time::Duration::from_secs(60)
+    }
+
+    fn render_pin(raw: &[u8], format: RetainedFileFormat) -> RetainedFilePin {
+        RetainedFilePin {
+            sha256: format!("sha256:{:x}", Sha256::digest(raw)),
+            size_bytes: raw.len() as u64,
+            format,
+        }
+    }
+    #[test]
+    fn retained_render_streams_beyond_cue_limit_and_reopens_without_mutable_candidate() {
+        let (fixture, _, candidate) = fixture();
+        let path = candidate.join("final.mp4");
+        // Physical hash/copy fixture, not a valid MP4 or long-video qualification.
+        let size = MAX_CUE_BYTES + BUFFER_BYTES as u64;
+        let mut file = File::create(&path).unwrap();
+        let mut sha = Sha256::new();
+        let block = [31u8; BUFFER_BYTES];
+        for _ in 0..size / BUFFER_BYTES as u64 {
+            file.write_all(&block).unwrap();
+            sha.update(block);
+        }
+        file.sync_all().unwrap();
+        drop(file);
+        let pin = RetainedFilePin {
+            sha256: format!("sha256:{:x}", sha.finalize()),
+            size_bytes: size,
+            format: RetainedFileFormat::Mp4,
+        };
+        let store = RetainedMixStore::new(&fixture.0, "render-reopen", budget(size)).unwrap();
+        let object = store
+            .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        let mtime = fs::metadata(&object.path).unwrap().modified().unwrap();
+        assert_eq!(store.used_bytes(deadline()).unwrap(), size);
+        assert!(fs::metadata(&object.path).unwrap().permissions().readonly());
+        assert_ne!(path, object.path);
+        fs::write(&path, b"changed candidate").unwrap();
+        assert_eq!(
+            store
+                .accept_file(
+                    &candidate,
+                    &path,
+                    &pin,
+                    |_| panic!("sealed reuse allocates no bytes"),
+                    deadline()
+                )
+                .unwrap(),
+            object
+        );
+        fs::remove_file(&path).unwrap();
+        drop(store);
+        let reopened =
+            RetainedMixStore::open_existing(&fixture.0, "render-reopen", budget(size)).unwrap();
+        reopened.verify_file(&object, deadline()).unwrap();
+        assert_eq!(
+            fs::metadata(&object.path).unwrap().modified().unwrap(),
+            mtime
+        );
+    }
+    #[test]
+    fn render_pcm_and_orphan_bytes_share_one_locked_aggregate_quota() {
+        let (fixture, _, candidate) = fixture();
+        let (wav, pcm) = wave(4, 2, false);
+        let path = candidate.join("original.wav");
+        fs::write(&path, &wav).unwrap();
+        let video = candidate.join("final.mp4");
+        fs::write(&video, b"render candidate").unwrap();
+        let pin = render_pin(b"render candidate", RetainedFileFormat::Mp4);
+        let store = RetainedMixStore::new(
+            &fixture.0,
+            "render-quota",
+            budget(pcm.size_bytes + pin.size_bytes),
+        )
+        .unwrap();
+        let old = store
+            .accept(&candidate, &path, &pcm, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        let orphan = store.objects.root.join(".copy-interrupted");
+        fs::write(&orphan, b"orphan").unwrap();
+        assert!(store
+            .accept_file(
+                &candidate,
+                &video,
+                &pin,
+                |_| panic!("quota refuses before OS space"),
+                deadline()
+            )
+            .is_err());
+        store.verify(&old, deadline()).unwrap();
+        assert_eq!(fs::read(&orphan).unwrap(), b"orphan");
+        assert!(RetainedMixStore::new(&fixture.0, "other-render", budget(u64::MAX)).is_err());
+    }
+    #[test]
+    fn space_changes_during_render_copy_refuse_before_sealing() {
+        let (fixture, _, candidate) = fixture();
+        let path = candidate.join("final.mp4");
+        let block = [7u8; BUFFER_BYTES];
+        let mut sha = Sha256::new();
+        let mut file = File::create(&path).unwrap();
+        for _ in 0..256 {
+            file.write_all(&block).unwrap();
+            sha.update(block);
+        }
+        file.sync_all().unwrap();
+        drop(file);
+        let pin = RetainedFilePin {
+            sha256: format!("sha256:{:x}", sha.finalize()),
+            size_bytes: 8 * 1024 * 1024,
+            format: RetainedFileFormat::Mp4,
+        };
+        let store =
+            RetainedMixStore::new(&fixture.0, "render-space", budget(pin.size_bytes)).unwrap();
+        let mut probes = 0;
+        assert!(store
+            .accept_file(
+                &candidate,
+                &path,
+                &pin,
+                |_| {
+                    probes += 1;
+                    Ok(if probes < 3 { u64::MAX } else { 0 })
+                },
+                deadline()
+            )
+            .is_err());
+        assert_eq!(probes, 3);
+        assert_eq!(store.used_bytes(deadline()).unwrap(), 0);
+        assert_eq!(fs::metadata(&path).unwrap().len(), pin.size_bytes);
+    }
+    #[test]
+    fn retained_render_refuses_unsealed_corrupt_substituted_or_expired_objects() {
+        let (fixture, _, candidate) = fixture();
+        let path = candidate.join("timeline.json");
+        fs::write(&path, b"{\"timeline\":1}").unwrap();
+        let pin = render_pin(b"{\"timeline\":1}", RetainedFileFormat::Json);
+        let store = RetainedMixStore::new(&fixture.0, "render-corrupt", budget(1000)).unwrap();
+        assert!(store
+            .accept_file(
+                &candidate,
+                &path,
+                &pin,
+                |_| Err(invalid("unknown space")),
+                deadline()
+            )
+            .is_err());
+        assert!(store
+            .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), Instant::now())
+            .is_err());
+        let object = store
+            .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        let mut substituted = object.clone();
+        substituted.pin.format = RetainedFileFormat::Ass;
+        assert!(store.verify_file(&substituted, deadline()).is_err());
+        let mut permissions = fs::metadata(&object.path).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&object.path, permissions).unwrap();
+        assert!(store.verify_file(&object, deadline()).is_err());
+        fs::write(&object.path, b"{\"timeline\":2}").unwrap();
+        let mut permissions = fs::metadata(&object.path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&object.path, permissions).unwrap();
+        assert!(store.verify_file(&object, deadline()).is_err());
+        assert!(store
+            .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .is_err());
+        assert_eq!(fs::read(&object.path).unwrap(), b"{\"timeline\":2}");
     }
 
     #[test]

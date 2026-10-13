@@ -905,12 +905,46 @@ bytes are rechecked after execution; the original archive/head is rechecked by
 the caller before response. Owned isolated Python containment and the native
 byte gate precede imports; the existing 900-second component render bound stays.
 
-These are private mutable render candidates, explicitly `retained_final_output=false`
-and `correction_ready=false`; the desktop is not enabled by this command. It
-does not grant durable final-media storage/quota/locator authority or graph CAS.
+The worker's five-role result still records the exact private generation used
+for execution and QC. Native code now copies its admitted MP4, SRT, ASS, timeline
+and QC into the same sealed output-volume media namespace as retained PCM,
+under one output-wide OS writer lease. Typed format pins restrict extensions
+and role-specific byte bounds; MP4 may stream up to128GiB, while each metadata
+role stays within64MiB. Every copy streams32KiB buffers, verifies complete
+source and copied SHA/size, flushes and publishes without replacing a prior
+object, then revalidates readonly bytes. Existing objects deduplicate only when
+their sealed bytes still match; corrupt/unsealed objects are retained/refused.
+Reopen verifies retained bytes without recreating missing namespaces or needing
+the old mutable candidate. There is no eviction of previous/undo dependencies.
+
+The existing32GiB aggregate Review quota now accounts for PCM and all render
+roles together, including other jobs, pending undo and crash orphans. Caller
+free space must cover the remaining copy plus2GiB reserve before writing, is
+reobserved every4MiB during copy and before sealing, and comes from the same
+fixed-local writable NTFS volume GUID captured before expensive work. Unknown,
+insufficient or changed-volume observations refuse without control-root
+fallback. This explicit quota can refuse a high-bitrate long render even when
+the per-file bound permits it; it is not evidence that every6h profile fits.
+Storage policy/configuration and actual long-form space qualification remain
+required. Cooperative probes/copy deadlines do not provide atomic reservation
+against other applications or interruption of blocked kernel I/O.
+
+Only after all five roles have canonical ArtifactLocators and physical readonly
+hashes revalidated does `review-render-cue` return `retained_final_output=true`.
+A sealed private schema1 receipt binds job/context, original candidate result,
+execution identity and ordered retained role descriptors. It preserves exact
+candidate/QC provenance instead of rewriting the worker's generation paths.
+It is not a published active graph. `correction_ready=false` and
+`active_graph_published=false` remain; the desktop is not enabled by this command.
+Partially completed retention leaves unreferenced sealed objects; no old valid
+graph/output is retired on failure. Native graph admission/CAS, undo dependencies,
+standard/editable publication and real installed/power-loss qualification remain.
+No public worker/SQLite/core2/optionalReview1 or original producer/model format
+changes. Older binaries ignore the private receipt and account these regular
+files in the existing namespace quota, preserving originals on rollback.
 An original pinned release must explicitly inventory/admit the worker; no
-historical worker/model/runtime pin is upgraded by this addition. Native output
-quota/volume/locator admission, immutable retention, final graph CAS/undo and
+historical worker/model/runtime pin is upgraded by this addition. Actual native
+output quota/volume/locator and immutable retention qualification, final graph CAS/undo and
 editable export remain required. This draft worker checkpoints only completed
 renders: chunk scheduling/checkpoints and bounded long-form recovery are still
 required before activation, as are B1/B2 installed and actual four-hour media

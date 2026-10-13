@@ -1,5 +1,8 @@
 //! Native private B1/B2 render dispatch and result admission; no graph mutation.
-use super::review_assets::{regular, AcceptedAudioStore, AcceptedJsonDocument};
+use super::review_assets::{
+    regular, AcceptedAudioStore, AcceptedJsonDocument, MixStorageBudget, RetainedFileFormat,
+    RetainedFilePin,
+};
 use super::review_correction::{accepted_json, candidate_scratch, cue_command, descriptor};
 use super::review_document::{closed, decode, tick, AdmittedSnapshot};
 use super::review_runtime::AdmittedRuntime;
@@ -83,6 +86,7 @@ pub(super) struct RenderInputs<'a> {
     pub(super) timeline: &'a AcceptedJsonDocument,
     pub(super) mixed: Option<&'a Value>,
     pub(super) output: &'a Path,
+    pub(super) output_pin: &'a super::review_retention::NativeOutputPin,
     pub(super) candidates: &'a Path,
     pub(super) start_request: &'a str,
 }
@@ -357,7 +361,7 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
     for document in [&manifest_object, &timeline_object, input.timeline, &context] {
         input.assets.read_json(document)?;
     }
-    if let Some((mix_object, composition_object, mix_raw, _)) = mixed {
+    if let Some((mix_object, composition_object, mix_raw, _)) = &mixed {
         input.assets.read_json(&mix_object)?;
         input.assets.read_json(&composition_object)?;
         let mix = decode(&mix_raw, LIMIT)?;
@@ -384,14 +388,109 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
             )?;
         }
     }
-    // These files are still private candidates. Their hashes do not authorize
-    // playback publication, final-volume retention, undo or a SQLite CAS.
+    // Preserve the candidate/QC provenance separately from publication paths.
     let result = input
         .assets
         .accept_json(&serde_json::to_string(&candidate)?)?;
+    let retained = super::review_retention::NativeMixStore::new(
+        input.output_pin,
+        &input.state.token.job_id,
+        MixStorageBudget {
+            maximum_bytes: 32 * 1024 * 1024 * 1024,
+            minimum_free_bytes: 2 * 1024 * 1024 * 1024,
+        },
+    )?;
+    let generation = input.candidates.join(format!("render-{}", &identity[7..]));
+    let deadline = Instant::now() + Duration::from_secs(720);
+    let formats = [
+        RetainedFileFormat::Mp4,
+        RetainedFileFormat::Srt,
+        RetainedFileFormat::Ass,
+        RetainedFileFormat::Json,
+        RetainedFileFormat::Json,
+    ];
+    let mut located = Vec::new();
+    for ((role, _), format) in ROLES.into_iter().zip(formats) {
+        let descriptor = &candidate["artifacts"][role];
+        let pin = RetainedFilePin {
+            sha256: descriptor["sha256"]
+                .as_str()
+                .ok_or_else(|| invalid("admitted render hash missing"))?
+                .into(),
+            size_bytes: tick(&descriptor["size_bytes"], true)?,
+            format,
+        };
+        let path = PathBuf::from(
+            descriptor["path"]
+                .as_str()
+                .ok_or_else(|| invalid("admitted render path missing"))?,
+        );
+        located.push((
+            role,
+            retained.accept_file(&generation, &path, &pin, deadline)?,
+        ));
+    }
+    let receipt = input.assets.accept_json(&serde_json::to_string(&json!({
+        "schema_version":1,"kind":"review_native_retained_render","job_id":input.state.token.job_id,
+        "context":descriptor(&context),"candidate_result":descriptor(&result),"execution_identity":identity,
+        "artifacts":located.iter().map(|(role,file)|json!({"role":role,"file":file.descriptor()})).collect::<Vec<_>>(),
+        "active_graph_published":false,"correction_ready":false
+    }))?)?;
+    input.assets.read_json(&receipt)?;
+    // Retention can be expensive. Re-fence the original source/recipe/control
+    // inputs after it as well, rather than relying on the pre-copy observation.
+    if input.runtime.render_recipe(Some(&context.sha256))?.2 != identity {
+        return Err(invalid("render recipe changed during retention"));
+    }
+    verified(
+        &source_path,
+        source_hash,
+        source_size,
+        false,
+        Instant::now() + Duration::from_secs(180),
+    )?;
+    for document in [
+        &manifest_object,
+        &timeline_object,
+        input.timeline,
+        &context,
+        &result,
+        &receipt,
+    ] {
+        input.assets.read_json(document)?;
+    }
+    if let Some((mix_object, composition_object, mix_raw, _)) = &mixed {
+        input.assets.read_json(mix_object)?;
+        input.assets.read_json(composition_object)?;
+        let mix = decode(mix_raw, LIMIT)?;
+        let mix_deadline = Instant::now() + Duration::from_secs(720);
+        for role in ["original_audio", "dialogue_stem", "final_mix"] {
+            let path = PathBuf::from(
+                mix[role]["path"]
+                    .as_str()
+                    .ok_or_else(|| invalid("retained mix path missing"))?,
+            );
+            verified(
+                &path,
+                mix[role]["content_hash"]
+                    .as_str()
+                    .ok_or_else(|| invalid("retained mix hash missing"))?,
+                regular(&path)?.metadata()?.len(),
+                false,
+                mix_deadline,
+            )?;
+        }
+    }
+    for (_, file) in &located {
+        retained.verify_file(file, deadline)?;
+    }
+    // All five roles are retained together before returning. Partial failures
+    // leave only unreferenced sealed objects; no old graph/output is retired.
     Ok(
         json!({"context":descriptor(&context),"result":descriptor(&result),"candidate":candidate,
-        "native_output_bytes_verified":true,"retained_final_output":false,"active_graph_published":false,"correction_ready":false}),
+        "retained_render":descriptor(&receipt),
+        "retained_artifacts":located.iter().map(|(role,file)|json!({"role":role,"file":file.descriptor()})).collect::<Vec<_>>(),
+        "native_output_bytes_verified":true,"retained_final_output":true,"active_graph_published":false,"correction_ready":false}),
     )
 }
 

@@ -2,7 +2,10 @@
 //! OS observations are fresh, path hints are not durable identity, and the
 //! canonical storage crate owns locator/path validation. Standard export does
 //! not depend on this optional local-NTFS Review path.
-use super::review_assets::{MixStorageBudget, PcmPin, RetainedMixAudio, RetainedMixStore};
+use super::review_assets::{
+    MixStorageBudget, PcmPin, RetainedFilePin, RetainedMixAudio, RetainedMixStore,
+    RetainedRenderFile,
+};
 use super::{SupervisorError, SupervisorResult};
 use dubflow_artifact_storage::ArtifactLocator;
 use dubflow_job_storage::RootKind;
@@ -196,6 +199,20 @@ fn probe(_path: &Path) -> SupervisorResult<Observation> {
 pub(super) struct LocatedMixAudio {
     audio: RetainedMixAudio,
     locator: ArtifactLocator,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct LocatedRenderFile {
+    file: RetainedRenderFile,
+    locator: ArtifactLocator,
+}
+impl LocatedRenderFile {
+    pub(super) fn descriptor(&self) -> Value {
+        json!({"path_hint":self.file.path,"format":self.file.pin.format.extension(),
+            "locator":{"schema_version":self.locator.schema_version,"volume_id":self.locator.volume_id,
+                "root_kind":self.locator.root_kind.as_str(),"relative_path":self.locator.relative_path,
+                "content_hash":self.locator.content_hash,"size_bytes":self.locator.size_bytes.to_string()}})
+    }
 }
 
 impl LocatedMixAudio {
@@ -392,6 +409,71 @@ impl NativeMixStore {
         Ok(result)
     }
 
+    pub(super) fn accept_file(
+        &self,
+        candidate_root: &Path,
+        candidate: &Path,
+        pin: &RetainedFilePin,
+        deadline: Instant,
+    ) -> SupervisorResult<LocatedRenderFile> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let file = self.objects.accept_file(
+            candidate_root,
+            candidate,
+            pin,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&self.volume_id, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            deadline,
+        )?;
+        let relative = file
+            .path
+            .strip_prefix(&self.root)
+            .map_err(|_| invalid("retained render escaped output root"))?;
+        let locator = ArtifactLocator::new(
+            &self.volume_id,
+            RootKind::Output,
+            relative,
+            &pin.sha256,
+            pin.size_bytes,
+        )
+        .map_err(|error| invalid(&format!("retained render locator refused: {error}")))?;
+        let result = LocatedRenderFile { file, locator };
+        self.verify_file(&result, deadline)?;
+        Ok(result)
+    }
+
+    pub(super) fn verify_file(
+        &self,
+        object: &LocatedRenderFile,
+        deadline: Instant,
+    ) -> SupervisorResult<()> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let relative = object
+            .file
+            .path
+            .strip_prefix(&self.root)
+            .map_err(|_| invalid("retained render is outside output root"))?;
+        let expected = ArtifactLocator::new(
+            &self.volume_id,
+            RootKind::Output,
+            relative,
+            &object.file.pin.sha256,
+            object.file.pin.size_bytes,
+        )
+        .map_err(|error| invalid(&format!("retained render locator refused: {error}")))?;
+        if expected != object.locator {
+            return Err(invalid(
+                "retained render locator changed volume/path/content pins",
+            ));
+        }
+        self.objects.verify_file(&object.file, deadline)?;
+        same_volume(&self.volume_id, &probe(object.file.path.parent().unwrap())?)?;
+        Ok(())
+    }
+
     pub(super) fn verify(
         &self,
         object: &LocatedMixAudio,
@@ -447,6 +529,72 @@ mod tests {
     use super::*;
     const GUID: &str = r"\\?\Volume{01234567-89AB-CDEF-0123-456789abcdef}\";
     const HARD_LINKS: u32 = 0x0040_0000;
+
+    #[cfg(windows)]
+    #[test]
+    fn actual_windows_render_retention_pins_canonical_locator_and_reopens_sealed_bytes() {
+        use sha2::Digest;
+        use std::fs;
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+        let output = std::env::temp_dir().join(format!(
+            "dubflow-render-volume-{}-{}",
+            std::process::id(),
+            super::super::ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&output).unwrap();
+        let candidate = output.join("candidate");
+        fs::create_dir(&candidate).unwrap();
+        let path = candidate.join("final.mp4");
+        let raw = b"physical hash fixture, not decoded MP4";
+        fs::write(&path, raw).unwrap();
+        let pin = RetainedFilePin {
+            sha256: format!("sha256:{:x}", sha2::Sha256::digest(raw)),
+            size_bytes: raw.len() as u64,
+            format: super::super::review_assets::RetainedFileFormat::Mp4,
+        };
+        let output_pin = NativeOutputPin::read(&output).unwrap();
+        let budget = MixStorageBudget {
+            maximum_bytes: 1000,
+            minimum_free_bytes: 0,
+        };
+        let store = NativeMixStore::new(&output_pin, "render-native-locator", budget).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let object = store
+            .accept_file(&candidate, &path, &pin, deadline)
+            .unwrap();
+        assert_eq!(
+            object.descriptor()["locator"]["size_bytes"],
+            pin.size_bytes.to_string()
+        );
+        assert_eq!(object.descriptor()["format"], "mp4");
+        assert_eq!(object.locator.root_kind, RootKind::Output);
+        fs::remove_file(&path).unwrap();
+        for index in 0..5 {
+            let mut wrong = object.clone();
+            match index {
+                0 => {
+                    wrong.locator.volume_id =
+                        "windows-volume-guid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into()
+                }
+                1 => wrong.locator.root_kind = RootKind::Control,
+                2 => wrong.locator.relative_path = "foreign.mp4".into(),
+                3 => wrong.locator.content_hash = format!("sha256:{}", "b".repeat(64)),
+                _ => wrong.locator.size_bytes += 1,
+            }
+            assert!(store.verify_file(&wrong, deadline).is_err());
+        }
+        drop(store);
+        let reopened =
+            NativeMixStore::open_existing(&output_pin, "render-native-locator", budget).unwrap();
+        reopened.verify_file(&object, deadline).unwrap();
+        assert_eq!(fs::read(&object.file.path).unwrap(), raw);
+        drop(reopened);
+        let mut permissions = fs::metadata(&object.file.path).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&object.file.path, permissions).unwrap();
+        fs::remove_dir_all(output).unwrap();
+    }
 
     fn metadata_fixture() -> (Value, Vec<(&'static str, LocatedMixAudio)>) {
         let fixture = super::super::review_document::decode(
