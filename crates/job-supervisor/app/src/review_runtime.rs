@@ -722,7 +722,8 @@ mod tests {
     #[test]
     fn linked_import_directory_refuses_even_with_identical_pinned_files() {
         let f = fixture();
-        let original = f.root.join("runtime/Lib");
+        // cmd's mklink treats a forward slash as an option even inside a path.
+        let original = f.root.join("runtime").join("Lib");
         let saved = f.root.join("saved-import-directory");
         fs::rename(&original, &saved).unwrap();
         #[cfg(unix)]
@@ -737,7 +738,13 @@ mod tests {
                 .creation_flags(0x08000000)
                 .output()
                 .unwrap();
-            assert!(output.status.success(), "fixture junction creation failed");
+            assert!(
+                output.status.success(),
+                "fixture junction creation failed: status={:?}, stdout={}, stderr={}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         let admission_refused = AdmittedRuntime::from_producer(&f.producer, &f.root).is_err();
         let final_refused = final_inventory(&f.root, &f.inventory).is_err();
