@@ -880,8 +880,24 @@ content/size verification and fresh source/mix/probe/full-decode checks; it does
 not rerender or rewrite the prior completed files. Deadline/byte-bounded hashes
 and metadata reads never authorize SQLite writes or active graph publication.
 
-This stage is not dispatched by the native supervisor yet. An original pinned
-release must explicitly inventory/admit the new worker before dispatch; no
+The opt-in native `review-render-cue` now connects B2 cue synthesis and retained
+mix preparation to this private renderer. It admits all original recipe source
+and media executable bytes before inference, reconstructs the context from
+native archived metadata, exact corrected timeline and sealed retained mix,
+and preserves the immutable original burn-in option. Caller arguments cannot
+select worker/context/source/media/output paths. A historical producer missing
+the new recipe refuses before inference; no newer adapter is copied into it.
+Native admission independently binds the worker result to its exact recipe,
+context, revision, generation, five role paths/complete byte hashes, exact
+corrected timeline and source/QC/codec/audio/duration evidence. Recipe and source
+bytes are rechecked after execution; the original archive/head is rechecked by
+the caller before response. Owned isolated Python containment and the native
+byte gate precede imports; the existing 900-second component render bound stays.
+
+These are private mutable render candidates, explicitly `retained_final_output=false`
+and `correction_ready=false`; the desktop is not enabled by this command. It
+does not grant durable final-media storage/quota/locator authority or graph CAS.
+An original pinned release must explicitly inventory/admit the worker; no
 historical worker/model/runtime pin is upgraded by this addition. Native output
 quota/volume/locator admission, immutable retention, final graph CAS/undo and
 editable export remain required. This draft worker checkpoints only completed

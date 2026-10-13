@@ -18,7 +18,7 @@ const LIMIT: usize = 64 * 1024 * 1024;
 fn invalid(message: &str) -> SupervisorError {
     SupervisorError::Invalid(message.into())
 }
-fn descriptor(object: &AcceptedJsonDocument) -> Value {
+pub(super) fn descriptor(object: &AcceptedJsonDocument) -> Value {
     json!({"path":object.path,"sha256":object.sha256,"size_bytes":object.size_bytes})
 }
 
@@ -94,19 +94,23 @@ fn unchanged(store: &DurableStore, state: &ReviewGraphState) -> SupervisorResult
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, false, false, false)
+    run_inner(&mut args, false, false, false, false)
 }
 
 pub(super) fn run_synthesis(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, false, false)
+    run_inner(&mut args, true, false, false, false)
 }
 
 pub(super) fn run_mix(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, true, false)
+    run_inner(&mut args, true, true, false, false)
 }
 
 pub(super) fn run_retained_mix(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, true, true)
+    run_inner(&mut args, true, true, true, false)
+}
+
+pub(super) fn run_render(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
+    run_inner(&mut args, true, true, true, true)
 }
 
 fn run_inner(
@@ -114,6 +118,7 @@ fn run_inner(
     synthesize: bool,
     mix: bool,
     retain: bool,
+    render: bool,
 ) -> SupervisorResult<()> {
     let mut values = std::collections::HashMap::new();
     while let Some(flag) = args.next() {
@@ -204,6 +209,11 @@ fn run_inner(
         .as_str()
         .ok_or_else(|| invalid("correction lacks an assigned voice"))?;
     let runtime = AdmittedRuntime::read(&store, job, &root)?;
+    if render {
+        // Refuse a historical producer missing the renderer before inference.
+        // The current supervisor never substitutes code into its pinned root.
+        runtime.render_recipe(None)?;
+    }
     if mix {
         runtime.mix_execution()?;
     }
@@ -276,7 +286,28 @@ fn run_inner(
         if let Some(timeline) = &corrected_timeline {
             assets.read_json(timeline)?;
         }
-        let mut packet = json!({"schema_version":1,"kind":if retain {"review_retained_mixed_original_cue"} else if mix {"review_mixed_original_cue"} else {"review_synthesized_original_cue"},
+        let rendered = if render {
+            Some(super::review_render::execute(
+                super::review_render::RenderInputs {
+                    runtime: &runtime,
+                    assets: &assets,
+                    state: &state,
+                    after: &after,
+                    timeline: corrected_timeline.as_ref().unwrap(),
+                    mixed: mixed.as_ref().unwrap(),
+                    output: &seed.output_root,
+                    candidates: &candidates,
+                    start_request: &store
+                        .job_start_request(job)?
+                        .ok_or_else(|| invalid("missing immutable render options"))?,
+                },
+            )?)
+        } else {
+            None
+        };
+        unchanged(&store, &state)?;
+        let _original = read_original(&store, &data, &state)?;
+        let mut packet = json!({"schema_version":1,"kind":if render {"review_rendered_original_cue"} else if retain {"review_retained_mixed_original_cue"} else if mix {"review_mixed_original_cue"} else {"review_synthesized_original_cue"},
             "job_id":job,"revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,"graph_sha256":state.token.graph_sha256,
             "finding_id":finding,"context":descriptor(&context),"request":descriptor(&accepted),"release_sha256":runtime.release_hash,
             "proposal":decode(after.json(),LIMIT)?,"accepted_cue":result,"model_weights_verified":true,"correction_ready":false});
@@ -292,6 +323,12 @@ fn run_inner(
                 .unwrap()
                 .insert("private_mix".into(), candidate);
         }
+        if let Some(candidate) = rendered {
+            packet
+                .as_object_mut()
+                .unwrap()
+                .insert("private_render".into(), candidate);
+        }
         return super::emit_value(&mut std::io::stdout().lock(), packet);
     }
     super::emit_value(
@@ -306,7 +343,7 @@ fn run_inner(
 const CUE_PACKET_LIMIT: usize = 256 * 1024;
 const CUE_DOCUMENT_LIMIT: usize = 64 * 1024;
 
-fn accepted_json(
+pub(super) fn accepted_json(
     value: &Value,
     assets: &AcceptedAudioStore,
 ) -> SupervisorResult<AcceptedJsonDocument> {
@@ -893,7 +930,7 @@ fn validate_scratch_length(scratch: &Path, windows: bool) -> SupervisorResult<()
     Ok(())
 }
 
-fn candidate_scratch(job_root: &Path) -> SupervisorResult<PathBuf> {
+pub(super) fn candidate_scratch(job_root: &Path) -> SupervisorResult<PathBuf> {
     // NativeProcess creates unique private TemporaryDirectories here. Sharing
     // the short parent across jobs does not share media/checkpoint identity.
     let scratch = job_root
@@ -908,7 +945,7 @@ fn candidate_scratch(job_root: &Path) -> SupervisorResult<PathBuf> {
     Ok(scratch)
 }
 
-fn cue_command(
+pub(super) fn cue_command(
     runtime: &AdmittedRuntime,
     entry: &Path,
     scratch: &Path,

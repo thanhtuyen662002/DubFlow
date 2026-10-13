@@ -40,6 +40,7 @@ mod review_runtime;
 mod review_correction;
 mod review_retention;
 mod review_timeline;
+mod review_render;
 
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
@@ -614,6 +615,9 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-render-cue")) {
+        return review_correction::run_render(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-retain-mix-cue")) {
         return review_correction::run_retained_mix(std::env::args_os().skip(2));
     }

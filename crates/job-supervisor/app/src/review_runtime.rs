@@ -440,6 +440,66 @@ impl AdmittedRuntime {
         Ok(entry)
     }
 
+    /// The recipe must belong to the original job's admitted inventory. New
+    /// supervisor code does not authorize a newer adapter for a historical job.
+    pub(super) fn render_recipe(
+        &self,
+        context_hash: Option<&str>,
+    ) -> SupervisorResult<(PathBuf, PathBuf, String)> {
+        let entry = self
+            .root
+            .join("app/engine/dubflow/review/render_execution.py");
+        let probe = super::first_existing(&[
+            self.root.join("runtime/media/ffprobe.exe"),
+            self.root.join("runtime/ffmpeg/ffprobe.exe"),
+        ])
+        .ok_or_else(|| invalid("original render probe unavailable"))?;
+        let mut pins = Vec::new();
+        for path in [
+            self.ffmpeg.clone(),
+            probe.clone(),
+            entry.clone(),
+            self.root
+                .join("app/engine/dubflow/worker/production_job.py"),
+            self.root.join("app/engine/dubflow/media/adapter.py"),
+            self.root
+                .join("app/engine/dubflow/review/corrected_timeline.py"),
+            self.root.join("app/engine/dubflow/review/wire.py"),
+            self.root.join("app/engine/dubflow/review/production.py"),
+            self.root
+                .join("app/engine/dubflow/review/synthesis_input.py"),
+            self.root
+                .join("app/engine/dubflow/review/synthesis_worker.py"),
+        ] {
+            let name = path
+                .strip_prefix(&self.root)
+                .map_err(|_| invalid("render recipe escaped original root"))?
+                .to_str()
+                .ok_or_else(|| invalid("render recipe path is not UTF-8"))?
+                .replace('\\', "/");
+            let pin = self.inventory.get(&name).ok_or_else(|| {
+                invalid(
+                    "original producer lacks the render recipe; explicit compatibility required",
+                )
+            })?;
+            fingerprint(&path, pin, false, 512 * 1024 * 1024)?;
+            pins.push(pin["sha256"].clone());
+        }
+        let identity = if let Some(context) = context_hash {
+            let mut raw = String::new();
+            super::review_document::canonical(
+                &json!({
+                    "context":context,"recipe":"review-private-render-v1","executables_and_source":pins
+                }),
+                &mut raw,
+            )?;
+            hash(raw.as_bytes())
+        } else {
+            String::new()
+        };
+        Ok((entry, probe, identity))
+    }
+
     /// Bind the owned adapter's target profile to this original catalog. Model
     /// weights remain unverified until the later physical producer loader.
     pub(super) fn voice(&self, id: &str) -> SupervisorResult<Value> {
@@ -535,6 +595,44 @@ mod tests {
             producer,
             inventory,
         }
+    }
+
+    #[test]
+    fn render_dispatch_requires_every_original_recipe_file_and_fresh_bytes() {
+        let f = fixture();
+        let mut runtime = AdmittedRuntime::from_producer(&f.producer, &f.root).unwrap();
+        assert!(runtime.render_recipe(None).is_err());
+        for name in [
+            "render_execution.py",
+            "corrected_timeline.py",
+            "wire.py",
+            "production.py",
+            "synthesis_input.py",
+            "synthesis_worker.py",
+        ] {
+            let name = format!("app/engine/dubflow/review/{name}");
+            let raw = format!("# pinned {name}").into_bytes();
+            fs::write(f.root.join(&name), &raw).unwrap();
+            runtime.inventory.insert(name, pin(&raw));
+        }
+        let media = "app/engine/dubflow/media/adapter.py";
+        fs::create_dir_all(f.root.join(media).parent().unwrap()).unwrap();
+        fs::write(f.root.join(media), b"# pinned media adapter").unwrap();
+        runtime
+            .inventory
+            .insert(media.into(), pin(b"# pinned media adapter"));
+        let context_a = hash(b"native-context-a");
+        let context_b = hash(b"native-context-b");
+        let a = runtime.render_recipe(Some(&context_a)).unwrap();
+        assert!(valid_hash(&a.2));
+        // App-owned Python _encode/_digest oracle for these exact ten pins.
+        assert_eq!(
+            a.2,
+            "sha256:6fa411184df113f99211859e9acbf95372dee88a32c58dfb18170aaa04e61e37"
+        );
+        assert_ne!(a.2, runtime.render_recipe(Some(&context_b)).unwrap().2);
+        fs::write(&a.0, b"# changed pinned recipe").unwrap();
+        assert!(runtime.render_recipe(Some(&context_a)).is_err());
     }
 
     #[test]
