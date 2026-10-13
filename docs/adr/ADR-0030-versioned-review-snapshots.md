@@ -835,3 +835,33 @@ unknown confidence, two corrections/two undos, stale-client refusal, replacement
 failure and concurrent-writer admission. Full #174 still requires installed
 desktop, actual B1/B2 regeneration and four-hour/real-media evidence that
 unrelated ASR/OCR artifacts are reused.
+
+### Private corrected render and QC execution
+
+The additive private native-render-context1/render-candidate1 formats bind exact
+native before/after snapshots, archived manifest/timeline and corrected timeline
+bytes. The owned worker independently rederives the selected translation,
+checks original source size/hash/probe and, in B2, all three retained PCM
+hashes/headers/frames plus mix/composition/revision bindings. It cannot silently
+downgrade B2 to original audio. Translation edits regenerate subtitles; voice
+edits keep exact original SRT/ASS/timeline bytes and diagnostic warnings.
+
+The worker uses app-owned FFmpeg/FFprobe through the existing media adapters.
+Execution identity includes exact context, executable and render recipe source
+hashes. A private OS writer lease serializes a generation. Only a full successful
+H.264/audio/duration check and full AV decode can produce its result checkpoint.
+Completed resume requires closed role inventory, exact expected output paths,
+content/size verification and fresh source/mix/probe/full-decode checks; it does
+not rerender or rewrite the prior completed files. Deadline/byte-bounded hashes
+and metadata reads never authorize SQLite writes or active graph publication.
+
+This stage is not dispatched by the native supervisor yet. An original pinned
+release must explicitly inventory/admit the new worker before dispatch; no
+historical worker/model/runtime pin is upgraded by this addition. Native output
+quota/volume/locator admission, immutable retention, final graph CAS/undo and
+editable export remain required. This draft worker checkpoints only completed
+renders: chunk scheduling/checkpoints and bounded long-form recovery are still
+required before activation, as are B1/B2 installed and actual four-hour media
+tests. Small physical fixtures qualify only the component. No durable schema,
+core2/optionalReview1 or existing job format changes. Rollback ignores private
+unreferenced candidates and keeps the original export/active graph usable.

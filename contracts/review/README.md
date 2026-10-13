@@ -70,3 +70,16 @@ retained objects, independently revalidates physical pins, and seals the new mix
 document. It keeps the candidate document separate. The Python adapter serves as
 a deterministic oracle; it is not a replacement producer or a native authority.
 The desktop and active graph are not wired to these private retained documents.
+
+`native-render-context-v1.json` binds native-admitted original manifest/timeline,
+exact before/after snapshots, corrected timeline and source pin. B2 additionally
+requires retained mix/composition pins; B1 cannot invent a mix. The private
+owned render worker emits `render-candidate-v1.json` after subtitle generation,
+FFmpeg render, stream/duration QC and full audio/video decode. Voice-only edits
+preserve exact original subtitle/timeline bytes. Completed candidate resume
+revalidates all inputs and five outputs and reruns probe/decode without render.
+Absolute paths are confined read/write hints, not volume/locator authority.
+Native release-inventory admission, contained dispatch, physical output
+retention/admission and graph CAS remain mandatory before desktop activation.
+The private entry point does not enable long-form chunk scheduling, editable
+export or undo. Unknown versions refuse; original exports remain unchanged.
