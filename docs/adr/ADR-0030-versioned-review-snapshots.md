@@ -512,6 +512,31 @@ actual inventory and release/entry-point pins again. Catalog/config metadata is
 bound to this original release; runtime admission does not verify model weights.
 The tree walk has a bounded observation deadline and no provisioning side effect.
 
+An actual mixed-version Windows run of source97ceccd refused before inference
+after180.156s at the original runtime validation deadline. The original pinned
+import trees contain35,842files/1,938,122,706bytes; original job/database/source
+and export hashes remained unchanged. This is a real failed qualification,
+not evidence that retained audio or corrected output ran successfully.
+
+Admission now shares one import traversal with the final inventory fence. It
+uses directory-entry type only to select the directory/file branch, validates
+each directory when entered, and leaves the fresh complete ancestor checks
+before/after the no-follow file open in `regular` unchanged. Every nonempty
+file still receives its full streamed SHA256 on every admission; empty-file,
+extra/missing/nonregular/reparse, size, root and final release/entry-point checks
+remain mandatory. This removes a redundant full ancestor walk and metadata read
+per file rather than caching hashes or trusting enumeration metadata as proof.
+The180-second bounds stay unchanged. Deadline errors include processed file/byte
+counts and elapsed milliseconds to distinguish traversal and throughput limits.
+The contribution of redundant checks to the observed timeout remains unproven
+until a new source-matched Windows execution is measured; fixture/CI success
+alone cannot qualify cold real-runtime performance.
+
+This changes neither producer/model/runtime pins nor a durable format. Old
+original release roots are never patched or rebound, and a refusal still keeps
+their existing exports/active graph usable. No SQLite, worker protocol,
+core2/optionalReview1 or updater migration is introduced.
+
 Legacy jobs lacking those pins, an unavailable original root or a release without
 the cue adapter require explicit compatibility. A newly installed release is
 never substituted silently. Such jobs retain their display/canonical exports;

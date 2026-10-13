@@ -90,8 +90,13 @@ fn relative(raw: &str) -> SupervisorResult<()> {
     Ok(())
 }
 
-fn final_inventory(root: &Path, inventory: &HashMap<String, Value>) -> SupervisorResult<()> {
+fn walk_import_files(
+    root: &Path,
+    phase: &str,
+    mut visit: impl FnMut(&Path, &str) -> SupervisorResult<u64>,
+) -> SupervisorResult<HashSet<String>> {
     let mut observed = HashSet::new();
+    let mut verified_bytes = 0u64;
     let started = Instant::now();
     for subtree in ["app", "runtime"] {
         let mut directories = vec![root.join(subtree)];
@@ -99,16 +104,24 @@ fn final_inventory(root: &Path, inventory: &HashMap<String, Value>) -> Superviso
             plain(&directory)?;
             for entry in std::fs::read_dir(&directory)? {
                 if started.elapsed() > Duration::from_secs(180) {
-                    return Err(invalid(
-                        "final producer inventory exceeded its bounded deadline",
-                    ));
+                    return Err(invalid(&format!(
+                        "{phase} exceeded its bounded deadline (files={}, bytes={verified_bytes}, elapsed_ms={})",
+                        observed.len(), started.elapsed().as_millis()
+                    )));
                 }
-                let path = entry?.path();
-                plain(&path)?;
-                let metadata = std::fs::symlink_metadata(&path)?;
-                if metadata.is_dir() {
+                let entry = entry?;
+                let path = entry.path();
+                // Enumeration metadata only selects the branch. Each directory
+                // is checked when entered; every file callback must use regular,
+                // whose fresh full ancestor checks surround the no-follow open.
+                // Do not repeat that entire ancestor walk before every callback.
+                let kind = entry.file_type()?;
+                if kind.is_dir() {
                     directories.push(path);
                     continue;
+                }
+                if !kind.is_file() {
+                    return Err(invalid("nonregular file in producer import tree"));
                 }
                 let name = path
                     .strip_prefix(root)
@@ -116,18 +129,33 @@ fn final_inventory(root: &Path, inventory: &HashMap<String, Value>) -> Superviso
                     .to_str()
                     .ok_or_else(|| invalid("producer path is not UTF-8"))?
                     .replace('\\', "/");
-                let pin = inventory
-                    .get(&name)
-                    .ok_or_else(|| invalid("unlisted final producer file"))?;
-                if !metadata.is_file()
-                    || regular(&path)?.metadata()?.len() != pin["size_bytes"].as_u64().unwrap()
-                    || !observed.insert(name)
-                {
-                    return Err(invalid("final producer inventory changed after hashing"));
+                if observed.contains(&name) || observed.len() >= MAX_FILES {
+                    return Err(invalid(
+                        "duplicate or oversized observed producer inventory",
+                    ));
                 }
+                let size = visit(&path, &name)?;
+                verified_bytes = verified_bytes
+                    .checked_add(size)
+                    .ok_or_else(|| invalid("producer byte inventory overflow"))?;
+                observed.insert(name);
             }
         }
     }
+    Ok(observed)
+}
+
+fn final_inventory(root: &Path, inventory: &HashMap<String, Value>) -> SupervisorResult<()> {
+    let observed = walk_import_files(root, "final producer inventory", |path, name| {
+        let pin = inventory
+            .get(name)
+            .ok_or_else(|| invalid("unlisted final producer file"))?;
+        let size = regular(path)?.metadata()?.len();
+        if size != pin["size_bytes"].as_u64().unwrap() {
+            return Err(invalid("final producer inventory changed after hashing"));
+        }
+        Ok(size)
+    })?;
     if inventory
         .keys()
         .filter(|p| p.starts_with("app/") || p.starts_with("runtime/"))
@@ -245,52 +273,22 @@ impl AdmittedRuntime {
         }
         // Imports are admitted as complete trees; an extra module/library can
         // execute before an otherwise trusted script can check itself.
-        let started = Instant::now();
-        let mut observed = HashSet::new();
-        for subtree in ["app", "runtime"] {
-            let mut directories = vec![root.join(subtree)];
-            while let Some(directory) = directories.pop() {
-                plain(&directory)?;
-                for entry in std::fs::read_dir(&directory)? {
-                    if started.elapsed() > Duration::from_secs(180) {
-                        return Err(invalid(
-                            "original runtime validation exceeded its bounded deadline",
-                        ));
-                    }
-                    let path = entry?.path();
-                    plain(&path)?;
-                    let metadata = std::fs::symlink_metadata(&path)?;
-                    if metadata.is_dir() {
-                        directories.push(path);
-                        continue;
-                    }
-                    if !metadata.is_file() {
-                        return Err(invalid("nonregular file in producer import tree"));
-                    }
-                    let name = path
-                        .strip_prefix(root)
-                        .map_err(|_| invalid("producer import escaped its root"))?
-                        .to_str()
-                        .ok_or_else(|| invalid("producer path is not UTF-8"))?
-                        .replace('\\', "/");
-                    let pin = inventory
-                        .get(&name)
-                        .ok_or_else(|| invalid("unlisted file in original producer import tree"))?;
-                    // Empty tracked files are allowed in release trees.
-                    if pin["size_bytes"] == 0 {
-                        let file = regular(&path)?;
-                        if file.metadata()?.len() != 0 || pin["sha256"] != hash(&[]) {
-                            return Err(invalid("empty producer file changed"));
-                        }
-                    } else {
-                        fingerprint(&path, pin, false, 8 * 1024 * 1024 * 1024)?;
-                    }
-                    if !observed.insert(name) {
-                        return Err(invalid("duplicate observed producer file"));
-                    }
+        let observed = walk_import_files(root, "original runtime validation", |path, name| {
+            let pin = inventory
+                .get(name)
+                .ok_or_else(|| invalid("unlisted file in original producer import tree"))?;
+            // Empty tracked files are allowed in release trees. Both paths keep
+            // the same fresh no-follow handle/ancestor checks and full hashes.
+            if pin["size_bytes"] == 0 {
+                let file = regular(path)?;
+                if file.metadata()?.len() != 0 || pin["sha256"] != hash(&[]) {
+                    return Err(invalid("empty producer file changed"));
                 }
+            } else {
+                fingerprint(path, pin, false, 8 * 1024 * 1024 * 1024)?;
             }
-        }
+            Ok(pin["size_bytes"].as_u64().unwrap())
+        })?;
         if inventory
             .keys()
             .filter(|p| p.starts_with("app/") || p.starts_with("runtime/"))
@@ -671,6 +669,85 @@ mod tests {
         fs::write(&path, &raw).unwrap();
         fs::write(f.root.join("app/foreign.py"), "new").unwrap();
         assert!(final_inventory(&f.root, &f.inventory).is_err());
+    }
+
+    #[test]
+    fn nested_import_walk_hashes_every_file_and_keeps_the_final_fence() {
+        let mut f = fixture();
+        for index in 0..192 {
+            let tree = if index % 2 == 0 { "app" } else { "runtime" };
+            let name = format!("{tree}/nested-{}/deep/module-{index}.py", index % 7);
+            let raw = format!("# original import {index:04}\n").into_bytes();
+            let path = f.root.join(&name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, &raw).unwrap();
+            f.inventory.insert(name, pin(&raw));
+        }
+        let records: Vec<_> = f
+            .inventory
+            .iter()
+            .map(|(name, pin)| {
+                json!({"path":name,"sha256":&pin["sha256"].as_str().unwrap()[7..],
+                "size_bytes":pin["size_bytes"].as_u64().unwrap().to_string()})
+            })
+            .collect();
+        let raw = json!({"schema_version":1,"artifacts":records}).to_string();
+        fs::write(f.root.join("release-manifest.json"), &raw).unwrap();
+        f.producer["release_manifest"] = pin(raw.as_bytes());
+        AdmittedRuntime::from_producer(&f.producer, &f.root).unwrap();
+        let observed = walk_import_files(&f.root, "test import fence", |path, name| {
+            let pin = f.inventory.get(name).unwrap();
+            if pin["size_bytes"] == 0 {
+                assert_eq!(regular(path)?.metadata()?.len(), 0);
+            } else {
+                fingerprint(path, pin, false, 1024 * 1024)?;
+            }
+            Ok(pin["size_bytes"].as_u64().unwrap())
+        })
+        .unwrap();
+        assert_eq!(observed.len(), f.inventory.len());
+        let path = f.root.join("runtime/nested-2/deep/module-191.py");
+        let original = fs::read(&path).unwrap();
+        let mut changed = original.clone();
+        changed[0] ^= 1;
+        fs::write(&path, changed).unwrap();
+        assert!(AdmittedRuntime::from_producer(&f.producer, &f.root).is_err());
+        fs::write(&path, original).unwrap();
+        final_inventory(&f.root, &f.inventory).unwrap();
+        fs::remove_file(path).unwrap();
+        assert!(final_inventory(&f.root, &f.inventory).is_err());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn linked_import_directory_refuses_even_with_identical_pinned_files() {
+        let f = fixture();
+        let original = f.root.join("runtime/Lib");
+        let saved = f.root.join("saved-import-directory");
+        fs::rename(&original, &saved).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&saved, &original).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let output = std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(&original)
+                .arg(&saved)
+                .creation_flags(0x08000000)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "fixture junction creation failed");
+        }
+        let admission_refused = AdmittedRuntime::from_producer(&f.producer, &f.root).is_err();
+        let final_refused = final_inventory(&f.root, &f.inventory).is_err();
+        #[cfg(unix)]
+        fs::remove_file(&original).unwrap();
+        #[cfg(windows)]
+        fs::remove_dir(&original).unwrap();
+        fs::rename(saved, original).unwrap();
+        assert!(admission_refused);
+        assert!(final_refused);
     }
 
     #[test]
