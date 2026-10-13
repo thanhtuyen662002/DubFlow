@@ -10,10 +10,49 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const MANIFEST_LIMIT: u64 = 16 * 1024 * 1024;
 const MAX_FILES: usize = 50000;
+const IMPORT_WORKERS: usize = 4;
+const IMPORT_DEADLINE: Duration = Duration::from_secs(180);
+
+/// One cooperative deadline covers enumeration, queued files and all workers.
+/// Counts describe fully verified files, not merely enumerated paths.
+struct ImportProgress<'a> {
+    phase: &'a str,
+    started: Instant,
+    deadline: Instant,
+    files: AtomicUsize,
+    bytes: AtomicU64,
+}
+
+impl ImportProgress<'_> {
+    fn check(&self) -> SupervisorResult<()> {
+        if Instant::now() >= self.deadline {
+            return Err(invalid(&format!(
+                "{} exceeded its bounded deadline (files={}, bytes={}, elapsed_ms={})",
+                self.phase,
+                self.files.load(Ordering::Relaxed),
+                self.bytes.load(Ordering::Relaxed),
+                self.started.elapsed().as_millis()
+            )));
+        }
+        Ok(())
+    }
+
+    fn completed(&self, size: u64) -> SupervisorResult<()> {
+        self.check()?;
+        self.bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                n.checked_add(size)
+            })
+            .map_err(|_| invalid("producer byte inventory overflow"))?;
+        self.files.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
 
 fn invalid(message: &str) -> SupervisorError {
     SupervisorError::Invalid(message.into())
@@ -30,6 +69,16 @@ fn valid_hash(raw: &str) -> bool {
 }
 
 fn fingerprint(path: &Path, pin: &Value, capture: bool, limit: u64) -> SupervisorResult<Vec<u8>> {
+    fingerprint_before(path, pin, capture, limit, None)
+}
+
+fn fingerprint_before(
+    path: &Path,
+    pin: &Value,
+    capture: bool,
+    limit: u64,
+    progress: Option<&ImportProgress<'_>>,
+) -> SupervisorResult<Vec<u8>> {
     closed(pin, &["sha256", "size_bytes"])?;
     let size = pin["size_bytes"]
         .as_u64()
@@ -52,6 +101,9 @@ fn fingerprint(path: &Path, pin: &Value, capture: bool, limit: u64) -> Superviso
     let mut buffer = [0u8; 32768];
     let started = Instant::now();
     loop {
+        if let Some(shared) = progress {
+            shared.check()?;
+        }
         if started.elapsed() > Duration::from_secs(180) {
             return Err(invalid("producer hash exceeded its bounded deadline"));
         }
@@ -93,22 +145,35 @@ fn relative(raw: &str) -> SupervisorResult<()> {
 fn walk_import_files(
     root: &Path,
     phase: &str,
-    mut visit: impl FnMut(&Path, &str) -> SupervisorResult<u64>,
+    visit: impl Fn(&Path, &str, &ImportProgress<'_>) -> SupervisorResult<u64> + Sync,
+) -> SupervisorResult<HashSet<String>> {
+    let started = Instant::now();
+    walk_import_files_before(root, phase, started, started + IMPORT_DEADLINE, visit)
+}
+
+fn walk_import_files_before(
+    root: &Path,
+    phase: &str,
+    started: Instant,
+    deadline: Instant,
+    visit: impl Fn(&Path, &str, &ImportProgress<'_>) -> SupervisorResult<u64> + Sync,
 ) -> SupervisorResult<HashSet<String>> {
     let mut observed = HashSet::new();
-    let mut verified_bytes = 0u64;
-    let started = Instant::now();
+    let mut files = Vec::new();
+    let progress = ImportProgress {
+        phase,
+        started,
+        deadline,
+        files: AtomicUsize::new(0),
+        bytes: AtomicU64::new(0),
+    };
     for subtree in ["app", "runtime"] {
         let mut directories = vec![root.join(subtree)];
         while let Some(directory) = directories.pop() {
+            progress.check()?;
             plain(&directory)?;
             for entry in std::fs::read_dir(&directory)? {
-                if started.elapsed() > Duration::from_secs(180) {
-                    return Err(invalid(&format!(
-                        "{phase} exceeded its bounded deadline (files={}, bytes={verified_bytes}, elapsed_ms={})",
-                        observed.len(), started.elapsed().as_millis()
-                    )));
-                }
+                progress.check()?;
                 let entry = entry?;
                 let path = entry.path();
                 // Enumeration metadata only selects the branch. Each directory
@@ -134,19 +199,84 @@ fn walk_import_files(
                         "duplicate or oversized observed producer inventory",
                     ));
                 }
-                let size = visit(&path, &name)?;
-                verified_bytes = verified_bytes
-                    .checked_add(size)
-                    .ok_or_else(|| invalid("producer byte inventory overflow"))?;
-                observed.insert(name);
+                observed.insert(name.clone());
+                files.push((path, name));
             }
         }
+    }
+    // A bounded list (MAX_FILES) and four scoped workers avoid one thread per
+    // import. Enumeration is never admission: callbacks independently re-open
+    // each path through regular and verify the original complete pin. This
+    // same worker limit also applies to the final metadata/inventory fence.
+    let next = AtomicUsize::new(0);
+    let stopped = AtomicBool::new(false);
+    std::thread::scope(|scope| -> SupervisorResult<()> {
+        let mut handles = Vec::new();
+        for _ in 0..IMPORT_WORKERS.min(files.len()) {
+            let files = &files;
+            let progress = &progress;
+            let next = &next;
+            let stopped = &stopped;
+            let visit = &visit;
+            // try-spawn refuses resource exhaustion without panicking.
+            let handle = std::thread::Builder::new().spawn_scoped(scope, move || {
+                let result = (|| -> SupervisorResult<()> {
+                    loop {
+                        if stopped.load(Ordering::Acquire) {
+                            return Ok(());
+                        }
+                        progress.check()?;
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some((path, name)) = files.get(index) else {
+                            return Ok(());
+                        };
+                        let size = visit(path, name, progress)?;
+                        progress.completed(size)?;
+                    }
+                })();
+                if result.is_err() {
+                    stopped.store(true, Ordering::Release);
+                }
+                result
+            });
+            match handle {
+                Ok(handle) => handles.push(handle),
+                Err(error) => {
+                    stopped.store(true, Ordering::Release);
+                    // Existing workers are joined explicitly before returning.
+                    for handle in handles {
+                        let _ = handle.join();
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
+        let mut failure = None;
+        for handle in handles {
+            let result = handle
+                .join()
+                .unwrap_or_else(|_| Err(invalid("producer inventory verifier panicked")));
+            if let Err(error) = result {
+                stopped.store(true, Ordering::Release);
+                if failure.is_none() {
+                    failure = Some(error);
+                }
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        Ok(())
+    })?;
+    progress.check()?;
+    if progress.files.load(Ordering::Relaxed) != observed.len() {
+        return Err(invalid("producer inventory was not completely verified"));
     }
     Ok(observed)
 }
 
 fn final_inventory(root: &Path, inventory: &HashMap<String, Value>) -> SupervisorResult<()> {
-    let observed = walk_import_files(root, "final producer inventory", |path, name| {
+    let observed = walk_import_files(root, "final producer inventory", |path, name, _| {
         let pin = inventory
             .get(name)
             .ok_or_else(|| invalid("unlisted final producer file"))?;
@@ -273,22 +403,26 @@ impl AdmittedRuntime {
         }
         // Imports are admitted as complete trees; an extra module/library can
         // execute before an otherwise trusted script can check itself.
-        let observed = walk_import_files(root, "original runtime validation", |path, name| {
-            let pin = inventory
-                .get(name)
-                .ok_or_else(|| invalid("unlisted file in original producer import tree"))?;
-            // Empty tracked files are allowed in release trees. Both paths keep
-            // the same fresh no-follow handle/ancestor checks and full hashes.
-            if pin["size_bytes"] == 0 {
-                let file = regular(path)?;
-                if file.metadata()?.len() != 0 || pin["sha256"] != hash(&[]) {
-                    return Err(invalid("empty producer file changed"));
+        let observed = walk_import_files(
+            root,
+            "original runtime validation",
+            |path, name, progress| {
+                let pin = inventory
+                    .get(name)
+                    .ok_or_else(|| invalid("unlisted file in original producer import tree"))?;
+                // Empty tracked files are allowed in release trees. Both paths keep
+                // the same fresh no-follow handle/ancestor checks and full hashes.
+                if pin["size_bytes"] == 0 {
+                    let file = regular(path)?;
+                    if file.metadata()?.len() != 0 || pin["sha256"] != hash(&[]) {
+                        return Err(invalid("empty producer file changed"));
+                    }
+                } else {
+                    fingerprint_before(path, pin, false, 8 * 1024 * 1024 * 1024, Some(progress))?;
                 }
-            } else {
-                fingerprint(path, pin, false, 8 * 1024 * 1024 * 1024)?;
-            }
-            Ok(pin["size_bytes"].as_u64().unwrap())
-        })?;
+                Ok(pin["size_bytes"].as_u64().unwrap())
+            },
+        )?;
         if inventory
             .keys()
             .filter(|p| p.starts_with("app/") || p.starts_with("runtime/"))
@@ -793,12 +927,12 @@ mod tests {
         fs::write(f.root.join("release-manifest.json"), &raw).unwrap();
         f.producer["release_manifest"] = pin(raw.as_bytes());
         AdmittedRuntime::from_producer(&f.producer, &f.root).unwrap();
-        let observed = walk_import_files(&f.root, "test import fence", |path, name| {
+        let observed = walk_import_files(&f.root, "test import fence", |path, name, progress| {
             let pin = f.inventory.get(name).unwrap();
             if pin["size_bytes"] == 0 {
                 assert_eq!(regular(path)?.metadata()?.len(), 0);
             } else {
-                fingerprint(path, pin, false, 1024 * 1024)?;
+                fingerprint_before(path, pin, false, 1024 * 1024, Some(progress))?;
             }
             Ok(pin["size_bytes"].as_u64().unwrap())
         })
@@ -814,6 +948,132 @@ mod tests {
         final_inventory(&f.root, &f.inventory).unwrap();
         fs::remove_file(path).unwrap();
         assert!(final_inventory(&f.root, &f.inventory).is_err());
+    }
+
+    #[test]
+    fn parallel_import_admission_is_bounded_and_verifies_every_original_file_once() {
+        use std::sync::{Condvar, Mutex};
+        let f = fixture();
+        let seen = Mutex::new(HashSet::new());
+        let gate = (Mutex::new(0usize), Condvar::new());
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let observed = walk_import_files(&f.root, "parallel test", |path, name, progress| {
+            let running = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(running, Ordering::SeqCst);
+            // A bounded rendezvous proves multiple files really overlap. It
+            // cannot hang CI if an accidental serial regression is introduced.
+            let mut arrived = gate.0.lock().unwrap();
+            if *arrived < IMPORT_WORKERS {
+                *arrived += 1;
+                gate.1.notify_all();
+                while *arrived < IMPORT_WORKERS {
+                    let (next, timeout) = gate
+                        .1
+                        .wait_timeout(arrived, Duration::from_secs(10))
+                        .unwrap();
+                    arrived = next;
+                    if timeout.timed_out() && *arrived < IMPORT_WORKERS {
+                        return Err(invalid("parallel verification did not overlap"));
+                    }
+                }
+            }
+            drop(arrived);
+            let pin = &f.inventory[name];
+            if pin["size_bytes"] == 0 {
+                assert_eq!(regular(path)?.metadata()?.len(), 0);
+                assert_eq!(pin["sha256"], hash(&[]));
+            } else {
+                fingerprint_before(path, pin, false, 1024 * 1024, Some(progress))?;
+            }
+            assert!(seen.lock().unwrap().insert(name.to_string()));
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(pin["size_bytes"].as_u64().unwrap())
+        })
+        .unwrap();
+        assert_eq!(peak.load(Ordering::SeqCst), IMPORT_WORKERS);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(observed, *seen.lock().unwrap());
+        assert_eq!(observed, f.inventory.keys().cloned().collect());
+        final_inventory(&f.root, &f.inventory).unwrap();
+    }
+
+    #[test]
+    fn import_deadline_covers_enumeration_and_inflight_full_hash_reads() {
+        let f = fixture();
+        let now = Instant::now();
+        let calls = AtomicUsize::new(0);
+        let error = walk_import_files_before(&f.root, "expired import", now, now, |_, _, _| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(0)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("expired import exceeded"));
+        assert!(error.to_string().contains("files=0, bytes=0"));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+        let progress = ImportProgress {
+            phase: "expired shared hash",
+            started: now,
+            deadline: now,
+            files: AtomicUsize::new(7),
+            bytes: AtomicU64::new(31),
+        };
+        let error = fingerprint_before(
+            &f.root.join("runtime/python.exe"),
+            &f.inventory["runtime/python.exe"],
+            false,
+            1024,
+            Some(&progress),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("expired shared hash exceeded"));
+        assert!(error.to_string().contains("files=7, bytes=31"));
+
+        // Completing a callback after its common deadline never yields an
+        // admitted partial inventory, even if the callback returns success.
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(1);
+        let calls = AtomicUsize::new(0);
+        let error = walk_import_files_before(
+            &f.root,
+            "late completion",
+            started,
+            deadline,
+            |path, _, _| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(
+                    deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+                );
+                Ok(regular(path)?.metadata()?.len())
+            },
+        )
+        .unwrap_err();
+        assert!(calls.load(Ordering::Relaxed) > 0);
+        assert!(error.to_string().contains("late completion exceeded"));
+    }
+
+    #[test]
+    fn failed_or_panicked_parallel_verifier_never_admits_partial_inventory() {
+        let f = fixture();
+        for panic in [false, true] {
+            let error = walk_import_files(&f.root, "failed verifier", |path, name, _| {
+                if name == "runtime/python.exe" {
+                    if panic {
+                        panic!("injected verification panic");
+                    }
+                    return Err(invalid("injected verification refusal"));
+                }
+                Ok(regular(path)?.metadata()?.len())
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains(if panic {
+                "producer inventory verifier panicked"
+            } else {
+                "injected verification refusal"
+            }));
+        }
+        final_inventory(&f.root, &f.inventory).unwrap();
     }
 
     #[cfg(any(unix, windows))]

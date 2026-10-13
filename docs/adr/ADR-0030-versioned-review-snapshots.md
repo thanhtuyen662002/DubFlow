@@ -532,6 +532,33 @@ The contribution of redundant checks to the observed timeout remains unproven
 until a new source-matched Windows execution is measured; fixture/CI success
 alone cannot qualify cold real-runtime performance.
 
+Source3b33d51 was then executed with its verified Windows supervisor against
+the unchanged original e1c producer/job. Original and active-original reads and
+the stale-token refusal passed, but the first runtime admission still refused
+after180.235s:25,280files/1,285,967,977bytes had been verified at the shared
+deadline. All31original database/source/export/release hashes were unchanged;
+inference, retention, timeline, render and resume were not reached. This proves
+the single-walk optimization did not qualify this real runtime's latency.
+
+The import traversal now enumerates at most50,000plain file paths and verifies
+them with at most four scoped workers. Each callback still performs the fresh
+complete ancestor/no-follow/regular-handle checks; every nonempty file receives
+its full streamed SHA256 and empty files retain exact empty-hash admission.
+Enumeration metadata and a queued path confer no authority. The final inventory
+fence uses the same bounded workers and fresh file admission, retaining all
+missing/extra/size/link/reparse refusals. No hash or metadata cache is introduced.
+One180-second phase deadline covers enumeration, waiting in the queue, each
+streamed read and completion of every worker. Errors, deadline exhaustion,
+thread creation failure or verifier panic refuse the whole admission; all
+started workers are joined and partial inventories cannot be returned. As
+before, deadlines are cooperative and cannot interrupt a stalled OS file call.
+
+This is a bounded I/O concurrency hypothesis, not proven cold performance or
+product acceptance. Hosted compilation/regressions and a new source-matched
+Windows execution remain required; source3b's green CI does not qualify this
+successor. No pinned runtime/producer/model bytes, schema, SQL, worker protocol,
+shared storage/source implementation or GUI enablement changes.
+
 This changes neither producer/model/runtime pins nor a durable format. Old
 original release roots are never patched or rebound, and a refusal still keeps
 their existing exports/active graph usable. No SQLite, worker protocol,
