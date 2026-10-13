@@ -197,6 +197,44 @@ fn run_inner(
         None
     };
     let graph = decode(&seed.graph, LIMIT)?;
+    if render && graph["mode"] == "b1" {
+        // B1 enters rendering before any voice/catalog/model execution path.
+        let after = seed
+            .snapshot
+            .correction(finding, translation, voice, ReviewMode::Subtitles)?;
+        let runtime = AdmittedRuntime::read(&store, job, &root)?;
+        runtime.render_recipe(None)?;
+        let assets = AcceptedAudioStore::open_existing(&data, job)?;
+        let timeline = assets.accept_json(&seed.corrected_timeline(&after)?)?;
+        let candidates = private_root(&seed.output_root, job)?;
+        let start_request = store
+            .job_start_request(job)?
+            .ok_or_else(|| invalid("missing immutable render options"))?;
+        let rendered = super::review_render::execute(super::review_render::RenderInputs {
+            runtime: &runtime,
+            assets: &assets,
+            state: &state,
+            after: &after,
+            timeline: &timeline,
+            mixed: None,
+            output: &seed.output_root,
+            candidates: &candidates,
+            start_request: &start_request,
+        })?;
+        assets.read_json(&timeline)?;
+        unchanged(&store, &state)?;
+        read_original(&store, &data, &state)?;
+        return super::emit_value(
+            &mut std::io::stdout().lock(),
+            json!({
+                "schema_version":1,"kind":"review_rendered_original_cue","mode":"b1","job_id":job,
+                "revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,
+                "graph_sha256":state.token.graph_sha256,"finding_id":finding,"proposal":decode(after.json(),LIMIT)?,
+                "release_sha256":runtime.release_hash,"corrected_timeline":descriptor(&timeline),
+                "private_render":rendered,"tts_executed":false,"mix_executed":false,"correction_ready":false
+            }),
+        );
+    }
     if graph["mode"] != "b2" {
         return Err(invalid(
             "B1 requires the subtitle regeneration path; never invent a TTS voice",
@@ -294,7 +332,7 @@ fn run_inner(
                     state: &state,
                     after: &after,
                     timeline: corrected_timeline.as_ref().unwrap(),
-                    mixed: mixed.as_ref().unwrap(),
+                    mixed: mixed.as_ref(),
                     output: &seed.output_root,
                     candidates: &candidates,
                     start_request: &store

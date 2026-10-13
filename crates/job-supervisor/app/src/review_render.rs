@@ -1,4 +1,4 @@
-//! Native private B2 render dispatch and result admission; no graph mutation.
+//! Native private B1/B2 render dispatch and result admission; no graph mutation.
 use super::review_assets::{regular, AcceptedAudioStore, AcceptedJsonDocument};
 use super::review_correction::{accepted_json, candidate_scratch, cue_command, descriptor};
 use super::review_document::{closed, decode, tick, AdmittedSnapshot};
@@ -81,7 +81,7 @@ pub(super) struct RenderInputs<'a> {
     pub(super) state: &'a ReviewGraphState,
     pub(super) after: &'a AdmittedSnapshot,
     pub(super) timeline: &'a AcceptedJsonDocument,
-    pub(super) mixed: &'a Value,
+    pub(super) mixed: Option<&'a Value>,
     pub(super) output: &'a Path,
     pub(super) candidates: &'a Path,
     pub(super) start_request: &'a str,
@@ -94,6 +94,15 @@ fn admit_result(
     identity: &str,
     candidates: &Path,
 ) -> SupervisorResult<Value> {
+    let mode = context["mode"]
+        .as_str()
+        .filter(|mode| matches!(*mode, "b1" | "b2"))
+        .ok_or_else(|| invalid("native render context mode is invalid"))?;
+    if (mode == "b1") != context["retained_mix"].is_null() {
+        return Err(invalid(
+            "native render cannot invent a B1 mix or downgrade B2",
+        ));
+    }
     let packet = decode(raw, LIMIT)?;
     closed(
         &packet,
@@ -113,7 +122,7 @@ fn admit_result(
     if packet["schema_version"].as_u64() != Some(1)
         || packet["kind"] != "review_private_render_candidate"
         || packet["job_id"] != context["job_id"]
-        || packet["mode"] != "b2"
+        || packet["mode"] != mode
         || packet["context_sha256"] != context_hash
         || packet["execution_identity"] != identity
         || packet["after_snapshot_sha256"]
@@ -201,16 +210,22 @@ fn admit_result(
     let audio = qc["output_probe"]["streams"]
         .as_array()
         .is_some_and(|streams| streams.iter().any(|s| s["codec_type"] == "audio"));
+    let source_audio = manifest["source"]["probe"]["streams"]
+        .as_array()
+        .ok_or_else(|| invalid("archived source streams missing"))?
+        .iter()
+        .any(|stream| stream["codec_type"] == "audio");
     if qc["schema_version"].as_u64() != Some(1)
         || qc["status"] != "passed"
-        || qc["mode"] != "b2"
+        || qc["mode"] != mode
         || qc["full_av_decode"] != true
         || qc["context_sha256"] != context_hash
         || qc["execution_identity"] != identity
         || qc["active_graph_published"] != false
         || qc["source_probe"] != manifest["source"]["probe"]
         || !h264
-        || !audio
+        || (mode == "b2" && !audio)
+        || (mode == "b1" && audio != source_audio)
         || PathBuf::from(qc["output_probe"]["source_path"].as_str().unwrap_or(""))
             != generation.join("final_vi.mp4")
         || source_duration.abs_diff(output_duration) > 2000
@@ -239,18 +254,38 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
     let manifest = decode(&manifest_raw, LIMIT)?;
     let original_timeline = input.assets.read_json(&timeline_object)?;
     let corrected_timeline = input.assets.read_json(input.timeline)?;
-    if input.mixed["retained_audio"] != true
-        || input.mixed["mix_metadata_retargeted"] != true
-        || input.mixed["active_graph_published"] != false
-    {
+    let graph = decode(
+        bound["source_graph_json"]
+            .as_str()
+            .ok_or_else(|| invalid("original mode binding missing"))?,
+        LIMIT,
+    )?;
+    let mode = graph["mode"]
+        .as_str()
+        .filter(|mode| matches!(*mode, "b1" | "b2"))
+        .ok_or_else(|| invalid("original mode is invalid"))?;
+    if (mode == "b2") != input.mixed.is_some() {
         return Err(invalid(
-            "native render requires a retained admitted correction mix",
+            "native render cannot invent a B1 mix or downgrade B2",
         ));
     }
-    let mix_object = accepted_json(&input.mixed["mix_document"], input.assets)?;
-    let composition_object = accepted_json(&input.mixed["composition"], input.assets)?;
-    let mix_raw = input.assets.read_json(&mix_object)?;
-    let composition_raw = input.assets.read_json(&composition_object)?;
+    let mixed = if let Some(mixed) = input.mixed {
+        if mixed["retained_audio"] != true
+            || mixed["mix_metadata_retargeted"] != true
+            || mixed["active_graph_published"] != false
+        {
+            return Err(invalid(
+                "native render requires a retained admitted correction mix",
+            ));
+        }
+        let mix_object = accepted_json(&mixed["mix_document"], input.assets)?;
+        let composition_object = accepted_json(&mixed["composition"], input.assets)?;
+        let mix_raw = input.assets.read_json(&mix_object)?;
+        let composition_raw = input.assets.read_json(&composition_object)?;
+        Some((mix_object, composition_object, mix_raw, composition_raw))
+    } else {
+        None
+    };
     let source_path = PathBuf::from(
         manifest["source"]["path"]
             .as_str()
@@ -270,14 +305,17 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
     let burn = decode(input.start_request, LIMIT)?["burn_in_subtitles"]
         .as_bool()
         .ok_or_else(|| invalid("immutable render option missing"))?;
-    let context_value = json!({"schema_version":1,"kind":"review_native_render_context","job_id":input.state.token.job_id,"mode":"b2",
+    let retained_mix = mixed.as_ref().map(|(mix_object, composition_object, mix_raw, composition_raw)| json!({
+        "mix_document_json":mix_raw,"mix_document_sha256":mix_object.sha256,
+        "composition_json":composition_raw,"composition_sha256":composition_object.sha256,"artifact_root":input.output
+    })).unwrap_or(Value::Null);
+    let context_value = json!({"schema_version":1,"kind":"review_native_render_context","job_id":input.state.token.job_id,"mode":mode,
         "before_snapshot_json":input.state.snapshot_json,"after_snapshot_json":input.after.json(),
         "original_manifest_json":manifest_raw,"original_manifest_sha256":input.state.token.original_manifest_sha256,
         "original_timeline_json":original_timeline,"corrected_timeline_json":corrected_timeline,
         "corrected_timeline_sha256":input.timeline.sha256,"original_output_root":input.output,
         "source":{"path":source_path,"sha256":source_hash,"size_bytes":source_size.to_string(),"artifact_root":source_path.parent()},
-        "retained_mix":{"mix_document_json":mix_raw,"mix_document_sha256":mix_object.sha256,
-            "composition_json":composition_raw,"composition_sha256":composition_object.sha256,"artifact_root":input.output},
+        "retained_mix":retained_mix,
         "burn_in_subtitles":burn});
     let context = input
         .assets
@@ -316,38 +354,35 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
         false,
         Instant::now() + Duration::from_secs(180),
     )?;
-    for document in [
-        &manifest_object,
-        &timeline_object,
-        input.timeline,
-        &mix_object,
-        &composition_object,
-        &context,
-    ] {
+    for document in [&manifest_object, &timeline_object, input.timeline, &context] {
         input.assets.read_json(document)?;
     }
-    let mix = decode(&mix_raw, LIMIT)?;
-    let mix_deadline = Instant::now() + Duration::from_secs(720);
-    for role in ["original_audio", "dialogue_stem", "final_mix"] {
-        let path = PathBuf::from(
-            mix[role]["path"]
-                .as_str()
-                .ok_or_else(|| invalid("retained mix path missing"))?,
-        );
-        if !path.starts_with(input.output.join(".dubflow-review-media-v1")) {
-            return Err(invalid(
-                "render input is not retained on its admitted output volume",
-            ));
+    if let Some((mix_object, composition_object, mix_raw, _)) = mixed {
+        input.assets.read_json(&mix_object)?;
+        input.assets.read_json(&composition_object)?;
+        let mix = decode(&mix_raw, LIMIT)?;
+        let mix_deadline = Instant::now() + Duration::from_secs(720);
+        for role in ["original_audio", "dialogue_stem", "final_mix"] {
+            let path = PathBuf::from(
+                mix[role]["path"]
+                    .as_str()
+                    .ok_or_else(|| invalid("retained mix path missing"))?,
+            );
+            if !path.starts_with(input.output.join(".dubflow-review-media-v1")) {
+                return Err(invalid(
+                    "render input is not retained on its admitted output volume",
+                ));
+            }
+            verified(
+                &path,
+                mix[role]["content_hash"]
+                    .as_str()
+                    .ok_or_else(|| invalid("retained mix hash missing"))?,
+                regular(&path)?.metadata()?.len(),
+                false,
+                mix_deadline,
+            )?;
         }
-        verified(
-            &path,
-            mix[role]["content_hash"]
-                .as_str()
-                .ok_or_else(|| invalid("retained mix hash missing"))?,
-            regular(&path)?.metadata()?.len(),
-            false,
-            mix_deadline,
-        )?;
     }
     // These files are still private candidates. Their hashes do not authorize
     // playback publication, final-volume retention, undo or a SQLite CAS.
@@ -379,6 +414,9 @@ mod tests {
         }
     }
     fn fixture() -> Fixture {
+        fixture_mode("b2", true)
+    }
+    fn fixture_mode(mode: &str, source_audio: bool) -> Fixture {
         let root = std::env::temp_dir().join(format!(
             "dubflow-native-render-{}-{}",
             std::process::id(),
@@ -388,13 +426,17 @@ mod tests {
         let identity = hash(b"native admitted recipe");
         let context_hash = hash(b"native admitted context");
         let generation = root.join(format!("render-{}", &identity[7..]));
-        let probe = json!({"canonical_duration_ticks":10000,"source_path":"original-source.mp4","streams":[{"codec_type":"video","codec_name":"h264"},{"codec_type":"audio","codec_name":"aac"}]});
+        let mut streams = vec![json!({"codec_type":"video","codec_name":"h264"})];
+        if source_audio {
+            streams.push(json!({"codec_type":"audio","codec_name":"aac"}));
+        }
+        let probe = json!({"canonical_duration_ticks":10000,"source_path":"original-source.mp4","streams":streams});
         let mut output_probe = probe.clone();
         output_probe["source_path"] = json!(generation.join("final_vi.mp4"));
         let manifest = json!({"source":{"probe":probe},"warnings":["retained warning"]});
-        let context = json!({"job_id":"native-render","after_snapshot_json":"{\"revision\":\"1\"}",
+        let context = json!({"job_id":"native-render","mode":mode,"retained_mix":if mode == "b1" {Value::Null} else {json!({"native":"retained"})},"after_snapshot_json":"{\"revision\":\"1\"}",
             "corrected_timeline_json":"{\"source_clock\":7}","original_manifest_json":manifest.to_string()});
-        let qc = json!({"schema_version":1,"status":"passed","mode":"b2","source_probe":probe,"output_probe":output_probe,
+        let qc = json!({"schema_version":1,"status":"passed","mode":mode,"source_probe":probe,"output_probe":output_probe,
             "warnings":["retained warning"],"full_av_decode":true,"context_sha256":context_hash,"execution_identity":identity,"active_graph_published":false});
         fs::create_dir(&generation).unwrap();
         let mut artifacts = serde_json::Map::new();
@@ -415,7 +457,7 @@ mod tests {
                 json!({"path":path,"sha256":hash(&raw),"size_bytes":raw.len().to_string()}),
             );
         }
-        let raw = json!({"schema_version":1,"kind":"review_private_render_candidate","job_id":"native-render","mode":"b2",
+        let raw = json!({"schema_version":1,"kind":"review_private_render_candidate","job_id":"native-render","mode":mode,
             "context_sha256":context_hash,"execution_identity":identity,
             "after_snapshot_sha256":hash(context["after_snapshot_json"].as_str().unwrap().as_bytes()),
             "artifacts":artifacts,"active_graph_published":false,"correction_ready":false}).to_string();
@@ -425,6 +467,51 @@ mod tests {
             raw,
             identity,
             context_hash,
+        }
+    }
+    #[test]
+    fn b1_admission_preserves_audio_or_silence_without_requiring_a_mix() {
+        for audio in [false, true] {
+            let f = fixture_mode("b1", audio);
+            let packet =
+                admit_result(&f.raw, &f.context, &f.context_hash, &f.identity, &f.root).unwrap();
+            assert_eq!(packet["mode"], "b1");
+            let mut invented = f.context.clone();
+            invented["retained_mix"] = json!({"foreign":"mix"});
+            assert!(
+                admit_result(&f.raw, &invented, &f.context_hash, &f.identity, &f.root).is_err()
+            );
+        }
+        let f = fixture();
+        let mut downgraded = f.context.clone();
+        downgraded["retained_mix"] = Value::Null;
+        assert!(admit_result(&f.raw, &downgraded, &f.context_hash, &f.identity, &f.root).is_err());
+    }
+    #[test]
+    fn b1_qc_cannot_lose_source_audio_or_invent_audio_for_a_silent_source() {
+        for source_audio in [false, true] {
+            let f = fixture_mode("b1", source_audio);
+            let mut packet: Value = serde_json::from_str(&f.raw).unwrap();
+            let path = PathBuf::from(packet["artifacts"]["qc_report"]["path"].as_str().unwrap());
+            let mut qc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let streams = qc["output_probe"]["streams"].as_array_mut().unwrap();
+            if source_audio {
+                streams.retain(|stream| stream["codec_type"] != "audio");
+            } else {
+                streams.push(json!({"codec_type":"audio","codec_name":"aac"}));
+            }
+            let raw = qc.to_string().into_bytes();
+            fs::write(&path, &raw).unwrap();
+            packet["artifacts"]["qc_report"]["sha256"] = hash(&raw).into();
+            packet["artifacts"]["qc_report"]["size_bytes"] = raw.len().to_string().into();
+            assert!(admit_result(
+                &packet.to_string(),
+                &f.context,
+                &f.context_hash,
+                &f.identity,
+                &f.root
+            )
+            .is_err());
         }
     }
     #[test]

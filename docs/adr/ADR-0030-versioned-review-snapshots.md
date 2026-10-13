@@ -880,8 +880,19 @@ content/size verification and fresh source/mix/probe/full-decode checks; it does
 not rerender or rewrite the prior completed files. Deadline/byte-bounded hashes
 and metadata reads never authorize SQLite writes or active graph publication.
 
-The opt-in native `review-render-cue` now connects B2 cue synthesis and retained
-mix preparation to this private renderer. It admits all original recipe source
+The opt-in native `review-render-cue` connects B2 cue synthesis and retained
+mix preparation to this private renderer. For a B1 graph it instead derives the
+subtitle-only proposal and corrected timeline from the native archived seed,
+then directly dispatches that same original-pinned renderer. The B1 branch runs
+before voice selection, physical model loading, cue synthesis or mix execution;
+its context has `retained_mix=null`. A voice assignment refuses through the
+existing subtitle-only correction semantics. B2 must supply its retained mix
+and cannot downgrade to this branch. Native result/QC admission binds the
+original mode; B1 preserves source audio or silence, while B2 requires audio.
+Both return private render candidates with the original graph unchanged.
+This wiring is not installed B1/B2 or real long-form qualification.
+
+It admits all original recipe source
 and media executable bytes before inference, reconstructs the context from
 native archived metadata, exact corrected timeline and sealed retained mix,
 and preserves the immutable original burn-in option. Caller arguments cannot
