@@ -3,8 +3,8 @@
 //! canonical storage crate owns locator/path validation. Standard export does
 //! not depend on this optional local-NTFS Review path.
 use super::review_assets::{
-    MixStorageBudget, PcmPin, RetainedFilePin, RetainedMixAudio, RetainedMixStore,
-    RetainedRenderFile,
+    MixStorageBudget, PcmPin, RetainedFileFormat, RetainedFilePin, RetainedMixAudio,
+    RetainedMixStore, RetainedRenderFile,
 };
 use super::{SupervisorError, SupervisorResult};
 use dubflow_artifact_storage::ArtifactLocator;
@@ -213,6 +213,82 @@ impl LocatedRenderFile {
                 "root_kind":self.locator.root_kind.as_str(),"relative_path":self.locator.relative_path,
                 "content_hash":self.locator.content_hash,"size_bytes":self.locator.size_bytes.to_string()}})
     }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.file.path
+    }
+}
+
+// Bind persisted descriptors to the freshly admitted root/volume. The object
+// store independently derives the permitted job/content/format filename.
+fn render_file_descriptor(
+    value: &Value,
+    root: &Path,
+    volume: &str,
+) -> SupervisorResult<LocatedRenderFile> {
+    use super::review_document::{closed, tick};
+    closed(value, &["path_hint", "format", "locator"])?;
+    value["path_hint"]
+        .as_str()
+        .filter(|hint| hint.len() <= 4096 && !hint.contains('\0'))
+        .ok_or_else(|| invalid("retained render path hint is malformed"))?;
+    let format = match value["format"].as_str() {
+        Some("mp4") => RetainedFileFormat::Mp4,
+        Some("srt") => RetainedFileFormat::Srt,
+        Some("ass") => RetainedFileFormat::Ass,
+        Some("json") => RetainedFileFormat::Json,
+        _ => return Err(invalid("unsupported retained render format")),
+    };
+    let locator = &value["locator"];
+    closed(
+        locator,
+        &[
+            "schema_version",
+            "volume_id",
+            "root_kind",
+            "relative_path",
+            "content_hash",
+            "size_bytes",
+        ],
+    )?;
+    if locator["schema_version"].as_u64() != Some(1)
+        || locator["volume_id"] != volume
+        || locator["root_kind"] != "output"
+    {
+        return Err(invalid(
+            "retained render recovery changed volume/root/version",
+        ));
+    }
+    let relative = locator["relative_path"]
+        .as_str()
+        .ok_or_else(|| invalid("retained render relative path is missing"))?;
+    let sha256 = locator["content_hash"]
+        .as_str()
+        .ok_or_else(|| invalid("retained render content hash is missing"))?;
+    let size_raw = locator["size_bytes"]
+        .as_str()
+        .ok_or_else(|| invalid("retained render size must be a decimal string"))?;
+    let size_bytes = tick(&Value::String(size_raw.into()), true)?;
+    let admitted = ArtifactLocator::new(volume, RootKind::Output, relative, sha256, size_bytes)
+        .map_err(|error| {
+            invalid(&format!(
+                "retained render recovery locator refused: {error}"
+            ))
+        })?;
+    if admitted.relative_path != Path::new(relative) {
+        return Err(invalid("retained render recovery path is not canonical"));
+    }
+    Ok(LocatedRenderFile {
+        file: RetainedRenderFile {
+            path: root.join(&admitted.relative_path),
+            pin: RetainedFilePin {
+                sha256: sha256.into(),
+                size_bytes,
+                format,
+            },
+        },
+        locator: admitted,
+    })
 }
 
 impl LocatedMixAudio {
@@ -474,6 +550,18 @@ impl NativeMixStore {
         Ok(())
     }
 
+    /// Reconstruct only from its persisted locator. Never read the absolute
+    /// hint, adopt a candidate, create replacement files or repair bytes.
+    pub(super) fn reopen_file(
+        &self,
+        descriptor: &Value,
+        deadline: Instant,
+    ) -> SupervisorResult<LocatedRenderFile> {
+        let object = render_file_descriptor(descriptor, &self.root, &self.volume_id)?;
+        self.verify_file(&object, deadline)?;
+        Ok(object)
+    }
+
     pub(super) fn verify(
         &self,
         object: &LocatedMixAudio,
@@ -529,6 +617,39 @@ mod tests {
     use super::*;
     const GUID: &str = r"\\?\Volume{01234567-89AB-CDEF-0123-456789abcdef}\";
     const HARD_LINKS: u32 = 0x0040_0000;
+
+    #[test]
+    fn persisted_render_descriptor_uses_native_root_and_refuses_locator_substitution() {
+        let volume = "windows-volume-guid:01234567-89ab-cdef-0123-456789abcdef";
+        let root = std::env::temp_dir().join("native-rebound-output");
+        let hash = format!("sha256:{}", "a".repeat(64));
+        let relative = format!(".dubflow-review-media-v1/job/{}.mp4", &hash[7..]);
+        let value = json!({"path_hint":"missing-candidate/never-read.mp4","format":"mp4",
+            "locator":{"schema_version":1,"volume_id":volume,"root_kind":"output",
+                "relative_path":relative,"content_hash":hash,"size_bytes":"9007199254740993"}});
+        let object = render_file_descriptor(&value, &root, volume).unwrap();
+        assert_eq!(object.path(), root.join(&relative));
+        assert_eq!(object.locator.size_bytes, 9007199254740993);
+        for case in 0..10 {
+            let mut bad = value.clone();
+            match case {
+                0 => bad["locator"]["volume_id"] = json!("foreign-volume"),
+                1 => bad["locator"]["root_kind"] = json!("control"),
+                2 => bad["locator"]["schema_version"] = json!(2),
+                3 => bad["locator"]["relative_path"] = json!("../escape.mp4"),
+                4 => bad["locator"]["content_hash"] = json!("sha256:invalid"),
+                5 => bad["locator"]["size_bytes"] = json!(100),
+                6 => bad["locator"]["size_bytes"] = json!("0100"),
+                7 => bad["format"] = json!("exe"),
+                8 => bad["locator"]["extra"] = json!(true),
+                _ => bad["path_hint"] = json!(true),
+            }
+            assert!(
+                render_file_descriptor(&bad, &root, volume).is_err(),
+                "case {case}"
+            );
+        }
+    }
 
     #[cfg(windows)]
     #[test]
@@ -588,6 +709,20 @@ mod tests {
         let reopened =
             NativeMixStore::open_existing(&output_pin, "render-native-locator", budget).unwrap();
         reopened.verify_file(&object, deadline).unwrap();
+        let mut persisted = object.descriptor();
+        persisted["path_hint"] = json!("missing-old-drive/candidate.mp4");
+        let restored = reopened.reopen_file(&persisted, deadline).unwrap();
+        assert_eq!(restored.path(), object.path());
+        for case in 0..4 {
+            let mut bad = persisted.clone();
+            match case {
+                0 => bad["locator"]["relative_path"] = json!("foreign.mp4"),
+                1 => bad["locator"]["content_hash"] = json!(format!("sha256:{}", "c".repeat(64))),
+                2 => bad["locator"]["size_bytes"] = json!((pin.size_bytes + 1).to_string()),
+                _ => bad["format"] = json!("srt"),
+            }
+            assert!(reopened.reopen_file(&bad, deadline).is_err());
+        }
         assert_eq!(fs::read(&object.file.path).unwrap(), raw);
         drop(reopened);
         let mut permissions = fs::metadata(&object.file.path).unwrap().permissions();

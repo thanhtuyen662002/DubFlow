@@ -10,6 +10,7 @@ use super::{SupervisorError, SupervisorResult};
 use dubflow_job_state::review_graph::ReviewGraphState;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -98,6 +99,26 @@ fn admit_result(
     identity: &str,
     candidates: &Path,
 ) -> SupervisorResult<Value> {
+    admit_result_at(
+        raw,
+        context,
+        context_hash,
+        identity,
+        candidates,
+        None,
+        Instant::now() + Duration::from_secs(720),
+    )
+}
+
+fn admit_result_at(
+    raw: &str,
+    context: &Value,
+    context_hash: &str,
+    identity: &str,
+    candidates: &Path,
+    retained_paths: Option<&HashMap<&str, PathBuf>>,
+    deadline: Instant,
+) -> SupervisorResult<Value> {
     let mode = context["mode"]
         .as_str()
         .filter(|mode| matches!(*mode, "b1" | "b2"))
@@ -140,7 +161,9 @@ fn admit_result(
     }
     closed(&packet["artifacts"], &ROLES.map(|(role, _)| role))?;
     let generation = candidates.join(format!("render-{}", &identity[7..]));
-    let deadline = Instant::now() + Duration::from_secs(720);
+    if retained_paths.is_some_and(|paths| paths.len() != ROLES.len()) {
+        return Err(invalid("retained render recovery requires all five roles"));
+    }
     let mut qc = None;
     for (role, name) in ROLES {
         let pin = &packet["artifacts"][role];
@@ -154,8 +177,16 @@ fn admit_result(
             return Err(invalid("render output escaped its exact native generation"));
         }
         let size = tick(&pin["size_bytes"], true)?;
+        let physical = if let Some(paths) = retained_paths {
+            paths
+                .get(role)
+                .ok_or_else(|| invalid("retained render role is missing"))?
+                .as_path()
+        } else {
+            path.as_path()
+        };
         let bytes = verified(
-            &path,
+            physical,
             pin["sha256"]
                 .as_str()
                 .ok_or_else(|| invalid("missing render hash"))?,
@@ -247,6 +278,99 @@ fn admit_result(
         ));
     }
     Ok(packet)
+}
+
+/// Re-admit sealed execution/QC metadata using canonical retained files only.
+/// Candidate paths remain provenance, never recovery IO or graph authority.
+fn reopen_retained_result(
+    input: &RenderInputs<'_>,
+    receipt: &AcceptedJsonDocument,
+    context: &AcceptedJsonDocument,
+    identity: &str,
+    deadline: Instant,
+) -> SupervisorResult<Value> {
+    let saved = decode(&input.assets.read_json(receipt)?, LIMIT)?;
+    closed(
+        &saved,
+        &[
+            "schema_version",
+            "kind",
+            "job_id",
+            "context",
+            "candidate_result",
+            "execution_identity",
+            "artifacts",
+            "active_graph_published",
+            "correction_ready",
+        ],
+    )?;
+    if saved["schema_version"].as_u64() != Some(1)
+        || saved["kind"] != "review_native_retained_render"
+        || saved["job_id"] != input.state.token.job_id
+        || saved["context"] != descriptor(context)
+        || saved["execution_identity"] != identity
+        || saved["active_graph_published"] != false
+        || saved["correction_ready"] != false
+    {
+        return Err(invalid(
+            "retained receipt substitutes native job/context/recipe",
+        ));
+    }
+    let context_value = decode(&input.assets.read_json(context)?, LIMIT)?;
+    if context_value["job_id"] != input.state.token.job_id
+        || context_value["before_snapshot_json"] != input.state.snapshot_json
+        || context_value["after_snapshot_json"] != input.after.json()
+        || context_value["corrected_timeline_json"] != input.assets.read_json(input.timeline)?
+    {
+        return Err(invalid(
+            "retained recovery changed native snapshot/timeline binding",
+        ));
+    }
+    let result = accepted_json(&saved["candidate_result"], input.assets)?;
+    let result_raw = input.assets.read_json(&result)?;
+    let candidate = decode(&result_raw, LIMIT)?;
+    let roles = saved["artifacts"]
+        .as_array()
+        .filter(|roles| roles.len() == ROLES.len())
+        .ok_or_else(|| invalid("retained receipt requires five ordered artifacts"))?;
+    let store = super::review_retention::NativeMixStore::open_existing(
+        input.output_pin,
+        &input.state.token.job_id,
+        MixStorageBudget {
+            maximum_bytes: 32 * 1024 * 1024 * 1024,
+            minimum_free_bytes: 2 * 1024 * 1024 * 1024,
+        },
+    )?;
+    let mut paths = HashMap::new();
+    for (entry, (role, _)) in roles.iter().zip(ROLES) {
+        closed(entry, &["role", "file"])?;
+        let expected_format = match role {
+            "final_video" => "mp4",
+            "captions_srt" => "srt",
+            "captions_ass" => "ass",
+            _ => "json",
+        };
+        if entry["role"] != role
+            || entry["file"]["format"] != expected_format
+            || entry["file"]["locator"]["content_hash"] != candidate["artifacts"][role]["sha256"]
+            || entry["file"]["locator"]["size_bytes"] != candidate["artifacts"][role]["size_bytes"]
+        {
+            return Err(invalid(
+                "retained receipt substitutes render role/content/format",
+            ));
+        }
+        let file = store.reopen_file(&entry["file"], deadline)?;
+        paths.insert(role, file.path().to_path_buf());
+    }
+    admit_result_at(
+        &result_raw,
+        &context_value,
+        &context.sha256,
+        identity,
+        input.candidates,
+        Some(&paths),
+        deadline,
+    )
 }
 
 pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
@@ -484,13 +608,20 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
     for (_, file) in &located {
         retained.verify_file(file, deadline)?;
     }
+    drop(retained);
+    if reopen_retained_result(&input, &receipt, &context, &identity, deadline)? != candidate {
+        return Err(invalid(
+            "reopened retained render differs from admitted candidate",
+        ));
+    }
     // All five roles are retained together before returning. Partial failures
     // leave only unreferenced sealed objects; no old graph/output is retired.
     Ok(
         json!({"context":descriptor(&context),"result":descriptor(&result),"candidate":candidate,
         "retained_render":descriptor(&receipt),
         "retained_artifacts":located.iter().map(|(role,file)|json!({"role":role,"file":file.descriptor()})).collect::<Vec<_>>(),
-        "native_output_bytes_verified":true,"retained_final_output":true,"active_graph_published":false,"correction_ready":false}),
+        "native_output_bytes_verified":true,"retained_final_output":true,"retained_receipt_reopened":true,
+        "active_graph_published":false,"correction_ready":false}),
     )
 }
 
@@ -623,6 +754,102 @@ mod tests {
         fs::write(&path, &changed).unwrap();
         assert!(admit_result(&f.raw, &f.context, &f.context_hash, &f.identity, &f.root).is_err());
         // Physical placeholders qualify hash admission only, never AV decoding.
+    }
+
+    #[test]
+    fn recovery_admits_all_retained_roles_after_mutable_generation_is_removed() {
+        let f = fixture();
+        let expected =
+            admit_result(&f.raw, &f.context, &f.context_hash, &f.identity, &f.root).unwrap();
+        let retained = f.root.join("retained-recovery");
+        fs::create_dir(&retained).unwrap();
+        let mut paths = HashMap::new();
+        for (role, name) in ROLES {
+            let old = PathBuf::from(expected["artifacts"][role]["path"].as_str().unwrap());
+            let path = retained.join(name);
+            fs::copy(old, &path).unwrap();
+            paths.insert(role, path);
+        }
+        fs::remove_dir_all(f.root.join(format!("render-{}", &f.identity[7..]))).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert_eq!(
+            admit_result_at(
+                &f.raw,
+                &f.context,
+                &f.context_hash,
+                &f.identity,
+                &f.root,
+                Some(&paths),
+                deadline
+            )
+            .unwrap(),
+            expected
+        );
+        assert!(admit_result(&f.raw, &f.context, &f.context_hash, &f.identity, &f.root).is_err());
+        let path = &paths["captions_ass"];
+        let mut bytes = fs::read(path).unwrap();
+        bytes[0] ^= 1;
+        fs::write(path, bytes).unwrap();
+        assert!(admit_result_at(
+            &f.raw,
+            &f.context,
+            &f.context_hash,
+            &f.identity,
+            &f.root,
+            Some(&paths),
+            deadline
+        )
+        .is_err());
+        // These physical placeholders test recovery/hash authority, not codecs.
+    }
+
+    #[test]
+    fn retained_recovery_rejects_partial_roles_and_semantically_foreign_qc() {
+        let f = fixture_mode("b1", false);
+        let mut packet = decode(&f.raw, LIMIT).unwrap();
+        let mut paths = HashMap::new();
+        for (role, _) in ROLES {
+            paths.insert(
+                role,
+                PathBuf::from(packet["artifacts"][role]["path"].as_str().unwrap()),
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut partial = paths.clone();
+        partial.remove("qc_report");
+        assert!(admit_result_at(
+            &f.raw,
+            &f.context,
+            &f.context_hash,
+            &f.identity,
+            &f.root,
+            Some(&partial),
+            deadline
+        )
+        .is_err());
+        let mut qc = decode(
+            std::str::from_utf8(&fs::read(&paths["qc_report"]).unwrap()).unwrap(),
+            LIMIT,
+        )
+        .unwrap();
+        qc["output_probe"]["streams"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"codec_type":"audio","codec_name":"aac"}));
+        let bytes = qc.to_string().into_bytes();
+        fs::write(&paths["qc_report"], &bytes).unwrap();
+        packet["artifacts"]["qc_report"]["sha256"] = hash(&bytes).into();
+        packet["artifacts"]["qc_report"]["size_bytes"] = bytes.len().to_string().into();
+        assert!(admit_result_at(
+            &packet.to_string(),
+            &f.context,
+            &f.context_hash,
+            &f.identity,
+            &f.root,
+            Some(&paths),
+            deadline
+        )
+        .is_err());
     }
     #[test]
     fn render_result_cannot_substitute_revision_recipe_root_roles_or_qc() {

@@ -942,6 +942,27 @@ standard/editable publication and real installed/power-loss qualification remain
 No public worker/SQLite/core2/optionalReview1 or original producer/model format
 changes. Older binaries ignore the private receipt and account these regular
 files in the existing namespace quota, preserving originals on rollback.
+
+Before returning the opt-in render result, native code now releases its writer
+lease and reopens the existing namespace from the original admitted output
+pin. It reads the sealed retained receipt, context and candidate result from
+the native accepted-document store, binds their exact job/recipe/before/after
+snapshot and corrected-timeline bytes, and reconstructs all five files from
+closed canonical locators. The absolute `path_hint` is bounded diagnostic data,
+never an IO target. Root kind, volume, relative path, hash, decimal-string size,
+format and native job/content filename must agree; unknown or substituted
+descriptors refuse without creating/replacing a namespace or object.
+
+The same result/timeline/QC semantic admission used for the live candidate is
+then rerun against those retained physical paths. Original candidate paths
+remain QC/execution provenance, but no candidate media is read during recovery.
+Only after that check may the private response add
+`retained_receipt_reopened=true`. This does not activate a corrected graph or
+perform SQLite CAS/undo. The future active-graph reader must invoke the same
+physical and semantic checks, bind its own current durable token, and validate
+all retained mix/original dependencies before publication. Reopening within
+one native process and deterministic missing-candidate fixtures do not replace
+actual installed crash/restart, volume-change or long-form qualification.
 An original pinned release must explicitly inventory/admit the worker; no
 historical worker/model/runtime pin is upgraded by this addition. Actual native
 output quota/volume/locator and immutable retention qualification, final graph CAS/undo and
