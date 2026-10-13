@@ -280,6 +280,44 @@ fn admit_result_at(
     Ok(packet)
 }
 
+/// A native recovery admission, never a worker/browser playback claim. Fields
+/// remain private so a graph caller cannot manufacture a preview from a hint.
+struct VerifiedRetainedRender {
+    candidate: Value,
+    proposal_json: String,
+    final_video: PathBuf,
+}
+
+impl VerifiedRetainedRender {
+    /// Prepare the snapshot a later graph transaction must publish alongside
+    /// its retained outputs. The logical proposal deliberately has old preview
+    /// paths; replacing every preview is necessary because rendering produces a
+    /// complete video, including unchanged cues and global findings.
+    fn prepare_snapshot(&self, proposal: &AdmittedSnapshot) -> SupervisorResult<AdmittedSnapshot> {
+        if proposal.json() != self.proposal_json
+            || self.candidate["after_snapshot_sha256"] != proposal.sha256()
+            || !self.final_video.is_absolute()
+        {
+            return Err(invalid(
+                "retained preview differs from its admitted proposal",
+            ));
+        }
+        let preview = self
+            .final_video
+            .to_str()
+            .ok_or_else(|| invalid("retained preview path is not UTF-8"))?;
+        super::review_document::text(&Value::String(preview.into()), 4096)?;
+        let mut snapshot = decode(proposal.json(), LIMIT)?;
+        for finding in snapshot["findings"].as_array_mut().unwrap() {
+            finding["output_preview"] = preview.into();
+        }
+        // Text/voice edits, exact source ticks, confidence, warnings and the
+        // invalidation plan remain those of the native logical proposal. Fresh
+        // render QC is a separate sealed artifact, not invented confidence.
+        AdmittedSnapshot::read(&snapshot.to_string(), proposal.job(), proposal.revision())
+    }
+}
+
 /// Re-admit sealed execution/QC metadata using canonical retained files only.
 /// Candidate paths remain provenance, never recovery IO or graph authority.
 fn reopen_retained_result(
@@ -288,7 +326,7 @@ fn reopen_retained_result(
     context: &AcceptedJsonDocument,
     identity: &str,
     deadline: Instant,
-) -> SupervisorResult<Value> {
+) -> SupervisorResult<VerifiedRetainedRender> {
     let saved = decode(&input.assets.read_json(receipt)?, LIMIT)?;
     closed(
         &saved,
@@ -362,7 +400,7 @@ fn reopen_retained_result(
         let file = store.reopen_file(&entry["file"], deadline)?;
         paths.insert(role, file.path().to_path_buf());
     }
-    admit_result_at(
+    let candidate = admit_result_at(
         &result_raw,
         &context_value,
         &context.sha256,
@@ -370,7 +408,15 @@ fn reopen_retained_result(
         input.candidates,
         Some(&paths),
         deadline,
-    )
+    )?;
+    Ok(VerifiedRetainedRender {
+        candidate,
+        proposal_json: input.after.json().into(),
+        final_video: paths
+            .get("final_video")
+            .ok_or_else(|| invalid("retained preview role is missing"))?
+            .clone(),
+    })
 }
 
 pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
@@ -609,16 +655,24 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
         retained.verify_file(file, deadline)?;
     }
     drop(retained);
-    if reopen_retained_result(&input, &receipt, &context, &identity, deadline)? != candidate {
+    let reopened = reopen_retained_result(&input, &receipt, &context, &identity, deadline)?;
+    if reopened.candidate != candidate {
         return Err(invalid(
             "reopened retained render differs from admitted candidate",
+        ));
+    }
+    let prepared = reopened.prepare_snapshot(input.after)?;
+    let prepared_snapshot = input.assets.accept_json(prepared.json())?;
+    if input.assets.read_json(&prepared_snapshot)? != prepared.json() {
+        return Err(invalid(
+            "sealed playback snapshot differs from native preparation",
         ));
     }
     // All five roles are retained together before returning. Partial failures
     // leave only unreferenced sealed objects; no old graph/output is retired.
     Ok(
         json!({"context":descriptor(&context),"result":descriptor(&result),"candidate":candidate,
-        "retained_render":descriptor(&receipt),
+        "retained_render":descriptor(&receipt),"prepared_snapshot":descriptor(&prepared_snapshot),
         "retained_artifacts":located.iter().map(|(role,file)|json!({"role":role,"file":file.descriptor()})).collect::<Vec<_>>(),
         "native_output_bytes_verified":true,"retained_final_output":true,"retained_receipt_reopened":true,
         "active_graph_published":false,"correction_ready":false}),
@@ -643,6 +697,96 @@ mod tests {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+
+    fn preview_fixture() -> (AdmittedSnapshot, VerifiedRetainedRender) {
+        let source = decode(
+            include_str!("../../../../tests/review/native_snapshot_v2.json"),
+            LIMIT,
+        )
+        .unwrap();
+        let before = AdmittedSnapshot::read(
+            &source["snapshot"].to_string(),
+            "job-native-doc",
+            9007199254740994,
+        )
+        .unwrap();
+        let proposal = before
+            .correction(
+                "finding-a",
+                Some("Đừng cử động."),
+                None,
+                super::super::review_document::ReviewMode::Dubbed,
+            )
+            .unwrap();
+        let proof = VerifiedRetainedRender {
+            candidate: json!({"after_snapshot_sha256":proposal.sha256(),
+                "artifacts":{"final_video":{"path":"untrusted-candidate-hint.mp4"}}}),
+            proposal_json: proposal.json().into(),
+            final_video: std::env::temp_dir().join("retained preview with spaces.mp4"),
+        };
+        (proposal, proof)
+    }
+
+    #[test]
+    fn prepared_playback_uses_retained_video_for_all_findings_preserving_exact_evidence() {
+        let (proposal, proof) = preview_fixture();
+        let original_bytes = proposal.json().to_owned();
+        let prepared = proof.prepare_snapshot(&proposal).unwrap();
+        let mut expected = decode(&original_bytes, LIMIT).unwrap();
+        for finding in expected["findings"].as_array_mut().unwrap() {
+            finding["output_preview"] = json!(proof.final_video);
+        }
+        assert_eq!(decode(prepared.json(), LIMIT).unwrap(), expected);
+        assert_eq!(prepared.revision(), 9007199254740995);
+        assert_ne!(prepared.sha256(), proposal.sha256());
+        assert_eq!(proposal.json(), original_bytes);
+        // Confidence, global warnings, unrelated cue content and source ticks
+        // above 2^53 are preserved by the complete-document comparison.
+        let fixture = decode(
+            include_str!("../../../../tests/review/native_snapshot_v2.json"),
+            LIMIT,
+        )
+        .unwrap();
+        let prior = AdmittedSnapshot::read(
+            &fixture["snapshot"].to_string(),
+            proposal.job(),
+            9007199254740994,
+        )
+        .unwrap();
+        let restored = prior.undo_proposal(&prepared).unwrap();
+        let mut expected_prior = decode(prior.json(), LIMIT).unwrap();
+        expected_prior["revision"] = 9007199254740996u64.into();
+        assert_eq!(decode(restored.json(), LIMIT).unwrap(), expected_prior);
+        // Pure snapshot undo only; this is not a durable graph/media undo test.
+    }
+
+    #[test]
+    fn prepared_playback_refuses_foreign_proposal_hash_or_non_native_path() {
+        let (proposal, _) = preview_fixture();
+        let other = proposal
+            .correction(
+                "finding-c",
+                Some("Một câu khác."),
+                None,
+                super::super::review_document::ReviewMode::Dubbed,
+            )
+            .unwrap();
+        for substitution in 0..5 {
+            let (_, mut proof) = preview_fixture();
+            match substitution {
+                0 => proof.proposal_json = other.json().into(),
+                1 => proof.candidate["after_snapshot_sha256"] = hash(b"foreign").into(),
+                2 => proof.final_video = PathBuf::from("relative-candidate.mp4"),
+                3 => proof.final_video = std::env::temp_dir().join("bad\npreview.mp4"),
+                _ => proof.candidate["after_snapshot_sha256"] = Value::Null,
+            }
+            assert!(
+                proof.prepare_snapshot(&proposal).is_err(),
+                "substitution {substitution}"
+            );
+        }
+    }
+
     fn fixture() -> Fixture {
         fixture_mode("b2", true)
     }

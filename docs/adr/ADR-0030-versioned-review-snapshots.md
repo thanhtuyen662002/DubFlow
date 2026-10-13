@@ -972,3 +972,26 @@ required before activation, as are B1/B2 installed and actual four-hour media
 tests. Small physical fixtures qualify only the component. No durable schema,
 core2/optionalReview1 or existing job format changes. Rollback ignores private
 unreferenced candidates and keeps the original export/active graph usable.
+
+The opt-in render response also prepares a separate sealed snapshot for future
+graph publication. Only native admission of the reopened five-role render can
+construct the private preview proof. Its source proposal must match exact
+canonical bytes and the worker result's admitted after-snapshot hash. Every
+finding, including unchanged cues and global warnings, receives the physically
+verified retained full-video path. Candidate paths and absolute locator hints
+cannot supply that preview. All other proposal fields remain identical: cue
+text/voice edits, source integer ticks/time base, measured confidence, existing
+warnings, finding order and the invalidation plan. Fresh render QC remains a
+separate sealed role; preview preparation does not invent confidence or clear
+prior risk evidence. Non-UTF8, relative or out-of-bound preview paths refuse.
+
+The additive private `prepared_snapshot` descriptor is distinct from the
+logical proposal and context fingerprint used by the worker. It neither changes
+the retained receipt format nor commits a SQLite graph, enables desktop edits
+or marks correction readiness. A future native graph transaction must read and
+revalidate this prepared snapshot against retained output admission, retain all
+undo and mix dependencies, and bind the current durable token before CAS. Old
+snapshots and source exports stay untouched. Older binaries ignore the extra
+private descriptor; unreferenced sealed metadata remains subject to the existing
+accepted-document budget. Pure snapshot/undo tests do not qualify media, crash
+recovery, cumulative graph edits or the installed product.
