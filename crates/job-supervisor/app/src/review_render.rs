@@ -33,7 +33,7 @@ fn hash(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn verified(
+pub(super) fn verified(
     path: &Path,
     expected: &str,
     size: u64,
@@ -282,7 +282,7 @@ fn admit_result_at(
 
 /// A native recovery admission, never a worker/browser playback claim. Fields
 /// remain private so a graph caller cannot manufacture a preview from a hint.
-struct VerifiedRetainedRender {
+pub(super) struct VerifiedRetainedRender {
     candidate: Value,
     proposal_json: String,
     final_video: PathBuf,
@@ -293,7 +293,10 @@ impl VerifiedRetainedRender {
     /// its retained outputs. The logical proposal deliberately has old preview
     /// paths; replacing every preview is necessary because rendering produces a
     /// complete video, including unchanged cues and global findings.
-    fn prepare_snapshot(&self, proposal: &AdmittedSnapshot) -> SupervisorResult<AdmittedSnapshot> {
+    pub(super) fn prepare_snapshot(
+        &self,
+        proposal: &AdmittedSnapshot,
+    ) -> SupervisorResult<AdmittedSnapshot> {
         if proposal.json() != self.proposal_json
             || self.candidate["after_snapshot_sha256"] != proposal.sha256()
             || !self.final_video.is_absolute()
@@ -320,8 +323,17 @@ impl VerifiedRetainedRender {
 
 /// Re-admit sealed execution/QC metadata using canonical retained files only.
 /// Candidate paths remain provenance, never recovery IO or graph authority.
-fn reopen_retained_result(
-    input: &RenderInputs<'_>,
+pub(super) struct RecoveryInputs<'a> {
+    pub(super) assets: &'a AcceptedAudioStore,
+    pub(super) state: &'a ReviewGraphState,
+    pub(super) after: &'a AdmittedSnapshot,
+    pub(super) timeline: &'a AcceptedJsonDocument,
+    pub(super) output_pin: &'a super::review_retention::NativeOutputPin,
+    pub(super) candidates: &'a Path,
+}
+
+pub(super) fn reopen_retained_result(
+    input: &RecoveryInputs<'_>,
     receipt: &AcceptedJsonDocument,
     context: &AcceptedJsonDocument,
     identity: &str,
@@ -655,7 +667,20 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
         retained.verify_file(file, deadline)?;
     }
     drop(retained);
-    let reopened = reopen_retained_result(&input, &receipt, &context, &identity, deadline)?;
+    let reopened = reopen_retained_result(
+        &RecoveryInputs {
+            assets: input.assets,
+            state: input.state,
+            after: input.after,
+            timeline: input.timeline,
+            output_pin: input.output_pin,
+            candidates: input.candidates,
+        },
+        &receipt,
+        &context,
+        &identity,
+        deadline,
+    )?;
     if reopened.candidate != candidate {
         return Err(invalid(
             "reopened retained render differs from admitted candidate",
@@ -668,11 +693,24 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
             "sealed playback snapshot differs from native preparation",
         ));
     }
+    let publication = super::review_active::prepare(
+        input.assets,
+        input.state,
+        input.after,
+        input.timeline,
+        &context,
+        &receipt,
+        &prepared_snapshot,
+        &identity,
+        input.output_pin.volume_id(),
+        input.mixed,
+    )?;
     // All five roles are retained together before returning. Partial failures
     // leave only unreferenced sealed objects; no old graph/output is retired.
     Ok(
         json!({"context":descriptor(&context),"result":descriptor(&result),"candidate":candidate,
         "retained_render":descriptor(&receipt),"prepared_snapshot":descriptor(&prepared_snapshot),
+        "native_publication":descriptor(&publication),
         "retained_artifacts":located.iter().map(|(role,file)|json!({"role":role,"file":file.descriptor()})).collect::<Vec<_>>(),
         "native_output_bytes_verified":true,"retained_final_output":true,"retained_receipt_reopened":true,
         "active_graph_published":false,"correction_ready":false}),

@@ -41,6 +41,7 @@ mod review_correction;
 mod review_retention;
 mod review_timeline;
 mod review_render;
+mod review_active;
 
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
@@ -615,6 +616,15 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-active")) {
+        return review_active::run(std::env::args_os().skip(2), false);
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-undo-active")) {
+        return review_active::run(std::env::args_os().skip(2), true);
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-commit-render-cue")) {
+        return review_correction::run_commit_render(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-render-cue")) {
         return review_correction::run_render(std::env::args_os().skip(2));
     }

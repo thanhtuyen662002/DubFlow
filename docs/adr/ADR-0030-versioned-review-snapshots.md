@@ -995,3 +995,39 @@ snapshots and source exports stay untouched. Older binaries ignore the extra
 private descriptor; unreferenced sealed metadata remains subject to the existing
 accepted-document budget. Pure snapshot/undo tests do not qualify media, crash
 recovery, cumulative graph edits or the installed product.
+
+A separate opt-in native `review-commit-render-cue` command now runs the same
+original B1/B2 correction/render boundary, reopens every retained render and mix
+dependency, checks the current durable token, then calls the existing supervisor
+SQLite graph CAS. It preserves the prior row as the undo target; validation,
+storage and CAS failure cannot retire the original export. Existing private
+commands remain SQLite read-only. A private schema1 publication document stores
+hash-bound sealed before-state/proposal/timeline/render/context/preview objects,
+original artifact/manifest identity and the pre-inference output volume GUID.
+It does not copy recursive graph history into each row. The corrected graph is
+a closed native pointer envelope to that publication document, never worker
+JSON authorizing a mutation. All objects and original exports remain retained.
+
+`review-active` re-admits that envelope, original canonical metadata, exact
+logical proposal and derived timeline, all five canonical output locators,
+retained B2 PCM locators/headers/full hashes and the exact path-only mix retarget.
+Absolute hints and mutable generation files cannot become recovery IO targets.
+Every displayed snapshot must match native prepared playback except its current
+monotonic revision. `review-undo-active` admits both current and prior graphs
+before the existing CAS restores the prior snapshot/graph at a new revision;
+an unknown/corrupt/offline graph refuses without silently repairing or falling
+back. Restored original metadata is normalized only for original semantic
+admission, while its public token remains monotonic; original media hashes are
+rechecked before it can be used. No worker, SQLite schema, public worker protocol
+or original producer/model/runtime pin is changed. Rollback to an older native
+binary refuses the unknown optional corrected graph while the untouched standard
+export remains available, rather than overwriting optional state.
+
+These commands are an integration draft, not enabled in the desktop. The current
+pinned cue recipe accepts only the original revision; cumulative edits and a
+new correction after undo still require the versioned effective-generation
+producer path. Chunked longform scheduling, corrected standard/editable export
+publication, actual installed CAS/undo/power-loss and native four-hour tests also
+remain mandatory. `correction_ready=false` stays even when the opt-in native
+graph CAS succeeds. Deterministic metadata/SQLite tests and placeholder media
+cannot qualify native render quality, an installed workflow or full Issue174.

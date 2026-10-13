@@ -746,7 +746,7 @@ fn emit_original(state: &ReviewGraphState) -> SupervisorResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use dubflow_job_state::JobStatus;
     use std::fs;
@@ -790,6 +790,15 @@ mod tests {
     }
     fn fixture() -> Fixture {
         fixture_with_metadata_subdir("")
+    }
+
+    /// Native active-reader tests share the original admission boundary. Test
+    /// metadata/SQLite only; this fixture does not contain encoded video.
+    pub(crate) fn with_admitted_original(f: impl FnOnce(&DurableStore, &Path, &ReviewGraphState)) {
+        let fixture = fixture();
+        let seed = AdmittedSeed::read(&fixture.packet.to_string(), &fixture.export).unwrap();
+        let state = initialize(&fixture.store, &fixture.root, &fixture.export, &seed).unwrap();
+        f(&fixture.store, &fixture.root, &state);
     }
 
     fn fixture_with_metadata_subdir(metadata_subdir: &str) -> Fixture {

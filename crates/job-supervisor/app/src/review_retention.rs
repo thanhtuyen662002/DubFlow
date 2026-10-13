@@ -390,6 +390,10 @@ pub(super) struct NativeOutputPin {
 }
 
 impl NativeOutputPin {
+    pub(super) fn volume_id(&self) -> &str {
+        &self.volume_id
+    }
+
     pub(super) fn read(root: &Path) -> SupervisorResult<Self> {
         let observed = probe(root)?;
         let root = std::fs::canonicalize(root)?;
@@ -559,6 +563,54 @@ impl NativeMixStore {
     ) -> SupervisorResult<LocatedRenderFile> {
         let object = render_file_descriptor(descriptor, &self.root, &self.volume_id)?;
         self.verify_file(&object, deadline)?;
+        Ok(object)
+    }
+
+    /// Recover PCM only from canonical locators; hints never authorize IO.
+    pub(super) fn reopen_audio(
+        &self,
+        value: &Value,
+        deadline: Instant,
+    ) -> SupervisorResult<LocatedMixAudio> {
+        use super::review_document::{closed, tick};
+        closed(
+            value,
+            &[
+                "path_hint",
+                "locator",
+                "sample_rate",
+                "channels",
+                "frame_count",
+            ],
+        )?;
+        if value["sample_rate"].as_u64() != Some(48000) || value["channels"].as_u64() != Some(2) {
+            return Err(invalid("retained recovery changed PCM layout"));
+        }
+        let frames = tick(&value["frame_count"], true)?;
+        if frames > 48000 * 6 * 3600 {
+            return Err(invalid("retained recovery PCM duration exceeds its bound"));
+        }
+        // Reuse the closed locator parser, then independently verify the PCM
+        // namespace/content filename and full streamed header/bytes below.
+        let file = render_file_descriptor(
+            &json!({"path_hint":value["path_hint"],"format":"json","locator":value["locator"]}),
+            &self.root,
+            &self.volume_id,
+        )?;
+        let object = LocatedMixAudio {
+            audio: RetainedMixAudio {
+                path: file.file.path,
+                pin: PcmPin {
+                    sha256: file.file.pin.sha256,
+                    size_bytes: file.file.pin.size_bytes,
+                    sample_rate: 48000,
+                    channels: 2,
+                    frame_count: frames,
+                },
+            },
+            locator: file.locator,
+        };
+        self.verify(&object, deadline)?;
         Ok(object)
     }
 
@@ -1043,6 +1095,19 @@ mod tests {
                 .is_err());
         }
         assert!(reopened.verify(&object, Instant::now()).is_err());
+        let mut hint_only = object.descriptor();
+        hint_only["path_hint"] = "missing mutable candidate, never read".into();
+        let restored_audio = reopened.reopen_audio(&hint_only, deadline).unwrap();
+        assert_eq!(restored_audio.audio, object.audio);
+        for field in ["sample_rate", "channels", "frame_count"] {
+            let mut substituted = hint_only.clone();
+            substituted[field] = if field == "frame_count" {
+                json!("0001")
+            } else {
+                json!(1)
+            };
+            assert!(reopened.reopen_audio(&substituted, deadline).is_err());
+        }
         let foreign_volume = NativeOutputPin {
             root: native.root.clone(),
             volume_id: "windows-volume-guid:ffffffff-89ab-cdef-0123-456789abcdef".into(),

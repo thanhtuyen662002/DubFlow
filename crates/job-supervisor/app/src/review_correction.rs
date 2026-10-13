@@ -94,23 +94,27 @@ fn unchanged(store: &DurableStore, state: &ReviewGraphState) -> SupervisorResult
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, false, false, false, false)
+    run_inner(&mut args, false, false, false, false, false)
 }
 
 pub(super) fn run_synthesis(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, false, false, false)
+    run_inner(&mut args, true, false, false, false, false)
 }
 
 pub(super) fn run_mix(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, true, false, false)
+    run_inner(&mut args, true, true, false, false, false)
 }
 
 pub(super) fn run_retained_mix(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, true, true, false)
+    run_inner(&mut args, true, true, true, false, false)
 }
 
 pub(super) fn run_render(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, true, true, true)
+    run_inner(&mut args, true, true, true, true, false)
+}
+
+pub(super) fn run_commit_render(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
+    run_inner(&mut args, true, true, true, true, true)
 }
 
 fn run_inner(
@@ -119,6 +123,7 @@ fn run_inner(
     mix: bool,
     retain: bool,
     render: bool,
+    publish: bool,
 ) -> SupervisorResult<()> {
     let mut values = std::collections::HashMap::new();
     while let Some(flag) = args.next() {
@@ -175,8 +180,13 @@ fn run_inner(
     let db = data.join("control/jobs.sqlite3");
     super::review_pin::plain(&db)?;
     let _guard = super::JobExecutionGuard::acquire(&db, job)?;
-    // SQLite enforces read-only even though private request objects are stored.
-    let store = DurableStore::open_read_only(&db)?;
+    // Existing private commands remain read-only. Only the separate explicit
+    // native publication command may use the supervisor-owned CAS transaction.
+    let store = if publish {
+        DurableStore::open(&db)?
+    } else {
+        DurableStore::open_read_only(&db)?
+    };
     let state = store
         .review_graph_state(job)?
         .ok_or_else(|| invalid("original Review state must be explicitly initialized first"))?;
@@ -225,6 +235,13 @@ fn run_inner(
         assets.read_json(&timeline)?;
         unchanged(&store, &state)?;
         read_original(&store, &data, &state)?;
+        if publish {
+            let committed = super::review_active::commit(&store, &data, &state, &rendered)?;
+            return super::emit_value(
+                &mut std::io::stdout().lock(),
+                super::review_active::committed_packet(&committed)?,
+            );
+        }
         return super::emit_value(
             &mut std::io::stdout().lock(),
             json!({
@@ -347,6 +364,20 @@ fn run_inner(
         };
         unchanged(&store, &state)?;
         let _original = read_original(&store, &data, &state)?;
+        if publish {
+            let committed = super::review_active::commit(
+                &store,
+                &data,
+                &state,
+                rendered
+                    .as_ref()
+                    .ok_or_else(|| invalid("publication requires retained render"))?,
+            )?;
+            return super::emit_value(
+                &mut std::io::stdout().lock(),
+                super::review_active::committed_packet(&committed)?,
+            );
+        }
         let mut packet = json!({"schema_version":1,"kind":if render {"review_rendered_original_cue"} else if retain {"review_retained_mixed_original_cue"} else if mix {"review_mixed_original_cue"} else {"review_synthesized_original_cue"},
             "job_id":job,"revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,"graph_sha256":state.token.graph_sha256,
             "finding_id":finding,"context":descriptor(&context),"request":descriptor(&accepted),"release_sha256":runtime.release_hash,
@@ -411,7 +442,7 @@ fn mix_descriptor(object: &AcceptedJsonDocument, waves: &Path) -> Value {
         "artifact_root":waves,"metadata_root":object.path.parent().unwrap()})
 }
 
-fn admit_mix_metadata(
+pub(super) fn admit_mix_metadata(
     raw: &str,
     context: &Value,
     context_hash: &str,
