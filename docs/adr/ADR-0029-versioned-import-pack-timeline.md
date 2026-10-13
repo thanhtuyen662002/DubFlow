@@ -144,6 +144,29 @@ and GUI usability remain separate required evidence for this integration.
 
 ## Exact vendor build identity
 
+### Ancillary manual editing guidance
+
+New packs include `HUONG_DAN.txt`, bounded to128KiB UTF-8, with steps derived from
+their normalized default tracks and relative resource names. It names the
+selected raw video, final mix and embedded-audio mute policy, keeps component
+stems as editing alternatives and directs subtitle files to the caption import
+surface. The user's9.6 desktop observation confirms media Import > From device.
+CapCut's [subtitle import help](https://www.capcut.com/help/how-to-import-subtitles)
+documents separate caption-file import. Its [project import help](https://www.capcut.com/help/import-a-previous-project-into-the-current-project)
+describes importing an exported video into a project, which does not qualify
+an adapter-generated native project opener. These sources do not add any tested
+vendor build to the direct-draft matrix.
+
+The guide is ancillary rather than a manifest resource or vendor draft. Public
+pack schemas/resource/timeline hashes are unchanged, and older published packs
+remain readable without this file. Private copy recipe
+`portable-import-pack-copy-v2-guide1` includes its exact text hash, keeping old
+interrupted copy namespaces intact and distinct. Current worker producer-source
+binding already includes the adapter bytes, so new guidance cannot silently
+rewrite a saved old job's pack. Rollback preserves previous media/pack readers;
+there is no in-place migration or SQLite/updater format change. Native vendor
+handoff and current installed usability still require their separate evidence.
+
 The draft boundary accepts bounded `major.minor.patch` and
 `major.minor.patch.build` identities, matching native registration discovery.
 It preserves the fourth component in compatibility lookup, generated metadata

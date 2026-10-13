@@ -31,6 +31,19 @@ work is never advertised as a completed pack or used to replace canonical
 output. A completed pack is independently validated before atomic promotion.
 
 The adapter does not inspect or write CapCut's private project database.
+New packs also include bounded UTF-8 `HUONG_DAN.txt` instructions derived from
+their normalized default tracks and relative file names. They identify media
+intake, separate caption import, the selected video/mix and embedded-audio mute
+policy. The text is ancillary guidance; it is not a vendor project format or a
+supported-build declaration. Resource hashes and timeline identity remain in
+the unchanged manifest. Released packs need not contain this file.
+
+Its exact text hash is included in the new private copy recipe
+`portable-import-pack-copy-v2-guide1`. A different guide/request gets a separate
+private checkpoint; old interrupted copies and already published packs are
+preserved, not rewritten or silently adopted. This changes no public pack
+schema, SQLite state, original media or pinned job/runtime.
+
 The direct-draft adapter may consume this pack only for an explicitly tested
 CapCut version and a caller-selected controlled directory. An unsupported or
 unavailable CapCut version always returns this pack as the actionable fallback;

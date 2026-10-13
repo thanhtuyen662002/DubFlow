@@ -293,6 +293,49 @@ def _manifest(pack_id: str, assets: list[dict[str, object]], timeline: Mapping[s
     return manifest
 
 
+def _editing_guide(manifest: Mapping[str, Any]) -> bytes:
+    """Human editing steps; the manifest remains the resource/timeline authority."""
+    assets = {asset["asset_id"]: asset for asset in manifest["assets"]}
+    tracks = manifest["tracks"]
+    active = [track for track in tracks if track.get("enabled_by_default") is True]
+    lines = ["DubFlow — Hướng dẫn chỉnh sửa", "",
+             "1. Tạo một dự án trong CapCut Desktop.",
+             "2. Dùng Import > From device để thêm video và âm thanh bên dưới.",
+             "   Đặt video và bản mix ở đầu timeline.", "", "Video:"]
+    video_tracks = [track for track in active if track["kind"] == "video"]
+    video_ids = [identifier for track in video_tracks for identifier in track["asset_ids"]] or ["source-video"]
+    lines += ["- " + str(assets[identifier]["relative_path"]) for identifier in video_ids]
+    if any(track.get("mute_embedded_audio") is True for track in video_tracks):
+        lines.append("- Đặt âm lượng của video về 0; dùng bản âm thanh đã chọn bên dưới.")
+    else:
+        lines.append("- Giữ âm thanh của video nếu bạn chưa chọn một bản mix thay thế.")
+    selected_audio = [identifier for track in active if track["kind"] == "audio" for identifier in track["asset_ids"]]
+    if selected_audio:
+        lines += ["", "Âm thanh đã chọn:"] + ["- " + str(assets[identifier]["relative_path"]) for identifier in selected_audio]
+        lines.append("- Dùng bản này cho âm thanh đầu ra. Các stem còn lại dành cho việc phối lại.")
+    elif any(asset["kind"] in {"original_audio", "dub_audio", "mixed_audio"} for asset in assets.values()):
+        lines += ["", "Tệp âm thanh để tự phối:"]
+        lines += ["- " + str(asset["relative_path"]) for asset in assets.values() if asset["kind"] in {"original_audio", "dub_audio", "mixed_audio"}]
+        lines.append("- Chọn hoặc phối âm thanh theo nhu cầu; mỗi stem là một tài nguyên riêng.")
+    subtitles = [asset for asset in assets.values() if asset["kind"] == "subtitle"]
+    srt = [asset for asset in subtitles if asset["format"] == "srt"]
+    if subtitles:
+        lines += ["", "3. Nhập phụ đề qua Captions > Add captions / Import file.",
+                  "   Chọn tệp phụ đề phù hợp với định dạng mà phiên bản CapCut của bạn hỗ trợ:"]
+        lines += ["- " + str(asset["relative_path"]) for asset in (srt or subtitles)]
+        lines.append("   Sau khi nhập, từng câu xuất hiện thành một lớp văn bản có thể chỉnh sửa.")
+    lines += ["", "Lưu dự án trong CapCut sau khi sắp xếp các lớp.",
+              "Có thể chuyển toàn bộ gói trước khi nhập. Sau khi nhập, giữ các tệp media",
+              "ở nơi đã chọn; nếu chuyển chúng, hãy liên kết lại media trong trình biên tập.",
+              "Các video và stem bổ sung trong gói là lựa chọn để dựng hoặc phối lại.",
+              "", "Tài liệu CapCut:",
+              "https://www.capcut.com/help/how-to-import-subtitles", ""]
+    raw = "\n".join(lines).encode("utf-8")
+    if len(raw) > 128 * 1024:
+        raise ImportPackError("editing guidance exceeds bounded storage")
+    return raw
+
+
 def create_import_pack(request: ImportPackRequest, output_root: Path) -> ImportPackResult:
     if output_root.exists() or output_root.is_symlink():
         raise ImportPackError("OUTPUT_EXISTS")
@@ -324,7 +367,9 @@ def create_import_pack(request: ImportPackRequest, output_root: Path) -> ImportP
         for cue in manifest["timeline"]["cues"]:
             if not set(cue.get("asset_ids", [])) <= asset_ids or ("track_id" in cue and cue["track_id"] not in track_ids):
                 raise ImportPackError("timeline cue references an unknown pack asset/track")
-    pins = {"recipe": "portable-import-pack-copy-v2", "manifest": manifest}
+    guide = _editing_guide(manifest)
+    pins = {"recipe": "portable-import-pack-copy-v2-guide1", "manifest": manifest,
+            "editing_guide_sha256": "sha256:" + sha256(guide).hexdigest()}
     raw_pins = json.dumps(pins, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     if len(raw_pins) > 16 * 1024 * 1024:
         raise ImportPackError("pack metadata exceeds bounded storage")
@@ -356,6 +401,26 @@ def create_import_pack(request: ImportPackRequest, output_root: Path) -> ImportP
     for (asset, relative), descriptor in zip(specifications, assets):
         _copy_asset(asset.source_path, temporary / relative, size=int(descriptor["size_bytes"]),
                     expected_hash=descriptor["content_hash"], root=temporary)
+    guide_path = temporary / "HUONG_DAN.txt"
+    _plain_under(temporary, guide_path)
+    if guide_path.exists():
+        if not guide_path.is_file() or guide_path.stat().st_size != len(guide) or guide_path.read_bytes() != guide:
+            raise ImportPackError("private editing guidance differs from its pinned recipe")
+    else:
+        guide_partial = temporary / ".HUONG_DAN.partial"
+        _plain_under(temporary, guide_partial)
+        prefix = b""
+        if guide_partial.exists():
+            if not guide_partial.is_file() or guide_partial.stat().st_nlink != 1 or guide_partial.stat().st_size > len(guide):
+                raise ImportPackError("private editing guidance checkpoint is invalid")
+            prefix = guide_partial.read_bytes()
+            if not guide.startswith(prefix):
+                raise ImportPackError("private editing guidance checkpoint differs")
+        with guide_partial.open("ab" if guide_partial.exists() else "xb") as stream:
+            stream.write(guide[len(prefix):])
+            stream.flush()
+            os.fsync(stream.fileno())
+        guide_partial.rename(guide_path)
     manifest_path = temporary / "manifest.json"
     _plain_under(temporary, manifest_path)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
