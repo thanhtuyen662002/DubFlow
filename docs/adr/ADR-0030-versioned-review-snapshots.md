@@ -1089,3 +1089,17 @@ publication, actual installed CAS/undo/power-loss and native four-hour tests als
 remain mandatory. `correction_ready=false` stays even when the opt-in native
 graph CAS succeeds. Deterministic metadata/SQLite tests and placeholder media
 cannot qualify native render quality, an installed workflow or full Issue174.
+
+Actual current-source B1 admission found Python correction planning traversing
+the B2 TTS/mix descendants even when both admitted finding voices were absent.
+The native B1 proposal correctly retained only translation, subtitles, render,
+QC and export, so the original renderer refused that proposal before rendering.
+Python store planning and timeline admission now derive those five B1 stages
+from the existing absent-voice provenance; adding a voice requires explicit mode
+compatibility and refuses. Assigned-voice B2 planning remains unchanged. ASR/OCR,
+source ticks, confidence, unrelated findings and exact downstream-plan equality
+remain fenced. There is no schema, SQL, worker protocol or producer pin change.
+Old sealed B1 proposals with TTS/mix stages are not silently rewritten. Existing
+pinned producers/jobs retain their code and failed evidence; the repaired recipe
+requires a new admitted producer/processing version and source-matched native
+qualification. The original export remains usable during refusal or rollback.

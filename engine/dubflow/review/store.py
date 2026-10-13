@@ -142,7 +142,8 @@ class ReviewStore:
             replacement = replace(selected, translated_text=translation.strip() if translation is not None else selected.translated_text,
                                   voice=voice if voice is not None else selected.voice)
             stages = _correction_stages(translation_changed=replacement.translated_text != selected.translated_text,
-                                        voice_changed=replacement.voice != selected.voice)
+                                        voice_changed=replacement.voice != selected.voice,
+                                        has_voice=selected.voice is not None)
             if len(history) >= MAX_UNDO:
                 raise ReviewError("review undo depth limit reached")
             plan = RegenerationPlan(finding_id, stages, ("asr", "ocr"), tuple("replacement:" + stage for stage in stages))

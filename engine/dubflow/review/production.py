@@ -43,7 +43,11 @@ _CORRECTION_EDGES = {
 _CORRECTION_ORDER = ("translation", "subtitles", "tts", "mix", "render", "qc", "export")
 
 
-def _correction_stages(*, translation_changed: bool, voice_changed: bool) -> tuple[str, ...]:
+def _correction_stages(*, translation_changed: bool, voice_changed: bool, has_voice: bool = True) -> tuple[str, ...]:
+    if type(has_voice) is not bool:
+        raise ReviewError("correction mode requires admitted voice provenance")
+    if not has_voice and voice_changed:
+        raise ReviewError("subtitle-only correction cannot change dubbing mode")
     roots = ({"translation"} if translation_changed else set()) | ({"tts"} if voice_changed else set())
     if not roots:
         raise ReviewError("a correction must change translation or voice")
@@ -54,7 +58,8 @@ def _correction_stages(*, translation_changed: bool, voice_changed: bool) -> tup
             if descendant not in affected:
                 affected.add(descendant)
                 pending.append(descendant)
-    return tuple(stage for stage in _CORRECTION_ORDER if stage in affected)
+    return tuple(stage for stage in _CORRECTION_ORDER if stage in affected and
+                 (has_voice or stage not in ("tts", "mix")))
 
 
 class ReviewError(ValueError):

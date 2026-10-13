@@ -37,7 +37,8 @@ def admit_correction(before: ReviewSnapshot, after: ReviewSnapshot):
     if (old.voice is None) != (new.voice is None):
         raise ReviewError("changing dubbing mode requires explicit compatibility")
     stages = _correction_stages(translation_changed=old.translated_text != new.translated_text,
-                                voice_changed=old.voice != new.voice)
+                                voice_changed=old.voice != new.voice,
+                                has_voice=old.voice is not None)
     plan = RegenerationPlan(identifier, stages, ("asr", "ocr"),
                             tuple("replacement:" + stage for stage in stages))
     if after.last_plan != plan:

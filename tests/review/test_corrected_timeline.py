@@ -51,6 +51,39 @@ class CorrectedTimelineTests(unittest.TestCase):
             after, _ = store.commit_correction(before, "risk-a", voice="voice-b")
             self.assertIs(derive_corrected_timeline(raw, before, after), raw)
 
+    def test_native_b1_five_stage_plan_matches_store_and_preserves_other_cues(self):
+        from engine.dubflow.review.production import RegenerationPlan
+        with TemporaryDirectory(prefix="dubflow-native-b1-plan-") as root:
+            raw, before, store, timeline = self.fixture(root, b1=True)
+            # Independent shape emitted by the actual native B1 correction.
+            stages = ("translation", "subtitles", "render", "qc", "export")
+            native_plan = RegenerationPlan("risk-a", stages, ("asr", "ocr"),
+                                          tuple("replacement:" + stage for stage in stages))
+            native_after = replace(before, revision=1, last_plan=native_plan,
+                findings=tuple(replace(f, translated_text="Chào bạn") if f.cue_id == "cue-a" else f
+                               for f in before.findings))
+            after, plan = store.commit_correction(before, "risk-a", translation="Chào bạn")
+            self.assertEqual(after, native_after)
+            self.assertEqual(plan, native_plan)
+            self.assertNotIn("tts", plan.stages_to_rerun)
+            self.assertNotIn("mix", plan.stages_to_rerun)
+            timeline["cues"][0]["translated_text"] = "Chào bạn"
+            self.assertEqual(json.loads(derive_corrected_timeline(raw, before, native_after)), timeline)
+
+    def test_b1_refuses_tts_mix_plan_or_voice_assignment_without_mutating_store(self):
+        from engine.dubflow.review.production import RegenerationPlan
+        with TemporaryDirectory(prefix="dubflow-b1-mode-refusal-") as root:
+            raw, before, store, _ = self.fixture(root, b1=True)
+            with self.assertRaisesRegex(ReviewError, "dubbing mode"):
+                store.commit_correction(before, "risk-a", voice="voice-a")
+            self.assertEqual(store.load(before.job_id), before)
+            after, _ = store.commit_correction(before, "risk-a", translation="Chào bạn")
+            wrong = ("translation", "subtitles", "tts", "mix", "render", "qc", "export")
+            substituted = replace(after, last_plan=RegenerationPlan("risk-a", wrong, ("asr", "ocr"),
+                tuple("replacement:" + stage for stage in wrong)))
+            with self.assertRaisesRegex(ReviewError, "downstream plan"):
+                derive_corrected_timeline(raw, before, substituted)
+
     def test_exact_rational_mapping_without_rounding(self):
         with TemporaryDirectory(prefix="dubflow-rational-timeline-") as root:
             raw, before, store, _ = self.fixture(root, time_base=("1", "48000"))
@@ -95,9 +128,15 @@ class CorrectedTimelineTests(unittest.TestCase):
                 derive_corrected_timeline(b"\xff", before, after)
 
     def test_b1_cannot_silently_enable_dubbing(self):
+        from engine.dubflow.review.production import RegenerationPlan
         with TemporaryDirectory(prefix="dubflow-b1-timeline-") as root:
             raw, before, store, _ = self.fixture(root, b1=True)
-            after, _ = store.commit_correction(before, "risk-a", voice="voice-a")
+            stages = ("tts", "mix", "render", "qc", "export")
+            plan = RegenerationPlan("risk-a", stages, ("asr", "ocr"),
+                                    tuple("replacement:" + stage for stage in stages))
+            after = replace(before, revision=1, last_plan=plan,
+                findings=tuple(replace(f, voice="voice-a") if f.cue_id == "cue-a" else f
+                               for f in before.findings))
             with self.assertRaisesRegex(ReviewError, "dubbing mode"):
                 derive_corrected_timeline(raw, before, after)
 
