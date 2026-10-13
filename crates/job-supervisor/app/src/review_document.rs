@@ -551,6 +551,56 @@ impl AdmittedSnapshot {
 mod tests {
     use super::*;
 
+    #[test]
+    fn strict_json_keeps_binary64_values_across_canonical_readback() {
+        // The first two are actual producer confidences changed by the default
+        // approximate JSON float parser in a Windows retained-mix execution.
+        // The oracle is Rust's correctly rounded decimal-to-binary64 parser,
+        // independent of serde_json::Value equality on two rounded operands.
+        for raw in [
+            "0.9838564395904541",
+            "0.9168733358383179",
+            "0.9999999999999999",
+            "1.0000000000000002",
+            "0.10000000000000002",
+            "5e-324",
+            "2.2250738585072014e-308",
+            "1.7976931348623157e308",
+            "-0.0",
+        ] {
+            let expected = raw.parse::<f64>().unwrap().to_bits();
+            let admitted = decode(&format!("{{\"value\":{raw}}}"), 1024).unwrap();
+            assert_eq!(
+                admitted["value"].as_f64().unwrap().to_bits(),
+                expected,
+                "{raw}"
+            );
+            let mut serialized = String::new();
+            canonical(&admitted, &mut serialized).unwrap();
+            let reopened = decode(&serialized, 1024).unwrap();
+            assert_eq!(
+                reopened["value"].as_f64().unwrap().to_bits(),
+                expected,
+                "{raw}"
+            );
+        }
+        let wide = decode(
+            "{\"ticks\":9007199254740993,\"revision\":\"9007199254740993\"}",
+            1024,
+        )
+        .unwrap();
+        assert_eq!(wide["ticks"].as_u64(), Some(9007199254740993));
+        assert_eq!(wide["revision"], "9007199254740993");
+        for raw in [
+            "{\"x\":NaN}",
+            "{\"x\":Infinity}",
+            "{\"x\":1e400}",
+            "{\"x\":0.9838564395904541,\"x\":0}",
+        ] {
+            assert!(decode(raw, 1024).is_err());
+        }
+    }
+
     fn fixture() -> Value {
         serde_json::from_str(include_str!(
             "../../../../tests/review/native_snapshot_v2.json"

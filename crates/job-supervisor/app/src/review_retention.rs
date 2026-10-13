@@ -860,6 +860,45 @@ mod tests {
     }
 
     #[test]
+    fn retained_metadata_keeps_actual_measured_confidence_bits_except_three_paths() {
+        use super::super::review_document::{canonical, decode};
+        let (fixture, objects) = metadata_fixture();
+        let mut source = decode(
+            fixture["context"]["candidate_mix_json"].as_str().unwrap(),
+            1024 * 1024,
+        )
+        .unwrap();
+        let scores = [0.9838564395904541_f64, 0.9168733358383179_f64];
+        assert!(source["segments"].as_array().unwrap().len() >= scores.len());
+        for (index, score) in scores.iter().enumerate() {
+            // Construct the baseline independently of JSON decimal decoding.
+            source["segments"][index]["confidence"] = json!(*score);
+        }
+        let mut raw = String::new();
+        canonical(&source, &mut raw).unwrap();
+        let result = retarget_metadata(
+            &raw,
+            fixture["context"]["composition_sha256"].as_str().unwrap(),
+            &objects,
+        )
+        .unwrap();
+        let admitted = decode(&result, 1024 * 1024).unwrap();
+        for (index, score) in scores.iter().enumerate() {
+            assert_eq!(
+                admitted["segments"][index]["confidence"]
+                    .as_f64()
+                    .unwrap()
+                    .to_bits(),
+                score.to_bits()
+            );
+        }
+        for (role, object) in &objects {
+            source[*role]["path"] = json!(object.audio.path);
+        }
+        assert_eq!(admitted, source); // Exact semantic equality; no epsilon.
+    }
+
+    #[test]
     fn retained_metadata_refuses_role_content_pcm_and_composition_substitution() {
         let (fixture, objects) = metadata_fixture();
         let source = fixture["context"]["candidate_mix_json"].as_str().unwrap();

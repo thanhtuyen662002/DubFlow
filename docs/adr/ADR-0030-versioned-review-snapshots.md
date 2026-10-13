@@ -559,6 +559,37 @@ Windows execution remain required; source3b's green CI does not qualify this
 successor. No pinned runtime/producer/model bytes, schema, SQL, worker protocol,
 shared storage/source implementation or GUI enablement changes.
 
+Actual sourceae1e7aa Windows execution subsequently reached the explicit old
+producer's missing-render-recipe refusal after36.813s and produced/retained a
+new translation mix after24.375s. This is mixed-version fresh-process evidence,
+not controlled OS-cold timing or a complete installed/render/CAS/undo test.
+QA path assertions were corrected to admit contractv1 Windows relative paths
+and the canonical NT/DOS spelling of the same physical file; no native process
+was repeated during those metadata-only diagnostics. Three retained48kHz stereo
+16-bit PCM roles passed full hash/layout/volume/filename admission, but the
+exact path-only metadata check correctly refused two changed confidences:
+0.9838564395904541 became0.983856439590454 and0.9168733358383179 became
+0.916873335838318. All31original hash/mtime pins remained unchanged. The three
+remaining resume/after-state calls were not run; this is a real metadata defect.
+
+The supervisor enables the existing locked serde_json1.0.151 `float_roundtrip`
+feature (no package/version/lockfile additions) so the strict JSON visitor
+receives correctly rounded binary64 values before canonical serialization.
+Measured floating values must retain their original bits; a tolerance or
+confidence normalization cannot waive the path-only transformation contract.
+Wide integers/decimal strings, duplicate-key refusal, nonfinite/overflow refusal,
+closed schemas, size/depth bounds and producer/model/runtime pins remain intact.
+The feature applies to supervisor JSON decoding, so the app-manifest edit is
+serialized and coordinated with the source-intake lease. No shared source/storage
+implementation, worker format, SQL or durable schema change is introduced.
+Existing sealed metadata and hashes are preserved rather than rewritten. A
+derived generation carrying previously rounded values may refuse the exact
+semantic fence and requires correct regeneration before publication; its old
+objects remain retained for inspection/undo policy, without silent repair or
+new authority. Original raw archives remain available. Successor hosted/native
+verification is required; sourceae1's green CI and partial native evidence do
+not qualify the new numeric admission behavior.
+
 This changes neither producer/model/runtime pins nor a durable format. Old
 original release roots are never patched or rebound, and a refusal still keeps
 their existing exports/active graph usable. No SQLite, worker protocol,
