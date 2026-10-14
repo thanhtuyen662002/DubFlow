@@ -1131,3 +1131,307 @@ writer lease is released before final render retention acquires it. Budgets,
 deadlines, original producer/model pins and schemas are unchanged. The failed
 producer/job and private rendered evidence remain immutable and unpublished;
 successor Windows/native render retention/CAS/undo still require qualification.
+
+### Planned successor: admitted effective generations
+
+Status: implementation requirements; the current private commands still admit
+only the original generation. This section does not enable desktop correction.
+
+An actual additional native48 case used the revision2 token restored by the
+completed B2 undo/reopen sequence, then requested a different translation. The
+native process refused with `existing generation requires its active graph
+reader; never overwrite`. Original exports, the complete private checkpoint
+inventory/hash/mtime, retained media, historical pins and all logical SQLite
+schema/rows remained identical. Full source, request, response and preservation
+evidence is in PR185 comments6163946535/6163947073, gzip66352B,
+SHA256a9e781940eccffb6d64f1d749f41a06ac06e27ecb113281839161d1ce1b8eef0.
+The attempt plus post-audit took2.000s; this is an unsupported-acceptance result.
+
+`review_seed::read_original` requires revision0 and empty undo ancestry. The
+restored-original branch of `review_active::read_active` verifies origin bytes
+at revision0, then restores the public monotonic revision for playback. That
+playback operation does not grant a new producer request. The owned cue and mix
+adapters additionally require an original revision0 graph. Removing one counter
+check cannot establish the effective media, assignment or producer binding.
+
+The successor must introduce explicitly tagged private effective-generation
+contexts and a native admitted-effective-state reader. An older original-only
+reader must refuse these tags. Existing original context encodings and sealed
+objects keep their current meaning and bytes. Public revision counters stay
+monotonic; origin revision0 is used solely to verify the original archive.
+
+The admitted state must independently bind:
+
+- immutable original job/manifest/source/media clock identity;
+- the current durable job/revision/snapshot/graph token;
+- the exact current logical snapshot and current canonical editable timeline;
+- B2 current per-cue TTS/spoken-text assignments and composition, with their
+  admitted producer/model/configuration provenance and retained PCM pins;
+- the current five retained render/QC roles and source-pinned render recipe;
+- explicit capabilities of the processing release that consumes the new format.
+
+The new generation must derive its selected cue from that admitted current
+state. Every other cue retains its current translated text, voice assignment,
+timing, confidence and spoken checkpoint. Original source-derived integer
+ticks/time-base mapping and original confidence bits remain the semantic
+reference. Native code must independently admit the complete before/after
+change and duplicate-finding consistency, rather than reconstructing current
+state from mutable candidate files or playback hints. A voice-only correction
+preserves current subtitle/timeline bytes. B1 retains its source audio/silence
+semantics; B2 cannot fall back to B1 when a mix dependency is unavailable.
+
+The current canonical timeline and B2 composition require explicit roles in
+the new context. The original manifest continues to identify the original
+export; a derived timeline or mix cannot impersonate that original artifact.
+All metadata reads are byte/hash bounded. Physical dependencies reopen through
+native canonical locators under their admitted fixed output volume, with fresh
+no-follow/regular/readonly/header/frame/size/full-hash checks. Each producer
+receives confined physical input paths after this admission; JSON hints do not
+grant file or volume authority. Existing aggregate Review quota, undo/orphan
+accounting, fresh reserve and copy/deadline fences also cover new generations.
+
+An original pinned producer lacking the new capability must refuse. Supporting
+an older completed job requires an explicitly admitted compatible processing
+release and recorded source/recipe/model/contract identity; replacing helper
+files inside its original bundle or changing its existing job pins is invalid.
+No model, runtime, default Truc Ly voice or25-voice catalog change is required
+by this design. The exact source-matched producer/native acceptance remains a
+separate gate from metadata compatibility.
+
+Replacement validation and publication remain supervisor-owned. A generation
+publication stores sealed closed references to its effective before-state,
+proposal, timeline, composition, render/QC and native preview evidence. It must
+avoid recursively embedding every prior generation. Only a final fresh token
+check and existing graph CAS may replace the active pointer. Undo validates
+both graphs and all required physical objects, restores the prior effective
+content at a new public revision, and retains all dependencies. A subsequent
+correction uses this restored effective state as its baseline. Failure, stale
+CAS or missing/offline/corrupt objects cannot retire the prior valid graph.
+
+Compatibility work is additive in private tagged context/publication formats;
+core2, optionalReview1 and the SQLite tables retain their existing boundaries.
+An older binary refuses an unknown active private graph while preserving the
+canonical standard export. There is no silent migration of sealed originals,
+history or model/runtime pins. Any implementation needing a durable schema or
+public worker-protocol change requires its own explicit migration/rollback
+review before activation.
+
+Required successor evidence includes:
+
+1. Two consecutive corrections to different cues while preserving the first
+   correction, then a second correction to the same cue or voice mapping.
+2. Undo of a corrected generation, a new correction from the restored state,
+   repeated undo to original content, and monotonic public tokens throughout.
+3. Original/source/unaffected cue and checkpoint reuse verified independently;
+   completed TTS/render media bytes and mtimes remain stable. Mutable execution
+   observations are recorded separately, with unchanged canonical document
+   content. No inference or render is relabeled as cache reuse.
+4. Actual separate-process stale-token, concurrent writer, corrupt/missing
+   dependency, volume and crash/restart refusal/recovery checks, preserving a
+   usable prior standard export on every failed replacement.
+5. Corrected standard and editable publication from the same accepted effective
+   generation, with exact canonical caption timing, actual retained audio and
+   full output verification. Integration with Issue172 export ownership is
+   coordinated before shared publication paths change.
+6. Chunked/checkpointed long-form replacement with bounded memory, disk and
+   recovery work; actual four-hour and representative real-media evidence that
+   unrelated ASR/OCR is reused. Completed-only whole-video checkpoints do not
+   satisfy this requirement.
+7. Current source-matched whole-producer B1/B2 and installed desktop preview,
+   editing, liveness/QC and undo evidence, with measured media/voice quality and
+   existing warnings retained. Small or mixed-producer proofs alone do not
+   enable `correction_ready` or qualify full Issue174/175.
+
+The current native48 retention/CAS/undo compatibility proof and its recorded
+three-file checkpoint-metadata limitation remain unchanged historical evidence.
+The existing source and all completed QA/native cases must not be replayed or
+rewritten merely to produce a passing successor report.
+
+#### Successor implementation checkpoint: current composition and cue preparation
+
+The first successor layer reopens existing v1/v2 audio compositions against
+separately admitted native source and document pins. It reconstructs all cue
+assignments from original canonical mapping and the current logical snapshot,
+then requires exact canonical composition bytes. JSON paths grant no authority;
+foreign inventories, producer pins, missing/duplicate/reordered cues, changed
+timing/confidence and lost prior edits refuse. Existing schema encodings remain
+unchanged. Metadata and waveform hashes/headers are rechecked without inference
+or writes.
+
+The additive private `review_effective_cue_context` and
+`review_prepared_effective_cue_request` tags bind the current native token,
+composition hash and exact before/after snapshot bytes. The selected cue uses
+its current document's producer/voice provenance, preserving a prior voice edit.
+A restored revision2 remains revision2 and proposes revision3; no public counter
+is normalized. Original-only adapters reject the successor tag. The capability
+field is format dispatch, not independent release/inventory admission.
+
+This layer is not wired to the current native commands. Their original-only
+guards and the actual after-undo refusal remain unchanged. Native admitted
+effective-state recovery, processing-release capability checks, independent
+request/mix/render validation and cumulative publication must be implemented
+before an actual successor correction can run. Deterministic synthetic metadata
+tests of these readers do not satisfy installed/native/GUI/long-form acceptance.
+
+#### Native effective-state reader checkpoint
+
+The read-only `review-effective-state` path now constructs a private current
+view from the same native playback admission, followed by a fresh durable token
+comparison. It binds current and origin as separate identities, preserves
+current public revision counters, and carries the exact current timeline and
+native sealed metadata pins. For original B2 content it independently checks
+every original cue PCM full hash/header/frame count under the archived source
+root, preserves source confidence bits, and records the original per-cue
+TTS/spoken-text assignments. Source PCM identity is matched to the archived mix.
+Unknown graphs, stale state, changed media and missing dependencies refuse.
+
+Inspection of native-publication-v1 shows that its retained mix references the
+accepted changed TTS document but omits the accepted changed spoken-text
+document. Existing playback recovery remains valid; a successor generation
+cannot infer the omitted reference from a private checkpoint or filename.
+The effective view reports an incomplete generation inventory for that legacy
+B2 publication and keeps its recorded composition snapshot identity separate
+from the current public token. Explicit compatible successor publications must
+carry all current per-cue TTS/spoken references. No sealed v1 record is rewritten.
+
+This reader still grants no processing-release capability, generation execution
+or cumulative publication. The original-only generation guards remain intact.
+Rust formatting and source-scope checks are separate from compilation and actual
+native acceptance, which still require the source-matched hosted/Windows gates.
+
+#### Versioned speech-reference publication checkpoint
+
+An additive native-publication-v2 record now stores a sealed closed per-cue
+speech inventory. A changed cue retains its accepted TTS/spoken documents, native
+acceptance context, recipe identity and sealed PCM proof. Every other cue keeps
+the original accepted TTS/spoken references. Recovery rebuilds those assignments
+from the native source, proposal and composition, checks PCM/header/full hash,
+canonical source confidence bits and exact path-only/hash-only retargets, and
+preserves checkpoint and bounded duration-rewrite advice. Missing, substituted
+or ambiguous references refuse. Recorded lexical rewrite evidence remains a
+restricted producer claim without semantic-confidence calibration.
+
+The distinct retained-render-graph-v2 tag dispatches to that reader; original
+publication-v1 playback and sealed bytes keep their meaning. No legacy record is
+augmented from private checkpoints or automatically migrated. The effective
+reader reports v2 speech references separately from its original/current token
+and composition-snapshot identities. This first-generation retention change does
+not relax original-only generation guards or enable cumulative edits. Its cue
+proof still refers to the native control-store acceptance format. A cumulative
+successor must admit compatible processing capability and integrate per-cue
+physical output identity/quota plus current timeline/mix/render/CAS/undo before
+actual correction after undo, corrected exports or desktop activation qualifies.
+
+#### Native per-cue output retention checkpoint
+
+The retained-generation synthesis path now copies selected cue PCM directly into
+the admitted fixed output volume before accepting its TTS/spoken documents.
+The native store gives it a distinct 48k mono signed16 cue type and canonical
+output-volume/job/content locator; the full-mix stereo contract is unchanged.
+It uses the existing output-wide OS writer lock, aggregate quota and orphan/undo
+accounting. Streamed copy/hash/header verification checks fresh caller reserve
+every four MiB and again before sealing. Dedup reopens sealed bytes and preserves
+their timestamp; a corrupt collision is refused, never replaced.
+
+New cue recovery ignores preview hints, derives only the canonical path, and
+checks readonly/header/frame/full SHA plus fresh volume and single-link handle
+identity. Unix uses native device/inode/link count; Windows uses the documented
+GetFileInformationByHandle/BY_HANDLE_FILE_INFORMATION layout. Unknown platforms
+refuse the cue identity operation. Native publication-v2 speech proof requires
+this locator and checks it against its accepted metadata and PCM pin. Metadata
+stays in the existing sealed control store, and only the separate legacy private
+non-retained synthesis command can use the legacy control PCM format. There is
+no retained-generation control fallback or implicit migration of existing media.
+
+This closes the selected per-cue physical retention boundary; it does not grant
+processing-release compatibility, current-composition rebinding or cumulative
+execution. Hosted/native source-matched tests, actual after-undo/cumulative
+corrections, corrected standard/editable publication and installed/long-form/
+crash acceptance remain required. Old actual failures and all pinned contexts,
+producer/model roots, artifacts, media and proofs remain immutable.
+
+#### Effective composition projection checkpoint
+
+Pending native current-state recovery now carries an independently computed
+effective composition beside its immutable content composition and admitted
+content snapshot. A retained proposal predates native preview-path attachment;
+undo changes the public revision while reusing prior content. The projection
+permits exactly those differences, checks monotonic revision and exact remaining
+snapshot content including diagnostic/plan fields, and changes only the new
+composition's snapshot hash. Current public tokens are never changed or sent as
+an archived revision-zero token. Accepted old metadata/media remain immutable.
+
+The owned Python effective-cue preparation independently reopens original
+composition bytes against separately admitted source/document pins and the
+explicit content-snapshot hash. It recomputes the same current projection before
+deriving a request, preserving earlier text and voice edits. The prepared packet
+keeps both immutable and projected composition identities. Changed warnings,
+confidence, source mapping, plans, unrelated cues, foreign snapshot pins or
+backwards public counters refuse. Playback hints never authorize file reads.
+
+These fields extend the still-unreleased private successor contexts only. Older
+original readers remain unchanged and reject successor tags; no sealed original
+or publication-v1 record is migrated. Processing release admission, cumulative
+mix/render/CAS/undo and corrected standard/editable/installed/long-form/crash
+acceptance are still mandatory; projection is not execution permission.
+
+#### Separate compatible processing release admission checkpoint
+
+The pending effective-state command accepts a complete explicit processing
+selection (root, release manifest SHA/size and source commit). Original job
+producer/model/root bindings remain immutable and are admitted from the durable
+job request, not from this new selection. Processing admission verifies the
+original and processing import trees through the existing complete bounded
+parallel verifier. Runtime files and TTS/mix/model/media dependency inventories
+must match exactly, including missing/extra files and empty-file hashes. No
+catalog/default/model/CPU recipe or runtime replacement is authorized. The
+processing release worker is a distinct inventory descriptor; no old bundle is
+modified and no durable job pin is rewritten.
+
+The release-inventoried Review capability declaration describes only the owned
+Python `prepare_effective_cue` function and its closed private formats. It does
+not advertise a runnable CLI, cumulative execution or graph publication. Native
+admission binds that declaration and function module to the selected source and
+manifest, records a separate receipt and rechecks source/entry/capability and
+final inventories before returning. The current durable token is fenced again
+after processing admission. Weights remain unverified until actual production
+loading; the original model root is preserved without provisioning or copying.
+
+The effective-state view reports this receipt separately from current/original
+tokens and physical content dependencies. No receipt can turn an incomplete
+legacy speech inventory into a complete one. Cumulative request/producer
+dispatch, current mix/render, source-bound closed publication/CAS/undo, corrected
+standard/editable exports and installed/long-form/crash acceptance remain
+mandatory. These unreleased private fields have no migration of sealed legacy
+graphs or implicit old-job/model compatibility. Original-only commands keep
+their current refusal guards.
+
+#### Native admitted current cue preparation checkpoint
+
+The pending `review-prepare-effective-cue` command now reads complete current
+speech dependencies through the native effective-state reader, derives a
+duplicate-finding-consistent proposal, selects the current cue input and TTS
+document/provenance and admits a separate processing release. Restored/current
+public counters are preserved; original revision zero is used solely for the
+immutable archive. Legacy B2 publications with incomplete spoken references
+refuse, and the speech command cannot silently convert B1 to B2.
+
+Native code seals a closed current binding/context pair and dispatches the
+inventoried owned Python adapter with -I -S -B and the existing native byte gate.
+The processing declaration now records both the preparation function and its
+isolated dispatch entry. The adapter independently reopens exact content,
+source/document/PCM and original canonical-input pins without loading models or
+writing media/SQLite. Its returned projection must equal the complete native
+projection, and BoundCueRequest rechecks current snapshots, producer/config/
+voice, rational source mapping and exact descendants. Immutable input fields
+also require canonical byte equality, preserving confidence bits and numeric
+types instead of relying on Value numeric equality.
+
+The native reader and durable current token are fenced again after dispatch;
+only then are request, proposal and projected composition sealed privately.
+No old producer/model/root/job binding is repinned and no original-only guard
+is removed. This metadata command creates neither an active graph nor inference,
+mix, render, CAS or undo. Current cumulative execution/publication, corrected
+standard/editable exports, chunked long-form and installed GUI/crash/real-media
+acceptance remain mandatory before activation. All prior actual failures and
+completed native proofs retain their recorded scope and bytes.

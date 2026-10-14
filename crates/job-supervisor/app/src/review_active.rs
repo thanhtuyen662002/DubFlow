@@ -33,6 +33,8 @@ pub(super) fn prepare(
     identity: &str,
     volume: &str,
     mixed: Option<&Value>,
+    accepted_cue: Option<&Value>,
+    output_pin: Option<&NativeOutputPin>,
 ) -> SupervisorResult<AcceptedJsonDocument> {
     if before.token.revision != 0 || before.undo_depth != 0 || before.undo_target_revision.is_some()
     {
@@ -43,8 +45,25 @@ pub(super) fn prepare(
     let snapshot = assets.accept_json(&before.snapshot_json)?;
     let graph = assets.accept_json(&before.graph_json)?;
     let proposal = assets.accept_json(proposal.json())?;
-    assets.accept_json(
-        &json!({"schema_version":1,"kind":"review_native_publication",
+    let speech = if let Some(cue) = accepted_cue {
+        Some(super::review_speech::seal(
+            assets,
+            before,
+            &AdmittedSnapshot::read(&assets.read_json(&proposal)?, &before.token.job_id, 1)?,
+            mixed.ok_or_else(|| invalid("speech publication requires its retained B2 mix"))?,
+            cue,
+            Instant::now() + Duration::from_secs(720),
+            output_pin
+                .filter(|pin| pin.volume_id() == volume)
+                .ok_or_else(|| {
+                    invalid("speech publication requires its admitted native output volume")
+                })?,
+        )?)
+    } else {
+        None
+    };
+    let mut record = json!({"schema_version":if speech.is_some() {2} else {1},
+        "kind":if speech.is_some() {"review_native_publication_v2"} else {"review_native_publication"},
         "before":{"job_id":before.token.job_id,"revision":"0",
             "original_artifact_id":before.original_artifact_id,
             "original_manifest_sha256":before.token.original_manifest_sha256,
@@ -52,9 +71,14 @@ pub(super) fn prepare(
         "proposal":descriptor(&proposal),"corrected_timeline":descriptor(timeline),
         "context":descriptor(context),"retained_render":descriptor(render),
         "prepared_snapshot":descriptor(prepared),"execution_identity":identity,
-        "output_volume_id":volume,"mixed":mixed})
-        .to_string(),
-    )
+        "output_volume_id":volume,"mixed":mixed});
+    if let Some(speech) = speech {
+        record
+            .as_object_mut()
+            .unwrap()
+            .insert("speech_inventory".into(), descriptor(&speech));
+    }
+    assets.accept_json(&record.to_string())
 }
 
 fn before_state(
@@ -227,11 +251,39 @@ fn verify_mix(
     Ok(())
 }
 
-struct AdmittedPublication {
-    before: ReviewGraphState,
+pub(super) struct AdmittedPublication {
+    pub(super) before: ReviewGraphState,
     snapshot: AdmittedSnapshot,
     graph: String,
+    pub(super) record: Value,
 }
+
+fn publication_version(record: &Value) -> SupervisorResult<u64> {
+    let version = record["schema_version"].as_u64();
+    let mut fields = vec![
+        "schema_version",
+        "kind",
+        "before",
+        "proposal",
+        "corrected_timeline",
+        "context",
+        "retained_render",
+        "prepared_snapshot",
+        "execution_identity",
+        "output_volume_id",
+        "mixed",
+    ];
+    if version == Some(2) {
+        fields.push("speech_inventory");
+    }
+    closed(record, &fields)?;
+    match (version, record["kind"].as_str()) {
+        (Some(1), Some("review_native_publication")) => Ok(1),
+        (Some(2), Some("review_native_publication_v2")) => Ok(2),
+        _ => Err(invalid("unknown native graph publication version")),
+    }
+}
+
 fn read_publication(
     store: &DurableStore,
     data: &Path,
@@ -241,26 +293,7 @@ fn read_publication(
     let assets = AcceptedAudioStore::open_existing(data, &current.token.job_id)?;
     let object = accepted_json(publication, &assets)?;
     let record = decode(&assets.read_json(&object)?, LIMIT)?;
-    closed(
-        &record,
-        &[
-            "schema_version",
-            "kind",
-            "before",
-            "proposal",
-            "corrected_timeline",
-            "context",
-            "retained_render",
-            "prepared_snapshot",
-            "execution_identity",
-            "output_volume_id",
-            "mixed",
-        ],
-    )?;
-    if record["schema_version"].as_u64() != Some(1) || record["kind"] != "review_native_publication"
-    {
-        return Err(invalid("unknown native graph publication version"));
-    }
+    let version = publication_version(&record)?;
     let before = before_state(&record, &assets, &current.token.job_id)?;
     if before.original_artifact_id != current.original_artifact_id
         || before.token.original_manifest_sha256 != current.token.original_manifest_sha256
@@ -334,6 +367,20 @@ fn read_publication(
         &proposal,
         deadline,
     )?;
+    if version == 2 {
+        if seed_graph["mode"] == "b1" {
+            return Err(invalid("B1 publication cannot invent current speech"));
+        }
+        super::review_speech::verify(
+            &assets,
+            &before,
+            &proposal,
+            &record["mixed"],
+            &record["speech_inventory"],
+            deadline,
+            &pin,
+        )?;
+    }
     let receipt = accepted_json(&record["retained_render"], &assets)?;
     let identity = super::review_document::text(&record["execution_identity"], 128)?;
     use sha2::{Digest, Sha256};
@@ -369,12 +416,17 @@ fn read_publication(
         before,
         snapshot: expected,
         graph: json!({"schema_version":1,
-        "kind":"review_bound_retained_render_graph","publication":descriptor(&object)})
+        "kind":if version==2 {"review_bound_retained_render_graph_v2"} else {"review_bound_retained_render_graph"},
+        "publication":descriptor(&object)})
         .to_string(),
+        record,
     })
 }
 
-fn at_revision(snapshot: &AdmittedSnapshot, revision: u64) -> SupervisorResult<AdmittedSnapshot> {
+pub(super) fn at_revision(
+    snapshot: &AdmittedSnapshot,
+    revision: u64,
+) -> SupervisorResult<AdmittedSnapshot> {
     let mut value = decode(snapshot.json(), LIMIT)?;
     value["revision"] = revision.into();
     AdmittedSnapshot::read(&value.to_string(), snapshot.job(), revision)
@@ -387,6 +439,16 @@ fn read_active(
     data: &Path,
     state: &ReviewGraphState,
 ) -> SupervisorResult<AdmittedSnapshot> {
+    Ok(read_active_inputs(store, data, state)?.0)
+}
+
+/// Return the exact admitted source record alongside playback. The effective
+/// reader consumes these same verified inputs without a second full media walk.
+pub(super) fn read_active_inputs(
+    store: &DurableStore,
+    data: &Path,
+    state: &ReviewGraphState,
+) -> SupervisorResult<(AdmittedSnapshot, Option<AdmittedPublication>)> {
     let graph = decode(&state.graph_json, LIMIT)?;
     if graph["kind"] == "review_bound_original_graph" {
         if state.undo_depth != 0 || state.undo_target_revision.is_some() {
@@ -439,11 +501,14 @@ fn read_active(
                 deadline,
             )?;
         }
-        return Ok(restored);
+        return Ok((restored, None));
     }
     closed(&graph, &["schema_version", "kind", "publication"])?;
     if graph["schema_version"].as_u64() != Some(1)
-        || graph["kind"] != "review_bound_retained_render_graph"
+        || !matches!(
+            graph["kind"].as_str(),
+            Some("review_bound_retained_render_graph" | "review_bound_retained_render_graph_v2")
+        )
     {
         return Err(invalid(
             "unknown corrected graph needs explicit compatibility",
@@ -461,7 +526,7 @@ fn read_active(
             "active snapshot substitutes its admitted playback or evidence",
         ));
     }
-    Ok(expected)
+    Ok((expected, Some(admitted)))
 }
 
 pub(super) fn commit(
@@ -514,6 +579,18 @@ pub(super) fn committed_packet(state: &ReviewGraphState) -> SupervisorResult<Val
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>, undo: bool) -> SupervisorResult<()> {
+    run_inner(&mut args, undo, false)
+}
+
+pub(super) fn run_effective(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
+    run_inner(&mut args, false, true)
+}
+
+fn run_inner(
+    mut args: impl Iterator<Item = OsString>,
+    undo: bool,
+    effective: bool,
+) -> SupervisorResult<()> {
     let mut values = HashMap::new();
     while let Some(flag) = args.next() {
         let flag = flag
@@ -527,6 +604,14 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>, undo: bool) -> Super
             "--graph-sha256",
         ]
         .contains(&flag.as_str())
+            && !(effective
+                && [
+                    "--processing-root",
+                    "--processing-manifest-sha256",
+                    "--processing-manifest-size-bytes",
+                    "--processing-source-sha",
+                ]
+                .contains(&flag.as_str()))
             || values.contains_key(&flag)
         {
             return Err(invalid("unknown or duplicate active argument"));
@@ -579,6 +664,43 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>, undo: bool) -> Super
     {
         return Err(invalid("active Review token changed; reload"));
     }
+    if effective {
+        let admitted = super::review_effective::read_current(&store, &data, &current)?;
+        let keys = [
+            "--processing-root",
+            "--processing-manifest-sha256",
+            "--processing-manifest-size-bytes",
+            "--processing-source-sha",
+        ];
+        let count = keys.iter().filter(|key| values.contains_key(**key)).count();
+        let processing = if count == 0 {
+            None
+        } else {
+            if count != keys.len() {
+                return Err(invalid(
+                    "processing selection requires root, exact manifest hash/size and source SHA",
+                ));
+            }
+            let size = tick(
+                &Value::String(required("--processing-manifest-size-bytes")?.into()),
+                false,
+            )?;
+            Some(super::review_runtime::AdmittedProcessingRuntime::read(
+                &store,
+                job,
+                &PathBuf::from(required("--processing-root")?),
+                &json!({"sha256":required("--processing-manifest-sha256")?,"size_bytes":size}),
+                required("--processing-source-sha")?,
+            )?)
+        };
+        let packet = admitted.packet_with_processing(processing.as_ref())?;
+        if store.review_graph_state(job)?.as_ref() != Some(&current) {
+            return Err(invalid(
+                "effective state changed during processing release admission; reload",
+            ));
+        }
+        return super::emit_value(&mut std::io::stdout().lock(), packet);
+    }
     let current_snapshot = read_active(&store, &data, &current)?;
     let (state, snapshot) = if undo {
         let target = store
@@ -600,7 +722,8 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>, undo: bool) -> Super
         json!({"schema_version":1,"kind":"review_active_native_state",
         "job_id":job,"revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,
         "graph_sha256":state.token.graph_sha256,"snapshot":decode(snapshot.json(),LIMIT)?,
-        "active_graph_published":decode(&state.graph_json,LIMIT)?["kind"]=="review_bound_retained_render_graph",
+        "active_graph_published":matches!(decode(&state.graph_json,LIMIT)?["kind"].as_str(),
+            Some("review_bound_retained_render_graph"|"review_bound_retained_render_graph_v2")),
         "correction_ready":false}),
     )
 }
@@ -628,9 +751,13 @@ mod tests {
                 "sha256:unexecuted-test",
                 "volume-test",
                 None,
+                None,
+                None,
             )
             .unwrap();
             let original = decode(&assets.read_json(&object).unwrap(), LIMIT).unwrap();
+            assert_eq!(publication_version(&original).unwrap(), 1);
+            assert!(original.get("speech_inventory").is_none());
             assert_eq!(
                 before_state(&original, &assets, &state.token.job_id).unwrap(),
                 *state
@@ -655,6 +782,43 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn publication_versions_require_explicit_tags_and_inventory_without_migrating_v1() {
+        let one = json!({"schema_version":1,"kind":"review_native_publication","before":{},"proposal":{},
+            "corrected_timeline":{},"context":{},"retained_render":{},"prepared_snapshot":{},
+            "execution_identity":"unused-shape-fixture","output_volume_id":"unused-shape-fixture","mixed":null});
+        let original = one.to_string();
+        assert_eq!(publication_version(&one).unwrap(), 1);
+        let mut two = one.clone();
+        two["schema_version"] = 2.into();
+        two["kind"] = "review_native_publication_v2".into();
+        assert!(publication_version(&two).is_err());
+        two.as_object_mut()
+            .unwrap()
+            .insert("speech_inventory".into(), json!({}));
+        assert_eq!(publication_version(&two).unwrap(), 2); // shape dispatch only, no physical admission.
+        for case in 0..4 {
+            let mut bad = two.clone();
+            match case {
+                0 => bad["kind"] = "review_native_publication".into(),
+                1 => bad["schema_version"] = true.into(),
+                2 => bad["schema_version"] = 3.into(),
+                _ => {
+                    bad.as_object_mut()
+                        .unwrap()
+                        .insert("caller_authorized".into(), true.into());
+                }
+            }
+            assert!(publication_version(&bad).is_err());
+        }
+        let mut bad = one.clone();
+        bad.as_object_mut()
+            .unwrap()
+            .insert("speech_inventory".into(), json!({}));
+        assert!(publication_version(&bad).is_err());
+        assert_eq!(one.to_string(), original);
     }
 
     #[test]

@@ -22,6 +22,7 @@ from .production import ReviewError, ReviewSnapshot
 from .store import _validate_cue_consistency
 from .synthesis_input import CueSynthesisInput, _digest, _encode, prepare_cue_synthesis
 from .synthesis_worker import _writer
+from .wire import decode_review_json
 
 MAX_CUES = 10000
 
@@ -175,6 +176,111 @@ def compose_audio(snapshot: ReviewSnapshot, *, manifest_sha256: str, source: Fil
             raise ReviewError("review findings differ from the active canonical audio assignment")
     return AudioComposition(snapshot, manifest_sha256, source, source_sha256, tuple(cues),
                             json.dumps(producer, sort_keys=True, separators=(",", ":")))
+
+
+def read_audio_composition(raw: bytes, *, expected_sha256: str, snapshot: ReviewSnapshot,
+                           manifest_sha256: str, source: FileSource, source_sha256: str,
+                           original_inputs: Sequence[TtsInput], documents: Sequence[PinnedDocument],
+                           mix_template: PinnedDocument) -> AudioComposition:
+    """Reopen current assignments using separately supervisor-admitted pins.
+
+    Serialized paths never construct a PinnedDocument or grant read authority.
+    The original canonical inputs retain timing, mapping and confidence; only
+    text already bound by the current snapshot can differ. This reader performs
+    no inference, publication, token normalization or durable state mutation.
+    """
+    _hash(expected_sha256)
+    if (not isinstance(raw, bytes) or not 1 <= len(raw) <= MAX_JSON_BYTES or
+        _digest(raw) != expected_sha256):
+        raise ReviewError("current composition bytes differ from their trusted pin")
+    value = decode_review_json(raw.decode("utf-8"))
+    fields = {"schema_version", "kind", "job_id", "manifest_sha256", "review_snapshot_sha256",
+              "source", "documents", "cues", "mix_producer_pin"}
+    if (not isinstance(value, dict) or set(value) != fields or
+        type(value["schema_version"]) is not int or value["schema_version"] not in (1, 2) or
+        value["kind"] != "review_audio_composition"):
+        raise ReviewError("unknown current composition requires explicit compatibility")
+    if (value["job_id"] != snapshot.job_id or value["manifest_sha256"] != manifest_sha256 or
+        value["review_snapshot_sha256"] != _digest(_encode(snapshot.to_dict(), MAX_JSON_BYTES))):
+        raise ReviewError("current composition substitutes its snapshot or original manifest")
+    _validate_cue_consistency(snapshot)
+    trusted_source = {"path": str(source.path), "sha256": source_sha256,
+                      "start": source.start.to_dict(), "end": source.end.to_dict(),
+                      "source_id": source.source_id, "layout": source.layout}
+    if _encode(value["source"], MAX_JSON_BYTES) != _encode(trusted_source, MAX_JSON_BYTES):
+        raise ReviewError("current composition substitutes its admitted source")
+    originals = tuple(original_inputs)
+    if (not 1 <= len(originals) <= MAX_CUES or
+        len({item.segment_id for item in originals}) != len(originals)):
+        raise ReviewError("current composition requires unique bounded original inputs")
+    trusted = {}
+    for pin in documents:
+        if not isinstance(pin, PinnedDocument) or pin.sha256 in trusted:
+            raise ReviewError("current composition has ambiguous admitted document pins")
+        trusted[pin.sha256] = pin
+        if len(trusted) > MAX_CUES:
+            raise ReviewError("current composition document inventory exceeds its bound")
+    serialized = value["documents"]
+    if (not isinstance(serialized, list) or not 1 <= len(serialized) <= MAX_CUES or
+        _encode(serialized, MAX_JSON_BYTES) !=
+        _encode([trusted[key].to_dict() for key in sorted(trusted)], MAX_JSON_BYTES)):
+        raise ReviewError("current composition substitutes its admitted document inventory")
+    cues = value["cues"]
+    if not isinstance(cues, list) or len(cues) != len(originals):
+        raise ReviewError("current composition needs every original cue exactly once")
+    findings = {item.cue_id: item for item in snapshot.findings if item.cue_id is not None}
+    inputs, assignments = [], {}
+    for original, item in zip(originals, cues):
+        if not isinstance(item, dict) or set(item) != {"tts_input", "document_sha256"}:
+            raise ReviewError("current composition cue descriptor is malformed")
+        finding = findings.get(original.segment_id)
+        current = (replace(original, text=finding.translated_text, normalized_text=None)
+                   if finding is not None and finding.translated_text != original.text else original)
+        # Canonical bytes also distinguish bool/int/float and preserve the
+        # original confidence bits; Python numeric equality alone is weaker.
+        if _encode(item["tts_input"], MAX_JSON_BYTES) != _encode(current.to_dict(), MAX_JSON_BYTES):
+            raise ReviewError("current composition changed canonical cue mapping or content")
+        key = item["document_sha256"]
+        if not isinstance(key, str) or key not in trusted:
+            raise ReviewError("current composition cue has no admitted document")
+        inputs.append(current)
+        assignments[current.segment_id] = trusted[key]
+    reopened = compose_audio(snapshot, manifest_sha256=manifest_sha256, source=source,
+        source_sha256=source_sha256, canonical_inputs=inputs, assignments=assignments,
+        mix_template=mix_template)
+    if _encode(reopened.to_dict(), MAX_JSON_BYTES) != raw:
+        raise ReviewError("current composition differs from its admitted canonical reconstruction")
+    return reopened
+
+
+def rebind_audio_composition(raw: bytes, *, content_snapshot: ReviewSnapshot,
+                             current_snapshot: ReviewSnapshot, **admitted_pins) -> AudioComposition:
+    """Project admitted immutable content onto its current public identity.
+
+    A retained publication binds its proposal before native playback paths are
+    attached, and undo advances the public revision without rewriting content.
+    Only those two differences are allowed. Every diagnostic, plan, cue, voice,
+    source mapping and confidence remains exact. The old bytes are never edited.
+    """
+    if (not isinstance(content_snapshot, ReviewSnapshot) or
+        not isinstance(current_snapshot, ReviewSnapshot) or
+        current_snapshot.revision < content_snapshot.revision):
+        raise ReviewError("composition projection requires its admitted monotonic current snapshot")
+    def content_identity(snapshot):
+        value = snapshot.to_dict()
+        value.pop("revision")
+        for finding in value["findings"]:
+            finding.pop("output_preview")
+        return _encode(value, MAX_JSON_BYTES)
+    if content_identity(content_snapshot) != content_identity(current_snapshot):
+        raise ReviewError("composition projection changed admitted content or diagnostics")
+    reopened = read_audio_composition(raw, snapshot=content_snapshot, **admitted_pins)
+    projected = replace(reopened, snapshot=current_snapshot)
+    previous, next_value = reopened.to_dict(), projected.to_dict()
+    previous.pop("review_snapshot_sha256"); next_value.pop("review_snapshot_sha256")
+    if _encode(previous, MAX_JSON_BYTES) != _encode(next_value, MAX_JSON_BYTES):
+        raise ReviewError("composition projection changed more than snapshot identity")
+    return projected
 
 
 def replace_audio_cue(current: AudioComposition, after: ReviewSnapshot, *, request: CueSynthesisInput,

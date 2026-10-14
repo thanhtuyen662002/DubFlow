@@ -86,6 +86,7 @@ pub(super) struct RenderInputs<'a> {
     pub(super) after: &'a AdmittedSnapshot,
     pub(super) timeline: &'a AcceptedJsonDocument,
     pub(super) mixed: Option<&'a Value>,
+    pub(super) accepted_cue: Option<&'a Value>,
     pub(super) output: &'a Path,
     pub(super) output_pin: &'a super::review_retention::NativeOutputPin,
     pub(super) candidates: &'a Path,
@@ -702,6 +703,8 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
         &identity,
         input.output_pin.volume_id(),
         input.mixed,
+        input.accepted_cue,
+        Some(input.output_pin),
     )?;
     // All five roles are retained together before returning. Partial failures
     // leave only unreferenced sealed objects; no old graph/output is retired.

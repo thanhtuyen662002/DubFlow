@@ -3,8 +3,8 @@
 //! canonical storage crate owns locator/path validation. Standard export does
 //! not depend on this optional local-NTFS Review path.
 use super::review_assets::{
-    MixStorageBudget, PcmPin, RetainedFileFormat, RetainedFilePin, RetainedMixAudio,
-    RetainedMixStore, RetainedRenderFile,
+    MixStorageBudget, PcmPin, RetainedCueAudio, RetainedFileFormat, RetainedFilePin,
+    RetainedMixAudio, RetainedMixStore, RetainedRenderFile,
 };
 use super::{SupervisorError, SupervisorResult};
 use dubflow_artifact_storage::ArtifactLocator;
@@ -205,6 +205,66 @@ pub(super) struct LocatedMixAudio {
 pub(super) struct LocatedRenderFile {
     file: RetainedRenderFile,
     locator: ArtifactLocator,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct LocatedCueAudio {
+    audio: RetainedCueAudio,
+    locator: ArtifactLocator,
+}
+impl LocatedCueAudio {
+    pub(super) fn path(&self) -> &Path {
+        &self.audio.path
+    }
+    pub(super) fn pin(&self) -> &PcmPin {
+        &self.audio.pin
+    }
+    pub(super) fn descriptor(&self) -> Value {
+        json!({"kind":"review_retained_cue_audio","path_hint":self.audio.path,
+            "locator":{"schema_version":self.locator.schema_version,"volume_id":self.locator.volume_id,
+                "root_kind":self.locator.root_kind.as_str(),"relative_path":self.locator.relative_path,
+                "content_hash":self.locator.content_hash,"size_bytes":self.locator.size_bytes.to_string()},
+            "sample_rate":48000,"channels":1,"frame_count":self.audio.pin.frame_count.to_string()})
+    }
+}
+
+fn cue_descriptor(value: &Value, root: &Path, volume: &str) -> SupervisorResult<LocatedCueAudio> {
+    use super::review_document::{closed, tick};
+    closed(
+        value,
+        &[
+            "kind",
+            "path_hint",
+            "locator",
+            "sample_rate",
+            "channels",
+            "frame_count",
+        ],
+    )?;
+    if value["kind"] != "review_retained_cue_audio"
+        || value["sample_rate"].as_u64() != Some(48000)
+        || value["channels"].as_u64() != Some(1)
+    {
+        return Err(invalid("retained cue changed its explicit PCM role/layout"));
+    }
+    let file = render_file_descriptor(
+        &json!({"path_hint":value["path_hint"],"format":"json","locator":value["locator"]}),
+        root,
+        volume,
+    )?;
+    Ok(LocatedCueAudio {
+        audio: RetainedCueAudio {
+            path: file.file.path,
+            pin: PcmPin {
+                sha256: file.file.pin.sha256,
+                size_bytes: file.file.pin.size_bytes,
+                sample_rate: 48000,
+                channels: 1,
+                frame_count: tick(&value["frame_count"], true)?,
+            },
+        },
+        locator: file.locator,
+    })
 }
 impl LocatedRenderFile {
     pub(super) fn descriptor(&self) -> Value {
@@ -433,6 +493,90 @@ fn ordered_pcm_entries(value: &Value) -> SupervisorResult<Vec<(&'static str, &Va
 }
 
 impl NativeMixStore {
+    pub(super) fn accept_cue(
+        &self,
+        candidate_root: &Path,
+        candidate: &Path,
+        pin: &PcmPin,
+        deadline: Instant,
+    ) -> SupervisorResult<LocatedCueAudio> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let audio = self.objects.accept_cue(
+            candidate_root,
+            candidate,
+            pin,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&self.volume_id, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            deadline,
+        )?;
+        let relative = audio
+            .path
+            .strip_prefix(&self.root)
+            .map_err(|_| invalid("retained cue escaped output root"))?;
+        let locator = ArtifactLocator::new(
+            &self.volume_id,
+            RootKind::Output,
+            relative,
+            &pin.sha256,
+            pin.size_bytes,
+        )
+        .map_err(|error| invalid(&format!("retained cue locator refused: {error}")))?;
+        let result = LocatedCueAudio { audio, locator };
+        self.verify_cue(&result, deadline)?;
+        Ok(result)
+    }
+
+    pub(super) fn reopen_cue(
+        &self,
+        value: &Value,
+        deadline: Instant,
+    ) -> SupervisorResult<LocatedCueAudio> {
+        let object = cue_descriptor(value, &self.root, &self.volume_id)?;
+        self.verify_cue(&object, deadline)?;
+        Ok(object)
+    }
+
+    pub(super) fn verify_cue(
+        &self,
+        object: &LocatedCueAudio,
+        deadline: Instant,
+    ) -> SupervisorResult<()> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let relative = object
+            .audio
+            .path
+            .strip_prefix(&self.root)
+            .map_err(|_| invalid("retained cue outside output root"))?;
+        let expected = ArtifactLocator::new(
+            &self.volume_id,
+            RootKind::Output,
+            relative,
+            &object.audio.pin.sha256,
+            object.audio.pin.size_bytes,
+        )
+        .map_err(|error| invalid(&format!("retained cue locator refused: {error}")))?;
+        if expected != object.locator {
+            return Err(invalid(
+                "retained cue locator changed job/volume/content identity",
+            ));
+        }
+        self.objects.verify_cue(&object.audio, deadline)?;
+        same_volume(
+            &self.volume_id,
+            &probe(
+                object
+                    .audio
+                    .path
+                    .parent()
+                    .ok_or_else(|| invalid("retained cue parent missing"))?,
+            )?,
+        )?;
+        Ok(())
+    }
+
     pub(super) fn new(
         pin: &NativeOutputPin,
         job: &str,
@@ -713,6 +857,161 @@ mod tests {
     use super::*;
     const GUID: &str = r"\\?\Volume{01234567-89AB-CDEF-0123-456789abcdef}\";
     const HARD_LINKS: u32 = 0x0040_0000;
+
+    #[test]
+    fn cue_locator_dispatch_is_closed_mono_and_keeps_hints_without_io_authority() {
+        let root = std::env::temp_dir();
+        let volume = "windows-volume-guid:01234567-89ab-cdef-0123-456789abcdef";
+        let hash = format!("sha256:{}", "a".repeat(64));
+        let relative = std::path::Path::new(".dubflow-review-media-v1")
+            .join("b".repeat(64))
+            .join(format!("{}.wav", "a".repeat(64)));
+        let descriptor = json!({"kind":"review_retained_cue_audio","path_hint":"ignored preview hint",
+            "locator":{"schema_version":1,"volume_id":volume,"root_kind":"output","relative_path":relative,
+                "content_hash":hash,"size_bytes":"46"},"sample_rate":48000,"channels":1,"frame_count":"1"});
+        let admitted = cue_descriptor(&descriptor, &root, volume).unwrap();
+        assert_eq!(admitted.audio.path, root.join(&relative));
+        for case in 0..6 {
+            let mut changed = descriptor.clone();
+            match case {
+                0 => changed["kind"] = "review_retained_mix_audio".into(),
+                1 => changed["channels"] = 2.into(),
+                2 => changed["sample_rate"] = 16000.into(),
+                3 => changed["frame_count"] = 1.into(),
+                4 => changed["locator"]["volume_id"] = "other-volume".into(),
+                _ => {
+                    changed
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("caller_authorized".into(), true.into());
+                }
+            }
+            assert!(
+                cue_descriptor(&changed, &root, volume).is_err(),
+                "case {case}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn actual_windows_cue_locator_reopens_single_link_mono_and_refuses_foreign_identity() {
+        use sha2::{Digest, Sha256};
+        use std::fs;
+        use std::sync::atomic::Ordering;
+        let root = (0..32)
+            .find_map(|_| {
+                let path = std::env::temp_dir().join(format!(
+                    "dubflow-cue-locator-{}-{}",
+                    std::process::id(),
+                    super::super::ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => Some(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => panic!("exclusive cue fixture: {error}"),
+                }
+            })
+            .expect("new exclusive cue fixture");
+        let output = root.join("output");
+        let candidate = root.join("candidate");
+        fs::create_dir(&output).unwrap();
+        fs::create_dir(&candidate).unwrap();
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&48000u32.to_le_bytes());
+        wav.extend_from_slice(&96000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&[1u8, 0]);
+        let source = candidate.join("cue.wav");
+        fs::write(&source, &wav).unwrap();
+        let pcm = PcmPin {
+            sha256: format!("sha256:{:x}", Sha256::digest(&wav)),
+            size_bytes: 46,
+            sample_rate: 48000,
+            channels: 1,
+            frame_count: 1,
+        };
+        let pin = NativeOutputPin::read(&output).unwrap();
+        let budget = MixStorageBudget {
+            maximum_bytes: 1000,
+            minimum_free_bytes: 0,
+        };
+        let store = NativeMixStore::new(&pin, "cue-physical", budget).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        let object = store
+            .accept_cue(&candidate, &source, &pcm, deadline)
+            .unwrap();
+        let descriptor = object.descriptor();
+        let modified = fs::metadata(object.path()).unwrap().modified().unwrap();
+        assert_eq!(descriptor["locator"]["root_kind"], "output");
+        assert_eq!(descriptor["locator"]["volume_id"], pin.volume_id());
+        drop(store);
+        let reader = NativeMixStore::open_existing(&pin, "cue-physical", budget).unwrap();
+        let mut hint = descriptor.clone();
+        hint["path_hint"] = "ignored nonexistent preview".into();
+        assert_eq!(
+            reader.reopen_cue(&hint, deadline).unwrap().path(),
+            object.path()
+        );
+        for case in 0..4 {
+            let mut foreign = descriptor.clone();
+            match case {
+                0 => foreign["locator"]["volume_id"] = "foreign-volume".into(),
+                1 => foreign["channels"] = 2.into(),
+                2 => foreign["locator"]["relative_path"] = "../foreign.wav".into(),
+                _ => foreign["frame_count"] = "2".into(),
+            }
+            assert!(
+                reader.reopen_cue(&foreign, deadline).is_err(),
+                "case {case}"
+            );
+        }
+        let extra = root.join("extra.wav");
+        fs::hard_link(object.path(), &extra).unwrap();
+        assert!(reader.reopen_cue(&descriptor, deadline).is_err());
+        let mut permissions = fs::metadata(&extra).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&extra, permissions).unwrap();
+        fs::remove_file(extra).unwrap();
+        let mut permissions = fs::metadata(object.path()).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(object.path(), permissions).unwrap();
+        reader.reopen_cue(&descriptor, deadline).unwrap();
+        assert_eq!(
+            fs::metadata(object.path()).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(fs::read(&source).unwrap(), wav);
+        assert!(reader.reopen_cue(&descriptor, Instant::now()).is_err());
+        let mut permissions = fs::metadata(object.path()).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(object.path(), permissions).unwrap();
+        let mut corrupted = wav.clone();
+        *corrupted.last_mut().unwrap() ^= 1;
+        fs::write(object.path(), corrupted).unwrap();
+        let mut permissions = fs::metadata(object.path()).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(object.path(), permissions).unwrap();
+        assert!(reader.reopen_cue(&descriptor, deadline).is_err()); // same-size header-valid corrupt PCM.
+        drop(reader);
+        let mut permissions = fs::metadata(object.path()).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(object.path(), permissions).unwrap();
+        assert!(root
+            .canonicalize()
+            .unwrap()
+            .starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn retained_pcm_fence_requires_closed_distinct_ordered_roles() {

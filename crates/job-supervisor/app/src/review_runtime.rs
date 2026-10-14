@@ -310,6 +310,271 @@ pub(super) struct AdmittedRuntime {
     inventory: HashMap<String, Value>,
 }
 
+const PROCESSING_CAPABILITY: &str = "review_effective_cue_preparation_v1";
+const PROCESSING_DECLARATION: &str = "app/engine/dubflow/review/processing-capabilities-v1.json";
+const EFFECTIVE_ENTRY: &str = "app/engine/dubflow/review/effective_cue_plan.py";
+const PROCESSING_DISPATCH_ENTRY: &str = "app/engine/dubflow/review/effective_cue_execution.py";
+
+/// A processing release is an additional immutable dependency, never a new
+/// producer binding written into the original job or copied into its bundle.
+pub(super) struct AdmittedProcessingRuntime {
+    runtime: AdmittedRuntime,
+    origin: AdmittedRuntime,
+    origin_producer: Value,
+    source_sha: String,
+    manifest_pin: Value,
+    capability_pin: Value,
+    protected_inventory_sha256: String,
+}
+
+fn processing_declaration() -> Value {
+    json!({"schema_version":1,"kind":"review_processing_capabilities",
+        "capabilities":[PROCESSING_CAPABILITY],
+        "entrypoint_kind":"python_function","entrypoint_symbol":"prepare_effective_cue",
+        "entrypoints":{"effective_cue_preparation":"engine/dubflow/review/effective_cue_plan.py",
+            "native_dispatch":"engine/dubflow/review/effective_cue_execution.py"},
+        "dispatch_contract":"review_native_effective_cue_bindings_v1",
+        "formats":{"snapshot":2,"audio_composition":[1,2],"effective_cue_context":1,
+            "prepared_effective_cue_request":1,"tts_document":[1,2],"spoken_text":1},
+        "compatibility":"exact_original_runtime_tts_mix_models_media",
+        "cumulative_execution":false,"active_graph_publication":false})
+}
+
+fn protected_processing_path(path: &str) -> bool {
+    [
+        "runtime/",
+        "app/engine/dubflow/tts/",
+        "app/engine/dubflow/mix/",
+        "app/engine/dubflow/models/",
+        "app/engine/dubflow/media/",
+        "app/models/",
+        "app/minimal-pipeline-wiring/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix))
+}
+
+impl AdmittedProcessingRuntime {
+    pub(super) fn read(
+        store: &DurableStore,
+        job: &str,
+        root: &Path,
+        manifest_pin: &Value,
+        source_sha: &str,
+    ) -> SupervisorResult<Self> {
+        let raw = store.job_start_request(job)?.ok_or_else(|| {
+            invalid("processing admission requires the original immutable job binding")
+        })?;
+        let request = decode(&raw, 64 * 1024 * 1024)?;
+        if request["schema_version"].as_u64() != Some(1) {
+            return Err(invalid("unsupported original processing binding"));
+        }
+        Self::from_origin(&request["producer"], root, manifest_pin, source_sha)
+    }
+
+    fn from_origin(
+        producer: &Value,
+        root: &Path,
+        manifest_pin: &Value,
+        source_sha: &str,
+    ) -> SupervisorResult<Self> {
+        if !matches!(source_sha.len(), 40 | 64)
+            || !source_sha
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(invalid(
+                "processing source identity must be an exact commit SHA",
+            ));
+        }
+        let origin_root = super::absolute_path(
+            producer["runtime_root"]
+                .as_str()
+                .ok_or_else(|| invalid("original runtime root missing"))?,
+            "original runtime root",
+        )?;
+        let origin = AdmittedRuntime::from_producer(producer, &origin_root)?;
+        plain(root)?;
+        if !root.is_absolute() || root.components().any(|c| matches!(c, Component::ParentDir)) {
+            return Err(invalid(
+                "processing root must be explicitly admitted and absolute",
+            ));
+        }
+        let raw = fingerprint(
+            &root.join("release-manifest.json"),
+            manifest_pin,
+            true,
+            MANIFEST_LIMIT,
+        )?;
+        let release = decode(
+            std::str::from_utf8(&raw).map_err(|_| invalid("processing release is not UTF-8"))?,
+            MANIFEST_LIMIT as usize,
+        )?;
+        if release["schema_version"].as_u64() != Some(1) || release["source_sha"] != source_sha {
+            return Err(invalid(
+                "processing release differs from its exact source identity",
+            ));
+        }
+        // Only the processing worker descriptor is taken from the new release.
+        // Runtime/tools/model manifests and model-root authority remain original.
+        let worker = release["artifacts"]
+            .as_array()
+            .ok_or_else(|| invalid("processing release inventory missing"))?
+            .iter()
+            .find(|v| v["path"] == "app/engine/dubflow/worker/production_job.py")
+            .ok_or_else(|| invalid("processing worker absent from the release inventory"))?;
+        let worker_size = worker["size_bytes"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|n| *n > 0 && n.to_string() == worker["size_bytes"].as_str().unwrap_or(""))
+            .ok_or_else(|| invalid("processing worker byte count invalid"))?;
+        let checksum = worker["sha256"]
+            .as_str()
+            .ok_or_else(|| invalid("processing worker checksum missing"))?;
+        let mut processing = producer.clone();
+        processing["runtime_root"] = json!(root);
+        processing["release_manifest"] = manifest_pin.clone();
+        processing["worker"] =
+            json!({"sha256":format!("sha256:{checksum}"),"size_bytes":worker_size});
+        // Same complete bounded parallel import verification and missing/extra/
+        // no-follow/full-hash/final-inventory fences as original admission.
+        let runtime = AdmittedRuntime::from_producer(&processing, root)?;
+        let original_protected: std::collections::BTreeMap<_, _> = origin
+            .inventory
+            .iter()
+            .filter(|(name, _)| protected_processing_path(name))
+            .map(|(name, pin)| (name.clone(), pin.clone()))
+            .collect();
+        let processing_protected: std::collections::BTreeMap<_, _> = runtime
+            .inventory
+            .iter()
+            .filter(|(name, _)| protected_processing_path(name))
+            .map(|(name, pin)| (name.clone(), pin.clone()))
+            .collect();
+        if original_protected != processing_protected || runtime.catalog_hash != origin.catalog_hash
+        {
+            return Err(invalid(
+                "processing release changed original runtime/TTS/mix/model/media pins",
+            ));
+        }
+        let capability_pin = runtime
+            .inventory
+            .get(PROCESSING_DECLARATION)
+            .ok_or_else(|| invalid("processing release lacks explicit effective cue capability"))?
+            .clone();
+        let declaration = fingerprint(
+            &root.join(PROCESSING_DECLARATION),
+            &capability_pin,
+            true,
+            64 * 1024,
+        )?;
+        let declaration = decode(
+            std::str::from_utf8(&declaration)
+                .map_err(|_| invalid("processing capability is not UTF-8"))?,
+            64 * 1024,
+        )?;
+        let mut admitted = String::new();
+        let mut expected = String::new();
+        super::review_document::canonical(&declaration, &mut admitted)?;
+        super::review_document::canonical(&processing_declaration(), &mut expected)?;
+        if admitted != expected {
+            return Err(invalid(
+                "unknown processing capabilities require explicit compatibility",
+            ));
+        }
+        let pin = runtime.inventory.get(EFFECTIVE_ENTRY).ok_or_else(|| {
+            invalid("effective cue entry is not part of the admitted processing release")
+        })?;
+        fingerprint(&root.join(EFFECTIVE_ENTRY), pin, false, 64 * 1024 * 1024)?;
+        let mut protected = String::new();
+        super::review_document::canonical(
+            &serde_json::to_value(&original_protected)?,
+            &mut protected,
+        )?;
+        let result = Self {
+            runtime,
+            origin,
+            origin_producer: producer.clone(),
+            source_sha: source_sha.into(),
+            manifest_pin: manifest_pin.clone(),
+            capability_pin,
+            protected_inventory_sha256: hash(protected.as_bytes()),
+        };
+        result.preparation_dispatch()?;
+        Ok(result)
+    }
+
+    pub(super) fn effective_entry(&self) -> SupervisorResult<PathBuf> {
+        fingerprint(
+            &self.runtime.root.join("release-manifest.json"),
+            &self.manifest_pin,
+            false,
+            MANIFEST_LIMIT,
+        )?;
+        fingerprint(
+            &self.origin.root.join("release-manifest.json"),
+            &self.origin_producer["release_manifest"],
+            false,
+            MANIFEST_LIMIT,
+        )?;
+        fingerprint(
+            &self.runtime.root.join(PROCESSING_DECLARATION),
+            &self.capability_pin,
+            false,
+            64 * 1024,
+        )?;
+        let pin = self
+            .runtime
+            .inventory
+            .get(EFFECTIVE_ENTRY)
+            .ok_or_else(|| invalid("processing entry pin unavailable"))?;
+        let path = self.runtime.root.join(EFFECTIVE_ENTRY);
+        fingerprint(&path, pin, false, 64 * 1024 * 1024)?;
+        final_inventory(&self.origin.root, &self.origin.inventory)?;
+        final_inventory(&self.runtime.root, &self.runtime.inventory)?;
+        Ok(path)
+    }
+
+    pub(super) fn receipt(&self) -> SupervisorResult<Value> {
+        let entry = self.effective_entry()?;
+        let dispatch = self.preparation_dispatch()?;
+        let mut origin = String::new();
+        super::review_document::canonical(&self.origin_producer, &mut origin)?;
+        Ok(
+            json!({"schema_version":1,"kind":"review_admitted_processing_release",
+            "capability":PROCESSING_CAPABILITY,"source_sha":self.source_sha,
+            "processing_root":self.runtime.root,"release_manifest":self.manifest_pin,
+            "capability_document":self.capability_pin,"effective_cue_entry":{
+                "path":entry,"pin":self.runtime.inventory[EFFECTIVE_ENTRY]},
+            "native_dispatch_entry":{"path":dispatch,"pin":self.runtime.inventory[PROCESSING_DISPATCH_ENTRY]},
+            "original_producer_sha256":hash(origin.as_bytes()),
+            "original_release_sha256":self.origin.release_hash,
+            "protected_inventory_sha256":self.protected_inventory_sha256,
+            "original_model_root":self.origin.model_root,
+            "original_job_binding_changed":false,"model_weights_verified":false,
+            "cumulative_execution_admitted":false,"active_graph_published":false}),
+        )
+    }
+
+    pub(super) fn runtime(&self) -> &AdmittedRuntime {
+        &self.runtime
+    }
+
+    pub(super) fn preparation_dispatch(&self) -> SupervisorResult<PathBuf> {
+        self.effective_entry()?;
+        let pin = self
+            .runtime
+            .inventory
+            .get(PROCESSING_DISPATCH_ENTRY)
+            .ok_or_else(|| {
+                invalid("native current cue dispatch is absent from its processing release")
+            })?;
+        let path = self.runtime.root.join(PROCESSING_DISPATCH_ENTRY);
+        fingerprint(&path, pin, false, 64 * 1024 * 1024)?;
+        Ok(path)
+    }
+}
+
 impl AdmittedRuntime {
     pub(super) fn read(store: &DurableStore, job: &str, root: &Path) -> SupervisorResult<Self> {
         let raw = store
@@ -729,6 +994,251 @@ mod tests {
             producer,
             inventory,
         }
+    }
+
+    fn put_processing_file(f: &mut Fixture, name: &str, raw: &[u8]) {
+        let path = f.root.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, raw).unwrap();
+        f.inventory.insert(name.into(), pin(raw));
+    }
+
+    fn seal_processing_fixture(f: &mut Fixture) -> Value {
+        let mut entries: Vec<_> = f.inventory.iter().collect();
+        entries.sort_by_key(|(name, _)| *name);
+        let artifacts: Vec<_> = entries
+            .iter()
+            .map(|(name, p)| {
+                json!({"path":name,
+            "sha256":p["sha256"].as_str().unwrap().trim_start_matches("sha256:"),
+            "size_bytes":p["size_bytes"].as_u64().unwrap().to_string()})
+            })
+            .collect();
+        let raw = json!({"schema_version":1,"source_sha":"b".repeat(40),"artifacts":artifacts})
+            .to_string();
+        fs::write(f.root.join("release-manifest.json"), raw.as_bytes()).unwrap();
+        pin(raw.as_bytes())
+    }
+
+    fn processing_fixture() -> (Fixture, Value) {
+        let mut f = fixture();
+        put_processing_file(
+            &mut f,
+            PROCESSING_DECLARATION,
+            processing_declaration().to_string().as_bytes(),
+        );
+        put_processing_file(
+            &mut f,
+            EFFECTIVE_ENTRY,
+            b"# new effective preparation adapter",
+        );
+        put_processing_file(
+            &mut f,
+            PROCESSING_DISPATCH_ENTRY,
+            b"# owned isolated native preparation dispatch",
+        );
+        put_processing_file(
+            &mut f,
+            "app/engine/dubflow/worker/production_job.py",
+            b"# explicitly separate processing worker",
+        );
+        let manifest = seal_processing_fixture(&mut f);
+        (f, manifest)
+    }
+
+    fn fixture_contents(
+        root: &Path,
+    ) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, std::time::SystemTime)> {
+        let mut result = std::collections::BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    result.insert(
+                        path.clone(),
+                        (
+                            fs::read(&path).unwrap(),
+                            fs::metadata(path).unwrap().modified().unwrap(),
+                        ),
+                    );
+                }
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn separate_processing_admission_keeps_original_binding_root_models_and_bytes() {
+        let original = fixture();
+        let (processing, manifest) = processing_fixture();
+        let saved = fixture_contents(&original.root);
+        let producer = original.producer.clone();
+        let admitted = AdmittedProcessingRuntime::from_origin(
+            &producer,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        let receipt = admitted.receipt().unwrap();
+        assert_eq!(receipt["source_sha"], "b".repeat(40));
+        assert_eq!(receipt["processing_root"], json!(processing.root));
+        assert_eq!(receipt["original_model_root"], producer["model_root"]);
+        assert_eq!(receipt["original_job_binding_changed"], false);
+        assert_eq!(receipt["model_weights_verified"], false);
+        assert_eq!(receipt["cumulative_execution_admitted"], false);
+        assert_eq!(receipt["active_graph_published"], false);
+        assert_eq!(original.producer, producer);
+        assert_eq!(fixture_contents(&original.root), saved);
+        assert!(!original.root.join("unprovisioned-models").exists());
+        assert_eq!(
+            admitted.effective_entry().unwrap(),
+            processing.root.join(EFFECTIVE_ENTRY)
+        );
+    }
+
+    #[test]
+    fn processing_admission_refuses_source_manifest_unknown_capability_or_missing_entry() {
+        let original = fixture();
+        for mutation in 0..7 {
+            let (mut f, mut manifest) = processing_fixture();
+            let mut source = "b".repeat(40);
+            match mutation {
+                0 => source = "c".repeat(40),
+                1 => manifest["sha256"] = json!(hash(b"foreign manifest")),
+                2 => {
+                    let mut declaration = processing_declaration();
+                    declaration["schema_version"] = json!(2);
+                    put_processing_file(
+                        &mut f,
+                        PROCESSING_DECLARATION,
+                        declaration.to_string().as_bytes(),
+                    );
+                    manifest = seal_processing_fixture(&mut f);
+                }
+                3 => {
+                    let mut declaration = processing_declaration();
+                    declaration["cumulative_execution"] = json!(true);
+                    put_processing_file(
+                        &mut f,
+                        PROCESSING_DECLARATION,
+                        declaration.to_string().as_bytes(),
+                    );
+                    manifest = seal_processing_fixture(&mut f);
+                }
+                4 => {
+                    fs::remove_file(f.root.join(EFFECTIVE_ENTRY)).unwrap();
+                    f.inventory.remove(EFFECTIVE_ENTRY);
+                    manifest = seal_processing_fixture(&mut f);
+                }
+                5 => {
+                    fs::remove_file(f.root.join(PROCESSING_DECLARATION)).unwrap();
+                    f.inventory.remove(PROCESSING_DECLARATION);
+                    manifest = seal_processing_fixture(&mut f);
+                }
+                _ => source = "B".repeat(40),
+            }
+            assert!(
+                AdmittedProcessingRuntime::from_origin(
+                    &original.producer,
+                    &f.root,
+                    &manifest,
+                    &source
+                )
+                .is_err(),
+                "mutation {mutation}"
+            );
+        }
+    }
+
+    #[test]
+    fn processing_admission_compares_complete_protected_inventory_not_only_entrypoint_pins() {
+        let original = fixture();
+        for mutation in 0..7 {
+            let (mut f, _) = processing_fixture();
+            match mutation {
+                0 => {
+                    put_processing_file(&mut f, "runtime/Lib/site.py", b"# changed runtime import")
+                }
+                1 => put_processing_file(&mut f, "runtime/Lib/extra.py", b"# extra runtime import"),
+                2 => {
+                    fs::remove_file(f.root.join("runtime/Lib/empty.py")).unwrap();
+                    f.inventory.remove("runtime/Lib/empty.py");
+                }
+                3 => put_processing_file(
+                    &mut f,
+                    "app/engine/dubflow/tts/backend.py",
+                    b"# changed TTS backend",
+                ),
+                4 => put_processing_file(
+                    &mut f,
+                    "app/engine/dubflow/mix/backend.py",
+                    b"# changed mix backend",
+                ),
+                5 => put_processing_file(
+                    &mut f,
+                    "app/engine/dubflow/models/loader.py",
+                    b"# changed model loader",
+                ),
+                _ => put_processing_file(
+                    &mut f,
+                    "app/engine/dubflow/media/adapter.py",
+                    b"# changed media adapter",
+                ),
+            }
+            let manifest = seal_processing_fixture(&mut f);
+            assert!(
+                AdmittedProcessingRuntime::from_origin(
+                    &original.producer,
+                    &f.root,
+                    &manifest,
+                    &"b".repeat(40)
+                )
+                .is_err(),
+                "mutation {mutation}"
+            );
+        }
+    }
+
+    #[test]
+    fn processing_receipt_rechecks_capability_entry_original_manifest_and_extra_imports() {
+        let original = fixture();
+        for target in [
+            PROCESSING_DECLARATION,
+            EFFECTIVE_ENTRY,
+            "app/engine/dubflow/review/unlisted.py",
+        ] {
+            let (f, manifest) = processing_fixture();
+            let admitted = AdmittedProcessingRuntime::from_origin(
+                &original.producer,
+                &f.root,
+                &manifest,
+                &"b".repeat(40),
+            )
+            .unwrap();
+            let path = f.root.join(target);
+            if path.exists() {
+                let mut raw = fs::read(&path).unwrap();
+                raw[0] ^= 1;
+                fs::write(path, raw).unwrap();
+            } else {
+                fs::write(path, b"# unlisted import").unwrap();
+            }
+            assert!(admitted.receipt().is_err());
+        }
+        let (f, manifest) = processing_fixture();
+        let admitted = AdmittedProcessingRuntime::from_origin(
+            &original.producer,
+            &f.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        fs::write(original.root.join("release-manifest.json"), b"changed").unwrap();
+        assert!(admitted.receipt().is_err());
     }
 
     #[test]

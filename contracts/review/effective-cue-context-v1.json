@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private native effective cue preparation context v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "capability", "before_token", "before_snapshot_json", "after_snapshot_json", "current_composition_sha256", "composition_snapshot_sha256"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_effective_cue_context"},
+    "capability": {"const": "review_effective_audio_v1"},
+    "before_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "before_snapshot_json": {"type": "string", "minLength": 1, "maxLength": 67108864},
+    "after_snapshot_json": {"type": "string", "minLength": 1, "maxLength": 67108864},
+    "current_composition_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "composition_snapshot_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"}
+  },
+  "$defs": {
+    "token": {
+      "type": "object", "additionalProperties": false,
+      "required": ["job_id", "revision", "snapshot_sha256", "graph_sha256", "original_manifest_sha256"],
+      "properties": {
+        "job_id": {"$ref": "cue-synthesis-v1.json#/$defs/id"},
+        "revision": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 19},
+        "snapshot_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+        "graph_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+        "original_manifest_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"}
+      }
+    }
+  }
+}

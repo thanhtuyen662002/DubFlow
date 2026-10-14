@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Supervisor supplied current cue preparation bindings; no path authority from UI",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "current_token",
+    "content_composition_json",
+    "content_composition_sha256",
+    "composition_snapshot_json",
+    "composition_snapshot_sha256",
+    "source_audio",
+    "canonical_inputs",
+    "documents",
+    "mix_template"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_native_effective_cue_bindings"
+    },
+    "current_token": {
+      "$ref": "effective-cue-context-v1.json#/$defs/token"
+    },
+    "content_composition_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "content_composition_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "composition_snapshot_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "composition_snapshot_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "source_audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "artifact_root"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "native-effective-cue-bindings-v1.json#/$defs/path"
+        },
+        "sha256": {
+          "$ref": "cue-synthesis-v1.json#/$defs/hash"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8589934592
+        },
+        "artifact_root": {
+          "$ref": "native-effective-cue-bindings-v1.json#/$defs/path"
+        }
+      }
+    },
+    "canonical_inputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "$ref": "cue-synthesis-v1.json#/$defs/input"
+      }
+    },
+    "documents": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "$ref": "native-effective-cue-bindings-v1.json#/$defs/document"
+      }
+    },
+    "mix_template": {
+      "$ref": "native-effective-cue-bindings-v1.json#/$defs/document"
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32767
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "artifact_root"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "native-effective-cue-bindings-v1.json#/$defs/path"
+        },
+        "sha256": {
+          "$ref": "cue-synthesis-v1.json#/$defs/hash"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "artifact_root": {
+          "$ref": "native-effective-cue-bindings-v1.json#/$defs/path"
+        },
+        "metadata_root": {
+          "$ref": "native-effective-cue-bindings-v1.json#/$defs/path"
+        }
+      }
+    }
+  }
+}

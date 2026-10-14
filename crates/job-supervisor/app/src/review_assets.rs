@@ -41,6 +41,16 @@ pub(super) struct PcmPin {
 }
 
 impl PcmPin {
+    fn validate_cue(&self) -> SupervisorResult<()> {
+        self.validate()?;
+        if self.sample_rate != 48000 || self.channels != 1 {
+            return Err(invalid(
+                "retained cue requires admitted 48k mono signed16 PCM",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> SupervisorResult<()> {
         if !valid_hash(&self.sha256)
             || !(44..=MAX_CUE_BYTES).contains(&self.size_bytes)
@@ -78,6 +88,13 @@ impl PcmPin {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AcceptedCueAudio {
+    pub(super) path: PathBuf,
+    pub(super) pin: PcmPin,
+}
+
+/// A distinct output-retained cue; it cannot relax the full-mix stereo contract.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RetainedCueAudio {
     pub(super) path: PathBuf,
     pub(super) pin: PcmPin,
 }
@@ -149,8 +166,106 @@ pub(super) fn regular(path: &Path) -> SupervisorResult<File> {
     Ok(file)
 }
 
+/// Fresh open-handle identity and exactly one link for retained cue media.
+/// Model/runtime inventories have separate explicit deduplication rules.
+fn single_cue_file(file: &File) -> SupervisorResult<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        if metadata.nlink() != 1 {
+            return Err(invalid("cue media cannot have multiple hard links"));
+        }
+        Ok((metadata.dev(), metadata.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        // Win32 BY_HANDLE_FILE_INFORMATION, DWORD/FILETIME layout:
+        // https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information
+        #[repr(C)]
+        struct Information {
+            attributes: u32,
+            created: [u32; 2],
+            accessed: [u32; 2],
+            written: [u32; 2],
+            volume: u32,
+            size_high: u32,
+            size_low: u32,
+            links: u32,
+            index_high: u32,
+            index_low: u32,
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetFileInformationByHandle(
+                handle: *mut std::ffi::c_void,
+                information: *mut Information,
+            ) -> i32;
+        }
+        let mut information: Information = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if information.links != 1 || information.attributes & (0x400 | 0x10) != 0 {
+            return Err(invalid(
+                "cue media must be a single-link regular no-reparse file",
+            ));
+        }
+        Ok((
+            u64::from(information.volume),
+            u64::from(information.index_high) << 32 | u64::from(information.index_low),
+        ))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        Err(invalid(
+            "retained cue identity requires a qualified native filesystem",
+        ))
+    }
+}
+
 fn stream_pin(source: &mut File, target: Option<&mut File>, pin: &PcmPin) -> SupervisorResult<()> {
     stream_pin_before(source, target, pin, None)
+}
+
+/// A caller supplies an exact archived original path and its admitted root.
+/// This never promotes a candidate/hint into canonical retained storage.
+pub(super) fn verify_original_cue_audio(
+    root: &Path,
+    path: &Path,
+    pin: &PcmPin,
+    deadline: Instant,
+) -> SupervisorResult<()> {
+    pin.validate()?;
+    plain(root)?;
+    if !root.is_dir()
+        || root.components().any(|c| matches!(c, Component::ParentDir))
+        || !path.is_absolute()
+        || !path.starts_with(root)
+    {
+        return Err(invalid("original cue is outside its admitted source root"));
+    }
+    let mut file = regular(path)?;
+    let before = file.metadata()?;
+    if before.len() != pin.size_bytes {
+        return Err(invalid("original cue size changed"));
+    }
+    stream_pin_before(&mut file, None, pin, Some(deadline))?;
+    pcm(&mut file, pin)?;
+    plain(root)?;
+    plain(path)?;
+    let after = file.metadata()?;
+    if before.len() != after.len()
+        || before.modified()? != after.modified()?
+        || fs::metadata(path)?.modified()? != before.modified()?
+    {
+        return Err(invalid(
+            "original cue changed during effective-state admission",
+        ));
+    }
+    time_left(Some(deadline))
 }
 
 fn time_left(deadline: Option<Instant>) -> SupervisorResult<()> {
@@ -492,6 +607,154 @@ fn mix_writer_lock(namespace: &Path, create: bool) -> SupervisorResult<File> {
 }
 
 impl RetainedMixStore {
+    /// Bounded single-cue PCM shares the existing output writer/quota/orphan
+    /// accounting. Copy guards observe fresh caller reserve every four MiB.
+    pub(super) fn accept_cue(
+        &self,
+        candidate_root: &Path,
+        candidate: &Path,
+        pin: &PcmPin,
+        mut available_bytes: impl FnMut(&Path) -> SupervisorResult<u64>,
+        deadline: Instant,
+    ) -> SupervisorResult<RetainedCueAudio> {
+        pin.validate_cue()?;
+        time_left(Some(deadline))?;
+        plain(candidate_root)?;
+        if !candidate_root.is_dir()
+            || candidate_root
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+            || !candidate.is_absolute()
+            || !candidate.starts_with(candidate_root)
+            || candidate
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+            || candidate.starts_with(&self.namespace)
+        {
+            return Err(invalid(
+                "cue candidate escaped its admitted private producer root",
+            ));
+        }
+        let retained = RetainedCueAudio {
+            path: self.objects.root.join(format!("{}.wav", &pin.sha256[7..])),
+            pin: pin.clone(),
+        };
+        match fs::symlink_metadata(&retained.path) {
+            Ok(_) => {
+                self.verify_cue(&retained, deadline)?;
+                return Ok(retained);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        let used = self.used_bytes(deadline)?;
+        if used
+            .checked_add(pin.size_bytes)
+            .is_none_or(|n| n > self.budget.maximum_bytes)
+        {
+            return Err(invalid(
+                "cue retention quota exhausted; preserve all prior/undo objects",
+            ));
+        }
+        let needed = pin
+            .size_bytes
+            .checked_add(self.budget.minimum_free_bytes)
+            .ok_or_else(|| invalid("cue retention reservation overflow"))?;
+        if available_bytes(&self.namespace)? < needed {
+            return Err(invalid(
+                "cue output has insufficient fresh caller reserve; no control fallback",
+            ));
+        }
+        let mut source = regular(candidate)?;
+        single_cue_file(&source)?;
+        if source.metadata()?.len() != pin.size_bytes {
+            return Err(invalid("cue candidate size changed before retention"));
+        }
+        let (mut copy, private) = self.objects.private_copy()?;
+        let mut space_guard = |copied: u64| -> SupervisorResult<()> {
+            let remaining = pin
+                .size_bytes
+                .checked_sub(copied)
+                .ok_or_else(|| invalid("cue copy reservation changed"))?;
+            let needed = remaining
+                .checked_add(self.budget.minimum_free_bytes)
+                .ok_or_else(|| invalid("cue copy reserve overflow"))?;
+            if available_bytes(&self.namespace)? < needed {
+                return Err(invalid(
+                    "cue caller reserve changed during copy; retain prior generation",
+                ));
+            }
+            Ok(())
+        };
+        // The generic bounded byte streamer is shared; the cue's PCM header
+        // is independently verified below. No render/file role is published.
+        let bytes = RetainedFilePin {
+            sha256: pin.sha256.clone(),
+            size_bytes: pin.size_bytes,
+            format: RetainedFileFormat::Json,
+        };
+        stream_render_file(
+            &mut source,
+            Some(&mut copy),
+            &bytes,
+            deadline,
+            Some(&mut space_guard),
+        )?;
+        drop(space_guard);
+        copy.sync_all()?;
+        stream_pin_before(&mut copy, None, pin, Some(deadline))?;
+        pcm(&mut copy, pin)?;
+        if available_bytes(&self.namespace)? < self.budget.minimum_free_bytes {
+            return Err(invalid("cue caller reserve changed before sealing"));
+        }
+        time_left(Some(deadline))?;
+        drop(copy);
+        self.objects.publish(&private, &retained.path)?;
+        // Publication removes its owned temporary link before sealing. End
+        // the copy guard before checking the final single-link media identity.
+        drop(private);
+        self.verify_cue(&retained, deadline)?;
+        Ok(retained)
+    }
+
+    pub(super) fn verify_cue(
+        &self,
+        retained: &RetainedCueAudio,
+        deadline: Instant,
+    ) -> SupervisorResult<()> {
+        retained.pin.validate_cue()?;
+        time_left(Some(deadline))?;
+        if retained.path
+            != self
+                .objects
+                .root
+                .join(format!("{}.wav", &retained.pin.sha256[7..]))
+        {
+            return Err(invalid(
+                "retained cue differs from its native job/content namespace",
+            ));
+        }
+        let mut file = regular(&retained.path)?;
+        let before = file.metadata()?;
+        let identity = single_cue_file(&file)?;
+        if !before.permissions().readonly() || before.len() != retained.pin.size_bytes {
+            return Err(invalid("retained cue is unsealed or changed size"));
+        }
+        stream_pin_before(&mut file, None, &retained.pin, Some(deadline))?;
+        pcm(&mut file, &retained.pin)?;
+        let after = regular(&retained.path)?;
+        if single_cue_file(&after)? != identity
+            || single_cue_file(&file)? != identity
+            || after.metadata()?.modified()? != before.modified()?
+            || !after.metadata()?.permissions().readonly()
+            || after.metadata()?.len() != retained.pin.size_bytes
+            || file.metadata()?.len() != retained.pin.size_bytes
+        {
+            return Err(invalid("retained cue identity changed during verification"));
+        }
+        time_left(Some(deadline))
+    }
+
     /// output_root is resolved from native immutable job configuration. The
     /// caller must not supply browser/worker roots or fall back to control.
     pub(super) fn new(
@@ -1134,6 +1397,147 @@ mod tests {
         *bad.last_mut().unwrap() ^= 1;
         fs::write(&path, bad).unwrap();
         assert!(verify_private_mix_audio(&root, &path, &pin, deadline).is_err());
+    }
+
+    #[test]
+    fn original_cue_reopen_checks_full_hash_pcm_root_deadline_without_copy_or_mutation() {
+        let (_fixture, store, root) = fixture();
+        let (bytes, pin) = wave(480, 1, false);
+        let path = root.join("original-cue.wav");
+        fs::write(&path, &bytes).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        verify_original_cue_audio(&root, &path, &pin, deadline()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 0);
+        assert!(verify_original_cue_audio(&root, &path, &pin, Instant::now()).is_err());
+        let changed = PcmPin {
+            frame_count: pin.frame_count - 1,
+            ..pin.clone()
+        };
+        assert!(verify_original_cue_audio(&root, &path, &changed, deadline()).is_err());
+        let foreign = root.parent().unwrap().join("foreign-cue.wav");
+        fs::write(&foreign, &bytes).unwrap();
+        assert!(verify_original_cue_audio(&root, &foreign, &pin, deadline()).is_err());
+        let mut corrupted = bytes;
+        *corrupted.last_mut().unwrap() ^= 1;
+        fs::write(&path, corrupted).unwrap();
+        assert!(verify_original_cue_audio(&root, &path, &pin, deadline()).is_err());
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cue_output_retention_shares_quota_reuses_sealed_bytes_and_rejects_mix_or_link_substitution()
+    {
+        let (fixture, _, candidate) = fixture();
+        let (bytes, pin) = wave(4800, 1, false);
+        let path = candidate.join("cue.wav");
+        fs::write(&path, &bytes).unwrap();
+        let source_modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let store =
+            RetainedMixStore::new(&fixture.0, "cue-output", budget(pin.size_bytes)).unwrap();
+        let retained = store
+            .accept_cue(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        assert_ne!(retained.path, path);
+        assert_eq!(retained.pin, pin);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            fs::metadata(&path).unwrap().modified().unwrap(),
+            source_modified
+        );
+        assert_eq!(store.used_bytes(deadline()).unwrap(), pin.size_bytes);
+        let modified = fs::metadata(&retained.path).unwrap().modified().unwrap();
+        assert!(single_cue_file(&regular(&retained.path).unwrap()).is_ok());
+        let same = store
+            .accept_cue(
+                &candidate,
+                &path,
+                &pin,
+                |_| panic!("valid dedup allocates no new bytes"),
+                deadline(),
+            )
+            .unwrap();
+        assert_eq!(same, retained);
+        assert_eq!(
+            fs::metadata(&same.path).unwrap().modified().unwrap(),
+            modified
+        );
+        assert!(store
+            .accept(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .is_err()); // mono is not full mix.
+        let video = candidate.join("new.mp4");
+        fs::write(&video, b"new render candidate").unwrap();
+        assert!(store
+            .accept_file(
+                &candidate,
+                &video,
+                &render_pin(b"new render candidate", RetainedFileFormat::Mp4),
+                |_| Ok(u64::MAX),
+                deadline()
+            )
+            .is_err()); // cue bytes reserve the same aggregate quota.
+        let extra = retained.path.with_extension("link");
+        fs::hard_link(&retained.path, &extra).unwrap();
+        assert!(store.verify_cue(&retained, deadline()).is_err());
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(&extra).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(&extra, permissions).unwrap();
+        }
+        fs::remove_file(&extra).unwrap();
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(&retained.path).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&retained.path, permissions).unwrap();
+        }
+        assert!(store.verify_cue(&retained, Instant::now()).is_err());
+        store.verify_cue(&retained, deadline()).unwrap();
+    }
+
+    #[test]
+    fn cue_copy_refuses_changed_caller_reserve_after_four_mib_without_retiring_prior_objects() {
+        let (fixture, _, candidate) = fixture();
+        let (bytes, pin) = wave(5 * 1024 * 1024 / 2, 1, false);
+        let path = candidate.join("large-cue.wav");
+        fs::write(&path, &bytes).unwrap();
+        let store =
+            RetainedMixStore::new(&fixture.0, "cue-space", budget(pin.size_bytes + 32)).unwrap();
+        let old = candidate.join("old.mp4");
+        fs::write(&old, b"valid prior render").unwrap();
+        let prior = store
+            .accept_file(
+                &candidate,
+                &old,
+                &render_pin(b"valid prior render", RetainedFileFormat::Mp4),
+                |_| Ok(u64::MAX),
+                deadline(),
+            )
+            .unwrap();
+        let mut calls = 0;
+        assert!(store
+            .accept_cue(
+                &candidate,
+                &path,
+                &pin,
+                |_| {
+                    calls += 1;
+                    Ok(if calls < 3 { u64::MAX } else { 0 })
+                },
+                deadline()
+            )
+            .is_err());
+        assert_eq!(calls, 3);
+        assert!(!store
+            .objects
+            .root
+            .join(format!("{}.wav", &pin.sha256[7..]))
+            .exists());
+        assert_eq!(fs::read(&prior.path).unwrap(), b"valid prior render");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(store.used_bytes(deadline()).unwrap(), prior.pin.size_bytes);
     }
 
     fn pin(bytes: &[u8], frame_count: u64, channels: u16) -> PcmPin {

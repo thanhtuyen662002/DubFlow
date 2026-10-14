@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Read-only native current content and separate archived origin; no generation admission",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "current_token", "current_snapshot_json", "origin_token", "origin_graph_json", "source_graph_json", "current_timeline_json", "content_composition_json", "composition_snapshot_json", "effective_composition_json", "spoken_assignments", "metadata_pins", "generation_dependencies_complete", "processing_release_admitted", "processing_release", "active_graph_published", "correction_ready"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_native_effective_state"},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "origin_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "current_snapshot_json": {"$ref": "native-effective-state-v1.json#/$defs/raw"},
+    "origin_graph_json": {"$ref": "native-effective-state-v1.json#/$defs/raw"},
+    "source_graph_json": {"$ref": "native-effective-state-v1.json#/$defs/raw"},
+    "current_timeline_json": {"$ref": "native-effective-state-v1.json#/$defs/raw"},
+    "content_composition_json": {"type": ["string", "null"], "minLength": 1, "maxLength": 67108864},
+    "composition_snapshot_json": {"type": ["string", "null"], "minLength": 1, "maxLength": 67108864},
+    "effective_composition_json": {"type": ["string", "null"], "minLength": 1, "maxLength": 67108864},
+    "spoken_assignments": {
+      "type": ["array", "null"], "minItems": 1, "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["cue_id", "tts_document_sha256", "spoken_text"],
+        "properties": {
+          "cue_id": {"$ref": "cue-synthesis-v1.json#/$defs/id"},
+          "tts_document_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+          "spoken_text": {"$ref": "native-effective-state-v1.json#/$defs/document"}
+        }
+      }
+    },
+    "metadata_pins": {
+      "type": "object", "additionalProperties": false, "required": ["current_timeline"],
+      "properties": {
+        "current_timeline": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "original_timeline": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "composition": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "composition_snapshot": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "speech_inventory": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "tts_document": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "spoken_text": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "mix_template": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "job_manifest": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "native_publication": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "retained_render": {"$ref": "native-effective-state-v1.json#/$defs/document"}
+      }
+    },
+    "generation_dependencies_complete": {"type": "boolean"},
+    "processing_release_admitted": {"type": "boolean"},
+    "processing_release": {"$ref": "native-processing-release-v1.json"},
+    "active_graph_published": {"const": false},
+    "correction_ready": {"const": false}
+  },
+  "$defs": {
+    "raw": {"type": "string", "minLength": 1, "maxLength": 67108864},
+    "document": {
+      "type": "object", "additionalProperties": false, "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 32767},
+        "sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 67108864}
+      }
+    }
+  }
+}

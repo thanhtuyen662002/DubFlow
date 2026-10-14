@@ -34,6 +34,9 @@ mod source_server;
 mod review_pin;
 mod review_assets;
 mod review_document;
+mod review_effective;
+mod review_generation;
+mod review_speech;
 mod review_request;
 mod review_seed;
 mod review_runtime;
@@ -616,6 +619,12 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-effective-state")) {
+        return review_active::run_effective(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-prepare-effective-cue")) {
+        return review_generation::run(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-active")) {
         return review_active::run(std::env::args_os().skip(2), false);
     }

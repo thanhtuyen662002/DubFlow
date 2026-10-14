@@ -227,6 +227,7 @@ fn run_inner(
             after: &after,
             timeline: &timeline,
             mixed: None,
+            accepted_cue: None,
             output: &seed.output_root,
             output_pin: retained_output.as_ref().unwrap(),
             candidates: &candidates,
@@ -320,7 +321,14 @@ fn run_inner(
     if synthesize {
         runtime.cue_execution()?;
         let candidates = private_root(&seed.output_root, job)?;
-        let result = synthesize_accepted(&runtime, &assets, &candidates, &request, &accepted)?;
+        let result = synthesize_accepted(
+            &runtime,
+            &assets,
+            &candidates,
+            &request,
+            &accepted,
+            retained_output.as_ref(),
+        )?;
         let mixed = if mix {
             Some(mix_private(
                 &runtime,
@@ -351,6 +359,7 @@ fn run_inner(
                     after: &after,
                     timeline: corrected_timeline.as_ref().unwrap(),
                     mixed: mixed.as_ref(),
+                    accepted_cue: Some(&result),
                     output: &seed.output_root,
                     output_pin: retained_output.as_ref().unwrap(),
                     candidates: &candidates,
@@ -1042,6 +1051,7 @@ fn synthesize_accepted(
     output: &Path,
     request: &BoundCueRequest,
     object: &AcceptedJsonDocument,
+    retained_output: Option<&super::review_retention::NativeOutputPin>,
 ) -> SupervisorResult<Value> {
     let (entry, model_root) = runtime.cue_execution()?;
     let scratch = candidate_scratch(output)?;
@@ -1067,7 +1077,50 @@ fn synthesize_accepted(
     let raw = collect(command, Duration::from_secs(300), CUE_PACKET_LIMIT)?;
     let generation = output.join(format!("cue-{}", &request.input_hash()[7..]));
     let candidate = admit_candidate(&raw, request, &generation)?;
-    let audio = assets.accept(&generation, &candidate.path, &candidate.pin)?;
+    let job = request.raw();
+    let request_value = decode(job, CUE_DOCUMENT_LIMIT)?;
+    let job = request_value["job_id"]
+        .as_str()
+        .ok_or_else(|| invalid("retained cue job missing"))?;
+    let budget = super::review_assets::MixStorageBudget {
+        maximum_bytes: 32 * 1024 * 1024 * 1024,
+        minimum_free_bytes: 2 * 1024 * 1024 * 1024,
+    };
+    let retained = if let Some(output_pin) = retained_output {
+        let media = super::review_retention::NativeMixStore::new(output_pin, job, budget)?;
+        Some(media.accept_cue(
+            &generation,
+            &candidate.path,
+            &candidate.pin,
+            std::time::Instant::now() + Duration::from_secs(180),
+        )?)
+    } else {
+        None
+    };
+    let audio = if let Some(retained) = &retained {
+        super::review_assets::AcceptedCueAudio {
+            path: retained.path().into(),
+            pin: retained.pin().clone(),
+        }
+    } else {
+        assets.accept(&generation, &candidate.path, &candidate.pin)?
+    };
+    let verify_audio = || -> SupervisorResult<()> {
+        if let (Some(output_pin), Some(retained)) = (retained_output, &retained) {
+            let media =
+                super::review_retention::NativeMixStore::open_existing(output_pin, job, budget)?;
+            let reopened = media.reopen_cue(
+                &retained.descriptor(),
+                std::time::Instant::now() + Duration::from_secs(180),
+            )?;
+            if reopened.path() != audio.path.as_path() || reopened.pin() != &audio.pin {
+                return Err(invalid("retained cue differs from its native accepted PCM"));
+            }
+            Ok(())
+        } else {
+            assets.verify(&audio)
+        }
+    };
     let wave = json!({"path":audio.path,"root":audio.path.parent().unwrap(),"sha256":audio.pin.sha256,"size_bytes":audio.pin.size_bytes,
         "sample_rate":audio.pin.sample_rate,"channels":audio.pin.channels,"frame_count":audio.pin.frame_count});
     let context=assets.accept_json(&serde_json::to_string(&json!({"schema_version":1,"kind":"review_native_accepted_cue_context",
@@ -1114,18 +1167,23 @@ fn synthesize_accepted(
             "accepted adapter changed fields beyond WAV path/document hash",
         ));
     }
-    assets.verify(&audio)?;
+    verify_audio()?;
     assets.read_json(object)?;
     assets.read_json(&context)?;
     let tts = assets.accept_json(&tts)?;
     let spoken = assets.accept_json(&spoken)?;
     assets.read_json(&tts)?;
     assets.read_json(&spoken)?;
-    assets.verify(&audio)?;
-    Ok(
-        json!({"audio":wave,"tts_document":descriptor(&tts),"spoken_text":descriptor(&spoken),"recipe_identity":candidate.recipe,
-        "accept_context":descriptor(&context),"active_graph_published":false}),
-    )
+    verify_audio()?;
+    let mut result = json!({"audio":wave,"tts_document":descriptor(&tts),"spoken_text":descriptor(&spoken),"recipe_identity":candidate.recipe,
+        "accept_context":descriptor(&context),"active_graph_published":false});
+    if let Some(retained) = retained {
+        result
+            .as_object_mut()
+            .unwrap()
+            .insert("retained_cue_audio".into(), retained.descriptor());
+    }
+    Ok(result)
 }
 
 #[cfg(test)]

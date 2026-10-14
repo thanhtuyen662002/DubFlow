@@ -83,3 +83,114 @@ Native release-inventory admission, contained dispatch, physical output
 retention/admission and graph CAS remain mandatory before desktop activation.
 The private entry point does not enable long-form chunk scheduling, editable
 export or undo. Unknown versions refuse; original exports remain unchanged.
+
+`effective-cue-context-v1.json` and `prepared-effective-cue-request-v1.json`
+are distinct private preparation tags for a current generation. The caller
+supplies its native token and separately admitted source/document pins. The
+reader reopens the complete current composition, preserving every original
+cue's timing, mapping and confidence while binding current text and per-cue
+voice/document assignments. Serialized paths cannot construct admitted pins.
+The prepared request retains the current public revision and selected cue's
+current producer/voice provenance. Old original-only adapters refuse these tags.
+These formats do not admit a processing release, execute a model, mutate SQLite
+or publish a graph. Native effective-state recovery, independent request/mix
+admission and versioned cumulative publication remain required before these
+preparation adapters can participate in actual correction or undo.
+
+`native-effective-state-v1.json` is a separate read-only native view of current
+content and its archived origin. It keeps the current public token, current
+timeline and native metadata pins separate from the revision-zero archive.
+Original B2 inputs reopen every per-cue PCM pin and bind per-cue spoken-text
+references to the sealed original documents. Retained publications use the
+existing physical five-role render/three-role PCM reader. Legacy publication-v1
+does not record the changed cue's spoken-text reference: it remains valid for
+playback, but reports an incomplete generation dependency inventory. No private
+checkpoint or path hint repairs that gap. Content-composition snapshot identity
+is explicit and may differ from the current public token after undo. This view
+does not admit a processing release, create a generation or enable the GUI.
+
+`native-speech-inventory-v1.json` closes the missing per-cue reference set. Each
+row binds the exact accepted TTS document and spoken-text document; a changed
+cue additionally retains its native acceptance context, recipe identity and
+sealed PCM pin. Native recovery rebuilds the inventory from its admitted request,
+proposal and composition, rechecks the accepted PCM and verifies exact path-only
+TTS/hash-only spoken retargets. Source mapping, confidence bits, current voice,
+checkpoint identity and recorded rewrite advice remain bound.
+
+`native-publication-v2.json` adds that sealed inventory to the first-generation
+B2 publication and uses `review_bound_retained_render_graph_v2`. Existing v1
+graphs and sealed bytes are read with the v1 reader and never migrated. The
+effective-state reader can expose complete speech references from a v2 record.
+This is a dependency retention step. Cumulative generation/current processing
+capability, fixed-output per-cue retention/quota integration, corrected standard
+and editable publication and full native/installed acceptance remain pending.
+
+`native-retained-cue-audio-v1.json` adds an explicit mono cue role in the same
+native output namespace, with a canonical output-volume/job/content locator.
+It does not change the stereo full-mix contract. The retained-generation path
+copies admitted cue PCM onto the output volume before metadata acceptance and
+mixing; the resulting native acceptance context receives confined physical
+paths. Every per-cue proof in publication-v2 now requires that retained locator.
+Recovery derives its path from the native locator, rechecks full hash/header,
+readonly/single-link file identity and fresh volume, then compares it to the
+exact accepted TTS/spoken evidence. No hint or control-store path is a fallback.
+The existing aggregate quota counts cue, mix, render, old/undo and orphan bytes;
+copy checks fresh caller reserve every four MiB and before sealing. The legacy
+private non-retained synthesis command remains separate and cannot publish a
+generation. Actual current/native/installed/cumulative acceptance is still a gate.
+
+### Effective composition identity after playback and undo
+
+The pending effective reader carries immutable `content_composition_json` and
+its exact `composition_snapshot_json` separately from the current public token.
+It also exposes a new `effective_composition_json` projection. Native admission
+and the owned Python preparation independently permit only monotonic revision
+and playback preview differences between those snapshots; diagnostics, plans,
+cue text/voices, source clocks and confidence remain exact. The projection changes
+only `review_snapshot_sha256`, never rewrites accepted composition/media bytes.
+Python reopens the original content with separately admitted document/source
+pins before projecting. Preparation binds both composition identities and the
+independently supplied content snapshot; serialized paths grant no authority.
+This unreleased private successor format still needs processing capability and
+cumulative native execution/publication before any actual acceptance claim.
+
+### Explicit compatible processing release admission
+
+`review-effective-state` may receive an explicit processing root, manifest
+SHA/byte count and source commit. Native admission retains the original job
+producer binding and model root, verifies both complete import inventories,
+and compares every runtime/TTS/mix/model/media inventory pin. A changed,
+missing or additional protected dependency refuses. The processing worker is a
+separate recorded descriptor, never copied into or repinned on the old bundle.
+
+`engine/dubflow/review/processing-capabilities-v1.json` is release-inventoried
+metadata for the `prepare_effective_cue` Python function, not a runnable CLI or
+cumulative processing permission. Native parsing requires its exact closed
+capability/format/compatibility declaration and an inventoried function module.
+`native-processing-release-v1.json` records the separate source/release and
+capability/entry pins, original producer/release/protected inventory identity
+and original model root. The command rechecks the current durable token after
+this read-only admission. No model weights are verified or provisioned here.
+Without explicit selection, the state view continues to report no admitted
+processing release. Native request dispatch, current mix/render and cumulative
+publication/CAS/undo remain required before actual product qualification.
+
+### Current cue preparation dispatch
+
+`review-prepare-effective-cue` derives an exact proposal from the admitted
+current snapshot, then dispatches the inventoried isolated
+`effective_cue_execution.py` adapter through native stdin byte gating.
+`native-effective-cue-bindings-v1.json` carries separately admitted content
+snapshot/composition/source/document/canonical input pins. It grants no UI path
+authority. The adapter reopens those pins and uses the current TTS provenance,
+keeping the monotonic public token and all prior cue/voice edits.
+
+Native code compares the entire projected composition against its independently
+derived projection and admits the request through BoundCueRequest. Immutable
+input fields use canonical byte comparison, including confidence signed-zero
+bits. Current token and physical dependencies are fenced after dispatch, before
+sealing the private request/proposal. The processing capability now additionally
+records this inventoried byte-gated dispatch entry; it still grants preparation
+only. Original-only commands and sealed original/v1 graphs remain unchanged.
+No TTS, mix, render, SQLite graph mutation or GUI activation occurs in this
+command. Those cumulative execution/publication/undo/export steps remain gates.
