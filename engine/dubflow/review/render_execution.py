@@ -35,8 +35,25 @@ def _path(value, root=None):
     if not isinstance(value, str):
         raise ReviewError("render paths require native absolute strings")
     path = _plain(Path(value))
-    if root is not None and not path.is_relative_to(root):
-        raise ReviewError("render input is outside its native admitted root")
+    if root is not None:
+        admitted = _plain(Path(root))
+        if not admitted.is_dir():
+            raise ReviewError("render input root requires an admitted directory")
+        contained = path.is_relative_to(admitted)
+        if not contained:
+            # Native Windows locators may use the extended local-drive spelling
+            # while the owned worker root uses DOS spelling. Compare existing
+            # plain directory identities, never strip a prefix or resolve a
+            # link into a permitted root. Keep the exact admitted input path.
+            for ancestor in (path, *path.parents):
+                try:
+                    if ancestor.is_dir() and os.path.samefile(ancestor, admitted):
+                        contained = True
+                        break
+                except OSError:
+                    continue
+        if not contained:
+            raise ReviewError("render input is outside its native admitted root")
     return path
 
 

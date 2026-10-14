@@ -12,7 +12,7 @@ import wave
 from engine.dubflow.media import MediaProbeResult, MediaStream, Rational
 from engine.dubflow.review.corrected_timeline import derive_corrected_timeline
 from engine.dubflow.review.production import ReviewError
-from engine.dubflow.review.render_execution import admit_context, render_candidate, MAX_PACKET
+from engine.dubflow.review.render_execution import admit_context, render_candidate, MAX_PACKET, _path
 from engine.dubflow.review.synthesis_input import _digest, _encode
 import test_corrected_timeline as timelines
 from schema_assertions import assert_schema
@@ -100,6 +100,51 @@ def render_fixture(directory, *, b1=True, voice_only=False, source_probe=None, s
 
 
 class RenderExecutionTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "native local-drive aliases require Windows")
+    def test_native_extended_wav_paths_match_dos_root_identity_without_retargeting(self):
+        with TemporaryDirectory(prefix="dubflow-render-os-root-") as directory:
+            context, _ = render_fixture(directory, b1=False)
+            retained = context["retained_mix"]
+            root = Path(retained["artifact_root"])
+            mix = json.loads(retained["mix_document_json"])
+            prefix = chr(92) * 2 + "?" + chr(92)
+            for role in ("original_audio", "dialogue_stem", "final_mix"):
+                ordinary = Path(mix[role]["path"])
+                extended = prefix + str(ordinary)
+                self.assertTrue(os.path.samefile(ordinary, extended))
+                self.assertEqual(str(_path(extended, root)), extended)
+                self.assertEqual(_path(str(ordinary), Path(prefix + str(root))), ordinary)
+                mix[role]["path"] = extended
+            raw = encode(mix)
+            retained.update(mix_document_json=raw.decode(), mix_document_sha256=_digest(raw))
+            admitted = admit_context(encode(context))[0]
+            self.assertEqual(admitted, context)
+            foreign = root.parent / "foreign.wav"
+            foreign.write_bytes(ordinary.read_bytes())
+            self.assertEqual(pin(foreign)["sha256"], pin(ordinary)["sha256"])
+            with self.assertRaises(ReviewError):
+                _path(prefix + str(foreign), root)
+
+    def test_physical_render_root_still_refuses_foreign_non_directory_and_linked_paths(self):
+        from engine.dubflow.mix.adapter import MixError
+        with TemporaryDirectory(prefix="dubflow-render-root-guards-") as directory:
+            parent = Path(directory).resolve()
+            root = parent / "retained"; root.mkdir()
+            child = root / "wave.wav"; child.write_bytes(b"same PCM fixture bytes")
+            foreign = parent / "wave.wav"; foreign.write_bytes(child.read_bytes())
+            self.assertEqual(_path(str(child), root), child)
+            with self.assertRaises(ReviewError):
+                _path(str(foreign), root)
+            with self.assertRaises(ReviewError):
+                _path(str(child), child)
+            linked = root / "linked.wav"
+            try:
+                linked.symlink_to(foreign)
+            except OSError:
+                return  # Foreign/root refusals above still run on Windows.
+            with self.assertRaises(MixError):
+                _path(str(linked), root)
+
     def adapters(self, context, args, *, decode_error=False):
         media_patch = patch("engine.dubflow.media.FfmpegMediaAdapter")
         probe_patch = patch("engine.dubflow.media.MediaProbe")

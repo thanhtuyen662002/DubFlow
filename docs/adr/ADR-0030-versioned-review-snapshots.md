@@ -1103,3 +1103,17 @@ Old sealed B1 proposals with TTS/mix stages are not silently rewritten. Existing
 pinned producers/jobs retain their code and failed evidence; the repaired recipe
 requires a new admitted producer/processing version and source-matched native
 qualification. The original export remains usable during refusal or rollback.
+
+Actual current-source B2 reached successful cue synthesis and retained mixing,
+then its renderer refused native extended Windows WAV paths against a DOS-spelled
+output root. Those spellings identify the same admitted NTFS directory. Worker
+render containment now checks plain existing directory identity for a lexical
+root mismatch, preserving the original path string. It does not strip arbitrary
+prefixes, follow a reparse/link into an allowed root, widen the root, read hints,
+or rewrite sealed mix metadata. Both paths retain the existing no-follow,
+named-stream and multi-link refusals; full file/header/hash and native output
+volume/final fences remain required. Foreign directories with identical bytes
+still refuse. This is an OS-spelling compatibility fix, with no schema, SQL,
+worker protocol, producer/model pin or runtime replacement. Old pinned producers
+and the actual failed B2 context remain immutable; the new processing source
+requires exact-head Windows and current native qualification before activation.
