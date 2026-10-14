@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Private current five-role render and prepared playback; cumulative graph publication not prepared",
+  "required": [
+    "current_token",
+    "context",
+    "result",
+    "candidate",
+    "processing_render",
+    "retained_render",
+    "prepared_snapshot",
+    "retained_artifacts",
+    "native_output_bytes_verified",
+    "retained_final_output",
+    "retained_receipt_reopened",
+    "cumulative_publication_prepared",
+    "active_graph_published",
+    "correction_ready"
+  ],
+  "properties": {
+    "current_token": {
+      "$ref": "effective-cue-context-v1.json#/$defs/token"
+    },
+    "context": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "result": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "candidate": {
+      "$ref": "render-candidate-v1.json"
+    },
+    "processing_render": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "retained_render": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "prepared_snapshot": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "retained_artifacts": {
+      "$ref": "native-effective-render-retained-v1.json#/$defs/artifacts"
+    },
+    "native_output_bytes_verified": {
+      "const": true
+    },
+    "retained_final_output": {
+      "const": true
+    },
+    "retained_receipt_reopened": {
+      "const": true
+    },
+    "cumulative_publication_prepared": {
+      "const": false
+    },
+    "active_graph_published": {
+      "const": false
+    },
+    "correction_ready": {
+      "const": false
+    }
+  }
+}

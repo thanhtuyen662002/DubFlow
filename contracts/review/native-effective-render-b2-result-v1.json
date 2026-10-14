@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Private native current B2 render with one-cue TTS and retained current mix; no graph publication",
+  "required": [
+    "schema_version",
+    "kind",
+    "current_token",
+    "context",
+    "bindings",
+    "request",
+    "proposal",
+    "effective_composition",
+    "accepted_cue",
+    "processing_synthesis",
+    "tts_executed",
+    "mix_executed",
+    "render_executed",
+    "model_weights_verified",
+    "active_graph_published",
+    "correction_ready",
+    "private_mix",
+    "private_render"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_native_rendered_effective_b2"
+    },
+    "current_token": {
+      "$ref": "effective-cue-context-v1.json#/$defs/token"
+    },
+    "context": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "bindings": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "request": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "proposal": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "effective_composition": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "accepted_cue": {
+      "$ref": "native-speech-inventory-v1.json#/properties/cues/items/properties/accepted_cue"
+    },
+    "processing_synthesis": {
+      "$ref": "native-processing-cue-synthesis-v1.json"
+    },
+    "tts_executed": {
+      "const": true
+    },
+    "mix_executed": {
+      "const": true
+    },
+    "render_executed": {
+      "const": true
+    },
+    "model_weights_verified": {
+      "const": true
+    },
+    "active_graph_published": {
+      "const": false
+    },
+    "correction_ready": {
+      "const": false
+    },
+    "private_mix": {
+      "$ref": "native-effective-mix-result-v1.json#/properties/private_mix"
+    },
+    "private_render": {
+      "$ref": "native-effective-render-private-v1.json"
+    }
+  }
+}

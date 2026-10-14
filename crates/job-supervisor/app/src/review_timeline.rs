@@ -69,7 +69,24 @@ pub(super) fn derive(
     mode: ReviewMode,
 ) -> SupervisorResult<String> {
     before.validate_correction(after, mode)?;
-    let mut timeline = decode(original, LIMIT)?;
+    let (mut timeline, by_id) = admit_timeline(original, before)?;
+    let old = before.finding(after.plan_finding_id()?)?;
+    let new = after.finding(after.plan_finding_id()?)?;
+    if old["translated_text"] == new["translated_text"] {
+        return Ok(original.into());
+    }
+    let index = by_id[old["cue_id"].as_str().unwrap()];
+    timeline["cues"][index]["translated_text"] = new["translated_text"].clone();
+    let mut encoded = String::new();
+    canonical(&timeline, &mut encoded)?;
+    Ok(encoded)
+}
+
+fn admit_timeline(
+    original: &str,
+    before: &AdmittedSnapshot,
+) -> SupervisorResult<(Value, HashMap<String, usize>)> {
+    let timeline = decode(original, LIMIT)?;
     closed(
         &timeline,
         &[
@@ -160,16 +177,46 @@ pub(super) fn derive(
             ));
         }
     }
-    let old = before.finding(after.plan_finding_id()?)?;
-    let new = after.finding(after.plan_finding_id()?)?;
-    if old["translated_text"] == new["translated_text"] {
-        return Ok(original.into());
+    Ok((timeline, by_id))
+}
+
+pub(super) fn derive_effective(
+    original: &str,
+    origin: &AdmittedSnapshot,
+    current: &str,
+    before: &AdmittedSnapshot,
+    after: &AdmittedSnapshot,
+    mode: ReviewMode,
+) -> SupervisorResult<String> {
+    if origin.revision() != 0
+        || origin.job() != before.job()
+        || origin.time_base() != before.time_base()
+    {
+        return Err(invalid(
+            "effective timeline requires a separately admitted original archive",
+        ));
     }
-    let index = by_id[old["cue_id"].as_str().unwrap()];
-    timeline["cues"][index]["translated_text"] = new["translated_text"].clone();
-    let mut encoded = String::new();
-    canonical(&timeline, &mut encoded)?;
-    Ok(encoded)
+    let (mut expected, index) = admit_timeline(original, origin)?;
+    let (actual, _) = admit_timeline(current, before)?;
+    let snapshot = decode(before.json(), LIMIT)?;
+    for finding in snapshot["findings"].as_array().unwrap() {
+        if let Some(id) = finding["cue_id"].as_str() {
+            let i = index
+                .get(id)
+                .ok_or_else(|| invalid("current timeline invents an original cue"))?;
+            expected["cues"][*i]["translated_text"] = finding["translated_text"].clone();
+        }
+    }
+    let mut expected_raw = String::new();
+    let mut actual_raw = String::new();
+    canonical(&expected, &mut expected_raw)?;
+    canonical(&actual, &mut actual_raw)?;
+    if expected_raw != actual_raw {
+        return Err(invalid(
+            "current timeline changes source/clock/confidence or loses earlier edits",
+        ));
+    }
+    derive(current, before, after, mode)
 }
 
 #[cfg(test)]
@@ -294,5 +341,118 @@ mod tests {
         assert!(within_duration(9000, 14400000, 1, 1000));
         assert!(!within_duration(14400001, 14400000, 1, 1000));
         assert!(!within_duration(1, 1, 1, i64::MAX as u64));
+    }
+
+    fn effective_fixture() -> Value {
+        decode(
+            include_str!("../../../../tests/review/native_effective_timeline_v1.json"),
+            LIMIT,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn current_b1_b2_timeline_matches_python_oracle_and_voice_keeps_current_bytes_and_counter() {
+        for case in effective_fixture()["cases"].as_array().unwrap() {
+            let mode = if case["mode"] == "b1" {
+                ReviewMode::Subtitles
+            } else {
+                ReviewMode::Dubbed
+            };
+            let before = snapshot(&case["before"]);
+            let after = snapshot(&case["after"]);
+            let current = case["current_json"].as_str().unwrap();
+            let result = derive_effective(
+                case["original_json"].as_str().unwrap(),
+                &snapshot(&case["origin"]),
+                current,
+                &before,
+                &after,
+                mode,
+            )
+            .unwrap();
+            let mut expected = String::new();
+            canonical(
+                &decode(case["expected_json"].as_str().unwrap(), LIMIT).unwrap(),
+                &mut expected,
+            )
+            .unwrap();
+            let mut actual = String::new();
+            canonical(&decode(&result, LIMIT).unwrap(), &mut actual).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(after.revision(), before.revision() + 1);
+            assert_eq!(case["token"]["revision"], before.revision().to_string());
+            let original = decode(case["original_json"].as_str().unwrap(), LIMIT).unwrap();
+            let final_value = decode(&result, LIMIT).unwrap();
+            for (old, new) in original["cues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(final_value["cues"].as_array().unwrap())
+            {
+                assert_eq!(
+                    old["confidence"].as_f64().unwrap().to_bits(),
+                    new["confidence"].as_f64().unwrap().to_bits()
+                );
+            }
+            if before.revision() > (1_u64 << 53) {
+                assert_eq!(result, current);
+                assert_ne!(current, case["original_json"].as_str().unwrap());
+            } else {
+                assert_eq!(final_value["cues"][0]["translated_text"], "Chào bạn");
+                assert_eq!(
+                    final_value["cues"][1]["translated_text"],
+                    "Chúc bạn bình an"
+                );
+                assert_eq!(final_value["cues"][2], original["cues"][2]);
+            }
+        }
+    }
+
+    #[test]
+    fn current_timeline_rejects_lost_caption_signed_zero_source_clock_and_foreign_original() {
+        let f = effective_fixture();
+        let case = &f["cases"][1];
+        let before = snapshot(&case["before"]);
+        let after = snapshot(&case["after"]);
+        let original = case["original_json"].as_str().unwrap();
+        let origin = snapshot(&case["origin"]);
+        for mutation in 0..7 {
+            let mut current = decode(case["current_json"].as_str().unwrap(), LIMIT).unwrap();
+            match mutation {
+                0 => current["cues"][0]["translated_text"] = json!("Xin chào"),
+                1 => current["cues"][2]["confidence"] = json!(0.0),
+                2 => current["cues"][0]["confidence"] = json!(0.983856439590454),
+                3 => current["source_clock_mapping"]["start_pts"] = json!("9001"),
+                4 => current["cues"][2]["translated_text"] = json!("Lost unwarned caption"),
+                5 => {
+                    current["cues"].as_array_mut().unwrap().pop();
+                }
+                _ => current["duration_ticks"] = json!(14400001),
+            }
+            assert!(
+                derive_effective(
+                    original,
+                    &origin,
+                    &current.to_string(),
+                    &before,
+                    &after,
+                    ReviewMode::Dubbed
+                )
+                .is_err(),
+                "mutation {mutation}"
+            );
+        }
+        let mut foreign = case["origin"].clone();
+        foreign["revision"] = json!(2);
+        assert!(derive_effective(
+            original,
+            &snapshot(&foreign),
+            case["current_json"].as_str().unwrap(),
+            &before,
+            &after,
+            ReviewMode::Dubbed
+        )
+        .is_err());
     }
 }

@@ -1,0 +1,987 @@
+{
+  "accepted_tts": {
+    "artifact_root": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\simulated-native-output",
+    "metadata_root": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\simulated-sealed-metadata",
+    "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\simulated-sealed-metadata\\b4523e55c81d66ae188d53148ecb8cf3aadf0d538edb312bd19a045d528a6a73.json",
+    "sha256": "sha256:b4523e55c81d66ae188d53148ecb8cf3aadf0d538edb312bd19a045d528a6a73",
+    "size_bytes": 2394
+  },
+  "after": {
+    "findings": [
+      {
+        "affected_stages": [
+          "tts"
+        ],
+        "confidence": "0.4",
+        "confidence_source": null,
+        "cue_id": "cue-a",
+        "finding_id": "finding-cue-a",
+        "output_preview": null,
+        "range": {
+          "end_ticks": "1000",
+          "start_ticks": "0"
+        },
+        "reason": "TTS_FAILURE",
+        "source_text": "Source",
+        "speaker": null,
+        "translated_text": "Xin chào",
+        "voice": "vi-hai-dang-vieneu3-v1",
+        "warning": null
+      },
+      {
+        "affected_stages": [
+          "tts"
+        ],
+        "confidence": "0.4",
+        "confidence_source": null,
+        "cue_id": "cue-b",
+        "finding_id": "finding-cue-b",
+        "output_preview": null,
+        "range": {
+          "end_ticks": "2000",
+          "start_ticks": "1000"
+        },
+        "reason": "TTS_FAILURE",
+        "source_text": "Source",
+        "speaker": null,
+        "translated_text": "Người tôi vô cùng trân trọng.",
+        "voice": "vi-truc-ly-vieneu3-v1",
+        "warning": null
+      }
+    ],
+    "job_id": "job-effective",
+    "last_plan": {
+      "finding_id": "finding-cue-b",
+      "preserved_artifacts": [
+        "asr",
+        "ocr"
+      ],
+      "replacement_artifacts": [
+        "replacement:translation",
+        "replacement:subtitles",
+        "replacement:tts",
+        "replacement:mix",
+        "replacement:render",
+        "replacement:qc",
+        "replacement:export"
+      ],
+      "requires_full_manual_review": false,
+      "retain_previous_until_validated": true,
+      "stages_to_rerun": [
+        "translation",
+        "subtitles",
+        "tts",
+        "mix",
+        "render",
+        "qc",
+        "export"
+      ]
+    },
+    "revision": 3,
+    "schema_version": 2,
+    "time_base": {
+      "denominator": "1000",
+      "numerator": "1"
+    }
+  },
+  "before": {
+    "findings": [
+      {
+        "affected_stages": [
+          "tts"
+        ],
+        "confidence": "0.4",
+        "confidence_source": null,
+        "cue_id": "cue-a",
+        "finding_id": "finding-cue-a",
+        "output_preview": null,
+        "range": {
+          "end_ticks": "1000",
+          "start_ticks": "0"
+        },
+        "reason": "TTS_FAILURE",
+        "source_text": "Source",
+        "speaker": null,
+        "translated_text": "Xin chào",
+        "voice": "vi-hai-dang-vieneu3-v1",
+        "warning": null
+      },
+      {
+        "affected_stages": [
+          "tts"
+        ],
+        "confidence": "0.4",
+        "confidence_source": null,
+        "cue_id": "cue-b",
+        "finding_id": "finding-cue-b",
+        "output_preview": null,
+        "range": {
+          "end_ticks": "2000",
+          "start_ticks": "1000"
+        },
+        "reason": "TTS_FAILURE",
+        "source_text": "Source",
+        "speaker": null,
+        "translated_text": "Tạm biệt",
+        "voice": "vi-truc-ly-vieneu3-v1",
+        "warning": null
+      }
+    ],
+    "job_id": "job-effective",
+    "last_plan": {
+      "finding_id": "finding-cue-a",
+      "preserved_artifacts": [
+        "asr",
+        "ocr"
+      ],
+      "replacement_artifacts": [
+        "replacement:tts",
+        "replacement:mix",
+        "replacement:render",
+        "replacement:qc",
+        "replacement:export"
+      ],
+      "requires_full_manual_review": false,
+      "retain_previous_until_validated": true,
+      "stages_to_rerun": [
+        "tts",
+        "mix",
+        "render",
+        "qc",
+        "export"
+      ]
+    },
+    "revision": 2,
+    "schema_version": 2,
+    "time_base": {
+      "denominator": "1000",
+      "numerator": "1"
+    }
+  },
+  "config": {
+    "bits_per_sample": 16,
+    "channels": 1,
+    "max_attempts": 1,
+    "max_clip_fraction_ppm": 1000,
+    "max_duration_error_ticks": 80,
+    "max_segments_per_chunk": 8,
+    "max_speed_ratio_milli": 1300,
+    "max_text_chars": 512,
+    "max_wave_bytes": 16777216,
+    "min_rms_milli": 1,
+    "min_speed_ratio_milli": 800,
+    "requested_profile": "cpu",
+    "resource": {
+      "max_batch_items": 1,
+      "max_memory_mb": 2048,
+      "max_threads": 2
+    },
+    "sample_rate": 48000
+  },
+  "current": {
+    "cues": [
+      {
+        "document_sha256": "sha256:004d4b87df4e2e3445e5da7810109b06ca2f49e0bc93ee26d9e793ce67213c38",
+        "tts_input": {
+          "confidence": 1.0,
+          "end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "1000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "normalized_text": "Xin chào",
+          "segment_id": "cue-a",
+          "source_language": "en",
+          "source_utterance_id": "source-cue-a",
+          "start": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "0",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "target_language": "vi",
+          "text": "Xin chào"
+        }
+      },
+      {
+        "document_sha256": "sha256:64ac22ea3aa928dae19ccd57e1f5a2f00e263668364c1ea5bfbf4f3ff15c2c02",
+        "tts_input": {
+          "confidence": 1.0,
+          "end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "2000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "normalized_text": "Tạm biệt",
+          "segment_id": "cue-b",
+          "source_language": "en",
+          "source_utterance_id": "source-cue-b",
+          "start": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "1000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "target_language": "vi",
+          "text": "Tạm biệt"
+        }
+      }
+    ],
+    "documents": [
+      {
+        "artifact_root": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\replacement",
+        "metadata_root": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\replacement",
+        "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\replacement\\tts_document.json",
+        "sha256": "sha256:004d4b87df4e2e3445e5da7810109b06ca2f49e0bc93ee26d9e793ce67213c38",
+        "size_bytes": 2357
+      },
+      {
+        "artifact_root": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\before",
+        "metadata_root": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\before",
+        "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\before\\tts_document.json",
+        "sha256": "sha256:64ac22ea3aa928dae19ccd57e1f5a2f00e263668364c1ea5bfbf4f3ff15c2c02",
+        "size_bytes": 3556
+      }
+    ],
+    "job_id": "job-effective",
+    "kind": "review_audio_composition",
+    "manifest_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "mix_producer_pin": {
+      "backend_id": "pcm-stream-duck-v1",
+      "config_hash": "sha256:3659ecf18cc876790c88599e6135bc8ff725234230fa05360b7f17978683fa0c",
+      "hardware_profile": "cpu",
+      "non_destructive": true,
+      "producer": "dubflow-aud-0",
+      "producer_version": "2.0.1",
+      "requested_profile": "cpu",
+      "resource": {
+        "max_batch_items": 8,
+        "max_memory_mb": 512,
+        "max_threads": 1
+      },
+      "runtime": "owned-python/numpy-2.2.6",
+      "timeline_contract": "timeline-v1"
+    },
+    "review_snapshot_sha256": "sha256:ea97e08eb4b142968e0af98c6eec57789e1846352400979affe35153a2cd6598",
+    "schema_version": 2,
+    "source": {
+      "end": {
+        "kind": "time_point",
+        "schema_version": 1,
+        "ticks": "2000",
+        "time_base": {
+          "denominator": "1000",
+          "numerator": "1"
+        }
+      },
+      "layout": "stereo-source",
+      "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\source48-stereo.wav",
+      "sha256": "sha256:de6c65e7284b5ef5c5d475adf95288a26aa0aca17d7ae97ff325e5c9bbfd1724",
+      "source_id": "fixture-source",
+      "start": {
+        "kind": "time_point",
+        "schema_version": 1,
+        "ticks": "0",
+        "time_base": {
+          "denominator": "1000",
+          "numerator": "1"
+        }
+      }
+    }
+  },
+  "documents": {
+    "sha256:004d4b87df4e2e3445e5da7810109b06ca2f49e0bc93ee26d9e793ce67213c38": {
+      "artifacts": [
+        {
+          "actual_end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "1000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "artifact_hash": "sha256:20ec9b7aad5fa38ea9083857b0940255e08e5fbd96743f7e1ef941e040adad44",
+          "bits_per_sample": 16,
+          "channels": 1,
+          "confidence": 1.0,
+          "content_hash": "sha256:d50acad87055e60637751f62e0f0b2c15482e4127c73ca69fff4b36472cccb2a",
+          "fallback_used": false,
+          "fit_mode": "native",
+          "format": "wav",
+          "frame_count": 48000,
+          "metrics": {
+            "clipped_samples": 0,
+            "content_hash": "sha256:d50acad87055e60637751f62e0f0b2c15482e4127c73ca69fff4b36472cccb2a",
+            "frame_count": 48000,
+            "peak": 9000,
+            "rms_milli": 162,
+            "sample_count": 48000
+          },
+          "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\replacement\\tts\\tts-7e3c2ac88e1ab447dea6c44d34f2bcab.wav",
+          "sample_rate": 48000,
+          "segment_id": "cue-a",
+          "slot_end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "1000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "slot_start": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "0",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "source_utterance_id": "source-cue-a",
+          "speed_ratio_milli": 1000,
+          "warnings": []
+        }
+      ],
+      "chunks": [
+        {
+          "artifact_hashes": [
+            "sha256:20ec9b7aad5fa38ea9083857b0940255e08e5fbd96743f7e1ef941e040adad44"
+          ],
+          "attempt": 1,
+          "chunk_id": "tts-chunk-b12eee01e91dab1957231bdb",
+          "index": 0,
+          "segment_ids": [
+            "cue-a"
+          ],
+          "status": "completed"
+        }
+      ],
+      "failures": [],
+      "kind": "tts_document",
+      "provenance": {
+        "backend_id": "vieneu-v3-turbo-onnx-v1",
+        "config_hash": "sha256:360bc749cf8f14f87c82abee6237e57f6292d186d21efc54b7cc828909b6a180",
+        "hardware_profile": "cpu",
+        "input_hash": "sha256:01986661429225c240986c12665ff936530404ab46b30f59a8decabfcfe56f7a",
+        "model_hash": "sha256:30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113",
+        "model_id": "vieneu-v3-turbo-fp32",
+        "model_version": "61b85e3-moss-ceff0d0-sdk3.8.3",
+        "producer": "dubflow-production-tts",
+        "producer_version": "3.5.0",
+        "requested_profile": "cpu",
+        "resource": {
+          "max_batch_items": 1,
+          "max_memory_mb": 2048,
+          "max_threads": 2
+        },
+        "runtime": "vieneu-3.8.3+sea-g2p-0.9.1+onnxruntime-1.30.0+tokenizers-0.23.2+numpy-2.2.6",
+        "timeline_contract": "timeline-v1",
+        "voice_hash": "sha256:1aab9a0351a3e90606ae5d66d84a7a1f4836de783b4265154415ddec9f6d055f",
+        "voice_id": "vi-hai-dang-vieneu3-v1",
+        "voice_version": "1.0.0"
+      },
+      "schema_version": 1,
+      "source_kind": "translation",
+      "source_segment_ids": [
+        "cue-a"
+      ],
+      "target_language": "vi",
+      "warnings": []
+    },
+    "sha256:64ac22ea3aa928dae19ccd57e1f5a2f00e263668364c1ea5bfbf4f3ff15c2c02": {
+      "artifacts": [
+        {
+          "actual_end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "1000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "artifact_hash": "sha256:c5956065f18515d5d0008e090e0f36de2ec5fb81073fafdd57a8f51c56bd23d2",
+          "bits_per_sample": 16,
+          "channels": 1,
+          "confidence": 1.0,
+          "content_hash": "sha256:d50acad87055e60637751f62e0f0b2c15482e4127c73ca69fff4b36472cccb2a",
+          "fallback_used": false,
+          "fit_mode": "native",
+          "format": "wav",
+          "frame_count": 48000,
+          "metrics": {
+            "clipped_samples": 0,
+            "content_hash": "sha256:d50acad87055e60637751f62e0f0b2c15482e4127c73ca69fff4b36472cccb2a",
+            "frame_count": 48000,
+            "peak": 9000,
+            "rms_milli": 162,
+            "sample_count": 48000
+          },
+          "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\before\\tts\\tts-e40607bcbef6bd824f180b8be218feaa.wav",
+          "sample_rate": 48000,
+          "segment_id": "cue-a",
+          "slot_end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "1000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "slot_start": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "0",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "source_utterance_id": "source-cue-a",
+          "speed_ratio_milli": 1000,
+          "warnings": []
+        },
+        {
+          "actual_end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "2000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "artifact_hash": "sha256:260feed4d9dda3bfba23000072477172b11255986ed22a1855e885b3ad80513f",
+          "bits_per_sample": 16,
+          "channels": 1,
+          "confidence": 1.0,
+          "content_hash": "sha256:73a970b0f753dc8323472e67239cb33b21a981e606139ec2feca25935d07eb39",
+          "fallback_used": false,
+          "fit_mode": "native",
+          "format": "wav",
+          "frame_count": 48000,
+          "metrics": {
+            "clipped_samples": 0,
+            "content_hash": "sha256:73a970b0f753dc8323472e67239cb33b21a981e606139ec2feca25935d07eb39",
+            "frame_count": 48000,
+            "peak": 9000,
+            "rms_milli": 162,
+            "sample_count": 48000
+          },
+          "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\before\\tts\\tts-b3dd7138b1f2a41be93938e93c05442d.wav",
+          "sample_rate": 48000,
+          "segment_id": "cue-b",
+          "slot_end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "2000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "slot_start": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "1000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "source_utterance_id": "source-cue-b",
+          "speed_ratio_milli": 1000,
+          "warnings": []
+        }
+      ],
+      "chunks": [
+        {
+          "artifact_hashes": [
+            "sha256:c5956065f18515d5d0008e090e0f36de2ec5fb81073fafdd57a8f51c56bd23d2",
+            "sha256:260feed4d9dda3bfba23000072477172b11255986ed22a1855e885b3ad80513f"
+          ],
+          "attempt": 1,
+          "chunk_id": "tts-chunk-44f17308ff73f2eb4067440e",
+          "index": 0,
+          "segment_ids": [
+            "cue-a",
+            "cue-b"
+          ],
+          "status": "completed"
+        }
+      ],
+      "failures": [],
+      "kind": "tts_document",
+      "provenance": {
+        "backend_id": "vieneu-v3-turbo-onnx-v1",
+        "config_hash": "sha256:360bc749cf8f14f87c82abee6237e57f6292d186d21efc54b7cc828909b6a180",
+        "hardware_profile": "cpu",
+        "input_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "model_hash": "sha256:30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113",
+        "model_id": "vieneu-v3-turbo-fp32",
+        "model_version": "61b85e3-moss-ceff0d0-sdk3.8.3",
+        "producer": "dubflow-production-tts",
+        "producer_version": "3.5.0",
+        "requested_profile": "cpu",
+        "resource": {
+          "max_batch_items": 1,
+          "max_memory_mb": 2048,
+          "max_threads": 2
+        },
+        "runtime": "vieneu-3.8.3+sea-g2p-0.9.1+onnxruntime-1.30.0+tokenizers-0.23.2+numpy-2.2.6",
+        "timeline_contract": "timeline-v1",
+        "voice_hash": "sha256:379d234f28bd0bf5af0aabcfb403b5e22703ecbcb2a5fb134f2f644978d6a3ed",
+        "voice_id": "vi-truc-ly-vieneu3-v1",
+        "voice_version": "1.0.0"
+      },
+      "schema_version": 1,
+      "source_kind": "translation",
+      "source_segment_ids": [
+        "cue-a",
+        "cue-b"
+      ],
+      "target_language": "vi",
+      "warnings": []
+    },
+    "sha256:b4523e55c81d66ae188d53148ecb8cf3aadf0d538edb312bd19a045d528a6a73": {
+      "artifacts": [
+        {
+          "actual_end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "2000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "artifact_hash": "sha256:3a893b2c5e481fc01d909754d2d15ad6c234f15bb10466cabbcc19d86519e58d",
+          "bits_per_sample": 16,
+          "channels": 1,
+          "confidence": 1.0,
+          "content_hash": "sha256:2eeb00a88a3d1b27cdd58b2c3b82430668c9ff9d8e1a4eaf1f191451da96a4a0",
+          "fallback_used": false,
+          "fit_mode": "native",
+          "format": "wav",
+          "frame_count": 48000,
+          "metrics": {
+            "clipped_samples": 0,
+            "content_hash": "sha256:2eeb00a88a3d1b27cdd58b2c3b82430668c9ff9d8e1a4eaf1f191451da96a4a0",
+            "frame_count": 48000,
+            "peak": 9000,
+            "rms_milli": 162,
+            "sample_count": 48000
+          },
+          "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\simulated-native-output\\2eeb00a88a3d1b27cdd58b2c3b82430668c9ff9d8e1a4eaf1f191451da96a4a0.wav",
+          "sample_rate": 48000,
+          "segment_id": "cue-b",
+          "slot_end": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "2000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "slot_start": {
+            "kind": "time_point",
+            "schema_version": 1,
+            "ticks": "1000",
+            "time_base": {
+              "denominator": "1000",
+              "numerator": "1"
+            }
+          },
+          "source_utterance_id": "source-cue-b",
+          "speed_ratio_milli": 1000,
+          "warnings": []
+        }
+      ],
+      "chunks": [
+        {
+          "artifact_hashes": [
+            "sha256:3a893b2c5e481fc01d909754d2d15ad6c234f15bb10466cabbcc19d86519e58d"
+          ],
+          "attempt": 1,
+          "chunk_id": "tts-chunk-5a92aa96778fa35a6c31db01",
+          "index": 0,
+          "segment_ids": [
+            "cue-b"
+          ],
+          "status": "completed"
+        }
+      ],
+      "failures": [],
+      "kind": "tts_document",
+      "provenance": {
+        "backend_id": "vieneu-v3-turbo-onnx-v1",
+        "config_hash": "sha256:360bc749cf8f14f87c82abee6237e57f6292d186d21efc54b7cc828909b6a180",
+        "hardware_profile": "cpu",
+        "input_hash": "sha256:8801b314eaeee89c0892a5153ded48d5b53925d530b6fccb69ab5746b7445b8e",
+        "model_hash": "sha256:30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113",
+        "model_id": "vieneu-v3-turbo-fp32",
+        "model_version": "61b85e3-moss-ceff0d0-sdk3.8.3",
+        "producer": "dubflow-production-tts",
+        "producer_version": "3.5.0",
+        "requested_profile": "cpu",
+        "resource": {
+          "max_batch_items": 1,
+          "max_memory_mb": 2048,
+          "max_threads": 2
+        },
+        "runtime": "vieneu-3.8.3+sea-g2p-0.9.1+onnxruntime-1.30.0+tokenizers-0.23.2+numpy-2.2.6",
+        "timeline_contract": "timeline-v1",
+        "voice_hash": "sha256:379d234f28bd0bf5af0aabcfb403b5e22703ecbcb2a5fb134f2f644978d6a3ed",
+        "voice_id": "vi-truc-ly-vieneu3-v1",
+        "voice_version": "1.0.0"
+      },
+      "schema_version": 1,
+      "source_kind": "translation",
+      "source_segment_ids": [
+        "cue-b"
+      ],
+      "target_language": "vi",
+      "warnings": []
+    }
+  },
+  "packet": {
+    "active_graph_published": false,
+    "before_token": {
+      "graph_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "job_id": "job-effective",
+      "original_manifest_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": "2",
+      "snapshot_sha256": "sha256:ea97e08eb4b142968e0af98c6eec57789e1846352400979affe35153a2cd6598"
+    },
+    "composition_json": "{\"cues\":[{\"document_sha256\":\"sha256:004d4b87df4e2e3445e5da7810109b06ca2f49e0bc93ee26d9e793ce67213c38\",\"tts_input\":{\"confidence\":1.0,\"end\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"1000\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}},\"normalized_text\":\"Xin chào\",\"segment_id\":\"cue-a\",\"source_language\":\"en\",\"source_utterance_id\":\"source-cue-a\",\"start\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"0\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}},\"target_language\":\"vi\",\"text\":\"Xin chào\"}},{\"document_sha256\":\"sha256:b4523e55c81d66ae188d53148ecb8cf3aadf0d538edb312bd19a045d528a6a73\",\"tts_input\":{\"confidence\":1.0,\"end\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"2000\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}},\"normalized_text\":\"Người tôi vô cùng trân trọng.\",\"segment_id\":\"cue-b\",\"source_language\":\"en\",\"source_utterance_id\":\"source-cue-b\",\"start\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"1000\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}},\"target_language\":\"vi\",\"text\":\"Người tôi vô cùng trân trọng.\"}}],\"documents\":[{\"artifact_root\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\replacement\",\"metadata_root\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\replacement\",\"path\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\replacement\\\\tts_document.json\",\"sha256\":\"sha256:004d4b87df4e2e3445e5da7810109b06ca2f49e0bc93ee26d9e793ce67213c38\",\"size_bytes\":2357},{\"artifact_root\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\simulated-native-output\",\"metadata_root\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\simulated-sealed-metadata\",\"path\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\simulated-sealed-metadata\\\\b4523e55c81d66ae188d53148ecb8cf3aadf0d538edb312bd19a045d528a6a73.json\",\"sha256\":\"sha256:b4523e55c81d66ae188d53148ecb8cf3aadf0d538edb312bd19a045d528a6a73\",\"size_bytes\":2394}],\"job_id\":\"job-effective\",\"kind\":\"review_audio_composition\",\"manifest_sha256\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"mix_producer_pin\":{\"backend_id\":\"pcm-stream-duck-v1\",\"config_hash\":\"sha256:3659ecf18cc876790c88599e6135bc8ff725234230fa05360b7f17978683fa0c\",\"hardware_profile\":\"cpu\",\"non_destructive\":true,\"producer\":\"dubflow-aud-0\",\"producer_version\":\"2.0.1\",\"requested_profile\":\"cpu\",\"resource\":{\"max_batch_items\":8,\"max_memory_mb\":512,\"max_threads\":1},\"runtime\":\"owned-python/numpy-2.2.6\",\"timeline_contract\":\"timeline-v1\"},\"review_snapshot_sha256\":\"sha256:2dc871f77625d154b71e03495dd3c111f67555ec3fdcacf772a7ceb171ef52e5\",\"schema_version\":2,\"source\":{\"end\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"2000\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}},\"layout\":\"stereo-source\",\"path\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\source48-stereo.wav\",\"sha256\":\"sha256:de6c65e7284b5ef5c5d475adf95288a26aa0aca17d7ae97ff325e5c9bbfd1724\",\"source_id\":\"fixture-source\",\"start\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"0\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}}}}",
+    "composition_sha256": "sha256:59fb176e0e63bf323e1cbd4f6c24e143d6ec873f523ca316a65316c7ef2d9ed4",
+    "context_sha256": "sha256:8faff76a5fe8f44ee898b5db42b3dc7c625a29ba3aa6a5ea2849b678d109f67f",
+    "kind": "review_effective_mix_candidate",
+    "mix_document_json": "{\"channels\":2,\"chunks\":[{\"attempt\":1,\"chunk_id\":\"stream-chunk-2bf7979bbd77bcc3eef2bbb5\",\"index\":0,\"segment_ids\":[\"cue-a\",\"cue-b\"],\"status\":\"completed\"}],\"dialogue_stem\":{\"artifact_id\":\"dialogue-stem\",\"bits_per_sample\":16,\"channels\":2,\"content_hash\":\"sha256:56407d4c313877684558cea84d5259dcd189e5466f2b1d23f39e4ecdcd5d06ef\",\"format\":\"wav\",\"frame_count\":96000,\"kind\":\"dialogue_stem\",\"metrics\":{\"clipped_samples\":0,\"content_hash\":\"sha256:56407d4c313877684558cea84d5259dcd189e5466f2b1d23f39e4ecdcd5d06ef\",\"frame_count\":96000,\"peak\":8100,\"rms_milli\":146,\"sample_count\":192000},\"path\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\current-mix\\\\mix-59fb176e0e63bf323e1cbd4f6c24e143d6ec873f523ca316a65316c7ef2d9ed4\\\\stream-388375147ebace4b55d5b31f72118455bec90b6828503c1c9d7ba0d723f222b2\\\\dialogue.wav\",\"sample_rate\":48000},\"duck_windows\":[{\"attack_samples\":1920,\"duck_gain_milli\":350,\"end_sample\":48000,\"release_samples\":5760,\"segment_id\":\"cue-a\",\"start_sample\":0},{\"attack_samples\":1920,\"duck_gain_milli\":350,\"end_sample\":96000,\"release_samples\":5760,\"segment_id\":\"cue-b\",\"start_sample\":48000}],\"failures\":[],\"final_mix\":{\"artifact_id\":\"final-mix\",\"bits_per_sample\":16,\"channels\":2,\"content_hash\":\"sha256:a1228c314542b9cfc1023df3c2519ff0cee5c9e67e5292e8293344be18f9bf40\",\"format\":\"wav\",\"frame_count\":96000,\"kind\":\"final_mix\",\"metrics\":{\"clipped_samples\":0,\"content_hash\":\"sha256:a1228c314542b9cfc1023df3c2519ff0cee5c9e67e5292e8293344be18f9bf40\",\"frame_count\":96000,\"peak\":8531,\"rms_milli\":146,\"sample_count\":192000},\"path\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\current-mix\\\\mix-59fb176e0e63bf323e1cbd4f6c24e143d6ec873f523ca316a65316c7ef2d9ed4\\\\stream-388375147ebace4b55d5b31f72118455bec90b6828503c1c9d7ba0d723f222b2\\\\final.wav\",\"sample_rate\":48000},\"kind\":\"audio_mix_document\",\"original_audio\":{\"artifact_id\":\"original-audio\",\"bits_per_sample\":16,\"channels\":2,\"content_hash\":\"sha256:de6c65e7284b5ef5c5d475adf95288a26aa0aca17d7ae97ff325e5c9bbfd1724\",\"format\":\"wav\",\"frame_count\":96000,\"kind\":\"original_audio\",\"metrics\":{\"clipped_samples\":0,\"content_hash\":\"sha256:de6c65e7284b5ef5c5d475adf95288a26aa0aca17d7ae97ff325e5c9bbfd1724\",\"frame_count\":96000,\"peak\":1234,\"rms_milli\":38,\"sample_count\":192000},\"path\":\"C:\\\\Users\\\\VOTHAN~1\\\\AppData\\\\Local\\\\Temp\\\\dubflow-effective-stream-eokfsmn7\\\\current-mix\\\\mix-59fb176e0e63bf323e1cbd4f6c24e143d6ec873f523ca316a65316c7ef2d9ed4\\\\stream-388375147ebace4b55d5b31f72118455bec90b6828503c1c9d7ba0d723f222b2\\\\original.wav\",\"sample_rate\":48000},\"provenance\":{\"backend_id\":\"pcm-stream-duck-v1\",\"config_hash\":\"sha256:3659ecf18cc876790c88599e6135bc8ff725234230fa05360b7f17978683fa0c\",\"hardware_profile\":\"cpu\",\"input_hash\":\"sha256:59fb176e0e63bf323e1cbd4f6c24e143d6ec873f523ca316a65316c7ef2d9ed4\",\"non_destructive\":true,\"producer\":\"dubflow-aud-0\",\"producer_version\":\"2.0.1\",\"requested_profile\":\"cpu\",\"resource\":{\"max_batch_items\":8,\"max_memory_mb\":512,\"max_threads\":1},\"runtime\":\"owned-python/numpy-2.2.6\",\"source_hash\":\"sha256:de6c65e7284b5ef5c5d475adf95288a26aa0aca17d7ae97ff325e5c9bbfd1724\",\"timeline_contract\":\"timeline-v1\"},\"sample_rate\":48000,\"schema_version\":1,\"segment_ids\":[\"cue-a\",\"cue-b\"],\"segments\":[{\"confidence\":1.0,\"fallback_used\":false,\"segment_id\":\"cue-a\",\"source_utterance_id\":\"source-cue-a\",\"status\":\"completed\"},{\"confidence\":1.0,\"fallback_used\":false,\"segment_id\":\"cue-b\",\"source_utterance_id\":\"source-cue-b\",\"status\":\"completed\"}],\"source_end\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"2000\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}},\"source_id\":\"fixture-source\",\"source_kind\":\"source_audio\",\"source_layout\":\"stereo-source\",\"source_start\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"0\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}},\"target_language\":\"vi\",\"warnings\":[\"final mix is below the configured target RMS; source and dialogue were preserved\"]}\n",
+    "mix_document_sha256": "sha256:f8ba37c0a10939ee952b7dc61937f76038d1923854132212b17a70750b73d782",
+    "request_sha256": "sha256:8801b314eaeee89c0892a5153ded48d5b53925d530b6fccb69ab5746b7445b8e",
+    "schema_version": 1
+  },
+  "previous_provenance": {
+    "backend_id": "vieneu-v3-turbo-onnx-v1",
+    "config_hash": "sha256:360bc749cf8f14f87c82abee6237e57f6292d186d21efc54b7cc828909b6a180",
+    "hardware_profile": "cpu",
+    "input_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "model_hash": "sha256:30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113",
+    "model_id": "vieneu-v3-turbo-fp32",
+    "model_version": "61b85e3-moss-ceff0d0-sdk3.8.3",
+    "producer": "dubflow-production-tts",
+    "producer_version": "3.5.0",
+    "requested_profile": "cpu",
+    "resource": {
+      "max_batch_items": 1,
+      "max_memory_mb": 2048,
+      "max_threads": 2
+    },
+    "runtime": "vieneu-3.8.3+sea-g2p-0.9.1+onnxruntime-1.30.0+tokenizers-0.23.2+numpy-2.2.6",
+    "timeline_contract": "timeline-v1",
+    "voice_hash": "sha256:379d234f28bd0bf5af0aabcfb403b5e22703ecbcb2a5fb134f2f644978d6a3ed",
+    "voice_id": "vi-truc-ly-vieneu3-v1",
+    "voice_version": "1.0.0"
+  },
+  "request": {
+    "after_snapshot_sha256": "sha256:2dc871f77625d154b71e03495dd3c111f67555ec3fdcacf772a7ceb171ef52e5",
+    "before_snapshot_sha256": "sha256:ea97e08eb4b142968e0af98c6eec57789e1846352400979affe35153a2cd6598",
+    "config": {
+      "bits_per_sample": 16,
+      "channels": 1,
+      "max_attempts": 1,
+      "max_clip_fraction_ppm": 1000,
+      "max_duration_error_ticks": 80,
+      "max_segments_per_chunk": 8,
+      "max_speed_ratio_milli": 1300,
+      "max_text_chars": 512,
+      "max_wave_bytes": 16777216,
+      "min_rms_milli": 1,
+      "min_speed_ratio_milli": 800,
+      "requested_profile": "cpu",
+      "resource": {
+        "max_batch_items": 1,
+        "max_memory_mb": 2048,
+        "max_threads": 2
+      },
+      "sample_rate": 48000
+    },
+    "cue_id": "cue-b",
+    "finding_id": "finding-cue-b",
+    "job_id": "job-effective",
+    "kind": "review_cue_synthesis_input",
+    "manifest_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "producer_pin": {
+      "backend_id": "vieneu-v3-turbo-onnx-v1",
+      "config_hash": "sha256:360bc749cf8f14f87c82abee6237e57f6292d186d21efc54b7cc828909b6a180",
+      "hardware_profile": "cpu",
+      "model_hash": "sha256:30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113",
+      "model_id": "vieneu-v3-turbo-fp32",
+      "model_version": "61b85e3-moss-ceff0d0-sdk3.8.3",
+      "producer": "dubflow-production-tts",
+      "producer_version": "3.5.0",
+      "requested_profile": "cpu",
+      "resource": {
+        "max_batch_items": 1,
+        "max_memory_mb": 2048,
+        "max_threads": 2
+      },
+      "runtime": "vieneu-3.8.3+sea-g2p-0.9.1+onnxruntime-1.30.0+tokenizers-0.23.2+numpy-2.2.6",
+      "timeline_contract": "timeline-v1",
+      "voice_hash": "sha256:379d234f28bd0bf5af0aabcfb403b5e22703ecbcb2a5fb134f2f644978d6a3ed",
+      "voice_id": "vi-truc-ly-vieneu3-v1",
+      "voice_version": "1.0.0"
+    },
+    "revision": "3",
+    "schema_version": 1,
+    "tts_input": {
+      "confidence": 1.0,
+      "end": {
+        "kind": "time_point",
+        "schema_version": 1,
+        "ticks": "2000",
+        "time_base": {
+          "denominator": "1000",
+          "numerator": "1"
+        }
+      },
+      "normalized_text": "Người tôi vô cùng trân trọng.",
+      "segment_id": "cue-b",
+      "source_language": "en",
+      "source_utterance_id": "source-cue-b",
+      "start": {
+        "kind": "time_point",
+        "schema_version": 1,
+        "ticks": "1000",
+        "time_base": {
+          "denominator": "1000",
+          "numerator": "1"
+        }
+      },
+      "target_language": "vi",
+      "text": "Người tôi vô cùng trân trọng."
+    },
+    "voice": {
+      "approved": true,
+      "credential_required": false,
+      "default": true,
+      "display_name": "Trúc Ly",
+      "emotion_mode": "neutral",
+      "language": "vi",
+      "license_id": "Apache-2.0",
+      "manifest_hash": "sha256:1d93dac129af3ad1937eb39fba24a8dbfde1aa0596541b521a343fe233f42078",
+      "model_hash": "sha256:30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113",
+      "model_id": "vieneu-v3-turbo-fp32",
+      "model_version": "61b85e3-moss-ceff0d0-sdk3.8.3",
+      "network_required": false,
+      "pitch_style": "auto",
+      "speaking_rate_milli": 1000,
+      "voice_id": "vi-truc-ly-vieneu3-v1",
+      "voice_version": "1.0.0"
+    }
+  },
+  "request_json": "{\"after_snapshot_sha256\":\"sha256:2dc871f77625d154b71e03495dd3c111f67555ec3fdcacf772a7ceb171ef52e5\",\"before_snapshot_sha256\":\"sha256:ea97e08eb4b142968e0af98c6eec57789e1846352400979affe35153a2cd6598\",\"config\":{\"bits_per_sample\":16,\"channels\":1,\"max_attempts\":1,\"max_clip_fraction_ppm\":1000,\"max_duration_error_ticks\":80,\"max_segments_per_chunk\":8,\"max_speed_ratio_milli\":1300,\"max_text_chars\":512,\"max_wave_bytes\":16777216,\"min_rms_milli\":1,\"min_speed_ratio_milli\":800,\"requested_profile\":\"cpu\",\"resource\":{\"max_batch_items\":1,\"max_memory_mb\":2048,\"max_threads\":2},\"sample_rate\":48000},\"cue_id\":\"cue-b\",\"finding_id\":\"finding-cue-b\",\"job_id\":\"job-effective\",\"kind\":\"review_cue_synthesis_input\",\"manifest_sha256\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"producer_pin\":{\"backend_id\":\"vieneu-v3-turbo-onnx-v1\",\"config_hash\":\"sha256:360bc749cf8f14f87c82abee6237e57f6292d186d21efc54b7cc828909b6a180\",\"hardware_profile\":\"cpu\",\"model_hash\":\"sha256:30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113\",\"model_id\":\"vieneu-v3-turbo-fp32\",\"model_version\":\"61b85e3-moss-ceff0d0-sdk3.8.3\",\"producer\":\"dubflow-production-tts\",\"producer_version\":\"3.5.0\",\"requested_profile\":\"cpu\",\"resource\":{\"max_batch_items\":1,\"max_memory_mb\":2048,\"max_threads\":2},\"runtime\":\"vieneu-3.8.3+sea-g2p-0.9.1+onnxruntime-1.30.0+tokenizers-0.23.2+numpy-2.2.6\",\"timeline_contract\":\"timeline-v1\",\"voice_hash\":\"sha256:379d234f28bd0bf5af0aabcfb403b5e22703ecbcb2a5fb134f2f644978d6a3ed\",\"voice_id\":\"vi-truc-ly-vieneu3-v1\",\"voice_version\":\"1.0.0\"},\"revision\":\"3\",\"schema_version\":1,\"tts_input\":{\"confidence\":1.0,\"end\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"2000\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}},\"normalized_text\":\"Người tôi vô cùng trân trọng.\",\"segment_id\":\"cue-b\",\"source_language\":\"en\",\"source_utterance_id\":\"source-cue-b\",\"start\":{\"kind\":\"time_point\",\"schema_version\":1,\"ticks\":\"1000\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}},\"target_language\":\"vi\",\"text\":\"Người tôi vô cùng trân trọng.\"},\"voice\":{\"approved\":true,\"credential_required\":false,\"default\":true,\"display_name\":\"Trúc Ly\",\"emotion_mode\":\"neutral\",\"language\":\"vi\",\"license_id\":\"Apache-2.0\",\"manifest_hash\":\"sha256:1d93dac129af3ad1937eb39fba24a8dbfde1aa0596541b521a343fe233f42078\",\"model_hash\":\"sha256:30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113\",\"model_id\":\"vieneu-v3-turbo-fp32\",\"model_version\":\"61b85e3-moss-ceff0d0-sdk3.8.3\",\"network_required\":false,\"pitch_style\":\"auto\",\"speaking_rate_milli\":1000,\"voice_id\":\"vi-truc-ly-vieneu3-v1\",\"voice_version\":\"1.0.0\"}}",
+  "scope": "SYNTHETIC_PYTHON_DSP_METADATA_NOT_NATIVE_ADMISSION",
+  "template": {
+    "channels": 2,
+    "chunks": [
+      {
+        "attempt": 1,
+        "chunk_id": "stream-chunk-d622d557cb64f0ef87d81251",
+        "index": 0,
+        "segment_ids": [
+          "cue-a",
+          "cue-b"
+        ],
+        "status": "completed"
+      }
+    ],
+    "dialogue_stem": {
+      "artifact_id": "dialogue-stem",
+      "bits_per_sample": 16,
+      "channels": 2,
+      "content_hash": "sha256:4cb5fb75112930db1a449b06a092d06c6208e98ca1816031dffa48654521aecc",
+      "format": "wav",
+      "frame_count": 96000,
+      "kind": "dialogue_stem",
+      "metrics": {
+        "clipped_samples": 0,
+        "content_hash": "sha256:4cb5fb75112930db1a449b06a092d06c6208e98ca1816031dffa48654521aecc",
+        "frame_count": 96000,
+        "peak": 8100,
+        "rms_milli": 146,
+        "sample_count": 192000
+      },
+      "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\stream-template\\stream-1facd5f6ff598fe75d1e3a4587e9402878808fa078842f309fab98ce85a0478a\\dialogue.wav",
+      "sample_rate": 48000
+    },
+    "duck_windows": [
+      {
+        "attack_samples": 1920,
+        "duck_gain_milli": 350,
+        "end_sample": 48000,
+        "release_samples": 5760,
+        "segment_id": "cue-a",
+        "start_sample": 0
+      },
+      {
+        "attack_samples": 1920,
+        "duck_gain_milli": 350,
+        "end_sample": 96000,
+        "release_samples": 5760,
+        "segment_id": "cue-b",
+        "start_sample": 48000
+      }
+    ],
+    "failures": [],
+    "final_mix": {
+      "artifact_id": "final-mix",
+      "bits_per_sample": 16,
+      "channels": 2,
+      "content_hash": "sha256:6a3358166ffd79d3b36ab310c520fed3cb99ec9ac22c7eced2c3f4523ecb01e6",
+      "format": "wav",
+      "frame_count": 96000,
+      "kind": "final_mix",
+      "metrics": {
+        "clipped_samples": 0,
+        "content_hash": "sha256:6a3358166ffd79d3b36ab310c520fed3cb99ec9ac22c7eced2c3f4523ecb01e6",
+        "frame_count": 96000,
+        "peak": 8531,
+        "rms_milli": 146,
+        "sample_count": 192000
+      },
+      "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\stream-template\\stream-1facd5f6ff598fe75d1e3a4587e9402878808fa078842f309fab98ce85a0478a\\final.wav",
+      "sample_rate": 48000
+    },
+    "kind": "audio_mix_document",
+    "original_audio": {
+      "artifact_id": "original-audio",
+      "bits_per_sample": 16,
+      "channels": 2,
+      "content_hash": "sha256:de6c65e7284b5ef5c5d475adf95288a26aa0aca17d7ae97ff325e5c9bbfd1724",
+      "format": "wav",
+      "frame_count": 96000,
+      "kind": "original_audio",
+      "metrics": {
+        "clipped_samples": 0,
+        "content_hash": "sha256:de6c65e7284b5ef5c5d475adf95288a26aa0aca17d7ae97ff325e5c9bbfd1724",
+        "frame_count": 96000,
+        "peak": 1234,
+        "rms_milli": 38,
+        "sample_count": 192000
+      },
+      "path": "C:\\Users\\VOTHAN~1\\AppData\\Local\\Temp\\dubflow-effective-stream-eokfsmn7\\stream-template\\stream-1facd5f6ff598fe75d1e3a4587e9402878808fa078842f309fab98ce85a0478a\\original.wav",
+      "sample_rate": 48000
+    },
+    "provenance": {
+      "backend_id": "pcm-stream-duck-v1",
+      "config_hash": "sha256:3659ecf18cc876790c88599e6135bc8ff725234230fa05360b7f17978683fa0c",
+      "hardware_profile": "cpu",
+      "input_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "non_destructive": true,
+      "producer": "dubflow-aud-0",
+      "producer_version": "2.0.1",
+      "requested_profile": "cpu",
+      "resource": {
+        "max_batch_items": 8,
+        "max_memory_mb": 512,
+        "max_threads": 1
+      },
+      "runtime": "owned-python/numpy-2.2.6",
+      "source_hash": "sha256:de6c65e7284b5ef5c5d475adf95288a26aa0aca17d7ae97ff325e5c9bbfd1724",
+      "timeline_contract": "timeline-v1"
+    },
+    "sample_rate": 48000,
+    "schema_version": 1,
+    "segment_ids": [
+      "cue-a",
+      "cue-b"
+    ],
+    "segments": [
+      {
+        "confidence": 1.0,
+        "fallback_used": false,
+        "segment_id": "cue-a",
+        "source_utterance_id": "source-cue-a",
+        "status": "completed"
+      },
+      {
+        "confidence": 1.0,
+        "fallback_used": false,
+        "segment_id": "cue-b",
+        "source_utterance_id": "source-cue-b",
+        "status": "completed"
+      }
+    ],
+    "source_end": {
+      "kind": "time_point",
+      "schema_version": 1,
+      "ticks": "2000",
+      "time_base": {
+        "denominator": "1000",
+        "numerator": "1"
+      }
+    },
+    "source_id": "fixture-source",
+    "source_kind": "source_audio",
+    "source_layout": "stereo-source",
+    "source_start": {
+      "kind": "time_point",
+      "schema_version": 1,
+      "ticks": "0",
+      "time_base": {
+        "denominator": "1000",
+        "numerator": "1"
+      }
+    },
+    "target_language": "vi",
+    "warnings": [
+      "final mix is below the configured target RMS; source and dialogue were preserved"
+    ]
+  },
+  "token": {
+    "graph_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "job_id": "job-effective",
+    "original_manifest_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revision": "2",
+    "snapshot_sha256": "sha256:ea97e08eb4b142968e0af98c6eec57789e1846352400979affe35153a2cd6598"
+  },
+  "voice": {
+    "approved": true,
+    "credential_required": false,
+    "default": true,
+    "display_name": "Trúc Ly",
+    "emotion_mode": "neutral",
+    "language": "vi",
+    "license_id": "Apache-2.0",
+    "manifest_hash": "sha256:1d93dac129af3ad1937eb39fba24a8dbfde1aa0596541b521a343fe233f42078",
+    "model_hash": "sha256:30163bab69ff85db094314385a56510129293f600fc130e53d1c9b3b4b276113",
+    "model_id": "vieneu-v3-turbo-fp32",
+    "model_version": "61b85e3-moss-ceff0d0-sdk3.8.3",
+    "network_required": false,
+    "pitch_style": "auto",
+    "speaking_rate_milli": 1000,
+    "voice_id": "vi-truc-ly-vieneu3-v1",
+    "voice_version": "1.0.0"
+  }
+}

@@ -186,6 +186,15 @@ def admit_context(raw):
             manifest.get("job_id") != before.job_id or _digest(manifest_raw) != context["original_manifest_sha256"] or
             manifest["artifacts"]["editable_timeline"]["sha256"] != _digest(original)):
         raise ReviewError("render original manifest/timeline binding differs")
+    _admit_media_context(context,manifest,before,after)
+    return context, manifest, before, after, old.translated_text != new.translated_text
+
+
+def _admit_media_context(context,manifest,before,after):
+    """Shared source/mix fence after each versioned caller admits its own tag."""
+    from .production import ReviewError
+    from .synthesis_input import _digest
+    from .wire import decode_review_json
     source = context["source"]
     _closed(source, ("path", "sha256", "size_bytes", "artifact_root"))
     _path(source["path"], _path(source["artifact_root"]))
@@ -217,7 +226,6 @@ def admit_context(raw):
             raise ReviewError("render mix does not belong to this exact corrected revision")
         for role in ("original_audio", "dialogue_stem", "final_mix"):
             _path(mix[role]["path"], _path(retained["artifact_root"]))
-    return context, manifest, before, after, old.translated_text != new.translated_text
 
 
 def _inputs(context, deadline):
@@ -254,6 +262,14 @@ def _inputs(context, deadline):
 
 def render_candidate(raw, *, output_root, ffmpeg_path, ffprobe_path, media_root, timeout_seconds=900):
     """Execute/revalidate a private candidate. No publication or B2 downgrade."""
+    return _render_admitted(raw,output_root=output_root,ffmpeg_path=ffmpeg_path,ffprobe_path=ffprobe_path,
+        media_root=media_root,timeout_seconds=timeout_seconds,admission=admit_context,
+        recipe='review-private-render-v1')
+
+
+def _render_admitted(raw, *, output_root, ffmpeg_path, ffprobe_path, media_root,
+                     timeout_seconds, admission, recipe, extra_recipe_sources=(), caption_reader=None):
+    """Private kernel; versioned entry points supply fixed admission and recipe."""
     import time
     from engine.dubflow.media import FfmpegMediaAdapter, MediaProbe
     from engine.dubflow.worker.production_job import TextCue, _write_subtitles, _source_render_duration, _validate_rendered_audio
@@ -264,7 +280,8 @@ def render_candidate(raw, *, output_root, ffmpeg_path, ffprobe_path, media_root,
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 3600:
         raise ReviewError("render deadline must be a bounded native integer")
     deadline = time.monotonic() + timeout_seconds
-    context, manifest, before, after, text_changed = admit_context(raw)
+    context, manifest, before, after, text_changed = admission(raw)
+    current_captions=caption_reader(context,deadline) if caption_reader is not None else None
     output = _path(str(output_root))
     if not output.is_dir():
         raise ReviewError("native private render root is unavailable")
@@ -276,7 +293,8 @@ def render_candidate(raw, *, output_root, ffmpeg_path, ffprobe_path, media_root,
         Path(__file__), Path(__file__).parents[1] / "worker/production_job.py", Path(__file__).parents[1] / "media/adapter.py",
         *(Path(__file__).with_name(name) for name in ("corrected_timeline.py", "wire.py", "production.py",
                                                      "synthesis_input.py", "synthesis_worker.py")))]
-    identity = _digest(_encode({"context":_digest(raw), "recipe":"review-private-render-v1", "executables_and_source":pins}, MAX_PACKET))
+    pins += [_file_hash(path,deadline)[0] for path in extra_recipe_sources]
+    identity = _digest(_encode({"context":_digest(raw), "recipe":recipe, "executables_and_source":pins}, MAX_PACKET))
     generation = _path(str(output / ("render-" + identity[7:])))
     if _path(context["source"]["path"]).is_relative_to(generation):
         raise ReviewError("private render cannot overwrite its source")
@@ -309,12 +327,15 @@ def render_candidate(raw, *, output_root, ffmpeg_path, ffprobe_path, media_root,
             else:
                 # Voice changes cannot upgrade/reformat a prior subtitle artifact.
                 for role, name in (("captions_srt", "captions_vi.srt"), ("captions_ass", "captions_vi.ass")):
-                    pin = dict(manifest["artifacts"][role]); pin["size_bytes"] = str(pin["size_bytes"])
-                    original = _verify(pin, _path(context["original_output_root"]), deadline)
-                    with original.open("rb") as stream:
-                        subtitle = stream.read(MAX_PACKET + 1)
-                    if len(subtitle) > MAX_PACKET:
-                        raise ReviewError("original subtitle exceeds its byte bound")
+                    if current_captions is not None:
+                        subtitle=current_captions[role]
+                    else:
+                        pin = dict(manifest["artifacts"][role]); pin["size_bytes"] = str(pin["size_bytes"])
+                        original = _verify(pin, _path(context["original_output_root"]), deadline)
+                        with original.open("rb") as stream:
+                            subtitle = stream.read(MAX_PACKET + 1)
+                        if len(subtitle) > MAX_PACKET:
+                            raise ReviewError("original subtitle exceeds its byte bound")
                     _atomic(generation / name, subtitle)
                 srt, ass = generation / "captions_vi.srt", generation / "captions_vi.ass"
             _atomic(generation / "timeline.json", context["corrected_timeline_json"].encode("utf-8"))
@@ -338,6 +359,8 @@ def render_candidate(raw, *, output_root, ffmpeg_path, ffprobe_path, media_root,
         if decoded.returncode != 0 or decoded.stderr.strip():
             raise ReviewError("corrected render full audio/video decode failed")
         _inputs(context, deadline)
+        if caption_reader is not None and caption_reader(context,deadline)!=current_captions:
+            raise ReviewError('current captions changed during private rendering')
         if result_path.exists():
             _checkpoint(result, context, raw, identity, generation, deadline)
             return result

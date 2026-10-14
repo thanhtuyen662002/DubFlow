@@ -50,14 +50,7 @@ def admit_correction(before: ReviewSnapshot, after: ReviewSnapshot):
     return old, new
 
 
-def derive_corrected_timeline(original: bytes, before: ReviewSnapshot, after: ReviewSnapshot) -> bytes:
-    """Change exactly the selected translation in the existing timeline v1.
-
-    Review time bases may differ from milliseconds. Compare exact rationals;
-    never round a cue to make it fit. Voice-only edits return the original bytes
-    so subtitle/render cache identity is not invalidated by reserialization.
-    """
-    old, new = admit_correction(before, after)
+def _admit_timeline(original: bytes, before: ReviewSnapshot):
     if not isinstance(original, bytes) or not 1 <= len(original) <= MAX_BYTES:
         raise ReviewError("original timeline exceeds its byte bound")
     try:
@@ -104,8 +97,42 @@ def derive_corrected_timeline(original: bytes, before: ReviewSnapshot, after: Re
                 Fraction(cue["start_ms"], 1000) != int(finding.start_ticks) * review_base or
                 Fraction(cue["end_ms"], 1000) != int(finding.end_ticks) * review_base):
             raise ReviewError("Review finding differs from the original canonical timeline")
+    return timeline, by_id
+
+
+def derive_corrected_timeline(original: bytes, before: ReviewSnapshot, after: ReviewSnapshot) -> bytes:
+    """Change one translation, preserving exact current bytes on voice edits.
+
+    The caller separately admits timeline/snapshot provenance. Rational source
+    ranges are compared without rounding; this helper grants no graph authority.
+    """
+    old, new = admit_correction(before, after)
+    timeline, by_id = _admit_timeline(original, before)
     if old.translated_text == new.translated_text:
         return original
     # Never upgrade ASR confidence because a human changed a translation.
     by_id[old.cue_id]["translated_text"] = new.translated_text
     return _encode(timeline, MAX_BYTES)
+
+
+def derive_effective_timeline(original: bytes, origin: ReviewSnapshot, current: bytes,
+                              before: ReviewSnapshot, after: ReviewSnapshot) -> bytes:
+    """Admit cumulative content against its original source, then edit one cue.
+
+    Origin and current public revisions remain distinct. Every original cue,
+    source interval/clock/confidence and unrepresented translation stays exact;
+    earlier edits must equal the separately admitted current findings.
+    """
+    if (not isinstance(origin, ReviewSnapshot) or origin.revision != 0 or
+        origin.job_id != before.job_id or origin.time_base != before.time_base):
+        raise ReviewError("effective timeline requires its separate original archive")
+    archived, _ = _admit_timeline(original, origin)
+    actual, _ = _admit_timeline(current, before)
+    expected = decode_review_json(_encode(archived, MAX_BYTES).decode())
+    findings = {item.cue_id:item for item in before.findings if item.cue_id is not None}
+    for cue in expected["cues"]:
+        if cue["cue_id"] in findings:
+            cue["translated_text"] = findings[cue["cue_id"]].translated_text
+    if _encode(expected, MAX_BYTES) != _encode(actual, MAX_BYTES):
+        raise ReviewError("effective timeline changed source/clock/confidence or lost prior edits")
+    return derive_corrected_timeline(current, before, after)

@@ -194,3 +194,82 @@ records this inventoried byte-gated dispatch entry; it still grants preparation
 only. Original-only commands and sealed original/v1 graphs remain unchanged.
 No TTS, mix, render, SQLite graph mutation or GUI activation occurs in this
 command. Those cumulative execution/publication/undo/export steps remain gates.
+
+### Current cue TTS execution
+
+`review-synthesize-effective-cue` additionally requires an inventoried closed
+`processing-cue-synthesis-v1.json` capability and a native independently hashed
+TTS recipe. `native-processing-cue-synthesis-v1.json` records this separate
+admission; the original model root remains pinned and model weights are verified
+by the owned read-only producer before loading. Missing capability or recipe
+drift refuses. Existing preparation-only releases keep their original meaning.
+
+`native-effective-cue-result-v1.json` records a private selected cue PCM and
+accepted TTS/spoken metadata. Native code reopens the canonical output-volume
+locator, request, source mapping, exact confidence bits and recorded spoken
+rewrite evidence, then fences the processing release and current durable token.
+The result grants no current mix/render, active graph, CAS/undo or GUI authority.
+All current cumulative/export/installed/long-form/crash gates remain mandatory.
+
+### Current-assignment private mix
+
+`review-mix-effective-cue` requires the separate inventoried
+`processing-effective-mix-v1.json` capability before inference. Its owned
+isolated adapter consumes `native-effective-mix-context-v1.json`, reopens the
+current bindings/projection and accepted TTS/spoken evidence, and streams the
+existing protected AUD-0 producer without speech inference or SQLite writes.
+
+`effective-mix-candidate-v1.json` binds the exact current token/request/context.
+Native validation independently preserves every unselected cue/document and
+checks source/producer, confidence bits, failure/duck-window/chunk evidence.
+Only after full physical verification are three PCM roles retained and exactly
+their paths retargeted. `native-processing-effective-mix-v1.json` and
+`native-effective-mix-result-v1.json` keep this private processing/retention
+evidence separate from current render/publication/CAS/undo/export authority.
+Original-only commands, sealed graphs and all producer/model pins remain valid
+under their existing meanings. Native/installed/long-form acceptance is pending.
+
+### Cumulative current timeline and private render preparation
+
+`review-prepare-effective-timeline` is a distinct B1/B2 metadata command. Native
+admission separately opens the original revision-zero archive and the current
+graph, then preserves the complete current token without normalizing a restored
+public revision. Native and owned Python independently reconstruct current
+translations against the original timeline before applying one new edit.
+Unwarned cues, source clocks/ranges and IEEE confidence bits remain unchanged;
+voice-only changes retain the exact current timeline bytes.
+
+`native-effective-timeline-context-v1.json`, `prepared-effective-timeline-v1.json`,
+`native-processing-effective-timeline-v1.json` and
+`native-effective-timeline-result-v1.json` describe private metadata evidence.
+The separate inventoried `processing-effective-timeline-v1.json` capability
+grants neither model/media execution nor graph publication.
+
+`native-effective-render-context-v1.json` requires current caption pins in
+addition to the original manifest/archive and current timeline/token. The owned
+current render adapter independently verifies complete SRT/ASS events, preserves
+exact current caption bytes on a voice-only edit and reopens all input pins after
+render/QC. A separate `processing-effective-render-v1.json` capability and
+`native-processing-effective-render-v1.json` receipt bind twelve ordered source
+and executable fingerprints to `review-private-effective-render-v1`; original
+and current tags/checkpoints are not interchangeable.
+
+`review-render-effective-b1` and `review-render-effective-b2` dispatch the
+distinct current worker after processing capability, current-token and output
+volume admission. B1 renders current captions with the archived source audio;
+B2 runs only the selected cue through the admitted current TTS/mix path first.
+Native code independently checks complete current caption events, source
+geometry/exact rational FPS, AAC and duration within one source frame. Five
+physical output roles are retained under the existing aggregate quota/reserve
+and canonical volume locators, then independently reopened after dropping the
+writer lease. Playback paths come only from that reopened retained final video.
+
+`native-effective-render-retained-v1.json` binds current token/context, the
+source-bound processing recipe, candidate provenance and five locators.
+`native-effective-render-private-v1.json` and the B1/B2 result schemas describe
+private retained evidence; `cumulative_publication_prepared` remains false.
+Native execution/hosted tests and cumulative publication/CAS/undo remain
+unqualified/unimplemented. Tiny owned-media B1 and mocked B2 tests cannot qualify
+current native/installed B1/B2, corrected standard/editable exports, chunked
+long-form behavior, GUI/liveness/crash recovery, real four-hour or full172/175
+acceptance. Existing original guards and producer/model/worker pins are intact.

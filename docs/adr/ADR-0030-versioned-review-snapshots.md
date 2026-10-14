@@ -1435,3 +1435,185 @@ mix, render, CAS or undo. Current cumulative execution/publication, corrected
 standard/editable exports, chunked long-form and installed GUI/crash/real-media
 acceptance remain mandatory before activation. All prior actual failures and
 completed native proofs retain their recorded scope and bytes.
+
+#### Current-generation cue TTS execution checkpoint
+
+The opt-in `review-synthesize-effective-cue` path now shares the admitted current
+preparation flow and requires an additional inventoried
+`processing-cue-synthesis-v1.json` declaration. Existing preparation-only releases
+remain usable for preparation; their receipt grants no TTS permission. Native
+code independently hashes the ordered original catalog/TTS backend/checkpoint/
+rewrite dependencies and compares the returned producer recipe before retaining
+audio. The processing root is a separate versioned dependency, and the original
+job/model/runtime root is never repinned or rewritten. Missing or incompatible
+capabilities, catalog drift and unlisted/changed recipe files refuse.
+
+The current request retains its public before/proposed revision, selected current
+voice/provenance and full independently admitted projection. The existing owned
+isolated byte-gated cue producer verifies the original physical model pack before
+loading and never provisions or repairs weights. Only the selected cue enters
+the private checkpoint generation keyed by its complete request and recipe;
+other cue assignments, source analysis and existing media remain untouched.
+Resume observations may change to skipped/reused and same-byte metadata may get
+new timestamps, as already recorded by the original producer. No claim of whole
+checkpoint timestamp invariance is introduced.
+
+Selected PCM is retained directly on the preadmitted fixed output volume through
+the existing writer lock, aggregate quota, reserve checks and canonical mono cue
+locator. The native speech fence is shared by original and current request types
+only after each caller independently binds its request. It reopens accepted PCM,
+TTS/spoken objects and acceptance context, preserves confidence IEEE bits and
+checks source mapping/actual end, producer/config pins, exact path-only/hash-only
+retargets, checkpoint identity and recorded bounded rewrite advice. Candidate and
+retarget comparisons also preserve signed zero. Current token/dependencies and
+the processing release are rechecked after synthesis; stale results remain
+private and cannot change playback or durable SQLite state.
+
+The closed `review_native_synthesized_effective_cue` result records private
+dependencies and TTS acceptance. Its caller must still revalidate those native
+dependencies before any later mix/publication, rather than treating a response
+path or boolean as authority. This path does not implement current mix/render,
+cumulative publication/CAS/undo, corrected standard/editable exports or desktop
+activation. The actual historical after-undo refusal remains failed; source
+authoring and tiny synthetic Python tests do not qualify source-matched native
+Windows execution, installed B1/B2, crash/recovery or real long-form acceptance.
+
+#### Current-assignment streamed mix checkpoint
+
+The opt-in `review-mix-effective-cue` path requires an additional inventoried
+current-mix capability before cue inference. The owned isolated mix adapter has
+its own closed effective-mix context, distinct from the original-only context.
+It reopens current native binding/source/document pins, independently derives
+the same current request and projection, verifies the accepted cue's complete
+TTS/spoken path-only/hash-only retarget, and replaces exactly that assignment.
+Other cue text, voice, producer, source mapping and physical media stay pinned.
+It uses the existing protected AUD-0 bounded streaming/checkpoint producer and
+executes no TTS, model provisioning, ASR/OCR or SQLite mutation.
+
+Native code independently constructs the complete replacement composition from
+its admitted current projection and the accepted cue descriptor. It retains all
+referenced prior documents, replaces only the selected cue, and removes only
+document references that have become unused. Returned composition values must
+match that independent result, including original confidence bits and protected
+source/mix producer. Mix segment/failure evidence is reconstructed from each
+native sealed assigned TTS document. Duck windows use rational source ticks and
+integer floor/ceil sample mapping, with the inventoried protected DSP policy.
+The producer's explicit interval ordering is used for physical mix evidence; it
+does not reorder logical cue assignments or Review stage plans. Chunk coverage,
+status and per-cue failure evidence are independently fenced.
+
+Original and current paths share only the already-admitted physical mix
+boundary. Three full PCM roles are checked against private generation shape,
+header/frame/hash/metrics and original source length, then copied/sealed through
+the existing canonical fixed-volume store, output writer lock, aggregate quota
+and reserve checks. Native retargeting changes exactly their three paths. Source
+metadata is checked before and after that boundary, and current token/content,
+speech dependencies and processing capability are reopened before returning.
+Returned paths and flags are private evidence, never publication authority.
+
+Tiny synthetic speech with actual two-second streamed DSP and isolated-process
+tests cover prior voice preservation, wrong current/request/accepted pins and
+completed checkpoint reuse. Their WAV byte/hash/mtime fences do not establish
+whole checkpoint metadata invariance, actual native Windows/after-undo behavior,
+speech quality or long-form capacity. Native interop/refusal tests remain a
+separate hosted gate. Current rendering, versioned cumulative publication/CAS/
+undo, matching standard/editable exports and installed/GUI/crash/real4h/full172/
+175 acceptance remain required; no original job/model/worker pin is replaced.
+
+#### Current B1/B2 cumulative timeline and render worker checkpoint
+
+The separately admitted original archive remains revision zero. The current
+timeline command accepts the complete current token and next native proposal,
+including restored or wide public counters. Native and owned Python derive the
+expected current timeline from the original source plus every current finding,
+then apply only the selected next change. Full canonical comparison preserves
+all source text, rational ranges/clock mapping, duration, unwarned cues and IEEE
+confidence bits, including signed zero. Voice-only proposals preserve exact
+current timeline bytes. The original-only reader/generation guard is unchanged.
+
+The optional current timeline capability is inventoried and closed. Its isolated
+Python entry requires the native byte gate before imports or context reads;
+native independently checks context/current token, proposal and current/derived
+timeline hashes before retaining private metadata. The processing release and
+full current dependency view are reopened after preparation. This does not
+execute media, provision models, publish SQLite state or mark correction ready.
+
+Current rendering uses a new closed context and a separate recipe. It admits
+the original manifest/source independently of the current timeline, proposal,
+complete public token and physical current caption pins. Current SRT bytes must
+contain every current cue at its exact source interval; ASS events must match
+the existing admitted producer formatting. The two existing LF/CRLF file
+framings are recognized without rewriting input bytes. In a voice-only edit,
+current captions are copied byte-for-byte rather than read from the original
+manifest. Prior captions are therefore retained after an earlier translation.
+
+Original and current entry points share only a private render kernel after
+their own tag/admission checks. Current capability admission fingerprints the
+original-compatible owned media and all twelve ordered executable/source pins,
+including the current render/timeline entries. Context hash plus the distinct
+current recipe identify checkpoints; no original-tag candidate is relabeled.
+Source/three-PCM header/frame/hash fences, source probe/geometry/FPS, full AV
+decode and all five output roles remain required. Current captions are reopened
+after render/QC, and completed render checkpoints retain their artifact bytes
+and mtimes rather than render again. The original runtime methods are unchanged.
+
+Current timeline metadata tests and tiny private-render tests are component
+evidence. One initial tiny-media test used an unavailable GPL-only libx264
+fixture encoder before any render-worker dispatch; that QA failure is preserved.
+The corrected fixture uses the shipped Windows h264_mf software encoder. The
+actual tiny B1 isolated render then passed full AV decode; mocked B2 caption and
+checkpoint tests are not real voice/native/long-form qualification. Native
+timeline/recipe interop/refusal tests remain authored but unrun without the
+required hosted/native source gate.
+
+Native current-render dispatch, physical final retention and versioned
+cumulative publication/CAS/monotonic undo are still required. Corrected
+standard/editable publication, chunked long-form processing, source-matched
+whole-producer B1/B2, installed GUI/liveness, actual crash/restart, representative
+real four-hour and full172/175 gates are unchanged. No old producer/job/model
+root is repinned or modified; private worker success does not satisfy those
+acceptance gates or authorize merge/Production.
+
+#### Native current render dispatch and physical retention source checkpoint
+
+Distinct `review-render-effective-b1` and `review-render-effective-b2` commands
+now connect the current graph reader, separate processing capability and owned
+current render worker in source. B1 uses its unchanged original source audio;
+B2 reuses current per-cue assignments and regenerates only the selected speech
+cue before the current mix/render. Original-only commands and their runtime
+methods retain their existing meanings. Public current/restored counters remain
+in the new context and are never rewritten to satisfy the original guard.
+
+The native boundary independently reconstructs cumulative timeline content and
+verifies current SRT/ASS events before dispatch. Caption IO uses native original
+export pins or already reopened retained-role locators; mutable hints do not
+authorize a read. Voice-only output must retain exact current caption byte pins.
+Result admission verifies all five physical role byte/hash pins, complete
+caption events, archived source probe/warnings, H.264/AAC, original geometry,
+exact rational FPS and duration within one source frame, without epsilon.
+
+All five roles are copied/sealed under the existing fixed writable NTFS volume,
+no-follow/readonly/full-hash fences, output writer lock, aggregate 32GiB quota
+and fresh 2GiB reserve. The writer is dropped before independent locator reopen.
+The separate private receipt binds complete current token, processing-release
+recipe, context and candidate provenance. Reopen uses canonical retained paths
+for IO while candidate paths remain provenance. Source, current captions,
+retained three-role mix, accepted metadata, processing recipe and durable graph
+token are fenced again around rendering/retention. Prepared playback paths
+derive from the reopened retained final video, never client preview hints.
+
+Four native caption/QC/physical-result/recovery tests are authored; they are not
+actual native execution or installed qualification. A separate actual tiny
+Python-worker probe checks its output against the newly authored native
+geometry/FPS/one-frame/AAC policy: 320x180,25fps,0ms source-duration delta, full AV
+decode and unchanged input byte/hash/mtime. It uses a synthetic native context
+and proves no native CLI/SQLite/CAS/undo/model or representative long-form run.
+
+Current receipts deliberately have no publication authority. Versioned
+cumulative graph publication, complete speech-reference preservation, CAS,
+monotonic undo/recovery and a new correction after undo still require source
+implementation and actual acceptance. Current source-matched hosted/native
+B1/B2, corrected standard/editable exports, chunked long-form, installed GUI,
+liveness, actual crash/restart, representative real4h/full172/175 gates remain
+mandatory. Private retained source code or component media success does not
+qualify those gates or authorize merge/Production.

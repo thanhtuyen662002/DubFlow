@@ -18,10 +18,9 @@ def _imports():
         sys.path.append(str(Path(__file__).resolve().parents[3]))
 
 
-def prepare_bound_cue(context_raw: bytes, bindings_raw: bytes, *, app_root: Path, profile_path: Path) -> dict:
+def read_bound_audio_pins(bindings_raw: bytes) -> dict:
     from engine.dubflow.mix import FileSource, streaming
     from engine.dubflow.review.audio_composition import PinnedDocument
-    from engine.dubflow.review.effective_cue_plan import prepare_effective_cue
     from engine.dubflow.review.production import ReviewError
     from engine.dubflow.review.synthesis_input import _digest, _encode
     from engine.dubflow.review.wire import decode_review_json, read_review_snapshot
@@ -87,11 +86,16 @@ def prepare_bound_cue(context_raw: bytes, bindings_raw: bytes, *, app_root: Path
         if _encode(segment.to_dict(), LIMIT) != _encode(item, LIMIT):
             raise ReviewError("native original cue binding changed canonical mapping/confidence")
         inputs.append(segment)
-    return prepare_effective_cue(context_raw, expected_token=value["current_token"],
+    return dict(expected_token=value["current_token"],
         composition_raw=value["content_composition_json"].encode(),
         composition_snapshot=read_review_snapshot(decode_review_json(value["composition_snapshot_json"])),
         source=source, source_sha256=source_pin["sha256"], original_inputs=inputs,
-        documents=tuple(document(item) for item in documents), mix_template=document(value["mix_template"]),
+        documents=tuple(document(item) for item in documents), mix_template=document(value["mix_template"]))
+
+
+def prepare_bound_cue(context_raw: bytes, bindings_raw: bytes, *, app_root: Path, profile_path: Path) -> dict:
+    from engine.dubflow.review.effective_cue_plan import prepare_effective_cue
+    return prepare_effective_cue(context_raw, **read_bound_audio_pins(bindings_raw),
         app_root=app_root, profile_path=profile_path)
 
 

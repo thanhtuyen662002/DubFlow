@@ -314,6 +314,56 @@ const PROCESSING_CAPABILITY: &str = "review_effective_cue_preparation_v1";
 const PROCESSING_DECLARATION: &str = "app/engine/dubflow/review/processing-capabilities-v1.json";
 const EFFECTIVE_ENTRY: &str = "app/engine/dubflow/review/effective_cue_plan.py";
 const PROCESSING_DISPATCH_ENTRY: &str = "app/engine/dubflow/review/effective_cue_execution.py";
+const SYNTHESIS_DECLARATION: &str = "app/engine/dubflow/review/processing-cue-synthesis-v1.json";
+const SYNTHESIS_ENTRY: &str = "app/engine/dubflow/review/cue_execution.py";
+const EFFECTIVE_MIX_DECLARATION: &str =
+    "app/engine/dubflow/review/processing-effective-mix-v1.json";
+const EFFECTIVE_MIX_ENTRY: &str = "app/engine/dubflow/review/effective_mix_execution.py";
+const EFFECTIVE_TIMELINE_CAPABILITY: &str =
+    "app/engine/dubflow/review/processing-effective-timeline-v1.json";
+const EFFECTIVE_TIMELINE_ENTRY: &str = "app/engine/dubflow/review/effective_timeline_execution.py";
+const EFFECTIVE_RENDER_CAPABILITY: &str =
+    "app/engine/dubflow/review/processing-effective-render-v1.json";
+const EFFECTIVE_RENDER_ENTRY: &str = "app/engine/dubflow/review/effective_render_execution.py";
+
+fn effective_render_declaration() -> Value {
+    json!({"schema_version":1,"kind":"review_processing_effective_render_capability",
+        "capability":"review_effective_render_v1","entrypoint":"engine/dubflow/review/effective_render_execution.py",
+        "context_format":"review_native_effective_render_context_v1","recipe":"review-private-effective-render-v1",
+        "modes":["b1","b2"],"roles":["final_video","captions_srt","captions_ass","corrected_timeline","qc_report"],
+        "current_caption_reuse":"exact_bytes_and_current_timeline_events","protected_media":"exact_original_inventory",
+        "tts_execution":false,"mix_execution":false,"chunked_longform":false,
+        "cumulative_publication":false,"active_graph_publication":false})
+}
+
+fn effective_timeline_declaration() -> Value {
+    json!({"schema_version":1,"kind":"review_processing_effective_timeline_capability",
+        "capability":"review_effective_timeline_v1","entrypoint":"engine/dubflow/review/effective_timeline_execution.py",
+        "context_format":"review_native_effective_timeline_context_v1","modes":["b1","b2"],
+        "timeline_format":1,"public_counter_normalization":false,"media_execution":false,
+        "model_provisioning":false,"active_graph_publication":false})
+}
+
+fn effective_mix_declaration() -> Value {
+    json!({"schema_version":1,"kind":"review_processing_effective_mix_capability",
+        "capability":"review_effective_mix_v1","entrypoint":"engine/dubflow/review/effective_mix_execution.py",
+        "context_format":"review_native_effective_mix_context_v1","composition_formats":[1,2],
+        "sample_rate":48000,"channels":2,"roles":["original_audio","dialogue_stem","final_mix"],
+        "dsp_policy":{"attack_ticks":40,"release_ticks":120,"duck_gain_milli":350,"max_segments_per_chunk":8},
+        "tts_execution":false,"model_provisioning":false,"render_execution":false,
+        "cumulative_publication":false,"active_graph_publication":false})
+}
+
+fn synthesis_declaration() -> Value {
+    json!({"schema_version":1,"kind":"review_processing_cue_synthesis_capability",
+        "capability":"review_effective_cue_synthesis_v1",
+        "entrypoint":"engine/dubflow/review/cue_execution.py",
+        "request_format":"review_cue_synthesis_input_v1",
+        "accepted_format":"review_native_accepted_cue_context_v1",
+        "compatibility":"exact_original_runtime_tts_mix_models_media",
+        "model_provisioning":false,"mix_execution":false,"render_execution":false,
+        "cumulative_execution":false,"active_graph_publication":false})
+}
 
 /// A processing release is an additional immutable dependency, never a new
 /// producer binding written into the original job or copied into its bundle.
@@ -572,6 +622,315 @@ impl AdmittedProcessingRuntime {
         let path = self.runtime.root.join(PROCESSING_DISPATCH_ENTRY);
         fingerprint(&path, pin, false, 64 * 1024 * 1024)?;
         Ok(path)
+    }
+
+    /// Additional explicit capability; preparation-only releases still admit
+    /// preparation but cannot reach inference through this method. Model bytes
+    /// are verified by the owned read-only producer immediately before loading.
+    pub(super) fn cue_synthesis_receipt(&self) -> SupervisorResult<Value> {
+        let processing = self.receipt()?;
+        let admitted_file = |name: &str, capture: bool| -> SupervisorResult<Vec<u8>> {
+            relative(name)?;
+            let pin = self
+                .runtime
+                .inventory
+                .get(name)
+                .ok_or_else(|| invalid("processing synthesis dependency is not inventoried"))?;
+            fingerprint(
+                &self.runtime.root.join(name),
+                pin,
+                capture,
+                64 * 1024 * 1024,
+            )
+        };
+        let declaration = admitted_file(SYNTHESIS_DECLARATION, true)?;
+        let declaration = decode(
+            std::str::from_utf8(&declaration)
+                .map_err(|_| invalid("processing synthesis capability is not UTF-8"))?,
+            64 * 1024,
+        )?;
+        let mut actual = String::new();
+        let mut expected = String::new();
+        super::review_document::canonical(&declaration, &mut actual)?;
+        super::review_document::canonical(&synthesis_declaration(), &mut expected)?;
+        if actual != expected {
+            return Err(invalid(
+                "unknown synthesis capability requires explicit compatibility",
+            ));
+        }
+        admitted_file(SYNTHESIS_ENTRY, false)?;
+        let profile = admitted_file("app/models/manifests/production-cpu-v1.json", true)?;
+        let profile = decode(
+            std::str::from_utf8(&profile)
+                .map_err(|_| invalid("processing synthesis profile is not UTF-8"))?,
+            512 * 1024,
+        )?;
+        let catalog = profile["tts_neural_profile"]
+            .as_str()
+            .ok_or_else(|| invalid("processing synthesis recipe is absent"))?;
+        relative(catalog)?;
+        let catalog = format!("app/{catalog}");
+        if !catalog.starts_with("app/models/manifests/")
+            || self
+                .runtime
+                .inventory
+                .get(&catalog)
+                .and_then(|pin| pin["sha256"].as_str())
+                != Some(self.runtime.catalog_hash.as_str())
+        {
+            return Err(invalid(
+                "processing synthesis catalog substitutes original voice pins",
+            ));
+        }
+        // Independent equivalent of the admitted B2 recipe's ordered digest
+        // concatenation. No worker-supplied recipe string grants cache reuse.
+        let names = [
+            catalog.as_str(),
+            "app/engine/dubflow/tts/adapter.py",
+            "app/engine/dubflow/tts/vieneu.py",
+            "app/engine/dubflow/tts/vieneu_native.py",
+            "app/engine/dubflow/tts/neural_vits.py",
+            "app/engine/dubflow/tts/mimic3_native.py",
+            "app/engine/dubflow/tts/native_process.py",
+            "app/engine/dubflow/tts/windows_job.py",
+            "app/engine/dubflow/worker/tts_checkpoints.py",
+            "app/engine/dubflow/worker/tts_rewrites.py",
+        ];
+        let mut hashes = String::new();
+        let mut dependencies = Vec::new();
+        for name in names {
+            admitted_file(name, false)?;
+            let pin = &self.runtime.inventory[name];
+            let hash = pin["sha256"]
+                .as_str()
+                .filter(|h| valid_hash(h))
+                .ok_or_else(|| invalid("processing synthesis recipe hash is invalid"))?;
+            hashes.push_str(&hash[7..]);
+            dependencies.push(json!({"path":name,"pin":pin}));
+        }
+        Ok(
+            json!({"schema_version":1,"kind":"review_admitted_effective_cue_synthesis",
+            "capability":"review_effective_cue_synthesis_v1","processing_release":processing,
+            "capability_document":self.runtime.inventory[SYNTHESIS_DECLARATION],
+            "synthesis_entry":{"path":self.runtime.root.join(SYNTHESIS_ENTRY),
+                "pin":self.runtime.inventory[SYNTHESIS_ENTRY]},
+            "recipe_identity":format!("{:x}",Sha256::digest(hashes.as_bytes())),
+            "recipe_dependencies":dependencies,"original_model_root":self.origin.model_root,
+            "model_weights_verified":false,"mix_execution_admitted":false,
+            "render_execution_admitted":false,"active_graph_published":false}),
+        )
+    }
+
+    pub(super) fn effective_mix_receipt(&self) -> SupervisorResult<Value> {
+        let synthesis = self.cue_synthesis_receipt()?;
+        let capability = self
+            .runtime
+            .inventory
+            .get(EFFECTIVE_MIX_DECLARATION)
+            .ok_or_else(|| invalid("processing release lacks current mix capability"))?;
+        let raw = fingerprint(
+            &self.runtime.root.join(EFFECTIVE_MIX_DECLARATION),
+            capability,
+            true,
+            64 * 1024,
+        )?;
+        let value = decode(
+            std::str::from_utf8(&raw)
+                .map_err(|_| invalid("current mix capability is not UTF-8"))?,
+            64 * 1024,
+        )?;
+        let mut actual = String::new();
+        let mut expected = String::new();
+        super::review_document::canonical(&value, &mut actual)?;
+        super::review_document::canonical(&effective_mix_declaration(), &mut expected)?;
+        if actual != expected {
+            return Err(invalid(
+                "unknown current mix capability requires explicit compatibility",
+            ));
+        }
+        let mut dependencies = Vec::new();
+        for name in [
+            EFFECTIVE_MIX_ENTRY,
+            "app/engine/dubflow/review/audio_composition.py",
+            "app/engine/dubflow/review/mix_io.py",
+            "app/engine/dubflow/mix/streaming.py",
+        ] {
+            let pin = self
+                .runtime
+                .inventory
+                .get(name)
+                .ok_or_else(|| invalid("current mix dependency is not inventoried"))?;
+            fingerprint(&self.runtime.root.join(name), pin, false, 64 * 1024 * 1024)?;
+            dependencies.push(json!({"path":name,"pin":pin}));
+        }
+        Ok(
+            json!({"schema_version":1,"kind":"review_admitted_effective_mix",
+            "capability":"review_effective_mix_v1","processing_synthesis":synthesis,
+            "capability_document":capability,"mix_entry":{"path":self.runtime.root.join(EFFECTIVE_MIX_ENTRY),
+                "pin":self.runtime.inventory[EFFECTIVE_MIX_ENTRY]},"dependencies":dependencies,
+            "render_execution_admitted":false,"active_graph_published":false}),
+        )
+    }
+}
+
+impl AdmittedProcessingRuntime {
+    pub(super) fn effective_render_receipt(
+        &self,
+        context_hash: Option<&str>,
+    ) -> SupervisorResult<Value> {
+        let timeline = self.effective_timeline_receipt()?;
+        let capability = self
+            .runtime
+            .inventory
+            .get(EFFECTIVE_RENDER_CAPABILITY)
+            .ok_or_else(|| invalid("processing release lacks current render capability"))?;
+        let raw = fingerprint(
+            &self.runtime.root.join(EFFECTIVE_RENDER_CAPABILITY),
+            capability,
+            true,
+            64 * 1024,
+        )?;
+        let value = decode(
+            std::str::from_utf8(&raw)
+                .map_err(|_| invalid("current render capability is not UTF-8"))?,
+            64 * 1024,
+        )?;
+        let mut actual = String::new();
+        let mut expected = String::new();
+        super::review_document::canonical(&value, &mut actual)?;
+        super::review_document::canonical(&effective_render_declaration(), &mut expected)?;
+        if actual != expected {
+            return Err(invalid(
+                "unknown current render capability requires explicit compatibility",
+            ));
+        }
+        let probe = super::first_existing(&[
+            self.runtime.root.join("runtime/media/ffprobe.exe"),
+            self.runtime.root.join("runtime/ffmpeg/ffprobe.exe"),
+        ])
+        .ok_or_else(|| invalid("current owned render probe unavailable"))?;
+        let mut pins = Vec::new();
+        let mut dependencies = Vec::new();
+        // Ordered exactly as the current Python private kernel; recipe identity
+        // never reuses an original-tag checkpoint for a current public token.
+        for path in [
+            self.runtime.ffmpeg.clone(),
+            probe.clone(),
+            self.runtime
+                .root
+                .join("app/engine/dubflow/review/render_execution.py"),
+            self.runtime
+                .root
+                .join("app/engine/dubflow/worker/production_job.py"),
+            self.runtime
+                .root
+                .join("app/engine/dubflow/media/adapter.py"),
+            self.runtime
+                .root
+                .join("app/engine/dubflow/review/corrected_timeline.py"),
+            self.runtime.root.join("app/engine/dubflow/review/wire.py"),
+            self.runtime
+                .root
+                .join("app/engine/dubflow/review/production.py"),
+            self.runtime
+                .root
+                .join("app/engine/dubflow/review/synthesis_input.py"),
+            self.runtime
+                .root
+                .join("app/engine/dubflow/review/synthesis_worker.py"),
+            self.runtime.root.join(EFFECTIVE_RENDER_ENTRY),
+            self.runtime.root.join(EFFECTIVE_TIMELINE_ENTRY),
+        ] {
+            let name = path
+                .strip_prefix(&self.runtime.root)
+                .map_err(|_| invalid("current render recipe escaped its processing root"))?
+                .to_str()
+                .ok_or_else(|| invalid("current render recipe path is not UTF-8"))?
+                .replace('\\', "/");
+            let pin = self
+                .runtime
+                .inventory
+                .get(&name)
+                .ok_or_else(|| invalid("current render recipe dependency not inventoried"))?;
+            fingerprint(&path, pin, false, 512 * 1024 * 1024)?;
+            pins.push(pin["sha256"].clone());
+            dependencies.push(json!({"path":name,"pin":pin}));
+        }
+        let identity = if let Some(context) = context_hash {
+            if context.len() != 71
+                || !context.starts_with("sha256:")
+                || !context[7..]
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(invalid("current render context hash is not canonical"));
+            }
+            let mut raw = String::new();
+            super::review_document::canonical(
+                &json!({"context":context,"recipe":"review-private-effective-render-v1",
+                "executables_and_source":pins}),
+                &mut raw,
+            )?;
+            hash(raw.as_bytes())
+        } else {
+            String::new()
+        };
+        Ok(
+            json!({"schema_version":1,"kind":"review_admitted_effective_render",
+            "capability":"review_effective_render_v1","processing_timeline":timeline,"capability_document":capability,
+            "entry":{"path":self.runtime.root.join(EFFECTIVE_RENDER_ENTRY),"pin":self.runtime.inventory[EFFECTIVE_RENDER_ENTRY]},
+            "ffprobe":{"path":probe,"pin":self.runtime.inventory[dependencies[1]["path"].as_str().unwrap()]},
+            "recipe_dependencies":dependencies,"execution_identity":identity,"active_graph_published":false,"correction_ready":false}),
+        )
+    }
+
+    pub(super) fn effective_timeline_receipt(&self) -> SupervisorResult<Value> {
+        let processing = self.receipt()?;
+        let capability = self
+            .runtime
+            .inventory
+            .get(EFFECTIVE_TIMELINE_CAPABILITY)
+            .ok_or_else(|| invalid("processing release lacks current timeline capability"))?;
+        let raw = fingerprint(
+            &self.runtime.root.join(EFFECTIVE_TIMELINE_CAPABILITY),
+            capability,
+            true,
+            64 * 1024,
+        )?;
+        let declaration = decode(
+            std::str::from_utf8(&raw).map_err(|_| invalid("timeline capability is not UTF-8"))?,
+            64 * 1024,
+        )?;
+        let mut actual = String::new();
+        let mut expected = String::new();
+        super::review_document::canonical(&declaration, &mut actual)?;
+        super::review_document::canonical(&effective_timeline_declaration(), &mut expected)?;
+        if actual != expected {
+            return Err(invalid(
+                "unknown timeline capability requires explicit compatibility",
+            ));
+        }
+        let mut dependencies = Vec::new();
+        for name in [
+            EFFECTIVE_TIMELINE_ENTRY,
+            "app/engine/dubflow/review/corrected_timeline.py",
+            "app/engine/dubflow/review/wire.py",
+        ] {
+            let pin = self
+                .runtime
+                .inventory
+                .get(name)
+                .ok_or_else(|| invalid("timeline dependency not inventoried"))?;
+            fingerprint(&self.runtime.root.join(name), pin, false, 64 * 1024 * 1024)?;
+            dependencies.push(json!({"path":name,"pin":pin}));
+        }
+        Ok(
+            json!({"schema_version":1,"kind":"review_admitted_effective_timeline",
+            "capability":"review_effective_timeline_v1","processing_release":processing,
+            "capability_document":capability,"entry":{"path":self.runtime.root.join(EFFECTIVE_TIMELINE_ENTRY),
+                "pin":self.runtime.inventory[EFFECTIVE_TIMELINE_ENTRY]},"dependencies":dependencies,
+            "model_weights_verified":false,"media_execution_admitted":false,"active_graph_published":false}),
+        )
     }
 }
 
@@ -1098,6 +1457,274 @@ mod tests {
             admitted.effective_entry().unwrap(),
             processing.root.join(EFFECTIVE_ENTRY)
         );
+        assert!(admitted.cue_synthesis_receipt().is_err());
+    }
+
+    #[test]
+    fn current_synthesis_requires_additional_capability_and_refuses_recipe_drift_without_repinning()
+    {
+        let mut original = fixture();
+        let (mut processing, _) = processing_fixture();
+        for name in [
+            "adapter.py",
+            "vieneu.py",
+            "vieneu_native.py",
+            "neural_vits.py",
+            "mimic3_native.py",
+            "native_process.py",
+            "windows_job.py",
+        ] {
+            let path = format!("app/engine/dubflow/tts/{name}");
+            put_processing_file(&mut original, &path, name.as_bytes());
+            put_processing_file(&mut processing, &path, name.as_bytes());
+        }
+        for name in ["tts_checkpoints.py", "tts_rewrites.py"] {
+            let path = format!("app/engine/dubflow/worker/{name}");
+            put_processing_file(&mut original, &path, name.as_bytes());
+            put_processing_file(&mut processing, &path, name.as_bytes());
+        }
+        put_processing_file(
+            &mut original,
+            "app/engine/dubflow/mix/streaming.py",
+            b"protected original DSP",
+        );
+        put_processing_file(
+            &mut processing,
+            "app/engine/dubflow/mix/streaming.py",
+            b"protected original DSP",
+        );
+        original.producer["release_manifest"] = seal_processing_fixture(&mut original);
+        let original_binding = original.producer.clone();
+        let saved = fixture_contents(&original.root);
+        let manifest = seal_processing_fixture(&mut processing);
+        let prepared = AdmittedProcessingRuntime::from_origin(
+            &original.producer,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        assert!(prepared.cue_synthesis_receipt().is_err());
+        put_processing_file(
+            &mut processing,
+            SYNTHESIS_DECLARATION,
+            synthesis_declaration().to_string().as_bytes(),
+        );
+        let manifest = seal_processing_fixture(&mut processing);
+        let admitted = AdmittedProcessingRuntime::from_origin(
+            &original.producer,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        let receipt = admitted.cue_synthesis_receipt().unwrap();
+        assert_eq!(receipt["capability"], "review_effective_cue_synthesis_v1");
+        assert_eq!(receipt["recipe_dependencies"].as_array().unwrap().len(), 10);
+        assert_eq!(receipt["recipe_identity"].as_str().unwrap().len(), 64);
+        assert_eq!(
+            receipt["original_model_root"],
+            original_binding["model_root"]
+        );
+        assert_eq!(receipt["model_weights_verified"], false);
+        assert_eq!(receipt["active_graph_published"], false);
+        assert_eq!(original.producer, original_binding);
+        assert_eq!(fixture_contents(&original.root), saved);
+        assert!(admitted.effective_mix_receipt().is_err());
+        put_processing_file(
+            &mut processing,
+            EFFECTIVE_MIX_DECLARATION,
+            effective_mix_declaration().to_string().as_bytes(),
+        );
+        for name in [
+            EFFECTIVE_MIX_ENTRY,
+            "app/engine/dubflow/review/audio_composition.py",
+            "app/engine/dubflow/review/mix_io.py",
+        ] {
+            put_processing_file(&mut processing, name, b"inventoried current mix adapter");
+        }
+        let manifest = seal_processing_fixture(&mut processing);
+        let admitted = AdmittedProcessingRuntime::from_origin(
+            &original.producer,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        let mixed = admitted.effective_mix_receipt().unwrap();
+        assert_eq!(mixed["capability"], "review_effective_mix_v1");
+        assert_eq!(mixed["dependencies"].as_array().unwrap().len(), 4);
+        assert_eq!(mixed["render_execution_admitted"], false);
+        let mix_entry = processing.root.join(EFFECTIVE_MIX_ENTRY);
+        let mut raw = fs::read(&mix_entry).unwrap();
+        raw[0] ^= 1;
+        fs::write(&mix_entry, raw).unwrap();
+        assert!(admitted.effective_mix_receipt().is_err());
+        let changed = processing
+            .root
+            .join("app/engine/dubflow/worker/tts_rewrites.py");
+        let mut bytes = fs::read(&changed).unwrap();
+        bytes[0] ^= 1;
+        fs::write(&changed, bytes).unwrap();
+        assert!(admitted.cue_synthesis_receipt().is_err());
+        assert_eq!(fixture_contents(&original.root), saved);
+    }
+
+    #[test]
+    fn current_b1_b2_timeline_requires_closed_capability_and_full_fingerprinted_dependencies() {
+        let original = fixture();
+        let original_binding = original.producer.clone();
+        let saved = fixture_contents(&original.root);
+        let (mut processing, manifest) = processing_fixture();
+        let admitted = AdmittedProcessingRuntime::from_origin(
+            &original_binding,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        assert!(admitted.effective_timeline_receipt().is_err());
+        for name in [
+            EFFECTIVE_TIMELINE_ENTRY,
+            "app/engine/dubflow/review/corrected_timeline.py",
+            "app/engine/dubflow/review/wire.py",
+        ] {
+            put_processing_file(&mut processing, name, b"inventoried timeline source");
+        }
+        for mutation in 0..3 {
+            let mut declaration = effective_timeline_declaration();
+            if mutation == 1 {
+                declaration["public_counter_normalization"] = json!(true);
+            }
+            if mutation == 2 {
+                declaration["media_execution"] = json!(true);
+            }
+            put_processing_file(
+                &mut processing,
+                EFFECTIVE_TIMELINE_CAPABILITY,
+                declaration.to_string().as_bytes(),
+            );
+            let manifest = seal_processing_fixture(&mut processing);
+            let admitted = AdmittedProcessingRuntime::from_origin(
+                &original_binding,
+                &processing.root,
+                &manifest,
+                &"b".repeat(40),
+            )
+            .unwrap();
+            if mutation == 0 {
+                let receipt = admitted.effective_timeline_receipt().unwrap();
+                assert_eq!(receipt["capability"], "review_effective_timeline_v1");
+                assert_eq!(receipt["dependencies"].as_array().unwrap().len(), 3);
+                assert_eq!(receipt["media_execution_admitted"], false);
+                assert_eq!(receipt["active_graph_published"], false);
+                let path = processing.root.join(EFFECTIVE_TIMELINE_ENTRY);
+                let old = fs::read(&path).unwrap();
+                let mut corrupt = old.clone();
+                corrupt[0] ^= 1;
+                fs::write(&path, corrupt).unwrap();
+                assert!(admitted.effective_timeline_receipt().is_err());
+                fs::write(&path, old).unwrap();
+            } else {
+                assert!(admitted.effective_timeline_receipt().is_err());
+            }
+        }
+        assert_eq!(original.producer, original_binding);
+        assert_eq!(fixture_contents(&original.root), saved);
+    }
+
+    #[test]
+    fn current_render_requires_separate_capability_orders_twelve_recipe_pins_and_refuses_drift() {
+        let mut original = fixture();
+        let (mut processing, _) = processing_fixture();
+        for f in [&mut original, &mut processing] {
+            put_processing_file(
+                f,
+                "app/engine/dubflow/media/adapter.py",
+                b"protected owned media adapter",
+            );
+        }
+        original.producer["release_manifest"] = seal_processing_fixture(&mut original);
+        let binding = original.producer.clone();
+        let saved = fixture_contents(&original.root);
+        for name in [
+            EFFECTIVE_TIMELINE_ENTRY,
+            EFFECTIVE_RENDER_ENTRY,
+            "app/engine/dubflow/review/render_execution.py",
+            "app/engine/dubflow/review/corrected_timeline.py",
+            "app/engine/dubflow/review/wire.py",
+            "app/engine/dubflow/review/production.py",
+            "app/engine/dubflow/review/synthesis_input.py",
+            "app/engine/dubflow/review/synthesis_worker.py",
+        ] {
+            put_processing_file(&mut processing, name, name.as_bytes());
+        }
+        put_processing_file(
+            &mut processing,
+            EFFECTIVE_TIMELINE_CAPABILITY,
+            effective_timeline_declaration().to_string().as_bytes(),
+        );
+        let manifest = seal_processing_fixture(&mut processing);
+        let runtime = AdmittedProcessingRuntime::from_origin(
+            &binding,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        assert!(runtime.effective_render_receipt(None).is_err());
+        put_processing_file(
+            &mut processing,
+            EFFECTIVE_RENDER_CAPABILITY,
+            effective_render_declaration().to_string().as_bytes(),
+        );
+        let manifest = seal_processing_fixture(&mut processing);
+        let runtime = AdmittedProcessingRuntime::from_origin(
+            &binding,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        let context = format!("sha256:{}", "c".repeat(64));
+        let receipt = runtime.effective_render_receipt(Some(&context)).unwrap();
+        let paths: Vec<_> = receipt["recipe_dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "runtime/media/ffmpeg.exe",
+                "runtime/media/ffprobe.exe",
+                "app/engine/dubflow/review/render_execution.py",
+                "app/engine/dubflow/worker/production_job.py",
+                "app/engine/dubflow/media/adapter.py",
+                "app/engine/dubflow/review/corrected_timeline.py",
+                "app/engine/dubflow/review/wire.py",
+                "app/engine/dubflow/review/production.py",
+                "app/engine/dubflow/review/synthesis_input.py",
+                "app/engine/dubflow/review/synthesis_worker.py",
+                EFFECTIVE_RENDER_ENTRY,
+                EFFECTIVE_TIMELINE_ENTRY
+            ]
+        );
+        assert_ne!(
+            receipt["execution_identity"].as_str().unwrap(),
+            runtime.runtime.render_recipe(Some(&context)).unwrap().2
+        );
+        assert_eq!(receipt["active_graph_published"], false);
+        assert_eq!(receipt["correction_ready"], false);
+        assert!(runtime.effective_render_receipt(Some("foreign")).is_err());
+        let entry = processing.root.join(EFFECTIVE_RENDER_ENTRY);
+        let mut bytes = fs::read(&entry).unwrap();
+        bytes[0] ^= 1;
+        fs::write(entry, bytes).unwrap();
+        assert!(runtime.effective_render_receipt(Some(&context)).is_err());
+        assert_eq!(original.producer, binding);
+        assert_eq!(fixture_contents(&original.root), saved);
     }
 
     #[test]

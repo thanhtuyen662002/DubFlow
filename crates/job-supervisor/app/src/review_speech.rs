@@ -166,21 +166,6 @@ fn selected_documents(
     output_pin: &super::review_retention::NativeOutputPin,
 ) -> SupervisorResult<(AcceptedJsonDocument, AcceptedJsonDocument)> {
     time_left(deadline)?;
-    closed(
-        cue,
-        &[
-            "audio",
-            "tts_document",
-            "spoken_text",
-            "recipe_identity",
-            "accept_context",
-            "active_graph_published",
-            "retained_cue_audio",
-        ],
-    )?;
-    if cue["active_graph_published"] != false {
-        return Err(invalid("accepted cue claims graph publication"));
-    }
     let request_raw = mix_context["request_json"]
         .as_str()
         .ok_or_else(|| invalid("speech request missing"))?;
@@ -212,6 +197,40 @@ fn selected_documents(
     if mix_context["request_sha256"] != bound.input_hash() {
         return Err(invalid("speech request checksum changed"));
     }
+    read_accepted_cue(assets, &bound, cue, deadline, output_pin)
+}
+
+/// Both original and current-generation callers independently bind the request
+/// before entering this physical/semantic acceptance fence. No graph authority
+/// is granted by a worker packet or by a retained PCM path.
+pub(super) fn read_accepted_cue(
+    assets: &AcceptedAudioStore,
+    bound: &BoundCueRequest,
+    cue: &Value,
+    deadline: Instant,
+    output_pin: &super::review_retention::NativeOutputPin,
+) -> SupervisorResult<(AcceptedJsonDocument, AcceptedJsonDocument)> {
+    time_left(deadline)?;
+    closed(
+        cue,
+        &[
+            "audio",
+            "tts_document",
+            "spoken_text",
+            "recipe_identity",
+            "accept_context",
+            "active_graph_published",
+            "retained_cue_audio",
+        ],
+    )?;
+    if cue["active_graph_published"] != false {
+        return Err(invalid("accepted cue claims graph publication"));
+    }
+    let request_raw = bound.raw();
+    let request = decode(request_raw, 32768)?;
+    let id = request["cue_id"]
+        .as_str()
+        .ok_or_else(|| invalid("bound speech cue identity missing"))?;
     let tts = accepted_json(&cue["tts_document"], assets)?;
     let spoken = accepted_json(&cue["spoken_text"], assets)?;
     let context = accepted_json(&cue["accept_context"], assets)?;
@@ -293,7 +312,9 @@ fn selected_documents(
     {
         let media = super::review_retention::NativeMixStore::open_existing(
             output_pin,
-            &before.token.job_id,
+            request["job_id"]
+                .as_str()
+                .ok_or_else(|| invalid("bound speech job identity missing"))?,
             super::review_assets::MixStorageBudget {
                 maximum_bytes: 32 * 1024 * 1024 * 1024,
                 minimum_free_bytes: 2 * 1024 * 1024 * 1024,

@@ -328,6 +328,7 @@ fn run_inner(
             &request,
             &accepted,
             retained_output.as_ref(),
+            None,
         )?;
         let mixed = if mix {
             Some(mix_private(
@@ -671,6 +672,58 @@ fn mix_private(
     let raw = collect(command, Duration::from_secs(45 * 60), LIMIT)?;
     let (composition_raw, mix_raw) =
         admit_mix_metadata(&raw, &context_value, &context.sha256, &template)?;
+    let dependencies = [
+        &context,
+        &speech,
+        &template_object,
+        &accepted,
+        &manifest_object,
+    ];
+    for object in dependencies {
+        assets.read_json(object)?;
+    }
+    let result = accept_private_mix(PrivateMixInputs {
+        assets,
+        output,
+        job: &state.token.job_id,
+        context: &context,
+        composition: &composition_raw,
+        mix: &mix_raw,
+        frame_count: template["original_audio"]["frame_count"]
+            .as_u64()
+            .ok_or_else(|| invalid("original mix frame count missing"))?,
+        retained_output,
+    })?;
+    for object in dependencies {
+        assets.read_json(object)?;
+    }
+    Ok(result)
+}
+
+/// Only callers that independently admit the whole composition and mix
+/// metadata may reach this shared physical verification/retention boundary.
+pub(super) struct PrivateMixInputs<'a> {
+    pub(super) assets: &'a AcceptedAudioStore,
+    pub(super) output: &'a Path,
+    pub(super) job: &'a str,
+    pub(super) context: &'a AcceptedJsonDocument,
+    pub(super) composition: &'a str,
+    pub(super) mix: &'a str,
+    pub(super) frame_count: u64,
+    pub(super) retained_output: Option<&'a super::review_retention::NativeOutputPin>,
+}
+
+pub(super) fn accept_private_mix(input: PrivateMixInputs<'_>) -> SupervisorResult<Value> {
+    let PrivateMixInputs {
+        assets,
+        output,
+        job,
+        context,
+        composition: composition_raw,
+        mix: mix_raw,
+        frame_count,
+        retained_output,
+    } = input;
     let composition_hash = digest(&composition_raw);
     let mix = decode(&mix_raw, LIMIT)?;
     let generation = output.join(format!("mix-{}", &composition_hash[7..]));
@@ -703,7 +756,7 @@ fn mix_private(
             || artifact["bits_per_sample"].as_u64() != Some(16)
             || artifact["sample_rate"].as_u64() != Some(48000)
             || artifact["channels"].as_u64() != Some(2)
-            || artifact["frame_count"] != template["original_audio"]["frame_count"]
+            || artifact["frame_count"].as_u64() != Some(frame_count)
             || artifact["metrics"]["content_hash"] != artifact["content_hash"]
             || artifact["metrics"]["frame_count"] != artifact["frame_count"]
         {
@@ -726,15 +779,7 @@ fn mix_private(
         super::review_assets::verify_private_mix_audio(&generation, &path, &pin, deadline)?;
         admitted_audio.push((role, path, pin));
     }
-    for object in [
-        &context,
-        &speech,
-        &template_object,
-        &accepted,
-        &manifest_object,
-    ] {
-        assets.read_json(object)?;
-    }
+    assets.read_json(context)?;
     let composition = assets.accept_json(&composition_raw)?;
     let document = assets.accept_json(&mix_raw)?;
     if let Some(output_pin) = retained_output {
@@ -743,7 +788,7 @@ fn mix_private(
         // and interrupted copies. Refusal preserves every original artifact.
         let retained = super::review_retention::NativeMixStore::new(
             output_pin,
-            &state.token.job_id,
+            job,
             super::review_assets::MixStorageBudget {
                 maximum_bytes: 32 * 1024 * 1024 * 1024,
                 minimum_free_bytes: 2 * 1024 * 1024 * 1024,
@@ -868,7 +913,8 @@ fn admit_candidate(
         || artifact["slot_start"] != segment["start"]
         || artifact["slot_end"] != segment["end"]
         || artifact["render_window_end"] != segment["render_window_end"]
-        || artifact["confidence"] != segment["confidence"]
+        || artifact["confidence"].as_f64().map(f64::to_bits)
+            != segment["confidence"].as_f64().map(f64::to_bits)
         || artifact["fallback_used"] != false
         || artifact["sample_rate"] != input["config"]["sample_rate"]
         || artifact["channels"] != input["config"]["channels"]
@@ -961,7 +1007,7 @@ fn original_audio_root(graph: &Value) -> SupervisorResult<PathBuf> {
     Ok(root.to_path_buf())
 }
 
-fn private_root(output: &Path, job: &str) -> SupervisorResult<PathBuf> {
+pub(super) fn private_root(output: &Path, job: &str) -> SupervisorResult<PathBuf> {
     if !output.is_absolute()
         || output
             .components()
@@ -1045,13 +1091,14 @@ pub(super) fn cue_command(
     Ok(command)
 }
 
-fn synthesize_accepted(
+pub(super) fn synthesize_accepted(
     runtime: &AdmittedRuntime,
     assets: &AcceptedAudioStore,
     output: &Path,
     request: &BoundCueRequest,
     object: &AcceptedJsonDocument,
     retained_output: Option<&super::review_retention::NativeOutputPin>,
+    expected_recipe: Option<&str>,
 ) -> SupervisorResult<Value> {
     let (entry, model_root) = runtime.cue_execution()?;
     let scratch = candidate_scratch(output)?;
@@ -1077,6 +1124,11 @@ fn synthesize_accepted(
     let raw = collect(command, Duration::from_secs(300), CUE_PACKET_LIMIT)?;
     let generation = output.join(format!("cue-{}", &request.input_hash()[7..]));
     let candidate = admit_candidate(&raw, request, &generation)?;
+    if expected_recipe.is_some_and(|recipe| recipe != candidate.recipe) {
+        return Err(invalid(
+            "candidate recipe differs from admitted processing synthesis",
+        ));
+    }
     let job = request.raw();
     let request_value = decode(job, CUE_DOCUMENT_LIMIT)?;
     let job = request_value["job_id"]
@@ -1160,8 +1212,13 @@ fn synthesize_accepted(
     expected_tts["artifacts"][0]["path"] = audio.path.to_string_lossy().into_owned().into();
     let mut expected_spoken = decode(&candidate.spoken, CUE_DOCUMENT_LIMIT)?;
     expected_spoken["tts_document_hash"] = digest(&tts).into();
-    if decode(&tts, CUE_DOCUMENT_LIMIT)? != expected_tts
-        || decode(&spoken, CUE_DOCUMENT_LIMIT)? != expected_spoken
+    let exact = |value: &Value| -> SupervisorResult<String> {
+        let mut raw = String::new();
+        super::review_document::canonical(value, &mut raw)?;
+        Ok(raw)
+    };
+    if exact(&decode(&tts, CUE_DOCUMENT_LIMIT)?)? != exact(&expected_tts)?
+        || exact(&decode(&spoken, CUE_DOCUMENT_LIMIT)?)? != exact(&expected_spoken)?
     {
         return Err(invalid(
             "accepted adapter changed fields beyond WAV path/document hash",
@@ -1437,9 +1494,18 @@ mod tests {
 
     #[test]
     fn candidate_admission_and_native_copy_bind_exact_cue_and_private_waveform() {
-        let f = fixture();
-        let case = &f["cases"][0];
-        let request = admit(&packet(&f, case), &f, case).unwrap();
+        let mut f = fixture();
+        let mut case = f["cases"][0].clone();
+        // Independently admitted signed zero must survive the candidate fence;
+        // Value equality alone treats the substituted positive zero as equal.
+        f["original_input"]["confidence"] = json!(-0.0);
+        let mut cue = decode(case["request_utf8"].as_str().unwrap(), 32768).unwrap();
+        cue["tts_input"]["confidence"] = json!(-0.0);
+        let mut raw = String::new();
+        super::super::review_document::canonical(&cue, &mut raw).unwrap();
+        case["request_utf8"] = json!(raw);
+        case["input_hash"] = json!(digest(&raw));
+        let request = admit(&packet(&f, &case), &f, &case).unwrap();
         let input = decode(request.raw(), 32768).unwrap();
         let root = std::env::temp_dir().join(format!(
             "dubflow-native-cue-candidate-{}-{}",
@@ -1478,6 +1544,12 @@ mod tests {
         let mut candidate = json!({"schema_version":1,"kind":"review_cue_candidate","request_sha256":request.input_hash(),"recipe_identity":"a".repeat(64),
             "tts_document_json":tts.to_string(),"tts_document_sha256":digest(&tts.to_string()),"spoken_text_json":"{}","spoken_text_sha256":digest("{}"),"model_weights_verified":true});
         let admitted = admit_candidate(&candidate.to_string(), &request, &generation).unwrap();
+        let mut changed = candidate.clone();
+        let mut substituted = tts.clone();
+        substituted["artifacts"][0]["confidence"] = json!(0.0);
+        changed["tts_document_json"] = json!(substituted.to_string());
+        changed["tts_document_sha256"] = json!(digest(&substituted.to_string()));
+        assert!(admit_candidate(&changed.to_string(), &request, &generation).is_err());
         let assets = AcceptedAudioStore::new(&root, "job-native-candidate").unwrap();
         let accepted = assets
             .accept(&generation, &admitted.path, &admitted.pin)

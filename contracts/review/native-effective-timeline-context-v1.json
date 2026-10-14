@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native original archive and separately admitted current B1/B2 timeline",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "mode", "current_token", "origin_snapshot_json", "before_snapshot_json", "after_snapshot_json", "original_timeline_json", "original_timeline_sha256", "current_timeline_json", "current_timeline_sha256"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_effective_timeline_context"},
+    "mode": {"enum": ["b1", "b2"]},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "origin_snapshot_json": {"$ref": "#/$defs/json"}, "before_snapshot_json": {"$ref": "#/$defs/json"},
+    "after_snapshot_json": {"$ref": "#/$defs/json"}, "original_timeline_json": {"$ref": "#/$defs/json"},
+    "original_timeline_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "current_timeline_json": {"$ref": "#/$defs/json"},
+    "current_timeline_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"}
+  },
+  "$defs": {"json": {"type": "string", "minLength": 1, "maxLength": 67108864}}
+}

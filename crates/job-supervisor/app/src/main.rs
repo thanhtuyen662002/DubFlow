@@ -625,6 +625,21 @@ fn run() -> SupervisorResult<()> {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-prepare-effective-cue")) {
         return review_generation::run(std::env::args_os().skip(2));
     }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-synthesize-effective-cue")) {
+        return review_generation::run_synthesis(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-mix-effective-cue")) {
+        return review_generation::run_mix(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-prepare-effective-timeline")) {
+        return review_generation::run_timeline(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-render-effective-b1")) {
+        return review_generation::run_render_b1(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-render-effective-b2")) {
+        return review_generation::run_render_b2(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-active")) {
         return review_active::run(std::env::args_os().skip(2), false);
     }

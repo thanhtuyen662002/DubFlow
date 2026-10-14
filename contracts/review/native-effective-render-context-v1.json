@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native current render context with original archive and independently bound current caption pins",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "mode", "current_token", "origin_snapshot_json", "before_snapshot_json", "after_snapshot_json", "original_manifest_json", "original_manifest_sha256", "original_timeline_json", "current_timeline_json", "current_timeline_sha256", "corrected_timeline_json", "corrected_timeline_sha256", "current_captions", "original_output_root", "source", "retained_mix", "burn_in_subtitles"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_effective_render_context"},
+    "job_id": {"type": "string", "minLength": 1, "maxLength": 256}, "mode": {"enum": ["b1", "b2"]},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "origin_snapshot_json": {"$ref": "native-effective-timeline-context-v1.json#/$defs/json"},
+    "before_snapshot_json": {"$ref": "native-effective-timeline-context-v1.json#/$defs/json"},
+    "after_snapshot_json": {"$ref": "native-effective-timeline-context-v1.json#/$defs/json"},
+    "original_manifest_json": {"$ref": "native-effective-timeline-context-v1.json#/$defs/json"},
+    "original_manifest_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "original_timeline_json": {"$ref": "native-effective-timeline-context-v1.json#/$defs/json"},
+    "current_timeline_json": {"$ref": "native-effective-timeline-context-v1.json#/$defs/json"},
+    "current_timeline_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "corrected_timeline_json": {"$ref": "native-effective-timeline-context-v1.json#/$defs/json"},
+    "corrected_timeline_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "current_captions": {"type": "object", "additionalProperties": false, "required": ["artifact_root", "captions_srt", "captions_ass"],
+      "properties": {"artifact_root": {"$ref": "native-render-context-v1.json#/properties/original_output_root"},
+        "captions_srt": {"$ref": "#/$defs/caption"}, "captions_ass": {"$ref": "#/$defs/caption"}}},
+    "original_output_root": {"$ref": "native-render-context-v1.json#/properties/original_output_root"},
+    "source": {"$ref": "native-render-context-v1.json#/properties/source"},
+    "retained_mix": {"$ref": "native-render-context-v1.json#/properties/retained_mix"},
+    "burn_in_subtitles": {"type": "boolean"}
+  },
+  "$defs": {"caption": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "size_bytes"],
+    "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 32767},
+      "sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"}, "size_bytes": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"}}}}
+}

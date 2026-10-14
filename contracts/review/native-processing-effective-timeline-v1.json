@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Source-bound processing timeline capability; original public token is never normalized",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "capability", "processing_release", "capability_document", "entry", "dependencies", "model_weights_verified", "media_execution_admitted", "active_graph_published"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_admitted_effective_timeline"},
+    "capability": {"const": "review_effective_timeline_v1"},
+    "processing_release": {"$ref": "native-processing-release-v1.json"},
+    "capability_document": {"$ref": "native-processing-release-v1.json#/$defs/metadata"},
+    "entry": {"$ref": "native-processing-release-v1.json#/properties/effective_cue_entry"},
+    "dependencies": {"type": "array", "minItems": 3, "maxItems": 3,
+      "items": {"$ref": "native-processing-cue-synthesis-v1.json#/properties/recipe_dependencies/items"}},
+    "model_weights_verified": {"const": false}, "media_execution_admitted": {"const": false}, "active_graph_published": {"const": false}
+  }
+}

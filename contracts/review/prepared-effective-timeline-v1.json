@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Current timeline adapter proposal; native independently derives all cumulative content",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "mode", "context_sha256", "current_token", "after_snapshot_sha256", "current_timeline_sha256", "corrected_timeline_json", "corrected_timeline_sha256", "model_weights_verified", "active_graph_published", "correction_ready"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_prepared_effective_timeline"},
+    "mode": {"enum": ["b1", "b2"]}, "context_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "after_snapshot_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "current_timeline_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "corrected_timeline_json": {"$ref": "native-effective-timeline-context-v1.json#/$defs/json"},
+    "corrected_timeline_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "model_weights_verified": {"const": false}, "active_graph_published": {"const": false}, "correction_ready": {"const": false}
+  }
+}
