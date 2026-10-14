@@ -1117,3 +1117,17 @@ still refuse. This is an OS-spelling compatibility fix, with no schema, SQL,
 worker protocol, producer/model pin or runtime replacement. Old pinned producers
 and the actual failed B2 context remain immutable; the new processing source
 requires exact-head Windows and current native qualification before activation.
+
+The subsequent actual B2 worker completed its private render and full AV/QC,
+but native post-render admission still compared retained extended Windows PCM
+paths to a DOS-spelled output prefix. That fence now reopens the three ordered
+native PCM locators in the existing store under the output volume pin captured
+before expensive work. Reopen independently checks the exact job namespace,
+readonly/no-link media, header/frame/size/full hashes and fresh volume identity;
+the original admitted candidate is retargeted again and must equal the complete
+sealed retained document byte-for-byte. Hints and lexical prefixes grant no
+authority, and unexpected roles or any semantic/numeric change refuse. The
+writer lease is released before final render retention acquires it. Budgets,
+deadlines, original producer/model pins and schemas are unchanged. The failed
+producer/job and private rendered evidence remain immutable and unpublished;
+successor Windows/native render retention/CAS/undo still require qualification.

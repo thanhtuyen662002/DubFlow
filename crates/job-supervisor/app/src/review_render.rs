@@ -546,29 +546,27 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
     if let Some((mix_object, composition_object, mix_raw, _)) = &mixed {
         input.assets.read_json(&mix_object)?;
         input.assets.read_json(&composition_object)?;
-        let mix = decode(&mix_raw, LIMIT)?;
         let mix_deadline = Instant::now() + Duration::from_secs(720);
-        for role in ["original_audio", "dialogue_stem", "final_mix"] {
-            let path = PathBuf::from(
-                mix[role]["path"]
-                    .as_str()
-                    .ok_or_else(|| invalid("retained mix path missing"))?,
-            );
-            if !path.starts_with(input.output.join(".dubflow-review-media-v1")) {
-                return Err(invalid(
-                    "render input is not retained on its admitted output volume",
-                ));
-            }
-            verified(
-                &path,
-                mix[role]["content_hash"]
-                    .as_str()
-                    .ok_or_else(|| invalid("retained mix hash missing"))?,
-                regular(&path)?.metadata()?.len(),
-                false,
-                mix_deadline,
-            )?;
-        }
+        let retained_mix = input
+            .mixed
+            .ok_or_else(|| invalid("retained B2 mix missing"))?;
+        let candidate_mix = accepted_json(&retained_mix["candidate_mix_document"], input.assets)?;
+        let candidate_raw = input.assets.read_json(&candidate_mix)?;
+        let media = super::review_retention::NativeMixStore::open_existing(
+            input.output_pin,
+            &input.state.token.job_id,
+            MixStorageBudget {
+                maximum_bytes: 32 * 1024 * 1024 * 1024,
+                minimum_free_bytes: 2 * 1024 * 1024 * 1024,
+            },
+        )?;
+        media.revalidate_admitted_document(
+            &candidate_raw,
+            &composition_object.sha256,
+            &retained_mix["retained_mix_audio"],
+            mix_raw,
+            mix_deadline,
+        )?;
     }
     // Preserve the candidate/QC provenance separately from publication paths.
     let result = input

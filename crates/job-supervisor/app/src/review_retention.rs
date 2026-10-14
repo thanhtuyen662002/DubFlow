@@ -414,6 +414,24 @@ fn same_volume(expected: &str, observed: &Observation) -> SupervisorResult<()> {
     Ok(())
 }
 
+fn ordered_pcm_entries(value: &Value) -> SupervisorResult<Vec<(&'static str, &Value)>> {
+    let entries = value
+        .as_array()
+        .filter(|entries| entries.len() == 3)
+        .ok_or_else(|| invalid("retained mix requires three ordered PCM roles"))?;
+    entries
+        .iter()
+        .zip(["original_audio", "dialogue_stem", "final_mix"])
+        .map(|(entry, role)| {
+            super::review_document::closed(entry, &["role", "audio"])?;
+            if entry["role"] != role {
+                return Err(invalid("retained PCM role substituted"));
+            }
+            Ok((role, &entry["audio"]))
+        })
+        .collect()
+}
+
 impl NativeMixStore {
     pub(super) fn new(
         pin: &NativeOutputPin,
@@ -662,6 +680,32 @@ impl NativeMixStore {
         }
         retarget_metadata(admitted, composition_hash, objects)
     }
+
+    /// Re-fence an already retained mix through its canonical native locators.
+    /// The output pin predates inference; neither a path hint nor DOS spelling
+    /// establishes volume/root authority. Reopen checks the job namespace,
+    /// readonly PCM header/complete hashes and fresh volume observations.
+    pub(super) fn revalidate_admitted_document(
+        &self,
+        candidate: &str,
+        composition_hash: &str,
+        entries: &Value,
+        retained: &str,
+        deadline: Instant,
+    ) -> SupervisorResult<()> {
+        let mut objects = Vec::new();
+        for (role, descriptor) in ordered_pcm_entries(entries)? {
+            objects.push((role, self.reopen_audio(descriptor, deadline)?));
+        }
+        if self.retarget_admitted_document(candidate, composition_hash, &objects, deadline)?
+            != retained
+        {
+            return Err(invalid(
+                "retained mix is not its exact native path-only retarget",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -669,6 +713,37 @@ mod tests {
     use super::*;
     const GUID: &str = r"\\?\Volume{01234567-89AB-CDEF-0123-456789abcdef}\";
     const HARD_LINKS: u32 = 0x0040_0000;
+
+    #[test]
+    fn retained_pcm_fence_requires_closed_distinct_ordered_roles() {
+        let entries = json!([
+            {"role":"original_audio","audio":{"locator":"original"}},
+            {"role":"dialogue_stem","audio":{"locator":"dialogue"}},
+            {"role":"final_mix","audio":{"locator":"final"}}
+        ]);
+        let admitted = ordered_pcm_entries(&entries).unwrap();
+        assert_eq!(admitted[2].0, "final_mix");
+        assert_eq!(admitted[2].1["locator"], "final");
+        for case in 0..6 {
+            let mut bad = entries.clone();
+            match case {
+                0 => bad.as_array_mut().unwrap().swap(0, 1),
+                1 => bad[1]["role"] = json!("original_audio"),
+                2 => bad[0]["role"] = json!("foreign"),
+                3 => bad[2]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("audio")
+                    .map(|_| ())
+                    .unwrap(),
+                4 => bad[0]["extra"] = json!(true),
+                _ => {
+                    bad.as_array_mut().unwrap().pop();
+                }
+            }
+            assert!(ordered_pcm_entries(&bad).is_err(), "case {case}");
+        }
+    }
 
     #[test]
     fn persisted_render_descriptor_uses_native_root_and_refuses_locator_substitution() {
@@ -1106,6 +1181,67 @@ mod tests {
         let retargeted = reopened
             .retarget_admitted_document(&source_raw, composition, &retained_roles, deadline)
             .unwrap();
+        // Actual Windows canonical retained paths use the extended spelling,
+        // while the original output pin was obtained from a DOS-spelled root.
+        // Reproduce the old render prefix refusal without stripping prefixes.
+        assert!(!object
+            .audio
+            .path
+            .starts_with(output.join(".dubflow-review-media-v1")));
+        let entries = json!(retained_roles
+            .iter()
+            .map(|(role, audio)| json!({"role":role,"audio":audio.descriptor()}))
+            .collect::<Vec<_>>());
+        reopened
+            .revalidate_admitted_document(&source_raw, composition, &entries, &retargeted, deadline)
+            .unwrap();
+        for change in 0..6 {
+            let mut foreign = entries.clone();
+            match change {
+                0 => foreign[0]["audio"]["locator"]["volume_id"] = json!("foreign-volume"),
+                1 => foreign[0]["audio"]["locator"]["root_kind"] = json!("control"),
+                2 => foreign[0]["audio"]["locator"]["relative_path"] = json!("../foreign.wav"),
+                3 => foreign[0]["audio"]["frame_count"] = json!("5"),
+                4 => foreign[1]["role"] = json!("original_audio"),
+                _ => {
+                    foreign[0]["audio"]["locator"]["content_hash"] =
+                        json!(format!("sha256:{}", "0".repeat(64)))
+                }
+            }
+            assert!(
+                reopened
+                    .revalidate_admitted_document(
+                        &source_raw,
+                        composition,
+                        &foreign,
+                        &retargeted,
+                        deadline,
+                    )
+                    .is_err(),
+                "case {change}"
+            );
+        }
+        let mut changed_metadata =
+            super::super::review_document::decode(&retargeted, 64 * 1024 * 1024).unwrap();
+        changed_metadata["segments"][0]["confidence"] = json!(0.5);
+        assert!(reopened
+            .revalidate_admitted_document(
+                &source_raw,
+                composition,
+                &entries,
+                &changed_metadata.to_string(),
+                deadline,
+            )
+            .is_err());
+        assert!(reopened
+            .revalidate_admitted_document(
+                &source_raw,
+                composition,
+                &entries,
+                &retargeted,
+                Instant::now(),
+            )
+            .is_err());
         for role in roles {
             source[role]["path"] = json!(object.audio.path);
         }
@@ -1167,6 +1303,17 @@ mod tests {
         sealed.set_readonly(true);
         fs::set_permissions(&object.audio.path, sealed).unwrap();
         assert!(reopened.verify(&object, deadline).is_err());
+        assert!(
+            reopened
+                .revalidate_admitted_document(
+                    &source_raw,
+                    composition,
+                    &entries,
+                    &retargeted,
+                    deadline,
+                )
+                .is_err()
+        );
         assert!(reopened
             .retarget_admitted_document(&source_raw, composition, &retained_roles, deadline,)
             .is_err());
