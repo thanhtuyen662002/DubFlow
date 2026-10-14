@@ -161,6 +161,15 @@ class EffectiveMixTests(unittest.TestCase):
                 path=Path(directory)/'context.json';raw=_encode(context,65536);path.write_bytes(raw)
                 command=[sys.executable,'-I','-S','-B',str(ENTRY),'--context',str(path),'--context-sha256',_digest(raw),
                     '--output-root',str(Path(directory)/'cli-mix'),'--app-root',str(helpers.REPO),'--profile',str(helpers.PROFILE)]
+                if sys.platform!='win32':
+                    # Linux hosted tests use the CI-pinned numeric package, not
+                    # the product's Windows runtime/Lib/site-packages layout.
+                    # Keep -I -S -B and invoke the same byte-gated production main.
+                    import numpy
+                    numeric_root=str(Path(numpy.__file__).parent.parent)
+                    bootstrap='import sys;sys.path.extend('+json.dumps([numeric_root,str(helpers.REPO)])+');'+\
+                        'from engine.dubflow.review.effective_mix_execution import main;raise SystemExit(main())'
+                    command=[sys.executable,'-I','-S','-B','-c',bootstrap,*command[5:]]
                 refused=subprocess.run(command,input=b'\x00',capture_output=True,timeout=20)
                 self.assertEqual(refused.returncode,2);self.assertFalse((Path(directory)/'cli-mix').exists())
                 result=subprocess.run(command,input=b'\x01',capture_output=True,timeout=30)
