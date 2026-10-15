@@ -18,8 +18,11 @@ const MAX_FILES: usize = 50000;
 const IMPORT_WORKERS: usize = 4;
 const IMPORT_DEADLINE: Duration = Duration::from_secs(180);
 
+#[path = "review_chunk_recipe.rs"]
+mod chunk_recipe;
 #[path = "review_chunk_runtime.rs"]
 mod chunk_runtime;
+pub(super) use chunk_recipe::ChunkRecipeSelection;
 
 /// One cooperative deadline covers enumeration, queued files and all workers.
 /// Counts describe fully verified files, not merely enumerated paths.
