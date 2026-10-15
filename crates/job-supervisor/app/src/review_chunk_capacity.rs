@@ -14,6 +14,19 @@ mod win {
     use super::*;
     use std::ffi::c_void;
     use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct DirectoryInformation {
+        attributes: u32,
+        created: [u32; 2],
+        accessed: [u32; 2],
+        written: [u32; 2],
+        volume: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
     #[link(name = "kernel32")]
     extern "system" {
         fn DeviceIoControl(
@@ -32,6 +45,39 @@ mod win {
             data: *const c_void,
             size: u32,
         ) -> i32;
+        fn GetFileInformationByHandle(
+            file: *mut c_void,
+            information: *mut DirectoryInformation,
+        ) -> i32;
+    }
+    pub(super) fn directory_identity(file: &File) -> SupervisorResult<(u64, u64)> {
+        // A work directory is deliberately not retained regular cue media.
+        // BY_HANDLE_FILE_INFORMATION is52bytes on Windows x64; require the
+        // directory bit rather than weakening single_cue_file's file guard.
+        if !file.metadata()?.is_dir() {
+            return Err(invalid("chunk work handle is not a directory"));
+        }
+        let mut information: DirectoryInformation = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if information.links != 1
+            || information.attributes & 0x10 == 0
+            || information.attributes & 0x400 != 0
+        {
+            return Err(invalid(
+                "chunk work requires a single-link no-reparse directory handle",
+            ));
+        }
+        Ok((
+            u64::from(information.volume),
+            u64::from(information.index_high) << 32 | u64::from(information.index_low),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(super) fn directory_information_size() -> usize {
+        std::mem::size_of::<DirectoryInformation>()
     }
     pub(super) fn sparse(file: &File) -> SupervisorResult<()> {
         let mut returned = 0;
@@ -138,7 +184,7 @@ fn work_identity(file: &File) -> SupervisorResult<(u64, u64)> {
     }
     #[cfg(windows)]
     {
-        single_cue_file(file)
+        win::directory_identity(file)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -489,6 +535,26 @@ impl RetainedMixStore {
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[cfg(windows)]
+    #[test]
+    fn native_directory_identity_accepts_only_directory_handles_without_weakening_cue_media() {
+        let fixture = Fixture::new();
+        let work = fixture.0.join("directory-only-identity");
+        fs::create_dir(&work).unwrap();
+        let directory = open_work(&work).unwrap();
+        assert_eq!(win::directory_information_size(), 52);
+        assert_eq!(
+            work_identity(&directory).unwrap(),
+            work_identity(&open_work(&work).unwrap()).unwrap()
+        );
+        assert!(single_cue_file(&directory).is_err());
+        let path = fixture.0.join("regular-file-is-not-work");
+        fs::write(&path, b"owned regular fixture").unwrap();
+        let file = File::open(&path).unwrap();
+        assert!(single_cue_file(&file).is_ok());
+        assert!(work_identity(&file).is_err());
+    }
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {

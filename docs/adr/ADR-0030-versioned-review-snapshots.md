@@ -3173,3 +3173,60 @@ Windows rename protection and missing-work refusal without implicit recreation.
 Native compiled execution, complete dispatcher/runtime/source-clock/AV/QC/CAS,
 installed GUI/crash/real4h qualification remain unproven. No public capability
 or current renderer route is enabled by these capacity primitives.
+
+#### Isolated pinned chunk processing entry v1 (pending source)
+
+The new longform_execution entry connects a sealed private execution context to
+the existing encoder and native callback channel. It requires owned Python
+-I -S -B and the native process-containment byte gate before importing the engine
+or reading the context. Only a context path and its independently admitted full
+SHA are accepted as command arguments. The closed canonical context is at most
+128KiB and binds the existing current-context/plan/local-chunk/environment hashes,
+source/processing recipe, exact physical input pins, native roots, source geometry,
+stream, caption mode, private media limit and bounded execution duration.
+
+Context/plan/optional captions are read-only regular single-link/no-follow inputs.
+Every bounded read checks exact handle/path identity, size, seal, full SHA and
+mtime before and after reading; the original observations survive across encoder
+execution. Replacing metadata with identical bytes at a new physical identity
+still refuses. Plan is at most4MiB, ASS at most64MiB, private chunk at most256MiB
+and execution at most900seconds. Exact signed64 plan metadata is preserved; the
+encoder's existing explicit FFmpeg timestamp compatibility bounds remain intact.
+No float/FPS/ordinal replaces canonical source clock identity.
+
+The worker verifies plan/source/recipe/local chunk membership before encoding.
+Initial and final environment/capacity requests use the existing monotonic native
+request/ack wire; live encoder callbacks use that same channel. Context, plan and
+caption metadata are independently reopened before the sole final response. Any
+metadata change, refused native callback, failed encoder or deadline prevents
+that response. Output remains an unadmitted encoded candidate, and partial
+scratch stays under the existing native quota/recovery policy.
+
+The additive processing-chunk-dispatch-v1 declaration is admitted only through
+the existing exact processing-release/original protected-runtime compatibility
+reader. Its explicit entry and ordered source dependencies must all match the
+complete inventoried release. Preparation-only and older releases remain valid
+for their existing operations and refuse this missing/unknown capability. No
+old producer/root/job/worker/model/runtime pin, durable SQL or public protocol is
+rewritten. This receipt explicitly grants no current/source/environment, media,
+semantic QC, graph publication or public chunked_longform authority.
+
+The complete native executor must still connect this processing receipt and
+entry with independently derived current/source/environment admission, indexed
+source-clock windows, the native capacity token and output journal, bounded
+writer contention, retained media/seam/audio/full-QC/CAS and scratch retirement.
+Existing effective-render-v1 remains unchanged. Installed B1/B2/GUI/liveness,
+actual processing-worker crash, corrected standard/editable publication and
+real four-hour/longform qualification remain mandatory.
+
+The first exact2338259 Windows build compiled but failed six capacity tests
+before any quota allocation: work_identity passed a directory handle into the
+existing regular cue-media identity checker. This is a native implementation
+failure, not an inference or fixture pass. The pending repair uses a separate
+directory-only BY_HANDLE_FILE_INFORMATION reader, requiring the directory bit,
+exactly one link and no reparse attribute. Retained regular media continue using
+the unchanged single_cue_file guard, which still refuses directory handles.
+The native directory regression checks the52byte ABI, stable reopened directory
+identity, regular-file refusal on the directory path and continued directory
+refusal on the media path. Hosted newsource Windows execution remains required;
+the earlier independent Win32 primitive probe did not execute this Rust helper.
