@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private editable candidate; native physical validation and publication still required",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "context_sha256", "current_token", "bundle_manifest_sha256", "generation", "processing_recipe_identity", "candidate_path", "candidate_manifest_sha256", "pack_format", "resource_count", "current_generation_checked", "active_graph_published", "correction_ready"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_private_editable_pack_candidate"},
+    "context_sha256": {"$ref": "schema-v2.json#/$defs/hash"},
+    "current_token": {"$ref": "review-worker-context-v1.json#/$defs/token"},
+    "bundle_manifest_sha256": {"$ref": "schema-v2.json#/$defs/hash"},
+    "generation": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "processing_recipe_identity": {"$ref": "schema-v2.json#/$defs/hash"},
+    "candidate_path": {"type": "string", "minLength": 1, "maxLength": 32767},
+    "candidate_manifest_sha256": {"$ref": "schema-v2.json#/$defs/hash"},
+    "pack_format": {"const": 2}, "resource_count": {"enum": [7, 10]},
+    "current_generation_checked": {"const": false}, "active_graph_published": {"const": false},
+    "correction_ready": {"const": false}
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "review_processing_editable_pack_capability",
+  "capability": "review_editable_pack_v1",
+  "entrypoint": "engine/dubflow/worker/review_editable_pack.py",
+  "context_format": "review_native_editable_pack_context_v1",
+  "result_format": "review_private_editable_pack_candidate_v1",
+  "recipe": "review-editable-pack-v1",
+  "modes": ["b1", "b2"],
+  "pack_format": 2,
+  "copy_policy": "bounded_prefix_resume_native_storage_guard_v1",
+  "current_generation_admitted": false,
+  "model_provisioning": false,
+  "vendor_execution": false,
+  "active_graph_publication": false
+}

@@ -3,6 +3,7 @@ import { connectDesktopShell } from "./shell/desktop_shell.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, voiceLabel, type VoiceCatalog } from "./features/voices/model.ts";
 import type { JobStatus } from "./features/job_status/status.ts";
+import { importPackMessage, parseImportPackStatus, type ImportPackStatus } from "./features/import_pack/model.ts";
 
 type ReleaseInfo = { version: string; channel: string; backend: string };
 
@@ -31,6 +32,9 @@ type StatusResponse = { status: JobStatus; output_path: string | null };
 
 const queue = new QueueController(browserStorage());
 const pollers = new Map<string, number>();
+// Verification is session-local: persisted paths never imply valid file hashes.
+const importPacks = new Map<string, ImportPackStatus>();
+const packChecks = new Set<string>();
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const element = document.querySelector<T>(selector);
@@ -156,9 +160,48 @@ function render(model: Parameters<Parameters<typeof connectDesktopShell>[1]>[0])
     card.append(term, description);
   }
   detail.append(card);
+  if (view.selected.status.state === "COMPLETED") {
+    const status = importPacks.get(view.selected.id);
+    const term = document.createElement("dt");
+    term.textContent = "Gói chỉnh sửa";
+    const path = document.createElement("dd");
+    path.textContent = importPackMessage(status);
+    card.append(term, path);
+    if (status?.state === "available" && status.capcutReason === "CAPCUT_VERSION_UNSUPPORTED") {
+      const advisory = document.createElement("p");
+      advisory.textContent = "Phiên bản CapCut này chưa hỗ trợ mở dự án trực tiếp. Bạn có thể nhập các file trong gói chỉnh sửa.";
+      detail.append(advisory);
+    }
+    const check = document.createElement("button");
+    check.type = "button";
+    check.textContent = "Kiểm tra lại gói";
+    check.disabled = packChecks.has(view.selected.id);
+    const jobId = view.selected.id;
+    check.addEventListener("click", () => void refreshImportPack(jobId, true));
+    detail.append(check);
+  }
 }
 
 const shell = connectDesktopShell(queue, render);
+
+async function refreshImportPack(jobId: string, force = false): Promise<void> {
+  if (packChecks.has(jobId) || (!force && importPacks.has(jobId))) return;
+  packChecks.add(jobId);
+  importPacks.set(jobId, { state: "checking" });
+  const redraw = () => {
+    const current = queue.getSnapshot().jobs.find((job) => job.id === jobId);
+    if (current) queue.updateStatus(jobId, current.status, current.outputPath);
+  };
+  redraw();
+  try {
+    importPacks.set(jobId, parseImportPackStatus(await invoke<unknown>("import_pack_status", { jobId })));
+  } catch {
+    importPacks.set(jobId, { state: "unavailable", reason: "IMPORT_PACK_VALIDATION_FAILED" });
+  } finally {
+    packChecks.delete(jobId);
+    redraw();
+  }
+}
 
 async function refreshJob(jobId: string): Promise<void> {
   try {
@@ -171,6 +214,7 @@ async function refreshJob(jobId: string): Promise<void> {
       const timer = pollers.get(jobId);
       if (timer !== undefined) window.clearInterval(timer);
       pollers.delete(jobId);
+      if (response.status.state === "COMPLETED") void refreshImportPack(jobId);
     }
   } catch (error) {
     const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === jobId);
