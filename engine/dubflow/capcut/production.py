@@ -14,7 +14,7 @@ import json
 import re
 from hashlib import file_digest, sha256
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .draft.adapter import DraftBackend, DraftResult, DraftStatus, VersionedDraftAdapter
 from .detection import discover_capcut_installation
@@ -65,6 +65,7 @@ def create_production_pack(
     supported_capcut_versions: set[str] | frozenset[str] = frozenset(),
     controlled_capcut_root: Path | None = None,
     draft_backend: DraftBackend | None = None,
+    storage_guard: Callable[[Path, int], None] | None = None,
 ) -> ProductionPackResult:
     """Create and independently validate the production editable handoff.
 
@@ -84,6 +85,7 @@ def create_production_pack(
             timeline=timeline,
             additional_assets=additional_assets,
             source_content_hash=source_content_hash,
+            storage_guard=storage_guard,
         ),
         output_root,
     )

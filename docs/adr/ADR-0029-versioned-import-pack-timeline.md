@@ -4,6 +4,111 @@
 
 Accepted for Issue #172; production integration remains in progress.
 
+## Corrected Review standard-bundle input
+
+An additive `create_pack_from_review_bundle` entry consumes the explicit
+`review_corrected_standard_bundle`/`review-corrected-standard-bundle-v1` format
+owned by Review (PR185, ADR0030). It requires a trusted manifest SHA256 and the
+complete expected current token, including decimal public revision, snapshot,
+graph and immutable-original manifest hashes. It does not fabricate a legacy
+job-manifest v1 or rewrite the original job/runtime/model pins. Native current
+admission remains the supervisor's responsibility; this Python adapter handles
+offline bytes and returns `current_generation_checked: false` in its binding.
+
+The adapter requires native canonical manifest bytes/generation identity,
+separate original token, snapshot byte hash/job/wide integer revision, the exact
+ordered B1/B2 resource set and a closed directory inventory. Inputs must be
+sealed, single-link regular files without symlink/reparse ancestors. It streams
+full SHA256/size checks under a720s validation bound and rechecks open-handle/path
+identity. Windows opens existing files read-only through
+[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
+with `FILE_FLAG_OPEN_REPARSE_POINT` and read sharing only; the handle transfers
+to the app-owned Python runtime using
+[open_osfhandle](https://docs.python.org/3/library/msvcrt.html#msvcrt.open_osfhandle).
+No executable, account, registry, vendor database or SQLite state is accessed.
+
+The unchanged existing production v2 assembler then copies raw/localized video,
+both captions, exact canonical timeline, QC, the hashed Review manifest and all
+three B2 original/dialogue/final-mix PCM resources. B1 introduces no PCM/mix. The
+descriptor projects canonical tick mapping through the existing rational clock
+adapter; original text/confidence/source-clock bytes stay in the unchanged
+timeline asset. The new pack ID includes the complete generation key, so prior
+generations and copies cannot be relabeled as current. All copied resource hashes
+are independently compared to the complete expected input set after assembly.
+Inputs rehash again after copying; overlap in either direction is refused.
+
+The existing private checkpoint/copy/guide recipe and v1/v2 pack schemas remain
+unchanged. A late verification refusal retains the complete pack for explicit
+recovery; no automatic cleanup or source mutation occurs. Direct vendor creation
+is not selected by this entry. Production adapter processing-release admission,
+native final-current-token fencing/publication and installed whole-flow evidence
+remain required before this is advertised as the current editable output.
+
+Five new Windows Python byte-fixture tests pass (0.547s): B1/B2 mode/default
+tracks and complete resources; moved bundle/pack,90kHz tick mapping and revision
+9007199254740993; changed token/equal-size corruption/extra resource; role/path/
+snapshot/duplicate metadata; overlap/hardlink refusals. Their first run had a
+test-only readonly-hardlink unlink error after the correct refusal; the owned
+fixture teardown was fixed and the failure retained. These tests do not qualify
+encoded media, installed native/CapCut, real crash or long-form acceptance.
+
+## Isolated Review editable worker and guarded private copies
+
+`worker/review_editable_pack.py` accepts only app-owned Python `-I -S -B`, the
+native byte gate and a sealed, hash-pinned closed context. The versioned context
+binds the full current token, native published standard-bundle generation/root,
+storage root, processing recipe identity and explicit storage limits. It derives
+the only candidate location as `.dubflow-review-media-v1/<job-SHA>/`
+`.editable-pending-v1/<generation>/import-pack`; arbitrary output paths are not
+accepted. The actual published standard-bundle directory must match the native
+job/generation namespace by physical identity after no-link checks.
+
+The native caller must retain its existing output-wide writer lease and fixed
+volume admission across this child. The worker does not manufacture either
+authority. It counts every file/orphan/old version in the namespace with bounded
+depth/entry/deadline and no-follow/single-link checks. An optional storage guard
+threads through the existing production/Review/v2-copy APIs. Its default is
+`None` for legacy callers; no public pack schema or private content recipe is
+changed. The guard runs before copy/metadata writes, at4MiB copy boundaries and
+before promotion, reserving all remaining resource/marker/guide/manifest bytes.
+Already present prefixes/metadata are subtracted only for allocation accounting;
+their content still undergoes the existing prefix/full-hash checks.
+
+Maximum aggregate may not exceed32GiB and free reserve may not fall below2GiB.
+Windows explicitly queries caller-available bytes through
+[GetDiskFreeSpaceExW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexw),
+refusing unknown/inconsistent observations. It does not substitute total volume
+free bytes for quota-limited caller capacity. A quota/space refusal preserves
+private checkpoints and all prior outputs; a changed available-space condition
+can resume. Complete candidates are reused only after independent full pack
+validation and exact resource binding to the same standard-bundle manifest.
+
+The bounded result reports the context hash, recipe identity, full token,
+candidate path/manifest hash and resources. Native must independently admit all
+candidate files, processing/source/volume/quota/current state and publication;
+the worker reports no live-current, graph publication or readiness authority.
+It launches no vendor executable and opens no SQLite/model files. The explicit
+capability is inventoried with the new application sources; original producer,
+model/runtime/media pins remain separate. Native storage inventory/layout and
+final editable retention/publication integration are still required before a
+real job may invoke this child. Older readers refuse the new editable directory
+tag; existing historical ROOT/jobs are not used for new worker execution.
+
+Eight focused Windows Python cases pass (5.205s): the prior five bridge cases
+plus actual isolated child creation/recovery/gate refusal, aggregate quota
+refusal and changed-reserve failure/resume. Input and recovered pack hashes/
+mtime remain unchanged. These fixture/process tests do not establish current
+native product, installed vendor, real crash or long-form acceptance. Native
+processing receipt coverage is authored separately in PR185 and awaits hosted
+compilation; combined-release admission/final publication is not claimed.
+
+Metadata reservations preserve the physical manifest bytes produced by the old
+platform-default `write_text` newline behavior, including CRLF on Windows. A
+focused filesystem assertion compares the new file against that unchanged write
+operation; adding storage callbacks does not silently change the copy recipe's
+manifest bytes. The fresh-space helper explicitly returns caller-available
+capacity, not a guessed volume-wide free-space value.
+
 ## Context
 
 Released import-pack v1 has assets and tracks, with no timeline requirement.
@@ -199,3 +304,21 @@ schema_version must not select v1 for one reader and v2 for another. Refusal
 keeps the prior validated draft and all portable/canonical resources, and
 cleans only the current private partial file. Valid v1/v2 bytes remain readable;
 no schema rewrite, automatic migration or new supported vendor build is added.
+### Native-pinned volume checks for private Review copying
+
+The unpublished private editable worker context now requires `output_volume_id`.
+Native supplies its OS volume pin in the sealed context. Every storage guard
+freshly compares the Windows volume GUID and fixed/writable NTFS capabilities
+before allowing copying to continue; caller-available bytes remain separately
+checked. POSIX device IDs allow deterministic byte fixtures, while native
+production storage still refuses unqualified providers. Missing/changed pins
+refuse, rather than accepting a drive-letter hint or rebinding an original job.
+This draft-only private context change does not alter stable import-pack v1/v2,
+the guide1/content recipe, or an existing producer/model/runtime binding.
+
+The source-matched native supervisor will independently validate/seal/publish the
+candidate. The worker still reports no native-current or publication authority.
+Four focused current-source Windows Python cases pass in4.940s, including a
+changed-volume refusal with original source hashes/mtime unchanged. This is
+component evidence; native compilation, current installed B1/B2, cumulative/
+after-undo, GUI, actual crash and long-form qualification remain required.

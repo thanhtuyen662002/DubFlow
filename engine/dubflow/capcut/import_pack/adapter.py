@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from engine.dubflow.media.adapter import MediaAdapterError, Rational, rescale_ticks
 
@@ -87,6 +87,8 @@ class ImportPackRequest:
     timeline: Mapping[str, Any] | None = None
     additional_assets: tuple[ImportPackAsset, ...] = ()
     source_content_hash: str | None = None
+    # Optional supervisor-owned policy; not serialized as content/pack identity.
+    storage_guard: Callable[[Path, int], None] | None = None
 
     def __post_init__(self) -> None:
         _id(self.pack_id, "pack_id")
@@ -105,6 +107,8 @@ class ImportPackRequest:
             raise ImportPackError("additional assets require the v2 timeline contract")
         if self.source_content_hash is not None and (not isinstance(self.source_content_hash, str) or not _HASH.fullmatch(self.source_content_hash)):
             raise ImportPackError("source content hash is invalid")
+        if self.storage_guard is not None and not callable(self.storage_guard):
+            raise ImportPackError("storage guard must be callable")
 
 
 @dataclass(frozen=True)
@@ -127,9 +131,12 @@ def _plain_under(root: Path, path: Path) -> None:
             break
 
 
-def _copy_asset(source: Path, target: Path, *, size: int, expected_hash: str, root: Path) -> None:
+def _copy_asset(source: Path, target: Path, *, size: int, expected_hash: str, root: Path,
+                storage_guard: Callable[[], None] | None = None) -> None:
     """Resume a private copy only after comparing its complete retained prefix."""
     _plain_under(root, target)
+    if storage_guard is not None:
+        storage_guard()
     target.parent.mkdir(parents=True, exist_ok=True)
     _plain_under(root, target)
     retained = target.stat().st_size if target.exists() else 0
@@ -162,6 +169,8 @@ def _copy_asset(source: Path, target: Path, *, size: int, expected_hash: str, ro
         with target.open("ab" if target.exists() else "xb") as output:
             total = retained
             while chunk := original.read(_COPY_BYTES):
+                if storage_guard is not None:
+                    storage_guard()
                 total += len(chunk)
                 if total > size:
                     raise ImportPackError("asset source grew during copying")
@@ -171,6 +180,8 @@ def _copy_asset(source: Path, target: Path, *, size: int, expected_hash: str, ro
             os.fsync(output.fileno())
     if total != size or "sha256:" + digest.hexdigest() != expected_hash:
         raise ImportPackError("copied asset differs from its pinned content hash/size")
+    if storage_guard is not None:
+        storage_guard()
 
 
 def _integer(value: Any, name: str, *, maximum: int = _I64_MAX, minimum: int = 0) -> int:
@@ -373,8 +384,29 @@ def create_import_pack(request: ImportPackRequest, output_root: Path) -> ImportP
     raw_pins = json.dumps(pins, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     if len(raw_pins) > 16 * 1024 * 1024:
         raise ImportPackError("pack metadata exceeds bounded storage")
-    output_root.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_root.parent / f".{output_root.name}.{sha256(raw_pins).hexdigest()[:32]}.partial"
+    # Preserve the old write_text(newline=None) physical bytes on each platform
+    # while reserving the exact count before writing metadata.
+    manifest_text = json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    manifest_bytes = manifest_text.replace("\n", os.linesep).encode("utf-8")
+    expected_files = {descriptor["relative_path"]: int(descriptor["size_bytes"]) for descriptor in assets}
+    expected_files.update({".dubflow-input-pins.json": len(raw_pins), "HUONG_DAN.txt": len(guide), "manifest.json": len(manifest_bytes)})
+
+    def check_storage() -> None:
+        if request.storage_guard is None:
+            return
+        remaining = 0
+        for relative, size in expected_files.items():
+            path = temporary / relative
+            if relative in {".dubflow-input-pins.json", "HUONG_DAN.txt"} and not path.exists():
+                path = temporary / (".dubflow-input-pins.partial" if relative.startswith(".dubflow") else ".HUONG_DAN.partial")
+            _plain_under(output_root.parent, path)
+            used = path.stat().st_size if path.is_file() else 0
+            remaining += max(size - used, 0)
+        request.storage_guard(temporary, remaining)
+
+    check_storage()
+    output_root.parent.mkdir(parents=True, exist_ok=True)
     _plain_under(output_root.parent, temporary)
     marker = temporary / ".dubflow-input-pins.json"
     if not temporary.exists():
@@ -392,6 +424,7 @@ def create_import_pack(request: ImportPackRequest, output_root: Path) -> ImportP
         if partial_marker.exists() and (not partial_marker.is_file() or partial_marker.stat().st_size > len(raw_pins) or not raw_pins.startswith(retained_marker)):
             raise ImportPackError("unrecognized private pack marker")
         with partial_marker.open("ab" if partial_marker.exists() else "xb") as stream:
+            check_storage()
             stream.write(raw_pins[len(retained_marker):])
             stream.flush()
             os.fsync(stream.fileno())
@@ -400,7 +433,7 @@ def create_import_pack(request: ImportPackRequest, output_root: Path) -> ImportP
     # export or unrelated folder is removed on a failed copy.
     for (asset, relative), descriptor in zip(specifications, assets):
         _copy_asset(asset.source_path, temporary / relative, size=int(descriptor["size_bytes"]),
-                    expected_hash=descriptor["content_hash"], root=temporary)
+                    expected_hash=descriptor["content_hash"], root=temporary, storage_guard=check_storage if request.storage_guard is not None else None)
     guide_path = temporary / "HUONG_DAN.txt"
     _plain_under(temporary, guide_path)
     if guide_path.exists():
@@ -417,14 +450,17 @@ def create_import_pack(request: ImportPackRequest, output_root: Path) -> ImportP
             if not guide.startswith(prefix):
                 raise ImportPackError("private editing guidance checkpoint differs")
         with guide_partial.open("ab" if guide_partial.exists() else "xb") as stream:
+            check_storage()
             stream.write(guide[len(prefix):])
             stream.flush()
             os.fsync(stream.fileno())
         guide_partial.rename(guide_path)
     manifest_path = temporary / "manifest.json"
     _plain_under(temporary, manifest_path)
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    check_storage()
+    manifest_path.write_bytes(manifest_bytes)
     validate_import_pack(temporary)
+    check_storage()
     temporary.rename(output_root)
     return ImportPackResult(output_root, manifest)
 
