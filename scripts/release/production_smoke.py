@@ -61,6 +61,48 @@ def _json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _verify_import_packs(root: Path, output_reports: Any, *, timeout: float) -> dict[str, Any]:
+    """Run the owned read-only validator on each actual completed job output."""
+    outputs: set[Path] = set()
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            if isinstance(value.get("output"), str) and value.get("video_codec") == "h264":
+                outputs.add(Path(value["output"]).parent.resolve())
+            for nested in value.values():
+                collect(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                collect(nested)
+    collect(output_reports)
+    if not outputs:
+        raise SmokeError("no actual completed outputs to qualify portable packs")
+    cases = []
+    for output in sorted(outputs):
+        manifest = _json(output / "job_manifest.json")
+        descriptor = manifest.get("editable_pack")
+        if not isinstance(descriptor, dict) or descriptor.get("state") != "available":
+            raise SmokeError("completed native worker did not emit a portable pack")
+        response = _run([str(root / "runtime/python.exe"), "-I", "-S", "-B",
+            str(root / "app/engine/dubflow/worker/editable_pack.py"), "--export-dir", str(output),
+            "--job-id", manifest["job_id"]], timeout=min(timeout, 120))
+        try:
+            report = json.loads(response.stdout)
+        except ValueError as error:
+            raise SmokeError("owned import pack validator emitted invalid JSON") from error
+        expected_path = (output / "editable/import-pack").resolve()
+        if (not isinstance(report, dict) or report.get("schema_version") != 1
+                or report.get("state") != "available" or Path(report.get("path", "")).resolve() != expected_path
+                or report.get("manifest_sha256") != descriptor.get("manifest_sha256")):
+            raise SmokeError("owned import pack validator did not verify the current export")
+        pack = _json(expected_path / "manifest.json")
+        discovery = descriptor.get("capcut", {}).get("discovery")
+        cases.append({"job_id": manifest["job_id"], "output": str(output), "pack": report,
+                      "asset_count": len(pack["assets"]), "schema_version": pack["schema_version"],
+                      "native_capcut_discovery": discovery})
+    return {"schema_version": 1, "scope": "actual packaged worker exports; independent owned hash validation; vendor registration only",
+            "cases": cases, "direct_vendor_qualification": "NOT_RUN"}
+
+
 def _terminate_tree(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
@@ -1170,9 +1212,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 or duration_rewrite.get("verified_release_tree") is not True or len(duration_rewrite.get("cases", [])) != 2):
             raise SmokeError("packaged bounded duration rewrite evidence differs")
 
+    portable_packs = _verify_import_packs(root, [good_output_report, resume_report, long_output_report,
+        voice_version, replay_isolation, tts_recovery, visible_downgrades, execution_ownership], timeout=args.timeout)
     return {
         "schema_version": 1,
         "profile": "cpu-local-file-b2" if args.enable_dubbing else "cpu-local-file-b1",
+        "portable_import_packs": portable_packs,
         "batch_failure_isolation": "passed",
         "immutable_job_replay": replay_isolation,
         "voice_version_isolation": voice_version,

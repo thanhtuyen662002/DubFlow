@@ -4,18 +4,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from functools import total_ordering
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 from typing import Protocol
 
 
-_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+_VERSION = re.compile(
+    r"^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})"
+    r"(?:\.(0|[1-9][0-9]{0,9}))?$"
+)
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_MAX_ENVELOPE_BYTES = 16 * 1024 * 1024
 
 
 class DirectDraftError(ValueError):
@@ -27,21 +33,34 @@ class DraftStatus(str, Enum):
     FALLBACK_IMPORT_PACK = "FALLBACK_IMPORT_PACK"
 
 
-@dataclass(frozen=True, order=True)
+@total_ordering
+@dataclass(frozen=True)
 class CapCutVersion:
     major: int
     minor: int
     patch: int
+    build: int | None = None
 
     @classmethod
     def parse(cls, value: str) -> "CapCutVersion":
         match = _VERSION.fullmatch(value)
         if not match:
-            raise DirectDraftError("CapCut version must be semantic major.minor.patch")
-        return cls(*(int(part) for part in match.groups()))
+            raise DirectDraftError("CapCut version must be exact major.minor.patch[.build]")
+        major, minor, patch, build = match.groups()
+        return cls(int(major), int(minor), int(patch), None if build is None else int(build))
 
     def __str__(self) -> str:
-        return f"{self.major}.{self.minor}.{self.patch}"
+        base = f"{self.major}.{self.minor}.{self.patch}"
+        return base if self.build is None else f"{base}.{self.build}"
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, CapCutVersion):
+            return NotImplemented
+        # A buildless legacy version is distinct from every concrete build.
+        # Ordering is retained for callers, never used to authorize compatibility.
+        return (self.major, self.minor, self.patch, -1 if self.build is None else self.build) < (
+            other.major, other.minor, other.patch, -1 if other.build is None else other.build
+        )
 
 
 @dataclass(frozen=True)
@@ -75,19 +94,53 @@ def _manifest_hash(pack_root: Path) -> str:
 
 
 def _validate_draft(path: Path, *, version: CapCutVersion, pack_root: Path) -> None:
-    if not path.is_file():
-        raise DirectDraftError("direct draft was not created")
+    def unique_fields(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("duplicate direct draft field")
+            result[key] = item
+        return result
+
+    def reject_constant(value):
+        raise ValueError("non-JSON numeric constant in direct draft")
+
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        metadata = path.lstat()
+        if (not stat.S_ISREG(metadata.st_mode) or
+                getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise DirectDraftError("direct draft must be a plain regular file")
+        if not 1 <= metadata.st_size <= _MAX_ENVELOPE_BYTES:
+            raise DirectDraftError("direct draft exceeds its envelope byte limit")
+        with path.open("rb") as stream:
+            raw = stream.read(_MAX_ENVELOPE_BYTES + 1)
+        if not 1 <= len(raw) <= _MAX_ENVELOPE_BYTES:
+            raise DirectDraftError("direct draft exceeds its envelope byte limit")
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_fields, parse_constant=reject_constant)
+    except DirectDraftError:
+        raise
+    except (OSError, ValueError) as exc:
         raise DirectDraftError("direct draft is not valid JSON") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != 1 or value.get("kind") != "capcut_direct_draft" or value.get("capcut_version") != str(version):
+    if not isinstance(value, dict) or value.get("kind") != "capcut_direct_draft" or value.get("capcut_version") != str(version):
         raise DirectDraftError("direct draft metadata does not match the tested version")
+    fields = {"schema_version", "kind", "capcut_version", "pack_manifest_hash", "assets"}
+    schema = value.get("schema_version")
+    if set(value) != fields or type(schema) is not int or schema not in (1, 2):
+        raise DirectDraftError("direct draft envelope schema is unsupported")
+    # Published v1 admits exactly three components. Never silently extend it
+    # for a concrete build or rewrite an archived object during validation.
+    if schema == 1 and version.build is not None:
+        raise DirectDraftError("direct draft v1 cannot represent an exact build")
     if value.get("pack_manifest_hash") != _manifest_hash(pack_root) or not _HASH.fullmatch(str(value.get("pack_manifest_hash"))):
         raise DirectDraftError("direct draft does not bind the import pack manifest")
     assets = value.get("assets")
-    if not isinstance(assets, list) or not assets:
-        raise DirectDraftError("direct draft has no assets")
+    if not isinstance(assets, list) or not 1 <= len(assets) <= 256 or any(
+        not isinstance(asset, str) or not 1 <= len(asset) <= 4096 for asset in assets
+    ):
+        raise DirectDraftError("direct draft asset inventory is invalid")
+    expected_assets = [item["relative_path"] for item in json.loads((pack_root / "manifest.json").read_text(encoding="utf-8"))["assets"]]
+    if assets != expected_assets:
+        raise DirectDraftError("direct draft asset inventory differs from the pinned pack")
 
 
 class FixtureDraftBackend:
@@ -102,7 +155,7 @@ class FixtureDraftBackend:
         output_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "kind": "capcut_direct_draft",
                     "capcut_version": str(version),
                     "pack_manifest_hash": _manifest_hash(pack_root),

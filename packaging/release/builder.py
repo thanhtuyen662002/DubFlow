@@ -51,15 +51,23 @@ _SKIP_SUFFIXES = {".pyc", ".pyo", ".partial"}
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
-    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().lower()):
-        if not path.is_file():
-            continue
-        relative_parts = path.relative_to(root).parts
-        if any(part in _SKIP_DIRS for part in relative_parts):
-            continue
-        if path.suffix.lower() in _SKIP_SUFFIXES:
-            continue
-        yield path
+    retained: list[Path] = []
+    def refuse_walk_error(error: OSError) -> None:
+        raise error
+    for directory, directories, files in os.walk(root, topdown=True, followlinks=False,
+                                               onerror=refuse_walk_error):
+        # Excluded trees must never be enumerated. Filtering after rglob still
+        # walks large build/cache directories on every copy/hash/ZIP pass.
+        directories[:] = [name for name in directories if name not in _SKIP_DIRS]
+        for name in files:
+            path = Path(directory) / name
+            if name in _SKIP_DIRS or path.suffix.lower() in _SKIP_SUFFIXES:
+                continue
+            if path.is_file():
+                retained.append(path)
+    # Preserve the existing global path order, including file-vs-directory
+    # punctuation ordering; depth-first walk order is not this format's order.
+    yield from sorted(retained, key=lambda item: item.as_posix().lower())
 
 
 def _copy_tree(source: Path, destination: Path) -> None:

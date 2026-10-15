@@ -777,6 +777,7 @@ def _write_manifest(
     language: Mapping[str, Any] | None = None,
     translation: Mapping[str, Any] | None = None,
     asr: Mapping[str, Any] | None = None,
+    editable_pack: Mapping[str, Any] | None = None,
 ) -> Path:
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -799,6 +800,8 @@ def _write_manifest(
         manifest["translation"] = dict(translation)
     if asr is not None:
         manifest["asr"] = dict(asr)
+    if editable_pack is not None:
+        manifest["editable_pack"] = dict(editable_pack)
     path = output_dir / "job_manifest.json"
     _atomic_json(path, manifest)
     return path
@@ -1149,7 +1152,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _atomic_json(qc_path, qc)
     editable_dir = export_dir / "editable"
-    editable_names = {"captions_vi.srt", "captions_vi.ass", "timeline.json"}
+    editable_names = {"captions_vi.srt", "captions_vi.ass", "timeline.json", "import-pack"}
     if b2_audio is not None:
         editable_names.update({"source_audio.wav", "dialogue_stem.wav", "final_mix.wav"})
         if b2_audio.placement_document_path is not None:
@@ -1200,6 +1203,23 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             artifacts["dubbing_spoken_text"] = b2_audio.spoken_text_document_path
             artifacts["editable_dubbing_spoken_text"] = editable_dir / "dubbing_spoken_text.json"
     manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=translation_provenance, asr=transcript.asr_evidence)
+    from engine.dubflow.worker.editable_pack import assemble_export_pack
+    emitter.progress(0.94, "Đang tạo gói video, phụ đề và âm thanh để chỉnh sửa")
+    try:
+        pack = assemble_export_pack(manifest_path, work_dir)
+        artifacts["import_pack_manifest"] = editable_dir / "import-pack" / "manifest.json"
+    except Exception as error:
+        # Copy/detection failures preserve the validated standard export and
+        # private copy checkpoints. Never turn optional handoff into data loss.
+        reason = "IMPORT_PACK_UNAVAILABLE:" + type(error).__name__
+        warnings.append(reason)
+        pack = {"schema_version": 1, "state": "unavailable", "reason": reason}
+        qc["warnings"] = list(warnings)
+        qc["downgrade"] = True
+        _atomic_json(qc_path, qc)
+    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata,
+        language=transcript.language_metadata(), translation=translation_provenance, asr=transcript.asr_evidence,
+        editable_pack=pack)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.checkpoint("qc", _sha256(qc_path))
     return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "manifest": str(manifest_path)}

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { MemorySnapshotStorage, QueueController, parseQueueSnapshot } from "../src/features/queue/model.ts";
 import { toQueueViewModel } from "../src/features/queue/view_model.ts";
+import { importPackMessage, parseImportPackStatus } from "../src/features/import_pack/model.ts";
 
 const clock = () => "2026-09-29T02:30:00.000Z";
 const storage = new MemorySnapshotStorage();
@@ -78,4 +79,14 @@ colliding.addPaths(["one"]);
 assert.throws(() => colliding.addPaths(["two"]), /independent job ID/);
 assert.equal(colliding.getSnapshot().jobs.length, 1);
 
-console.log("desktop queue tests passed");
+const verifiedPack = parseImportPackStatus({ schema_version: 1, state: "available", path: "D:/output/portable pack",
+  manifest_sha256: `sha256:${"a".repeat(64)}`, capcut: { reason: "CAPCUT_VERSION_UNSUPPORTED" } });
+assert.equal(importPackMessage(verifiedPack), "D:/output/portable pack");
+assert.equal(verifiedPack.capcutReason, "CAPCUT_VERSION_UNSUPPORTED");
+assert.throws(() => parseImportPackStatus({ schema_version: 1, state: "available", path: "../other", manifest_sha256: `sha256:${"a".repeat(64)}` }));
+assert.throws(() => parseImportPackStatus({ schema_version: 1, state: "available", path: "D:/output", manifest_sha256: "not verified" }));
+assert.throws(() => parseImportPackStatus({ schema_version: 2, state: "unavailable", reason: "unknown" }));
+assert.equal(parseImportPackStatus({ schema_version: 1, state: "unavailable", reason: "LEGACY_EXPORT_WITHOUT_IMPORT_PACK" }).state, "unavailable");
+assert.match(importPackMessage({ state: "unavailable", reason: "corrupt" }), /Video và phụ đề/);
+
+console.log("desktop queue and import pack tests passed");

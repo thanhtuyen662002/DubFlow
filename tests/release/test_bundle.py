@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from contextlib import closing
+import os
 import importlib.util
 import json
 import hashlib
@@ -42,6 +43,50 @@ def _desktop_binary(root: Path) -> Path:
 
 
 class ReleaseBundleTests(unittest.TestCase):
+    def test_excluded_build_trees_are_never_enumerated_and_retained_global_order_is_exact(self) -> None:
+        from packaging.release.builder import _iter_files
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            names = ["foo.txt", "foo/a.py", "foo/Z.py", "A.toml", "nested/valid.json", "nested/.kept"]
+            for name in names:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(name.encode())
+            excluded = {".git", "__pycache__", ".pytest_cache", "node_modules", "dist", "target"}
+            for name in excluded:
+                path = root / "nested" / name / "must-not-enumerate"
+                path.mkdir(parents=True)
+                (path / "private.bin").write_bytes(b"not a payload")
+            for name in ("stale.pyc", "stale.PYO", "unfinished.partial", "node_modules"):
+                (root / name).write_bytes(b"excluded file")
+            real_scan = os.scandir
+            scanned = []
+            def scan(path):
+                relative = Path(path).relative_to(root)
+                self.assertFalse(any(part in excluded for part in relative.parts), str(relative))
+                scanned.append(relative.as_posix())
+                return real_scan(path)
+            with mock.patch("os.scandir", side_effect=scan):
+                actual = [path.relative_to(root).as_posix() for path in _iter_files(root)]
+            self.assertEqual(actual, sorted(names, key=str.lower))
+            self.assertEqual(set(scanned), {".", "foo", "nested"})
+            self.assertLess(actual.index("foo.txt"), actual.index("foo/a.py"))
+
+    def test_required_subtree_enumeration_failure_refuses_without_a_partial_file_inventory(self) -> None:
+        from packaging.release.builder import _iter_files
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a-valid.txt").write_bytes(b"must not become a partial inventory")
+            (root / "required").mkdir()
+            real_scan = os.scandir
+            def scan(path):
+                if Path(path) == root / "required":
+                    raise PermissionError("required payload subtree is unavailable")
+                return real_scan(path)
+            with mock.patch("os.scandir", side_effect=scan):
+                with self.assertRaisesRegex(PermissionError, "required payload subtree"):
+                    next(iter(_iter_files(root)))
+
     def test_builder_stdout_preserves_vietnamese_on_a_windows_legacy_console(self) -> None:
         stream = io.BytesIO()
         console = io.TextIOWrapper(stream, encoding="cp1252", write_through=True)
