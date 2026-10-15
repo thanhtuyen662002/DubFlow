@@ -1,6 +1,7 @@
 //! Opt-in current cue/timeline preparation and TTS/mix through an admitted
 //! processing release. Original-only guards remain intact. Current render
-//! dispatch is separate for B1/B2; cumulative graph CAS is not implemented here.
+//! dispatch is separate for B1/B2; confirmed commits retain physical results
+//! before passing the publication to the existing monotonic graph CAS.
 use super::review_assets::{AcceptedAudioStore, AcceptedJsonDocument};
 use super::review_correction::{accepted_json, descriptor};
 use super::review_document::{canonical, closed, decode, tick, AdmittedSnapshot, ReviewMode};
@@ -23,7 +24,96 @@ fn invalid(s: &str) -> SupervisorError {
 
 #[cfg(test)]
 mod tests {
+    use super::super::review_seed::tests::with_admitted_original;
     use super::*;
+
+    #[test]
+    fn current_commit_confirmation_binds_original_cue_and_candidate_before_any_worker_or_durable_write(
+    ) {
+        with_admitted_original(|store, _, state| {
+            let before =
+                AdmittedSnapshot::read(&state.snapshot_json, &state.token.job_id, 0).unwrap();
+            let after = before
+                .correction(
+                    "finding-a",
+                    Some("Confirmed caption"),
+                    None,
+                    ReviewMode::Subtitles,
+                )
+                .unwrap();
+            let cue = after.finding("finding-a").unwrap()["cue_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let values = HashMap::from([
+                (
+                    "--original-manifest-sha256".into(),
+                    state.token.original_manifest_sha256.clone(),
+                ),
+                ("--candidate-snapshot-sha256".into(), after.sha256()),
+                ("--cue-id".into(), cue),
+            ]);
+            confirmation_gate(true, &values, state, &after).unwrap();
+            for key in [
+                "--original-manifest-sha256",
+                "--candidate-snapshot-sha256",
+                "--cue-id",
+            ] {
+                let mut missing = values.clone();
+                missing.remove(key);
+                assert!(confirmation_gate(true, &missing, state, &after).is_err());
+                let mut forged = values.clone();
+                forged.insert(key.into(), "foreign".into());
+                assert!(confirmation_gate(true, &forged, state, &after).is_err());
+            }
+            let changed = before
+                .correction(
+                    "finding-a",
+                    Some("Unconfirmed caption"),
+                    None,
+                    ReviewMode::Subtitles,
+                )
+                .unwrap();
+            assert!(confirmation_gate(true, &values, state, &changed).is_err());
+            assert_eq!(
+                store
+                    .review_graph_state(&state.token.job_id)
+                    .unwrap()
+                    .as_ref(),
+                Some(state)
+            );
+        });
+    }
+
+    #[test]
+    fn preparation_does_not_accept_confirmation_fields_or_silently_execute_a_commit() {
+        with_admitted_original(|_, _, state| {
+            let before =
+                AdmittedSnapshot::read(&state.snapshot_json, &state.token.job_id, 0).unwrap();
+            let after = before
+                .correction(
+                    "finding-a",
+                    Some("Draft caption"),
+                    None,
+                    ReviewMode::Subtitles,
+                )
+                .unwrap();
+            confirmation_gate(false, &HashMap::new(), state, &after).unwrap();
+            for key in [
+                "--original-manifest-sha256",
+                "--candidate-snapshot-sha256",
+                "--cue-id",
+            ] {
+                assert!(confirmation_gate(
+                    false,
+                    &HashMap::from([(key.into(), "foreign".into())]),
+                    state,
+                    &after
+                )
+                .is_err());
+            }
+        });
+    }
     fn fixture() -> Value {
         decode(
             include_str!("../../../../tests/review/native_cue_request_v1.json"),
@@ -251,17 +341,57 @@ fn unchanged(store: &DurableStore, state: &ReviewGraphState) -> SupervisorResult
     Ok(())
 }
 
+/// Commit callers must bind the logical proposal they explicitly confirmed.
+/// This runs under JobExecutionGuard and before any worker/context mutation.
+fn confirmation_gate(
+    publish: bool,
+    values: &HashMap<String, String>,
+    state: &ReviewGraphState,
+    after: &AdmittedSnapshot,
+) -> SupervisorResult<()> {
+    const KEYS: [&str; 3] = [
+        "--original-manifest-sha256",
+        "--candidate-snapshot-sha256",
+        "--cue-id",
+    ];
+    if !publish {
+        if KEYS.iter().any(|key| values.contains_key(*key)) {
+            return Err(invalid(
+                "confirmation fields require the explicit current commit command",
+            ));
+        }
+        return Ok(());
+    }
+    let expected = |key: &str| {
+        values.get(key).map(String::as_str).ok_or_else(||invalid("current commit requires original-manifest, candidate snapshot and exact cue confirmation"))
+    };
+    if expected(KEYS[0])? != state.token.original_manifest_sha256
+        || expected(KEYS[1])? != after.sha256()
+        || after.finding(after.plan_finding_id()?)?["cue_id"] != expected(KEYS[2])?
+    {
+        return Err(invalid(
+            "current commit differs from the confirmed original/cue/proposal",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn run_timeline(args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_timeline_inner(args, false)
+    run_timeline_inner(args, false, false)
 }
 
 pub(super) fn run_render_b1(args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_timeline_inner(args, true)
+    run_timeline_inner(args, true, false)
+}
+
+pub(super) fn run_commit_b1(args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
+    run_timeline_inner(args, true, true)
 }
 
 fn run_timeline_inner(
     mut args: impl Iterator<Item = OsString>,
     render: bool,
+    publish: bool,
 ) -> SupervisorResult<()> {
     let mut values = HashMap::new();
     while let Some(flag) = args.next() {
@@ -274,6 +404,9 @@ fn run_timeline_inner(
             "--revision",
             "--snapshot-sha256",
             "--graph-sha256",
+            "--original-manifest-sha256",
+            "--candidate-snapshot-sha256",
+            "--cue-id",
             "--finding-id",
             "--translation",
             "--voice",
@@ -309,7 +442,11 @@ fn run_timeline_inner(
     let db = data.join("control/jobs.sqlite3");
     super::review_pin::plain(&db)?;
     let _guard = super::JobExecutionGuard::acquire(&db, job)?;
-    let store = DurableStore::open_read_only(&db)?;
+    let store = if publish {
+        DurableStore::open(&db)?
+    } else {
+        DurableStore::open_read_only(&db)?
+    };
     let state = store
         .review_graph_state(job)?
         .ok_or_else(|| invalid("current timeline graph missing"))?;
@@ -335,6 +472,7 @@ fn run_timeline_inner(
         values.get("--voice").map(String::as_str),
         mode,
     )?;
+    confirmation_gate(publish, &values, &state, &after)?;
     let assets = AcceptedAudioStore::open_existing(&data, job)?;
     let origin = decode(&admitted.origin().graph_json, LIMIT)?;
     let original_object =
@@ -469,6 +607,29 @@ fn run_timeline_inner(
                 candidates: &candidates,
             })?;
         unchanged(&store, &state)?;
+        if publish {
+            let rendered = super::review_publication::prepare_effective(
+                super::review_publication::EffectivePublicationInputs {
+                    store: &store,
+                    data: &data,
+                    assets: &assets,
+                    current: &admitted,
+                    after: &after,
+                    timeline: &timeline,
+                    rendered: &rendered,
+                    mixed: None,
+                    mix_packet: None,
+                    processing_mix: None,
+                    speech_inventory: None,
+                    output_pin: &output_pin,
+                },
+            )?;
+            let committed = super::review_active::commit(&store, &data, &state, &rendered)?;
+            return super::emit_value(
+                &mut std::io::stdout().lock(),
+                super::review_active::committed_packet(&committed)?,
+            );
+        }
         return super::emit_value(
             &mut std::io::stdout().lock(),
             json!({"schema_version":1,
@@ -602,19 +763,23 @@ pub(super) fn bind_current_request(
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, false, false, false)
+    run_inner(&mut args, false, false, false, false)
 }
 
 pub(super) fn run_synthesis(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, false, false)
+    run_inner(&mut args, true, false, false, false)
 }
 
 pub(super) fn run_mix(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, true, false)
+    run_inner(&mut args, true, true, false, false)
 }
 
 pub(super) fn run_render_b2(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
-    run_inner(&mut args, true, true, true)
+    run_inner(&mut args, true, true, true, false)
+}
+
+pub(super) fn run_commit_b2(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
+    run_inner(&mut args, true, true, true, true)
 }
 
 fn run_inner(
@@ -622,6 +787,7 @@ fn run_inner(
     synthesize: bool,
     mix: bool,
     render: bool,
+    publish: bool,
 ) -> SupervisorResult<()> {
     let mut values = HashMap::new();
     while let Some(flag) = args.next() {
@@ -634,6 +800,9 @@ fn run_inner(
             "--revision",
             "--snapshot-sha256",
             "--graph-sha256",
+            "--original-manifest-sha256",
+            "--candidate-snapshot-sha256",
+            "--cue-id",
             "--finding-id",
             "--translation",
             "--voice",
@@ -669,7 +838,11 @@ fn run_inner(
     let db = data.join("control/jobs.sqlite3");
     super::review_pin::plain(&db)?;
     let _guard = super::JobExecutionGuard::acquire(&db, job)?;
-    let store = DurableStore::open_read_only(&db)?;
+    let store = if publish {
+        DurableStore::open(&db)?
+    } else {
+        DurableStore::open_read_only(&db)?
+    };
     let state = store
         .review_graph_state(job)?
         .ok_or_else(|| invalid("current Review graph missing"))?;
@@ -696,6 +869,7 @@ fn run_inner(
         values.get("--voice").map(String::as_str),
         ReviewMode::Dubbed,
     )?;
+    confirmation_gate(publish, &values, &state, &after)?;
     let seed = super::review_seed::read_original(&store, &data, admitted.origin())?;
     let source_graph = decode(&seed.graph, LIMIT)?;
     if source_graph["mode"] != "b2" {
@@ -939,6 +1113,43 @@ fn run_inner(
                     candidates: &candidates,
                 },
             )?;
+            if publish {
+                let inventory = super::review_speech::seal_effective(
+                    super::review_speech::EffectiveSpeechInputs {
+                        store: &store,
+                        assets: &assets,
+                        current: &admitted,
+                        after: &after,
+                        request: &request,
+                        cue: &result,
+                        mixed: &private_mix.retained_mix,
+                        processing: &processing,
+                        output_pin: &output_pin,
+                        deadline: std::time::Instant::now() + Duration::from_secs(720),
+                    },
+                )?;
+                let publication = super::review_publication::prepare_effective(
+                    super::review_publication::EffectivePublicationInputs {
+                        store: &store,
+                        data: &data,
+                        assets: &assets,
+                        current: &admitted,
+                        after: &after,
+                        timeline: &timeline,
+                        rendered: &rendered,
+                        mixed: Some(&private_mix.retained_mix),
+                        mix_packet: Some(&private_mix.candidate_packet),
+                        processing_mix: Some(&private_mix.processing_mix),
+                        speech_inventory: Some(&inventory),
+                        output_pin: &output_pin,
+                    },
+                )?;
+                let committed = super::review_active::commit(&store, &data, &state, &publication)?;
+                return super::emit_value(
+                    &mut std::io::stdout().lock(),
+                    super::review_active::committed_packet(&committed)?,
+                );
+            }
             Some(rendered)
         } else {
             None

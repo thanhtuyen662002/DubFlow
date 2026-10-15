@@ -325,6 +325,29 @@ const EFFECTIVE_TIMELINE_ENTRY: &str = "app/engine/dubflow/review/effective_time
 const EFFECTIVE_RENDER_CAPABILITY: &str =
     "app/engine/dubflow/review/processing-effective-render-v1.json";
 const EFFECTIVE_RENDER_ENTRY: &str = "app/engine/dubflow/review/effective_render_execution.py";
+const EDITABLE_CAPABILITY: &str = "app/engine/dubflow/capcut/review-processing-capability-v1.json";
+const EDITABLE_ENTRY: &str = "app/engine/dubflow/worker/review_editable_pack.py";
+const EDITABLE_RECIPE: [&str; 10] = [
+    EDITABLE_ENTRY,
+    "app/engine/dubflow/capcut/review_export.py",
+    "app/engine/dubflow/capcut/production.py",
+    "app/engine/dubflow/capcut/import_pack/adapter.py",
+    "app/engine/dubflow/capcut/import_pack/__init__.py",
+    "app/engine/dubflow/capcut/__init__.py",
+    "app/engine/dubflow/capcut/detection.py",
+    "app/engine/dubflow/capcut/draft/adapter.py",
+    "app/engine/dubflow/media/adapter.py",
+    "app/engine/dubflow/asr/__init__.py",
+];
+
+fn editable_declaration() -> Value {
+    json!({"schema_version":1,"kind":"review_processing_editable_pack_capability",
+        "capability":"review_editable_pack_v1","entrypoint":"engine/dubflow/worker/review_editable_pack.py",
+        "context_format":"review_native_editable_pack_context_v1","result_format":"review_private_editable_pack_candidate_v1",
+        "recipe":"review-editable-pack-v1","modes":["b1","b2"],"pack_format":2,
+        "copy_policy":"bounded_prefix_resume_native_storage_guard_v1","current_generation_admitted":false,
+        "model_provisioning":false,"vendor_execution":false,"active_graph_publication":false})
+}
 
 fn effective_render_declaration() -> Value {
     json!({"schema_version":1,"kind":"review_processing_effective_render_capability",
@@ -405,6 +428,74 @@ fn protected_processing_path(path: &str) -> bool {
 }
 
 impl AdmittedProcessingRuntime {
+    /// A separate additive capability from PR183. Nothing is copied into the
+    /// original job/root, and a worker/browser recipe string grants no admission.
+    pub(super) fn editable_pack_receipt(
+        &self,
+        context_hash: Option<&str>,
+    ) -> SupervisorResult<Value> {
+        if context_hash.is_some_and(|value| !valid_hash(value)) {
+            return Err(invalid("editable processing context hash is invalid"));
+        }
+        let processing = self.receipt()?;
+        let capability = self
+            .runtime
+            .inventory
+            .get(EDITABLE_CAPABILITY)
+            .ok_or_else(|| invalid("processing release lacks explicit editable pack capability"))?;
+        let raw = fingerprint(
+            &self.runtime.root.join(EDITABLE_CAPABILITY),
+            capability,
+            true,
+            64 * 1024,
+        )?;
+        let declaration = decode(
+            std::str::from_utf8(&raw).map_err(|_| invalid("editable capability is not UTF-8"))?,
+            64 * 1024,
+        )?;
+        let mut actual = String::new();
+        let mut expected = String::new();
+        super::review_document::canonical(&declaration, &mut actual)?;
+        super::review_document::canonical(&editable_declaration(), &mut expected)?;
+        if actual != expected {
+            return Err(invalid(
+                "unknown editable capability requires explicit compatibility",
+            ));
+        }
+        let mut dependencies = Vec::new();
+        for name in EDITABLE_RECIPE {
+            let pin = self
+                .runtime
+                .inventory
+                .get(name)
+                .ok_or_else(|| invalid("editable recipe dependency is not inventoried"))?;
+            fingerprint(&self.runtime.root.join(name), pin, false, 64 * 1024 * 1024)?;
+            dependencies.push(json!({"path":name,"pin":pin}));
+        }
+        let mut result = json!({"schema_version":1,"kind":"review_admitted_editable_pack",
+            "capability":"review_editable_pack_v1","processing_release":processing,
+            "capability_document":capability,"entry":{"path":self.runtime.root.join(EDITABLE_ENTRY),
+                "pin":self.runtime.inventory[EDITABLE_ENTRY]},"recipe_dependencies":dependencies,
+            "current_generation_admitted":false,"model_provisioning":false,"vendor_execution":false,
+            "active_graph_published":false,"correction_ready":false});
+        let mut recipe = String::new();
+        super::review_document::canonical(&result, &mut recipe)?;
+        let recipe_identity = hash(recipe.as_bytes());
+        let execution = if let Some(context) = context_hash {
+            let binding = json!({"recipe_identity":recipe_identity,"context_sha256":context});
+            let mut raw = String::new();
+            super::review_document::canonical(&binding, &mut raw)?;
+            hash(raw.as_bytes())
+        } else {
+            String::new()
+        };
+        result["recipe_identity"] = recipe_identity.into();
+        result["execution_identity"] = execution.into();
+        final_inventory(&self.origin.root, &self.origin.inventory)?;
+        final_inventory(&self.runtime.root, &self.runtime.inventory)?;
+        Ok(result)
+    }
+
     pub(super) fn read(
         store: &DurableStore,
         job: &str,
@@ -1723,6 +1814,74 @@ mod tests {
         bytes[0] ^= 1;
         fs::write(entry, bytes).unwrap();
         assert!(runtime.effective_render_receipt(Some(&context)).is_err());
+        assert_eq!(original.producer, binding);
+        assert_eq!(fixture_contents(&original.root), saved);
+    }
+
+    #[test]
+    fn editable_recipe_requires_explicit_capability_ten_pins_and_context_binding_without_repinning()
+    {
+        let mut original = fixture();
+        let (mut processing, _) = processing_fixture();
+        for value in [&mut original, &mut processing] {
+            put_processing_file(
+                value,
+                "app/engine/dubflow/media/adapter.py",
+                b"protected original media adapter",
+            );
+        }
+        original.producer["release_manifest"] = seal_processing_fixture(&mut original);
+        let binding = original.producer.clone();
+        let saved = fixture_contents(&original.root);
+        for name in EDITABLE_RECIPE {
+            if name != "app/engine/dubflow/media/adapter.py" {
+                put_processing_file(&mut processing, name, name.as_bytes());
+            }
+        }
+        let manifest = seal_processing_fixture(&mut processing);
+        let runtime = AdmittedProcessingRuntime::from_origin(
+            &binding,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        assert!(runtime.editable_pack_receipt(None).is_err());
+        put_processing_file(
+            &mut processing,
+            EDITABLE_CAPABILITY,
+            editable_declaration().to_string().as_bytes(),
+        );
+        let manifest = seal_processing_fixture(&mut processing);
+        let runtime = AdmittedProcessingRuntime::from_origin(
+            &binding,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        let a = format!("sha256:{}", "a".repeat(64));
+        let b = format!("sha256:{}", "b".repeat(64));
+        let first = runtime.editable_pack_receipt(Some(&a)).unwrap();
+        let second = runtime.editable_pack_receipt(Some(&b)).unwrap();
+        let paths: Vec<_> = first["recipe_dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, EDITABLE_RECIPE);
+        assert_eq!(first["recipe_identity"], second["recipe_identity"]);
+        assert_ne!(first["execution_identity"], second["execution_identity"]);
+        assert_eq!(first["current_generation_admitted"], false);
+        assert_eq!(first["vendor_execution"], false);
+        assert!(runtime.editable_pack_receipt(Some("foreign")).is_err());
+        let path = processing.root.join(EDITABLE_ENTRY);
+        let raw = fs::read(&path).unwrap();
+        let mut corrupt = raw.clone();
+        corrupt[0] ^= 1;
+        fs::write(&path, corrupt).unwrap();
+        assert!(runtime.editable_pack_receipt(Some(&a)).is_err());
         assert_eq!(original.producer, binding);
         assert_eq!(fixture_contents(&original.root), saved);
     }

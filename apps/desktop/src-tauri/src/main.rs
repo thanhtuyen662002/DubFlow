@@ -296,7 +296,7 @@ fn main() {
     tauri::Builder::default()
         .manage(review::ReviewHost::default())
         .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job,
-            review::review_snapshot_v1, review::review_audio_v1, review::review_cancel_v1])
+            review::review_snapshot_v1, review::review_snapshot_v2, review::review_audio_v1, review::review_audio_v2, review::review_plan_v1, review::review_cancel_v1])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
 }

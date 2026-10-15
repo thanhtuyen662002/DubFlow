@@ -371,10 +371,414 @@ pub(super) fn seal_current(
     Ok(object)
 }
 
+fn v3_shape(record: &Value) -> SupervisorResult<()> {
+    closed(
+        record,
+        &[
+            "schema_version",
+            "kind",
+            "before_state",
+            "origin_token",
+            "proposal",
+            "corrected_timeline",
+            "context",
+            "retained_render",
+            "processing_render",
+            "prepared_snapshot",
+            "execution_identity",
+            "output_volume_id",
+            "mixed",
+            "mix_packet",
+            "processing_mix",
+            "speech_inventory",
+        ],
+    )?;
+    if record["schema_version"].as_u64() != Some(3)
+        || record["kind"] != "review_native_publication_v3"
+    {
+        return Err(invalid("unknown cumulative native publication version"));
+    }
+    Ok(())
+}
+
+/// A cumulative publication reopens its actual immutable before-state and all
+/// physical dependencies. Nothing in a sealed byte reference grants admission
+/// by itself, and no public token is rewritten to bypass an original reader.
+pub(super) fn read_v3(
+    store: &DurableStore,
+    data: &std::path::Path,
+    current: &ReviewGraphState,
+    assets: &AcceptedAudioStore,
+    object: &AcceptedJsonDocument,
+    walk: &mut RecoveryWalk,
+) -> SupervisorResult<super::review_active::AdmittedPublication> {
+    walk.with_proof(&object.sha256, |walk| {
+        let record = decode(&walk.read_metadata(assets, object)?, LIMIT)?;
+        v3_shape(&record)?;
+        let reference = read_reference(store, assets, &record["before_state"], current, walk)?;
+        let before = super::review_effective::read_historical(store, data, &reference, walk)?;
+        let state = before.state();
+        if record["origin_token"] != token(before.origin())
+            || state.token.revision > current.token.revision
+        {
+            return Err(invalid("cumulative publication substitutes its origin or future before-state"));
+        }
+        let proposal_object = accepted_json(&record["proposal"], assets)?;
+        let revision = state.token.revision.checked_add(1)
+            .ok_or_else(|| invalid("cumulative proposal revision overflow"))?;
+        let proposal = AdmittedSnapshot::read(&walk.read_metadata(assets, &proposal_object)?, &state.token.job_id, revision)?;
+        let seed = super::review_seed::read_original(store, data, before.origin())?;
+        let seed_graph = decode(&seed.graph, LIMIT)?;
+        let mode = match seed_graph["mode"].as_str() {
+            Some("b1") => super::review_document::ReviewMode::Subtitles,
+            Some("b2") => super::review_document::ReviewMode::Dubbed,
+            _ => return Err(invalid("cumulative publication original mode missing")),
+        };
+        before.snapshot().validate_correction(&proposal, mode)?;
+        let timeline = accepted_json(&record["corrected_timeline"], assets)?;
+        let context = accepted_json(&record["context"], assets)?;
+        let processing_object = accepted_json(&record["processing_render"], assets)?;
+        let saved_processing = decode(&walk.read_metadata(assets, &processing_object)?, LIMIT)?;
+        let release = &saved_processing["processing_timeline"]["processing_release"];
+        let processing_root = std::path::PathBuf::from(
+            text(&release["processing_root"], 32767)?);
+        let processing = super::review_runtime::AdmittedProcessingRuntime::read(
+            store, &state.token.job_id, &processing_root, &release["release_manifest"],
+            text(&release["source_sha"], 64)?)?;
+        if exact_value(&saved_processing, &processing.effective_render_receipt(Some(&context.sha256))?)? == false {
+            return Err(invalid("cumulative processing recipe differs from its source-matched admission"));
+        }
+        walk.check()?;
+        let pin = super::review_retention::NativeOutputPin::read(&seed.output_root)?;
+        if record["output_volume_id"] != pin.volume_id() {
+            return Err(invalid("cumulative publication output volume changed"));
+        }
+        if seed_graph["mode"] == "b2" {
+            super::review_speech::verify_effective_inventory(
+                super::review_speech::EffectiveInventoryInputs {
+                    store, data, assets, before: &before, after: &proposal,
+                    mixed: &record["mixed"], mix_packet: &record["mix_packet"],
+                    processing_mix: &record["processing_mix"], processing: &processing,
+                    output_pin: &pin,
+                }, &record["speech_inventory"], walk)?;
+        } else if ["mixed", "mix_packet", "processing_mix", "speech_inventory"]
+            .into_iter().any(|key| !record[key].is_null()) {
+            return Err(invalid("B1 cumulative publication cannot invent speech or mixed audio"));
+        }
+        let candidates = seed.output_root.join(".dubflow-review-candidates")
+            .join(format!("{:x}", Sha256::digest(state.token.job_id.as_bytes())));
+        let input = super::review_render::EffectiveRenderInputs {
+            processing: &processing, store, data, assets, state,
+            current: &before, after: &proposal, timeline: &timeline,
+            mixed: if seed_graph["mode"] == "b2" { Some(&record["mixed"]) } else { None },
+            output_pin: &pin, candidates: &candidates,
+        };
+        let recovered = super::review_render::recover_effective_retained(&input, &record, walk)?;
+        let expected = recovered.prepare_snapshot(&proposal)?;
+        let prepared = accepted_json(&record["prepared_snapshot"], assets)?;
+        if walk.read_metadata(assets, &prepared)? != expected.json() {
+            return Err(invalid("cumulative snapshot differs from retained physical playback"));
+        }
+        let retained = accepted_json(&record["retained_render"], assets)?;
+        for metadata in [object, &proposal_object, &timeline, &context, &processing_object, &prepared, &retained] {
+            walk.read_metadata(assets, metadata)?;
+        }
+        walk.check()?;
+        Ok(super::review_active::AdmittedPublication {
+            before: state.clone(), origin: before.origin().clone(), snapshot: expected,
+            graph: json!({"schema_version":1,"kind":"review_bound_retained_render_graph_v3", "publication":descriptor(object)}).to_string(),
+            record,
+        })
+    })
+}
+
+fn exact_value(left: &Value, right: &Value) -> SupervisorResult<bool> {
+    let mut l = String::new();
+    let mut r = String::new();
+    super::review_document::canonical(left, &mut l)?;
+    super::review_document::canonical(right, &mut r)?;
+    Ok(l == r)
+}
+
+pub(super) struct EffectivePublicationInputs<'a> {
+    pub(super) store: &'a DurableStore,
+    pub(super) data: &'a std::path::Path,
+    pub(super) assets: &'a AcceptedAudioStore,
+    pub(super) current: &'a super::review_effective::AdmittedEffectiveState,
+    pub(super) after: &'a AdmittedSnapshot,
+    pub(super) timeline: &'a AcceptedJsonDocument,
+    pub(super) rendered: &'a Value,
+    pub(super) mixed: Option<&'a Value>,
+    pub(super) mix_packet: Option<&'a AcceptedJsonDocument>,
+    pub(super) processing_mix: Option<&'a Value>,
+    pub(super) speech_inventory: Option<&'a AcceptedJsonDocument>,
+    pub(super) output_pin: &'a super::review_retention::NativeOutputPin,
+}
+
+/// Prepare a new explicit v3 object, then exercise the complete read path before
+/// it can reach the existing CAS. Any refusal leaves the old head/undo intact.
+pub(super) fn prepare_effective(input: EffectivePublicationInputs<'_>) -> SupervisorResult<Value> {
+    let deadline = Instant::now() + std::time::Duration::from_secs(720);
+    let state = input.current.state();
+    require_current(input.store, state)?;
+    if input.rendered["retained_final_output"] != true
+        || input.rendered["retained_receipt_reopened"] != true
+        || input.rendered["active_graph_published"] != false
+        || input.rendered["correction_ready"] != false
+    {
+        return Err(invalid(
+            "cumulative publication requires a complete private retained render",
+        ));
+    }
+    let before = seal_current(input.store, input.assets, input.current, deadline)?;
+    let proposal = input.assets.accept_json(input.after.json())?;
+    let mix_fields = [
+        input.mixed.is_some(),
+        input.mix_packet.is_some(),
+        input.processing_mix.is_some(),
+        input.speech_inventory.is_some(),
+    ];
+    if mix_fields.iter().any(|v| *v != mix_fields[0]) {
+        return Err(invalid(
+            "cumulative B2 publication requires the complete mix/speech proof set",
+        ));
+    }
+    let processing_mix = input
+        .processing_mix
+        .map(|r| input.assets.accept_json(&r.to_string()))
+        .transpose()?;
+    let record = json!({"schema_version":3,"kind":"review_native_publication_v3",
+        "before_state":descriptor(&before),"origin_token":token(input.current.origin()),
+        "proposal":descriptor(&proposal),"corrected_timeline":descriptor(input.timeline),
+        "context":input.rendered["context"],"retained_render":input.rendered["retained_render"],
+        "processing_render":input.rendered["processing_render"],"prepared_snapshot":input.rendered["prepared_snapshot"],
+        "execution_identity":Value::Null,"output_volume_id":input.output_pin.volume_id(),
+        "mixed":input.mixed,"mix_packet":input.mix_packet.map(descriptor),
+        "processing_mix":processing_mix.as_ref().map(descriptor),"speech_inventory":input.speech_inventory.map(descriptor)});
+    let mut record = record;
+    let render_recipe = accepted_json(&record["processing_render"], input.assets)?;
+    record["execution_identity"] =
+        decode(&input.assets.read_json(&render_recipe)?, LIMIT)?["execution_identity"].clone();
+    v3_shape(&record)?;
+    let object = input.assets.accept_json(&record.to_string())?;
+    let admitted = read_v3(
+        input.store,
+        input.data,
+        state,
+        input.assets,
+        &object,
+        &mut RecoveryWalk::new(deadline),
+    )?;
+    if admitted.before != *state || admitted.origin != *input.current.origin() {
+        return Err(invalid(
+            "cumulative publication changed its native before/origin identity",
+        ));
+    }
+    require_current(input.store, state)?;
+    let mut rendered = input.rendered.clone();
+    rendered["native_publication"] = descriptor(&object);
+    rendered["cumulative_publication_prepared"] = true.into();
+    Ok(rendered)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::review_seed::tests::with_admitted_original;
     use super::*;
     use std::time::Duration;
+
+    fn restore_original_at_two(store: &DurableStore, state: &ReviewGraphState) -> ReviewGraphState {
+        let before = AdmittedSnapshot::read(&state.snapshot_json, &state.token.job_id, 0).unwrap();
+        let changed = before
+            .correction(
+                "finding-a",
+                Some("Chào bạn."),
+                None,
+                super::super::review_document::ReviewMode::Subtitles,
+            )
+            .unwrap();
+        // Test-only low-level row; no encoded render or native publication is
+        // claimed. The real monotonic state transition restores the original.
+        let one = store
+            .commit_review_graph(
+                &state.token,
+                changed.json(),
+                r#"{"kind":"test-only-unknown"}"#,
+                10,
+            )
+            .unwrap();
+        let restored = before.undo_proposal(&changed).unwrap();
+        store
+            .undo_review_graph(&one.token, restored.json(), 11)
+            .unwrap()
+    }
+
+    #[test]
+    fn recorded_reference_recovery_preserves_after_undo_token_and_refuses_forged_effective_view() {
+        with_admitted_original(|store, data, original| {
+            let assets = AcceptedAudioStore::open_existing(data, &original.token.job_id).unwrap();
+            let zero = super::super::review_effective::read_current(store, data, original).unwrap();
+            let zero_reference = seal_current(
+                store,
+                &assets,
+                &zero,
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+            let restored = restore_original_at_two(store, original);
+            let admitted =
+                super::super::review_effective::read_current(store, data, &restored).unwrap();
+            let reference = seal_current(
+                store,
+                &assets,
+                &admitted,
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+            for (object, expected) in [(&zero_reference, original), (&reference, &restored)] {
+                let mut walk = RecoveryWalk::new(Instant::now() + Duration::from_secs(10));
+                let recorded =
+                    read_reference(store, &assets, &descriptor(object), original, &mut walk)
+                        .unwrap();
+                assert_eq!(recorded.state(), expected);
+                let physical = super::super::review_effective::read_historical(
+                    store, data, &recorded, &mut walk,
+                )
+                .unwrap();
+                assert_eq!(physical.state(), expected);
+                assert_eq!(physical.origin().token.revision, 0);
+                assert_eq!(
+                    store.review_graph_state(&original.token.job_id).unwrap(),
+                    Some(restored.clone())
+                );
+                assert!(store.review_undo_target(&restored.token).unwrap().is_none());
+            }
+            assert_eq!(admitted.state().token.revision, 2);
+            assert!(super::super::review_seed::read_original(store, data, &restored).is_err());
+            // Valid accepted bytes and a real recorded token do not prove that
+            // an asserted effective view describes the physical graph.
+            let mut forged_view = admitted.packet().unwrap();
+            forged_view["current_timeline_json"] = r#"{"changed":"unadmitted timeline"}"#.into();
+            let view_object = assets.accept_json(&forged_view.to_string()).unwrap();
+            let mut record = decode(&assets.read_json(&reference).unwrap(), LIMIT).unwrap();
+            record["effective_state"] = descriptor(&view_object);
+            let forged = assets.accept_json(&record.to_string()).unwrap();
+            let mut walk = RecoveryWalk::new(Instant::now() + Duration::from_secs(10));
+            let reference =
+                read_reference(store, &assets, &descriptor(&forged), original, &mut walk).unwrap();
+            assert!(super::super::review_effective::read_historical(
+                store, data, &reference, &mut walk
+            )
+            .is_err());
+            assert_eq!(
+                store.review_graph_state(&original.token.job_id).unwrap(),
+                Some(restored)
+            );
+            assert_eq!(
+                store
+                    .review_graph_revision(&original.token)
+                    .unwrap()
+                    .as_ref(),
+                Some(original)
+            );
+        });
+    }
+
+    #[test]
+    fn recorded_reference_cannot_hide_changed_original_artifact_bytes() {
+        with_admitted_original(|store, data, original| {
+            let assets = AcceptedAudioStore::open_existing(data, &original.token.job_id).unwrap();
+            let native =
+                super::super::review_effective::read_current(store, data, original).unwrap();
+            let object = seal_current(
+                store,
+                &assets,
+                &native,
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+            let path = data.join("output/editable_timeline.json");
+            let before = std::fs::read(&path).unwrap();
+            let mut changed = before.clone();
+            let index = changed.iter().position(|b| *b == b'{').unwrap();
+            changed[index] = b'[';
+            assert_eq!(changed.len(), before.len());
+            std::fs::write(&path, changed).unwrap();
+            let mut walk = RecoveryWalk::new(Instant::now() + Duration::from_secs(10));
+            let reference =
+                read_reference(store, &assets, &descriptor(&object), original, &mut walk).unwrap();
+            assert!(super::super::review_effective::read_historical(
+                store, data, &reference, &mut walk
+            )
+            .is_err());
+            assert_eq!(
+                store
+                    .review_graph_state(&original.token.job_id)
+                    .unwrap()
+                    .as_ref(),
+                Some(original)
+            );
+            assert!(store.review_undo_target(&original.token).unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn cumulative_publication_without_processing_and_physical_render_never_changes_after_undo_head()
+    {
+        with_admitted_original(|store, data, original| {
+            let restored = restore_original_at_two(store, original);
+            let native =
+                super::super::review_effective::read_current(store, data, &restored).unwrap();
+            let assets = AcceptedAudioStore::open_existing(data, &original.token.job_id).unwrap();
+            let before = seal_current(
+                store,
+                &assets,
+                &native,
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+            let after = native
+                .snapshot()
+                .correction(
+                    "finding-a",
+                    Some("Một lần sửa sau undo."),
+                    None,
+                    super::super::review_document::ReviewMode::Subtitles,
+                )
+                .unwrap();
+            let proposal = assets.accept_json(after.json()).unwrap();
+            let empty = assets.accept_json("{}").unwrap();
+            let record = json!({"schema_version":3,"kind":"review_native_publication_v3", "before_state":descriptor(&before),
+                "origin_token":token(native.origin()),"proposal":descriptor(&proposal),"corrected_timeline":descriptor(&empty),
+                "context":descriptor(&empty),"retained_render":descriptor(&empty),"processing_render":descriptor(&empty),
+                "prepared_snapshot":descriptor(&proposal),"execution_identity":hash("missing render"),"output_volume_id":"fixture-only",
+                "mixed":null,"mix_packet":null,"processing_mix":null,"speech_inventory":null});
+            let proof = assets.accept_json(&record.to_string()).unwrap();
+            let private = json!({"retained_final_output":true,"retained_receipt_reopened":true,"active_graph_published":false,
+                "native_publication":descriptor(&proof)});
+            // Real commit performs the recursive v3 admission before CAS. A
+            // claimed ready receipt plus valid metadata cannot manufacture a
+            // processing release or any of the five physical render roles.
+            assert!(super::super::review_active::commit(store, data, &restored, &private).is_err());
+            assert_eq!(
+                store.review_graph_state(&original.token.job_id).unwrap(),
+                Some(restored.clone())
+            );
+            assert!(store.review_undo_target(&restored.token).unwrap().is_none());
+            assert_eq!(
+                store.review_graph_revision(&restored.token).unwrap(),
+                Some(restored)
+            );
+            assert!(store
+                .review_graph_revision(&ReviewToken {
+                    revision: 3,
+                    snapshot_sha256: after.sha256(),
+                    graph_sha256: hash("not committed"),
+                    ..original.token.clone()
+                })
+                .is_err());
+        });
+    }
 
     fn fixture() -> (ReviewGraphState, Value) {
         let fixture = decode(

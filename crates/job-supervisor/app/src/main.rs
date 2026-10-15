@@ -36,6 +36,13 @@ mod review_assets;
 mod review_document;
 mod review_effective;
 mod review_publication;
+mod review_export;
+mod review_export_publication;
+mod review_editable;
+mod review_desktop;
+mod review_preview;
+mod review_plan;
+mod review_apply;
 mod review_generation;
 mod review_speech;
 mod review_request;
@@ -620,6 +627,30 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-confirm-current")) {
+        return review_apply::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-current-plan")) {
+        return review_plan::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-current-audio")) {
+        return review_preview::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-desktop-state")) {
+        return review_desktop::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-publish-active-editable-pack")) {
+        return review_editable::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-publish-active-export")) {
+        return review_export::run_publish(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-validate-export-bundle")) {
+        return review_export_publication::run_validate(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-prepare-active-export")) {
+        return review_export::run(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-effective-state")) {
         return review_active::run_effective(std::env::args_os().skip(2));
     }
@@ -640,6 +671,12 @@ fn run() -> SupervisorResult<()> {
     }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-render-effective-b2")) {
         return review_generation::run_render_b2(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-commit-effective-b1")) {
+        return review_generation::run_commit_b1(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-commit-effective-b2")) {
+        return review_generation::run_commit_b2(std::env::args_os().skip(2));
     }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-active")) {
         return review_active::run(std::env::args_os().skip(2), false);

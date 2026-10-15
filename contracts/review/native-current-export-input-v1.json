@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native observation of current corrected export inputs; not serialized publication authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "current_token", "origin_token", "mode", "current_snapshot_json", "current_timeline_json", "original_manifest", "native_publication", "retained_render", "artifacts", "source", "final_mix", "active_graph_published", "export_published", "correction_ready"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_native_current_export_input"},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "origin_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "mode": {"enum": ["b1", "b2"]},
+    "current_snapshot_json": {"$ref": "native-effective-state-v1.json#/$defs/raw"},
+    "current_timeline_json": {"$ref": "native-effective-state-v1.json#/$defs/raw"},
+    "original_manifest": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "native_publication": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "retained_render": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "artifacts": {
+      "type": "array", "minItems": 5, "maxItems": 5,
+      "prefixItems": [
+        {"$ref": "#/$defs/artifact", "properties": {"role": {"const": "final_video"}}},
+        {"$ref": "#/$defs/artifact", "properties": {"role": {"const": "captions_srt"}}},
+        {"$ref": "#/$defs/artifact", "properties": {"role": {"const": "captions_ass"}}},
+        {"$ref": "#/$defs/artifact", "properties": {"role": {"const": "corrected_timeline"}}},
+        {"$ref": "#/$defs/artifact", "properties": {"role": {"const": "qc_report"}}}
+      ], "items": false
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+        "size_bytes": {"$ref": "#/$defs/positive_decimal"}
+      }
+    },
+    "final_mix": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/final_mix"}]},
+    "active_graph_published": {"const": true},
+    "export_published": {"const": false},
+    "correction_ready": {"const": false}
+  },
+  "allOf": [{"if": {"properties": {"mode": {"const": "b1"}}},
+    "then": {"properties": {"final_mix": {"type": "null"}}},
+    "else": {"properties": {"final_mix": {"$ref": "#/$defs/final_mix"}}}
+  }],
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "maxLength": 32767},
+    "positive_decimal": {"type": "string", "minLength": 1, "maxLength": 19, "pattern": "^[1-9][0-9]*$"},
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "path", "file"],
+      "properties": {
+        "role": {"enum": ["final_video", "captions_srt", "captions_ass", "corrected_timeline", "qc_report"]},
+        "path": {"$ref": "#/$defs/path"},
+        "file": {"$ref": "native-effective-render-retained-v1.json#/$defs/file"}
+      }
+    },
+    "final_mix": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "audio"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "audio": {"$ref": "native-retained-mix-context-v1.json#/properties/retained_mix_audio/items/properties/audio"}
+      }
+    }
+  }
+}

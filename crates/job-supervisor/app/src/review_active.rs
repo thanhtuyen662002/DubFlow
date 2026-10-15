@@ -254,8 +254,8 @@ fn verify_mix(
 pub(super) struct AdmittedPublication {
     pub(super) before: ReviewGraphState,
     pub(super) origin: ReviewGraphState,
-    snapshot: AdmittedSnapshot,
-    graph: String,
+    pub(super) snapshot: AdmittedSnapshot,
+    pub(super) graph: String,
     pub(super) record: Value,
 }
 
@@ -307,10 +307,30 @@ fn read_publication_before(
     publication: &Value,
     deadline: Instant,
 ) -> SupervisorResult<AdmittedPublication> {
-    super::review_publication::RecoveryWalk::new(deadline).check()?;
+    read_publication_with_walk(
+        store,
+        data,
+        current,
+        publication,
+        &mut super::review_publication::RecoveryWalk::new(deadline),
+    )
+}
+
+pub(super) fn read_publication_with_walk(
+    store: &DurableStore,
+    data: &Path,
+    current: &ReviewGraphState,
+    publication: &Value,
+    walk: &mut super::review_publication::RecoveryWalk,
+) -> SupervisorResult<AdmittedPublication> {
+    walk.check()?;
+    let deadline = walk.deadline();
     let assets = AcceptedAudioStore::open_existing(data, &current.token.job_id)?;
     let object = accepted_json(publication, &assets)?;
-    let record = decode(&assets.read_json(&object)?, LIMIT)?;
+    let record = decode(&walk.read_metadata(&assets, &object)?, LIMIT)?;
+    if record["schema_version"].as_u64() == Some(3) {
+        return super::review_publication::read_v3(store, data, current, &assets, &object, walk);
+    }
     let version = publication_version(&record)?;
     let before = before_state(&record, &assets, &current.token.job_id)?;
     if before.original_artifact_id != current.original_artifact_id
@@ -429,7 +449,7 @@ fn read_publication_before(
             "published snapshot differs from retained playback admission",
         ));
     }
-    super::review_publication::RecoveryWalk::new(deadline).check()?;
+    walk.check()?;
     Ok(AdmittedPublication {
         origin: before.clone(),
         before,
@@ -482,7 +502,22 @@ pub(super) fn read_active_inputs_before(
     state: &ReviewGraphState,
     deadline: Instant,
 ) -> SupervisorResult<(AdmittedSnapshot, Option<AdmittedPublication>)> {
-    super::review_publication::RecoveryWalk::new(deadline).check()?;
+    read_active_inputs_with_walk(
+        store,
+        data,
+        state,
+        &mut super::review_publication::RecoveryWalk::new(deadline),
+    )
+}
+
+pub(super) fn read_active_inputs_with_walk(
+    store: &DurableStore,
+    data: &Path,
+    state: &ReviewGraphState,
+    walk: &mut super::review_publication::RecoveryWalk,
+) -> SupervisorResult<(AdmittedSnapshot, Option<AdmittedPublication>)> {
+    walk.check()?;
+    let deadline = walk.deadline();
     let graph = decode(&state.graph_json, LIMIT)?;
     if graph["kind"] == "review_bound_original_graph" {
         if state.undo_depth != 0 || state.undo_target_revision.is_some() {
@@ -534,21 +569,25 @@ pub(super) fn read_active_inputs_before(
                 deadline,
             )?;
         }
-        super::review_publication::RecoveryWalk::new(deadline).check()?;
+        walk.check()?;
         return Ok((restored, None));
     }
     closed(&graph, &["schema_version", "kind", "publication"])?;
     if graph["schema_version"].as_u64() != Some(1)
         || !matches!(
             graph["kind"].as_str(),
-            Some("review_bound_retained_render_graph" | "review_bound_retained_render_graph_v2")
+            Some(
+                "review_bound_retained_render_graph"
+                    | "review_bound_retained_render_graph_v2"
+                    | "review_bound_retained_render_graph_v3"
+            )
         )
     {
         return Err(invalid(
             "unknown corrected graph needs explicit compatibility",
         ));
     }
-    let admitted = read_publication_before(store, data, state, &graph["publication"], deadline)?;
+    let admitted = read_publication_with_walk(store, data, state, &graph["publication"], walk)?;
     if admitted.graph != state.graph_json {
         return Err(invalid(
             "corrected graph is not its native canonical encoding",
@@ -560,7 +599,7 @@ pub(super) fn read_active_inputs_before(
             "active snapshot substitutes its admitted playback or evidence",
         ));
     }
-    super::review_publication::RecoveryWalk::new(deadline).check()?;
+    walk.check()?;
     Ok((expected, Some(admitted)))
 }
 
@@ -758,7 +797,7 @@ fn run_inner(
         "job_id":job,"revision":state.token.revision.to_string(),"snapshot_sha256":state.token.snapshot_sha256,
         "graph_sha256":state.token.graph_sha256,"snapshot":decode(snapshot.json(),LIMIT)?,
         "active_graph_published":matches!(decode(&state.graph_json,LIMIT)?["kind"].as_str(),
-            Some("review_bound_retained_render_graph"|"review_bound_retained_render_graph_v2")),
+            Some("review_bound_retained_render_graph"|"review_bound_retained_render_graph_v2"|"review_bound_retained_render_graph_v3")),
         "correction_ready":false}),
     )
 }

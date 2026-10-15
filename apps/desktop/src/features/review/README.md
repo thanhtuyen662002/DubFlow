@@ -1,5 +1,28 @@
 # Review Center component boundary
 
+The installed transport now calls `review_snapshot_v2`. Native discovery returns
+either an original-only session after checking no graph exists, or an admitted
+current display projection with `schema_version:3`. Its complete native token
+keeps revision as a decimal string; the component never converts it to a Number
+or manufactures a v2 revision. The current revision is shown after correction or
+undo. Existing v1/v2 payload parsing remains explicit and unchanged.
+
+Current B2 cue playback uses a separate full-token `review_audio_v2` request.
+All token fields and the selected job/finding/cue must match; browser requests
+never choose a media path. B1 has no invented synthesized preview. Current views
+cannot call the old revision0 audio or correction callbacks. Current B1/B2
+drafts can request `review_plan_v1` explicitly before confirmation. The native
+reader checks the actual current content/token and mode, then returns the exact
+scope and candidate metadata hash without running inference or changing durable
+state. The client keeps the current token, rejects substituted scope/changes and
+cancels a check when the draft or selection changes. Apply remains disabled until
+the full-token execution/CAS route is integrated and qualified. Full-token mutation/
+undo/export actions remain to integrate. A current native admission failure
+propagates; it does not select an old original snapshot. Standard output remains
+usable independently of Review.
+Component tests and type checks do not qualify native binaries, installed GUI,
+actual crash, cumulative regeneration or long-form product behavior.
+
 `mountReviewCenter(container, snapshot, actions)` reads strict public v1/v2
 payloads. It groups six finding reasons and renders at most 30 finding buttons
 per page. Integer source ticks remain identity; formatted milliseconds are only

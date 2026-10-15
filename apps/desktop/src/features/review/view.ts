@@ -1,14 +1,16 @@
 import type { ReviewReason } from "./model.ts";
 import { previewProductionCorrection, readReviewPayload, reviewRangeLabel,
   type ProductionCorrection, type ProductionFinding, type ReviewPayload } from "./wire.ts";
-import { acceptCorrectionResponse, correctionRequest, type ReviewCorrectionRequest, type ReviewCueRequest } from "./session.ts";
+import { acceptCorrectionResponse, correctionRequest, previewRequest, type ReviewCorrectionRequest, type ReviewPreviewRequest } from "./session.ts";
+import { currentPlanRequest, type CurrentPlanRequest, type CurrentCorrectionPlan } from "./current-plan.ts";
 
 export type ReviewVoice = { voice_id: string; label: string };
 export type ReviewActions = {
   /** Supply voices compatible with the pinned producer/model. */
   voices?: readonly ReviewVoice[];
-  preview?: (request: ReviewCueRequest, signal: AbortSignal) => Promise<void>;
+  preview?: (request: ReviewPreviewRequest, signal: AbortSignal) => Promise<void>;
   correct?: (request: ReviewCorrectionRequest) => Promise<unknown>;
+  planCurrent?: (request: CurrentPlanRequest, signal: AbortSignal) => Promise<CurrentCorrectionPlan>;
 };
 const LABELS: Record<ReviewReason, string> = {
   ASR_OCR_CONFLICT: "Lời nói và chữ trên hình", SPEAKER_UNCERTAINTY: "Người nói",
@@ -35,7 +37,8 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
   let selected: string | null = payload.findings[0]?.finding_id ?? null;
   let busy = false, stale = false, dirty = false, destroyed = false, message = "";
   let previewAbort: AbortController | null = null;
-  const invalidate = () => { epoch++; previewAbort?.abort(); previewAbort = null; return epoch; };
+  let planAbort: AbortController | null = null;
+  const invalidate = () => { epoch++; previewAbort?.abort(); previewAbort = null; planAbort?.abort(); planAbort = null; return epoch; };
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
     const node = doc.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -60,8 +63,8 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
     dirty = false;
     const root = el("section", undefined, "review-center");
     root.setAttribute("aria-label", "Review Center"); root.setAttribute("aria-busy", String(busy));
-    root.append(el("h2", actions.correct ? "Kiểm tra và sửa lời thoại" : "Kiểm tra lời thoại"));
-    root.append(el("p", payload.schema_version === 2 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.revision}` :
+    root.append(el("h2", actions.correct || actions.planCurrent ? "Kiểm tra và sửa lời thoại" : "Kiểm tra lời thoại"));
+    root.append(el("p", payload.schema_version === 3 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.current_token.revision}` : payload.schema_version === 2 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.revision}` :
       "Bản review cũ: chỉ xem nội dung, chưa có mốc thời gian xác thực."));
     const status = el("p", message, "review-status"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); root.append(status);
     const nav = el("nav", undefined, "review-groups"); nav.setAttribute("aria-label", "Nhóm cảnh báo");
@@ -100,14 +103,15 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
         metadata.append(el("dt", label), el("dd", value));
       }
       detail.append(metadata);
-      const bound = payload.schema_version === 2 ? item as ProductionFinding : null;
+      const bound = payload.schema_version !== 1 ? item as ProductionFinding : null;
       if (bound?.warning) detail.append(el("p", bound.warning, "review-warning"));
-      const canEdit = !!bound?.cue_id && !!bound.range && !!actions.correct;
-      const canPreview = !!bound?.cue_id && !!bound.output_preview && !!actions.preview;
+      const canEdit = payload.schema_version === 2 && !!bound?.cue_id && !!bound.range && !!actions.correct;
+      const canPlan = payload.schema_version === 3 && !!bound?.cue_id && !!bound.range && !!actions.planCurrent;
+      const canDraft = canEdit || canPlan;
+      const canPreview = (payload.schema_version === 2 || payload.schema_version === 3 && payload.mode === "b2") && !!bound?.cue_id && !!bound.output_preview && !!actions.preview;
       const listen = button("Nghe câu này", () => {
-        if (payload.schema_version !== 2 || !bound?.cue_id || !actions.preview) return;
-        const at = epoch; const request = { job_id: payload.job_id, revision: payload.revision,
-          finding_id: bound.finding_id, cue_id: bound.cue_id };
+        if (payload.schema_version === 1 || !bound?.cue_id || !actions.preview) return;
+        const at = epoch; const request = previewRequest(payload, bound.finding_id);
         previewAbort?.abort(); const playback = new AbortController(); previewAbort = playback;
         listen.disabled = true; status.textContent = "Đang kiểm tra và phát câu thoại…";
         void Promise.resolve().then(() => { if (playback.signal.aborted) throw new Error("preview cancelled");
@@ -119,36 +123,50 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
       }, !canPreview, false); detail.append(listen);
       const form = el("form"), translation = el("textarea"), voice = el("select");
       translation.id = prefix + "-translation"; translation.value = item.translated_text; translation.maxLength = 8192;
-      translation.rows = 4; translation.disabled = !canEdit || busy || stale;
+      translation.rows = 4; translation.disabled = !canDraft || busy || stale;
       const translationLabel = el("label", "Bản dịch"); translationLabel.htmlFor = translation.id;
-      voice.id = prefix + "-voice"; voice.disabled = !canEdit || busy || stale || !voices.length;
+      voice.id = prefix + "-voice"; voice.disabled = !canDraft || busy || stale || !voices.length || payload.schema_version === 3 && payload.mode === "b1";
       if (!voices.some(candidate => candidate.voice_id === item.voice)) {
         const retained = el("option", item.voice ?? "Giữ nguyên giọng hiện tại"); retained.value = item.voice ?? ""; voice.append(retained);
       }
       for (const candidate of voices) { const option = el("option", candidate.label); option.value = candidate.voice_id; voice.append(option); }
       voice.value = item.voice ?? "";
       const voiceLabel = el("label", "Giọng cho câu này"); voiceLabel.htmlFor = voice.id;
-      const planText = el("p", canEdit ? "Sửa bản dịch hoặc chọn giọng để xem các bước cần chạy lại." :
+      const planText = el("p", canDraft ? "Sửa bản dịch hoặc chọn giọng để xem các bước cần chạy lại." :
         "Chỉ xem lời thoại. Chức năng sửa câu chưa sẵn sàng trong phiên bản này.", "review-plan");
       planText.setAttribute("role", "status");
       const submit = el("button", "Xác nhận sửa câu này"); submit.type = "submit"; submit.disabled = true;
       const discard = el("button", "Bỏ thay đổi chưa lưu"); discard.type = "button"; discard.disabled = true;
-      function candidate() {
+      const inspect = el("button", "Xem phạm vi chạy lại"); inspect.type = "button"; inspect.disabled = true;
+      if (canPlan) { submit.textContent = "Chưa thể áp dụng thay đổi"; }
+      function candidateCorrection() {
         const correction: ProductionCorrection = { finding_id: item!.finding_id };
-        if (translation.value.trim() !== item!.translated_text) correction.translation = translation.value;
+        if (translation.value.trim() !== item!.translated_text) correction.translation = payload.schema_version === 3 ? translation.value.trim() : translation.value;
         if (voice.value !== (item!.voice ?? "")) {
           if (!voices.some(value => value.voice_id === voice.value)) throw new Error("invalid voice");
           correction.voice = voice.value;
         }
+        return correction;
+      }
+      function candidate() {
+        const correction = candidateCorrection();
         return { correction, plan: previewProductionCorrection(payload, correction) };
       }
       function refreshPlan() {
         submit.disabled = true;
-        if (!canEdit || busy || stale) return;
+        inspect.disabled = true;
+        planAbort?.abort(); planAbort = null;
+        if (!canDraft || busy || stale) return;
         dirty = translation.value.trim() !== item!.translated_text || voice.value !== (item!.voice ?? "");
         discard.disabled = !dirty;
         for (const control of root.querySelectorAll<HTMLButtonElement>("button[data-review-navigation]")) {
           control.disabled = control.dataset.reviewBlocked === "true" || dirty;
+        }
+        if (canPlan && payload.schema_version === 3) {
+          try { currentPlanRequest(payload, candidateCorrection()); inspect.disabled = false;
+            planText.textContent = "Kiểm tra phạm vi chạy lại trước khi áp dụng. Bản xuất hiện tại được giữ nguyên.";
+          } catch { planText.textContent = "Nhập bản dịch hợp lệ hoặc chọn một giọng khác để tiếp tục."; }
+          return;
         }
         try { const { plan } = candidate(); planText.textContent = "Chạy lại: " + plan.stages_to_rerun.map(stage => STAGES[stage] ?? stage).join(" → ") +
           ". Giữ kết quả nhận dạng lời nói và chữ trên hình. Giữ bản xuất hiện tại đến khi bản thay thế được kiểm tra."; submit.disabled = false;
@@ -157,6 +175,19 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
       discard.addEventListener("click", () => { translation.value = item.translated_text; voice.value = item.voice ?? "";
         refreshPlan(); translation.focus(); });
       translation.addEventListener("input", refreshPlan); voice.addEventListener("change", refreshPlan);
+      inspect.addEventListener("click", () => {
+        if (!canPlan || busy || stale || destroyed || payload.schema_version !== 3 || !actions.planCurrent) return;
+        let request: CurrentPlanRequest;
+        try { request = currentPlanRequest(payload, candidateCorrection()); } catch { refreshPlan(); return; }
+        planAbort?.abort(); const abort = new AbortController(); planAbort = abort;
+        const at = epoch; inspect.disabled = true; planText.textContent = "Đang kiểm tra bản hiện hành và phạm vi chạy lại…";
+        void actions.planCurrent(request, abort.signal).then(result => {
+          if (at !== epoch || destroyed || abort.signal.aborted) return;
+          planText.textContent = "Chạy lại: " + result.plan.stages_to_rerun.map(stage => STAGES[stage] ?? stage).join(" → ") +
+            ". Giữ kết quả nhận dạng lời nói và chữ trên hình. Kế hoạch chưa được áp dụng; bản xuất hiện tại được giữ nguyên.";
+        }, () => { if (at === epoch && !destroyed && !abort.signal.aborted) planText.textContent = "Chưa xác thực được kế hoạch. Hãy tải lại lời thoại trước khi tiếp tục.";
+        }).finally(() => { if (planAbort === abort) { planAbort = null; if (at === epoch && !destroyed) inspect.disabled = false; } });
+      });
       form.addEventListener("submit", event => {
         event.preventDefault(); if (!canEdit || busy || stale || destroyed || payload.schema_version !== 2 || !actions.correct) return;
         let change: ReturnType<typeof candidate>;
@@ -172,8 +203,9 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
           message = "Chưa xác định yêu cầu đã lưu hay chưa. Hãy tải lại review trước khi sửa tiếp.";
         } }).finally(() => { if (at === epoch && !destroyed) { busy = false; render(); } });
       });
-      form.append(translationLabel, translation, voiceLabel, voice, planText, submit, discard); detail.append(form);
-      if (!canEdit) detail.append(el("p", bound?.cue_id ? "Chức năng sửa câu chưa sẵn sàng cho kết quả này." :
+      form.append(translationLabel, translation, voiceLabel, voice, planText); if (canPlan) form.append(inspect);
+      form.append(submit, discard); detail.append(form);
+      if (!canDraft) detail.append(el("p", bound?.cue_id ? "Chức năng sửa câu chưa sẵn sàng cho kết quả này." :
         "Cảnh báo này chưa gắn với một câu thoại xác thực; chỉ có thể xem."));
     }
     layout.append(detail); root.append(layout); container.replaceChildren(root);

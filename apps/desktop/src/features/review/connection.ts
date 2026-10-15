@@ -1,19 +1,21 @@
-import { acceptCorrectionResponse, correctionRequest, type ReviewCorrectionRequest, type ReviewCueRequest } from "./session.ts";
-import { previewProductionCorrection, readReviewPayload, type ProductionSnapshot } from "./wire.ts";
+import { acceptCorrectionResponse, correctionRequest, previewRequest, samePreviewRequest, type ReviewCorrectionRequest, type ReviewPreviewRequest } from "./session.ts";
+import { previewProductionCorrection, readReviewPayload, type DisplaySnapshot } from "./wire.ts";
 import type { ReviewActions, ReviewVoice } from "./view.ts";
+import { currentPlanRequest, sameCurrentPlanRequest, readCurrentPlan, type CurrentPlanRequest } from "./current-plan.ts";
 
 /** The native host resolves committed pins and owns playback/durable writes. */
 export type ReviewTransport = {
   snapshot(jobId: string, signal: AbortSignal): Promise<unknown>;
-  preview(request: ReviewCueRequest, signal: AbortSignal): Promise<void>;
+  preview(request: ReviewPreviewRequest, signal: AbortSignal): Promise<void>;
   correct?: (request: ReviewCorrectionRequest, signal: AbortSignal) => Promise<unknown>;
+  planCurrent?: (request: CurrentPlanRequest, signal: AbortSignal) => Promise<unknown>;
 };
 
 function cancelled(): Error { return new DOMException("Review selection changed", "AbortError"); }
 
 /** Selection lifecycle shared by the real desktop host and its component harness. */
 export class ReviewConnection {
-  private current: ProductionSnapshot | null = null;
+  private current: DisplaySnapshot | null = null;
   private generation = 0;
   private abort = new AbortController();
   private disposed = false;
@@ -22,7 +24,7 @@ export class ReviewConnection {
 
   constructor(transport: ReviewTransport) { this.transport = transport; }
 
-  async load(jobId: string): Promise<ProductionSnapshot | null> {
+  async load(jobId: string): Promise<DisplaySnapshot | null> {
     if (this.disposed) throw new Error("review connection was disposed");
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(jobId)) throw new Error("review job ID is invalid");
     this.clear();
@@ -31,7 +33,7 @@ export class ReviewConnection {
       const raw = await this.transport.snapshot(jobId, signal);
       if (generation !== this.generation || signal.aborted || this.disposed) return null;
       const snapshot = readReviewPayload(raw);
-      if (snapshot.schema_version !== 2 || snapshot.job_id !== jobId) throw new Error("review snapshot does not belong to selected job");
+      if (snapshot.schema_version === 1 || snapshot.job_id !== jobId) throw new Error("review snapshot does not belong to selected job");
       this.current = snapshot;
       return structuredClone(snapshot);
     } catch (error) {
@@ -41,24 +43,40 @@ export class ReviewConnection {
     }
   }
 
-  snapshot(): ProductionSnapshot | null { return structuredClone(this.current); }
+  snapshot(): DisplaySnapshot | null { return structuredClone(this.current); }
 
   actions(voices: readonly ReviewVoice[] = []): ReviewActions {
     if (!this.current || this.disposed) throw new Error("review has not loaded");
+    const currentB1 = this.current.schema_version === 3 && this.current.mode !== "b2";
     const generation = this.generation, jobSignal = this.abort.signal;
-    const bound = (request: ReviewCueRequest) => {
+    const bound = (request: ReviewPreviewRequest) => {
       if (generation !== this.generation || jobSignal.aborted || !this.current || this.disposed) throw cancelled();
       const snapshot = this.current;
       const finding = snapshot.findings.find(item => item.finding_id === request.finding_id);
-      if (request.job_id !== snapshot.job_id || request.revision !== snapshot.revision ||
-        !finding || finding.cue_id === null || finding.range === null || finding.cue_id !== request.cue_id) {
+      if (!finding || !samePreviewRequest(previewRequest(snapshot, request.finding_id), request)) {
         throw new Error("review request does not match current job/revision/cue");
       }
       return { snapshot, finding };
     };
-    const result: ReviewActions = {
-      voices: voices.map(voice => ({ ...voice })),
-      preview: async (request, viewSignal) => {
+    const result: ReviewActions = { voices: voices.map(voice => ({ ...voice })) };
+    if (this.transport.planCurrent && this.current.schema_version === 3) result.planCurrent = async (request, viewSignal) => {
+      const assertBound = () => {
+        if (generation !== this.generation || jobSignal.aborted || !this.current || this.disposed || this.current.schema_version !== 3) throw cancelled();
+        const expected = currentPlanRequest(this.current, { finding_id: request.finding_id, ...request.changes });
+        if (!sameCurrentPlanRequest(expected, request)) throw new Error("current plan request does not match actual token/cue/changes");
+        return this.current;
+      };
+      assertBound();
+      const child = new AbortController(), cancel = () => child.abort();
+      jobSignal.addEventListener("abort", cancel, { once: true }); viewSignal.addEventListener("abort", cancel, { once: true });
+      try {
+        if (jobSignal.aborted || viewSignal.aborted) throw cancelled();
+        const response = await this.transport.planCurrent!(structuredClone(request), child.signal);
+        if (child.signal.aborted) throw cancelled();
+        return readCurrentPlan(assertBound(), request, response);
+      } finally { jobSignal.removeEventListener("abort", cancel); viewSignal.removeEventListener("abort", cancel); }
+    };
+    result.preview = async (request, viewSignal) => {
         const { finding } = bound(request);
         if (finding.output_preview === null) throw new Error("cue has no validated preview descriptor");
         const child = new AbortController();
@@ -74,10 +92,12 @@ export class ReviewConnection {
           jobSignal.removeEventListener("abort", cancel);
           viewSignal.removeEventListener("abort", cancel);
         }
-      },
-    };
-    if (this.transport.correct) result.correct = async request => {
-      const { snapshot } = bound(request);
+      };
+    if (currentB1) delete result.preview;
+    if (this.transport.correct && this.current.schema_version === 2) result.correct = async request => {
+      const cue = { job_id: request.job_id, revision: request.revision, finding_id: request.finding_id, cue_id: request.cue_id };
+      const { snapshot } = bound(cue);
+      if (snapshot.schema_version !== 2) throw new Error("current correction requires its full-token route");
       if (this.correcting === generation) throw new Error("review correction is already in progress");
       const expected = correctionRequest(snapshot, request.correction);
       if (JSON.stringify(expected) !== JSON.stringify(request)) throw new Error("review correction identity changed");
@@ -85,7 +105,7 @@ export class ReviewConnection {
       this.correcting = generation;
       try {
         const response = await this.transport.correct!(structuredClone(request), jobSignal);
-        bound(request);
+        bound(cue);
         const next = acceptCorrectionResponse(snapshot, request, response, plan);
         this.current = next;
         return structuredClone(next);

@@ -1,5 +1,7 @@
 import type { ReviewTransport } from "./connection.ts";
-import type { ReviewCueRequest } from "./session.ts";
+import { sameCurrentToken, samePreviewRequest, type NativeCurrentToken, type ReviewPreviewRequest } from "./session.ts";
+import { readReviewPayload } from "./wire.ts";
+import { sameCurrentPlanRequest, type CurrentPlanRequest } from "./current-plan.ts";
 
 export type ReviewInvoke = <T>(command: string, args: Record<string, unknown>) => Promise<T>;
 export type ReviewPlay = (bytes: ArrayBuffer, signal: AbortSignal) => Promise<void>;
@@ -35,42 +37,68 @@ export async function playReviewAudio(bytes: ArrayBuffer, signal: AbortSignal): 
 /** The session ID refers to a native pin held in memory, not a browser hash. */
 export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = playReviewAudio,
   nextId: () => string = () => crypto.randomUUID()): ReviewTransport {
-  let current: { jobId: string; id: string; signal: AbortSignal } | null = null;
+  let current: { jobId: string; id: string; signal: AbortSignal; nativeCurrent: boolean; token: NativeCurrentToken | null } | null = null;
   const cancel = (id: string) => { void invoke("review_cancel_v1", { requestId: id }).catch(() => {}); };
   return {
     snapshot: async (jobId, signal) => {
       if (signal.aborted) throw aborted();
-      const binding = { jobId, id: nextId(), signal };
+      const binding = { jobId, id: nextId(), signal, nativeCurrent: false, token: null as NativeCurrentToken | null };
       const release = () => { cancel(binding.id); if (current === binding) current = null; };
       signal.addEventListener("abort", release, { once: true });
       try {
-        const response = await invoke<unknown>("review_snapshot_v1", { jobId, requestId: binding.id });
+        const response = await invoke<unknown>("review_snapshot_v2", { jobId, requestId: binding.id });
         if (signal.aborted) throw aborted();
         if (!response || typeof response !== "object" || Array.isArray(response)) throw new Error("invalid review session");
         const session = response as Record<string, unknown>;
         if (Object.keys(session).sort().join(",") !== "kind,schema_version,session_id,snapshot" ||
-          session.schema_version !== 1 || session.kind !== "review_desktop_session" || session.session_id !== binding.id) throw new Error("invalid review session");
+          session.schema_version !== 2 || session.kind !== "review_desktop_current_session" || session.session_id !== binding.id) throw new Error("invalid review session");
+        if (!session.snapshot || typeof session.snapshot !== "object" || Array.isArray(session.snapshot)) throw new Error("invalid review snapshot");
+        const snapshot = readReviewPayload(session.snapshot);
+        if (snapshot.schema_version === 1 || snapshot.job_id !== jobId) throw new Error("unsupported native review snapshot");
+        binding.nativeCurrent = snapshot.schema_version === 3;
+        binding.token = snapshot.schema_version === 3 ? { ...snapshot.current_token } : null;
         current = binding;
-        return session.snapshot;
+        return snapshot;
       } catch (error) {
         release(); signal.removeEventListener("abort", release); throw error;
       }
       // Keep the listener while this job is selected, including after loading.
     },
-    preview: async (request: ReviewCueRequest, signal) => {
+    preview: async (request: ReviewPreviewRequest, signal) => {
       const binding = current;
       if (!binding || binding.jobId !== request.job_id || binding.signal.aborted || signal.aborted) throw aborted();
+      if (binding.nativeCurrent ? !("current_token" in request) || !binding.token || !sameCurrentToken(binding.token, request.current_token) : "current_token" in request) {
+        throw new Error("native audio requires the session's complete token binding");
+      }
+      const expected = binding.nativeCurrent ?
+        { job_id: binding.jobId, current_token: binding.token!, finding_id: request.finding_id, cue_id: request.cue_id } :
+        { job_id: binding.jobId, revision: (request as { revision: number }).revision, finding_id: request.finding_id, cue_id: request.cue_id };
+      if (!samePreviewRequest(expected, request)) throw new Error("native audio request has unsupported fields");
       const child = new AbortController();
       const id = nextId(), cancelRead = () => { child.abort(); cancel(id); };
       signal.addEventListener("abort", cancelRead, { once: true });
       binding.signal.addEventListener("abort", cancelRead, { once: true });
       try {
         if (signal.aborted || binding.signal.aborted) { cancelRead(); throw aborted(); }
-        const bytes = await invoke<ArrayBuffer>("review_audio_v1", { sessionId: binding.id, requestId: id, request: { ...request } });
+        const bytes = await invoke<ArrayBuffer>(binding.nativeCurrent ? "review_audio_v2" : "review_audio_v1", { sessionId: binding.id, requestId: id, request: structuredClone(request) });
         if (signal.aborted || binding.signal.aborted || current !== binding) throw aborted();
         if (!(bytes instanceof ArrayBuffer) || bytes.byteLength < 44 || bytes.byteLength > 64 * 1024 * 1024) throw new Error("invalid review audio response");
         await play(bytes, child.signal);
         if (signal.aborted || binding.signal.aborted || current !== binding) throw aborted();
+      } finally { signal.removeEventListener("abort", cancelRead); binding.signal.removeEventListener("abort", cancelRead); }
+    },
+    planCurrent: async (request: CurrentPlanRequest, signal) => {
+      const binding = current;
+      if (!binding || !binding.nativeCurrent || !binding.token || binding.jobId !== request.job_id || binding.signal.aborted || signal.aborted) throw aborted();
+      const expected = { job_id: binding.jobId, current_token: binding.token, finding_id: request.finding_id, cue_id: request.cue_id, changes: request.changes };
+      if (!sameCurrentPlanRequest(expected, request)) throw new Error("native plan requires the complete session token and closed changes");
+      const id = nextId(), cancelRead = () => cancel(id);
+      signal.addEventListener("abort", cancelRead, { once: true }); binding.signal.addEventListener("abort", cancelRead, { once: true });
+      try {
+        if (signal.aborted || binding.signal.aborted) { cancelRead(); throw aborted(); }
+        const response = await invoke<unknown>("review_plan_v1", { sessionId: binding.id, requestId: id, request: structuredClone(request) });
+        if (signal.aborted || binding.signal.aborted || current !== binding) throw aborted();
+        return response;
       } finally { signal.removeEventListener("abort", cancelRead); binding.signal.removeEventListener("abort", cancelRead); }
     },
   };

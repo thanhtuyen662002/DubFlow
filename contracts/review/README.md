@@ -339,3 +339,190 @@ segment/failure/duck-window/chunk/provenance oracle and reopens all three native
 PCM roles under the fixed output volume/quota/reserve/path-only-retarget fences.
 No producer, DSP, TTS/model inference or state mutation runs during recovery.
 These source interfaces are not yet connected to a complete v3 record or CAS.
+### Cumulative publication v3 (pending native qualification)
+
+`native-publication-v3.json` is a separate closed tag; v1/v2 keep their original
+meanings. Its before-state reference must match an actual immutable supervisor
+revision and recover through the same physical native reader, including undo
+states. The original archive token remains separate from the actual public token.
+The complete walk shares one deadline, cycle/depth/read bounds and no admission
+cache. Render context is derived from native current/original content and exact
+processing receipts before all five roles are reopened. B2 also rechecks the
+selected generation, all prior speech assignments, original mix packet and all
+three retained PCM roles. B1 requires every speech/mix field to be null.
+
+The opt-in `review-commit-effective-b1` and `review-commit-effective-b2` commands
+prepare this record through the native reader and use the existing supervisor CAS
+and monotonic undo. Existing private commands remain private. Desktop readiness
+stays false. This source is pending compilation/actual qualification; it does not
+prove cumulative editing, installed GUI, crash recovery or long-form acceptance.
+
+The active response recognizes an admitted v3 graph. Render recovery rechecks its
+live processing recipe after all five roles, in addition to the sealed metadata
+hash. Three pending native metadata/SQLite tests cover reference recovery after
+undo, forged views, changed original artifact bytes and refusal of a v3 receipt
+without processing/physical render. These tests are authored but not yet run.
+
+### Current corrected export input (pending native qualification)
+
+`review-prepare-active-export` takes the complete current token, including the
+original manifest hash, and opens the supervisor store read-only. The closed
+`native-current-export-input-v1.json` packet describes the actually active
+corrected graph; original/restored-original exports continue through their
+existing route. Full native v1/v2/v3 physical admission and selection share one
+720s recovery walk and before/after head fences. No original-only guard changes.
+
+All five retained roles reopen through canonical output-volume locators under
+the existing32GiB aggregate/2GiB reserve policy. Physical timeline bytes equal
+the admitted current cumulative timeline. Original source remains bound to the
+archived manifest and render context. B2 reopens all three retained PCM roles
+and selects the current final mix; B1 requires no mix. Paths are obtained from
+native reopened objects; mutable hints are never used for file access.
+
+The private Rust constructor grants no decoder/worker/browser authority. The
+serialized packet is an observation, not a durable input lease. The future
+standard/editable publisher must re-admit the active graph, reopen and copy/hash
+all assets, validate its complete portable pack and fence the full current head
+again before publication. This command copies no assets, changes no SQLite state
+and sets export publication/readiness false. Two native refusal regressions are
+authored but unrun; the selector, actual corrected export publication and full
+installed/cumulative/chunked/GUI/crash/long-form acceptance remain unqualified.
+
+The pending corrected-export copy primitive stages files within explicit
+`.exports-pending-v1/<native-generation-key>` directories in the existing locked
+Review media store. Inventories account pending/published/old/orphan exports
+across all jobs in the same quota. Restart verifies the complete saved prefix
+against the admitted source before appending; final full hashes, no-follow and
+single-link checks, readonly sealing and atomic no-replace rename protect each
+file. Fresh reserve checks cover all remaining assets before copy/every4MiB/
+preseal. Old storage inventories fail closed on the added directory layout;
+immutable historical product roots are never used to execute this new stage.
+
+Four filesystem regression cases are authored but unrun. Copying alone does not
+publish a complete export: current admission, complete portable manifest/pack
+validation, final head fence, atomic directory publication and actual product
+qualification still need to be connected and verified.
+
+### Versioned native corrected standard bundle (pending qualification)
+
+`review-publish-active-export` connects typed native current inputs to real
+bounded resumable copies and a complete relative-resource manifest. Five render
+roles/source and all three B2 PCM roles are copied; B1 has six resources. The
+entire current token/snapshot, separate origin, mode and native publication/render
+hashes bind the deterministic generation key. All resource paths are portable
+basenames; snapshot bytes remain exact identity metadata, not portable IO paths.
+
+Independent bundle validation rehashes every sealed resource, checks its exact
+directory inventory, closed role/file table and snapshot/generation identity.
+A second full current native admission must reproduce the same manifest before
+final state/quota/reserve fences and native no-replace directory publication.
+The existing job guard covers publication; SQLite opens read-only. Interrupted
+staging is resumed by the same generation; fully published generations are
+revalidated/reused. Original standard files and prior exports remain intact.
+
+The explicit offline `review-validate-export-bundle` command requires the trusted
+manifest hash. It verifies a moved bundle's bytes without claiming live state or
+media decoding. Production editable-pack integration with PR183 is still required;
+the new result keeps that flag false. This standard publication source and native
+tests are pending compilation/execution, with no current installed/crash/long-form
+acceptance implied. No historical driver/job/root or source pin is replayed.
+
+Resume reservation counts only bytes still to allocate after inspecting existing
+prefix sizes and reverified sealed targets. Prefix content is still compared
+against the native source before append, and the aggregate includes every actual
+byte. Three additional native bundle/directory regression cases are authored but
+unrun; their byte fixtures make no encoded-media/product claim.
+
+`native-processing-editable-pack-v1.json` is a separate optional processing
+receipt for PR183's isolated guarded-copy worker. It reuses full processing/origin
+admission and exact protected runtime/model/media pins, then verifies a closed
+inventoried capability plus ten ordered dependencies. The native recipe hash
+is source-bound; the execution hash additionally binds the context. It gives no
+current-state, vendor or graph publication authority. Missing/changed capability
+or dependency refuses; existing original/effective admission semantics stay
+unchanged. Its new native regression is authored but unrun. Combined-release
+admission, dispatch, explicit editable storage inventory/physical retention and
+final current editable publication/actual product qualification remain required.
+### Current corrected editable publication (pending native qualification)
+
+`review-publish-active-editable-pack` takes the complete actual current token and
+explicit source-matched processing selection. It requires a previously published
+exact native current standard bundle, derives its sealed worker context and
+private output path, and holds the existing job/output leases through copying.
+The worker context's `output_volume_id` is a native OS pin, freshly compared
+during guarded copying; worker output never admits native volume/current state.
+Native independently checks all v2 assets/tracks/integer timeline projection,
+guide/marker bytes, copied full hashes and closed single-link physical inventory.
+
+The explicit pending/published editable layouts count with all old/undo/orphan/
+other-job output bytes. Full source/current/processing re-admission precedes
+readonly seal and no-replace directory publication; late failure preserves the
+complete version. `native-current-editable-result-v1.json` distinguishes native
+current publication from historical worker hints and keeps vendor/graph/readiness
+flags false. Original export routes and immutable producer bindings remain.
+Six authored native tests have not executed; Python/byte fixture evidence does
+not qualify Rust, installed media, cumulative/undo, crash or long-form behavior.
+
+### Current desktop display projection
+
+`native-desktop-state-v1.json` is emitted by the read-only `review-desktop-state`
+route. An initialized graph must pass full native physical current recovery;
+errors cannot become original fallback. Only `original_only` with a null snapshot
+means no graph exists. A current snapshot uses separate `schema-v3.json` with
+the complete actual token and canonical decimal revision; durable snapshot-v2
+bytes and hashes remain unchanged.
+
+Tauri snapshot-v2 sessions retain native current tokens. Current sessions refuse
+old revision0 audio; original-only sessions recheck native absence around audio
+and snapshot delivery. Frontend current-v3 views preserve signed64 counters and
+retain `correction_ready:false`; full-token editing, audio, undo and export actions
+remain to integrate and qualify. The old v1 endpoint and public v1/v2 payload
+contracts remain available explicitly; native failure never silently selects one.
+
+### Current cue audio (pending native qualification)
+
+`native-current-cue-request-v1.json` carries the full actual native token and
+finding/cue identities, with no media path. `review-current-audio` readmits the
+current B2 composition, selects its assigned accepted TTS document, hashes and
+checks the complete single-link PCM wave and fences the actual head before
+returning bounded bytes. Changed/retained documents require readonly waveforms;
+only the exact accepted original TTS metadata object keeps its archived
+producer's pinned-source policy. Missing current audio never falls back to the
+original. Failed/unmapped audio refuses; B1 does not invent TTS.
+Tauri audio-v2 binds that request to its native current session and original pin;
+frontend routing/cancellation preserves decimal revisions and all hash fields.
+The new Node/type checks pass; five Rust/Tauri tests remain unrun. Full native,
+installed GUI and actual media qualification are still mandatory.
+
+### Current correction proposal before confirmation
+
+`native-current-correction-plan-v1.json` defines a separate private read-only
+proposal, bound to every actual token field, finding/cue and normalized changes.
+`review-current-plan` physically admits current content, calls the native mode
+planner and fences the head. B1 excludes TTS/mix and rejects voice assignment;
+B2 distinguishes translation and voice-only scope. ASR/OCR and valid output stay
+retained. Candidate revision/hash identify logical metadata, not produced media.
+
+The result's read_only is true and processing_release_admitted,
+active_graph_published and execution_ready are false. No inference, processing
+release admission or durable write is implied. Tauri/session/client checks retain
+the complete decimal token and cancel stale requests. Current desktop drafts can
+request this check; actual confirmation/execution/CAS remains separately gated.
+Three new native/Tauri tests are authored/unrun; Node/type checks pass. Full
+native, installed GUI, media, crash and long-form acceptance remains mandatory.
+
+### Explicit current confirmation
+
+`native-current-confirmation-v1.json` wraps the complete read-only native plan
+with an explicit true confirmation. `review-confirm-current` re-derives that plan
+and requires exact canonical equality, then selects only its own installed
+source-matched native/manifest processing root. Missing compiled source identity,
+ambiguous inventory, changed executable bytes or a changing manifest refuses.
+Full processing/runtime/model admission remains the commit path's responsibility.
+
+Current B1/B2 commit commands additionally require original-manifest hash, exact
+cue and candidate snapshot hash. These are checked under the existing job lock,
+before worker/context mutation. Preparation commands reject confirmation fields.
+No durable schema or original job pin changes. Four new native tests remain
+authored/unrun; source/format checks do not replace exact-head CI, actual native
+execution, desktop apply/undo/export or full product acceptance.

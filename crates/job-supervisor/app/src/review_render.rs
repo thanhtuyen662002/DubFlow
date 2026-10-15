@@ -1250,9 +1250,21 @@ fn reopen_effective_retained(
     })
 }
 
-pub(super) fn execute_effective(input: EffectiveRenderInputs<'_>) -> SupervisorResult<Value> {
+/// Build the complete context from typed current content, immutable origin and
+/// freshly reopened physical dependencies. Historical recovery uses this same
+/// derivation without pretending its before-state is the current SQLite head.
+fn effective_context(
+    input: &EffectiveRenderInputs<'_>,
+    deadline: Instant,
+) -> SupervisorResult<Value> {
+    let phase = super::review_publication::RecoveryWalk::new(deadline);
+    phase.check()?;
     let view = input.current.packet()?;
-    effective_fence(&input, &view)?;
+    if input.state != input.current.state() {
+        return Err(invalid(
+            "current render state differs from its typed content",
+        ));
+    }
     let seed = super::review_seed::read_original(input.store, input.data, input.current.origin())?;
     let graph = decode(&seed.graph, LIMIT)?;
     let mode = match graph["mode"].as_str() {
@@ -1303,13 +1315,7 @@ pub(super) fn execute_effective(input: EffectiveRenderInputs<'_>) -> SupervisorR
     if old["translated_text"] == new["translated_text"] && corrected != current {
         return Err(invalid("voice-only current timeline bytes changed"));
     }
-    let captions = current_caption_pins(
-        &input,
-        &view,
-        &manifest,
-        &seed.output_root,
-        Instant::now() + Duration::from_secs(720),
-    )?;
+    let captions = current_caption_pins(&input, &view, &manifest, &seed.output_root, deadline)?;
     let mixed = if let Some(m) = input.mixed {
         if m["retained_audio"] != true
             || m["mix_metadata_retargeted"] != true
@@ -1327,11 +1333,7 @@ pub(super) fn execute_effective(input: EffectiveRenderInputs<'_>) -> SupervisorR
     } else {
         None
     };
-    verify_effective_mix(
-        &input,
-        mixed.as_ref(),
-        Instant::now() + Duration::from_secs(720),
-    )?;
+    verify_effective_mix(input, mixed.as_ref(), deadline)?;
     let source_path = PathBuf::from(
         manifest["source"]["path"]
             .as_str()
@@ -1346,7 +1348,7 @@ pub(super) fn execute_effective(input: EffectiveRenderInputs<'_>) -> SupervisorR
         source_hash,
         source_size,
         false,
-        Instant::now() + Duration::from_secs(180),
+        deadline.min(Instant::now() + Duration::from_secs(180)),
     )?;
     let start = input
         .store
@@ -1364,6 +1366,87 @@ pub(super) fn execute_effective(input: EffectiveRenderInputs<'_>) -> SupervisorR
         "corrected_timeline_json":corrected,"corrected_timeline_sha256":input.timeline.sha256,"current_captions":captions,
         "original_output_root":seed.output_root,"source":{"path":source_path,"sha256":source_hash,"size_bytes":source_size.to_string(),"artifact_root":source_path.parent()},
         "retained_mix":retained_mix,"burn_in_subtitles":burn});
+    for object in [
+        &manifest_object,
+        &original_object,
+        &current_object,
+        input.timeline,
+    ] {
+        phase.read_metadata(input.assets, object)?;
+    }
+    phase.check()?;
+    Ok(ctx)
+}
+
+/// Physical recovery accepts no worker/client context as authority. Compare the
+/// entire saved context with the same fresh native derivation used at execution
+/// and reopen the five retained roles under the caller's single phase deadline.
+pub(super) fn recover_effective_retained(
+    input: &EffectiveRenderInputs<'_>,
+    record: &Value,
+    walk: &mut super::review_publication::RecoveryWalk,
+) -> SupervisorResult<VerifiedRetainedRender> {
+    walk.check()?;
+    let context = accepted_json(&record["context"], input.assets)?;
+    let receipt = accepted_json(&record["retained_render"], input.assets)?;
+    let processing = accepted_json(&record["processing_render"], input.assets)?;
+    let saved = decode(&walk.read_metadata(input.assets, &context)?, LIMIT)?;
+    let expected = effective_context(input, walk.deadline())?;
+    if exact(&saved)? != exact(&expected)? {
+        return Err(invalid(
+            "recovered render context differs from native current/original dependencies",
+        ));
+    }
+    let recipe = input
+        .processing
+        .effective_render_receipt(Some(&context.sha256))?;
+    let identity = super::review_document::text(&record["execution_identity"], 128)?;
+    if recipe["execution_identity"] != identity
+        || exact(&decode(
+            &walk.read_metadata(input.assets, &processing)?,
+            LIMIT,
+        )?)? != exact(&recipe)?
+    {
+        return Err(invalid(
+            "recovered render substitutes its processing execution identity",
+        ));
+    }
+    let reopened = reopen_effective_retained(
+        input,
+        &receipt,
+        &context,
+        &processing,
+        identity,
+        walk.deadline(),
+    )?;
+    if exact(&effective_context(input, walk.deadline())?)? != exact(&expected)? {
+        return Err(invalid(
+            "native render dependencies changed during physical recovery",
+        ));
+    }
+    // The sealed receipt is a byte pin. Recheck the admitted live processing
+    // dependencies after physical media recovery before it can reach CAS.
+    if exact(
+        &input
+            .processing
+            .effective_render_receipt(Some(&context.sha256))?,
+    )? != exact(&recipe)?
+    {
+        return Err(invalid(
+            "processing render recipe changed during physical recovery",
+        ));
+    }
+    for object in [&context, &receipt, &processing, input.timeline] {
+        walk.read_metadata(input.assets, object)?;
+    }
+    walk.check()?;
+    Ok(reopened)
+}
+
+pub(super) fn execute_effective(input: EffectiveRenderInputs<'_>) -> SupervisorResult<Value> {
+    let view = input.current.packet()?;
+    effective_fence(&input, &view)?;
+    let ctx = effective_context(&input, Instant::now() + Duration::from_secs(720))?;
     let context = input.assets.accept_json(&ctx.to_string())?;
     let recipe = input
         .processing
@@ -1468,33 +1551,16 @@ pub(super) fn execute_effective(input: EffectiveRenderInputs<'_>) -> SupervisorR
         retained.verify_file(file, deadline)?;
     }
     drop(retained); // Release output writer before independent canonical reopen.
-    verified(
-        &source_path,
-        source_hash,
-        source_size,
-        false,
-        Instant::now() + Duration::from_secs(180),
-    )?;
-    verify_caption_pins(
-        &captions,
-        &current,
-        Instant::now() + Duration::from_secs(720),
-    )?;
-    verify_effective_mix(
+    if exact(&effective_context(
         &input,
-        mixed.as_ref(),
         Instant::now() + Duration::from_secs(720),
-    )?;
-    for object in [
-        &manifest_object,
-        &original_object,
-        &current_object,
-        input.timeline,
-        &context,
-        &result,
-        &processing,
-        &receipt,
-    ] {
+    )?)? != exact(&ctx)?
+    {
+        return Err(invalid(
+            "current render context changed during execution/retention",
+        ));
+    }
+    for object in [input.timeline, &context, &result, &processing, &receipt] {
         input.assets.read_json(object)?;
     }
     effective_fence(&input, &view)?;

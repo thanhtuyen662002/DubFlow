@@ -24,7 +24,10 @@ export function mountDesktopReview(container: HTMLElement, transport: ReviewTran
       const snapshot = await connection.load(jobId);
       if (at !== generation || disposed || !snapshot) return;
       view = mountReviewCenter(body, snapshot, connection.actions(voices));
-      status.textContent = "Có thể xem lời thoại và nghe từng câu. Chức năng sửa và dựng lại đang được hoàn thiện. Bản xuất hiện tại vẫn dùng được.";
+      status.textContent = snapshot.schema_version === 3 ?
+        (snapshot.mode === "b2" ? "Đang xem phiên bản hiện hành. Có thể nghe từng câu và kiểm tra phạm vi chạy lại khi sửa. Bản xuất hiện tại vẫn dùng được." :
+          "Đang xem phiên bản phụ đề hiện hành. Có thể kiểm tra phạm vi chạy lại khi sửa bản dịch. Bản xuất hiện tại vẫn dùng được.") :
+        "Có thể xem lời thoại và nghe từng câu. Chức năng sửa và dựng lại đang được hoàn thiện. Bản xuất hiện tại vẫn dùng được.";
       load.textContent = "Tải lại lời thoại";
     } catch (error) {
       if (at !== generation || disposed) return;

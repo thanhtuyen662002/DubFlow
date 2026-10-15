@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native corrected standard bundle; relative resources and exact current identity",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "recipe", "generation", "current_token", "origin_token", "mode", "current_snapshot_json", "publication_sha256", "retained_render_sha256", "files"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_corrected_standard_bundle"},
+    "recipe": {"const": "review-corrected-standard-bundle-v1"},
+    "generation": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "origin_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "mode": {"enum": ["b1", "b2"]},
+    "current_snapshot_json": {"$ref": "native-effective-state-v1.json#/$defs/raw"},
+    "publication_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "retained_render_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "files": {"type": "array", "minItems": 6, "maxItems": 9,
+      "items": false,
+      "prefixItems": [
+        {"$ref": "#/$defs/file", "properties": {"role": {"const": "final_video"}, "relative_path": {"const": "final_vi.mp4"}}},
+        {"$ref": "#/$defs/file", "properties": {"role": {"const": "captions_srt"}, "relative_path": {"const": "captions_vi.srt"}}},
+        {"$ref": "#/$defs/file", "properties": {"role": {"const": "captions_ass"}, "relative_path": {"const": "captions_vi.ass"}}},
+        {"$ref": "#/$defs/file", "properties": {"role": {"const": "corrected_timeline"}, "relative_path": {"const": "timeline.json"}}},
+        {"$ref": "#/$defs/file", "properties": {"role": {"const": "qc_report"}, "relative_path": {"const": "qc_report.json"}}},
+        {"$ref": "#/$defs/file", "properties": {"role": {"const": "source_video"}, "relative_path": {"pattern": "^source\\.[a-z0-9]{1,8}$"}}},
+        {"$ref": "#/$defs/file", "properties": {"role": {"const": "original_audio"}, "relative_path": {"const": "original_audio.wav"}}},
+        {"$ref": "#/$defs/file", "properties": {"role": {"const": "dialogue_stem"}, "relative_path": {"const": "dialogue_stem.wav"}}},
+        {"$ref": "#/$defs/file", "properties": {"role": {"const": "final_mix"}, "relative_path": {"const": "final_mix.wav"}}}
+      ]
+    }
+  },
+  "allOf": [{"if": {"properties": {"mode": {"const": "b1"}}},
+    "then": {"properties": {"files": {"minItems": 6, "maxItems": 6}}},
+    "else": {"properties": {"files": {"minItems": 9, "maxItems": 9}}}
+  }],
+  "$defs": {
+    "file": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "relative_path", "sha256", "size_bytes"],
+      "properties": {
+        "role": {"enum": ["final_video", "captions_srt", "captions_ass", "corrected_timeline", "qc_report", "source_video", "original_audio", "dialogue_stem", "final_mix"]},
+        "relative_path": {"type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-z0-9]{1,8}$", "maxLength": 128},
+        "sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+        "size_bytes": {"type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 19}
+      }
+    }
+  }
+}

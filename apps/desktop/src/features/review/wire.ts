@@ -25,7 +25,14 @@ export type ProductionSnapshot = {
   last_plan: ProductionPlan | null;
 };
 export type LegacyPayload = { schema_version: 1; findings: ReviewFinding[] };
-export type ReviewPayload = LegacyPayload | ProductionSnapshot;
+export type CurrentReviewSnapshot = {
+  schema_version: 3; kind: "review_current_snapshot"; job_id: string;
+  current_token: { job_id: string; revision: string; snapshot_sha256: string; graph_sha256: string; original_manifest_sha256: string };
+  mode: "b1" | "b2"; time_base: ProductionSnapshot["time_base"];
+  findings: ProductionFinding[]; last_plan: ProductionPlan | null; correction_ready: false;
+};
+export type DisplaySnapshot = ProductionSnapshot | CurrentReviewSnapshot;
+export type ReviewPayload = LegacyPayload | DisplaySnapshot;
 export type ProductionCorrection = { finding_id: string; translation?: string; voice?: string };
 
 const REASONS: ReviewReason[] = ["ASR_OCR_CONFLICT", "SPEAKER_UNCERTAINTY", "TRANSLATION_ANOMALY",
@@ -117,6 +124,7 @@ function plan(value: unknown): ProductionPlan | null {
 export function readReviewPayload(value: unknown): ReviewPayload {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("review payload is invalid");
   const version = (value as Record<string, unknown>).schema_version;
+  if (version === 3) return readCurrentReview(value);
   if (version !== 1 && version !== 2) throw new Error("unsupported review schema_version");
   const raw = record(value, version === 1 ? ["schema_version", "findings"] :
     ["schema_version", "job_id", "revision", "time_base", "findings", "last_plan"], "snapshot");
@@ -145,6 +153,39 @@ export function readReviewPayload(value: unknown): ReviewPayload {
     cues.set(item.cue_id, scope);
   }
   return result;
+}
+
+/** Native display projection retains the full actual token as decimal/hash
+ * strings. It never manufactures a v2 revision or authorizes an old v2 action. */
+function readCurrentReview(value: unknown): CurrentReviewSnapshot {
+  const raw = record(value, ["schema_version", "kind", "job_id", "current_token", "mode", "time_base", "findings", "last_plan", "correction_ready"], "current snapshot");
+  if (raw.kind !== "review_current_snapshot" || raw.correction_ready !== false || (raw.mode !== "b1" && raw.mode !== "b2")) throw new Error("unsupported native current projection");
+  const token = record(raw.current_token, ["job_id", "revision", "snapshot_sha256", "graph_sha256", "original_manifest_sha256"], "current token");
+  const job = id(raw.job_id, "job_id"), tokenJob = id(token.job_id, "token job_id");
+  if (job !== tokenJob) throw new Error("native token belongs to another job");
+  const revision = ticks(token.revision);
+  const hash = (v: unknown) => { if (typeof v !== "string" || !/^sha256:[0-9a-f]{64}$/.test(v)) throw new Error("native token hash is invalid"); return v; };
+  const base = record(raw.time_base, ["numerator", "denominator"], "time_base");
+  const numerator = ticks(base.numerator), denominator = ticks(base.denominator);
+  let a = BigInt(numerator), b = BigInt(denominator);
+  if (!a || !b) throw new Error("time_base must be positive");
+  while (b) [a, b] = [b, a % b];
+  if (a !== 1n) throw new Error("time_base must be reduced");
+  if (!Array.isArray(raw.findings) || raw.findings.length > 100000) throw new Error("findings must be a bounded array");
+  const findings = raw.findings.map(item => finding(item, false) as ProductionFinding);
+  if (new Set(findings.map(item => item.finding_id)).size !== findings.length) throw new Error("duplicate finding_id");
+  const cues = new Map<string, string>();
+  for (const item of findings) {
+    if (item.cue_id === null) continue;
+    const scope = JSON.stringify([item.range, item.source_text, item.translated_text, item.speaker, item.voice]);
+    if (cues.has(item.cue_id) && cues.get(item.cue_id) !== scope) throw new Error("findings disagree on canonical cue mapping");
+    cues.set(item.cue_id, scope);
+  }
+  const last_plan = plan(raw.last_plan);
+  if (last_plan && !findings.some(item => item.finding_id === last_plan.finding_id)) throw new Error("plan references an unknown finding");
+  return { schema_version: 3, kind: "review_current_snapshot", job_id: job,
+    current_token: { job_id: tokenJob, revision, snapshot_sha256: hash(token.snapshot_sha256), graph_sha256: hash(token.graph_sha256), original_manifest_sha256: hash(token.original_manifest_sha256) },
+    mode: raw.mode, time_base: { numerator, denominator }, findings, last_plan, correction_ready: false };
 }
 
 export function previewProductionCorrection(payload: ReviewPayload, correction: ProductionCorrection): ProductionPlan {

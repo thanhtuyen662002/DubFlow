@@ -19,6 +19,14 @@ const BUFFER_BYTES: usize = 32 * 1024;
 const MAX_RIFF_CHUNKS: usize = 1024;
 const MAX_MIX_STORE_ENTRIES: usize = 4096;
 
+#[path = "review_export_copy.rs"]
+mod export_copy;
+pub(super) use export_copy::{verify_export_files, ExportCopyInput, ExportFileSpec};
+
+#[path = "review_editable_storage.rs"]
+mod editable_storage;
+pub(super) use editable_storage::{verify_editable_files, EditableFileSpec};
+
 fn invalid(message: &str) -> SupervisorError {
     SupervisorError::Invalid(message.into())
 }
@@ -273,6 +281,256 @@ fn time_left(deadline: Option<Instant>) -> SupervisorResult<()> {
         return Err(invalid("mix storage exceeded its shared deadline"));
     }
     Ok(())
+}
+
+/// Read an already admitted current cue into memory. The caller must derive
+/// root/path/pin from native current composition, never a preview path hint.
+pub(super) enum CueAudioKind {
+    ArchivedOriginal,
+    Retained,
+}
+
+pub(super) fn read_current_cue_audio(
+    root: &Path,
+    path: &Path,
+    pin: &PcmPin,
+    kind: CueAudioKind,
+    deadline: Instant,
+) -> SupervisorResult<Vec<u8>> {
+    time_left(Some(deadline))?;
+    pin.validate()?;
+    plain(root)?;
+    if !root.is_absolute()
+        || !root.is_dir()
+        || !path.is_absolute()
+        || !path.starts_with(root)
+        || root.components().any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(invalid("current cue escaped its admitted waveform root"));
+    }
+    let mut file = regular(path)?;
+    let identity = single_cue_file(&file)?;
+    let before = file.metadata()?;
+    let retained = matches!(kind, CueAudioKind::Retained);
+    if before.len() != pin.size_bytes || retained && !before.permissions().readonly() {
+        return Err(invalid(
+            "current cue bytes are not the sealed admitted size",
+        ));
+    }
+    let mut raw = Vec::with_capacity(pin.size_bytes as usize);
+    let mut digest = Sha256::new();
+    let mut block = [0u8; BUFFER_BYTES];
+    loop {
+        time_left(Some(deadline))?;
+        let n = file.read(&mut block)?;
+        if n == 0 {
+            break;
+        }
+        if raw.len() as u64 + n as u64 > pin.size_bytes {
+            return Err(invalid("current cue grew"));
+        }
+        digest.update(&block[..n]);
+        raw.extend_from_slice(&block[..n]);
+    }
+    if raw.len() as u64 != pin.size_bytes || format!("sha256:{:x}", digest.finalize()) != pin.sha256
+    {
+        return Err(invalid("current cue full hash changed"));
+    }
+    pcm(&mut file, pin)?;
+    plain(root)?;
+    plain(path)?;
+    let fresh = regular(path)?;
+    if single_cue_file(&fresh)? != identity
+        || single_cue_file(&file)? != identity
+        || fresh.metadata()?.len() != before.len()
+        || fresh.metadata()?.modified()? != before.modified()?
+        || file.metadata()?.modified()? != before.modified()?
+        || fresh.metadata()?.permissions().readonly() != before.permissions().readonly()
+        || retained && !fresh.metadata()?.permissions().readonly()
+    {
+        return Err(invalid("current cue changed its readonly file identity"));
+    }
+    time_left(Some(deadline))?;
+    Ok(raw)
+}
+
+#[cfg(test)]
+mod current_audio_read_tests {
+    use super::*;
+    use std::time::Duration;
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            // Only this fresh flat fixture directory is owned. No parent or
+            // historical QA root is removed and no recursive deletion is used.
+            if let Ok(entries) = fs::read_dir(&self.0) {
+                for entry in entries.flatten() {
+                    if entry.file_type().is_ok_and(|v| v.is_file()) {
+                        if let Ok(meta) = entry.metadata() {
+                            let mut p = meta.permissions();
+                            #[cfg(windows)]
+                            p.set_readonly(false);
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                p.set_mode(0o600);
+                            }
+                            let _ = fs::set_permissions(entry.path(), p);
+                            let _ = fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+            let _ = fs::remove_dir(&self.0);
+        }
+    }
+    fn fixture() -> (Fixture, PathBuf, Vec<u8>, PcmPin) {
+        let root = std::env::temp_dir().join(format!(
+            "dubflow-current-cue-{}-{}",
+            std::process::id(),
+            ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("current.wav");
+        let mut raw = Vec::new();
+        raw.extend(b"RIFF");
+        raw.extend(100u32.to_le_bytes());
+        raw.extend(b"WAVEfmt ");
+        raw.extend(16u32.to_le_bytes());
+        raw.extend(1u16.to_le_bytes());
+        raw.extend(1u16.to_le_bytes());
+        raw.extend(48000u32.to_le_bytes());
+        raw.extend(96000u32.to_le_bytes());
+        raw.extend(2u16.to_le_bytes());
+        raw.extend(16u16.to_le_bytes());
+        raw.extend(b"data");
+        raw.extend(64u32.to_le_bytes());
+        for i in 0..32i16 {
+            raw.extend(i.to_le_bytes());
+        }
+        fs::write(&path, &raw).unwrap();
+        let mut p = fs::metadata(&path).unwrap().permissions();
+        p.set_readonly(true);
+        fs::set_permissions(&path, p).unwrap();
+        let pin = PcmPin {
+            sha256: format!("sha256:{:x}", Sha256::digest(&raw)),
+            size_bytes: raw.len() as u64,
+            sample_rate: 48000,
+            channels: 1,
+            frame_count: 32,
+        };
+        (Fixture(root), path, raw, pin)
+    }
+    fn writable(path: &Path) {
+        let mut p = fs::metadata(path).unwrap().permissions();
+        #[cfg(windows)]
+        p.set_readonly(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            p.set_mode(0o600);
+        }
+        fs::set_permissions(path, p).unwrap();
+    }
+    #[test]
+    fn current_cue_capture_is_full_hash_pcm_readonly_and_mtime_preserving() {
+        let (root, path, raw, pin) = fixture();
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            read_current_cue_audio(
+                &root.0,
+                &path,
+                &pin,
+                CueAudioKind::Retained,
+                Instant::now() + Duration::from_secs(3)
+            )
+            .unwrap(),
+            raw
+        );
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+        assert!(read_current_cue_audio(
+            &root.0,
+            &path,
+            &pin,
+            CueAudioKind::Retained,
+            Instant::now()
+        )
+        .is_err());
+        writable(&path);
+        assert!(read_current_cue_audio(
+            &root.0,
+            &path,
+            &pin,
+            CueAudioKind::Retained,
+            Instant::now() + Duration::from_secs(3)
+        )
+        .is_err());
+        assert_eq!(
+            read_current_cue_audio(
+                &root.0,
+                &path,
+                &pin,
+                CueAudioKind::ArchivedOriginal,
+                Instant::now() + Duration::from_secs(3)
+            )
+            .unwrap(),
+            raw
+        );
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+        assert_eq!(fs::read(&path).unwrap(), raw);
+    }
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn current_cue_capture_refuses_hardlink_equal_size_corruption_and_header_changes_without_repair(
+    ) {
+        let (root, path, raw, pin) = fixture();
+        let alias = root.0.join("alias.wav");
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(read_current_cue_audio(
+            &root.0,
+            &path,
+            &pin,
+            CueAudioKind::Retained,
+            Instant::now() + Duration::from_secs(3)
+        )
+        .is_err());
+        writable(&alias);
+        fs::remove_file(&alias).unwrap();
+        let mut corrupt = raw.clone();
+        corrupt[45] ^= 1;
+        fs::write(&path, &corrupt).unwrap();
+        let mut p = fs::metadata(&path).unwrap().permissions();
+        p.set_readonly(true);
+        fs::set_permissions(&path, p).unwrap();
+        assert!(read_current_cue_audio(
+            &root.0,
+            &path,
+            &pin,
+            CueAudioKind::Retained,
+            Instant::now() + Duration::from_secs(3)
+        )
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), corrupt);
+        writable(&path);
+        let mut header = raw.clone();
+        header[34..36].copy_from_slice(&32u16.to_le_bytes());
+        fs::write(&path, &header).unwrap();
+        let mut p = fs::metadata(&path).unwrap().permissions();
+        p.set_readonly(true);
+        fs::set_permissions(&path, p).unwrap();
+        let mut changed = pin;
+        changed.sha256 = format!("sha256:{:x}", Sha256::digest(&header));
+        assert!(read_current_cue_audio(
+            &root.0,
+            &path,
+            &changed,
+            CueAudioKind::Retained,
+            Instant::now() + Duration::from_secs(3)
+        )
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), header);
+    }
 }
 
 fn stream_pin_before(
@@ -859,6 +1117,48 @@ impl RetainedMixStore {
             for object in fs::read_dir(&path)? {
                 let object = object?;
                 account(&object.path())?;
+                if object.file_name() == ".editable-pending-v1"
+                    || object.file_name() == ".editable-published-v1"
+                {
+                    if !object.file_type()?.is_dir() {
+                        return Err(invalid("editable namespace is not a plain directory"));
+                    }
+                    total = total
+                        .checked_add(editable_storage::inventory_bytes(
+                            &object.path(),
+                            &mut account,
+                        )?)
+                        .ok_or_else(|| invalid("editable aggregate byte count overflow"))?;
+                    continue;
+                }
+                if object.file_name() == ".exports-pending-v1"
+                    || object.file_name() == ".exports-published-v1"
+                {
+                    if !object.file_type()?.is_dir() {
+                        return Err(invalid("Review export namespace is not a plain directory"));
+                    }
+                    for generation in fs::read_dir(object.path())? {
+                        let generation = generation?;
+                        account(&generation.path())?;
+                        let name = generation.file_name();
+                        let name = name.to_str().unwrap_or("");
+                        if !valid_hash(&format!("sha256:{name}"))
+                            || !generation.file_type()?.is_dir()
+                        {
+                            return Err(invalid("unknown Review export generation namespace"));
+                        }
+                        for file in fs::read_dir(generation.path())? {
+                            let file = file?;
+                            account(&file.path())?;
+                            // Count every regular byte, including partial,
+                            // foreign, old and unreferenced export files.
+                            total = total
+                                .checked_add(regular(&file.path())?.metadata()?.len())
+                                .ok_or_else(|| invalid("Review export byte count overflow"))?;
+                        }
+                    }
+                    continue;
+                }
                 let file = regular(&object.path())?;
                 // Include .copy crash orphans, foreign regular files and all
                 // old/undo objects. Never evict a potentially referenced file.
@@ -2292,6 +2592,332 @@ mod tests {
         assert!(destination.is_dir());
         assert_eq!(fs::read(&source).unwrap(), bytes);
         assert_eq!(fs::read_dir(&store.root).unwrap().count(), 1);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn export_copy_resumes_verified_prefix_after_space_refusal_and_reuses_sealed_bytes() {
+        let (fixture, _, candidate) = fixture();
+        let store = RetainedMixStore::new(
+            &fixture.0,
+            "export-resume",
+            MixStorageBudget {
+                maximum_bytes: 16 * 1024 * 1024,
+                minimum_free_bytes: 1024,
+            },
+        )
+        .unwrap();
+        let bytes: Vec<u8> = (0..6 * 1024 * 1024).map(|n| (n % 251) as u8).collect();
+        let source = candidate.join("input.mp4");
+        fs::write(&source, &bytes).unwrap();
+        let source_mtime = fs::metadata(&source).unwrap().modified().unwrap();
+        let generation = "a".repeat(64);
+        let hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let input = ExportCopyInput {
+            generation: &generation,
+            name: "final_vi.mp4",
+            source: &source,
+            sha256: &hash,
+            size_bytes: bytes.len() as u64,
+            remaining_after: 0,
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
+        let mut calls = 0;
+        assert!(store
+            .copy_export_file(
+                &input,
+                |_| {
+                    calls += 1;
+                    Ok(if calls < 3 { u64::MAX } else { 0 })
+                },
+                deadline
+            )
+            .is_err());
+        let directory = store.export_pending_directory(&generation).unwrap();
+        let partial = directory.join("final_vi.mp4.partial");
+        assert_eq!(fs::metadata(&partial).unwrap().len(), 4 * 1024 * 1024);
+        assert_eq!(fs::read(&partial).unwrap(), bytes[..4 * 1024 * 1024]);
+        assert!(!directory.join("final_vi.mp4").exists());
+        let path = store
+            .copy_export_file(&input, |_| Ok(u64::MAX), deadline)
+            .unwrap();
+        assert!(!partial.exists());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(fs::metadata(&path).unwrap().permissions().readonly());
+        let copied_mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            store
+                .copy_export_file(&input, |_| panic!("sealed reuse copies no bytes"), deadline)
+                .unwrap(),
+            path
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().modified().unwrap(),
+            copied_mtime
+        );
+        assert_eq!(
+            fs::metadata(&source).unwrap().modified().unwrap(),
+            source_mtime
+        );
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        // Only this test's newly created nested output needs writable teardown
+        // on Windows. Historical/other-process temporary paths are untouched.
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        #[cfg(windows)]
+        permissions.set_readonly(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o600);
+        }
+        fs::set_permissions(&path, permissions).unwrap();
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn export_copy_refuses_corrupted_resume_prefix_without_overwriting_it() {
+        let (fixture, _, candidate) = fixture();
+        let store = RetainedMixStore::new(
+            &fixture.0,
+            "export-corrupt",
+            MixStorageBudget {
+                maximum_bytes: 1024 * 1024,
+                minimum_free_bytes: 1024,
+            },
+        )
+        .unwrap();
+        let bytes = vec![37u8; 32768];
+        let source = candidate.join("input.mp4");
+        fs::write(&source, &bytes).unwrap();
+        let generation = "b".repeat(64);
+        let directory = store.export_pending_directory(&generation).unwrap();
+        let partial = directory.join("source.mp4.partial");
+        let mut bad = bytes[..8192].to_vec();
+        bad[511] ^= 1;
+        fs::write(&partial, &bad).unwrap();
+        let mtime = fs::metadata(&partial).unwrap().modified().unwrap();
+        let hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let input = ExportCopyInput {
+            generation: &generation,
+            name: "source.mp4",
+            source: &source,
+            sha256: &hash,
+            size_bytes: bytes.len() as u64,
+            remaining_after: 0,
+        };
+        assert!(store
+            .copy_export_file(
+                &input,
+                |_| Ok(u64::MAX),
+                Instant::now() + std::time::Duration::from_secs(5)
+            )
+            .is_err());
+        assert_eq!(fs::read(&partial).unwrap(), bad);
+        assert_eq!(fs::metadata(&partial).unwrap().modified().unwrap(), mtime);
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert!(!directory.join("source.mp4").exists());
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn export_copy_counts_other_job_published_partial_and_orphan_bytes_before_reserving() {
+        let (fixture, _, candidate) = fixture();
+        let store = RetainedMixStore::new(
+            &fixture.0,
+            "export-quota",
+            MixStorageBudget {
+                maximum_bytes: 1024,
+                minimum_free_bytes: 1,
+            },
+        )
+        .unwrap();
+        let other = store.namespace.join("c".repeat(64));
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("old.wav"), vec![1u8; 200]).unwrap();
+        let published = other.join(".exports-published-v1");
+        fs::create_dir(&published).unwrap();
+        let prior = published.join("d".repeat(64));
+        fs::create_dir(&prior).unwrap();
+        fs::write(prior.join("old.mp4"), vec![2u8; 300]).unwrap();
+        let generation = "e".repeat(64);
+        let pending = store.export_pending_directory(&generation).unwrap();
+        fs::write(pending.join("crash-orphan.partial"), vec![3u8; 200]).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        assert_eq!(store.used_bytes(deadline).unwrap(), 700);
+        let bytes = vec![4u8; 200];
+        let source = candidate.join("source.mp4");
+        fs::write(&source, &bytes).unwrap();
+        let hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let input = ExportCopyInput {
+            generation: &generation,
+            name: "source.mp4",
+            source: &source,
+            sha256: &hash,
+            size_bytes: 200,
+            remaining_after: 125,
+        };
+        assert!(store
+            .copy_export_file(
+                &input,
+                |_| panic!("quota refuses before probing OS space"),
+                deadline
+            )
+            .is_err());
+        assert_eq!(
+            fs::metadata(pending.join("source.mp4.partial"))
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(store.used_bytes(deadline).unwrap(), 700);
+        assert!(!pending.join("source.mp4").exists());
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn export_atomic_rename_preserves_an_existing_destination() {
+        let (_fixture, _, candidate) = fixture();
+        let source = candidate.join("sealed.partial");
+        let target = candidate.join("already.mp4");
+        fs::write(&source, b"new bytes").unwrap();
+        fs::write(&target, b"old bytes").unwrap();
+        assert!(export_copy::rename_new(&source, &target).is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"new bytes");
+        assert_eq!(fs::read(&target).unwrap(), b"old bytes");
+        let fresh = candidate.join("new.mp4");
+        export_copy::rename_new(&source, &fresh).unwrap();
+        assert!(!source.exists());
+        assert_eq!(fs::read(fresh).unwrap(), b"new bytes");
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn export_directory_fence_refusal_preserves_staging_and_restart_recovers_published_version() {
+        let (fixture, _, candidate) = fixture();
+        let store = RetainedMixStore::new(
+            &fixture.0,
+            "export-directory",
+            MixStorageBudget {
+                maximum_bytes: 1024 * 1024,
+                minimum_free_bytes: 1024,
+            },
+        )
+        .unwrap();
+        let generation = "f".repeat(64);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let mut specs = Vec::new();
+        // Byte-only filesystem fixture, with no encoded-media admission claim.
+        for name in [
+            "final_vi.mp4",
+            "captions_vi.srt",
+            "captions_vi.ass",
+            "timeline.json",
+            "qc_report.json",
+            "source.mp4",
+            "review_export_manifest.json",
+        ] {
+            let bytes = format!("owned copy fixture {name}").into_bytes();
+            let source = candidate.join(name);
+            fs::write(&source, &bytes).unwrap();
+            let hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+            store
+                .copy_export_file(
+                    &ExportCopyInput {
+                        generation: &generation,
+                        name,
+                        source: &source,
+                        sha256: &hash,
+                        size_bytes: bytes.len() as u64,
+                        remaining_after: 0,
+                    },
+                    |_| Ok(u64::MAX),
+                    deadline,
+                )
+                .unwrap();
+            specs.push(ExportFileSpec {
+                name: name.into(),
+                sha256: hash,
+                size_bytes: bytes.len() as u64,
+            });
+        }
+        let pending = store.export_pending_directory(&generation).unwrap();
+        assert_eq!(
+            store
+                .export_remaining_bytes(&generation, &specs, deadline)
+                .unwrap(),
+            vec![0; specs.len()]
+        );
+        let orphan = pending.join("unexpected.partial");
+        fs::write(&orphan, b"interrupted").unwrap();
+        assert!(store
+            .publish_export_directory(
+                &generation,
+                &specs,
+                |_| Ok(u64::MAX),
+                || panic!("closed inventory refuses first"),
+                deadline
+            )
+            .is_err());
+        fs::remove_file(orphan).unwrap();
+        assert!(store
+            .publish_export_directory(
+                &generation,
+                &specs,
+                |_| Ok(u64::MAX),
+                || Err(invalid("changed full head")),
+                deadline
+            )
+            .is_err());
+        assert!(pending.is_dir());
+        assert!(store
+            .export_published_directory(&generation)
+            .unwrap()
+            .is_none());
+        let published = store
+            .publish_export_directory(&generation, &specs, |_| Ok(u64::MAX), || Ok(()), deadline)
+            .unwrap();
+        assert!(!pending.exists());
+        verify_export_files(&published, &specs, deadline).unwrap();
+        let before: Vec<_> = specs
+            .iter()
+            .map(|s| {
+                fs::metadata(published.join(&s.name))
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+            })
+            .collect();
+        // Simulates restart after a complete rename but before a response.
+        assert_eq!(
+            store
+                .publish_export_directory(
+                    &generation,
+                    &specs,
+                    |_| Ok(u64::MAX),
+                    || Ok(()),
+                    deadline
+                )
+                .unwrap(),
+            published
+        );
+        for (file, mtime) in specs.iter().zip(before) {
+            let path = published.join(&file.name);
+            assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                fs::read(candidate.join(&file.name)).unwrap()
+            );
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            #[cfg(windows)]
+            permissions.set_readonly(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                permissions.set_mode(0o600);
+            }
+            fs::set_permissions(path, permissions).unwrap();
+        }
     }
 
     #[cfg(unix)]

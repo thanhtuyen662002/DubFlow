@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Full-token current cue request; no browser-supplied media path",
+  "type": "object", "additionalProperties": false,
+  "required": ["job_id", "current_token", "finding_id", "cue_id"],
+  "properties": {
+    "job_id": {"$ref": "schema-v2.json#/$defs/id"},
+    "current_token": {"$ref": "native-current-export-manifest-v1.json#/properties/current_token"},
+    "finding_id": {"$ref": "schema-v2.json#/$defs/id"}, "cue_id": {"$ref": "schema-v2.json#/$defs/id"}
+  }
+}

@@ -254,14 +254,27 @@ pub(super) fn read_current(
     data: &Path,
     state: &ReviewGraphState,
 ) -> SupervisorResult<AdmittedEffectiveState> {
-    current_fence(store, state)?;
-    let admitted = read_content(
+    read_current_with_walk(
         store,
         data,
         state,
-        Instant::now() + Duration::from_secs(720),
-    )?;
+        &mut super::review_publication::RecoveryWalk::new(
+            Instant::now() + Duration::from_secs(720),
+        ),
+    )
+}
+
+pub(super) fn read_current_with_walk(
+    store: &DurableStore,
+    data: &Path,
+    state: &ReviewGraphState,
+    walk: &mut super::review_publication::RecoveryWalk,
+) -> SupervisorResult<AdmittedEffectiveState> {
+    walk.check()?;
     current_fence(store, state)?;
+    let admitted = read_content(store, data, state, walk)?;
+    current_fence(store, state)?;
+    walk.check()?;
     Ok(admitted)
 }
 
@@ -276,7 +289,7 @@ pub(super) fn read_historical(
 ) -> SupervisorResult<AdmittedEffectiveState> {
     let state = reference.state();
     walk.with_proof(&state.token.graph_sha256, |walk| {
-        let admitted = read_content(store, data, state, walk.deadline())?;
+        let admitted = read_content(store, data, state, walk)?;
         let mut actual = String::new();
         canonical(&admitted.packet()?, &mut actual)?;
         let mut expected = String::new();
@@ -295,11 +308,12 @@ fn read_content(
     store: &DurableStore,
     data: &Path,
     state: &ReviewGraphState,
-    deadline: Instant,
+    walk: &mut super::review_publication::RecoveryWalk,
 ) -> SupervisorResult<AdmittedEffectiveState> {
-    super::review_publication::RecoveryWalk::new(deadline).check()?;
+    walk.check()?;
+    let deadline = walk.deadline();
     let (snapshot, publication) =
-        super::review_active::read_active_inputs_before(store, data, state, deadline)?;
+        super::review_active::read_active_inputs_with_walk(store, data, state, walk)?;
     let mut origin = if let Some(publication) = &publication {
         publication.origin.clone()
     } else {
@@ -338,7 +352,10 @@ fn read_content(
         if let Some(publication) = &publication {
             let object = accepted_json(&publication.record["mixed"]["composition"], &assets)?;
             let proposal = accepted_json(&publication.record["proposal"], &assets)?;
-            let (spoken, pins) = if publication.record["schema_version"] == 2 {
+            let (spoken, pins) = if matches!(
+                publication.record["schema_version"].as_u64(),
+                Some(2 | 3)
+            ) {
                 let inventory = accepted_json(&publication.record["speech_inventory"], &assets)?;
                 let value = decode(&assets.read_json(&inventory)?, LIMIT)?;
                 let assignments:Vec<Value>=value["cues"].as_array()
@@ -482,7 +499,7 @@ fn read_content(
             ))
         }
     };
-    super::review_publication::RecoveryWalk::new(deadline).check()?;
+    walk.check()?;
     Ok(AdmittedEffectiveState {
         current: state.clone(),
         snapshot,

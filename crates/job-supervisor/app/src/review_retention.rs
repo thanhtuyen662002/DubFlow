@@ -3,8 +3,8 @@
 //! canonical storage crate owns locator/path validation. Standard export does
 //! not depend on this optional local-NTFS Review path.
 use super::review_assets::{
-    MixStorageBudget, PcmPin, RetainedCueAudio, RetainedFileFormat, RetainedFilePin,
-    RetainedMixAudio, RetainedMixStore, RetainedRenderFile,
+    ExportCopyInput, ExportFileSpec, MixStorageBudget, PcmPin, RetainedCueAudio,
+    RetainedFileFormat, RetainedFilePin, RetainedMixAudio, RetainedMixStore, RetainedRenderFile,
 };
 use super::{SupervisorError, SupervisorResult};
 use dubflow_artifact_storage::ArtifactLocator;
@@ -352,6 +352,10 @@ fn render_file_descriptor(
 }
 
 impl LocatedMixAudio {
+    pub(super) fn path(&self) -> &Path {
+        &self.audio.path
+    }
+
     pub(super) fn descriptor(&self) -> Value {
         json!({"path_hint":self.audio.path,
             "locator":{"schema_version":self.locator.schema_version,
@@ -450,6 +454,9 @@ pub(super) struct NativeOutputPin {
 }
 
 impl NativeOutputPin {
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
     pub(super) fn volume_id(&self) -> &str {
         &self.volume_id
     }
@@ -493,6 +500,133 @@ fn ordered_pcm_entries(value: &Value) -> SupervisorResult<Vec<(&'static str, &Va
 }
 
 impl NativeMixStore {
+    pub(super) fn editable_pending_directory(&self, generation: &str) -> SupervisorResult<PathBuf> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let path = self.objects.editable_pending_directory(generation)?;
+        same_volume(&self.volume_id, &probe(&path)?)?;
+        Ok(path)
+    }
+
+    pub(super) fn editable_published_directory(
+        &self,
+        generation: &str,
+    ) -> SupervisorResult<Option<PathBuf>> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let path = self.objects.editable_published_directory(generation)?;
+        if let Some(path) = &path {
+            same_volume(&self.volume_id, &probe(path)?)?;
+        }
+        Ok(path)
+    }
+
+    pub(super) fn editable_capacity(&self, deadline: Instant) -> SupervisorResult<()> {
+        let observed = probe(&self.root)?;
+        same_volume(&self.volume_id, &observed)?;
+        self.objects
+            .editable_capacity(observed.available_bytes, deadline)
+    }
+
+    pub(super) fn publish_editable_directory(
+        &self,
+        generation: &str,
+        files: &[super::review_assets::EditableFileSpec],
+        fence: impl FnMut() -> SupervisorResult<()>,
+        deadline: Instant,
+    ) -> SupervisorResult<PathBuf> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let path = self.objects.publish_editable_directory(
+            generation,
+            files,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&self.volume_id, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            fence,
+            deadline,
+        )?;
+        same_volume(&self.volume_id, &probe(&path)?)?;
+        Ok(path)
+    }
+
+    pub(super) fn export_remaining_bytes(
+        &self,
+        generation: &str,
+        files: &[ExportFileSpec],
+        deadline: Instant,
+    ) -> SupervisorResult<Vec<u64>> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        self.objects
+            .export_remaining_bytes(generation, files, deadline)
+    }
+
+    pub(super) fn export_pending_directory(&self, generation: &str) -> SupervisorResult<PathBuf> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let path = self.objects.export_pending_directory(generation)?;
+        same_volume(&self.volume_id, &probe(&path)?)?;
+        Ok(path)
+    }
+
+    pub(super) fn export_published_directory(
+        &self,
+        generation: &str,
+    ) -> SupervisorResult<Option<PathBuf>> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let path = self.objects.export_published_directory(generation)?;
+        if let Some(path) = &path {
+            same_volume(&self.volume_id, &probe(path)?)?;
+        }
+        Ok(path)
+    }
+
+    pub(super) fn publish_export_directory(
+        &self,
+        generation: &str,
+        files: &[ExportFileSpec],
+        fence: impl FnMut() -> SupervisorResult<()>,
+        deadline: Instant,
+    ) -> SupervisorResult<PathBuf> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let path = self.objects.publish_export_directory(
+            generation,
+            files,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&self.volume_id, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            fence,
+            deadline,
+        )?;
+        same_volume(&self.volume_id, &probe(&path)?)?;
+        Ok(path)
+    }
+
+    pub(super) fn copy_export_file(
+        &self,
+        input: &ExportCopyInput<'_>,
+        deadline: Instant,
+    ) -> SupervisorResult<PathBuf> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let path = self.objects.copy_export_file(
+            input,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&self.volume_id, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            deadline,
+        )?;
+        same_volume(
+            &self.volume_id,
+            &probe(
+                path.parent()
+                    .ok_or_else(|| invalid("export copy parent missing"))?,
+            )?,
+        )?;
+        Ok(path)
+    }
+
     pub(super) fn accept_cue(
         &self,
         candidate_root: &Path,

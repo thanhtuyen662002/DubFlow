@@ -3,9 +3,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createReviewSnapshot, groupFindings, ReviewController } from "../../apps/desktop/src/features/review/model.ts";
 import { readReviewPayload, previewProductionCorrection, reviewRangeLabel } from "../../apps/desktop/src/features/review/wire.ts";
-import { correctionRequest, acceptCorrectionResponse } from "../../apps/desktop/src/features/review/session.ts";
+import { correctionRequest, acceptCorrectionResponse, previewRequest } from "../../apps/desktop/src/features/review/session.ts";
 import { ReviewConnection } from "../../apps/desktop/src/features/review/connection.ts";
 import { nativeReviewTransport } from "../../apps/desktop/src/features/review/transport.ts";
+import { currentPlanRequest, sameCurrentPlanRequest, readCurrentPlan } from "../../apps/desktop/src/features/review/current-plan.ts";
 
 const finding = {
   finding_id: "cue-1",
@@ -233,7 +234,8 @@ const native = nativeReviewTransport((command, args) => {
 () => "native-request-" + String(++nativeId).padStart(16, "0"));
 const nativeConnection = new ReviewConnection(native);
 const nativeLoad = nativeConnection.load("job-review");
-nativeReplies[0].resolve({ schema_version: 1, kind: "review_desktop_session", session_id: nativeReplies[0].args.requestId, snapshot: previewSnapshot });
+assert.equal(nativeReplies[0].command, "review_snapshot_v2");
+nativeReplies[0].resolve({ schema_version: 2, kind: "review_desktop_current_session", session_id: nativeReplies[0].args.requestId, snapshot: previewSnapshot });
 await nativeLoad;
 const nativeViewSignal = new AbortController();
 const nativePreview = nativeConnection.actions().preview(cueRequest, nativeViewSignal.signal);
@@ -255,7 +257,7 @@ assert(nativeCalls.some(call => call.command === "review_cancel_v1" && call.args
 completePlay();
 await assert.rejects(liveAudio, { name: "AbortError" });
 const reloadedNative = nativeConnection.load("job-review");
-nativeReplies[3].resolve({ schema_version: 1, kind: "review_desktop_session", session_id: nativeReplies[3].args.requestId, snapshot: previewSnapshot });
+nativeReplies[3].resolve({ schema_version: 2, kind: "review_desktop_current_session", session_id: nativeReplies[3].args.requestId, snapshot: previewSnapshot });
 await reloadedNative;
 const malformedAudio = nativeConnection.actions().preview(cueRequest, new AbortController().signal);
 nativeReplies[4].resolve([82, 73, 70, 70]);
@@ -266,8 +268,166 @@ const badSession = nativeConnection.load("job-review");
 await assert.rejects(badSession, /disposed/);
 const badNativeConnection = new ReviewConnection(native);
 const badSessionReply = badNativeConnection.load("job-review");
-nativeReplies[5].resolve({ schema_version: 1, kind: "review_desktop_session", session_id: "another-session", snapshot: previewSnapshot });
+nativeReplies[5].resolve({ schema_version: 2, kind: "review_desktop_current_session", session_id: "another-session", snapshot: previewSnapshot });
 await assert.rejects(badSessionReply, /invalid review session/);
 assert(nativeCalls.some(call => call.command === "review_cancel_v1" && call.args.requestId === nativeReplies[5].args.requestId));
 badNativeConnection.dispose();
-console.log("legacy review, Python-to-desktop v2 and native session/audio cancellation tests passed");
+// This is display/transport evidence. Native physical admission and installed
+// GUI execution are separate gates; these opaque token fixtures grant neither.
+const currentView = { schema_version: 3, kind: "review_current_snapshot", job_id: actual.edited.job_id,
+  current_token: { job_id: actual.edited.job_id, revision: "9007199254740993",
+    snapshot_sha256: "sha256:" + "a".repeat(64), graph_sha256: "sha256:" + "b".repeat(64), original_manifest_sha256: "sha256:" + "c".repeat(64) },
+  mode: "b2", time_base: actual.edited.time_base, findings: actual.edited.findings, last_plan: actual.edited.last_plan,
+  correction_ready: false };
+const currentRead = readReviewPayload(currentView);
+assert.deepEqual(currentRead, currentView);
+assert.equal(currentRead.current_token.revision, "9007199254740993");
+assert.equal(Object.hasOwn(currentRead, "revision"), false);
+assert.equal(reviewRangeLabel(currentRead, currentRead.findings[0]), reviewRangeLabel(payload, payload.findings[0]));
+for (const change of [v => { v.current_token.revision = 9007199254740992; }, v => { v.current_token.revision = "09007199254740993"; },
+  v => { v.current_token.revision = "9223372036854775808"; }, v => { v.current_token.job_id = "another-job"; },
+  v => { v.current_token.graph_sha256 = "untrusted"; }, v => { v.mode = "unknown"; }, v => { v.correction_ready = true; },
+  v => { v.revision = 0; }, v => { v.findings[0].range.end_ticks = "0"; }]) {
+  const forged = structuredClone(currentView); change(forged); assert.throws(() => readReviewPayload(forged));
+}
+assert.throws(() => correctionRequest(currentRead, { finding_id: currentRead.findings[0].finding_id, translation: "Another" }), /display-only/);
+let unsafePreview = 0, unsafeCorrection = 0;
+const currentConnection = new ReviewConnection({ async snapshot() { return currentView; }, async preview() { unsafePreview++; },
+  async correct() { unsafeCorrection++; return actual.first; } });
+await currentConnection.load(currentView.job_id);
+assert.deepEqual(currentConnection.snapshot().current_token, currentView.current_token);
+assert.equal(typeof currentConnection.actions().preview, "function");
+assert.equal(currentConnection.actions().correct, undefined);
+await assert.rejects(currentConnection.actions().preview(previewRequest(currentRead, currentRead.findings[0].finding_id), new AbortController().signal), /no validated preview/);
+assert.equal(unsafePreview + unsafeCorrection, 0);
+currentConnection.dispose();
+let currentNativeCalls = 0, currentPlayed = 0;
+const currentNative = nativeReviewTransport(async (command, args) => {
+  currentNativeCalls++;
+  assert.equal(command, "review_snapshot_v2");
+  return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: currentView };
+}, async () => { currentPlayed++; }, () => "native-current-session-0001");
+const currentAbort = new AbortController();
+assert.deepEqual(await currentNative.snapshot(currentView.job_id, currentAbort.signal), currentView);
+await assert.rejects(currentNative.preview({ job_id: currentView.job_id, revision: 0, finding_id: "finding-a", cue_id: "cue-a" }, currentAbort.signal), /complete token/);
+assert.equal(currentNativeCalls, 1);
+assert.equal(currentPlayed, 0);
+// Current audio uses all five native token fields. The cue's display hint is
+// not included in IPC and cannot choose a waveform. This mock verifies client
+// routing/cancellation only; it does not execute native physical admission.
+const playable = structuredClone(currentView);
+playable.findings[0].output_preview = "native-current-cue-descriptor";
+const audioCalls = [], audioPending = [];
+let currentAudioId = 0, currentAudioPlayed = 0, deferCurrentAudio = false;
+const fullTokenTransport = nativeReviewTransport(async (command, args) => {
+  audioCalls.push({ command, args });
+  if (command === "review_cancel_v1") return;
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: playable };
+  assert.equal(command, "review_audio_v2");
+  assert.deepEqual(Object.keys(args.request).sort(), ["cue_id", "current_token", "finding_id", "job_id"]);
+  assert.deepEqual(args.request.current_token, playable.current_token);
+  if (deferCurrentAudio) return await new Promise(resolve => audioPending.push({ args, resolve }));
+  return new ArrayBuffer(44);
+}, async () => { currentAudioPlayed++; }, () => "current-audio-request-" + String(++currentAudioId).padStart(8, "0"));
+const fullTokenConnection = new ReviewConnection(fullTokenTransport);
+await fullTokenConnection.load(playable.job_id);
+const fullRequest = previewRequest(fullTokenConnection.snapshot(), playable.findings[0].finding_id);
+assert.equal(fullRequest.current_token.revision, "9007199254740993");
+assert.equal(Object.hasOwn(fullRequest, "revision"), false);
+await fullTokenConnection.actions().preview(fullRequest, new AbortController().signal);
+assert.equal(currentAudioPlayed, 1);
+const successfulCalls = audioCalls.filter(call => call.command === "review_audio_v2").length;
+for (const change of [r => { r.current_token.revision = "2"; }, r => { r.current_token.graph_sha256 = "sha256:" + "e".repeat(64); },
+  r => { r.current_token.snapshot_sha256 = "sha256:" + "f".repeat(64); }, r => { r.current_token.original_manifest_sha256 = "sha256:" + "0".repeat(64); },
+  r => { r.current_token.job_id = "other-job"; }, r => { r.path = "C:/untrusted.wav"; }, r => { r.revision = 0; }]) {
+  const forged = structuredClone(fullRequest); change(forged);
+  await assert.rejects(fullTokenConnection.actions().preview(forged, new AbortController().signal), /does not match/);
+}
+assert.equal(audioCalls.filter(call => call.command === "review_audio_v2").length, successfulCalls);
+deferCurrentAudio = true;
+const lateCurrentAudio = fullTokenConnection.actions().preview(fullRequest, new AbortController().signal);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(audioPending.length, 1);
+fullTokenConnection.clear();
+assert(audioCalls.some(call => call.command === "review_cancel_v1" && call.args.requestId === audioPending[0].args.requestId));
+audioPending[0].resolve(new ArrayBuffer(44));
+await assert.rejects(lateCurrentAudio, { name: "AbortError" });
+assert.equal(currentAudioPlayed, 1);
+const b1Connection = new ReviewConnection({ async snapshot() { return { ...playable, mode: "b1" }; }, async preview() { throw new Error("B1 must not synthesize preview"); } });
+await b1Connection.load(playable.job_id);
+assert.equal(b1Connection.actions().preview, undefined);
+assert.throws(() => previewRequest(b1Connection.snapshot(), playable.findings[0].finding_id), /B1/);
+b1Connection.dispose(); fullTokenConnection.dispose();
+// Native proposal envelopes are independent test responses, never fake published
+// snapshots. The connection must retain the original current token throughout.
+function planResponse(snapshot, request) {
+  const stages = snapshot.mode === "b1" ? ["translation", "subtitles", "render", "qc", "export"] :
+    request.changes.translation ? ["translation", "subtitles", "tts", "mix", "render", "qc", "export"] : ["tts", "mix", "render", "qc", "export"];
+  return { schema_version: 1, kind: "review_current_correction_plan", ...structuredClone(request), mode: snapshot.mode,
+    plan: { finding_id: request.finding_id, stages_to_rerun: stages, preserved_artifacts: ["asr", "ocr"], replacement_artifacts: stages.map(s => "replacement:" + s),
+      retain_previous_until_validated: true, requires_full_manual_review: false },
+    candidate_revision: String(BigInt(snapshot.current_token.revision) + 1n), candidate_snapshot_sha256: "sha256:" + "8".repeat(64),
+    read_only: true, processing_release_admitted: false, active_graph_published: false, execution_ready: false };
+}
+const planCalls = [], pendingPlans = []; let planId = 0, deferPlan = false;
+const plannerTransport = nativeReviewTransport(async (command, args) => {
+  planCalls.push({ command, args });
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: structuredClone(playable) };
+  if (command === "review_plan_v1") {
+    if (deferPlan) return new Promise(resolve => pendingPlans.push({ args, resolve }));
+    return planResponse(playable, args.request);
+  }
+  if (command === "review_cancel_v1") return;
+  throw new Error("plan preview must not execute correction or media work");
+}, async () => { throw new Error("planning must not play audio"); }, () => `request-plan-${++planId}`);
+const planner = new ReviewConnection(plannerTransport);
+await planner.load(playable.job_id);
+const beforePlan = structuredClone(planner.snapshot());
+const proposalRequest = currentPlanRequest(beforePlan, { finding_id: beforePlan.findings[0].finding_id, translation: "Bản dịch mới được kiểm tra" });
+const proposed = await planner.actions().planCurrent(proposalRequest, new AbortController().signal);
+assert.equal(proposed.candidate_revision, "9007199254740994");
+assert.equal(proposed.execution_ready, false);
+assert.deepEqual(proposed.plan.stages_to_rerun, ["translation", "subtitles", "tts", "mix", "render", "qc", "export"]);
+assert.deepEqual(planner.snapshot(), beforePlan);
+assert.equal(planner.actions().correct, undefined);
+const plannedCalls = planCalls.filter(c => c.command === "review_plan_v1").length;
+for (const change of [r => { r.current_token.revision = "0"; }, r => { r.current_token.job_id = "foreign"; },
+  r => { r.current_token.snapshot_sha256 = "sha256:" + "d".repeat(64); }, r => { r.current_token.graph_sha256 = "sha256:" + "e".repeat(64); },
+  r => { r.current_token.original_manifest_sha256 = "sha256:" + "f".repeat(64); }, r => { r.cue_id = "foreign"; },
+  r => { r.path = "D:/foreign.json"; }, r => { r.changes.path = "D:/foreign.json"; }, r => { r.changes.translation = ""; }]) {
+  const forged = structuredClone(proposalRequest); change(forged);
+  assert.notDeepEqual(forged, proposalRequest);
+  await assert.rejects(planner.actions().planCurrent(forged, new AbortController().signal));
+}
+assert.equal(planCalls.filter(c => c.command === "review_plan_v1").length, plannedCalls);
+for (const change of [r => { r.execution_ready = true; }, r => { r.active_graph_published = true; }, r => { r.processing_release_admitted = true; },
+  r => { r.read_only = false; }, r => { r.candidate_revision = "2"; }, r => { r.current_token.revision = "2"; },
+  r => { r.changes.translation = "Substituted"; }, r => { r.plan.stages_to_rerun.reverse(); }, r => { r.plan.preserved_artifacts = []; },
+  r => { r.plan.replacement_artifacts.pop(); }, r => { r.plan.retain_previous_until_validated = false; }, r => { r.path = "foreign"; }]) {
+  const forged = planResponse(beforePlan, proposalRequest); change(forged);
+  assert.throws(() => readCurrentPlan(beforePlan, proposalRequest, forged));
+}
+const voiceProposal = currentPlanRequest(beforePlan, { finding_id: beforePlan.findings[0].finding_id, voice: "voice-for-plan" });
+assert.deepEqual(readCurrentPlan(beforePlan, voiceProposal, planResponse(beforePlan, voiceProposal)).plan.stages_to_rerun, ["tts", "mix", "render", "qc", "export"]);
+const b1PlanSnapshot = structuredClone(beforePlan); b1PlanSnapshot.mode = "b1";
+for (const finding of b1PlanSnapshot.findings) finding.voice = null;
+const b1Plan = currentPlanRequest(b1PlanSnapshot, { finding_id: b1PlanSnapshot.findings[0].finding_id, translation: "Phụ đề B1 mới" });
+assert.deepEqual(readCurrentPlan(b1PlanSnapshot, b1Plan, planResponse(b1PlanSnapshot, b1Plan)).plan.stages_to_rerun, ["translation", "subtitles", "render", "qc", "export"]);
+assert.throws(() => currentPlanRequest(b1PlanSnapshot, { finding_id: b1PlanSnapshot.findings[0].finding_id, voice: "invented" }), /B1/);
+const b1Planning = new ReviewConnection({ async snapshot() { return b1PlanSnapshot; }, async preview() { throw new Error("no B1 TTS"); },
+  async planCurrent(request) { return planResponse(b1PlanSnapshot, request); } });
+await b1Planning.load(b1PlanSnapshot.job_id);
+assert.equal(b1Planning.actions().preview, undefined);
+assert.deepEqual((await b1Planning.actions().planCurrent(b1Plan, new AbortController().signal)).plan.stages_to_rerun, ["translation", "subtitles", "render", "qc", "export"]);
+assert.deepEqual(b1Planning.snapshot(), b1PlanSnapshot); b1Planning.dispose();
+assert.equal(sameCurrentPlanRequest(b1Plan, { ...b1Plan, changes: { ...b1Plan.changes, path: "foreign" } }), false);
+deferPlan = true;
+const latePlan = planner.actions().planCurrent(proposalRequest, new AbortController().signal);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(pendingPlans.length, 1);
+planner.clear();
+assert(planCalls.some(c => c.command === "review_cancel_v1" && c.args.requestId === pendingPlans[0].args.requestId));
+pendingPlans[0].resolve(planResponse(beforePlan, proposalRequest));
+await assert.rejects(latePlan, { name: "AbortError" });
+assert.equal(planner.snapshot(), null); planner.dispose();
+console.log("legacy/Python v2, current full-token audio and read-only native correction-plan scope/cancellation tests passed");
