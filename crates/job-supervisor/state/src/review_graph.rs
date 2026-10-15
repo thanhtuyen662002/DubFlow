@@ -305,6 +305,53 @@ impl DurableStore {
         })
     }
 
+    /// Read an immutable recorded version by its complete token. This is not
+    /// a live-head CAS check and never initializes, migrates or writes history.
+    pub fn review_graph_revision(&self, token: &ReviewToken) -> Result<Option<ReviewGraphState>> {
+        validate_id(&token.job_id, "job_id", MAX_ID_CHARS)?;
+        if !is_sha256(&token.snapshot_sha256)
+            || !is_sha256(&token.graph_sha256)
+            || !is_sha256(&token.original_manifest_sha256)
+        {
+            return Err(invalid("historical Review token hashes are invalid"));
+        }
+        observe(&self.connection, |db| {
+            if schema(db)?.is_none() {
+                return Ok(None);
+            }
+            let head = match active(db, &token.job_id)? {
+                Some(head) => head,
+                None => return Ok(None),
+            };
+            if head.token.original_manifest_sha256 != token.original_manifest_sha256
+                || token.revision > head.token.revision
+            {
+                return Err(invalid(
+                    "historical Review token changed original binding or invents a future version",
+                ));
+            }
+            let exists: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM review_graph_revisions WHERE job_id=?1 AND revision=?2)",
+                params![token.job_id, token.revision.to_string()], |row| row.get(0))?;
+            if !exists {
+                return Ok(None);
+            }
+            let recorded = version(
+                db,
+                &token.job_id,
+                &token.revision.to_string(),
+                &head.original_artifact_id,
+                &token.original_manifest_sha256,
+            )?;
+            if recorded.token != *token {
+                return Err(invalid(
+                    "historical Review token differs from the recorded version",
+                ));
+            }
+            Ok(Some(recorded))
+        })
+    }
+
     /// The caller has validated the completed manifest, snapshot and graph.
     /// This does not import a legacy sidecar or grant worker publication rights.
     pub fn create_review_graph(
@@ -624,6 +671,78 @@ mod tests {
             .commit_review_graph(&zero.token, "{}", "{}", 8)
             .is_err());
         assert_eq!(count(&store), 1);
+    }
+
+    #[test]
+    fn historical_revision_reader_preserves_actual_after_undo_head_and_all_immutable_rows() {
+        let (fixture, store, hash) = fixture();
+        let zero = initial(&store, &hash);
+        let one = store
+            .commit_review_graph(
+                &zero.token,
+                r#"{"revision":"1","text":"Changed cue"}"#,
+                r#"{"graph":"one"}"#,
+                8,
+            )
+            .unwrap();
+        let two = store
+            .undo_review_graph(&one.token, r#"{"revision":"2","text":"Trúc Ly"}"#, 9)
+            .unwrap();
+        let reader = DurableStore::open_read_only(fixture.0.join("jobs.sqlite3")).unwrap();
+        let original = fs::read(fixture.0.join("manifest.json")).unwrap();
+        for state in [&zero, &one, &two] {
+            assert_eq!(
+                reader.review_graph_revision(&state.token).unwrap().as_ref(),
+                Some(state)
+            );
+            assert_eq!(
+                reader.review_graph_state("job-r").unwrap(),
+                Some(two.clone())
+            );
+            assert!(reader.review_undo_target(&two.token).unwrap().is_none());
+            assert_eq!(count(&reader), 3);
+        }
+        assert_eq!(fs::read(fixture.0.join("manifest.json")).unwrap(), original);
+    }
+
+    #[test]
+    fn historical_revision_reader_refuses_wrong_token_corruption_and_does_not_initialize_schema() {
+        let (_fixture, store, hash) = fixture();
+        let missing = ReviewToken {
+            job_id: "job-r".into(),
+            revision: 0,
+            snapshot_sha256: digest("{}"),
+            graph_sha256: digest("{}"),
+            original_manifest_sha256: hash.clone(),
+        };
+        assert!(store.review_graph_revision(&missing).unwrap().is_none());
+        assert!(schema(&store.connection).unwrap().is_none());
+        let zero = initial(&store, &hash);
+        let one = store
+            .commit_review_graph(
+                &zero.token,
+                r#"{"revision":"1","text":"Changed cue"}"#,
+                r#"{"graph":"one"}"#,
+                8,
+            )
+            .unwrap();
+        let two = store
+            .undo_review_graph(&one.token, r#"{"revision":"2","text":"Trúc Ly"}"#, 9)
+            .unwrap();
+        for field in 0..4 {
+            let mut bad = one.token.clone();
+            match field {
+                0 => bad.snapshot_sha256 = digest("changed"),
+                1 => bad.graph_sha256 = digest("changed"),
+                2 => bad.original_manifest_sha256 = digest("changed"),
+                _ => bad.revision = 3,
+            }
+            assert!(store.review_graph_revision(&bad).is_err());
+        }
+        store.connection.execute("UPDATE review_graph_revisions SET snapshot_json='corrupted' WHERE job_id='job-r' AND revision='1'", []).unwrap();
+        assert!(store.review_graph_revision(&one.token).is_err());
+        assert_eq!(store.review_graph_state("job-r").unwrap(), Some(two));
+        assert_eq!(count(&store), 3);
     }
 
     #[test]

@@ -553,24 +553,7 @@ fn admit_prepared(
     let request_raw = packet["request_json"]
         .as_str()
         .ok_or_else(|| invalid("current cue request bytes missing"))?;
-    let request_value = decode(request_raw, 32768)?;
-    // Value equality can equate signed zero or differing numeric types. Every
-    // immutable input field retains its independently admitted canonical bytes.
-    let mut actual = request_value["tts_input"].clone();
-    let mut expected = current_input.clone();
-    for value in [&mut actual, &mut expected] {
-        let object = value
-            .as_object_mut()
-            .ok_or_else(|| invalid("current cue input missing"))?;
-        object.remove("text");
-        object.remove("normalized_text");
-    }
-    if exact(&actual)? != exact(&expected)? {
-        return Err(invalid(
-            "current cue changed canonical input mapping/confidence bits",
-        ));
-    }
-    let request = BoundCueRequest::read(
+    let request = bind_current_request(
         request_raw,
         before,
         after,
@@ -588,6 +571,34 @@ fn admit_prepared(
         return Err(invalid("prepared current request checksum changed"));
     }
     Ok(request)
+}
+
+/// Preparation and historical speech recovery share the same independently
+/// admitted current-input fence, including numeric type and signed-zero bits.
+pub(super) fn bind_current_request(
+    request_raw: &str,
+    before: &AdmittedSnapshot,
+    after: &AdmittedSnapshot,
+    pins: CueRequestPins<'_>,
+) -> SupervisorResult<BoundCueRequest> {
+    let request_value = decode(request_raw, 32768)?;
+    // Value equality can equate signed zero or differing numeric types. Every
+    // immutable input field retains its independently admitted canonical bytes.
+    let mut actual = request_value["tts_input"].clone();
+    let mut expected = pins.original_input.clone();
+    for value in [&mut actual, &mut expected] {
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| invalid("current cue input missing"))?;
+        object.remove("text");
+        object.remove("normalized_text");
+    }
+    if exact(&actual)? != exact(&expected)? {
+        return Err(invalid(
+            "current cue changed canonical input mapping/confidence bits",
+        ));
+    }
+    BoundCueRequest::read(request_raw, before, after, pins)
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {
@@ -923,7 +934,7 @@ fn run_inner(
                     current: &admitted,
                     after: &after,
                     timeline: &timeline,
-                    mixed: Some(&private_mix["retained_mix"]),
+                    mixed: Some(&private_mix.retained_mix),
                     output_pin: &output_pin,
                     candidates: &candidates,
                 },
@@ -943,7 +954,7 @@ fn run_inner(
             "active_graph_published":false,"correction_ready":false,
         });
         if let Some(mixed) = mixed {
-            packet["private_mix"] = mixed;
+            packet["private_mix"] = mixed.packet();
         }
         if let Some(rendered) = rendered {
             packet["private_render"] = rendered;
@@ -961,7 +972,7 @@ fn run_inner(
     )
 }
 
-fn replacement_composition(
+pub(super) fn replacement_composition(
     current: &Value,
     request: &BoundCueRequest,
     accepted: &Value,
@@ -1287,7 +1298,21 @@ struct CurrentMixInputs<'a> {
     initial_receipt: &'a Value,
 }
 
-fn mix_current(input: CurrentMixInputs<'_>) -> SupervisorResult<Value> {
+struct CurrentMixResult {
+    processing_mix: Value,
+    retained_mix: Value,
+    candidate_packet: AcceptedJsonDocument,
+}
+
+impl CurrentMixResult {
+    // Existing private command packets retain their existing closed schema.
+    // Only the new v3 native caller may publish the separate evidence reference.
+    fn packet(&self) -> Value {
+        json!({"processing_mix":self.processing_mix,"retained_mix":self.retained_mix,"active_graph_published":false})
+    }
+}
+
+fn mix_current(input: CurrentMixInputs<'_>) -> SupervisorResult<CurrentMixResult> {
     let CurrentMixInputs {
         processing,
         assets,
@@ -1370,6 +1395,7 @@ fn mix_current(input: CurrentMixInputs<'_>) -> SupervisorResult<Value> {
         &evidence,
         &template_value,
     )?;
+    let candidate_packet = assets.accept_json(&raw)?;
     let request_value = decode(request.raw(), 32768)?;
     let result =
         super::review_correction::accept_private_mix(super::review_correction::PrivateMixInputs {
@@ -1392,5 +1418,227 @@ fn mix_current(input: CurrentMixInputs<'_>) -> SupervisorResult<Value> {
     if exact(&receipt)? != exact(&processing.effective_mix_receipt()?)? {
         return Err(invalid("current mix release changed during execution"));
     }
-    Ok(json!({"processing_mix":receipt,"retained_mix":result,"active_graph_published":false}))
+    assets.read_json(&candidate_packet)?;
+    Ok(CurrentMixResult {
+        processing_mix: receipt,
+        retained_mix: result,
+        candidate_packet,
+    })
+}
+
+pub(super) struct CurrentMixRecoveryInputs<'a> {
+    pub(super) store: &'a DurableStore,
+    pub(super) data: &'a std::path::Path,
+    pub(super) processing: &'a AdmittedProcessingRuntime,
+    pub(super) assets: &'a AcceptedAudioStore,
+    pub(super) current: &'a super::review_effective::AdmittedEffectiveState,
+    pub(super) after: &'a AdmittedSnapshot,
+    pub(super) request: &'a BoundCueRequest,
+    pub(super) cue: &'a Value,
+    pub(super) retained_mix: &'a Value,
+    pub(super) candidate_packet: &'a Value,
+    pub(super) processing_mix: &'a Value,
+    pub(super) output_pin: &'a super::review_retention::NativeOutputPin,
+}
+
+/// Recover the original accepted current-mix packet, never a newly fabricated
+/// success response. The same independent metadata oracle and all three native
+/// retained PCM fences apply without executing a producer or recomputing DSP.
+pub(super) fn recover_current_mix(
+    input: CurrentMixRecoveryInputs<'_>,
+    walk: &mut super::review_publication::RecoveryWalk,
+) -> SupervisorResult<Value> {
+    walk.check()?;
+    let view = input.current.packet()?;
+    let seed = super::review_seed::read_original(input.store, input.data, input.current.origin())?;
+    let origin = decode(&input.current.origin().graph_json, LIMIT)?;
+    let graph = decode(&seed.graph, LIMIT)?;
+    if graph["mode"] != "b2" || input.output_pin.volume_id().is_empty() {
+        return Err(invalid(
+            "current mix recovery requires its native B2/output admission",
+        ));
+    }
+    let tts = accepted_json(&input.cue["tts_document"], input.assets)?;
+    let audio = std::path::PathBuf::from(
+        input.cue["audio"]["path"]
+            .as_str()
+            .ok_or_else(|| invalid("recovered current PCM path missing"))?,
+    );
+    let assigned = json!({"path":tts.path,"sha256":tts.sha256,"size_bytes":tts.size_bytes,
+        "artifact_root":audio.parent().ok_or_else(||invalid("recovered PCM parent missing"))?,"metadata_root":tts.path.parent()});
+    let current = decode(
+        view["effective_composition_json"]
+            .as_str()
+            .ok_or_else(|| invalid("current recovery composition missing"))?,
+        LIMIT,
+    )?;
+    let expected = replacement_composition(&current, input.request, &assigned)?;
+    let template = accepted_json(&origin["accepted_documents"]["mix_document"], input.assets)?;
+    let manifest = accepted_json(&origin["accepted_documents"]["job_manifest"], input.assets)?;
+    let manifest_value = decode(&walk.read_metadata(input.assets, &manifest)?, LIMIT)?;
+    let source = &manifest_value["artifacts"]["source_audio"];
+    closed(source, &["path", "sha256", "size_bytes"])?;
+    if current["source"]["path"] != source["path"]
+        || current["source"]["sha256"] != source["sha256"]
+    {
+        return Err(invalid(
+            "current recovery source PCM differs from immutable original",
+        ));
+    }
+    let template_value = decode(&walk.read_metadata(input.assets, &template)?, LIMIT)?;
+    let content = view["content_composition_json"]
+        .as_str()
+        .ok_or_else(|| invalid("current recovery content missing"))?;
+    let content_snapshot = view["composition_snapshot_json"]
+        .as_str()
+        .ok_or_else(|| invalid("current recovery content snapshot missing"))?;
+    let preparation = json!({"schema_version":1,"kind":"review_effective_cue_context","capability":"review_effective_audio_v1",
+        "before_token":view["current_token"],"before_snapshot_json":input.current.snapshot().json(),"after_snapshot_json":input.after.json(),
+        "current_composition_sha256":digest(content),"composition_snapshot_sha256":digest(content_snapshot)});
+    let bindings = json!({"schema_version":1,"kind":"review_native_effective_cue_bindings","current_token":view["current_token"],
+        "content_composition_json":content,"content_composition_sha256":digest(content),"composition_snapshot_json":content_snapshot,
+        "composition_snapshot_sha256":digest(content_snapshot),"source_audio":{"path":source["path"],"sha256":source["sha256"],
+            "size_bytes":source["size_bytes"],"artifact_root":seed.output_root},
+        "canonical_inputs":graph["canonical_inputs"],"documents":current["documents"],
+        "mix_template":{"path":template.path,"sha256":template.sha256,"size_bytes":template.size_bytes,
+            "artifact_root":seed.output_root,"metadata_root":template.path.parent()}});
+    let mixed = input.retained_mix;
+    closed(
+        mixed,
+        &[
+            "context",
+            "composition",
+            "candidate_mix_document",
+            "mix_document",
+            "private_audio_verified",
+            "retained_audio",
+            "active_graph_published",
+            "mix_metadata_retargeted",
+            "retained_mix_audio",
+        ],
+    )?;
+    if mixed["private_audio_verified"] != true
+        || mixed["retained_audio"] != true
+        || mixed["mix_metadata_retargeted"] != true
+        || mixed["active_graph_published"] != false
+    {
+        return Err(invalid(
+            "current mix recovery lacks complete native retention flags",
+        ));
+    }
+    let context = accepted_json(&mixed["context"], input.assets)?;
+    let context_value = decode(&walk.read_metadata(input.assets, &context)?, LIMIT)?;
+    closed(
+        &context_value,
+        &[
+            "schema_version",
+            "kind",
+            "preparation_context_json",
+            "preparation_context_sha256",
+            "bindings_json",
+            "bindings_sha256",
+            "request_json",
+            "request_sha256",
+            "accepted_tts_document",
+            "accepted_spoken_text",
+            "accept_context",
+        ],
+    )?;
+    let preparation_raw = context_value["preparation_context_json"]
+        .as_str()
+        .ok_or_else(|| invalid("saved preparation bytes missing"))?;
+    let bindings_raw = context_value["bindings_json"]
+        .as_str()
+        .ok_or_else(|| invalid("saved current binding bytes missing"))?;
+    if context_value["schema_version"].as_u64() != Some(1)
+        || context_value["kind"] != "review_native_effective_mix_context"
+        || exact(&decode(preparation_raw, LIMIT)?)? != exact(&preparation)?
+        || context_value["preparation_context_sha256"] != digest(preparation_raw)
+        || exact(&decode(bindings_raw, LIMIT)?)? != exact(&bindings)?
+        || context_value["bindings_sha256"] != digest(bindings_raw)
+        || context_value["request_json"] != input.request.raw()
+        || context_value["request_sha256"] != input.request.input_hash()
+        || exact(&context_value["accepted_tts_document"])? != exact(&assigned)?
+        || context_value["accepted_spoken_text"] != input.cue["spoken_text"]
+        || context_value["accept_context"] != input.cue["accept_context"]
+    {
+        return Err(invalid(
+            "saved current mix context replaces native token/content/source/request/cue bindings",
+        ));
+    }
+    let processing = accepted_json(input.processing_mix, input.assets)?;
+    let processing_value = decode(&walk.read_metadata(input.assets, &processing)?, LIMIT)?;
+    let receipt = input.processing.effective_mix_receipt()?;
+    if exact(&receipt)? != exact(&processing_value)? {
+        return Err(invalid("saved current mix processing recipe changed"));
+    }
+    let mut documents = std::collections::HashMap::new();
+    let mut objects = Vec::new();
+    for doc in expected["documents"].as_array().unwrap() {
+        let object = accepted_json(
+            &json!({"path":doc["path"],"sha256":doc["sha256"],"size_bytes":doc["size_bytes"]}),
+            input.assets,
+        )?;
+        documents.insert(
+            object.sha256.clone(),
+            decode(&walk.read_metadata(input.assets, &object)?, LIMIT)?,
+        );
+        objects.push(object);
+    }
+    let evidence = mix_evidence(&expected, &documents)?;
+    let packet = accepted_json(input.candidate_packet, input.assets)?;
+    let raw_packet = walk.read_metadata(input.assets, &packet)?;
+    let (composition_raw, candidate_raw) = admit_current_mix(
+        &raw_packet,
+        &context.sha256,
+        &view["current_token"],
+        input.request,
+        &expected,
+        &evidence,
+        &template_value,
+    )?;
+    let composition = accepted_json(&mixed["composition"], input.assets)?;
+    let candidate = accepted_json(&mixed["candidate_mix_document"], input.assets)?;
+    let retained = accepted_json(&mixed["mix_document"], input.assets)?;
+    if walk.read_metadata(input.assets, &composition)? != composition_raw
+        || walk.read_metadata(input.assets, &candidate)? != candidate_raw
+    {
+        return Err(invalid(
+            "saved current mix packet changed its exact admitted metadata",
+        ));
+    }
+    let media = super::review_retention::NativeMixStore::open_existing(
+        input.output_pin,
+        input.current.snapshot().job(),
+        super::review_assets::MixStorageBudget {
+            maximum_bytes: 32 * 1024 * 1024 * 1024,
+            minimum_free_bytes: 2 * 1024 * 1024 * 1024,
+        },
+    )?;
+    media.revalidate_admitted_document(
+        &candidate_raw,
+        &composition.sha256,
+        &mixed["retained_mix_audio"],
+        &walk.read_metadata(input.assets, &retained)?,
+        walk.deadline(),
+    )?;
+    drop(media);
+    for object in objects.iter().chain([
+        &tts,
+        &template,
+        &manifest,
+        &context,
+        &processing,
+        &packet,
+        &composition,
+        &candidate,
+        &retained,
+    ]) {
+        walk.read_metadata(input.assets, object)?;
+    }
+    if exact(&receipt)? != exact(&input.processing.effective_mix_receipt()?)? {
+        return Err(invalid("current mix processing changed during recovery"));
+    }
+    walk.check()?;
+    Ok(expected)
 }

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native immutable historical state identity; physical graph admission is still required",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "token", "original_artifact_id", "snapshot", "graph", "undo_depth", "undo_target_revision", "effective_state"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_native_generation_state_reference"},
+    "token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "original_artifact_id": {"$ref": "cue-synthesis-v1.json#/$defs/id"},
+    "snapshot": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "graph": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "undo_depth": {"type": "integer", "minimum": 0, "maximum": 256},
+    "undo_target_revision": {"type": ["string", "null"], "pattern": "^(0|[1-9][0-9]{0,19})$", "maxLength": 20},
+    "effective_state": {"$ref": "native-effective-state-v1.json#/$defs/document"}
+  }
+}

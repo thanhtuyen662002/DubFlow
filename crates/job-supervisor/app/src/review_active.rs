@@ -253,6 +253,7 @@ fn verify_mix(
 
 pub(super) struct AdmittedPublication {
     pub(super) before: ReviewGraphState,
+    pub(super) origin: ReviewGraphState,
     snapshot: AdmittedSnapshot,
     graph: String,
     pub(super) record: Value,
@@ -290,6 +291,23 @@ fn read_publication(
     current: &ReviewGraphState,
     publication: &Value,
 ) -> SupervisorResult<AdmittedPublication> {
+    read_publication_before(
+        store,
+        data,
+        current,
+        publication,
+        Instant::now() + Duration::from_secs(720),
+    )
+}
+
+fn read_publication_before(
+    store: &DurableStore,
+    data: &Path,
+    current: &ReviewGraphState,
+    publication: &Value,
+    deadline: Instant,
+) -> SupervisorResult<AdmittedPublication> {
+    super::review_publication::RecoveryWalk::new(deadline).check()?;
     let assets = AcceptedAudioStore::open_existing(data, &current.token.job_id)?;
     let object = accepted_json(publication, &assets)?;
     let record = decode(&assets.read_json(&object)?, LIMIT)?;
@@ -356,7 +374,6 @@ fn read_publication(
     if record["output_volume_id"] != pin.volume_id() {
         return Err(invalid("native publication output volume changed"));
     }
-    let deadline = Instant::now() + Duration::from_secs(720);
     verify_mix(
         &record,
         &context_value,
@@ -412,7 +429,9 @@ fn read_publication(
             "published snapshot differs from retained playback admission",
         ));
     }
+    super::review_publication::RecoveryWalk::new(deadline).check()?;
     Ok(AdmittedPublication {
+        origin: before.clone(),
         before,
         snapshot: expected,
         graph: json!({"schema_version":1,
@@ -449,6 +468,21 @@ pub(super) fn read_active_inputs(
     data: &Path,
     state: &ReviewGraphState,
 ) -> SupervisorResult<(AdmittedSnapshot, Option<AdmittedPublication>)> {
+    read_active_inputs_before(
+        store,
+        data,
+        state,
+        Instant::now() + Duration::from_secs(720),
+    )
+}
+
+pub(super) fn read_active_inputs_before(
+    store: &DurableStore,
+    data: &Path,
+    state: &ReviewGraphState,
+    deadline: Instant,
+) -> SupervisorResult<(AdmittedSnapshot, Option<AdmittedPublication>)> {
+    super::review_publication::RecoveryWalk::new(deadline).check()?;
     let graph = decode(&state.graph_json, LIMIT)?;
     if graph["kind"] == "review_bound_original_graph" {
         if state.undo_depth != 0 || state.undo_target_revision.is_some() {
@@ -477,7 +511,6 @@ pub(super) fn read_active_inputs(
         let bound = decode(&state.graph_json, LIMIT)?;
         let manifest = accepted_json(&bound["accepted_documents"]["job_manifest"], &assets)?;
         let manifest = decode(&assets.read_json(&manifest)?, LIMIT)?;
-        let deadline = Instant::now() + Duration::from_secs(720);
         for entry in manifest["artifacts"]
             .as_object()
             .ok_or_else(|| invalid("original artifact set missing"))?
@@ -501,6 +534,7 @@ pub(super) fn read_active_inputs(
                 deadline,
             )?;
         }
+        super::review_publication::RecoveryWalk::new(deadline).check()?;
         return Ok((restored, None));
     }
     closed(&graph, &["schema_version", "kind", "publication"])?;
@@ -514,7 +548,7 @@ pub(super) fn read_active_inputs(
             "unknown corrected graph needs explicit compatibility",
         ));
     }
-    let admitted = read_publication(store, data, state, &graph["publication"])?;
+    let admitted = read_publication_before(store, data, state, &graph["publication"], deadline)?;
     if admitted.graph != state.graph_json {
         return Err(invalid(
             "corrected graph is not its native canonical encoding",
@@ -526,6 +560,7 @@ pub(super) fn read_active_inputs(
             "active snapshot substitutes its admitted playback or evidence",
         ));
     }
+    super::review_publication::RecoveryWalk::new(deadline).check()?;
     Ok((expected, Some(admitted)))
 }
 

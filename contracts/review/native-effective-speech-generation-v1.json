@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sealed native current-cue generation proof; original public counter is preserved",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "current_token", "before_state", "before_effective_state", "before_snapshot", "after_snapshot", "bound_request", "baseline_composition", "processing_synthesis", "accepted_cue"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_effective_speech_generation"},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "before_state": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "before_effective_state": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "before_snapshot": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "after_snapshot": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "bound_request": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "baseline_composition": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "processing_synthesis": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "accepted_cue": {"$ref": "native-speech-inventory-v1.json#/properties/cues/items/properties/accepted_cue", "type": "object"}
+  }
+}

@@ -30,6 +30,9 @@ pub(super) struct AdmittedEffectiveState {
 }
 
 impl AdmittedEffectiveState {
+    pub(super) fn state(&self) -> &ReviewGraphState {
+        &self.current
+    }
     pub(super) fn snapshot(&self) -> &AdmittedSnapshot {
         &self.snapshot
     }
@@ -252,9 +255,53 @@ pub(super) fn read_current(
     state: &ReviewGraphState,
 ) -> SupervisorResult<AdmittedEffectiveState> {
     current_fence(store, state)?;
-    let (snapshot, publication) = super::review_active::read_active_inputs(store, data, state)?;
+    let admitted = read_content(
+        store,
+        data,
+        state,
+        Instant::now() + Duration::from_secs(720),
+    )?;
+    current_fence(store, state)?;
+    Ok(admitted)
+}
+
+/// Historical input is reopened through the same physical reader as the live
+/// head, under its actual public counter. Only the live wrapper applies the
+/// store-head fence; an archived reference is not silently made current.
+pub(super) fn read_historical(
+    store: &DurableStore,
+    data: &Path,
+    reference: &super::review_publication::ReferencedState,
+    walk: &mut super::review_publication::RecoveryWalk,
+) -> SupervisorResult<AdmittedEffectiveState> {
+    let state = reference.state();
+    walk.with_proof(&state.token.graph_sha256, |walk| {
+        let admitted = read_content(store, data, state, walk.deadline())?;
+        let mut actual = String::new();
+        canonical(&admitted.packet()?, &mut actual)?;
+        let mut expected = String::new();
+        canonical(reference.effective_view(), &mut expected)?;
+        if actual != expected {
+            return Err(invalid(
+                "historical native physical recovery differs from its sealed effective state",
+            ));
+        }
+        walk.check()?;
+        Ok(admitted)
+    })
+}
+
+fn read_content(
+    store: &DurableStore,
+    data: &Path,
+    state: &ReviewGraphState,
+    deadline: Instant,
+) -> SupervisorResult<AdmittedEffectiveState> {
+    super::review_publication::RecoveryWalk::new(deadline).check()?;
+    let (snapshot, publication) =
+        super::review_active::read_active_inputs_before(store, data, state, deadline)?;
     let mut origin = if let Some(publication) = &publication {
-        publication.before.clone()
+        publication.origin.clone()
     } else {
         // A distinct archived-origin identity; never sent as the current token.
         let zero = super::review_active::at_revision(&snapshot, 0)?;
@@ -322,7 +369,6 @@ pub(super) fn read_current(
             let template = accepted_json(&bound["accepted_documents"]["mix_document"], &assets)?;
             let manifest = accepted_json(&bound["accepted_documents"]["job_manifest"], &assets)?;
             let speech_raw = assets.read_json(&speech)?;
-            let deadline = Instant::now() + Duration::from_secs(720);
             verify_original_speech(&graph, &decode(&speech_raw, LIMIT)?, deadline)?;
             let mix = decode(&assets.read_json(&template)?, LIMIT)?;
             let original_manifest = decode(&assets.read_json(&manifest)?, LIMIT)?;
@@ -436,7 +482,7 @@ pub(super) fn read_current(
             ))
         }
     };
-    current_fence(store, state)?;
+    super::review_publication::RecoveryWalk::new(deadline).check()?;
     Ok(AdmittedEffectiveState {
         current: state.clone(),
         snapshot,

@@ -1617,3 +1617,126 @@ B1/B2, corrected standard/editable exports, chunked long-form, installed GUI,
 liveness, actual crash/restart, representative real4h/full172/175 gates remain
 mandatory. Private retained source code or component media success does not
 qualify those gates or authorize merge/Production.
+
+#### Cumulative publication-v3 and complete speech-inventory-v2 implementation
+
+Status: additive implementation in progress; no current CAS/publication or
+desktop readiness is enabled by this declaration. Existing publication-v1/v2
+and speech-inventory-v1 bytes remain immutable and keep their old meaning.
+
+Publication-v3 must bind original archive separately from the complete native
+effective before token/snapshot/graph, one next proposal, current/corrected
+timeline, processing release, retained render/QC and prepared playback. Before
+state references include undo depth/target as admitted from the supervisor;
+the original archive remains revision zero. Legacy first-generation publishers
+continue refusing cumulative input. New history is admitted only under a closed
+versioned graph tag and existing SQLite CAS, with no feature schema migration,
+model/producer repin, relaxed source mapping or public revision normalization.
+
+B2 speech-inventory-v2 must replace exactly the selected cue row in the complete
+currently admitted inventory. Every other cue keeps its existing TTS document,
+spoken-text document and native acceptance proof. A changed cue binds a sealed
+generation proof containing the native current before/after snapshots, bound
+request, current baseline TTS assignment/provenance and processing capability.
+Recovery independently rebinds that request, checks original source clocks and
+confidence bits, reopens canonical PCM, verifies exact native TTS/spoken retarget
+and checkpoint identity, then checks every assignment against the cumulative
+composition. No old private worker checkpoint is treated as a missing proof.
+
+Legacy inventory-v1 may provide admitted prior rows after its existing verifier
+passes; its selected cue must gain an explicit compatible proof reference when
+consumed by v3. The original archive contributes unmodified rows with no speech
+generation proof. A v1 publication without complete changed-speech evidence
+remains incomplete/refused. Inventory rows are kept in original canonical cue
+order, and source/mapping/confidence are unchanged across a new text/voice edit.
+
+Only a verified cumulative before-state and full retained result may prepare a
+v3 record. Final admission reopens every physical dependency and source-bound
+processing receipt before existing graph CAS. Undo verifies the current graph
+and prior effective content, restores that content at the next public revision
+and preserves the prior proof chain. A later correction uses the restored token
+and current assignments. No recursive JSON embedding, candidate/hint authority,
+partial admission, metadata normalization or silent migration is permitted.
+Proof traversal/work remains explicitly bounded by shared deadlines and the
+existing history/quota/reserve policy; a bounded refusal preserves the previous
+standard export and active graph.
+
+The source implementation and its test vectors must cover different-cue edits,
+same-cue replacement, a prior voice/text change, wide/restored revisions, lost
+or reordered assignments, changed spoken/provenance/PCM and stale CAS. Actual
+source-matched native B1/B2/cumulative/undo/after-undo, separate process/crash,
+standard/editable publication, installed GUI/liveness and chunked/real4h/full172/
+175 gates remain mandatory. Metadata source or fixtures cannot qualify them.
+
+##### Native historical identity and physical-reader boundary
+
+The pending v3 recovery source introduces a closed generation-state reference.
+It keeps the real public decimal token, original artifact/manifest identity,
+accepted snapshot and graph references, undo depth/target and exact native
+effective-state view. Snapshot plus graph retain the existing64MiB state
+payload limit; decimal parsing keeps integer counters exact and refuses aliases.
+Sealing requires a native admitted effective state and exact live store state
+before and after accepted-object sealing. No client path/token or reset tozero
+is used to manufacture a generation baseline.
+
+Reference parsing reopens full accepted bytes under the same deadline and
+checks state hashes and undo ancestry. The returned reference is deliberately
+distinct from AdmittedEffectiveState. Historical content must pass the same
+physical original/legacy graph reader, canonical source/timeline, retained
+render/mix and speech checks as current content. Its recovered effective view
+must match the sealed native view exactly before becoming a typed baseline.
+Live current reads continue checking the durable head before and after that
+shared physical reader; a historical read does not claim to be the live head.
+
+Historical references must also match the complete immutable SQLite version
+recorded for that exact token, including undo fields. A read-only
+review_graph_revision API validates the original completed job binding, rejects
+future/wrong tokens and rechecks recorded hashes/payload/undo consistency in a
+deferred observation transaction. It does not initialize/migrate the optional
+feature or change its live head, rows, CAS or undo semantics. Parsing metadata
+alone cannot invent a historical baseline. Two native store tests for actual
+commit/undo/read-only reopen and wrong-token/corrupted-row refusals are authored;
+they are not actual product crash or installed acceptance.
+
+The new traversal owns one deadline for all nested legacy physical work and
+rejects cycles, more than256 active proof scopes, more than4096 proof reads,
+panic or late completion. No proof admission is cached between references.
+For existing publications, before and origin remain the same original state;
+they are separate native fields so a future v3 before may have a later public
+counter while its origin remains the immutable archive. Existing publication
+tags, original-only preparation guard, SQL CAS/schema and old worker meanings
+are unchanged. The full v3 record reader, speech-proof recovery and CAS/undo
+remain in progress; metadata source and authored native tests do not qualify
+actual cumulative/after-undo/Windows/installed/long-form acceptance.
+
+##### Effective selected-speech and current-mix proof recovery source
+
+Preparation and recovery use the same native current request binder. It keeps
+the independently admitted immutable TTS input fields, numeric types and IEEE
+confidence bits, and binds the actual before/after snapshots, previous producer
+provenance, configuration and target catalog voice. Recovery verifies the exact
+immutable recorded before-state and complete native effective view rather than
+accepting a worker metadata projection as an admission.
+
+The selected effective-speech proof must bind its own current token, sealed
+before-state, snapshots, baseline composition, request, processing synthesis
+receipt/recipe and native accepted cue. Full canonical retained cue PCM and exact
+TTS/spoken retarget evidence are reopened. Every unselected inventory row keeps
+its native prior TTS/spoken/proof references; a legacy proof cannot stand in for
+the new selected effective generation.
+
+The current mix executor additionally seals the exact accepted worker response
+as private recovery evidence without adding fields to existing command packets.
+Recovery reconstructs native preparation and bindings from the admitted current
+and original archive, rechecks the source PCM/manifest, current assignment set,
+request and accepted cue, and reopens the source-matched processing mix receipt.
+The existing independent mix metadata oracle verifies segments, failures, duck
+windows, chunk ownership/status and protected provenance. All three physical
+retained PCM roles then pass full byte/header/locator/volume and exact path-only
+retarget checks under the same deadline and32GiB/2GiB policy. No inference/DSP
+execution or SQLite mutation is used to manufacture missing recovery evidence.
+
+Full publication-v3 record dispatch, render recovery/factory, CAS/monotonic undo
+and actual acceptance remain incomplete. This source checkpoint may be compiled
+and tested as Draft progress; green source/component checks do not qualify
+cumulative product correction, installed GUI, crash or long-form behavior.

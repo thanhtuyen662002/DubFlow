@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Complete cumulative native per-cue speech references; no graph publication authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "manifest_sha256", "snapshot_sha256", "cues"],
+  "properties": {
+    "schema_version": {"const": 2}, "kind": {"const": "review_native_speech_inventory_v2"},
+    "job_id": {"$ref": "cue-synthesis-v1.json#/$defs/id"},
+    "manifest_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "snapshot_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "cues": {"type": "array", "minItems": 1, "maxItems": 10000,
+      "items": {"type": "object", "additionalProperties": false,
+        "required": ["cue_id", "tts_document", "spoken_text", "generation_proof"],
+        "properties": {
+          "cue_id": {"$ref": "cue-synthesis-v1.json#/$defs/id"},
+          "tts_document": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+          "spoken_text": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+          "generation_proof": {"type": ["object", "null"], "additionalProperties": false,
+            "required": ["format", "proof"], "properties": {
+              "format": {"enum": ["legacy_publication_v2", "effective_speech_v1"]},
+              "proof": {"$ref": "native-effective-state-v1.json#/$defs/document"}
+            }}
+        }}}
+  }
+}

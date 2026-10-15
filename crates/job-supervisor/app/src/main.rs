@@ -35,6 +35,7 @@ mod review_pin;
 mod review_assets;
 mod review_document;
 mod review_effective;
+mod review_publication;
 mod review_generation;
 mod review_speech;
 mod review_request;

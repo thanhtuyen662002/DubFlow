@@ -273,3 +273,69 @@ unqualified/unimplemented. Tiny owned-media B1 and mocked B2 tests cannot qualif
 current native/installed B1/B2, corrected standard/editable exports, chunked
 long-form behavior, GUI/liveness/crash recovery, real four-hour or full172/175
 acceptance. Existing original guards and producer/model/worker pins are intact.
+
+### Cumulative per-cue speech-reference layer in progress
+
+`native-speech-inventory-v2.json` preserves every current cue's TTS/spoken
+references and original cue order while replacing only the selected cue row.
+Already admitted legacy publication-v2 acceptance stays explicitly tagged
+`legacy_publication_v2`; it is not relabeled as a new current-generation proof.
+Unmodified original rows have no generation proof. A changed row uses a sealed
+`native-effective-speech-generation-v1.json` proof with the complete current
+token, current before snapshot/view, next proposal, bound request, baseline
+composition, source-bound processing receipt and physically admitted cue.
+
+The native factory reopens accepted cue PCM/TTS/spoken metadata and the retained
+three-role mix, checks complete replacement composition against the native
+current assignment, then seals the private inventory. All unselected current
+rows and references stay exact, including an earlier voice/translation change.
+An unrelated assignment change, missing/duplicate/reordered cue, foreign pin or
+unknown proof tag refuses. Legacy v1 inventory/source objects remain unchanged.
+
+This layer is source in progress and is not wired to publication-v3/CAS/undo.
+Its new native tests are authored but unrun. A private inventory is not durable
+graph authority or product qualification; current native/installed/cumulative/
+after-undo, export, chunked/crash/GUI/long-form and full172/174/175 gates remain.
+
+The pending native speech generation proof also references the complete
+`native-generation-state-reference-v1.json` before state. Its actual decimal
+public counter, snapshot/graph byte hashes, original job binding and undo
+depth/target are sealed without revision normalization. Capturing a reference
+requires a native effective state and matching live supervisor state before
+and after sealing. References are reopened from the existing accepted store;
+their parser grants neither physical graph admission nor CAS authority.
+
+The complete referenced state must also match its actual immutable supervisor
+SQLite version. The read-only history API rechecks original binding, hashes,
+payload and undo ancestry, rejects a future or substituted token, and never
+initializes/migrates the feature or changes head/rows/undo. Two native history
+store tests are authored for commit/undo/read-only reopen and corrupted records.
+
+A separate historical reader feeds that referenced state through the same
+physical original/legacy publication reader used by the live current wrapper.
+The live wrapper retains both head fences; history uses its real prior counter
+without pretending to be the current head. Recovered effective metadata must
+match the sealed native view exactly. One caller-owned recovery deadline covers
+all nested legacy media work; proof recursion refuses cycles, depth above256,
+more than4096 proof reads, panic or late completion. Repeated references are
+read again rather than accepted from an admission cache.
+
+The four new native reference/ancestry/view/budget tests are authored, not run.
+Publication-v3 graph dispatch, full speech-proof recovery, CAS/undo and actual
+product acceptance remain required; these references are a recovery interface.
+
+Pending effective speech recovery now shares the current preparation request
+binder, including independent canonical input/confidence-bit checks. It binds
+the selected proof to the exact stored and physically admitted before-state,
+proposal, effective baseline, processing synthesis recipe/catalog and retained
+cue/TTS/spoken bytes. The complete inventory must equal the native one-row
+replacement, preserving every other prior TTS/spoken/proof reference.
+
+Current mix execution privately retains its original accepted worker packet
+for future v3 recovery. Existing command packet schemas and meanings are
+unchanged. Recovery rebinds the full native preparation/source/current context,
+processing capability and packet checksums; it reuses the independent existing
+segment/failure/duck-window/chunk/provenance oracle and reopens all three native
+PCM roles under the fixed output volume/quota/reserve/path-only-retarget fences.
+No producer, DSP, TTS/model inference or state mutation runs during recovery.
+These source interfaces are not yet connected to a complete v3 record or CAS.
