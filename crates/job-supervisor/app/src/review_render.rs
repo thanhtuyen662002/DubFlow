@@ -974,7 +974,7 @@ pub(super) struct EffectiveRenderInputs<'a> {
     pub(super) candidates: &'a Path,
 }
 
-fn storage_budget() -> MixStorageBudget {
+pub(super) fn storage_budget() -> MixStorageBudget {
     MixStorageBudget {
         maximum_bytes: 32 * 1024 * 1024 * 1024,
         minimum_free_bytes: 2 * 1024 * 1024 * 1024,

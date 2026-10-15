@@ -2562,3 +2562,156 @@ attempt cannot borrow another request's error context even when IDs/job/operatio
 match. Lock contention or missing/expired capture degrades to the existing generic
 error, never a false binding. This observation capability is separate from token/
 producer authority and does not change shared session/apply guard ownership.
+
+### Private source-PTS longform chunk planning v1 (pending source)
+
+The current effective-render-v1 recipe still renders the entire video and only
+reuses a fully completed candidate. It explicitly declares chunked_longform=false.
+That declaration and every existing producer/job/context remain unchanged.
+
+The new private longform-plan-v1 is the first scheduling component for a distinct
+future render recipe. It consumes an ordered stream of decoded presentation
+timestamps in the admitted source's reduced rational time base, retaining the
+exact signed64 source origin (including negative/nonzero and values above2^53).
+No float seconds, nominal FPS or frame ordinal becomes identity. Adjacent half-open
+chunk intervals cover the entire source interval exactly once; every boundary
+starts at a real next frame. target_ticks is a scheduling target, not permission
+to fabricate frames or split a sparse held frame. A separate maximum frame count
+limits dense chunks. Source duration is at most six hours by exact rational
+comparison. The planner keeps only running SHA256 states and at most4096 chunk
+descriptors, with a4MiB encoded metadata limit and a bounded planning deadline.
+The process supplying the clock still requires its own native containment bound.
+
+Each video chunk identity binds exact source bytes, processing/encoder/config
+recipe, reduced time base, absolute interval, frame count, exact ordered PTS hash
+and interval-local visual dependency hash. The full plan separately binds the
+current request/context and whole frame-clock hash. A new request token or one
+caption elsewhere therefore does not itself invalidate this chunk. The admitted
+caller must include all local burn-in cues/styles/geometry/cleanup dependencies,
+and any global configuration change in each affected dependency/recipe hash.
+Audio is deliberately not made a per-video-chunk dependency: final admitted audio
+and its continuity remain a separately required assembly/QC gate. This design
+alone makes no assertion about AAC/encoder seams or exact VFR mux behavior.
+
+The closed pinned-byte reader checks format/recipe, canonical decimal strings,
+signed64 bounds, reduced rational clock, complete interval/frame-count coverage,
+per-chunk keys and canonical byte encoding. A plan is policy data, never source,
+caption, filesystem, volume, quota, checkpoint, render, QC or CAS authority.
+Neither decoded PTS nor an untrusted dependency hash alone admits an artifact.
+Native physical checkpoint admission and independent source-clock revalidation,
+bounded FFmpeg chunk execution, caption global clocks, exact output PTS/seams,
+final audio/subtitle mux/full AV QC, crash recovery and retained publication must
+be connected before a new capability may advertise chunked rendering. Existing
+32GiB aggregate/fresh2GiB reserve/no-follow/volume/hash/CAS/undo fences still apply;
+actual six-hour policy fit and real four-hour regeneration remain unproven.
+
+Compatibility is additive and private: no released format, original guard,
+worker protocol, durable schema, shared media adapter, runtime/model pin or v1
+capability changes. Planner tests qualify exact metadata and selective key reuse
+only. They do not qualify chunked product execution, installed B1/B2/GUI/liveness,
+actual crash/recovery, corrected standard/editable output or full174/172/175.
+
+#### Bounded decoded-frame clock consumer (pending source)
+
+longform_clock.py connects an incremental owned-ffprobe XML frame=pts stream to
+the private planner. It uses bounded SAX parsing, not a complete JSON/frame array:
+4096B input blocks,8192B unfinished tokens, at most32 bounded attributes per
+element, a five-element stack, bounded total bytes/frame count and a cooperative
+deadline. It retains exact signed64 source PTS, refuses missing/noncanonical/
+duplicate/reversed values and never substitutes FPS, frame ordinal or a
+best-effort timestamp. Known bounded codec side data supplies no clock identity.
+DTD/entities/processing instructions/CDATA/comments/unsupported encoding and
+unknown frame fields refuse. A partial XML tail cannot produce a complete plan
+or clock summary, even after valid earlier frame records were observed.
+
+The reader is a private consumer, not a new native process grant. The producer
+must still be app-owned/inventory-pinned, select the admitted video stream, run
+inside native timeout/cancellation/output containment, exit successfully with
+admitted diagnostics and revalidate exact source bytes. Clock indexing itself
+must use checkpointed bounded work windows rather than one full-longform decode
+under a metadata deadline. ffprobe read_intervals seeks are not exact and cannot
+establish a source boundary; actual decoded PTS and independently proved complete
+coverage are mandatory. No seek normalization or floating-second identity is
+introduced. Native indexed-window/checkpoint execution, FFmpeg render/assembly,
+PTS/VFR/audio/caption seam checks and final physical/QC/CAS admission are still
+unimplemented; effective-render-v1 and chunked_longform=false stay unchanged.
+
+#### Bounded owned probe process adapter (pending source)
+
+The private longform_probe module connects the decoded clock consumer/planner
+to an explicit app-owned ffprobe executable, full executable SHA/size and a
+no-follow source locator/SHA/size under an admitted root. Pins are rechecked
+before and after execution. It selects the admitted integer video stream index,
+requests exact frame PTS/known side-data XML, uses argv/shell=false/no interactive
+window and never passes an approximate seek or user filter expression. The
+processing release, executable inventory/compatibility and native process-tree
+containment are still required outside this private adapter.
+
+Two pipe readers feed a16-block bounded queue. Stdout uses4096B blocks and an
+explicit byte bound; ordinary error diagnostics have a4096B cap. Deadline and
+cancellation remain active while waiting for pipe output, EOF and process exit.
+Every reader must finish and join; every child must reap under a separate2second
+cleanup bound. EOF alone is not success: nonzero exit, any error-level stderr,
+partial XML, malformed clock, early consumer return, read failure, output cap or
+late source/executable changes refuse the entire plan. No partial observed
+frame/chunk becomes a valid checkpoint. Native containment must recover if an
+inherited pipe cannot join; this path cannot report success.
+
+Deterministic actual app-owned Python child fixtures exercise streaming,
+deadline/cancellation/reaping, output floods, diagnostics, early-consumer failure
+and partial tails; mocked ffprobe dispatch exercises exact locator/pin checks.
+They are process-boundary tests, not actual ffprobe/VFR/media qualification.
+No render-v1 capability/deadline, original worker/model/producer pin, durable
+schema, canonical source or graph publication changes. Native indexed-window
+coverage/checkpoints, chunk encode/assembly/PTS/audio/caption seams, full QC,
+actual crash/longform/installed product acceptance remain mandatory.
+
+An explicit optional local owned-media component fixture additionally generated
+two seconds of96x64 FFV1 video with32VFR frames at a nonzero2000tick origin in a
+1/1000 source time base. The actual ffprobe process preserved the independently
+defined frame PTS sequence and four500tick plan intervals; source and both owned
+media executable hashes/mtimes stayed unchanged. This small synthetic source
+does not qualify H.264 chunk rendering/mux, physical checkpoint reuse, installed
+Review, B1/B2 regeneration or real four-hour product/longform acceptance.
+
+#### Native physical-only longform chunk checkpoints (pending source)
+
+The additive review_chunks module independently reads the closed4MiB planner
+format against separate native plan/context/source/processing-recipe hashes. It
+checks canonical bytes, signed64/reduced rational clock and six-hour duration,
+ordered exact interval coverage/frame totals, bounded inventory and each local
+chunk key. A Python-to-native fixture covers negative and above2^53 source PTS.
+This metadata admission is not independent decoded-clock/media/QC admission.
+
+Physical chunk retention uses the existing NativeOutputPin/NativeMixStore and
+AcceptedAudioStore, without a second storage implementation or schema/migration.
+The same output-wide OS writer lease,32GiB aggregate including old/undo/orphans/
+other jobs, fresh2GiB reserve,32KiB copy/full SHA, regular/no-follow/readonly seal,
+job/content/format namespace and canonical volume GUID locators remain mandatory.
+The existing render budget is shared by visibility only; its values/behavior are
+unchanged. After storing an immutable content-addressed metadata receipt, the
+writer lease drops and an independent reopen reacquires the existing fence and
+validates every physical byte. Hints never authorize IO. Missing/corrupt/unsealed/
+foreign-job/changed-volume/changed-size objects refuse; no automatic regeneration
+or fallback root is introduced.
+
+The new retained-chunk-v1 receipt binds job, exact local chunk/clock/source/recipe,
+native retained MP4 locator and archived originating plan/context hashes. Reuse
+matches the current plan's local chunk dependencies, rather than requiring an
+unchanged whole-request token after an unrelated correction or undo. Archived
+origin pins remain provenance, not a grant to consume an old current graph.
+Receipts explicitly require semantic_qc_admitted=false and
+active_graph_published=false: this storage component does not admit codec,
+decoded source-window completeness, actual output PTS/frame/geometry/audio/seams,
+caption semantics, processing compatibility or CAS. The future complete native
+render caller must independently perform those gates. Content-addressed receipts
+may remain harmless quota-accounted orphans if a caller dies before recording
+its private checkpoint index; no valid prior receipt is overwritten.
+
+Actual Windows retention/canonical reopen/mtime/corruption tests are authored but
+require newsource hosted Windows evidence; local missingMSVClink compile is not
+retried. Cross-language deterministic metadata tests do not substitute for the
+native physical test. No original job/worker/model/runtime/processing pin, durable
+SQLite state or released format changes; full native indexed-window/checkpoint
+execution, chunk rendering/assembly/QC/installed/crash/real4h gates remain. Current
+effective-render-v1 still declares chunked_longform=false.

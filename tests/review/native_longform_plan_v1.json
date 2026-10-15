@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "python_native_longform_plan_fixture",
+  "cases": [
+    {
+      "name": "negative-vfr",
+      "source_pts": [
+        "-100",
+        "-99",
+        "-93",
+        "-70",
+        "-69",
+        "-50"
+      ],
+      "plan_json": "{\"chunks\":[{\"end_tick\":\"-70\",\"frame_clock_sha256\":\"sha256:c71278cae134347eaedae5c71dadbc1ff201bf73631cffd8c7eab2d9bf180442\",\"frame_count\":\"3\",\"identity\":\"sha256:25f87624da550fd6097cc25301ea235a9b93d7eb583404987959b0efdea4a8bf\",\"start_tick\":\"-100\",\"visual_dependencies_sha256\":\"sha256:dd71e9e8420e0c494c728a7b3418d0274d9aea3e31b945303967649321e949d4\"},{\"end_tick\":\"-50\",\"frame_clock_sha256\":\"sha256:bfb8772a8e92df6522d47ad5ea9bf96ce27be0e1211e1e9fe9bf908e1db6fc1d\",\"frame_count\":\"2\",\"identity\":\"sha256:4c73016ea00395b72c266ebd2d12bbfc87a5052cacc7b8218716d249b0f0c541\",\"start_tick\":\"-70\",\"visual_dependencies_sha256\":\"sha256:dd71e9e8420e0c494c728a7b3418d0274d9aea3e31b945303967649321e949d4\"},{\"end_tick\":\"-40\",\"frame_clock_sha256\":\"sha256:b84096a2c95f7ac535bc39b9351f3df17093723b168773f68f3b80a089a39087\",\"frame_count\":\"1\",\"identity\":\"sha256:4f572815dde22062b156458cce6869b191b2eb7ff80a47333a9c38252ef5b0c3\",\"start_tick\":\"-50\",\"visual_dependencies_sha256\":\"sha256:dd71e9e8420e0c494c728a7b3418d0274d9aea3e31b945303967649321e949d4\"}],\"context_sha256\":\"sha256:923894234beced7bd88c6943de010e77c52a25527b1cf2d09014f69d45def13e\",\"frame_clock_sha256\":\"sha256:ef731249c2dd5fd45a4a069e4c2500321a50513d0a85c12861119081c0d5cbeb\",\"frame_count\":\"6\",\"kind\":\"review_longform_render_plan\",\"policy\":{\"max_chunks\":4096,\"max_frames\":3,\"target_ticks\":\"10\"},\"processing_recipe_sha256\":\"sha256:ba09d934a2c20ced349a2934ec1734e74d7b2fdd5978b2f30d8502472c4eb473\",\"recipe\":\"review-source-pts-chunks-v1\",\"schema_version\":1,\"source_interval\":{\"end_tick\":\"-40\",\"start_tick\":\"-100\"},\"source_sha256\":\"sha256:a37ee4f6445723e1acc88373e68f567a1299cb0c59092c7aa5683be48e6db135\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}}",
+      "plan_sha256": "sha256:0570f963cd1feb0b9ecafa5247226813870a4f405749e29f08bdbebc0a5d547d"
+    },
+    {
+      "name": "wide-vfr",
+      "source_pts": [
+        "9007199254741009",
+        "9007199254741010",
+        "9007199254741016",
+        "9007199254741039",
+        "9007199254741040",
+        "9007199254741059"
+      ],
+      "plan_json": "{\"chunks\":[{\"end_tick\":\"9007199254741039\",\"frame_clock_sha256\":\"sha256:93b2573283e048b2ff102d53865365c558054d46862bc44770e357257995908f\",\"frame_count\":\"3\",\"identity\":\"sha256:d3569b5501559a90f07e3a02f0efd053145ee352398cce188bcf11b30de9b692\",\"start_tick\":\"9007199254741009\",\"visual_dependencies_sha256\":\"sha256:dd71e9e8420e0c494c728a7b3418d0274d9aea3e31b945303967649321e949d4\"},{\"end_tick\":\"9007199254741059\",\"frame_clock_sha256\":\"sha256:68bba1a460436b53adc6a8c0bce34089f9c97627599d4e9f94819d0c490406d2\",\"frame_count\":\"2\",\"identity\":\"sha256:eb52b7bc7e86f356d21ef1e5cc9801125132b99f27dade7919dade7a008482a4\",\"start_tick\":\"9007199254741039\",\"visual_dependencies_sha256\":\"sha256:dd71e9e8420e0c494c728a7b3418d0274d9aea3e31b945303967649321e949d4\"},{\"end_tick\":\"9007199254741069\",\"frame_clock_sha256\":\"sha256:7d389a2f0c60012d2563172849a7bf6b85727a0be579af66aa8f86fcd9b0fdf7\",\"frame_count\":\"1\",\"identity\":\"sha256:9ced350a51ea2663a31bcca137d29ea458d5217afaf7144aa91e55fa0a263da7\",\"start_tick\":\"9007199254741059\",\"visual_dependencies_sha256\":\"sha256:dd71e9e8420e0c494c728a7b3418d0274d9aea3e31b945303967649321e949d4\"}],\"context_sha256\":\"sha256:923894234beced7bd88c6943de010e77c52a25527b1cf2d09014f69d45def13e\",\"frame_clock_sha256\":\"sha256:b272bcb902b750ea71421b01f69d9a3e3d40ae0d5c9c0b9481935122a7ec5cf6\",\"frame_count\":\"6\",\"kind\":\"review_longform_render_plan\",\"policy\":{\"max_chunks\":4096,\"max_frames\":3,\"target_ticks\":\"10\"},\"processing_recipe_sha256\":\"sha256:ba09d934a2c20ced349a2934ec1734e74d7b2fdd5978b2f30d8502472c4eb473\",\"recipe\":\"review-source-pts-chunks-v1\",\"schema_version\":1,\"source_interval\":{\"end_tick\":\"9007199254741069\",\"start_tick\":\"9007199254741009\"},\"source_sha256\":\"sha256:a37ee4f6445723e1acc88373e68f567a1299cb0c59092c7aa5683be48e6db135\",\"time_base\":{\"denominator\":\"1000\",\"numerator\":\"1\"}}",
+      "plan_sha256": "sha256:e5cb8f4feb149a8860558427998e0a08d78ae4c3d8b36e140b72567ab075406c"
+    }
+  ]
+}

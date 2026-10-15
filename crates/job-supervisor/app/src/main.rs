@@ -53,6 +53,7 @@ mod review_correction;
 mod review_retention;
 mod review_timeline;
 mod review_render;
+mod review_chunks;
 mod review_active;
 
 const STAGE_ID: &str = "local-file";
