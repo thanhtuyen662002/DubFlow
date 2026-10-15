@@ -2715,3 +2715,211 @@ native physical test. No original job/worker/model/runtime/processing pin, durab
 SQLite state or released format changes; full native indexed-window/checkpoint
 execution, chunk rendering/assembly/QC/installed/crash/real4h gates remain. Current
 effective-render-v1 still declares chunked_longform=false.
+
+#### Source-clock fragmented video assembly (pending source)
+
+A first new actual three-chunk H.264 component experiment failed despite clean
+ffprobe/full-decode exits: each independent empty-moov mux reset tfdt to zero,
+so unchanged fragment concatenation recovered only17 of49 expected VFR frames.
+The failed complete experiment/source/raw probes/call logs/media are preserved.
+This is an assembly clock failure, not proof that a clean decode preserves source
+coverage. A distinct read-only-input continuation derives global fragment decode
+time and each final frame hold from the exact source interval, restoring all49
+independent expected PTS across sparse seams without any chunk re-encoding.
+
+The new private longform_fragments module implements a bounded one-video-track
+AVC fragmented-MP4 subset. Full pinned immutable input bytes, identical decoder
+initialization, admitted coded geometry/exact timescale, a single explicit track,
+default-base-is-moof, adjacent bounded moof/mdat pairs, explicit sample durations,
+exact payload offsets/sizes, independent first sync sample and zero composition
+offsets are required. Encryption/multi-track/reordered clocks/edit lists/unknown
+sample tables refuse rather than silently normalize. The ordered encoded sample
+PTS/count hash must equal the plan's exact source-PTS hash in every chunk. A
+nonunit reduced rational clock rescales by checked integer multiplication; wide
+or negative source origins never pass through floating seconds.
+
+Only new candidate metadata is derived: monotonic mfhd sequence, global64bit
+tfdt anchored at original source start and the final sample duration ending at
+the admitted next-frame/source-end boundary. Interior sample durations and every
+encoded mdat byte remain unchanged. Source-bound intervals, rather than inferred
+last-chunk duration sums, determine all seams. Inputs are never rewritten. The
+stale absolute random-access trailer is excluded from the new candidate; native
+final mux/seekability/PTS/AV QC remains required before standard publication.
+
+Memory is bounded to1MiB initialization/moof metadata,16MiB aggregate retained
+fragment headers,32768 fragment pairs and32KiB media copy blocks; the encoded
+candidate remains under the existing128GiB per-video ceiling, which does not
+waive32GiB aggregate Review quota. A mandatory native-derived capacity callback
+checks remaining copy bytes before creation/writes/every4MiB/preseal, alongside
+deadline/cancellation and full readonly input hash/mtime rechecks. Errors remove
+only that newly created private partial candidate, preserving prior artifacts.
+This callback interface does not itself admit volume/quota/root authority.
+
+Actual tiny owned-media tests cover49VFR frames across three h264_mf software
+encoded fragments, exact source-derived output PTS, geometry/codec/timebase and
+full video decode with all inputs/executables hash/mtime unchanged. Deterministic
+tests cover signed/wide origins, rational rescaling, foreign clock/codec/offset/
+composition/sample inventory, mutable inputs, capacity failure and cancellation.
+These are component tests, not native current B1/B2/product qualification.
+The source-clock indexed-window producer, checkpoint scheduler/native semantic
+admission, global caption clocks, audio continuity/final mux, hardware fallback,
+fullAV/QC/CAS, installed GUI, actual crash and real four-hour acceptance still
+must be connected. Original render-v1/current capability remains unchanged and
+chunked_longform=false; no original worker/model/runtime/processing pins migrate.
+
+#### Bounded source-clock chunk encode and global captions (pending source)
+
+The private longform_captions reader binds complete UTF8 ASS bytes to an exact
+current pin and retains each selected event's original global centisecond clock
+and bytes. Exact integer rational overlap selects only the events that intersect
+a source chunk; events crossing a seam are neither clipped nor rebased. Header
+and local event bytes determine the visual dependency. An unrelated later cue
+does not invalidate an earlier chunk, while a style/header change does. Native
+current timeline/caption provenance and subtitle semantics still need admission.
+
+longform_encode executes a fixed h264_mf software recipe with no B frames. It
+binds owned FFmpeg/ffprobe bytes, helper source bytes, selected integer video
+stream, geometry/time base, subtitle choice and the native-admitted runtime
+environment hash. The environment must cover Media Foundation codec/OS and
+DirectWrite/GDI/font selection/fallback bytes and configuration; an FFmpeg hash
+alone does not bind those dependencies. A mandatory native observation callback
+must independently revalidate that environment before and after each process.
+This callback interface does not implement or grant native closure admission.
+The tiny Latin/Arial component fixture pins its observed font file only; complete
+installed font/codec/provider closure remains unimplemented and unqualified.
+
+An actual first bounded encode failed with an empty MP4 initialization despite
+exit zero: copyts plus accurate absolute input seek discarded the selected
+nonzero-origin source frames. Its raw logs/media and independent changed-option
+diagnosis are retained. The fixed recipe uses absolute seek only as an earlier
+microsecond hint with noaccurate_seek, keeps the pre-roll source PTS, and applies
+exact integer trim. It stops output at the independently planned frame count;
+seek position or inferred FPS never decides identity or coverage. Full encoded
+sample PTS/count hash must still equal the independently admitted source clock.
+
+Filters trim on source PTS, subtract the original source origin while applying
+the unmodified global ASS events, and only then place the encoded chunk at its
+local zero origin. The existing strict fragment assembler derives its final
+sample hold. This recipe refuses absolute filter PTS above binary64's exact
+integer range and unsupported MP4 timescales before execution; signed64 metadata
+support does not waive the still-required exact wide-clock render mapping.
+
+Each bounded child has no stdin/window, a 16-block pipe queue, streamed private
+output, native capacity callback checks and the existing shared cancellation/
+deadline/diagnostic/reap fences. Exact source/executable/environment pins are
+rechecked around execution. Raw plus normalized private chunks have explicit
+byte bounds; only fresh scratch is removed on failure, and hard-crash orphans
+remain quota-accounted. No unchanged retained input or original worker pin is
+rewritten. native-encoded-chunk-candidate-v1 records provenance/full video
+decode with semantic_qc_admitted=false and active_graph_published=false; its path
+is a hint, never a canonical native locator or authority to reuse/publish.
+
+An additional QA failure used an incomplete ASS style fixture, yielding no
+visible glyphs while source PTS were already correct. The failure is preserved;
+the corrected fixture supplies the full existing producer style fields. New
+tiny tests independently compare the selected nonzero-origin VFR PTS and two
+decoded image samples before/during a global caption interval. They do not
+qualify current native B1/B2, full runtime closure or installed product behavior.
+Native indexed-window coverage/checkpoint scheduling, independent physical and
+semantic chunk admission, audio continuity/final mux, hardware fallback, AV/QC/
+CAS, standard/editable publication, installed GUI, actual crash and real four-hour
+acceptance still must be connected. Current effective-render-v1 and
+chunked_longform=false remain unchanged.
+
+#### Native ordered physical chunk scheduling (pending source)
+
+The native review_chunks scheduler walks the separately pinned current plan in
+source order. A matching local key may select an older request's checkpoint;
+every selected receipt independently reopens through the existing native media
+store. A changed local dependency invokes the native processing executor rather
+than treating an unrelated request token as a reason to repeat all chunks.
+Corrupt/foreign/missing selected checkpoints refuse without an implicit encode
+retry. Current job/token/source/processing/runtime and cancellation fences apply
+around dispatch, retention and checkpoint boundaries; each phase uses the lesser
+of the caller's absolute deadline and the existing900second render bound.
+
+An encoded worker packet must bind exact current plan/context, source, processing
+recipe/runtime environment, local chunk/caption/frame-clock hashes and frame
+count. Its closed private candidate is not trusted semantic media evidence.
+MP4 bytes still retain/reopen through the existing no-follow/readonly/fullSHA/
+canonical-volume/output-writer/32GiB media quota and fresh2GiB reserve. Native
+independent decoded source coverage/codec/geometry/caption/audio/QC is mandatory
+before any final use. No worker boolean, path hint, callback or hash grants those
+admissions. This scheduler remains unavailable through the current render entry.
+
+After each physical chunk completes, the supervisor accepts one immutable index
+node and requires the native caller's durable checkpoint callback to record its
+pointer before advancing. A node contains just this chunk and its previous
+content-addressed node, not a repeated whole-prefix array. Walking requires exact
+node bytes/SHA/size, same job/source/recipe/clock/origin pins, decreasing bounded
+ordinal, no repeated key and a valid root. A current-plan chain must be its exact
+completed ordered prefix. Older origin pins preserve history only; every current
+required key is reconsidered. Each attempt creates a fresh chain from its own
+root, so unrelated edits/resumes do not accumulate old chains into one walk.
+At most4096nodes/16MiB metadata are read or emitted per chain. Metadata capacity
+must independently account all old/undo/orphan accepted metadata under the native
+aggregate budget before and after accepting records; the native callback must be
+implemented before this interface becomes an execution route. Failure can leave
+quota-accounted immutable orphan nodes but cannot overwrite an earlier index.
+
+New deterministic Rust tests are authored for ordered local reuse, partial-prefix
+resume, cancellation/stale/deadline/checkpoint failures, corrupt reuse refusal,
+foreign candidate/index fields and a4096node linear metadata bound. They have NOT
+RUN: known missing localMSVClink is not retried, and exact hosted source evidence
+is still required. Source parses/formats with rustfmt only. The native processing
+executor, bounded source-clock indexed-window producer, runtime font/codec closure,
+durable pointer/capacity implementation, current-render wiring, final audio/mux/
+QC/CAS/standard+editable output and installedGUI/crash/real4h acceptance remain
+unimplemented/unqualified. No SQLite/worker protocol/model/original producer
+change or public longform capability activation is introduced.
+
+#### Output-owned bounded checkpoint metadata prerequisite (pending source)
+
+Connecting an executor exposed a storage gap in the authored scheduler: its
+AcceptedAudioStore index lives under DATA, while the native media quota and
+writer lease protect the output volume. An opaque capacity callback is not an
+implementation of that admission. Holding another output writer lease around
+the existing retain function would recursively acquire the same lease. No such
+callback is implemented or routed into current rendering.
+
+RetainedMixStore now has a separate bounded JSON-record primitive for native
+checkpoint metadata of at most64KiB. It uses the same already-held output-wide
+OS writer lease, content/format/job namespace,32GiB aggregate count of media,
+metadata, old/undo/unreferenced/copy-orphan and other-job bytes, and fresh2GiB
+caller reserve. Known sealed exact bytes reuse without a new copy or changing
+mtime. New writes reserve before creation and before each32KiB block, fsync,
+validate exact raw JSON/SHA/size, recheck reserve and deadline before exclusive
+publication, and reopen readonly single-link metadata. Corrupt/unsealed/linked
+collisions refuse without repair. Only that new private temporary is disposable;
+prior records remain untouched. Exact wide integers/UTF8 bytes are not rewritten.
+This storage primitive grants no record semantics or graph authority.
+
+NativeMixStore wraps that primitive in fresh volume observations, the existing
+output GUID locator, no-follow/readonly/fullSHA/identity checks and independent
+canonical reopening. Absolute hints do not authorize IO. No metadata is copied
+to a control-root fallback, and no original ROOT/job/worker/model is repinned.
+The existing JSON retained-file format/path namespace is reused; original
+artifact/schema/SQL/worker formats are unchanged.
+
+The old global4096 filesystem-entry bound cannot contain a4096chunk plan plus
+its receipts and index nodes. The finite entry ceiling is raised to65536 while
+the32GiB aggregate byte budget, fresh2GiB reserve and all cooperative deadlines
+remain unchanged. Every entry is still observed/refused on links or unknown
+nested namespaces. Tests use a smaller private fixture limit to exercise the
+same actual filesystem refusal without creating65536 files in ordinary CI.
+This is a bounded inventory policy change, not proof of six-hour fit or latency;
+actual Windows/full-longform inventory admission remains mandatory. An older
+controller may refuse new large inventories; it must never evict or silently
+repin them. Existing standard exports stay independent of Review admission.
+
+Four new core Rust cases cover exact sealed reuse/reopen, shared media/orphan/
+other-job quota and writer exclusion, changing/unknown space/invalid JSON/
+deadline bounds, and linked/unsealed/corrupt/foreign-role refusals. One Windows
+case additionally covers the real native volume/locator/hint/independent reopen.
+All five are AUTHORED/NOT_RUN; rustfmt/diff checks are syntax/source evidence only,
+and known missing localMSVClink is not retried. The DATA-based prototype scheduler
+still needs explicit versioned output-metadata integration and durable checkpoint
+discovery/pointer handling before an admitted executor may use it. Source-clock
+window coverage, complete runtime closure, actual worker containment/current
+render integration/final audio-mux/QC/CAS/installed/crash/real4h acceptance remain
+unimplemented/unqualified. Current chunked_longform=false remains unchanged.

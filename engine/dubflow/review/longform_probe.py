@@ -22,7 +22,7 @@ DIAGNOSTIC_BYTES = 4096
 PIPE_QUEUE_BLOCKS = 16
 
 
-def _consume_process(argv, consume, *, deadline, max_stdout_bytes, cancelled):
+def _consume_process(argv, consume, *, deadline, max_stdout_bytes, cancelled, cwd=None):
     """Bounded pipe kernel. Tests use an app-owned Python fixture, never a shell."""
     from engine.dubflow.security import build_subprocess_plan
 
@@ -37,7 +37,7 @@ def _consume_process(argv, consume, *, deadline, max_stdout_bytes, cancelled):
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     try:
         child = subprocess.Popen(command.argv, shell=False, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags, cwd=cwd)
     except OSError as error:
         raise ReviewError("owned decoded-clock probe could not start") from error
     events, stop, workers = queue.Queue(maxsize=PIPE_QUEUE_BLOCKS), threading.Event(), []

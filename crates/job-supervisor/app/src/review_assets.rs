@@ -17,7 +17,11 @@ const MAX_CUE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 const BUFFER_BYTES: usize = 32 * 1024;
 const MAX_RIFF_CHUNKS: usize = 1024;
-const MAX_MIX_STORE_ENTRIES: usize = 4096;
+// One longform plan may retain4096 video chunks plus independent receipt/index
+// records. This finite inventory bound never increases the aggregate byte quota
+// or cooperative deadline, and old/undo/orphan/other-job entries still count.
+const MAX_MIX_STORE_ENTRIES: usize = 65536;
+const MAX_RETAINED_METADATA_BYTES: usize = 64 * 1024;
 
 #[path = "review_export_copy.rs"]
 mod export_copy;
@@ -811,6 +815,7 @@ pub(super) struct RetainedMixStore {
     namespace: PathBuf,
     objects: AcceptedAudioStore,
     budget: MixStorageBudget,
+    inventory_limit: usize,
     // One OS lock covers quota scan through copy/publication, across jobs and
     // supervisor processes. Never clone the handle or unlink its empty file.
     _lease: File,
@@ -1072,6 +1077,7 @@ impl RetainedMixStore {
             namespace,
             objects: AcceptedAudioStore { root },
             budget,
+            inventory_limit: MAX_MIX_STORE_ENTRIES,
             _lease: lease,
         })
     }
@@ -1083,7 +1089,7 @@ impl RetainedMixStore {
         let mut account = |path: &Path| -> SupervisorResult<()> {
             time_left(Some(deadline))?;
             count += 1;
-            if count > MAX_MIX_STORE_ENTRIES {
+            if count > self.inventory_limit {
                 return Err(invalid(
                     "mix object inventory limit; explicit recovery required",
                 ));
@@ -1168,6 +1174,117 @@ impl RetainedMixStore {
             }
         }
         Ok(total)
+    }
+
+    /// Native small checkpoint records share the exact output writer/aggregate
+    /// quota with media. No candidate path/control-root fallback or semantic
+    /// grant is introduced. Keep every prior/orphan byte and never replace a
+    /// collision, including corrupt/unsealed metadata.
+    pub(super) fn accept_json_record(
+        &self,
+        raw: &str,
+        mut available_bytes: impl FnMut(&Path) -> SupervisorResult<u64>,
+        deadline: Instant,
+    ) -> SupervisorResult<RetainedRenderFile> {
+        time_left(Some(deadline))?;
+        if raw.is_empty() || raw.len() > MAX_RETAINED_METADATA_BYTES {
+            return Err(invalid(
+                "retained checkpoint metadata exceeds its small-record bound",
+            ));
+        }
+        json_syntax(raw)?;
+        let pin = RetainedFilePin {
+            sha256: format!("sha256:{:x}", Sha256::digest(raw.as_bytes())),
+            size_bytes: raw.len() as u64,
+            format: RetainedFileFormat::Json,
+        };
+        let retained = RetainedRenderFile {
+            path: self.objects.root.join(format!("{}.json", &pin.sha256[7..])),
+            pin,
+        };
+        match fs::symlink_metadata(&retained.path) {
+            Ok(_) => {
+                self.read_json_record(&retained, deadline)?;
+                return Ok(retained);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+        }
+        let used = self.used_bytes(deadline)?;
+        if used
+            .checked_add(retained.pin.size_bytes)
+            .is_none_or(|n| n > self.budget.maximum_bytes)
+        {
+            return Err(invalid(
+                "retained checkpoint metadata exceeds shared media quota; preserve prior objects",
+            ));
+        }
+        let reserve = |remaining: u64| {
+            remaining
+                .checked_add(self.budget.minimum_free_bytes)
+                .ok_or_else(|| invalid("retained checkpoint metadata reserve overflow"))
+        };
+        if available_bytes(&self.namespace)? < reserve(retained.pin.size_bytes)? {
+            return Err(invalid(
+                "retained checkpoint metadata has insufficient fresh caller space",
+            ));
+        }
+        let (mut copy, private) = self.objects.private_copy()?;
+        let mut written = 0u64;
+        for bytes in raw.as_bytes().chunks(BUFFER_BYTES) {
+            time_left(Some(deadline))?;
+            if available_bytes(&self.namespace)? < reserve(retained.pin.size_bytes - written)? {
+                return Err(invalid(
+                    "retained checkpoint metadata caller reserve changed during write",
+                ));
+            }
+            copy.write_all(bytes)?;
+            written += bytes.len() as u64;
+        }
+        copy.sync_all()?;
+        read_json_file(&mut copy, &retained.pin.sha256, retained.pin.size_bytes)?;
+        if available_bytes(&self.namespace)? < self.budget.minimum_free_bytes {
+            return Err(invalid(
+                "retained checkpoint metadata caller reserve changed before sealing",
+            ));
+        }
+        time_left(Some(deadline))?;
+        drop(copy);
+        self.objects.publish(&private, &retained.path)?;
+        drop(private); // Remove our temporary link before single-file reopening.
+        self.read_json_record(&retained, deadline)?;
+        Ok(retained)
+    }
+
+    pub(super) fn read_json_record(
+        &self,
+        retained: &RetainedRenderFile,
+        deadline: Instant,
+    ) -> SupervisorResult<String> {
+        if retained.pin.format != RetainedFileFormat::Json
+            || retained.pin.size_bytes > MAX_RETAINED_METADATA_BYTES as u64
+        {
+            return Err(invalid(
+                "retained checkpoint record has a foreign format or bound",
+            ));
+        }
+        self.verify_file(retained, deadline)?;
+        let mut file = regular(&retained.path)?;
+        let identity = single_cue_file(&file)?;
+        let modified = file.metadata()?.modified()?;
+        let raw = read_json_file(&mut file, &retained.pin.sha256, retained.pin.size_bytes)?;
+        let after = regular(&retained.path)?;
+        if single_cue_file(&after)? != identity
+            || single_cue_file(&file)? != identity
+            || after.metadata()?.modified()? != modified
+            || !after.metadata()?.permissions().readonly()
+        {
+            return Err(invalid(
+                "retained checkpoint metadata handle identity or seal changed",
+            ));
+        }
+        self.verify_file(retained, deadline)?;
+        Ok(raw)
     }
 
     /// Same writer/quota namespace as PCM, including old/undo/crash objects.
@@ -1869,6 +1986,198 @@ mod tests {
         }
     }
     #[test]
+    fn retained_json_record_uses_media_namespace_quota_exact_bytes_and_sealed_reuse() {
+        let (fixture, _, _) = fixture();
+        let raw = "{\"wide\":9007199254740993,\"version\":1}\n";
+        let store =
+            RetainedMixStore::new(&fixture.0, "metadata-record", budget(raw.len() as u64)).unwrap();
+        let kept = store
+            .accept_json_record(raw, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        assert_eq!(kept.pin.format, RetainedFileFormat::Json);
+        assert_eq!(store.used_bytes(deadline()).unwrap(), raw.len() as u64);
+        assert_eq!(store.read_json_record(&kept, deadline()).unwrap(), raw);
+        assert!(fs::metadata(&kept.path).unwrap().permissions().readonly());
+        let mtime = fs::metadata(&kept.path).unwrap().modified().unwrap();
+        assert_eq!(
+            store
+                .accept_json_record(
+                    raw,
+                    |_| panic!("sealed metadata reuse allocates no copy/reserve"),
+                    deadline()
+                )
+                .unwrap(),
+            kept
+        );
+        assert_eq!(fs::metadata(&kept.path).unwrap().modified().unwrap(), mtime);
+        drop(store);
+        let reopened = RetainedMixStore::open_existing(
+            &fixture.0,
+            "metadata-record",
+            budget(raw.len() as u64),
+        )
+        .unwrap();
+        assert_eq!(reopened.read_json_record(&kept, deadline()).unwrap(), raw);
+        assert_eq!(fs::metadata(&kept.path).unwrap().modified().unwrap(), mtime);
+    }
+
+    #[test]
+    fn retained_json_record_counts_media_orphans_and_other_jobs_under_the_existing_writer() {
+        let (fixture, _, candidate) = fixture();
+        let bytes = b"physical media fixture";
+        let path = candidate.join("part.mp4");
+        fs::write(&path, bytes).unwrap();
+        let pin = render_pin(bytes, RetainedFileFormat::Mp4);
+        let raw = "{\"checkpoint\":1}";
+        let store = RetainedMixStore::new(
+            &fixture.0,
+            "metadata-old",
+            budget(pin.size_bytes + raw.len() as u64 + 1),
+        )
+        .unwrap();
+        let video = store
+            .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        let kept = store
+            .accept_json_record(raw, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        fs::write(store.objects.root.join(".copy-interrupted-metadata"), [1u8]).unwrap();
+        assert_eq!(
+            store.used_bytes(deadline()).unwrap(),
+            pin.size_bytes + raw.len() as u64 + 1
+        );
+        assert!(RetainedMixStore::new(&fixture.0, "metadata-parallel", budget(u64::MAX)).is_err());
+        let old = fs::read(&kept.path).unwrap();
+        drop(store);
+        let another = RetainedMixStore::new(
+            &fixture.0,
+            "metadata-next",
+            budget(pin.size_bytes + raw.len() as u64 + 1),
+        )
+        .unwrap();
+        assert!(another
+            .accept_json_record(
+                "{\"new\":true}",
+                |_| panic!("shared quota refuses before space probe"),
+                deadline()
+            )
+            .is_err());
+        assert_eq!(fs::read(&kept.path).unwrap(), old);
+        assert_eq!(fs::read(&video.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn retained_json_record_refuses_unknown_changing_space_deadline_and_invalid_or_oversized_json()
+    {
+        let (fixture, _, _) = fixture();
+        let store = RetainedMixStore::new(&fixture.0, "metadata-space", budget(200000)).unwrap();
+        let prior = store
+            .accept_json_record("{\"prior\":true}", |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        let before = fs::read(&prior.path).unwrap();
+        let mtime = fs::metadata(&prior.path).unwrap().modified().unwrap();
+        let raw = format!("{{\"payload\":\"{}\"}}", "x".repeat(40000));
+        for fail_at in [1, 3, 4] {
+            let mut calls = 0;
+            assert!(store
+                .accept_json_record(
+                    &raw,
+                    |_| {
+                        calls += 1;
+                        Ok(if calls == fail_at { 0 } else { u64::MAX })
+                    },
+                    deadline()
+                )
+                .is_err());
+            assert_eq!(store.used_bytes(deadline()).unwrap(), prior.pin.size_bytes);
+        }
+        assert!(store
+            .accept_json_record(
+                &raw,
+                |_| Err(invalid("unknown native caller space")),
+                deadline()
+            )
+            .is_err());
+        assert!(store
+            .accept_json_record(
+                &raw,
+                |_| panic!("expired operation must not probe space"),
+                Instant::now() - std::time::Duration::from_secs(1)
+            )
+            .is_err());
+        for invalid_raw in [
+            "",
+            "{",
+            "{\"duplicate\":1,\"duplicate\":2}",
+            "{\"bad\":NaN}",
+        ] {
+            assert!(store
+                .accept_json_record(
+                    invalid_raw,
+                    |_| panic!("syntax refuses before allocation"),
+                    deadline()
+                )
+                .is_err());
+        }
+        let large = format!(
+            "{{\"payload\":\"{}\"}}",
+            "x".repeat(MAX_RETAINED_METADATA_BYTES)
+        );
+        assert!(store
+            .accept_json_record(
+                &large,
+                |_| panic!("record bound refuses before allocation"),
+                deadline()
+            )
+            .is_err());
+        assert_eq!(fs::read(&prior.path).unwrap(), before);
+        assert_eq!(
+            fs::metadata(&prior.path).unwrap().modified().unwrap(),
+            mtime
+        );
+    }
+
+    #[test]
+    fn retained_json_record_refuses_changed_unsealed_linked_and_foreign_format_without_repair() {
+        let (fixture, _, _) = fixture();
+        let store = RetainedMixStore::new(&fixture.0, "metadata-fences", budget(10000)).unwrap();
+        let raw = "{\"node\":1}";
+        let kept = store
+            .accept_json_record(raw, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        let mut foreign = kept.clone();
+        foreign.pin.format = RetainedFileFormat::Srt;
+        assert!(store.read_json_record(&foreign, deadline()).is_err());
+        let alias = fixture.0.join("owned-hardlink-metadata.json");
+        fs::hard_link(&kept.path, &alias).unwrap();
+        assert!(store.read_json_record(&kept, deadline()).is_err());
+        let mut permissions = fs::metadata(&kept.path).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&kept.path, permissions).unwrap();
+        fs::remove_file(alias).unwrap();
+        assert!(store
+            .accept_json_record(
+                raw,
+                |_| panic!("unsealed collision never allocates"),
+                deadline()
+            )
+            .is_err());
+        fs::write(&kept.path, b"{\"node\":2}").unwrap();
+        let mut permissions = fs::metadata(&kept.path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&kept.path, permissions).unwrap();
+        let corrupted = fs::read(&kept.path).unwrap();
+        assert!(store
+            .accept_json_record(
+                raw,
+                |_| panic!("corrupt collision never overwrites"),
+                deadline()
+            )
+            .is_err());
+        assert_eq!(fs::read(&kept.path).unwrap(), corrupted);
+    }
+
+    #[test]
     fn retained_render_streams_beyond_cue_limit_and_reopens_without_mutable_candidate() {
         let (fixture, _, candidate) = fixture();
         let path = candidate.join("final.mp4");
@@ -2231,7 +2540,12 @@ mod tests {
         let (bytes, pin) = wave(480, 2, false);
         let path = root.join("mix.wav");
         fs::write(&path, &bytes).unwrap();
-        let store = RetainedMixStore::new(&fixture.0, "job-inventory", budget(u64::MAX)).unwrap();
+        let mut store =
+            RetainedMixStore::new(&fixture.0, "job-inventory", budget(u64::MAX)).unwrap();
+        // Exercise the same filesystem walk with a small per-fixture bound;
+        // creating the production65536 files is not necessary for this refusal.
+        let inventory_limit = 32;
+        store.inventory_limit = inventory_limit;
         let nested = store.objects.root.join("interrupted-generation");
         fs::create_dir(&nested).unwrap();
         assert!(store
@@ -2239,7 +2553,7 @@ mod tests {
             .is_err());
         assert!(nested.is_dir());
         fs::remove_dir(nested).unwrap();
-        for index in 0..MAX_MIX_STORE_ENTRIES {
+        for index in 0..inventory_limit {
             File::create(store.objects.root.join(format!(".copy-{index}"))).unwrap();
         }
         assert!(store
@@ -2253,7 +2567,7 @@ mod tests {
             .is_err());
         assert_eq!(
             fs::read_dir(&store.objects.root).unwrap().count(),
-            MAX_MIX_STORE_ENTRIES
+            inventory_limit
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }

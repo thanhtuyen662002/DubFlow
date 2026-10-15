@@ -821,6 +821,52 @@ impl NativeMixStore {
         Ok(result)
     }
 
+    /// Small native checkpoint metadata is physically retained on the same
+    /// output volume and under the same writer/quota lease as video/PCM.
+    pub(super) fn accept_json_record(
+        &self,
+        raw: &str,
+        deadline: Instant,
+    ) -> SupervisorResult<LocatedRenderFile> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let file = self.objects.accept_json_record(
+            raw,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&self.volume_id, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            deadline,
+        )?;
+        let relative = file
+            .path
+            .strip_prefix(&self.root)
+            .map_err(|_| invalid("checkpoint metadata escaped output root"))?;
+        let locator = ArtifactLocator::new(
+            &self.volume_id,
+            RootKind::Output,
+            relative,
+            &file.pin.sha256,
+            file.pin.size_bytes,
+        )
+        .map_err(|e| invalid(&format!("checkpoint metadata locator refused: {e}")))?;
+        let result = LocatedRenderFile { file, locator };
+        self.verify_file(&result, deadline)?;
+        Ok(result)
+    }
+
+    pub(super) fn read_json_record(
+        &self,
+        object: &LocatedRenderFile,
+        deadline: Instant,
+    ) -> SupervisorResult<String> {
+        self.verify_file(object, deadline)?;
+        let raw = self.objects.read_json_record(&object.file, deadline)?;
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        self.verify_file(object, deadline)?;
+        Ok(raw)
+    }
+
     pub(super) fn verify_file(
         &self,
         object: &LocatedRenderFile,
@@ -991,6 +1037,79 @@ mod tests {
     use super::*;
     const GUID: &str = r"\\?\Volume{01234567-89AB-CDEF-0123-456789abcdef}\";
     const HARD_LINKS: u32 = 0x0040_0000;
+
+    #[cfg(windows)]
+    #[test]
+    fn native_json_record_uses_output_volume_canonical_locator_and_independent_reopen() {
+        use std::fs;
+        let parent = std::env::temp_dir();
+        let root = parent.join(format!(
+            "dubflow-native-json-{}-{}",
+            std::process::id(),
+            super::super::ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        assert!(!root.exists());
+        fs::create_dir(&root).unwrap();
+        let output = NativeOutputPin::read(&root).unwrap();
+        let until = Instant::now() + std::time::Duration::from_secs(30);
+        let budget = super::super::review_render::storage_budget();
+        let kept;
+        let raw = "{\"private_checkpoint\":9007199254740993}\n";
+        {
+            let store = NativeMixStore::new(&output, "native-json", budget).unwrap();
+            kept = store.accept_json_record(raw, until).unwrap();
+            assert_eq!(store.read_json_record(&kept, until).unwrap(), raw);
+            let mut hinted = kept.descriptor();
+            hinted["path_hint"] = json!("Z:/untrusted-preview-hint.json");
+            assert_eq!(
+                store
+                    .read_json_record(&store.reopen_file(&hinted, until).unwrap(), until)
+                    .unwrap(),
+                raw
+            );
+            let mut foreign = kept.descriptor();
+            foreign["locator"]["volume_id"] =
+                json!("windows-volume-guid:00000000-0000-0000-0000-000000000000");
+            assert!(store.reopen_file(&foreign, until).is_err());
+        }
+        let before = fs::metadata(kept.path()).unwrap().modified().unwrap();
+        {
+            let store = NativeMixStore::open_existing(
+                &output,
+                "native-json",
+                super::super::review_render::storage_budget(),
+            )
+            .unwrap();
+            let reopened = store.reopen_file(&kept.descriptor(), until).unwrap();
+            assert_eq!(store.read_json_record(&reopened, until).unwrap(), raw);
+            assert_eq!(
+                fs::metadata(reopened.path()).unwrap().modified().unwrap(),
+                before
+            );
+        }
+        assert_eq!(root.parent(), Some(parent.as_path()));
+        assert!(root
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("dubflow-native-json-"));
+        fn unseal(root: &Path) {
+            for entry in fs::read_dir(root).unwrap() {
+                let path = entry.unwrap().path();
+                let m = fs::symlink_metadata(&path).unwrap();
+                assert!(!m.file_type().is_symlink());
+                if m.is_dir() {
+                    unseal(&path)
+                } else {
+                    let mut p = m.permissions();
+                    p.set_readonly(false);
+                    fs::set_permissions(path, p).unwrap();
+                }
+            }
+        }
+        unseal(&root);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn cue_locator_dispatch_is_closed_mono_and_keeps_hints_without_io_authority() {

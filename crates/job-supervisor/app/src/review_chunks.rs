@@ -9,8 +9,9 @@ use super::review_retention::{LocatedRenderFile, NativeMixStore, NativeOutputPin
 use super::{SupervisorError, SupervisorResult};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::path::Path;
-use std::time::Instant;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const MAX_PLAN: usize = 4 * 1024 * 1024;
 const CHUNK_FIELDS: &[&str] = &[
@@ -339,6 +340,484 @@ pub(super) fn retain(
     reopen(assets, output, job, binding, &receipt, deadline)
 }
 
+const MAX_RECEIPT: u64 = 65536;
+const MAX_INDEX_CHAIN: u64 = 16 * 1024 * 1024;
+
+fn receipt_pin(v: &Value) -> SupervisorResult<AcceptedJsonDocument> {
+    closed(v, &["path", "sha256", "size_bytes"])?;
+    let path = v["path"]
+        .as_str()
+        .filter(|p| !p.is_empty() && p.len() <= 4096)
+        .ok_or_else(|| invalid("chunk receipt needs a bounded native metadata path"))?;
+    let size = bounded_number(&v["size_bytes"], MAX_RECEIPT)?;
+    Ok(AcceptedJsonDocument {
+        path: PathBuf::from(path),
+        sha256: hash_text(&v["sha256"])?.into(),
+        size_bytes: size,
+    })
+}
+
+/// The index is an immutable private lookup, never a media/semantic grant.
+/// Every selected receipt still passes the existing native independent reopen.
+fn read_index_node(raw: &str, job: &str, plan: &BoundPlan) -> SupervisorResult<Value> {
+    let v = decode(raw, MAX_RECEIPT as usize)?;
+    closed(
+        &v,
+        &[
+            "schema_version",
+            "kind",
+            "job_id",
+            "source_sha256",
+            "processing_recipe_sha256",
+            "time_base",
+            "origin_plan_sha256",
+            "origin_context_sha256",
+            "ordinal",
+            "previous",
+            "chunk",
+            "complete",
+            "semantic_qc_admitted",
+            "active_graph_published",
+        ],
+    )?;
+    if v["schema_version"].as_u64() != Some(1)
+        || v["kind"] != "review_native_chunk_checkpoint_index"
+        || v["job_id"] != job
+        || v["source_sha256"] != plan.value["source_sha256"]
+        || v["processing_recipe_sha256"] != plan.value["processing_recipe_sha256"]
+        || v["time_base"] != plan.value["time_base"]
+        || v["complete"].as_bool().is_none()
+        || v["semantic_qc_admitted"] != false
+        || v["active_graph_published"] != false
+        || exact(&v)? != raw
+    {
+        return Err(invalid(
+            "chunk checkpoint index substitutes native job/source/recipe/clock or authority",
+        ));
+    }
+    hash_text(&v["origin_plan_sha256"])?;
+    hash_text(&v["origin_context_sha256"])?;
+    let ordinal = bounded_number(&v["ordinal"], 4096)?;
+    closed(&v["chunk"], &["chunk_identity", "receipt"])?;
+    hash_text(&v["chunk"]["chunk_identity"])?;
+    receipt_pin(&v["chunk"]["receipt"])?;
+    if (ordinal == 1) != v["previous"].is_null() {
+        return Err(invalid("chunk index loses its bounded root/ordinal"));
+    }
+    if !v["previous"].is_null() {
+        receipt_pin(&v["previous"])?;
+    }
+    Ok(v)
+}
+
+fn read_index_chain(
+    latest: &AcceptedJsonDocument,
+    job: &str,
+    plan: &BoundPlan,
+    mut read: impl FnMut(&AcceptedJsonDocument) -> SupervisorResult<String>,
+) -> SupervisorResult<BTreeMap<String, Value>> {
+    let mut current = latest.clone();
+    let mut bytes = 0u64;
+    let mut found = BTreeMap::new();
+    let mut ordered = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut origin = None;
+    let mut expected = None;
+    loop {
+        if current.size_bytes > MAX_RECEIPT || !seen.insert(current.sha256.clone()) {
+            return Err(invalid("chunk index repeats or exceeds a metadata node"));
+        }
+        bytes = bytes
+            .checked_add(current.size_bytes)
+            .filter(|n| *n <= MAX_INDEX_CHAIN)
+            .ok_or_else(|| invalid("chunk index chain exceeds its aggregate metadata bound"))?;
+        let raw = read(&current)?;
+        if raw.len() as u64 != current.size_bytes || hash(&raw) != current.sha256 {
+            return Err(invalid(
+                "chunk index node differs from its exact physical metadata pin",
+            ));
+        }
+        let node = read_index_node(&raw, job, plan)?;
+        let ordinal = bounded_number(&node["ordinal"], 4096)?;
+        let pins = (
+            node["origin_plan_sha256"].clone(),
+            node["origin_context_sha256"].clone(),
+        );
+        if let Some((old, number, _)) = &origin {
+            if old != &pins
+                || Some(ordinal) != expected
+                || node["complete"] != false
+                || *number > 4096
+            {
+                return Err(invalid(
+                    "chunk index chain substitutes plan/context/ordinal or completion",
+                ));
+            }
+        } else {
+            origin = Some((pins, ordinal, node["complete"] == true));
+        }
+        let entry = &node["chunk"];
+        let id = hash_text(&entry["chunk_identity"])?;
+        if found.insert(id.into(), entry["receipt"].clone()).is_some() {
+            return Err(invalid("chunk index chain repeats a local chunk"));
+        }
+        ordered.push(entry["chunk_identity"].clone());
+        if node["previous"].is_null() {
+            break;
+        }
+        expected = Some(ordinal - 1);
+        current = receipt_pin(&node["previous"])?;
+    }
+    let ((origin_plan, context), count, complete) = origin.unwrap();
+    if count as usize != ordered.len() {
+        return Err(invalid("chunk index chain omits a completed prefix node"));
+    }
+    if origin_plan == plan.sha256 {
+        let chunks = plan.value["chunks"].as_array().unwrap();
+        if context != plan.value["context_sha256"]
+            || ordered.len() > chunks.len()
+            || (complete && ordered.len() != chunks.len())
+            || ordered
+                .iter()
+                .rev()
+                .zip(chunks)
+                .any(|(id, c)| id != &c["identity"])
+        {
+            return Err(invalid(
+                "current chunk index loses its ordered completion prefix",
+            ));
+        }
+    }
+    Ok(found)
+}
+
+fn index_packet(
+    job: &str,
+    plan: &BoundPlan,
+    entry: &Value,
+    ordinal: usize,
+    previous: Option<&AcceptedJsonDocument>,
+    complete: bool,
+) -> SupervisorResult<Value> {
+    let v = json!({"schema_version":1,"kind":"review_native_chunk_checkpoint_index","job_id":job,
+        "source_sha256":plan.value["source_sha256"],"processing_recipe_sha256":plan.value["processing_recipe_sha256"],
+        "time_base":plan.value["time_base"],"origin_plan_sha256":plan.sha256,
+        "origin_context_sha256":plan.value["context_sha256"],"chunk":entry,"ordinal":ordinal,
+        "previous":previous.map(super::review_correction::descriptor),"complete":complete,
+        "semantic_qc_admitted":false,"active_graph_published":false});
+    read_index_node(&exact(&v)?, job, plan)?;
+    Ok(v)
+}
+
+fn encoded_pin(
+    raw: &str,
+    binding: &BoundChunk,
+    environment: &str,
+) -> SupervisorResult<(PathBuf, RetainedFilePin)> {
+    let v = decode(raw, MAX_RECEIPT as usize)?;
+    closed(
+        &v,
+        &[
+            "schema_version",
+            "kind",
+            "context_sha256",
+            "plan_sha256",
+            "source_sha256",
+            "processing_recipe_sha256",
+            "runtime_environment_sha256",
+            "chunk_identity",
+            "caption_window_sha256",
+            "source_frame_clock_sha256",
+            "frame_count",
+            "file",
+            "full_video_decode",
+            "semantic_qc_admitted",
+            "active_graph_published",
+        ],
+    )?;
+    hash_text(&json!(environment))?;
+    if v["schema_version"].as_u64() != Some(1)
+        || v["kind"] != "review_private_encoded_chunk_candidate"
+        || v["context_sha256"] != binding.context_sha256
+        || v["plan_sha256"] != binding.plan_sha256
+        || v["source_sha256"] != binding.source
+        || v["processing_recipe_sha256"] != binding.recipe
+        || v["runtime_environment_sha256"] != environment
+        || v["chunk_identity"] != binding.chunk["identity"]
+        || v["caption_window_sha256"] != binding.chunk["visual_dependencies_sha256"]
+        || v["source_frame_clock_sha256"] != binding.chunk["frame_clock_sha256"]
+        || v["frame_count"] != binding.chunk["frame_count"]
+        || v["full_video_decode"] != true
+        || v["semantic_qc_admitted"] != false
+        || v["active_graph_published"] != false
+    {
+        return Err(invalid(
+            "encoded chunk substitutes native plan/local dependencies or claims graph/QC authority",
+        ));
+    }
+    closed(&v["file"], &["path", "sha256", "size_bytes"])?;
+    let path = v["file"]["path"]
+        .as_str()
+        .filter(|p| !p.is_empty() && p.len() <= 4096)
+        .ok_or_else(|| invalid("encoded chunk needs a bounded private path hint"))?;
+    let size = tick(&v["file"]["size_bytes"], true)?;
+    if size > 256 * 1024 * 1024 {
+        return Err(invalid("encoded chunk exceeds its private candidate bound"));
+    }
+    Ok((
+        PathBuf::from(path),
+        RetainedFilePin {
+            sha256: hash_text(&v["file"]["sha256"])?.into(),
+            size_bytes: size,
+            format: RetainedFileFormat::Mp4,
+        },
+    ))
+}
+
+/// Only a native processing caller implements this interface. fence must hold
+/// current token/source/processing/runtime closure authority; encode must use
+/// native process-tree containment and its supplied absolute deadline. checkpoint
+/// must durably record this immutable index before execution advances. No worker
+/// packet, hash or callback alone supplies those admissions.
+pub(super) trait NativeChunkExecutor {
+    fn fence(&mut self, deadline: Instant) -> SupervisorResult<()>;
+    fn encode(&mut self, request: &Value, deadline: Instant) -> SupervisorResult<String>;
+    fn metadata_capacity(
+        &mut self,
+        additional_bytes: u64,
+        deadline: Instant,
+    ) -> SupervisorResult<()>;
+    fn checkpoint(
+        &mut self,
+        index: &AcceptedJsonDocument,
+        deadline: Instant,
+    ) -> SupervisorResult<()>;
+}
+
+pub(super) struct ScheduleInputs<'a> {
+    pub(super) assets: &'a AcceptedAudioStore,
+    pub(super) output: &'a NativeOutputPin,
+    pub(super) job: &'a str,
+    pub(super) plan: &'a BoundPlan,
+    pub(super) cache: Option<&'a AcceptedJsonDocument>,
+    pub(super) candidates: &'a Path,
+    pub(super) runtime_environment_sha256: &'a str,
+    pub(super) deadline: Instant,
+}
+
+pub(super) struct ScheduledChunks {
+    pub(super) index: AcceptedJsonDocument,
+    pub(super) files: Vec<PhysicalChunk>,
+    pub(super) encoded: usize,
+    pub(super) reused: usize,
+}
+
+trait ScheduleBackend {
+    type Kept;
+    fn fence(&mut self, deadline: Instant) -> SupervisorResult<()>;
+    fn reopen(
+        &mut self,
+        chunk: &BoundChunk,
+        receipt: &Value,
+        deadline: Instant,
+    ) -> SupervisorResult<Self::Kept>;
+    fn encode(
+        &mut self,
+        plan: &BoundPlan,
+        chunk: &BoundChunk,
+        deadline: Instant,
+    ) -> SupervisorResult<Self::Kept>;
+    fn receipt(kept: &Self::Kept) -> Value;
+    fn checkpoint(
+        &mut self,
+        packet: &Value,
+        deadline: Instant,
+    ) -> SupervisorResult<AcceptedJsonDocument>;
+}
+
+fn guard(
+    backend: &mut impl ScheduleBackend,
+    deadline: Instant,
+    cancelled: &mut impl FnMut() -> bool,
+) -> SupervisorResult<()> {
+    if cancelled() || Instant::now() >= deadline {
+        return Err(invalid(
+            "native chunk schedule cancelled or exceeded deadline",
+        ));
+    }
+    backend.fence(deadline)?;
+    if cancelled() || Instant::now() >= deadline {
+        return Err(invalid("native chunk fence cancelled or exceeded deadline"));
+    }
+    Ok(())
+}
+
+fn drive<B: ScheduleBackend>(
+    job: &str,
+    plan: &BoundPlan,
+    cache: BTreeMap<String, Value>,
+    deadline: Instant,
+    backend: &mut B,
+    cancelled: &mut impl FnMut() -> bool,
+) -> SupervisorResult<(AcceptedJsonDocument, Vec<B::Kept>, usize, usize)> {
+    super::validate_job_id(job)?;
+    guard(backend, deadline, cancelled)?;
+    let mut files = Vec::new();
+    let (mut encoded, mut reused) = (0, 0);
+    let mut last = None;
+    let mut index_bytes = 0u64;
+    let chunks = plan.value["chunks"].as_array().unwrap();
+    for c in chunks {
+        let chunk = BoundChunk {
+            chunk: c.clone(),
+            clock: plan.value["time_base"].clone(),
+            source: plan.value["source_sha256"].clone(),
+            recipe: plan.value["processing_recipe_sha256"].clone(),
+            plan_sha256: plan.sha256.clone(),
+            context_sha256: plan.value["context_sha256"].clone(),
+        };
+        let phase = deadline.min(Instant::now() + Duration::from_secs(900));
+        guard(backend, phase, cancelled)?;
+        let id = hash_text(&c["identity"])?;
+        let kept = if let Some(receipt) = cache.get(id) {
+            reused += 1;
+            backend.reopen(&chunk, receipt, phase)?
+        } else {
+            encoded += 1;
+            backend.encode(plan, &chunk, phase)?
+        };
+        guard(backend, phase, cancelled)?;
+        let entry = json!({"chunk_identity":id,"receipt":B::receipt(&kept)});
+        let packet = index_packet(
+            job,
+            plan,
+            &entry,
+            files.len() + 1,
+            last.as_ref(),
+            files.len() + 1 == chunks.len(),
+        )?;
+        index_bytes = index_bytes
+            .checked_add(exact(&packet)?.len() as u64)
+            .filter(|n| *n <= MAX_INDEX_CHAIN)
+            .ok_or_else(|| {
+                invalid("new chunk checkpoint chain exceeds its aggregate metadata bound")
+            })?;
+        let saved = backend.checkpoint(&packet, phase)?;
+        guard(backend, phase, cancelled)?;
+        files.push(kept);
+        last = Some(saved);
+    }
+    Ok((
+        last.ok_or_else(|| invalid("native chunk plan is empty"))?,
+        files,
+        encoded,
+        reused,
+    ))
+}
+
+struct PhysicalSchedule<'a, 'b, E> {
+    input: ScheduleInputs<'a>,
+    executor: &'b mut E,
+}
+impl<E: NativeChunkExecutor> ScheduleBackend for PhysicalSchedule<'_, '_, E> {
+    type Kept = PhysicalChunk;
+    fn fence(&mut self, d: Instant) -> SupervisorResult<()> {
+        self.executor.fence(d)
+    }
+    fn reopen(&mut self, c: &BoundChunk, v: &Value, d: Instant) -> SupervisorResult<PhysicalChunk> {
+        reopen(
+            self.input.assets,
+            self.input.output,
+            self.input.job,
+            c,
+            &receipt_pin(v)?,
+            d,
+        )
+    }
+    fn encode(
+        &mut self,
+        p: &BoundPlan,
+        c: &BoundChunk,
+        d: Instant,
+    ) -> SupervisorResult<PhysicalChunk> {
+        let request = json!({"schema_version":1,"kind":"review_native_chunk_work","plan_json":exact(&p.value)?,
+            "plan_sha256":p.sha256,"context_sha256":p.value["context_sha256"],"chunk_identity":c.chunk["identity"],
+            "runtime_environment_sha256":self.input.runtime_environment_sha256});
+        let raw = self.executor.encode(&request, d)?;
+        self.executor.fence(d)?;
+        let (path, pin) = encoded_pin(&raw, c, self.input.runtime_environment_sha256)?;
+        self.executor.metadata_capacity(MAX_RECEIPT, d)?;
+        let kept = retain(
+            self.input.assets,
+            self.input.output,
+            self.input.job,
+            c,
+            self.input.candidates,
+            &path,
+            &pin,
+            d,
+        )?;
+        self.executor.metadata_capacity(0, d)?;
+        Ok(kept)
+    }
+    fn receipt(k: &PhysicalChunk) -> Value {
+        super::review_correction::descriptor(&k.receipt)
+    }
+    fn checkpoint(&mut self, p: &Value, d: Instant) -> SupervisorResult<AcceptedJsonDocument> {
+        let raw = exact(p)?;
+        self.executor.metadata_capacity(raw.len() as u64, d)?;
+        let index = self.input.assets.accept_json(&raw)?;
+        self.executor.metadata_capacity(0, d)?;
+        self.executor.checkpoint(&index, d)?;
+        self.input.assets.read_json(&index)?;
+        Ok(index)
+    }
+}
+
+/// Ordered native physical-checkpoint execution, with a checkpoint after every
+/// completed chunk. This returns no semantic QC, AV or graph publication grant.
+/// Source-clock indexed coverage, actual processing executor/runtime closure,
+/// final audio/mux/QC and current render integration must be supplied separately.
+pub(super) fn schedule<E: NativeChunkExecutor>(
+    input: ScheduleInputs<'_>,
+    executor: &mut E,
+    cancelled: &mut impl FnMut() -> bool,
+) -> SupervisorResult<ScheduledChunks> {
+    hash_text(&json!(input.runtime_environment_sha256))?;
+    super::validate_job_id(input.job)?;
+    if cancelled() || Instant::now() >= input.deadline {
+        return Err(invalid(
+            "native chunk schedule cancelled or expired before admission",
+        ));
+    }
+    executor.fence(input.deadline)?;
+    let cache = if let Some(saved) = input.cache {
+        read_index_chain(saved, input.job, input.plan, |object| {
+            if cancelled() || Instant::now() >= input.deadline {
+                return Err(invalid(
+                    "native chunk cache read cancelled or exceeded deadline",
+                ));
+            }
+            executor.fence(input.deadline)?;
+            input.assets.read_json(object)
+        })?
+    } else {
+        BTreeMap::new()
+    };
+    let job = input.job;
+    let plan = input.plan;
+    let deadline = input.deadline;
+    let mut backend = PhysicalSchedule { input, executor };
+    let (index, files, encoded, reused) =
+        drive(job, plan, cache, deadline, &mut backend, cancelled)?;
+    Ok(ScheduledChunks {
+        index,
+        files,
+        encoded,
+        reused,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +942,360 @@ mod tests {
             );
         }
     }
+    #[derive(Default)]
+    struct MockSchedule {
+        nodes: BTreeMap<String, String>,
+        saved: Vec<AcceptedJsonDocument>,
+        events: Vec<String>,
+        generated: usize,
+        fail_encode: Option<usize>,
+        fail_checkpoint: bool,
+        fail_reopen: bool,
+        stale: bool,
+    }
+    impl ScheduleBackend for MockSchedule {
+        type Kept = Value;
+        fn fence(&mut self, _: Instant) -> SupervisorResult<()> {
+            if self.stale {
+                Err(invalid("changed current native fence"))
+            } else {
+                Ok(())
+            }
+        }
+        fn reopen(&mut self, c: &BoundChunk, v: &Value, _: Instant) -> SupervisorResult<Value> {
+            self.events
+                .push(format!("R:{}", c.chunk["identity"].as_str().unwrap()));
+            if self.fail_reopen {
+                return Err(invalid("corrupt physical checkpoint; no encode fallback"));
+            }
+            receipt_pin(v)?;
+            Ok(v.clone())
+        }
+        fn encode(&mut self, _: &BoundPlan, c: &BoundChunk, _: Instant) -> SupervisorResult<Value> {
+            self.generated += 1;
+            self.events
+                .push(format!("E:{}", c.chunk["identity"].as_str().unwrap()));
+            if self.fail_encode == Some(self.generated) {
+                return Err(invalid("bounded encoder failed"));
+            }
+            Ok(
+                json!({"path":std::env::temp_dir().join("mock-chunk-receipt"),"sha256":hash(&exact(&c.chunk)?),"size_bytes":42}),
+            )
+        }
+        fn receipt(v: &Value) -> Value {
+            v.clone()
+        }
+        fn checkpoint(&mut self, p: &Value, _: Instant) -> SupervisorResult<AcceptedJsonDocument> {
+            let raw = exact(p)?;
+            let sha256 = hash(&raw);
+            self.events.push(format!("C:{}", p["ordinal"]));
+            let object = AcceptedJsonDocument {
+                path: std::env::temp_dir().join(&sha256[7..]),
+                sha256: sha256.clone(),
+                size_bytes: raw.len() as u64,
+            };
+            if let Some(old) = self.nodes.insert(sha256, raw.clone()) {
+                assert_eq!(old, raw);
+            }
+            if self.fail_checkpoint {
+                return Err(invalid(
+                    "native pointer checkpoint failed; metadata is an orphan",
+                ));
+            }
+            self.saved.push(object.clone());
+            Ok(object)
+        }
+    }
+    fn schedule_plan() -> Value {
+        decode(
+            fixture()["cases"][0]["plan_json"].as_str().unwrap(),
+            MAX_PLAN,
+        )
+        .unwrap()
+    }
+    fn cache(
+        mock: &MockSchedule,
+        last: &AcceptedJsonDocument,
+        p: &BoundPlan,
+    ) -> SupervisorResult<BTreeMap<String, Value>> {
+        read_index_chain(last, "chunk-job", p, |pin| {
+            mock.nodes
+                .get(&pin.sha256)
+                .cloned()
+                .ok_or_else(|| invalid("missing index node"))
+        })
+    }
+    #[test]
+    fn native_ordered_schedule_reuses_only_unchanged_local_chunks_after_other_cue_edit() {
+        let mut value = schedule_plan();
+        let first = read(&value).unwrap();
+        let mut original = MockSchedule::default();
+        let (last, _, encoded, reused) = drive(
+            "chunk-job",
+            &first,
+            BTreeMap::new(),
+            Instant::now() + Duration::from_secs(30),
+            &mut original,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!((encoded, reused), (3, 0));
+        let preserved = original.nodes.clone();
+        value["context_sha256"] = json!(hash("new cumulative current context"));
+        value["chunks"][1]["visual_dependencies_sha256"] = json!(hash("changed only middle cue"));
+        value["chunks"][1]["identity"] = json!(chunk_identity(
+            &value["source_sha256"],
+            &value["processing_recipe_sha256"],
+            &value["time_base"],
+            &value["chunks"][1]
+        )
+        .unwrap());
+        let current = read(&value).unwrap();
+        let lookup = cache(&original, &last, &current).unwrap();
+        let mut next = MockSchedule::default();
+        let (_, files, encoded, reused) = drive(
+            "chunk-job",
+            &current,
+            lookup,
+            Instant::now() + Duration::from_secs(30),
+            &mut next,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!((files.len(), encoded, reused), (3, 1, 2));
+        assert_eq!(
+            next.events
+                .iter()
+                .filter(|s| s.starts_with("R:") || s.starts_with("E:"))
+                .map(|s| &s[..1])
+                .collect::<Vec<_>>(),
+            ["R", "E", "R"]
+        );
+        assert_eq!(original.nodes, preserved);
+        let root = decode(
+            next.nodes.get(&next.saved[0].sha256).unwrap(),
+            MAX_RECEIPT as usize,
+        )
+        .unwrap();
+        assert!(root["previous"].is_null());
+        assert_eq!(root["ordinal"], 1);
+    }
+    #[test]
+    fn native_partial_checkpoint_chain_resumes_without_replaying_completed_chunk() {
+        let p = read(&schedule_plan()).unwrap();
+        let mut first = MockSchedule {
+            fail_encode: Some(2),
+            ..Default::default()
+        };
+        assert!(drive(
+            "chunk-job",
+            &p,
+            BTreeMap::new(),
+            Instant::now() + Duration::from_secs(30),
+            &mut first,
+            &mut || false
+        )
+        .is_err());
+        assert_eq!(first.saved.len(), 1);
+        let latest = first.saved[0].clone();
+        assert_eq!(
+            decode(first.nodes.get(&latest.sha256).unwrap(), 65536).unwrap()["complete"],
+            false
+        );
+        let lookup = cache(&first, &latest, &p).unwrap();
+        let prior = first.nodes.clone();
+        let mut next = MockSchedule::default();
+        let (last, _, encoded, reused) = drive(
+            "chunk-job",
+            &p,
+            lookup,
+            Instant::now() + Duration::from_secs(30),
+            &mut next,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!((encoded, reused), (2, 1));
+        assert!(next.events[0].starts_with("R:"));
+        assert_eq!(first.nodes, prior);
+        assert_eq!(cache(&next, &last, &p).unwrap().len(), 3);
+    }
+    #[test]
+    fn native_schedule_refuses_cancel_stale_deadline_checkpoint_and_corrupt_reuse_without_advancing(
+    ) {
+        let p = read(&schedule_plan()).unwrap();
+        for mode in 0..4 {
+            let mut mock = MockSchedule {
+                stale: mode == 1,
+                fail_checkpoint: mode == 3,
+                ..Default::default()
+            };
+            let deadline = if mode == 2 {
+                Instant::now() - Duration::from_secs(1)
+            } else {
+                Instant::now() + Duration::from_secs(30)
+            };
+            assert!(drive(
+                "chunk-job",
+                &p,
+                BTreeMap::new(),
+                deadline,
+                &mut mock,
+                &mut || mode == 0
+            )
+            .is_err());
+            assert_eq!(mock.generated, if mode == 3 { 1 } else { 0 });
+            assert!(mock.saved.is_empty());
+        }
+        let mut base = MockSchedule::default();
+        let (last, _, _, _) = drive(
+            "chunk-job",
+            &p,
+            BTreeMap::new(),
+            Instant::now() + Duration::from_secs(30),
+            &mut base,
+            &mut || false,
+        )
+        .unwrap();
+        let lookup = cache(&base, &last, &p).unwrap();
+        let mut corrupt = MockSchedule {
+            fail_reopen: true,
+            ..Default::default()
+        };
+        assert!(drive(
+            "chunk-job",
+            &p,
+            lookup,
+            Instant::now() + Duration::from_secs(30),
+            &mut corrupt,
+            &mut || false
+        )
+        .is_err());
+        assert_eq!(corrupt.generated, 0);
+        assert!(corrupt.saved.is_empty());
+    }
+    fn encoded(binding: &BoundChunk, environment: &str) -> Value {
+        json!({"schema_version":1,"kind":"review_private_encoded_chunk_candidate","context_sha256":binding.context_sha256,
+            "plan_sha256":binding.plan_sha256,"source_sha256":binding.source,"processing_recipe_sha256":binding.recipe,
+            "runtime_environment_sha256":environment,"chunk_identity":binding.chunk["identity"],
+            "caption_window_sha256":binding.chunk["visual_dependencies_sha256"],"source_frame_clock_sha256":binding.chunk["frame_clock_sha256"],
+            "frame_count":binding.chunk["frame_count"],"file":{"path":std::env::temp_dir().join("mock-only.mp4"),"sha256":hash("video bytes"),"size_bytes":"12"},
+            "full_video_decode":true,"semantic_qc_admitted":false,"active_graph_published":false})
+    }
+    #[test]
+    fn native_encoded_candidate_and_index_refuse_foreign_pins_counts_fields_and_authority() {
+        let p = read(&schedule_plan()).unwrap();
+        let binding = p
+            .chunk(p.value["chunks"][0]["identity"].as_str().unwrap())
+            .unwrap();
+        let env = hash("native runtime closure");
+        let original = encoded(&binding, &env);
+        assert!(encoded_pin(&exact(&original).unwrap(), &binding, &env).is_ok());
+        for key in [
+            "context_sha256",
+            "plan_sha256",
+            "source_sha256",
+            "processing_recipe_sha256",
+            "runtime_environment_sha256",
+            "chunk_identity",
+            "caption_window_sha256",
+            "source_frame_clock_sha256",
+        ] {
+            let mut bad = original.clone();
+            bad[key] = json!(hash("foreign"));
+            assert!(
+                encoded_pin(&exact(&bad).unwrap(), &binding, &env).is_err(),
+                "{key}"
+            );
+        }
+        for key in [
+            "schema_version",
+            "frame_count",
+            "full_video_decode",
+            "semantic_qc_admitted",
+            "active_graph_published",
+            "extra",
+        ] {
+            let mut bad = original.clone();
+            bad[key] = if key == "full_video_decode" {
+                json!(false)
+            } else {
+                json!(true)
+            };
+            assert!(
+                encoded_pin(&exact(&bad).unwrap(), &binding, &env).is_err(),
+                "{key}"
+            );
+        }
+        for size in [
+            json!(0),
+            json!(true),
+            json!("0"),
+            json!("268435457"),
+            json!("+12"),
+        ] {
+            let mut bad = original.clone();
+            bad["file"]["size_bytes"] = size;
+            assert!(encoded_pin(&exact(&bad).unwrap(), &binding, &env).is_err());
+        }
+        let entry = json!({"chunk_identity":binding.chunk["identity"],"receipt":{"path":std::env::temp_dir().join("metadata"),"sha256":hash("receipt"),"size_bytes":20}});
+        let node = index_packet("chunk-job", &p, &entry, 1, None, false).unwrap();
+        for key in [
+            "job_id",
+            "source_sha256",
+            "processing_recipe_sha256",
+            "origin_plan_sha256",
+            "time_base",
+            "ordinal",
+            "previous",
+            "semantic_qc_admitted",
+            "active_graph_published",
+            "foreign",
+        ] {
+            let mut bad = node.clone();
+            bad[key] = json!(true);
+            assert!(
+                read_index_node(&exact(&bad).unwrap(), "chunk-job", &p).is_err(),
+                "{key}"
+            );
+        }
+    }
+    #[test]
+    fn native_checkpoint_chain_is_linear_bounded_and_refuses_missing_or_changed_metadata() {
+        let mut value = schedule_plan();
+        value["time_base"] = json!({"numerator":"1","denominator":"1000"});
+        value["source_interval"] = json!({"start_tick":"0","end_tick":"4096"});
+        value["frame_count"] = json!("4096");
+        value["policy"] = json!({"target_ticks":"1","max_frames":1,"max_chunks":4096});
+        let chunks=(0..4096).map(|i| {
+            let mut c=json!({"start_tick":i.to_string(),"end_tick":(i+1).to_string(),"frame_count":"1",
+                "frame_clock_sha256":hash(&format!("mock frame {i}")),"visual_dependencies_sha256":hash("unchanged captions"),"identity":hash("temporary")});
+            c["identity"]=json!(chunk_identity(&value["source_sha256"],&value["processing_recipe_sha256"],&value["time_base"],&c).unwrap());c
+        }).collect::<Vec<_>>();
+        value["chunks"] = json!(chunks);
+        let p = read(&value).unwrap();
+        let mut mock = MockSchedule::default();
+        let (last, _, encoded, reused) = drive(
+            "chunk-job",
+            &p,
+            BTreeMap::new(),
+            Instant::now() + Duration::from_secs(60),
+            &mut mock,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!((encoded, reused, mock.nodes.len()), (4096, 0, 4096));
+        assert!(mock.nodes.values().map(|s| s.len() as u64).sum::<u64>() <= MAX_INDEX_CHAIN);
+        assert_eq!(cache(&mock, &last, &p).unwrap().len(), 4096);
+        let mut missing = mock.nodes.clone();
+        missing.remove(&mock.saved[0].sha256);
+        assert!(read_index_chain(&last, "chunk-job", &p, |pin| missing
+            .get(&pin.sha256)
+            .cloned()
+            .ok_or_else(|| invalid("missing")))
+        .is_err());
+        assert!(read_index_chain(&last, "chunk-job", &p, |_| Ok("{}".into())).is_err());
+    }
+
     #[cfg(windows)]
     #[test]
     fn actual_windows_chunk_checkpoint_reopens_same_locator_and_refuses_corruption_and_foreign_job()
