@@ -232,6 +232,26 @@ impl BoundPlan {
             sha256: expected_plan.into(),
         })
     }
+    /// Match an independently derived native source interval, never FPS or a
+    /// container's rounded canonical millisecond duration. Metadata binding only.
+    pub(super) fn require_source_bounds(
+        &self,
+        clock: [u64; 2],
+        start: i64,
+        end: i64,
+    ) -> SupervisorResult<()> {
+        if start >= end
+            || self.value["time_base"]
+                != json!({"numerator":clock[0].to_string(),"denominator":clock[1].to_string()})
+            || self.value["source_interval"]
+                != json!({"start_tick":start.to_string(),"end_tick":end.to_string()})
+        {
+            return Err(invalid(
+                "chunk plan differs from the independently pinned source clock/interval",
+            ));
+        }
+        Ok(())
+    }
     pub(super) fn chunk(&self, identity: &str) -> SupervisorResult<BoundChunk> {
         hash_text(&json!(identity))?;
         let chunk = self.value["chunks"]
