@@ -5,6 +5,7 @@
 use super::review_assets::{AcceptedAudioStore, AcceptedJsonDocument};
 use super::review_correction::{accepted_json, descriptor};
 use super::review_document::{canonical, closed, decode, tick, AdmittedSnapshot, ReviewMode};
+use super::review_progress::{stage, Stage};
 use super::review_request::{BoundCueRequest, CueRequestPins};
 use super::review_runtime::AdmittedProcessingRuntime;
 use super::{SupervisorError, SupervisorResult};
@@ -456,6 +457,7 @@ fn run_timeline_inner(
     {
         return Err(invalid("current timeline token changed; reload"));
     }
+    stage(Stage::Current);
     let admitted = super::review_effective::read_current(&store, &data, &state)?;
     let view = admitted.packet()?;
     let archive = super::review_seed::read_original(&store, &data, admitted.origin())?;
@@ -488,6 +490,7 @@ fn run_timeline_inner(
         &after,
         mode,
     )?;
+    stage(Stage::Processing);
     let processing = AdmittedProcessingRuntime::read(
         &store,
         job,
@@ -524,6 +527,7 @@ fn run_timeline_inner(
         OsString::from("--context-sha256"),
         OsString::from(&context.sha256),
     ]);
+    stage(Stage::Timeline);
     let raw = super::review_seed::collect(command, Duration::from_secs(60), LIMIT)?;
     let packet = decode(&raw, LIMIT)?;
     closed(
@@ -608,6 +612,7 @@ fn run_timeline_inner(
             })?;
         unchanged(&store, &state)?;
         if publish {
+            stage(Stage::Retain);
             let rendered = super::review_publication::prepare_effective(
                 super::review_publication::EffectivePublicationInputs {
                     store: &store,
@@ -624,6 +629,7 @@ fn run_timeline_inner(
                     output_pin: &output_pin,
                 },
             )?;
+            stage(Stage::Commit);
             let committed = super::review_active::commit(&store, &data, &state, &rendered)?;
             return super::emit_value(
                 &mut std::io::stdout().lock(),
@@ -853,6 +859,7 @@ fn run_inner(
     {
         return Err(invalid("current cue token changed; reload"));
     }
+    stage(Stage::Current);
     let admitted = super::review_effective::read_current(&store, &data, &state)?;
     let view = admitted.packet()?;
     if view["generation_dependencies_complete"] != true
@@ -930,6 +937,7 @@ fn run_inner(
         &Value::String(required("--processing-manifest-size-bytes")?.into()),
         false,
     )?;
+    stage(Stage::Processing);
     let processing = AdmittedProcessingRuntime::read(
         &store,
         job,
@@ -981,6 +989,7 @@ fn run_inner(
         OsString::from("--profile"),
         processing.runtime().profile.clone().into_os_string(),
     ]);
+    stage(Stage::PrepareCue);
     let raw = super::review_seed::collect(command, Duration::from_secs(60), LIMIT)?;
     let request = admit_prepared(
         &raw,
@@ -1001,6 +1010,7 @@ fn run_inner(
     assets.read_json(&context)?;
     assets.read_json(&bindings)?;
     unchanged(&store, &state)?;
+    stage(Stage::Reopen);
     let final_state = super::review_effective::read_current(&store, &data, &state)?.packet()?;
     if final_state != view {
         return Err(invalid(
@@ -1026,6 +1036,7 @@ fn run_inner(
         processing.runtime().cue_execution()?;
         let candidates = super::review_correction::private_root(&seed.output_root, job)?;
         unchanged(&store, &state)?;
+        stage(Stage::Synthesis);
         let result = super::review_correction::synthesize_accepted(
             processing.runtime(),
             &assets,
@@ -1037,6 +1048,7 @@ fn run_inner(
         )?;
         // Independently re-open native PCM and accepted documents, rational
         // actual-end mapping, exact confidence bits and spoken rewrite evidence.
+        stage(Stage::ValidateCue);
         super::review_speech::read_accepted_cue(
             &assets,
             &request,
@@ -1077,6 +1089,7 @@ fn run_inner(
             assets.read_json(document)?;
         }
         unchanged(&store, &state)?;
+        stage(Stage::Reopen);
         let reopened = super::review_effective::read_current(&store, &data, &state)?.packet()?;
         if exact(&reopened)? != exact(&view)? {
             return Err(invalid("current generation changed during cue synthesis"));
@@ -1086,6 +1099,7 @@ fn run_inner(
             let original =
                 accepted_json(&origin["accepted_documents"]["editable_timeline"], &assets)?;
             let current = accepted_json(&view["metadata_pins"]["current_timeline"], &assets)?;
+            stage(Stage::Timeline);
             let corrected = super::review_timeline::derive_effective(
                 &assets.read_json(&original)?,
                 &seed.snapshot,
@@ -1128,6 +1142,7 @@ fn run_inner(
                         deadline: std::time::Instant::now() + Duration::from_secs(720),
                     },
                 )?;
+                stage(Stage::Retain);
                 let publication = super::review_publication::prepare_effective(
                     super::review_publication::EffectivePublicationInputs {
                         store: &store,
@@ -1144,6 +1159,7 @@ fn run_inner(
                         output_pin: &output_pin,
                     },
                 )?;
+                stage(Stage::Commit);
                 let committed = super::review_active::commit(&store, &data, &state, &publication)?;
                 return super::emit_value(
                     &mut std::io::stdout().lock(),
@@ -1596,7 +1612,9 @@ fn mix_current(input: CurrentMixInputs<'_>) -> SupervisorResult<CurrentMixResult
         OsString::from("--profile"),
         processing.runtime().profile.as_os_str().to_owned(),
     ]);
+    stage(Stage::Mix);
     let raw = super::review_seed::collect(command, Duration::from_secs(45 * 60), LIMIT)?;
+    stage(Stage::ValidateMix);
     let (composition, mix) = admit_current_mix(
         &raw,
         &context.sha256,

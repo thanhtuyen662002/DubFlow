@@ -10,6 +10,7 @@ import { currentPlanRequest, sameCurrentPlanRequest, readCurrentPlan } from "../
 import { currentConfirmation, readCurrentConfirmation, readAppliedCurrent } from "../../apps/desktop/src/features/review/current-apply.ts";
 import { currentUndoRequest, readCurrentUndoRequest, readUndoneCurrent } from "../../apps/desktop/src/features/review/current-undo.ts";
 import { currentExportRequest, readCurrentExportRequest, readExportedCurrent } from "../../apps/desktop/src/features/review/current-export.ts";
+import { currentInitializeRequest, readCurrentInitializeRequest, readInitializedCurrent } from "../../apps/desktop/src/features/review/current-initialize.ts";
 
 const finding = {
   finding_id: "cue-1",
@@ -689,4 +690,236 @@ const uncertainExport = new ReviewConnection({ async snapshot() { return exportB
 await uncertainExport.load(exportBefore.job_id);
 await assert.rejects(uncertainExport.actions().exportCurrent(standardRequest, new AbortController().signal), /reply lost/);
 assert.equal(uncertainExportCalls, 1); assert.equal(uncertainExport.snapshot(), null); uncertainExport.dispose();
-console.log("legacy/Python v2, current full-token audio/plan/apply/undo/standard-editable export routing, immutable evidence and uncertain-result cancellation tests passed");
+function initializedResponse(before, sessionId, mode = "b2") {
+  return { schema_version: 1, kind: "review_desktop_initialized_current", job_id: before.job_id, session_id: sessionId,
+    snapshot: { schema_version: 3, kind: "review_current_snapshot", job_id: before.job_id,
+      current_token: { job_id: before.job_id, revision: "0", snapshot_sha256: "sha256:" + "4".repeat(64), graph_sha256: "sha256:" + "5".repeat(64), original_manifest_sha256: "sha256:" + "6".repeat(64) },
+      mode, time_base: structuredClone(before.time_base), findings: structuredClone(before.findings), last_plan: null, correction_ready: false } };
+}
+const initialBefore = structuredClone(payload), initializeRequest = currentInitializeRequest(initialBefore);
+const initialResponse = initializedResponse(initialBefore, "request-initialize-result-0001");
+assert.equal(readInitializedCurrent(initialBefore, initializeRequest, initialResponse).current_token.revision, "0");
+for (const change of [r => { r.confirm = false; }, r => { r.job_id = "foreign"; }, r => { r.root = "D:/foreign"; }, r => { r.current_token = initialResponse.snapshot.current_token; },
+  r => { r.snapshot = initialBefore; }]) {
+  const forged = structuredClone(initializeRequest); change(forged); assert.notDeepEqual(forged, initializeRequest);
+  assert.throws(() => readCurrentInitializeRequest(initialBefore, forged));
+}
+for (const change of [r => { r.job_id = "foreign"; }, r => { r.snapshot.current_token.revision = "1"; }, r => { r.snapshot.current_token.job_id = "foreign"; },
+  r => { r.snapshot.findings[0].source_text = "foreign"; }, r => { r.snapshot.findings[0].translated_text = "changed"; },
+  r => { r.snapshot.findings[0].confidence = "0.98"; }, r => { r.snapshot.findings[0].range.start_ticks = "1"; },
+  r => { r.snapshot.findings[0].output_preview = "substituted-original-preview"; }, r => { r.snapshot.findings.pop(); }, r => { r.session_id = "short"; }, r => { r.target_path = "foreign"; }]) {
+  const forged = structuredClone(initialResponse); change(forged); assert.notDeepEqual(forged, initialResponse);
+  assert.throws(() => readInitializedCurrent(initialBefore, initializeRequest, forged));
+}
+const nonOriginal = structuredClone(initialBefore); nonOriginal.revision = 1;
+assert.throws(() => currentInitializeRequest(nonOriginal));
+let initialId = 0, waitInitialize = false, initialNativeView = structuredClone(initialBefore);
+const initialCalls = [], initialPending = [];
+const initialTransport = nativeReviewTransport(async (command, args) => {
+  initialCalls.push({ command, args });
+  if (command === "review_cancel_v1") return;
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: structuredClone(initialNativeView) };
+  if (command === "review_initialize_v1") {
+    assert.deepEqual(Object.keys(args).sort(), ["request", "requestId", "sessionId"]);
+    assert.deepEqual(args.request, initializeRequest);
+    const response = initializedResponse(initialBefore, args.requestId);
+    if (waitInitialize) return new Promise(resolve => initialPending.push({ args, response, resolve }));
+    initialNativeView = structuredClone(response.snapshot); return response;
+  }
+  if (command === "review_plan_v1") return planResponse(initialNativeView, args.request);
+  if (command === "review_audio_v2") return new ArrayBuffer(44);
+  throw new Error("initialize must not invoke original audio, apply or export");
+}, async () => {}, () => `request-initialize-native-${++initialId}`);
+const initializing = new ReviewConnection(initialTransport); await initializing.load(initialBefore.job_id);
+const oldActions = initializing.actions(), initialized = await oldActions.initializeCurrent(initializeRequest, new AbortController().signal);
+assert.deepEqual(initializing.snapshot(), initialized);
+assert.equal(oldActions.planCurrent, undefined);
+const freshActions = oldActions.refreshed();
+assert.equal(freshActions.initializeCurrent, undefined); assert.equal(typeof freshActions.planCurrent, "function");
+const initializedPlanRequest = currentPlanRequest(initialized, { finding_id: initialized.findings[0].finding_id, translation: "Sửa sau khi lưu bản gốc" });
+const initializedPlan = await freshActions.planCurrent(initializedPlanRequest, new AbortController().signal);
+assert.equal(initializedPlan.current_token.revision, "0"); assert.equal(initializedPlan.candidate_revision, "1");
+const initialNativeCall = initialCalls.find(c => c.command === "review_initialize_v1");
+assert.equal(initialCalls.findLast(c => c.command === "review_plan_v1").args.sessionId, initialNativeCall.args.requestId);
+// The actual Python fixture has a TTS warning and no admitted preview. Preserve
+// that refusal after initialization instead of inventing playable audio.
+await assert.rejects(freshActions.preview(previewRequest(initialized, initialized.findings[0].finding_id), new AbortController().signal), /no validated preview/);
+assert.equal(initialCalls.filter(c => c.command === "review_audio_v2" || c.command === "review_audio_v1").length, 0);
+await assert.rejects(oldActions.initializeCurrent(initializeRequest, new AbortController().signal));
+assert.equal(initialCalls.filter(c => c.command === "review_initialize_v1").length, 1); initializing.dispose();
+initialNativeView = structuredClone(initialBefore); waitInitialize = true;
+const abortingInitial = new ReviewConnection(initialTransport); await abortingInitial.load(initialBefore.job_id);
+const initialAbort = new AbortController(), pendingInitial = abortingInitial.actions().initializeCurrent(initializeRequest, initialAbort.signal);
+await new Promise(resolve => setImmediate(resolve)); assert.equal(initialPending.length, 1);
+await assert.rejects(abortingInitial.actions().initializeCurrent(initializeRequest, new AbortController().signal), /already in progress/);
+initialAbort.abort(); assert(initialCalls.some(c => c.command === "review_cancel_v1" && c.args.requestId === initialPending[0].args.requestId));
+initialPending[0].resolve(initialPending[0].response); await assert.rejects(pendingInitial, { name: "AbortError" }); assert.equal(abortingInitial.snapshot(), null); abortingInitial.dispose();
+let uncertainInitialCalls = 0;
+const uncertainInitial = new ReviewConnection({ async snapshot() { return initialBefore; }, async preview() {},
+  async initializeCurrent() { uncertainInitialCalls++; throw new Error("reply lost after possible initialization"); } });
+await uncertainInitial.load(initialBefore.job_id);
+await assert.rejects(uncertainInitial.actions().initializeCurrent(initializeRequest, new AbortController().signal), /reply lost/);
+assert.equal(uncertainInitialCalls, 1); assert.equal(uncertainInitial.snapshot(), null); uncertainInitial.dispose();
+const initialB1 = structuredClone(initialBefore); for (const f of initialB1.findings) f.voice = null;
+assert.equal(readInitializedCurrent(initialB1, currentInitializeRequest(initialB1), initializedResponse(initialB1, "request-initialize-b1-0001", "b1")).mode, "b1");
+console.log("legacy/Python v2, explicit original initialization and current full-token audio/plan/apply/undo/standard-editable routing, exact evidence and cancellation tests passed");
+
+
+// Real request observation is separate from success and remains selection-bound.
+const { readReviewActivity, observeReviewRequest, reviewActivityText } = await import("../../apps/desktop/src/features/review/request-activity.ts");
+const activityRecord = (id = "request-observed-client-0001", overrides = {}) => ({ schema_version: 1, kind: "review_desktop_request_activity",
+  request_id: id, job_id: initialBefore.job_id, operation: "initialize", state: "running", phase: "processing",
+  elapsed_ms: 6240, phase_elapsed_ms: 5000, process_state: "running", process_observation_age_ms: 40, ...overrides });
+const activityEnvelope = activity => ({ schema_version: 1, kind: "review_desktop_request_stage", activity, native_observation: "unavailable", native_stage: null });
+const aBound = activityRecord();
+assert.deepEqual(readReviewActivity(aBound, aBound.request_id, aBound.job_id, "initialize"), aBound);
+for (const mutation of [ { request_id: "request-other-client-0001" }, { job_id: "other-job" }, { operation: "apply" },
+  { percent: 100 }, { state: "success" }, { state: "ended" }, { phase: "ended" }, { elapsed_ms: -1 },
+  { elapsed_ms: 1.5 }, { phase_elapsed_ms: 6241 }, { process_observation_age_ms: null }, { process_state: "idle" }, { path: "C:/fake" } ]) {
+  assert.throws(() => readReviewActivity({ ...aBound, ...mutation }, aBound.request_id, aBound.job_id, "initialize"));
+}
+assert.match(reviewActivityText({ kind: "observed", activity: aBound }), /chưa có kết quả được xác nhận/);
+assert.match(reviewActivityText({ kind: "observed", activity: activityRecord(aBound.request_id, { process_observation_age_ms: 6000 }) }), /Chưa cập nhật/);
+assert.match(reviewActivityText({ kind: "observed", activity: activityRecord(aBound.request_id, { state: "ended", phase: "ended", process_state: "exited" }) }), /chưa thể kết luận thành công/);
+const pauseObservation = () => new Promise(resolve => setTimeout(resolve, 250));
+let pendingObservation, observationCalls = 0; const lateActivity = [];
+const statusAbort = new AbortController();
+const stopObserved = observeReviewRequest(async (command, args) => {
+  assert.equal(command, "review_request_stage_v1"); assert.deepEqual(args, { requestId: aBound.request_id }); observationCalls++;
+  return new Promise(resolve => { pendingObservation = resolve; });
+}, aBound.request_id, aBound.job_id, "initialize", statusAbort.signal, value => lateActivity.push(value));
+await pauseObservation(); assert.equal(observationCalls, 1); statusAbort.abort();
+pendingObservation(activityEnvelope(aBound)); await new Promise(resolve => setImmediate(resolve)); assert.equal(lateActivity.length, 0); stopObserved();
+let missingCalls = 0; const missingActivity = [], missingAbort = new AbortController();
+const stopMissing = observeReviewRequest(async () => { missingCalls++; throw new Error("observation unavailable"); },
+  aBound.request_id, aBound.job_id, "initialize", missingAbort.signal, value => missingActivity.push(value));
+await pauseObservation(); assert.equal(missingCalls, 1); assert.deepEqual(missingActivity, [{ kind: "unavailable" }]); stopMissing(); missingAbort.abort();
+
+let observedInitReply, observedInitId; const observedIpc = [], activityUpdates = [];
+const observedTransport = nativeReviewTransport(async (command, args) => {
+  observedIpc.push({ command, args: structuredClone(args) });
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: structuredClone(initialBefore) };
+  if (command === "review_initialize_v1") {
+    observedInitId = args.requestId; return new Promise(resolve => { observedInitReply = resolve; });
+  }
+  if (command === "review_request_stage_v1") return activityEnvelope(activityRecord(args.requestId, { state: "ended", phase: "ended", process_state: "exited" }));
+  if (command === "review_cancel_v1") return;
+  throw new Error("unexpected observation route");
+}, async () => {}, (() => { let n = 0; return () => `request-activity-integration-${++n}`; })());
+const observedConnection = new ReviewConnection(observedTransport); await observedConnection.load(initialBefore.job_id);
+let actualReplyAccepted = false;
+const observingInit = observedConnection.actions().initializeCurrent(currentInitializeRequest(initialBefore), new AbortController().signal,
+  value => activityUpdates.push(value)).then(value => { actualReplyAccepted = true; return value; });
+await pauseObservation();
+assert.equal(activityUpdates.length, 1); assert.equal(activityUpdates[0].activity.request_id, observedInitId);
+assert.equal(activityUpdates[0].activity.state, "ended"); assert.equal(actualReplyAccepted, false);
+assert.equal(observedConnection.snapshot().schema_version, 2);
+await assert.rejects(observedConnection.actions().initializeCurrent(currentInitializeRequest(initialBefore), new AbortController().signal), /already in progress/);
+observedInitReply(initializedResponse(initialBefore, observedInitId)); await observingInit;
+assert.equal(actualReplyAccepted, true); assert.equal(observedConnection.snapshot().schema_version, 3);
+assert.equal(observedIpc.filter(c => c.command === "review_initialize_v1").length, 1);
+assert.equal(observedIpc.filter(c => c.command === "review_request_stage_v1").length, 1);
+observedConnection.dispose();
+let oldNotify, oldInitReply; const selectionUpdates = [];
+const selectedActivity = new ReviewConnection({ async snapshot() { return structuredClone(initialBefore); }, async preview() {},
+  async initializeCurrent(_request, _signal, notify) { oldNotify = notify; return new Promise(resolve => { oldInitReply = resolve; }); } });
+await selectedActivity.load(initialBefore.job_id);
+const oldInitializing = selectedActivity.actions().initializeCurrent(currentInitializeRequest(initialBefore), new AbortController().signal,
+  value => selectionUpdates.push(value));
+selectedActivity.clear(); oldNotify({ kind: "observed", activity: aBound });
+assert.equal(selectionUpdates.length, 0); oldInitReply(initializedResponse(initialBefore, "request-observation-old-0001"));
+await assert.rejects(oldInitializing, { name: "AbortError" }); selectedActivity.dispose();
+console.log("request activity: exact identity/timing, process-versus-result distinction, unavailable observation, no duplicate mutation, cancellation and late selection guards passed");
+
+
+const { readReviewStage } = await import("../../apps/desktop/src/features/review/request-activity.ts");
+const runtimeStage = { schema_version: 1, kind: "review_native_stage_observation", sequence: 3, stage_epoch: 2,
+  stage: "verifying_runtime_files", elapsed_ms: 5000, units_completed: 214, bytes_verified: 12345678 };
+const nativeEnvelope = (event = runtimeStage) => ({ ...activityEnvelope(aBound), native_observation: "observed",
+  native_stage: { event: structuredClone(event), received_age_ms: 40, advance_age_ms: 2000 } });
+const nativeDisplay = readReviewStage(nativeEnvelope(), aBound.request_id, aBound.job_id, "initialize");
+assert.equal(nativeDisplay.native.event.units_completed, 214);
+assert.match(reviewActivityText(nativeDisplay), /214 tệp/); assert.match(reviewActivityText(nativeDisplay), /2 giây từ mốc xử lý/);
+for (const mutation of [{ sequence: 0 }, { sequence: 32769 }, { stage_epoch: 4 }, { elapsed_ms: 6241 },
+  { units_completed: -1 }, { bytes_verified: Number.MAX_SAFE_INTEGER + 1 }, { stage: "success" }, { success: true },
+  { stage: "synthesizing_cue" }, { root: "C:/substituted" }]) {
+  assert.throws(() => readReviewStage(nativeEnvelope({ ...runtimeStage, ...mutation }), aBound.request_id, aBound.job_id, "initialize"));
+}
+const badAges = nativeEnvelope(); badAges.native_stage.advance_age_ms = 1;
+assert.throws(() => readReviewStage(badAges, aBound.request_id, aBound.job_id, "initialize"));
+const oldHostShape = activityEnvelope(aBound);
+assert.deepEqual(readReviewStage(oldHostShape, aBound.request_id, aBound.job_id, "initialize"), { kind: "observed", activity: aBound });
+assert.throws(() => readReviewStage({ ...oldHostShape, native_observation: "observed" }, aBound.request_id, aBound.job_id, "initialize"));
+// Observe actual transition messages and reject an older event without running a
+// mutation or treating telemetry as its acknowledgement.
+let stageCalls = 0; const stageUpdates = [], stageSignal = new AbortController();
+const stopStages = observeReviewRequest(async command => {
+  assert.equal(command, "review_request_stage_v1"); stageCalls++;
+  return nativeEnvelope(stageCalls === 1 ? runtimeStage : { ...runtimeStage, sequence: 2, units_completed: 213 });
+}, aBound.request_id, aBound.job_id, "initialize", stageSignal.signal, value => stageUpdates.push(value));
+await new Promise(resolve => setTimeout(resolve, 1300)); stopStages(); stageSignal.abort();
+assert.equal(stageCalls, 2); assert.equal(stageUpdates[0].native.event.units_completed, 214);
+assert.deepEqual(stageUpdates[1], { kind: "unavailable" });
+console.log("native stage envelope: actual verified-file counters, closed stages, no success authority, immutable old activity shape and out-of-order observation refusal passed");
+
+// Equal native snapshots remain equal when JSON object key order differs.
+let repeatedStageCalls = 0; const repeatedStageUpdates = [], repeatedStageSignal = new AbortController();
+const stopRepeatedStage = observeReviewRequest(async () => {
+  repeatedStageCalls++;
+  const event = repeatedStageCalls === 1 ? runtimeStage : Object.fromEntries(Object.entries(runtimeStage).reverse());
+  return nativeEnvelope(event);
+}, aBound.request_id, aBound.job_id, "initialize", repeatedStageSignal.signal, value => repeatedStageUpdates.push(value));
+await new Promise(resolve => setTimeout(resolve, 1300)); stopRepeatedStage(); repeatedStageSignal.abort();
+assert.equal(repeatedStageCalls, 2); assert.equal(repeatedStageUpdates.length, 2);
+assert(repeatedStageUpdates.every(value => value.kind === "observed"));
+console.log("repeated native snapshots accept JSON key order differences without altering values or advancement age");
+
+
+const { readReviewFailure, boundReviewFailure, reviewFailureDetails, ReviewFailureError } = await import("../../apps/desktop/src/features/review/request-failure.ts");
+const failurePacket = (id, job = initialBefore.job_id, operation = "initialize", overrides = {}) => ({ schema_version: 1, kind: "review_desktop_request_failure",
+  request_id: id, job_id: job, operation, outcome: "unconfirmed", phase: "processing", native_stage: "synthesizing_cue",
+  message: "Không xác nhận được kết quả; hãy tải lại", diagnostic: "QC refused: <img src=x onerror=alert(1)> is inert diagnostic text", ...overrides });
+const rawFailure = failurePacket("request-diagnostic-client-0001");
+assert.deepEqual(readReviewFailure(rawFailure, rawFailure.request_id, rawFailure.job_id, "initialize"), rawFailure);
+for (const mutation of [{ request_id: "request-different-error-0001" }, { job_id: "other-job" }, { operation: "apply" }, { outcome: "not_committed" },
+  { success: true }, { retryable: true }, { root: "C:/substituted" }, { phase: "ended" }, { native_stage: "successful" }, { message: "" },
+  { message: "x".repeat(1025) }, { diagnostic: "a".repeat(4097) }, { diagnostic: "漢".repeat(1366) }, { diagnostic: "bad\u0000text" }, { diagnostic: "bad\ud800text" }]) {
+  assert.throws(() => readReviewFailure({ ...rawFailure, ...mutation }, rawFailure.request_id, rawFailure.job_id, "initialize"));
+}
+assert.equal(readReviewFailure({ ...rawFailure, diagnostic: null, native_stage: null }, rawFailure.request_id, rawFailure.job_id, "initialize").diagnostic, null);
+const displayedFailure = boundReviewFailure(rawFailure, rawFailure.request_id, rawFailure.job_id, "initialize"); assert(displayedFailure instanceof ReviewFailureError);
+assert.match(reviewFailureDetails(displayedFailure, rawFailure.job_id, "initialize"), /<img src=x/);
+assert.equal(reviewFailureDetails(displayedFailure, "other-job", "initialize"), null);
+assert.equal(reviewFailureDetails(displayedFailure, rawFailure.job_id, "apply"), null);
+assert.equal(boundReviewFailure("legacy error", rawFailure.request_id, rawFailure.job_id, "initialize"), "legacy error");
+const mismatchedFailure = { ...rawFailure, job_id: "different-job" };
+assert.equal(boundReviewFailure(mismatchedFailure, rawFailure.request_id, rawFailure.job_id, "initialize"), mismatchedFailure);
+const diagnosticCalls = []; let diagnosticId = 0;
+const diagnosticTransport = nativeReviewTransport(async (command, args) => {
+  diagnosticCalls.push({ command, args: structuredClone(args) });
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: structuredClone(initialBefore) };
+  if (command === "review_initialize_v1") throw failurePacket(args.requestId);
+  if (command === "review_cancel_v1") return;
+  throw new Error("unexpected diagnostic route");
+}, async () => {}, () => `request-diagnostic-native-${++diagnosticId}`);
+const diagnosticConnection = new ReviewConnection(diagnosticTransport); await diagnosticConnection.load(initialBefore.job_id);
+await assert.rejects(diagnosticConnection.actions().initializeCurrent(currentInitializeRequest(initialBefore), new AbortController().signal), error => {
+  assert(error instanceof ReviewFailureError); assert.equal(error.failure.request_id, diagnosticCalls.find(c => c.command === "review_initialize_v1").args.requestId);
+  assert.equal(error.failure.outcome, "unconfirmed"); assert.match(reviewFailureDetails(error, initialBefore.job_id, "initialize"), /QC refused/); return true;
+});
+assert.equal(diagnosticConnection.snapshot(), null);
+assert.equal(diagnosticCalls.filter(c => c.command === "review_initialize_v1").length, 1);
+assert(diagnosticCalls.some(c => c.command === "review_cancel_v1")); diagnosticConnection.dispose();
+let lateFailureReject; const lateDiagnosticCalls = [];
+const lateDiagnosticTransport = nativeReviewTransport(async (command, args) => {
+  lateDiagnosticCalls.push({ command, args: structuredClone(args) });
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: structuredClone(initialBefore) };
+  if (command === "review_initialize_v1") return new Promise((_resolve, reject) => { lateFailureReject = () => reject(failurePacket(args.requestId)); });
+  if (command === "review_cancel_v1") return;
+  throw new Error("unexpected late diagnostic route");
+}, async () => {}, (() => { let n = 0; return () => `request-late-diagnostic-${++n}`; })());
+const lateDiagnosticConnection = new ReviewConnection(lateDiagnosticTransport); await lateDiagnosticConnection.load(initialBefore.job_id);
+const lateDiagnostic = lateDiagnosticConnection.actions().initializeCurrent(currentInitializeRequest(initialBefore), new AbortController().signal);
+lateDiagnosticConnection.clear(); lateFailureReject(); await assert.rejects(lateDiagnostic); assert.equal(lateDiagnosticConnection.snapshot(), null);
+assert.equal(lateDiagnosticCalls.filter(c => c.command === "review_initialize_v1").length, 1); lateDiagnosticConnection.dispose();
+console.log("bound request failures: exact invocation, UTF8/control caps, inert details, unconfirmed outcome, stale/lost/late guards and no retry passed");

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Optional native Review observations; no worker/durable authority",
+  "oneOf": [{"$ref": "#/$defs/event"}, {"$ref": "#/$defs/envelope"}],
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "ms": {"type": "integer", "minimum": 0, "maximum": 86400000},
+    "event": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "sequence", "stage_epoch", "stage", "elapsed_ms", "units_completed", "bytes_verified"],
+      "properties": {
+        "schema_version": {"const": 1}, "kind": {"const": "review_native_stage_observation"},
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 32768},
+        "stage_epoch": {"type": "integer", "minimum": 1, "maximum": 32768},
+        "stage": {"enum": ["admitting_current", "admitting_processing", "verifying_runtime_files", "preparing_cue", "synthesizing_cue", "validating_cue", "mixing_audio", "validating_mix", "deriving_timeline", "rendering_video", "validating_render", "retaining_publication", "committing_revision", "reopening_current", "publishing_standard", "publishing_editable"]},
+        "elapsed_ms": {"$ref": "#/$defs/ms"}, "units_completed": {"$ref": "#/$defs/count"}, "bytes_verified": {"$ref": "#/$defs/count"}
+      },
+      "if": {"properties": {"stage": {"not": {"const": "verifying_runtime_files"}}}},
+      "then": {"properties": {"units_completed": {"const": 0}, "bytes_verified": {"const": 0}}}
+    },
+    "observation": {
+      "type": "object", "additionalProperties": false, "required": ["event", "received_age_ms", "advance_age_ms"],
+      "properties": {"event": {"$ref": "#/$defs/event"}, "received_age_ms": {"$ref": "#/$defs/ms"}, "advance_age_ms": {"$ref": "#/$defs/ms"}}
+    },
+    "envelope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "activity", "native_observation", "native_stage"],
+      "properties": {
+        "schema_version": {"const": 1}, "kind": {"const": "review_desktop_request_stage"},
+        "activity": {"$ref": "desktop-request-activity-v1.json"},
+        "native_observation": {"enum": ["observed", "unavailable"]},
+        "native_stage": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/observation"}]}
+      },
+      "if": {"properties": {"native_observation": {"const": "observed"}}},
+      "then": {"properties": {"native_stage": {"$ref": "#/$defs/observation"}}},
+      "else": {"properties": {"native_stage": {"type": "null"}}}
+    }
+  },
+  "$comment": "Opt-in native stderr DUBFLOW_REVIEW_STAGE_V1 prefix, each record <=512 bytes, <=32768 records, host progress stream <=16MiB; ordinary diagnostics retain4096-byte cap and stdout is unchanged. Sequence strictly increases within a native invocation; stage_epoch <=sequence and does not decrease. Same epoch retains stage and monotonically increasing fully verified file/byte counters. Queue/lock contention can drop observations; no extrapolation. Host event elapsed <=host request elapsed, advance_age>=received_age. No percentages, ETA, result authority, worker heartbeat, new inference, paths or producer/token changes. Existing host-only status v1 is retained. Native step entry/wait and verified files do not prove worker/chunk advancement, QC success, CAS or product liveness/soak."
+}

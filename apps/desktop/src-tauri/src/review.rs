@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
@@ -38,6 +38,182 @@ struct RequestSlot {
     cancelled: Arc<AtomicBool>,
     active: bool,
     changed: Instant,
+    activity: Option<RequestActivity>,
+}
+
+// Host observations only. Process liveness is not worker/chunk progress or a
+// successful durable result; only the existing validated reply proves success.
+struct RequestActivity {
+    job: String,
+    operation: &'static str,
+    started: Instant,
+    phase: &'static str,
+    phase_started: Instant,
+    process: &'static str,
+    process_observed: Option<Instant>,
+    native: Option<NativeObservation>,
+    native_invalid: bool,
+    ended_phase: Option<&'static str>,
+    diagnostic: Option<String>,
+}
+
+const STAGE_PREFIX: &[u8] = b"DUBFLOW_REVIEW_STAGE_V1 ";
+const NATIVE_STAGES: &[&str] = &[
+    "admitting_current",
+    "admitting_processing",
+    "verifying_runtime_files",
+    "preparing_cue",
+    "synthesizing_cue",
+    "validating_cue",
+    "mixing_audio",
+    "validating_mix",
+    "deriving_timeline",
+    "rendering_video",
+    "validating_render",
+    "retaining_publication",
+    "committing_revision",
+    "reopening_current",
+    "publishing_standard",
+    "publishing_editable",
+];
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct NativeStage {
+    schema_version: u32,
+    kind: String,
+    sequence: u64,
+    stage_epoch: u64,
+    stage: String,
+    elapsed_ms: u64,
+    units_completed: u64,
+    bytes_verified: u64,
+}
+impl NativeStage {
+    fn read(raw: &[u8]) -> Option<Self> {
+        let value: Self = serde_json::from_slice(raw).ok()?;
+        if value.schema_version != 1
+            || value.kind != "review_native_stage_observation"
+            || !(1..=32768).contains(&value.sequence)
+            || !(1..=value.sequence).contains(&value.stage_epoch)
+            || !NATIVE_STAGES.contains(&value.stage.as_str())
+            || value.elapsed_ms > 86_400_000
+            || value.units_completed > 9_007_199_254_740_991
+            || value.bytes_verified > 9_007_199_254_740_991
+            || (value.stage != "verifying_runtime_files"
+                && (value.units_completed != 0 || value.bytes_verified != 0))
+        {
+            return None;
+        }
+        Some(value)
+    }
+}
+struct NativeObservation {
+    event: NativeStage,
+    received: Instant,
+    advanced: Instant,
+}
+#[derive(Clone)]
+struct StageSink {
+    host: ReviewHost,
+    id: String,
+}
+impl StageSink {
+    fn invalid(&self) {
+        if let Ok(mut r) = self.host.registry.lock() {
+            if let Some(a) = r
+                .requests
+                .get_mut(&self.id)
+                .and_then(|s| s.activity.as_mut())
+            {
+                a.native = None;
+                a.native_invalid = true;
+            }
+        }
+    }
+    fn observe(&self, event: NativeStage) {
+        if let Ok(mut r) = self.host.registry.lock() {
+            let Some(slot) = r.requests.get_mut(&self.id) else {
+                return;
+            };
+            if !slot.active || slot.cancelled.load(Ordering::SeqCst) {
+                return;
+            }
+            let Some(a) = slot.activity.as_mut() else {
+                return;
+            };
+            if a.native_invalid {
+                return;
+            }
+            let now = Instant::now();
+            let mut advanced = now;
+            if let Some(previous) = &a.native {
+                let p = &previous.event;
+                if event.sequence <= p.sequence
+                    || event.elapsed_ms < p.elapsed_ms
+                    || event.stage_epoch < p.stage_epoch
+                    || (event.stage_epoch == p.stage_epoch
+                        && (event.stage != p.stage
+                            || event.units_completed < p.units_completed
+                            || event.bytes_verified < p.bytes_verified))
+                {
+                    a.native = None;
+                    a.native_invalid = true;
+                    return;
+                }
+                if event.stage_epoch == p.stage_epoch
+                    && event.units_completed == p.units_completed
+                    && event.bytes_verified == p.bytes_verified
+                {
+                    advanced = previous.advanced;
+                }
+            }
+            a.native = Some(NativeObservation {
+                event,
+                received: now,
+                advanced,
+            });
+        }
+    }
+}
+
+/// Only this explicit observed native command permits progress records. Ordinary
+/// stderr remains under its original cap; stdout/final acknowledgements do not change.
+fn capture_stage_stderr(stream: impl Read, sink: StageSink) -> Result<Vec<u8>, String> {
+    let mut reader = BufReader::new(stream);
+    let mut diagnostics = Vec::new();
+    let mut line_start = true;
+    let mut progress_bytes = 0usize;
+    loop {
+        let mut fragment = Vec::new();
+        // A long diagnostic line is read in bounded fragments, never allocated whole.
+        let n = reader
+            .by_ref()
+            .take(513)
+            .read_until(b'\n', &mut fragment)
+            .map_err(|_| "Không đọc được chẩn đoán review")?;
+        if n == 0 {
+            return Ok(diagnostics);
+        }
+        let ended = fragment.last() == Some(&b'\n');
+        if line_start && ended && fragment.len() <= 512 && fragment.starts_with(STAGE_PREFIX) {
+            if let Some(event) = NativeStage::read(&fragment[STAGE_PREFIX.len()..]) {
+                progress_bytes += fragment.len();
+                if progress_bytes > 16 * 1024 * 1024 {
+                    sink.invalid();
+                    return Err("Quan sát review vượt giới hạn byte".into());
+                }
+                sink.observe(event);
+                line_start = true;
+                continue;
+            }
+            sink.invalid();
+        }
+        if diagnostics.len() + fragment.len() > ERROR_LIMIT {
+            return Err("Nội dung review vượt giới hạn byte".into());
+        }
+        diagnostics.extend_from_slice(&fragment);
+        line_start = ended;
+    }
 }
 #[derive(Clone, PartialEq)]
 enum SessionBinding {
@@ -50,6 +226,7 @@ struct Session {
     created: Instant,
     binding: SessionBinding,
     pending_plan: Option<Value>,
+    original_view: Option<Value>,
 }
 #[derive(Default)]
 struct Registry {
@@ -61,6 +238,11 @@ struct Registry {
 #[derive(Clone, Default)]
 pub struct ReviewHost {
     registry: Arc<Mutex<Registry>>,
+    failure_binding: Option<Arc<Mutex<Option<FailureBinding>>>>,
+}
+struct FailureBinding {
+    id: String,
+    registered: Arc<AtomicBool>,
 }
 
 fn request_id(value: &str) -> Result<(), String> {
@@ -125,12 +307,185 @@ impl Drop for RequestGuard {
             if let Some(slot) = registry.requests.get_mut(&self.id) {
                 slot.active = false;
                 slot.changed = Instant::now();
+                if let Some(activity) = slot.activity.as_mut() {
+                    activity.ended_phase = Some(activity.phase);
+                    activity.phase = "ended";
+                    activity.phase_started = slot.changed;
+                }
+            }
+        }
+    }
+}
+
+impl RequestGuard {
+    fn failing_stderr(&self, bytes: &[u8]) {
+        if let Ok(mut r) = self.host.registry.lock() {
+            if let Some(a) = r
+                .requests
+                .get_mut(&self.id)
+                .and_then(|r| r.activity.as_mut())
+            {
+                let text = bounded_diagnostic(&String::from_utf8_lossy(bytes), ERROR_LIMIT);
+                a.diagnostic = if text.is_empty() { None } else { Some(text) };
+            }
+        }
+    }
+
+    fn observe(&self, job: &str, operation: &'static str) -> Result<(), String> {
+        let mut registry = self
+            .host
+            .registry
+            .lock()
+            .map_err(|_| "Review không sẵn sàng")?;
+        let slot = registry
+            .requests
+            .get_mut(&self.id)
+            .ok_or("Yêu cầu review đã hết hạn")?;
+        if !slot.active || slot.activity.is_some() || self.cancelled.load(Ordering::SeqCst) {
+            return Err("Yêu cầu review không còn hoạt động".into());
+        }
+        let now = Instant::now();
+        slot.activity = Some(RequestActivity {
+            job: job.into(),
+            operation,
+            started: now,
+            phase: "checking",
+            phase_started: now,
+            process: "idle",
+            process_observed: None,
+            native: None,
+            native_invalid: false,
+            ended_phase: None,
+            diagnostic: None,
+        });
+        Ok(())
+    }
+
+    fn phase(&self, phase: &'static str) {
+        if let Ok(mut registry) = self.host.registry.lock() {
+            if let Some(activity) = registry
+                .requests
+                .get_mut(&self.id)
+                .and_then(|s| s.activity.as_mut())
+            {
+                activity.phase = phase;
+                if phase == "processing" {
+                    activity.native = None;
+                    activity.native_invalid = false;
+                }
+                activity.phase_started = Instant::now();
+                activity.process = "idle";
+                activity.process_observed = None;
+            }
+        }
+    }
+
+    fn process(&self, state: &'static str) {
+        if let Ok(mut registry) = self.host.registry.lock() {
+            if let Some(activity) = registry
+                .requests
+                .get_mut(&self.id)
+                .and_then(|s| s.activity.as_mut())
+            {
+                activity.process = state;
+                activity.process_observed = Some(Instant::now());
             }
         }
     }
 }
 
 impl ReviewHost {
+    fn capture_failures(&self) -> Self {
+        Self {
+            registry: self.registry.clone(),
+            failure_binding: Some(Arc::new(Mutex::new(None))),
+        }
+    }
+
+    fn request_failure(&self, id: &str, message: &str) -> Value {
+        let message = bounded_diagnostic(message, 1024);
+        let Ok(registry) = self.registry.lock() else {
+            return Value::String(message);
+        };
+        let Some(slot) = registry.requests.get(id) else {
+            return Value::String(message);
+        };
+        if !slot.active && slot.changed.elapsed() >= TOMBSTONE_TTL {
+            return Value::String(message);
+        }
+        let Some(binding) = self.failure_binding.as_ref() else {
+            return Value::String(message);
+        };
+        let Ok(binding) = binding.try_lock() else {
+            return Value::String(message);
+        };
+        let Some(binding) = binding.as_ref() else {
+            return Value::String(message);
+        };
+        if binding.id != id || !Arc::ptr_eq(&binding.registered, &slot.cancelled) {
+            return Value::String(message);
+        }
+        let Some(a) = slot.activity.as_ref() else {
+            return Value::String(message);
+        };
+        serde_json::json!({"schema_version":1,"kind":"review_desktop_request_failure",
+            "request_id":id,"job_id":a.job,"operation":a.operation,"outcome":"unconfirmed",
+            "phase":a.ended_phase.unwrap_or(a.phase),"native_stage":a.native.as_ref().filter(|_| !a.native_invalid).map(|n| n.event.stage.as_str()),
+            "message":message,"diagnostic":a.diagnostic})
+    }
+
+    fn request_status(&self, id: &str) -> Result<Value, String> {
+        request_id(id)?;
+        let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        registry.prune();
+        let slot = registry
+            .requests
+            .get(id)
+            .ok_or("Chưa đọc được trạng thái tác vụ review")?;
+        let a = slot
+            .activity
+            .as_ref()
+            .ok_or("Tác vụ chưa có quan sát review")?;
+        let now = if slot.active {
+            Instant::now()
+        } else {
+            slot.changed
+        };
+        let ms = |time: Instant| {
+            now.saturating_duration_since(time)
+                .as_millis()
+                .min(86_400_000) as u64
+        };
+        Ok(
+            serde_json::json!({"schema_version":1,"kind":"review_desktop_request_activity",
+            "request_id":id,"job_id":a.job,"operation":a.operation,
+            "state":if !slot.active {"ended"} else if slot.cancelled.load(Ordering::SeqCst) {"cancelling"} else {"running"},
+            "phase":a.phase,"elapsed_ms":ms(a.started),"phase_elapsed_ms":ms(a.phase_started),
+            "process_state":a.process,"process_observation_age_ms":a.process_observed.map(ms)}),
+        )
+    }
+
+    fn request_stage(&self, id: &str) -> Result<Value, String> {
+        request_id(id)?;
+        let registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        let a = registry
+            .requests
+            .get(id)
+            .and_then(|r| r.activity.as_ref())
+            .ok_or("Chưa quan sát được review")?;
+        let native = a.native.as_ref().filter(|_| !a.native_invalid).map(|n| serde_json::json!({
+            "event":n.event,"received_age_ms":n.received.elapsed().as_millis().min(86_400_000) as u64,
+            "advance_age_ms":n.advanced.elapsed().as_millis().min(86_400_000) as u64}));
+        drop(registry);
+        // Read host elapsed after the native event snapshot to avoid a newer
+        // cross-thread event exceeding an earlier host observation cut.
+        let activity = self.request_status(id)?;
+        Ok(
+            serde_json::json!({"schema_version":1,"kind":"review_desktop_request_stage","activity":activity,
+            "native_observation":if native.is_some() {"observed"} else {"unavailable"},"native_stage":native}),
+        )
+    }
+
     fn begin(&self, id: &str) -> Result<RequestGuard, String> {
         request_id(id)?;
         let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
@@ -155,8 +510,19 @@ impl ReviewHost {
                 cancelled: cancelled.clone(),
                 active: true,
                 changed: Instant::now(),
+                activity: None,
             },
         );
+        if let Some(binding) = &self.failure_binding {
+            if let Ok(mut binding) = binding.try_lock() {
+                if binding.is_none() {
+                    *binding = Some(FailureBinding {
+                        id: id.to_owned(),
+                        registered: cancelled.clone(),
+                    });
+                }
+            }
+        }
         Ok(RequestGuard {
             host: self.clone(),
             id: id.to_owned(),
@@ -183,6 +549,7 @@ impl ReviewHost {
                     cancelled: Arc::new(AtomicBool::new(true)),
                     active: false,
                     changed: Instant::now(),
+                    activity: None,
                 },
             );
         }
@@ -222,6 +589,7 @@ impl ReviewHost {
                 created: Instant::now(),
                 binding,
                 pending_plan: None,
+                original_view: None,
             },
         );
         Ok(())
@@ -420,6 +788,67 @@ impl ReviewHost {
         ))
     }
 
+    fn save_original_view(&self, request: &RequestGuard, snapshot: &Value) -> Result<(), String> {
+        if snapshot["schema_version"].as_u64() != Some(2)
+            || snapshot["revision"].as_u64() != Some(0)
+            || !snapshot["last_plan"].is_null()
+            || serde_json::to_vec(snapshot)
+                .map_err(|_| "Nội dung gốc không hợp lệ")?
+                .len()
+                > JSON_LIMIT
+        {
+            return Err("Chỉ có thể bắt đầu lịch sử từ bản gốc chưa chỉnh sửa".into());
+        }
+        let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        let saved = registry
+            .sessions
+            .get_mut(&request.id)
+            .ok_or("Phiên gốc đã hết hạn")?;
+        if request.cancelled.load(Ordering::SeqCst)
+            || saved.binding != SessionBinding::Uninitialized
+            || snapshot["job_id"] != saved.pin.job_id
+        {
+            return Err("Phiên gốc đã đổi hoặc bị hủy; hãy tải lại".into());
+        }
+        saved.original_view = Some(snapshot.clone());
+        Ok(())
+    }
+
+    fn consume_initialize(
+        &self,
+        session: &str,
+        job: &str,
+    ) -> Result<(ExportPin, Value, ApplyGuard), String> {
+        request_id(session)?;
+        let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        registry.prune();
+        let saved = registry
+            .sessions
+            .get(session)
+            .ok_or("Phiên gốc đã hết hạn; hãy tải lại")?;
+        if saved.binding != SessionBinding::Uninitialized
+            || saved.pin.job_id != job
+            || registry.applying_jobs.contains(job)
+        {
+            return Err("Chỉ có thể bắt đầu từ phiên gốc chưa có lịch sử; hãy tải lại".into());
+        }
+        let previous = saved
+            .original_view
+            .clone()
+            .ok_or("Phiên gốc chưa được kiểm tra; hãy tải lại")?;
+        let pin = saved.pin.clone();
+        registry.sessions.retain(|_, saved| saved.pin.job_id != job);
+        registry.applying_jobs.insert(job.to_owned());
+        Ok((
+            pin,
+            previous,
+            ApplyGuard {
+                host: self.clone(),
+                job: job.to_owned(),
+            },
+        ))
+    }
+
     /// Only the caller holding this host's live mutation guard may publish the
     /// freshly readmitted post-CAS session. Snapshot readers cannot recreate an
     /// old session while the apply is in flight.
@@ -456,6 +885,7 @@ impl ReviewHost {
                 created: Instant::now(),
                 binding: SessionBinding::Current(token),
                 pending_plan: None,
+                original_view: None,
             },
         );
         Ok(())
@@ -573,6 +1003,7 @@ fn current_apply(
     }
     let request = host.begin(&id)?;
     let (pin, before, applying) = host.consume_plan(&session, &confirmation.plan)?;
+    request.observe(&pin.job_id, "apply")?;
     let root = super::version_root()?;
     let data = data_root()?;
     if trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin {
@@ -600,12 +1031,9 @@ fn current_apply(
     // host bound does not impose the short read-preview timeout on rendering.
     // Cancellation kills the owned native process; its existing Windows
     // non-inherited kill-on-close WorkerTree owns each worker before byte-gate.
-    let bytes = run_bounded(
-        command,
-        JSON_LIMIT,
-        Duration::from_secs(8 * 3600),
-        &request.cancelled,
-    )?;
+    request.phase("processing");
+    let bytes = run_observed(command, JSON_LIMIT, Duration::from_secs(8 * 3600), &request)?;
+    request.phase("verifying");
     let ack: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "Kết quả áp dụng chưa rõ; hãy tải lại để kiểm tra")?;
     if request.cancelled.load(Ordering::SeqCst)
@@ -743,6 +1171,7 @@ fn current_undo(
     job_id(&input.current_token.job_id)?;
     let request = host.begin(&id)?;
     let (pin, before, applying) = host.consume_undo(&session, &input.current_token)?;
+    request.observe(&pin.job_id, "undo")?;
     let root = super::version_root()?;
     let data = data_root()?;
     if trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin {
@@ -770,12 +1199,9 @@ fn current_undo(
         .arg(&before.graph_sha256);
     // This existing native command physically admits current+prior graphs and
     // performs monotonic CAS under JobExecutionGuard. No producer is executed.
-    let bytes = run_bounded(
-        command,
-        JSON_LIMIT,
-        Duration::from_secs(740),
-        &request.cancelled,
-    )?;
+    request.phase("processing");
+    let bytes = run_observed(command, JSON_LIMIT, Duration::from_secs(740), &request)?;
+    request.phase("verifying");
     let ack: Value =
         serde_json::from_slice(&bytes).map_err(|_| "Kết quả hoàn tác chưa rõ; hãy tải lại")?;
     if request.cancelled.load(Ordering::SeqCst)
@@ -933,6 +1359,14 @@ fn current_export(
     job_id(&input.current_token.job_id)?;
     let request = host.begin(&id)?;
     let (pin, before, applying) = host.consume_export(&session, &input.current_token)?;
+    request.observe(
+        &pin.job_id,
+        if input.format == "standard" {
+            "standard_export"
+        } else {
+            "editable_export"
+        },
+    )?;
     let root = super::version_root()?;
     let data = data_root()?;
     if trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin {
@@ -961,12 +1395,9 @@ fn current_export(
         .arg(&data)
         .arg("--request-json")
         .arg(encoded);
-    let bytes = run_bounded(
-        command,
-        JSON_LIMIT,
-        Duration::from_secs(8 * 3600),
-        &request.cancelled,
-    )?;
+    request.phase("processing");
+    let bytes = run_observed(command, JSON_LIMIT, Duration::from_secs(8 * 3600), &request)?;
+    request.phase("verifying");
     let ack: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "Kết quả xuất chưa rõ; hãy tải lại để kiểm tra")?;
     if request.cancelled.load(Ordering::SeqCst)
@@ -996,13 +1427,179 @@ fn current_export(
     )
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentInitializeRequest {
+    schema_version: u32,
+    kind: String,
+    confirm: bool,
+    job_id: String,
+}
+
+fn initialized_token(
+    pin: &ExportPin,
+    previous: &Value,
+    ack: &Value,
+    fresh: &Value,
+) -> Result<CurrentToken, String> {
+    let error = || "Khởi tạo chưa khớp bản xuất gốc; hãy tải lại để kiểm tra".to_owned();
+    let fields = [
+        "schema_version",
+        "kind",
+        "job_id",
+        "revision",
+        "snapshot_sha256",
+        "graph_sha256",
+        "manifest_sha256",
+        "snapshot",
+        "correction_ready",
+    ];
+    if ack
+        .as_object()
+        .is_none_or(|o| o.len() != fields.len() || fields.iter().any(|k| !o.contains_key(*k)))
+        || ack["schema_version"].as_u64() != Some(1)
+        || ack["kind"] != "review_original_state"
+        || ack["job_id"] != pin.job_id
+        || ack["revision"] != "0"
+        || ack["manifest_sha256"] != pin.manifest_sha256
+        || ack["correction_ready"] != false
+        || previous["schema_version"].as_u64() != Some(2)
+        || previous["job_id"] != pin.job_id
+        || previous["revision"].as_u64() != Some(0)
+        || !previous["last_plan"].is_null()
+        || ack["snapshot"] != *previous
+        || fresh["time_base"] != previous["time_base"]
+        || fresh["findings"] != previous["findings"]
+        || fresh["last_plan"] != previous["last_plan"]
+    {
+        return Err(error());
+    }
+    let token: CurrentToken =
+        serde_json::from_value(fresh["current_token"].clone()).map_err(|_| error())?;
+    if token.job_id != pin.job_id
+        || token.revision != "0"
+        || token.original_manifest_sha256 != pin.manifest_sha256
+        || !is_sha(&token.snapshot_sha256)
+        || !is_sha(&token.graph_sha256)
+        || ack["snapshot_sha256"] != token.snapshot_sha256
+        || ack["graph_sha256"] != token.graph_sha256
+    {
+        return Err(error());
+    }
+    Ok(token)
+}
+
+fn current_initialize(
+    host: ReviewHost,
+    session: String,
+    id: String,
+    input: CurrentInitializeRequest,
+) -> Result<Value, String> {
+    if input.schema_version != 1 || input.kind != "review_initialize_current" || !input.confirm {
+        return Err("Cần xác nhận bắt đầu chỉnh sửa bản gốc".into());
+    }
+    job_id(&input.job_id)?;
+    let request = host.begin(&id)?;
+    let (pin, previous, applying) = host.consume_initialize(&session, &input.job_id)?;
+    request.observe(&pin.job_id, "initialize")?;
+    let root = super::version_root()?;
+    let data = data_root()?;
+    if trusted_pin(&root, &data, &input.job_id, &request.cancelled)? != pin
+        || current_state(&root, &data, &input.job_id, &pin, &request.cancelled)?.is_some()
+    {
+        return Err("Bản gốc hoặc lịch sử đã thay đổi; hãy tải lại".into());
+    }
+    let mut command = Command::new(owned_file(&root, "app/bin/dubflow-supervisor.exe")?);
+    command
+        .arg("review-original")
+        .arg("--root")
+        .arg(&root)
+        .arg("--data-root")
+        .arg(&data)
+        .arg("--job-id")
+        .arg(&input.job_id)
+        .arg("--initialize-original");
+    // Existing native initialization owns metadata validation, original pin and
+    // the durable job guard. No inference, render or current-generation repair.
+    request.phase("processing");
+    let bytes = run_observed(command, JSON_LIMIT, Duration::from_secs(740), &request)?;
+    request.phase("verifying");
+    let ack: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "Kết quả khởi tạo chưa rõ; hãy tải lại để kiểm tra")?;
+    if request.cancelled.load(Ordering::SeqCst)
+        || trusted_pin(&root, &data, &input.job_id, &request.cancelled)? != pin
+    {
+        return Err("Khởi tạo bị hủy hoặc bản gốc đổi; hãy tải lại để kiểm tra".into());
+    }
+    let fresh = current_state(&root, &data, &input.job_id, &pin, &request.cancelled)?
+        .ok_or("Không đọc được lịch sử vừa tạo; hãy tải lại")?;
+    let token = initialized_token(&pin, &previous, &ack, &fresh)?;
+    if request.cancelled.load(Ordering::SeqCst)
+        || trusted_pin(&root, &data, &input.job_id, &request.cancelled)? != pin
+    {
+        return Err("Kết quả khởi tạo đến sau khi hủy; hãy tải lại để kiểm tra".into());
+    }
+    host.finish_apply_session(&request, pin, token, &applying)?;
+    Ok(
+        serde_json::json!({"schema_version":1,"kind":"review_desktop_initialized_current","job_id":input.job_id,"session_id":id,"snapshot":fresh}),
+    )
+}
+
+fn bounded_diagnostic(text: &str, limit: usize) -> String {
+    let mut out = String::new();
+    for ch in text
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+    {
+        if out.len() + ch.len_utf8() > limit {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+async fn review_task_reply(
+    host: ReviewHost,
+    id: String,
+    work: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> Result<Value, Value> {
+    match tauri::async_runtime::spawn_blocking(work).await {
+        Ok(result) => result.map_err(|message| host.request_failure(&id, &message)),
+        Err(_) => Err(host.request_failure(
+            &id,
+            "Tác vụ review bị gián đoạn; hãy tải lại để kiểm tra bản hiện hành",
+        )),
+    }
+}
+
 /// Readers drain both pipes concurrently. A finite deadline covers process
 /// completion AND pipe EOF; no unbounded wait/join runs on the UI thread.
 fn run_bounded(
+    command: Command,
+    limit: usize,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, String> {
+    run_bounded_inner(command, limit, timeout, cancelled, None)
+}
+
+fn run_observed(
+    mut command: Command,
+    limit: usize,
+    timeout: Duration,
+    request: &RequestGuard,
+) -> Result<Vec<u8>, String> {
+    command.env("DUBFLOW_REVIEW_PROGRESS_V1", "1");
+    run_bounded_inner(command, limit, timeout, &request.cancelled, Some(request))
+}
+
+fn run_bounded_inner(
     mut command: Command,
     limit: usize,
     timeout: Duration,
     cancelled: &AtomicBool,
+    observer: Option<&RequestGuard>,
 ) -> Result<Vec<u8>, String> {
     if cancelled.load(Ordering::SeqCst) {
         return Err("Review đã bị hủy".into());
@@ -1019,6 +1616,10 @@ fn run_bounded(
     let mut child = command
         .spawn()
         .map_err(|_| "Không khởi động được bộ đọc review của DubFlow")?;
+    if let Some(request) = observer {
+        request.process("running");
+    }
+    let mut last_observed = Instant::now();
     let stdout = child.stdout.take().ok_or("Bộ đọc review thiếu stdout")?;
     let stderr = child.stderr.take().ok_or("Bộ đọc review thiếu stderr")?;
     let (sender, receiver) = mpsc::channel();
@@ -1026,8 +1627,16 @@ fn run_bounded(
     std::thread::spawn(move || {
         let _ = sender.send((true, capture(stdout, limit)));
     });
+    let stage_sink = observer.map(|r| StageSink {
+        host: r.host.clone(),
+        id: r.id.clone(),
+    });
     std::thread::spawn(move || {
-        let _ = error_sender.send((false, capture(stderr, ERROR_LIMIT)));
+        let bytes = match stage_sink {
+            Some(sink) => capture_stage_stderr(stderr, sink),
+            None => capture(stderr, ERROR_LIMIT),
+        };
+        let _ = error_sender.send((false, bytes));
     });
     let deadline = Instant::now() + timeout;
     let mut output = None;
@@ -1062,12 +1671,27 @@ fn run_bounded(
         }
         if status.is_none() {
             match child.try_wait() {
-                Ok(value) => status = value,
+                Ok(value) => {
+                    status = value;
+                    if status.is_some() || last_observed.elapsed() >= Duration::from_millis(250) {
+                        if let Some(request) = observer {
+                            request.process(if status.is_some() {
+                                "exited"
+                            } else {
+                                "running"
+                            });
+                        }
+                        last_observed = Instant::now();
+                    }
+                }
                 Err(_) => break Err("Không đọc được trạng thái bộ đọc review".into()),
             }
         }
-        if let (Some(status), Some(_), Some(_)) = (&status, &output, &errors) {
+        if let (Some(status), Some(_), Some(stderr)) = (&status, &output, &errors) {
             if !status.success() {
+                if let Some(request) = observer {
+                    request.failing_stderr(stderr);
+                }
                 break Err("Không xác thực được lời thoại hoặc âm thanh; hãy tải lại và kiểm tra đầu ra của video".into());
             }
             break Ok(output.take().unwrap_or_default());
@@ -1078,11 +1702,19 @@ fn run_bounded(
         let _ = child.kill();
         // Reap a killed owned reader without extending the deadline indefinitely.
         let reap_deadline = Instant::now() + Duration::from_secs(2);
+        let mut reaped = false;
         while Instant::now() < reap_deadline {
             match child.try_wait() {
-                Ok(Some(_)) | Err(_) => break,
+                Ok(Some(_)) => {
+                    reaped = true;
+                    break;
+                }
+                Err(_) => break,
                 Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             }
+        }
+        if let Some(request) = observer {
+            request.process(if reaped { "exited" } else { "unobserved" });
         }
     }
     outcome
@@ -1313,7 +1945,11 @@ fn current_snapshot(host: ReviewHost, job: String, id: String) -> Result<Value, 
     if trusted_pin(&root, &data, &job, &request.cancelled)? != pin {
         return Err("Bản xuất đã thay đổi; hãy tải lại review".into());
     }
+    let uninitialized = matches!(&binding, SessionBinding::Uninitialized);
     host.save_bound_session(&request, pin, binding)?;
+    if uninitialized {
+        host.save_original_view(&request, &snapshot)?;
+    }
     Ok(
         serde_json::json!({"schema_version":2,"kind":"review_desktop_current_session","session_id":id,"snapshot":snapshot}),
     )
@@ -1650,13 +2286,14 @@ pub async fn review_apply_v1(
     session_id: String,
     request_id: String,
     confirmation: CurrentConfirmation,
-) -> Result<Value, String> {
-    let host = host.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
+) -> Result<Value, Value> {
+    let host = host.inner().capture_failures();
+    let errors = host.clone();
+    let id = request_id.clone();
+    review_task_reply(errors, id, move || {
         current_apply(host, session_id, request_id, confirmation)
     })
     .await
-    .map_err(|_| "Tác vụ sửa câu bị gián đoạn; hãy tải lại để kiểm tra kết quả".to_owned())?
 }
 
 #[tauri::command]
@@ -1665,13 +2302,14 @@ pub async fn review_undo_v1(
     session_id: String,
     request_id: String,
     request: CurrentUndoRequest,
-) -> Result<Value, String> {
-    let host = host.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
+) -> Result<Value, Value> {
+    let host = host.inner().capture_failures();
+    let errors = host.clone();
+    let id = request_id.clone();
+    review_task_reply(errors, id, move || {
         current_undo(host, session_id, request_id, request)
     })
     .await
-    .map_err(|_| "Tác vụ hoàn tác bị gián đoạn; hãy tải lại để kiểm tra".to_owned())?
 }
 
 #[tauri::command]
@@ -1680,13 +2318,30 @@ pub async fn review_export_v1(
     session_id: String,
     request_id: String,
     request: CurrentExportRequest,
-) -> Result<Value, String> {
-    let host = host.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
+) -> Result<Value, Value> {
+    let host = host.inner().capture_failures();
+    let errors = host.clone();
+    let id = request_id.clone();
+    review_task_reply(errors, id, move || {
         current_export(host, session_id, request_id, request)
     })
     .await
-    .map_err(|_| "Tác vụ xuất bị gián đoạn; hãy tải lại để kiểm tra".to_owned())?
+}
+
+#[tauri::command]
+pub async fn review_initialize_v1(
+    host: tauri::State<'_, ReviewHost>,
+    session_id: String,
+    request_id: String,
+    request: CurrentInitializeRequest,
+) -> Result<Value, Value> {
+    let host = host.inner().capture_failures();
+    let errors = host.clone();
+    let id = request_id.clone();
+    review_task_reply(errors, id, move || {
+        current_initialize(host, session_id, request_id, request)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1705,6 +2360,22 @@ pub async fn review_audio_v1(
 }
 
 #[tauri::command]
+pub fn review_request_stage_v1(
+    host: tauri::State<'_, ReviewHost>,
+    request_id: String,
+) -> Result<Value, String> {
+    host.request_stage(&request_id)
+}
+
+#[tauri::command]
+pub fn review_request_status_v1(
+    host: tauri::State<'_, ReviewHost>,
+    request_id: String,
+) -> Result<Value, String> {
+    host.request_status(&request_id)
+}
+
+#[tauri::command]
 pub fn review_cancel_v1(
     host: tauri::State<'_, ReviewHost>,
     request_id: String,
@@ -1715,6 +2386,309 @@ pub fn review_cancel_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_details_are_bounded_utf8_inert_text_and_keep_unconfirmed_outcome() {
+        let cleaned =
+            bounded_diagnostic(&format!("a\0\u{1b}b\n\t{}", "😀".repeat(3000)), ERROR_LIMIT);
+        assert!(cleaned.len() <= ERROR_LIMIT);
+        assert!(cleaned.starts_with("ab\n\t"));
+        assert!(!cleaned
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t'));
+        let host = ReviewHost::default().capture_failures();
+        assert!(host
+            .request_failure("request-unknown-error-0001", "unknown")
+            .is_string());
+        let request = host.begin("request-error-bounded-0001").unwrap();
+        request.observe("job-error", "apply").unwrap();
+        request.phase("processing");
+        request.failing_stderr(b"QC refused: <tag> is diagnostic text, never a command");
+        let id = request.id.clone();
+        let duplicate = host.capture_failures();
+        assert!(duplicate.begin(&id).is_err());
+        assert!(duplicate
+            .request_failure(&id, "duplicate refused before registration")
+            .is_string());
+        drop(request);
+        let error = host.request_failure(&id, "Reload to inspect the current result");
+        assert_eq!(error.as_object().unwrap().len(), 10);
+        assert_eq!(error["outcome"], "unconfirmed");
+        assert_eq!(error["phase"], "processing");
+        assert_eq!(error["request_id"], id);
+        assert_eq!(error["job_id"], "job-error");
+        assert!(error["diagnostic"].as_str().unwrap().contains("<tag>"));
+        for key in [
+            "retryable",
+            "committed",
+            "success",
+            "token",
+            "snapshot",
+            "root",
+        ] {
+            assert!(error.get(key).is_none());
+        }
+        host.registry
+            .lock()
+            .unwrap()
+            .requests
+            .get_mut(&id)
+            .unwrap()
+            .changed = Instant::now() - TOMBSTONE_TTL;
+        assert!(host.request_failure(&id, "expired observation").is_string());
+    }
+
+    #[test]
+    fn failing_owned_process_preserves_its_capped_diagnostic_in_the_bound_error() {
+        let host = ReviewHost::default().capture_failures();
+        let errors = host.clone();
+        let id = "request-failure-process-0001".to_string();
+        let result_id = id.clone();
+        let result =
+            tauri::async_runtime::block_on(review_task_reply(errors, id.clone(), move || {
+                let request = host.begin(&id)?;
+                request.observe("job-error-process", "apply")?;
+                request.phase("processing");
+                run_observed(
+                    fixture("failed-diagnostic"),
+                    4096,
+                    Duration::from_secs(5),
+                    &request,
+                )?;
+                Ok(serde_json::json!({"must_not_succeed":true}))
+            }));
+        let error = result.unwrap_err();
+        assert_eq!(error["request_id"], result_id);
+        assert_eq!(error["phase"], "processing");
+        assert_eq!(error["outcome"], "unconfirmed");
+        assert!(error["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("REVIEW_QC_DIAGNOSTIC_FIXTURE"));
+    }
+
+    #[test]
+    fn no_diagnostic_is_invented_for_unobserved_or_successful_processes() {
+        let host = ReviewHost::default().capture_failures();
+        let request = host.begin("request-no-failed-stderr-0001").unwrap();
+        request.observe("job-no-failed-stderr", "undo").unwrap();
+        request.phase("processing");
+        run_observed(fixture("small"), 4096, Duration::from_secs(5), &request).unwrap();
+        request.phase("verifying");
+        let id = request.id.clone();
+        drop(request);
+        let failure = host.request_failure(&id, "A later current-state check failed");
+        assert_eq!(failure["phase"], "verifying");
+        assert!(failure["diagnostic"].is_null());
+        assert_eq!(failure["outcome"], "unconfirmed");
+    }
+
+    fn stage_packet(sequence: u64, units: u64) -> Vec<u8> {
+        serde_json::to_vec(
+            &serde_json::json!({"schema_version":1,"kind":"review_native_stage_observation",
+            "sequence":sequence,"stage_epoch":1,"stage":"verifying_runtime_files","elapsed_ms":0,
+            "units_completed":units,"bytes_verified":units * 10}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn native_stage_reader_preserves_diagnostics_caps_and_closed_observation() {
+        let host = ReviewHost::default();
+        let request = host.begin("request-stage-reader-0001").unwrap();
+        request.observe("job-stage-reader", "apply").unwrap();
+        request.phase("processing");
+        let sink = StageSink {
+            host: host.clone(),
+            id: request.id.clone(),
+        };
+        let packet = stage_packet(1, 3);
+        let mut raw = b"warning before\n".to_vec();
+        raw.extend_from_slice(STAGE_PREFIX);
+        raw.extend_from_slice(&packet);
+        raw.extend_from_slice(b"\nwarning after\n");
+        assert_eq!(
+            capture_stage_stderr(std::io::Cursor::new(raw), sink.clone()).unwrap(),
+            b"warning before\nwarning after\n"
+        );
+        let status = host.request_stage(&request.id).unwrap();
+        assert_eq!(status["native_stage"]["event"]["units_completed"], 3);
+        assert_eq!(status["activity"]["state"], "running");
+        assert!(status.get("success").is_none());
+        // The old activity shape remains closed and unchanged.
+        assert_eq!(
+            host.request_status(&request.id)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len(),
+            11
+        );
+        let mut malformed = STAGE_PREFIX.to_vec();
+        malformed.extend_from_slice(b"{\"success\":true}\n");
+        assert_eq!(
+            capture_stage_stderr(std::io::Cursor::new(&malformed), sink.clone()).unwrap(),
+            malformed
+        );
+        assert_eq!(
+            host.request_stage(&request.id).unwrap()["native_observation"],
+            "unavailable"
+        );
+        let ordinary = vec![b'x'; ERROR_LIMIT];
+        assert_eq!(
+            capture_stage_stderr(std::io::Cursor::new(&ordinary), sink.clone()).unwrap(),
+            ordinary
+        );
+        assert!(
+            capture_stage_stderr(std::io::Cursor::new(vec![b'x'; ERROR_LIMIT + 1]), sink).is_err()
+        );
+    }
+
+    #[test]
+    fn repeated_counts_do_not_reset_advancement_and_reordered_events_are_unknown() {
+        let host = ReviewHost::default();
+        let request = host.begin("request-stage-order-0001").unwrap();
+        request.observe("job-stage-order", "apply").unwrap();
+        request.phase("processing");
+        let sink = StageSink {
+            host: host.clone(),
+            id: request.id.clone(),
+        };
+        sink.observe(NativeStage::read(&stage_packet(1, 2)).unwrap());
+        let advanced = Instant::now() - Duration::from_secs(3);
+        host.registry
+            .lock()
+            .unwrap()
+            .requests
+            .get_mut(&request.id)
+            .unwrap()
+            .activity
+            .as_mut()
+            .unwrap()
+            .native
+            .as_mut()
+            .unwrap()
+            .advanced = advanced;
+        sink.observe(NativeStage::read(&stage_packet(2, 2)).unwrap());
+        assert!(
+            host.request_stage(&request.id).unwrap()["native_stage"]["advance_age_ms"]
+                .as_u64()
+                .unwrap()
+                >= 3000
+        );
+        sink.observe(NativeStage::read(&stage_packet(1, 9)).unwrap());
+        assert_eq!(
+            host.request_stage(&request.id).unwrap()["native_observation"],
+            "unavailable"
+        );
+        sink.observe(NativeStage::read(&stage_packet(3, 9)).unwrap());
+        assert_eq!(
+            host.request_stage(&request.id).unwrap()["native_observation"],
+            "unavailable"
+        );
+        request.phase("processing");
+        host.cancel(&request.id).unwrap();
+        sink.observe(NativeStage::read(&stage_packet(4, 10)).unwrap());
+        assert_eq!(
+            host.request_stage(&request.id).unwrap()["native_observation"],
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn activity_binds_only_admitted_requests_and_never_promises_success() {
+        let host = ReviewHost::default();
+        assert!(host.request_status("request-unknown-0001").is_err());
+        host.cancel("request-before-activity-0001").unwrap();
+        assert!(host.request_status("request-before-activity-0001").is_err());
+        let request = host.begin("request-observed-0001").unwrap();
+        assert!(host.request_status(&request.id).is_err());
+        request.observe("job-observed", "apply").unwrap();
+        assert!(request.observe("different-job", "undo").is_err());
+        let initial = host.request_status(&request.id).unwrap();
+        assert_eq!(initial["job_id"], "job-observed");
+        assert_eq!(initial["phase"], "checking");
+        assert!(initial["process_observation_age_ms"].is_null());
+        request.phase("processing");
+        request.process("running");
+        let running = host.request_status(&request.id).unwrap();
+        assert_eq!(running["process_state"], "running");
+        assert_eq!(running.as_object().unwrap().len(), 11);
+        assert!(running.get("success").is_none());
+        host.cancel(&request.id).unwrap();
+        assert_eq!(
+            host.request_status(&request.id).unwrap()["state"],
+            "cancelling"
+        );
+        request.process("exited");
+        let id = request.id.clone();
+        drop(request);
+        let ended = host.request_status(&id).unwrap();
+        assert_eq!(ended["state"], "ended");
+        assert_eq!(ended["phase"], "ended");
+        assert_eq!(ended["process_state"], "exited");
+        assert!(ended.get("success").is_none());
+        let mut registry = host.registry.lock().unwrap();
+        registry.requests.get_mut(&id).unwrap().changed = Instant::now() - TOMBSTONE_TTL;
+        drop(registry);
+        assert!(host.request_status(&id).is_err());
+    }
+
+    #[test]
+    fn observed_process_failure_and_timeout_stay_errors() {
+        let host = ReviewHost::default();
+        for mode in ["small", "failed", "sleep"] {
+            let request = host.begin(&format!("request-process-{mode}-0001")).unwrap();
+            request.observe("job-process", "apply").unwrap();
+            request.phase("processing");
+            let result = run_observed(
+                fixture(mode),
+                4096,
+                if mode == "sleep" {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(5)
+                },
+                &request,
+            );
+            assert_eq!(result.is_ok(), mode == "small");
+            let activity = host.request_status(&request.id).unwrap();
+            assert_eq!(activity["process_state"], "exited");
+            // Even a zero exit has not passed native reply/current validation.
+            assert_eq!(activity["state"], "running");
+            request.phase("verifying");
+            assert!(
+                host.request_status(&request.id).unwrap()["process_observation_age_ms"].is_null()
+            );
+        }
+    }
+
+    #[test]
+    fn observed_running_child_can_be_cancelled_without_a_success_receipt() {
+        let host = ReviewHost::default();
+        let request = host.begin("request-observed-cancel-0001").unwrap();
+        request.observe("job-observed-cancel", "apply").unwrap();
+        request.phase("processing");
+        let worker = std::thread::spawn(move || {
+            run_observed(fixture("sleep"), 4096, Duration::from_secs(5), &request)
+        });
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let status = host.request_status("request-observed-cancel-0001").unwrap();
+            if status["process_state"] == "running" {
+                assert_eq!(status["state"], "running");
+                break;
+            }
+            assert!(Instant::now() < deadline, "child did not become observable");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        host.cancel("request-observed-cancel-0001").unwrap();
+        assert!(worker.join().unwrap().is_err());
+        let ended = host.request_status("request-observed-cancel-0001").unwrap();
+        assert_eq!(ended["state"], "ended");
+        assert_eq!(ended["process_state"], "exited");
+        assert!(ended.get("success").is_none());
+    }
 
     fn apply_fixture() -> (ReviewHost, CurrentToken, Value) {
         let host = ReviewHost::default();
@@ -1741,6 +2715,117 @@ mod tests {
             .unwrap();
         drop(request);
         (host, token, plan)
+    }
+
+    #[test]
+    fn initialization_consumes_only_an_absent_current_session_with_saved_original_view() {
+        let (host, token, _) = apply_fixture();
+        assert!(host
+            .consume_initialize("request-apply-session-0001", &token.job_id)
+            .is_err());
+        let pin = host
+            .current_session("request-apply-session-0001", &token.job_id)
+            .unwrap()
+            .0;
+        let original = serde_json::json!({"schema_version":2,"job_id":token.job_id,"revision":0,"time_base":{"numerator":"1","denominator":"1000"},"findings":[],"last_plan":null});
+        let legacy = host.begin("request-initial-legacy-0001").unwrap();
+        host.save_session(&legacy, pin.clone()).unwrap();
+        assert!(host.save_original_view(&legacy, &original).is_err());
+        assert!(host.consume_initialize(&legacy.id, &token.job_id).is_err());
+        let uninitialized = host.begin("request-initial-original-0002").unwrap();
+        host.save_bound_session(&uninitialized, pin.clone(), SessionBinding::Uninitialized)
+            .unwrap();
+        assert!(host
+            .consume_initialize(&uninitialized.id, &token.job_id)
+            .is_err());
+        host.save_original_view(&uninitialized, &original).unwrap();
+        let (bound, view, guard) = host
+            .consume_initialize(&uninitialized.id, &token.job_id)
+            .unwrap();
+        assert_eq!(bound, pin);
+        assert_eq!(view, original);
+        assert!(host
+            .current_session("request-apply-session-0001", &token.job_id)
+            .is_err());
+        assert!(host
+            .consume_initialize(&uninitialized.id, &token.job_id)
+            .is_err());
+        let racing = host.begin("request-initial-racing-0003").unwrap();
+        assert!(host
+            .save_bound_session(&racing, pin.clone(), SessionBinding::Uninitialized)
+            .is_err());
+        host.cancel(&racing.id).unwrap();
+        assert!(host
+            .finish_apply_session(&racing, pin, token.clone(), &guard)
+            .is_err());
+        drop(guard);
+        assert!(!host
+            .registry
+            .lock()
+            .unwrap()
+            .applying_jobs
+            .contains(&token.job_id));
+    }
+
+    #[test]
+    fn initialize_request_is_explicit_closed_and_does_not_accept_current_or_browser_roots() {
+        let (host, token, _) = apply_fixture();
+        let request = CurrentInitializeRequest {
+            schema_version: 1,
+            kind: "review_initialize_current".into(),
+            confirm: false,
+            job_id: token.job_id.clone(),
+        };
+        assert!(current_initialize(
+            host.clone(),
+            "request-apply-session-0001".into(),
+            "request-initial-false-0001".into(),
+            request
+        )
+        .is_err());
+        assert!(host
+            .current_session("request-apply-session-0001", &token.job_id)
+            .is_ok());
+        let raw = serde_json::json!({"schema_version":1,"kind":"review_initialize_current","confirm":true,"job_id":token.job_id,"root":"foreign"});
+        assert!(serde_json::from_value::<CurrentInitializeRequest>(raw).is_err());
+    }
+
+    #[test]
+    fn original_initialization_ack_matches_full_unchanged_revision_zero_evidence() {
+        let (host, before, _) = apply_fixture();
+        let pin = host
+            .current_session("request-apply-session-0001", &before.job_id)
+            .unwrap()
+            .0;
+        let previous = serde_json::json!({"schema_version":2,"job_id":before.job_id,"revision":0,"time_base":{"numerator":"1","denominator":"1000"},"findings":[
+            {"source_text":"Source","translated_text":"Original","confidence":"0.9838564395904541","cue_id":"cue-a","range":{"start_ticks":"10","end_ticks":"20"},"output_preview":"original-preview"}],"last_plan":null});
+        let ack = serde_json::json!({"schema_version":1,"kind":"review_original_state","job_id":before.job_id,"revision":"0","snapshot_sha256":before.snapshot_sha256,
+            "graph_sha256":before.graph_sha256,"manifest_sha256":before.original_manifest_sha256,"snapshot":previous,"correction_ready":false});
+        let fresh = serde_json::json!({"current_token":{"job_id":before.job_id,"revision":"0","snapshot_sha256":before.snapshot_sha256,"graph_sha256":before.graph_sha256,"original_manifest_sha256":before.original_manifest_sha256},
+            "time_base":previous["time_base"],"findings":previous["findings"],"last_plan":null});
+        assert_eq!(
+            initialized_token(&pin, &previous, &ack, &fresh)
+                .unwrap()
+                .revision,
+            "0"
+        );
+        for change in 0..10 {
+            let mut a = ack.clone();
+            let mut f = fresh.clone();
+            match change {
+                0 => a["manifest_sha256"] = serde_json::json!("foreign"),
+                1 => a["revision"] = serde_json::json!("1"),
+                2 => f["current_token"]["revision"] = serde_json::json!("1"),
+                3 => a["snapshot"]["findings"][0]["source_text"] = serde_json::json!("foreign"),
+                4 => f["findings"][0]["translated_text"] = serde_json::json!("foreign"),
+                5 => f["findings"][0]["confidence"] = serde_json::json!("0.98"),
+                6 => f["findings"][0]["range"]["start_ticks"] = serde_json::json!("0"),
+                7 => f["findings"][0]["output_preview"] = Value::Null,
+                8 => f["current_token"]["graph_sha256"] = serde_json::json!("foreign"),
+                _ => f["last_plan"] = serde_json::json!({"unexpected":true}),
+            }
+            assert!(initialized_token(&pin, &previous, &a, &f).is_err());
+        }
     }
 
     #[test]
@@ -2412,6 +3497,12 @@ mod tests {
             }
             Ok("sleep") => std::thread::sleep(Duration::from_secs(30)),
             Ok("failed") => std::process::exit(2),
+            Ok("failed-diagnostic") => {
+                eprintln!(
+                    "REVIEW_QC_DIAGNOSTIC_FIXTURE: inspect input and reload; no retry authority"
+                );
+                std::process::exit(2);
+            }
             _ => {}
         }
     }

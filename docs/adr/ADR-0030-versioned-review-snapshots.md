@@ -2392,3 +2392,173 @@ fixtures/results are retained. The second diagnostic's reproduction assertion
 failed after a successful rename; it is QA evidence, not a native product failure.
 No unmodified diagnostic/old native driver is retried. Published f5 remains
 FAILED; successor exact Required-CI and actual product acceptance are mandatory.
+
+### Explicit original-only desktop history initialization
+
+The optional `review_initialize_v1` Tauri route and
+`desktop-current-initialize-v1.json` accept only schema/kind/explicit confirmation
+and original job ID. No browser snapshot/hash/root/worker/model/producer selection
+is accepted. Only an Uninitialized session created by native-current-absent
+discovery can proceed; legacy and already-current bindings are refused. That
+session retains the exact bounded original display view in native memory with
+the committed export pin, within the existing session count and metadata bounds.
+
+The host consumes every prior job session and saved plan under the existing
+apply/undo/export job guard. It rechecks the original export pin and native
+absence before invoking the existing owned native `review-original --root
+<owned-install> --data-root <owned-control> --job-id <bound-job>
+--initialize-original`. Native original metadata validation, explicit schema
+initialization and JobExecutionGuard are unchanged. No old producer/model/runtime
+is repinned, worker copied, inference/render dispatched or existing generation
+normalized to bypass the original reader. The native command's existing identical
+original revision0 idempotence and later/corrupt generation refusal remain exact.
+
+After initialization, the closed original acknowledgement must match the complete
+stored original view at revision0, original manifest identity and new native
+snapshot/graph hashes. A fresh full native current reader must agree on those
+tokens and all time-base/findings/last-plan content before the request can admit
+a replacement current session. Null confidence/preview and source/cue/ticks/
+warnings remain exact. This grants metadata history only; later media reuse,
+processing execution and correction CAS still require their full admission.
+
+The UI requires a second confirmation, offers cancellation and refreshes actions
+from the returned current connection. The first correction still requires its
+separate native scope check and confirmation. Late/cancelled/lost/mismatching
+results invalidate the binding and require actual reload, never automatic retry.
+The original standard output remains usable if optional history admission fails.
+
+The changed Node suite and TypeScript noEmit pass for actual owned-Python original
+metadata plus native response fixtures: exact original-to-current projection,
+closed request/token/path refusal, revision0, B1, action/session refresh and first
+current plan, concurrent initialization block and cancelled/uncertain replies.
+The first QA refusal test assigned null to an already-null preview; its failure
+is preserved. It now asserts a genuinely substituted preview, and preserves the
+actual fixture's missing-audio refusal instead of inventing a playable waveform.
+Three Tauri tests are authored but unrun; known MSVC link.exe remains unavailable.
+No actual native driver/original job/initialization is replayed for these source
+tests. Publishedb11 Windows evidence cannot qualify this pending source. Measured
+liveness/action availability, current whole B1B2/installed GUI/cumulative/afterundo/
+standard+editable/crash/real4h and all full172/174/175 gates remain mandatory.
+
+
+### Desktop Review request observation v1 (pending source)
+
+The optional read-only `review_request_status_v1` IPC observes only host-owned
+in-memory requests admitted under the existing mutation guard. Browser input is
+only the opaque request ID. Status contains no root/path, model/producer pin,
+revision, snapshot, durable writer instruction, raw stderr or retry permission.
+The host records checking, native command processing and final verification,
+monotonic total/phase elapsed times, and age of an actual child `try_wait` result.
+Running and exited describe the process, not stage progress or successful CAS.
+Request drop records ended even on failure; success still requires the unchanged
+validated operation reply and current physical generation admission. Cancellation
+records intent and retains existing bounded kill/reap behavior; if reaping cannot
+be observed, process state is unobserved. No progress percentage, ETA or healthy
+worker assertion follows from a process being alive.
+
+The closed versioned client observation binds exact request/job/operation,
+rejects unexpected fields and backwards time, and cannot change operation
+results. At most one status IPC is outstanding; a five-second missing observation
+becomes unknown, not a stopped task. Uncertain/late/cancelled results retain the
+existing reload/no-auto-retry rules. Observation callbacks stop on completion or
+selection change and never grant a stale session access. Tombstone/active limits
+and expiry remain; status reads neither prolong leases nor alter durable state.
+
+Compatibility/migration: additive optional IPC/callback, no durable schema or
+worker format change. Existing hosts/callers without the observer retain their
+behavior. Legacy snapshots and exact original/current producer pins remain.
+Deterministic client tests and authored native process tests establish only this
+component. Native chunk/stage advancement, actionable QC diagnostics, installed
+GUI/process termination/recovery, real four-hour and long-form acceptance remain
+mandatory. This pending source is not qualified by the earlier b11 binary/CI.
+
+
+### Native Review stage/file observation v1 (pending source)
+
+The desktop opts the owned native command into `DUBFLOW_REVIEW_PROGRESS_V1=1`.
+Without that explicit observation opt-in the native CLI stays silent on the
+progress channel. The native module writes fixed closed records on stderr with
+`DUBFLOW_REVIEW_STAGE_V1 ` prefix, <=512 bytes each, <=32768 per invocation. A
+16-record nonblocking queue and try-lock drop observations under contention;
+a separate writer never holds the pipeline observation lock while writing.
+No arbitrary text/path/job/token/producer bytes enter records, stdout is unchanged,
+and no observation participates in admission, retries, inference decisions or CAS.
+The host drains valid records separately (16MiB progress cap) while retaining
+4096-byte ordinary stderr and existing stdout/deadline/cancellation/kill bounds.
+Malformed prefixed diagnostics remain ordinary diagnostics and invalidate native
+observation. Wire cap violations retain fail-closed output refusal.
+
+Events mark actual current/processing admission, cue preparation/synthesis,
+validation/mix/timeline/render/retention/commit and current reopen or export calls.
+Only the existing successful complete per-file verifier increments runtime counts;
+parallel counts are monotonic per walk epoch and a final count follows joined
+workers and the existing complete-inventory/deadline check. Contention may drop
+observations, never invent an extrapolated count or percentage. New walk epochs
+reset counters explicitly. Native stage entry, worker wait and file validation
+are not evidence of completed synthesis, chunk advancement, QC or durable success.
+
+The separate `review_request_stage_v1` envelope retains the closed host activity
+v1 unchanged and adds optional native observation. Native sequence/epoch/time/
+counts and exact stage fields are validated independently of the durable result;
+reordered, malformed or unavailable telemetry becomes unknown. Same-count records
+do not reset advancement age. The UI may show the last observed stage, real file/
+byte counts and age since the last change, while retaining cancellation/reload.
+Host elapsed is sampled after the native event to avoid a cross-thread clock cut.
+Cancellation/selection/disposal suppress late updates; no automatic mutation retry.
+
+Compatibility: additive optional observation module and IPC, no durable/schema/
+worker contract change, no processing/model repin or old-job replay. Existing
+native binaries without events yield unavailable native observation; unchanged
+host-only status remains readable. Compiled/current source and installed tests are
+still required. Native worker/chunk internal advancement, actionable QC diagnostics,
+source-matched complete producer B1B2, installed GUI/liveness/actual crash/recovery,
+cumulative/new-after-undo/exports and real four-hour/long-form acceptance remain.
+This pending source is not qualified by the earlier b11 binary or its CI.
+
+
+### Optional bound desktop Review errors v1 (pending source)
+
+The four explicit mutation IPC commands retain their success payloads/core
+admission algorithms, but may return `review_desktop_request_failure` on the error
+channel after actual host request/job/operation binding. Pre-binding/legacy errors
+can remain strings. The typed error contains only schema/kind, exact opaque
+request/job/operation, host failing phase, optional admitted native stage label,
+bounded host message and optional bounded ordinary stderr. It never contains a
+current token/root/snapshot/candidate, retry permission, success or a committed/
+not-committed assertion. Outcome is always unconfirmed; failures can occur after
+a possible durable CAS, so actual reload is required before another mutation.
+
+An existing nonzero process exit captures <=4096UTF8 bytes from the ordinary stderr
+reader already covered by its cap. Successful/unobserved/cancel-before-result
+processes do not invent native diagnostics. Host message<=1024UTF8 bytes. Control
+characters except newline/tab are filtered, UTF8 truncation keeps character
+boundaries, and the existing64request/4active/120second tombstone limits bound
+retained memory. Request drop retains the prior actual phase before ended; ended
+is still not success. Success stderr/warnings never become failures or change low
+confidence data. Native supervisor/worker/model/schema/deadline/physical/CAS logic
+and source-version pins are unchanged by this display-only error continuation.
+
+The transport validates the exact operation invocation before constructing typed
+error details. The connection retains existing uncertain-result invalidation;
+the generation-bound view displays details through textContent in a collapsed
+wrapped disclosure. It cannot execute a diagnostic command, resolve a path, open
+a link, play media, grant a session or retry work. Wrong-job/operation/late/cancelled
+responses keep existing reload rules. Compatibility is additive on the optional
+error channel: older clients continue generic failure handling, success contracts
+remain exact, and no durable/worker migration or original pin rewrite occurs.
+
+Deterministic client tests and authored Tauri process tests cover only this
+component; the pending source is not earlier b11CI or installed product evidence.
+Actionable native diagnostics do not substitute for structured full QC, actual
+worker/chunk advancement, current whole B1B2/GUI/liveness/crash/recovery, cumulative/
+new-after-undo/standard+editable exports/long-form/real4h or175acceptance.
+
+
+Failure metadata additionally requires an invocation-local capture handle created
+before that mutation task. Only successful fresh `begin` registration records its
+actual cancellation-Arc identity in that handle; error serialization requires
+pointer equality with the still-retained registry slot. A duplicate/pre-binding
+attempt cannot borrow another request's error context even when IDs/job/operation
+match. Lock contention or missing/expired capture degrades to the existing generic
+error, never a false binding. This observation capability is separate from token/
+producer authority and does not change shared session/apply guard ownership.

@@ -50,6 +50,11 @@ impl ImportProgress<'_> {
             })
             .map_err(|_| invalid("producer byte inventory overflow"))?;
         self.files.fetch_add(1, Ordering::Relaxed);
+        super::review_progress::runtime_files(
+            self.files.load(Ordering::Relaxed) as u64,
+            self.bytes.load(Ordering::Relaxed),
+            false,
+        );
         Ok(())
     }
 }
@@ -158,6 +163,7 @@ fn walk_import_files_before(
     deadline: Instant,
     visit: impl Fn(&Path, &str, &ImportProgress<'_>) -> SupervisorResult<u64> + Sync,
 ) -> SupervisorResult<HashSet<String>> {
+    super::review_progress::stage(super::review_progress::Stage::RuntimeFiles);
     let mut observed = HashSet::new();
     let mut files = Vec::new();
     let progress = ImportProgress {
@@ -272,6 +278,11 @@ fn walk_import_files_before(
     if progress.files.load(Ordering::Relaxed) != observed.len() {
         return Err(invalid("producer inventory was not completely verified"));
     }
+    super::review_progress::runtime_files(
+        progress.files.load(Ordering::Relaxed) as u64,
+        progress.bytes.load(Ordering::Relaxed),
+        true,
+    );
     Ok(observed)
 }
 

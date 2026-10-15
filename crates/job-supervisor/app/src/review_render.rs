@@ -5,6 +5,7 @@ use super::review_assets::{
 };
 use super::review_correction::{accepted_json, candidate_scratch, cue_command, descriptor};
 use super::review_document::{canonical, closed, decode, tick, AdmittedSnapshot, ReviewMode};
+use super::review_progress::{stage, Stage};
 use super::review_runtime::{AdmittedProcessingRuntime, AdmittedRuntime};
 use super::{SupervisorError, SupervisorResult};
 use dubflow_job_state::{review_graph::ReviewGraphState, DurableStore};
@@ -762,7 +763,9 @@ pub(super) fn execute(input: RenderInputs<'_>) -> SupervisorResult<Value> {
         OsString::from("--media-root"),
         input.runtime.root.join("runtime").into_os_string(),
     ]);
+    stage(Stage::Render);
     let raw = super::review_seed::collect(command, Duration::from_secs(900), LIMIT)?;
+    stage(Stage::ValidateRender);
     let candidate = admit_result(
         &raw,
         &context_value,
@@ -1487,7 +1490,9 @@ pub(super) fn execute_effective(input: EffectiveRenderInputs<'_>) -> SupervisorR
             .into_os_string(),
     ]);
     effective_fence(&input, &view)?;
+    stage(Stage::Render);
     let raw = super::review_seed::collect(command, Duration::from_secs(900), LIMIT)?;
+    stage(Stage::ValidateRender);
     let candidate = admit_effective_result_at(
         &raw,
         &ctx,

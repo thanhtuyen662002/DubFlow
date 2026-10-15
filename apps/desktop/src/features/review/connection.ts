@@ -1,3 +1,4 @@
+import { type ReviewActivityObserver } from "./request-activity.ts";
 import { acceptCorrectionResponse, correctionRequest, previewRequest, samePreviewRequest, type ReviewCorrectionRequest, type ReviewPreviewRequest } from "./session.ts";
 import { previewProductionCorrection, readReviewPayload, type DisplaySnapshot } from "./wire.ts";
 import type { ReviewActions, ReviewVoice } from "./view.ts";
@@ -5,6 +6,7 @@ import { currentPlanRequest, sameCurrentPlanRequest, readCurrentPlan, type Curre
 import { readCurrentConfirmation, readAppliedCurrent, type CurrentConfirmation } from "./current-apply.ts";
 import { readCurrentUndoRequest, readUndoneCurrent, type CurrentUndoRequest } from "./current-undo.ts";
 import { readCurrentExportRequest, readExportedCurrent, type CurrentExportRequest, type CurrentExportReceipt } from "./current-export.ts";
+import { readCurrentInitializeRequest, readInitializedCurrent, type CurrentInitializeRequest } from "./current-initialize.ts";
 
 /** The native host resolves committed pins and owns playback/durable writes. */
 export type ReviewTransport = {
@@ -12,9 +14,10 @@ export type ReviewTransport = {
   preview(request: ReviewPreviewRequest, signal: AbortSignal): Promise<void>;
   correct?: (request: ReviewCorrectionRequest, signal: AbortSignal) => Promise<unknown>;
   planCurrent?: (request: CurrentPlanRequest, signal: AbortSignal) => Promise<unknown>;
-  applyCurrent?: (confirmation: CurrentConfirmation, signal: AbortSignal) => Promise<unknown>;
-  undoCurrent?: (request: CurrentUndoRequest, signal: AbortSignal) => Promise<unknown>;
-  exportCurrent?: (request: CurrentExportRequest, signal: AbortSignal) => Promise<unknown>;
+  applyCurrent?: (confirmation: CurrentConfirmation, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<unknown>;
+  undoCurrent?: (request: CurrentUndoRequest, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<unknown>;
+  exportCurrent?: (request: CurrentExportRequest, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<unknown>;
+  initializeCurrent?: (request: CurrentInitializeRequest, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<unknown>;
 };
 
 function cancelled(): Error { return new DOMException("Review selection changed", "AbortError"); }
@@ -65,7 +68,31 @@ export class ReviewConnection {
       }
       return { snapshot, finding };
     };
-    const result: ReviewActions = { voices: voices.map(voice => ({ ...voice })) };
+    const observeBound = (notify?: ReviewActivityObserver): ReviewActivityObserver | undefined => notify ? update => {
+      if (generation === this.generation && !jobSignal.aborted && this.current && !this.disposed && this.correcting === generation) notify(update);
+    } : undefined;
+    const result: ReviewActions = { voices: voices.map(voice => ({ ...voice })), refreshed: () => this.actions(voices) };
+    if (this.transport.initializeCurrent && this.current.schema_version === 2 && this.current.revision === 0) result.initializeCurrent = async (request, viewSignal, observe) => {
+      if (generation !== this.generation || jobSignal.aborted || !this.current || this.disposed || this.current.schema_version !== 2) throw cancelled();
+      if (this.correcting === generation) throw new Error("review mutation is already in progress");
+      const previous = structuredClone(this.current), accepted = readCurrentInitializeRequest(previous, request);
+      const child = new AbortController(), cancel = () => child.abort();
+      jobSignal.addEventListener("abort", cancel, { once: true }); viewSignal.addEventListener("abort", cancel, { once: true });
+      this.correcting = generation;
+      try {
+        if (jobSignal.aborted || viewSignal.aborted) throw cancelled();
+        const response = await this.transport.initializeCurrent!(accepted, child.signal, observeBound(observe));
+        if (generation !== this.generation || jobSignal.aborted || child.signal.aborted || !this.current || this.disposed) throw cancelled();
+        const next = readInitializedCurrent(previous, accepted, response);
+        this.current = next; this.standardExport = undefined; return structuredClone(next);
+      } catch (error) {
+        if (generation === this.generation) this.clear();
+        throw error;
+      } finally {
+        jobSignal.removeEventListener("abort", cancel); viewSignal.removeEventListener("abort", cancel);
+        if (this.correcting === generation) this.correcting = null;
+      }
+    };
     if (this.transport.planCurrent && this.current.schema_version === 3) result.planCurrent = async (request, viewSignal) => {
       const assertBound = () => {
         if (generation !== this.generation || jobSignal.aborted || !this.current || this.disposed || this.current.schema_version !== 3) throw cancelled();
@@ -101,7 +128,7 @@ export class ReviewConnection {
         }
       };
     if (currentB1) delete result.preview;
-    if (this.transport.applyCurrent && this.current.schema_version === 3) result.applyCurrent = async (confirmation, viewSignal) => {
+    if (this.transport.applyCurrent && this.current.schema_version === 3) result.applyCurrent = async (confirmation, viewSignal, observe) => {
       if (generation !== this.generation || jobSignal.aborted || !this.current || this.disposed || this.current.schema_version !== 3) throw cancelled();
       if (this.correcting === generation) throw new Error("review correction is already in progress");
       const previous = structuredClone(this.current), accepted = readCurrentConfirmation(previous, confirmation);
@@ -110,7 +137,7 @@ export class ReviewConnection {
       this.correcting = generation;
       try {
         if (jobSignal.aborted || viewSignal.aborted) throw cancelled();
-        const response = await this.transport.applyCurrent!(accepted, child.signal);
+        const response = await this.transport.applyCurrent!(accepted, child.signal, observeBound(observe));
         if (generation !== this.generation || jobSignal.aborted || child.signal.aborted || !this.current || this.disposed) throw cancelled();
         const next = readAppliedCurrent(previous, accepted, response);
         this.current = next; this.standardExport = undefined; return structuredClone(next);
@@ -124,7 +151,7 @@ export class ReviewConnection {
         if (this.correcting === generation) this.correcting = null;
       }
     };
-    if (this.transport.undoCurrent && this.current.schema_version === 3) result.undoCurrent = async (request, viewSignal) => {
+    if (this.transport.undoCurrent && this.current.schema_version === 3) result.undoCurrent = async (request, viewSignal, observe) => {
       if (generation !== this.generation || jobSignal.aborted || !this.current || this.disposed || this.current.schema_version !== 3) throw cancelled();
       if (this.correcting === generation) throw new Error("review mutation is already in progress");
       const previous = structuredClone(this.current), accepted = readCurrentUndoRequest(previous, request);
@@ -133,7 +160,7 @@ export class ReviewConnection {
       this.correcting = generation;
       try {
         if (jobSignal.aborted || viewSignal.aborted) throw cancelled();
-        const response = await this.transport.undoCurrent!(accepted, child.signal);
+        const response = await this.transport.undoCurrent!(accepted, child.signal, observeBound(observe));
         if (generation !== this.generation || jobSignal.aborted || child.signal.aborted || !this.current || this.disposed) throw cancelled();
         const next = readUndoneCurrent(previous, accepted, response);
         this.current = next; this.standardExport = undefined; return structuredClone(next);
@@ -145,7 +172,7 @@ export class ReviewConnection {
         if (this.correcting === generation) this.correcting = null;
       }
     };
-    if (this.transport.exportCurrent && this.current.schema_version === 3) result.exportCurrent = async (request, viewSignal) => {
+    if (this.transport.exportCurrent && this.current.schema_version === 3) result.exportCurrent = async (request, viewSignal, observe) => {
       if (generation !== this.generation || jobSignal.aborted || !this.current || this.disposed || this.current.schema_version !== 3) throw cancelled();
       if (this.correcting === generation) throw new Error("review mutation is already in progress");
       const previous = structuredClone(this.current), accepted = readCurrentExportRequest(previous, request);
@@ -155,7 +182,7 @@ export class ReviewConnection {
       this.correcting = generation;
       try {
         if (jobSignal.aborted || viewSignal.aborted) throw cancelled();
-        const response = await this.transport.exportCurrent!(accepted, child.signal);
+        const response = await this.transport.exportCurrent!(accepted, child.signal, observeBound(observe));
         if (generation !== this.generation || jobSignal.aborted || child.signal.aborted || !this.current || this.disposed) throw cancelled();
         const checked = readExportedCurrent(previous, accepted, response, this.standardExport);
         this.current = checked.snapshot;

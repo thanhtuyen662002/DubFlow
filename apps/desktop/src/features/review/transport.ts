@@ -1,3 +1,5 @@
+import { boundReviewFailure } from "./request-failure.ts";
+import { observeReviewRequest, type ReviewActivityObserver, type ReviewOperation } from "./request-activity.ts";
 import type { ReviewTransport } from "./connection.ts";
 import { sameCurrentToken, samePreviewRequest, type NativeCurrentToken, type ReviewPreviewRequest } from "./session.ts";
 import { readReviewPayload } from "./wire.ts";
@@ -6,6 +8,7 @@ import { sameCurrentPlanRequest, type CurrentPlanRequest } from "./current-plan.
 import { readCurrentConfirmation, readAppliedCurrent, type CurrentConfirmation } from "./current-apply.ts";
 import { readCurrentUndoRequest, readUndoneCurrent, type CurrentUndoRequest } from "./current-undo.ts";
 import { readCurrentExportRequest, readExportedCurrent, type CurrentExportRequest, type CurrentExportReceipt } from "./current-export.ts";
+import { readCurrentInitializeRequest, readInitializedCurrent, type CurrentInitializeRequest } from "./current-initialize.ts";
 
 export type ReviewInvoke = <T>(command: string, args: Record<string, unknown>) => Promise<T>;
 export type ReviewPlay = (bytes: ArrayBuffer, signal: AbortSignal) => Promise<void>;
@@ -43,6 +46,12 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
   nextId: () => string = () => crypto.randomUUID()): ReviewTransport {
   let current: { jobId: string; id: string; signal: AbortSignal; nativeCurrent: boolean; token: NativeCurrentToken | null; view: DisplaySnapshot | null; applying: boolean; standard?: CurrentExportReceipt } | null = null;
   const cancel = (id: string) => { void invoke("review_cancel_v1", { requestId: id }).catch(() => {}); };
+  const observedInvoke = async (command: string, args: Record<string, unknown>, job: string,
+    operation: ReviewOperation, signal: AbortSignal, notify?: ReviewActivityObserver): Promise<unknown> => {
+    const pending = invoke<unknown>(command, args);
+    const stop = observeReviewRequest(invoke, args.requestId as string, job, operation, signal, notify);
+    try { return await pending; } finally { stop(); }
+  };
   return {
     snapshot: async (jobId, signal) => {
       if (signal.aborted) throw aborted();
@@ -106,7 +115,30 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
         return response;
       } finally { signal.removeEventListener("abort", cancelRead); binding.signal.removeEventListener("abort", cancelRead); }
     },
-    exportCurrent: async (request: CurrentExportRequest, signal) => {
+    initializeCurrent: async (request: CurrentInitializeRequest, signal, observe) => {
+      const binding = current;
+      if (!binding || binding.applying || binding.nativeCurrent || binding.token || binding.view?.schema_version !== 2 || binding.signal.aborted || signal.aborted) throw aborted();
+      const previous = structuredClone(binding.view), accepted = readCurrentInitializeRequest(previous, request);
+      const id = nextId(), cancelRead = () => cancel(id);
+      binding.applying = true;
+      signal.addEventListener("abort", cancelRead, { once: true }); binding.signal.addEventListener("abort", cancelRead, { once: true });
+      try {
+        if (signal.aborted || binding.signal.aborted) { cancelRead(); throw aborted(); }
+        const response = await observedInvoke("review_initialize_v1", { sessionId: binding.id, requestId: id, request: accepted }, binding.jobId, "initialize", signal, observe);
+        if (signal.aborted || binding.signal.aborted || current !== binding) throw aborted();
+        const next = readInitializedCurrent(previous, accepted, response);
+        if ((response as { session_id: string }).session_id !== id) throw new Error("initialized native session identity changed");
+        binding.id = id; binding.token = { ...next.current_token }; binding.view = structuredClone(next); binding.nativeCurrent = true; binding.standard = undefined;
+        return response;
+      } catch (error) {
+        cancel(id); if (current === binding) current = null;
+        throw boundReviewFailure(error, id, binding.jobId, "initialize");
+      } finally {
+        binding.applying = false;
+        signal.removeEventListener("abort", cancelRead); binding.signal.removeEventListener("abort", cancelRead);
+      }
+    },
+    exportCurrent: async (request: CurrentExportRequest, signal, observe) => {
       const binding = current;
       if (!binding || binding.applying || !binding.nativeCurrent || !binding.token || binding.view?.schema_version !== 3 || binding.signal.aborted || signal.aborted) throw aborted();
       const previous = structuredClone(binding.view), accepted = readCurrentExportRequest(previous, request);
@@ -116,7 +148,7 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
       signal.addEventListener("abort", cancelRead, { once: true }); binding.signal.addEventListener("abort", cancelRead, { once: true });
       try {
         if (signal.aborted || binding.signal.aborted) { cancelRead(); throw aborted(); }
-        const response = await invoke<unknown>("review_export_v1", { sessionId: binding.id, requestId: id, request: accepted });
+        const response = await observedInvoke("review_export_v1", { sessionId: binding.id, requestId: id, request: accepted }, binding.jobId, accepted.format === "standard" ? "standard_export" : "editable_export", signal, observe);
         if (signal.aborted || binding.signal.aborted || current !== binding) throw aborted();
         const checked = readExportedCurrent(previous, accepted, response, binding.standard);
         if ((response as { session_id: string }).session_id !== id) throw new Error("export native session identity changed");
@@ -125,13 +157,13 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
         return response;
       } catch (error) {
         cancel(id); if (current === binding) current = null;
-        throw error;
+        throw boundReviewFailure(error, id, binding.jobId, accepted.format === "standard" ? "standard_export" : "editable_export");
       } finally {
         binding.applying = false;
         signal.removeEventListener("abort", cancelRead); binding.signal.removeEventListener("abort", cancelRead);
       }
     },
-    undoCurrent: async (request: CurrentUndoRequest, signal) => {
+    undoCurrent: async (request: CurrentUndoRequest, signal, observe) => {
       const binding = current;
       if (!binding || binding.applying || !binding.nativeCurrent || !binding.token || binding.view?.schema_version !== 3 || binding.signal.aborted || signal.aborted) throw aborted();
       const previous = structuredClone(binding.view), accepted = readCurrentUndoRequest(previous, request);
@@ -140,7 +172,7 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
       signal.addEventListener("abort", cancelRead, { once: true }); binding.signal.addEventListener("abort", cancelRead, { once: true });
       try {
         if (signal.aborted || binding.signal.aborted) { cancelRead(); throw aborted(); }
-        const response = await invoke<unknown>("review_undo_v1", { sessionId: binding.id, requestId: id, request: accepted });
+        const response = await observedInvoke("review_undo_v1", { sessionId: binding.id, requestId: id, request: accepted }, binding.jobId, "undo", signal, observe);
         if (signal.aborted || binding.signal.aborted || current !== binding) throw aborted();
         const next = readUndoneCurrent(previous, accepted, response);
         if ((response as { session_id: string }).session_id !== id) throw new Error("undo native session identity changed");
@@ -148,13 +180,13 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
         return response;
       } catch (error) {
         cancel(id); if (current === binding) current = null;
-        throw error;
+        throw boundReviewFailure(error, id, binding.jobId, "undo");
       } finally {
         binding.applying = false;
         signal.removeEventListener("abort", cancelRead); binding.signal.removeEventListener("abort", cancelRead);
       }
     },
-    applyCurrent: async (confirmation: CurrentConfirmation, signal) => {
+    applyCurrent: async (confirmation: CurrentConfirmation, signal, observe) => {
       const binding = current;
       if (!binding || binding.applying || !binding.nativeCurrent || !binding.token || binding.view?.schema_version !== 3 || binding.signal.aborted || signal.aborted) throw aborted();
       const previous = structuredClone(binding.view), accepted = readCurrentConfirmation(previous, confirmation);
@@ -163,7 +195,7 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
       signal.addEventListener("abort", cancelRead, { once: true }); binding.signal.addEventListener("abort", cancelRead, { once: true });
       try {
         if (signal.aborted || binding.signal.aborted) { cancelRead(); throw aborted(); }
-        const response = await invoke<unknown>("review_apply_v1", { sessionId: binding.id, requestId: id, confirmation: accepted });
+        const response = await observedInvoke("review_apply_v1", { sessionId: binding.id, requestId: id, confirmation: accepted }, binding.jobId, "apply", signal, observe);
         if (signal.aborted || binding.signal.aborted || current !== binding) throw aborted();
         const next = readAppliedCurrent(previous, accepted, response);
         if ((response as { session_id: string }).session_id !== id) throw new Error("applied native session identity changed");
@@ -171,7 +203,7 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
         return response;
       } catch (error) {
         cancel(id); if (current === binding) current = null;
-        throw error;
+        throw boundReviewFailure(error, id, binding.jobId, "apply");
       } finally {
         binding.applying = false;
         signal.removeEventListener("abort", cancelRead); binding.signal.removeEventListener("abort", cancelRead);

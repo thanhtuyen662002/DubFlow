@@ -146,3 +146,69 @@ Cancellation/late/lost replies invalidate the binding and require actual reload;
 there is no automatic resubmission. A new edit/undo clears old in-memory receipts
 while previously published versions remain retained. The changed Node component
 suite/typecheck are distinct from installed GUI and actual native publication.
+
+## Beginning optional edit history
+
+An original-only current session offers an explicit two-step action to begin
+editing. Only job ID/confirmation crosses to native; the host owns the original
+export pin, exact bounded original view and absence check. Existing native seed
+admission writes the original optional history under its job guard. Its unchanged
+metadata acknowledgement must match a fresh revision0 full-token current view.
+
+The UI then refreshes actions from the current connection, allowing the first
+scope check and edit without inventing a token or rerunning a job. Missing audio
+previews stay unavailable; B1 does not acquire a synthesized voice. Legacy or
+already-current sessions cannot reinitialize. Cancelled/lost/late results require
+reload, and a failed optional initialization preserves canonical standard output.
+Client and source tests remain separate from native/installed/crash qualification.
+
+
+## Request activity observations
+
+Explicit initialize/apply/undo/standard/editable operations can observe the native
+`review_request_status_v1` IPC. The request ID, job and operation must match the
+actual operation. The host reports its checking/processing/verifying phases,
+monotonic elapsed times and age of its own `Child::try_wait` observation. Existing
+native deadlines, output caps, cancellation, token/physical fences and final
+acknowledgement are unchanged. Ended/zero exit is never a success signal.
+
+The view shows observed activity separately while retaining cancellation. Only
+one status IPC may be outstanding; a five-second missing observation reports
+unknown and does not retry/cancel the mutation. Selection/disposal/cancellation
+and completed replies suppress late observations. The display uses text only;
+no artifact paths or raw stderr become activity authority. Polling never changes
+sessions, plans or durable state. This establishes host request observation;
+native stage/chunk advancement, QC diagnostics and installed liveness/crash/soak
+acceptance still need their own actual evidence. No percentage/ETA is invented.
+
+
+Native observations use the separate `review_request_stage_v1` envelope while
+host-only `review_request_status_v1` stays unchanged. The owned native command
+opts into bounded stderr records; stdout/final replies remain exact. The native
+writer uses a bounded nonblocking queue and try-lock; dropped records are not
+fabricated progress. Stage entries describe actual calls; only completed runtime
+file verification contributes file/byte counters, including a final joined count.
+The UI reports age since the last changed stage/count; repeated equal counters
+do not renew advancement. Missing worker/chunk observations during synthesis,
+mix/render/QC cannot establish healthy advancement or success. Existing operation
+acknowledgements, exact token/physical checks and cancellation remain authoritative.
+
+
+## Bound operation failure details
+
+Optional mutation IPC failures may return closed `review_desktop_request_failure`
+metadata after a request was actually bound. Exact request/job/operation must match
+before the transport constructs a typed error. Core success replies/token/physical
+acknowledgements stay unchanged. Missing/legacy/mismatching errors stay uncertain.
+The outcome is always unconfirmed, including failures during verification after a
+possible durable commit. No error grants not-committed/success/retry permission.
+
+The host retains its actual failing phase and <=4096UTF8 bytes of ordinary stderr
+only after an observed nonzero native exit. Control characters except newline/tab
+are removed, truncation respects UTF8 boundaries and empty/unobserved diagnostics
+stay null. Message<=1024UTF8 bytes; active/tombstone limits bound memory. The view
+keeps its existing reload/stale behavior and shows valid details in a collapsed
+textContent/pre-wrap disclosure. Diagnostic strings never become HTML, links,
+commands, paths, media URLs or action authority. Late selection/cancellation is
+still guarded; no automatic resubmission. Raw processing diagnostics can explain
+an actual refusal but do not replace structured QC findings/product qualification.

@@ -593,3 +593,49 @@ validates the current standard receipt, then permits an editable request bound
 to it. Editing/undo clears those in-memory bindings; published files remain.
 The source is pending and new Rust tests are unrun. Actual installed/current
 B1B2/physical publication/vendor/timing/GUI/crash/long-form acceptance is separate.
+
+### Explicit original-only desktop initialization
+
+`desktop-current-initialize-v1.json` accepts only explicit confirmation and the
+bound original job ID. The session must come from native-current-absent discovery;
+legacy or already-current sessions cannot initialize. The host stores the exact
+bounded original view alongside its native export pin. It consumes all older job
+sessions/plans under the same apply/undo/export guard and rechecks native absence
+and the original pin before using the existing `review-original
+--initialize-original` command with owned roots.
+
+No original reader/seed guard, producer/model/runtime/worker format or durable
+schema is changed. Native metadata admission and its job guard still own the
+initial optional history write. The acknowledgement and a fresh native current
+read must preserve the whole displayed original snapshot at revision0, including
+null preview/confidence/warnings, before the replacement full-token session is
+admitted. This does not authorize physical media reuse or inference. A late,
+cancelled, changed or uncertain result requires actual discovery without retry.
+UI confirmation is separate from first correction confirmation; actions refresh
+from the returned current state. Source/metadata tests do not qualify actual
+installed initialization, subsequent correction, crash or long-form acceptance.
+
+
+`desktop-request-activity-v1.json` is the closed, memory-only host request
+observation. It is not a worker heartbeat, QC result, publication receipt or
+current token. Request/job/operation mismatch, backwards elapsed time or invalid
+field/phase relations refuses the observation only. Missing/stale observation
+never authorizes a retry or reclassifies the durable operation as stopped.
+
+
+`native-stage-observation-v1.json` defines opt-in native stderr records and the
+separate closed desktop stage envelope. The existing host-only activity v1 is
+unchanged. Progress records cannot change durable state, inputs, pins or results.
+The writer is bounded/nonblocking; the reader separates valid records from the
+unchanged ordinary diagnostic cap and stdout. Sequence/epoch/count regressions
+invalidate observation only. Entering a native stage or retaining a live process
+is not worker/chunk/QC advancement or publication success.
+
+
+`desktop-request-failure-v1.json` adds optional bounded errors for actual bound
+mutation requests. Exact request/job/operation and UTF8 byte caps are enforced;
+legacy/pre-binding failures may remain strings. Outcome is always unconfirmed,
+never a claim about whether a possible CAS committed. No retry is authorized.
+Only actual nonzero-exit ordinary stderr is attached; missing diagnostics stay
+null. Existing success envelopes, host activity v1 and native-stage observation
+contracts remain unchanged. Inert display details do not enter artifact authority.

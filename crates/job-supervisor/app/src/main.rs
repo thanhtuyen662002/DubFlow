@@ -42,6 +42,7 @@ mod review_editable;
 mod review_desktop;
 mod review_preview;
 mod review_plan;
+mod review_progress;
 mod review_apply;
 mod review_generation;
 mod review_speech;

@@ -1,6 +1,7 @@
 //! Explicit native confirmation bridge. Only the executable's own source-bound
 //! installed processing release is selected; browser/root hints grant nothing.
 use super::review_document::{canonical, closed, decode, text};
+use super::review_progress::{stage, Stage};
 use super::{SupervisorError, SupervisorResult};
 use dubflow_job_state::DurableStore;
 use serde_json::{json, Value};
@@ -245,6 +246,7 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<
     )?;
     let input = &confirmation["plan"];
     let store = DurableStore::open_read_only(&db)?;
+    stage(Stage::Current);
     let actual = super::review_plan::read(
         &store,
         &data,
@@ -254,6 +256,7 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<
         &input["changes"],
     )?;
     confirmed(&confirmation, &actual)?;
+    stage(Stage::Processing);
     let processing = installed_processing()?;
     let token = &actual["current_token"];
     let mut dispatch = Vec::<OsString>::new();
@@ -414,8 +417,12 @@ pub(super) fn run_export_confirmed(
     let current = super::review_publication::token(&state);
     let format = export_confirmation(&request, &current)?;
     let result = match format {
-        "standard" => super::review_export_publication::publish(&store, &data, &state)?,
+        "standard" => {
+            stage(Stage::StandardExport);
+            super::review_export_publication::publish(&store, &data, &state)?
+        }
         "editable" => {
+            stage(Stage::Processing);
             let selected = installed_processing()?;
             let processing = super::review_runtime::AdmittedProcessingRuntime::read(
                 &store,
@@ -424,6 +431,7 @@ pub(super) fn run_export_confirmed(
                 &selected.manifest,
                 &selected.source,
             )?;
+            stage(Stage::EditableExport);
             super::review_editable::publish(&store, &data, &state, &processing)?
         }
         _ => return Err(invalid("confirmed export format changed")),

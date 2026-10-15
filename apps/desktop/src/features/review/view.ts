@@ -1,3 +1,5 @@
+import { reviewFailureDetails } from "./request-failure.ts";
+import { reviewActivityText, type ReviewActivityObserver, type ReviewActivityUpdate } from "./request-activity.ts";
 import type { ReviewReason } from "./model.ts";
 import { previewProductionCorrection, readReviewPayload, reviewRangeLabel,
   type ProductionCorrection, type ProductionFinding, type ReviewPayload } from "./wire.ts";
@@ -6,6 +8,7 @@ import { currentPlanRequest, type CurrentPlanRequest, type CurrentCorrectionPlan
 import { currentConfirmation, type CurrentConfirmation } from "./current-apply.ts";
 import { currentUndoRequest, type CurrentUndoRequest } from "./current-undo.ts";
 import { currentExportRequest, type CurrentExportRequest, type CurrentExportReceipt, type CurrentExportFormat } from "./current-export.ts";
+import { currentInitializeRequest, type CurrentInitializeRequest } from "./current-initialize.ts";
 import type { CurrentReviewSnapshot } from "./wire.ts";
 
 export type ReviewVoice = { voice_id: string; label: string };
@@ -15,9 +18,12 @@ export type ReviewActions = {
   preview?: (request: ReviewPreviewRequest, signal: AbortSignal) => Promise<void>;
   correct?: (request: ReviewCorrectionRequest) => Promise<unknown>;
   planCurrent?: (request: CurrentPlanRequest, signal: AbortSignal) => Promise<CurrentCorrectionPlan>;
-  applyCurrent?: (confirmation: CurrentConfirmation, signal: AbortSignal) => Promise<CurrentReviewSnapshot>;
-  undoCurrent?: (request: CurrentUndoRequest, signal: AbortSignal) => Promise<CurrentReviewSnapshot>;
-  exportCurrent?: (request: CurrentExportRequest, signal: AbortSignal) => Promise<CurrentExportReceipt>;
+  applyCurrent?: (confirmation: CurrentConfirmation, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<CurrentReviewSnapshot>;
+  undoCurrent?: (request: CurrentUndoRequest, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<CurrentReviewSnapshot>;
+  exportCurrent?: (request: CurrentExportRequest, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<CurrentExportReceipt>;
+  initializeCurrent?: (request: CurrentInitializeRequest, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<CurrentReviewSnapshot>;
+  /** Rebind optional actions after the native original session becomes current. */
+  refreshed?: () => ReviewActions;
 };
 const LABELS: Record<ReviewReason, string> = {
   ASR_OCR_CONFLICT: "Lời nói và chữ trên hình", SPEAKER_UNCERTAINTY: "Người nói",
@@ -42,13 +48,15 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
   let group: ReviewReason = payload.findings[0]?.reason ?? "TRANSLATION_ANOMALY";
   let page = 0, epoch = 0;
   let selected: string | null = payload.findings[0]?.finding_id ?? null;
-  let busy = false, stale = false, dirty = false, destroyed = false, message = "", undoArmed = false;
+  let busy = false, stale = false, dirty = false, destroyed = false, message = "", undoArmed = false, initializeArmed = false;
   let exportArmed: CurrentExportFormat | undefined;
   let publications: Partial<Record<CurrentExportFormat, { receipt: CurrentExportReceipt; revision: string }>> = {};
+  let activity: ReviewActivityUpdate | null = null;
+  let failureDetails: string | null = null;
   let previewAbort: AbortController | null = null;
   let planAbort: AbortController | null = null;
   let applyAbort: AbortController | null = null;
-  const invalidate = () => { epoch++; previewAbort?.abort(); previewAbort = null; planAbort?.abort(); planAbort = null; applyAbort?.abort(); applyAbort = null; return epoch; };
+  const invalidate = () => { failureDetails = null; activity = null; epoch++; previewAbort?.abort(); previewAbort = null; planAbort?.abort(); planAbort = null; applyAbort?.abort(); applyAbort = null; return epoch; };
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
     const node = doc.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -69,6 +77,12 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
       }
     }); return node;
   };
+  const observeAt = (at: number): ReviewActivityObserver => update => {
+    if (at !== epoch || destroyed || !busy || applyAbort?.signal.aborted) return;
+    activity = update;
+    const node = container.querySelector<HTMLElement>("[data-review-activity]");
+    if (node) node.textContent = reviewActivityText(update);
+  };
   function render() {
     dirty = false;
     const root = el("section", undefined, "review-center");
@@ -77,6 +91,46 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
     root.append(el("p", payload.schema_version === 3 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.current_token.revision}` : payload.schema_version === 2 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.revision}` :
       "Bản review cũ: chỉ xem nội dung, chưa có mốc thời gian xác thực."));
     const status = el("p", message, "review-status"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); root.append(status);
+    if (failureDetails) {
+      const details = el("details"); details.append(el("summary", "Chi tiết lỗi"));
+      const text = el("pre", failureDetails); text.style.whiteSpace = "pre-wrap"; text.style.overflowWrap = "anywhere";
+      details.append(text); root.append(details);
+    }
+    if (busy && applyAbort) {
+      const observed = el("p", activity ? reviewActivityText(activity) : "Đang chờ trạng thái xử lý…", "review-activity");
+      observed.dataset.reviewActivity = "true"; observed.setAttribute("aria-live", "off"); root.append(observed);
+    }
+    if (payload.schema_version === 2 && payload.revision === 0 && actions.initializeCurrent) {
+      const start = el("section"); start.setAttribute("aria-label", "Bắt đầu chỉnh sửa");
+      if (!initializeArmed) start.append(button("Bật chỉnh sửa cho kết quả này", () => { invalidate(); initializeArmed = true; render(); }));
+      else {
+        start.append(el("p", "Lưu bản gốc vào lịch sử để có thể sửa từng câu và hoàn tác. Bản xuất hiện tại được giữ nguyên."));
+        start.append(button("Xác nhận bắt đầu chỉnh sửa", () => {
+          if (payload.schema_version !== 2 || !actions.initializeCurrent) return;
+          const previous = payload, request = currentInitializeRequest(previous), at = invalidate();
+          const controller = new AbortController(); applyAbort = controller;
+          initializeArmed = false; busy = true; message = "Đang kiểm tra và lưu bản gốc vào lịch sử chỉnh sửa…"; render();
+          void Promise.resolve().then(() => {
+            if (controller.signal.aborted) throw new Error("initialization cancelled");
+            return actions.initializeCurrent!(request, controller.signal, observeAt(at));
+          }).then(next => {
+            if (at !== epoch || destroyed) return;
+            try {
+              if (controller.signal.aborted) throw new Error("initialization cancelled");
+              const checked = readReviewPayload(next);
+              if (checked.schema_version !== 3 || checked.job_id !== previous.job_id || checked.current_token.revision !== "0") throw new Error("initialized state changed");
+              payload = checked; actions = actions.refreshed?.() ?? actions;
+              busy = false; message = "Đã lưu bản gốc. Bạn có thể sửa từng câu, kiểm tra phạm vi chạy lại rồi xác nhận.";
+            } catch { busy = false; stale = true; message = "Chưa xác nhận được lịch sử vừa tạo. Hãy tải lại lời thoại để kiểm tra."; }
+            render();
+          }, error => {
+            if (at === epoch && !destroyed) { failureDetails = reviewFailureDetails(error, previous.job_id, "initialize"); busy = false; stale = true; message = "Không xác nhận được kết quả khởi tạo. Hãy tải lại lời thoại trước khi tiếp tục."; render(); }
+          }).finally(() => { if (applyAbort === controller) applyAbort = null; });
+        }));
+        start.append(button("Để sau", () => { initializeArmed = false; render(); }));
+      }
+      root.append(start);
+    }
     if (payload.schema_version === 3 && actions.undoCurrent && BigInt(payload.current_token.revision) > 0n && BigInt(payload.current_token.revision) < 9223372036854775807n) {
       const undo = el("section"); undo.setAttribute("aria-label", "Hoàn tác lời thoại");
       if (!undoArmed) undo.append(button("Hoàn tác thay đổi gần nhất", () => { invalidate(); undoArmed = true; render(); }, !!exportArmed));
@@ -89,7 +143,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
           undoArmed = false; busy = true; message = "Đang kiểm tra và khôi phục bản trước…"; render();
           void Promise.resolve().then(() => {
             if (controller.signal.aborted) throw new Error("undo cancelled");
-            return actions.undoCurrent!(request, controller.signal);
+            return actions.undoCurrent!(request, controller.signal, observeAt(at));
           }).then(next => {
             if (at !== epoch || destroyed) return;
             try {
@@ -100,8 +154,8 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
               payload = checked; publications = {}; exportArmed = undefined; busy = stale = false; message = "Đã hoàn tác và kiểm tra bản hiện hành.";
             } catch { busy = false; stale = true; message = "Chưa xác nhận được bản sau hoàn tác. Hãy tải lại lời thoại để kiểm tra."; }
             render();
-          }, () => {
-            if (at === epoch && !destroyed) { busy = false; stale = true; message = "Không xác nhận được kết quả hoàn tác. Hãy tải lại lời thoại trước khi tiếp tục."; render(); }
+          }, error => {
+            if (at === epoch && !destroyed) { failureDetails = reviewFailureDetails(error, previous.job_id, "undo"); busy = false; stale = true; message = "Không xác nhận được kết quả hoàn tác. Hãy tải lại lời thoại trước khi tiếp tục."; render(); }
           }).finally(() => { if (applyAbort === controller) applyAbort = null; });
         }));
         undo.append(button("Giữ bản hiện tại", () => { undoArmed = false; render(); }));
@@ -123,7 +177,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
           exportArmed = undefined; busy = true; message = "Đang tạo và kiểm tra bản xuất. Các bản đã có được giữ lại…"; render();
           void Promise.resolve().then(() => {
             if (controller.signal.aborted) throw new Error("export cancelled");
-            return actions.exportCurrent!(request, controller.signal);
+            return actions.exportCurrent!(request, controller.signal, observeAt(at));
           }).then(receipt => {
             if (at !== epoch || destroyed) return;
             try {
@@ -132,8 +186,8 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
               busy = false; message = format === "standard" ? "Đã tạo và kiểm tra kết quả chuẩn." : "Đã tạo và kiểm tra gói chỉnh sửa.";
             } catch { busy = false; stale = true; message = "Chưa xác nhận được bản xuất. Hãy tải lại lời thoại để kiểm tra."; }
             render();
-          }, () => {
-            if (at === epoch && !destroyed) { busy = false; stale = true; message = "Không xác nhận được kết quả xuất. Các bản đã tạo vẫn được giữ lại; hãy tải lại trước khi tiếp tục."; render(); }
+          }, error => {
+            if (at === epoch && !destroyed) { failureDetails = reviewFailureDetails(error, previous.job_id, format === "standard" ? "standard_export" : "editable_export"); busy = false; stale = true; message = "Không xác nhận được kết quả xuất. Các bản đã tạo vẫn được giữ lại; hãy tải lại trước khi tiếp tục."; render(); }
           }).finally(() => { if (applyAbort === controller) applyAbort = null; });
         }));
         output.append(button("Để sau", () => { exportArmed = undefined; render(); }));
@@ -192,7 +246,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
       if (bound?.warning) detail.append(el("p", bound.warning, "review-warning"));
       const canEdit = payload.schema_version === 2 && !!bound?.cue_id && !!bound.range && !!actions.correct;
       const canPlan = payload.schema_version === 3 && !!bound?.cue_id && !!bound.range && !!actions.planCurrent;
-      const canDraft = (canEdit || canPlan) && !undoArmed && !exportArmed;
+      const canDraft = (canEdit || canPlan) && !undoArmed && !exportArmed && !initializeArmed;
       const canPreview = (payload.schema_version === 2 || payload.schema_version === 3 && payload.mode === "b2") && !!bound?.cue_id && !!bound.output_preview && !!actions.preview;
       const listen = button("Nghe câu này", () => {
         if (payload.schema_version === 1 || !bound?.cue_id || !actions.preview) return;
@@ -287,14 +341,14 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
           } catch { refreshPlan(); return; }
           const before = payload, at = invalidate(), abort = new AbortController(); applyAbort = abort;
           busy = true; message = "Đang dựng và kiểm tra bản thay thế. Bản xuất hiện tại được giữ nguyên…"; render();
-          void actions.applyCurrent(confirmation, abort.signal).then(next => {
+          void actions.applyCurrent(confirmation, abort.signal, observeAt(at)).then(next => {
             if (at !== epoch || destroyed || abort.signal.aborted) return;
             try {
               const checked = readReviewPayload(next);
               if (checked.schema_version !== 3 || checked.job_id !== before.job_id || checked.current_token.revision !== confirmation.plan.candidate_revision) throw new Error("applied version changed");
               payload = checked; publications = {}; exportArmed = undefined; message = "Đã kiểm tra và áp dụng bản thay thế. Lời thoại đang hiển thị là bản hiện hành.";
             } catch { stale = true; message = "Kết quả đã đổi phiên bản. Hãy tải lại để kiểm tra trước khi sửa tiếp."; }
-          }, () => { if (at === epoch && !destroyed) { stale = true;
+          }, error => { if (at === epoch && !destroyed) { failureDetails = reviewFailureDetails(error, before.job_id, "apply"); stale = true;
             message = "Chưa xác định tác vụ đã áp dụng hay chưa. Hãy tải lại lời thoại để kiểm tra; không tự gửi lại yêu cầu.";
           } }).finally(() => { if (applyAbort === abort) applyAbort = null;
             if (at === epoch && !destroyed) { busy = false; render(); } });
@@ -324,7 +378,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
   render();
   return {
     replace(value: unknown) { const next = readReviewPayload(value); if (destroyed) throw new Error("review view was destroyed");
-      invalidate(); payload = next; publications = {}; exportArmed = undefined; busy = stale = undoArmed = false; message = ""; page = 0;
+      invalidate(); payload = next; publications = {}; exportArmed = undefined; busy = stale = undoArmed = initializeArmed = false; message = ""; page = 0;
       group = payload.findings[0]?.reason ?? "TRANSLATION_ANOMALY"; selected = payload.findings[0]?.finding_id ?? null; render(); },
     destroy() { invalidate(); destroyed = true; container.replaceChildren(); },
   };

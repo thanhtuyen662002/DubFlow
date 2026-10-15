@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Observed desktop Review request activity; no durable-result authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "request_id", "job_id", "operation", "state", "phase", "elapsed_ms", "phase_elapsed_ms", "process_state", "process_observation_age_ms"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_desktop_request_activity"},
+    "request_id": {"type": "string", "pattern": "^[A-Za-z0-9-]{16,64}$"},
+    "job_id": {"$ref": "schema-v2.json#/$defs/id"},
+    "operation": {"enum": ["initialize", "apply", "undo", "standard_export", "editable_export"]},
+    "state": {"enum": ["running", "cancelling", "ended"]},
+    "phase": {"enum": ["checking", "processing", "verifying", "ended"]},
+    "elapsed_ms": {"$ref": "#/$defs/ms"}, "phase_elapsed_ms": {"$ref": "#/$defs/ms"},
+    "process_state": {"enum": ["idle", "running", "exited", "unobserved"]},
+    "process_observation_age_ms": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/ms"}]}
+  },
+  "allOf": [
+    {"if": {"properties": {"state": {"const": "ended"}}}, "then": {"properties": {"phase": {"const": "ended"}}}, "else": {"properties": {"phase": {"enum": ["checking", "processing", "verifying"]}}}},
+    {"if": {"properties": {"process_state": {"const": "idle"}}}, "then": {"properties": {"process_observation_age_ms": {"type": "null"}}}, "else": {"properties": {"process_observation_age_ms": {"$ref": "#/$defs/ms"}}}}
+  ],
+  "$defs": {"ms": {"type": "integer", "minimum": 0, "maximum": 86400000}},
+  "$comment": "The client additionally requires phase_elapsed_ms <= elapsed_ms, exact request/job/operation and monotonic elapsed_ms. Ended means the host request ended; only the original validated operation reply and fresh physical generation prove success. Process running does not prove worker/chunk advancement. No percent, ETA, paths, source tokens, raw diagnostics, retry or durable mutation. Missing/expired/stale observation is unknown, never terminal."
+}

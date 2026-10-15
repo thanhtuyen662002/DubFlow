@@ -27,7 +27,7 @@ export function mountDesktopReview(container: HTMLElement, transport: ReviewTran
       status.textContent = snapshot.schema_version === 3 ?
         (snapshot.mode === "b2" ? "Đang xem phiên bản hiện hành. Sửa bản dịch hoặc giọng, kiểm tra phạm vi chạy lại rồi xác nhận. Bản xuất hiện tại được giữ đến khi bản thay thế hợp lệ." :
           "Đang xem phiên bản phụ đề hiện hành. Sửa bản dịch, kiểm tra phạm vi chạy lại rồi xác nhận. Bản xuất hiện tại được giữ đến khi bản thay thế hợp lệ.") :
-        "Có thể xem lời thoại và nghe từng câu. Chức năng sửa và dựng lại đang được hoàn thiện. Bản xuất hiện tại vẫn dùng được.";
+        "Có thể xem lời thoại và nghe từng câu. Chọn bật chỉnh sửa để lưu bản gốc vào lịch sử trước khi sửa. Bản xuất hiện tại vẫn dùng được.";
       load.textContent = "Tải lại lời thoại";
     } catch (error) {
       if (at !== generation || disposed) return;
