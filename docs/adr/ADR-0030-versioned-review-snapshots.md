@@ -3261,3 +3261,43 @@ unchanged. The source dispatcher, indexed clock windows, native capacity and
 output-journal connection, final audio/seam/AV/QC/CAS and real installed B1/B2,
 GUI/liveness/actual-processing-crash/representative-four-hour acceptance remain
 mandatory; fixture or recipe equality cannot substitute for any of them.
+
+#### Native current source and chunk-plan binding (pending source)
+
+CurrentChunkSource first connects the existing native effective-render reader
+and separately derived processing recipe. Its exact sealed context/source/recipe
+pins are available before clock planning. Consuming bind_plan then produces a
+CurrentChunkPlan for those pins, avoiding a circular dependency between deriving
+the context and generating its plan. The effective
+reader reopens the current full token, immutable original manifest/source bytes,
+cumulative corrected timeline and retained captions/mix. The new component
+accepts no client geometry, source root, video-stream choice or time-base fields.
+It seals the derived current render context and binds the plan's context/source/
+recipe hashes to those exact native values before accepting the plan metadata.
+
+Geometry, primary stream and the exact signed64 PTS interval come from the
+archived original stream probe. Selection matches the pinned production adapter's
+first video stream and refuses duplicate or unsupported stream indices. A
+positive reduced rational and exact positive duration_ts/duration_ticks agreement
+are required; missing exact duration needs explicit compatibility. Negative and
+above2^53 PTS remain integer values. End overflow, over-six-hour sources, inferred
+float/FPS clocks and rounded canonical-millisecond interval substitutions refuse.
+BoundPlan independently requires the complete source interval and time base to
+equal this selection after its existing canonical/hash/local-chunk admission.
+
+Before returning and on explicit revalidation, native reconstructs the complete
+effective context, reopens source bytes/current dependencies, rederives all
+processing recipe pins and reopens the immutable plan. Changed tokens, content,
+source or processing cannot be repaired by overwriting a saved context. The
+context/plan are private metadata in the existing accepted store; no SQL schema,
+old job/model/worker/runtime pin or public contract is migrated.
+
+This component binds archived stream metadata and exact source bytes. It does
+not independently decode frame coverage or admit the codec/font/provider/OS
+environment, and it cannot dispatch a worker or publish a graph. Both admissions
+must still be supplied to the complete contained executor, indexed-clock windows,
+native capacity/output journal and final audio/seam/AV/QC/CAS integration. Public
+chunked_longform remains false. The Python stream-timeline oracle and authored
+native parser/interval regressions are component evidence only; complete current
+installed B1/B2, corrected standard/editable outputs, GUI/liveness, actual worker
+crash/recovery and representative real-four-hour acceptance remain mandatory.
