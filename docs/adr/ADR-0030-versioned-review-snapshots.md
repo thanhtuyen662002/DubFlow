@@ -2923,3 +2923,253 @@ discovery/pointer handling before an admitted executor may use it. Source-clock
 window coverage, complete runtime closure, actual worker containment/current
 render integration/final audio-mux/QC/CAS/installed/crash/real4h acceptance remain
 unimplemented/unqualified. Current chunked_longform=false remains unchanged.
+
+#### Output-only physical checkpoint receipt/index v2 (pending source)
+
+The new private review_chunk_output backend connects the ordered native chunk
+scheduler to output-owned metadata. A completed chunk's MP4 and receipt-v2 JSON
+share the existing output store; index-v2 predecessor and receipt references
+are canonical output JSON locators, never AcceptedAudioStore paths under DATA.
+The old DATA-v1 API/format remains unchanged and independently readable. A v1
+pointer supplied to v2 refuses; no implicit conversion, copied old helper,
+producer repin or original-job rewrite occurs. No SQLite migration or original
+worker/runtime/model format changes are introduced.
+
+The existing ordered scheduler loop now abstracts its index type/packet builder
+alongside its physical backend. The same cancellation/deadline/local-key reuse,
+completed-prefix checkpoint and aggregate chain-byte checks serve v1 and v2.
+The new v2 walker independently reads bounded native output metadata, verifies
+locator/content hash/size, exact canonical closed bytes and version, source/
+recipe/timebase/job, immutable origin pins, decreasing ordinals/root/unique local
+keys and the current plan's completed prefix. It retains the4096node/16MiB chain
+limits. All selected receipts reopen their canonical video locators independently.
+Hints cannot authorize filesystem reads. Unknown/missing/corrupt/foreign-volume
+objects refuse without an encode repair or fallback to DATA.
+
+One existing output-wide OS writer covers video plus its small receipt creation
+and shared32GiB aggregate old/undo/orphan/alljob quota with fresh2GiB reserve.
+The writer scope ends before independent reopen. Each new index node similarly
+uses the output JSON API and drops its writer before invoking native current/
+runtime fences or the durable checkpoint-pointer callback. An independent reopen
+follows that callback. This removes the prototype's opaque metadata quota callback
+and avoids recursive output writer acquisition. No storage lease crosses native
+state callback boundaries. Failed pointer publication may leave quota-accounted
+immutable output orphans but never retires the previous valid chain.
+
+Two new deterministic Rust cases are authored for the same-loop partial resume/
+unrelated-context reuse and strict v2 chain/locator/origin/format/byte refusals.
+A separate Windows test is authored for actual output volume/canonical record
+reopen, physical reuse preserving video/receipt mtimes, no DATA/control artifacts,
+foreign-volume refusal and reacquiring the real writer inside the pointer
+callback. Its video bytes and executor are explicit physical-storage fixtures,
+not real encoding/runtime/semantic/QC evidence; the callback observes pointers
+and does not claim an actual crash-safe state writer. All three new tests are
+NOT_RUN until hosted evidence for this new source. rustfmt/diff is syntax/source
+evidence only and the known missing localMSVClink is not retried. The previously
+published f6 crossplatform scheduler/metadata tests passed, but do not qualify
+this successor. Required f6 Windows diagnostics remain independent.
+
+The admitted processing executor, native current token/source/runtime closure,
+complete indexed-window source clock,
+audio/final mux/QC/CAS/current render routing and standard/editable/installed GUI/
+actual crash/real4h acceptance still require implementation/qualification.
+This backend adds no current renderer entry or capability grant: both receipt
+and index require semantic_qc_admitted=false and active_graph_published=false,
+and effective-render-v1/chunked_longform=false remain unchanged.
+
+#### Immutable output checkpoint journal v2 (pending source)
+
+The native output backend now persists each completed index before releasing
+the existing output-wide writer. A sealed marker lives under the same job's
+output object store as `.chunk-checkpoint-v2-<64planhex>-<ordinal4digits>.json`.
+Its closed version2 packet contains the native job/current full plan/context,
+ordinal and canonical output index descriptor. This private discovery namespace
+is separate from content-addressed media/records and introduces no mutable head,
+SQL stage write, DATA fallback, worker protocol or original producer change.
+An exact existing marker reuses bytes and mtime; any changed collision refuses.
+No old marker, chain, media, undo generation or orphan is overwritten/evicted.
+
+Startup scans only this admitted job store with the existing finite65536entry
+bound, cooperative deadline/cancellation and fresh native volume observations.
+Matching marker names must be canonical contiguous ordinals1..N. Each record is
+bounded64KiB, the complete journal4096markers/16MiB. Markers require no-follow
+regular handles, readonly seal, single link, stable identity/mtime/size and full
+byte hash/syntax readback. These bytes participate in the same32GiB aggregate
+old/undo/orphan/alljob quota and fresh2GiB reserve, including private copies if a
+process dies before publication. Writes use exclusive private creation,32KiB
+blocks, fresh space checks, fsync, exclusive publication and independent sealed
+readback. A crash may leave quota-accounted private or index orphans; it cannot
+turn an incomplete private copy into completed progress.
+
+Names only locate candidate markers. The native reader admits exact canonical
+packets against its current plan and independently reopens every index through
+the canonical output locator. Native job/source/recipe/timebase/context, ordinal,
+ordered local chunk key, exact predecessor descriptor and final completion flag
+must match the current completed prefix. A gap, foreign origin/role/volume,
+changed byte or fork refuses with explicit recovery required. Preserved path
+hints remain exact archived metadata and supply no IO authority after relocation.
+The current durable prefix supplies reuse even when no UI/cache pointer arrives.
+Archived local-key caches can fill later chunks but cannot replace this prefix.
+
+The optional executor checkpoint callback is now an observation after native
+journal publication and writer release; persistence does not depend on it. If
+it fails, the next fresh invocation discovers the already sealed prefix and
+revalidates all physical receipts instead of repeating completed encoding. This
+implements the physical prefix discovery/publication that the earlier output-v2
+paragraph listed as missing; full processing and graph publication are separate
+remaining requirements. Old DATA-v1 files/APIs remain unchanged. Old controllers
+may refuse an unfamiliar output inventory; they must not repair/evict/repin it.
+Standard exports remain usable independently of Review admission.
+
+Four journal storage tests and two marker/current-prefix refusal tests are
+AUTHORED/NOT_RUN. The storage kill test launches only its exact ignored child
+entry in a validated fresh OS-temp fixture, with bounded output/waits and no
+Windows console window. After the child's sealed-marker signal it forcibly
+kills that actual process, reopens the output writer/marker, and appends the next
+ordinal while checking prior bytes/mtime. This is an authored actual-process
+storage test, not executed crash evidence for the processing worker, real media,
+full Review graph, installed GUI or real4h acceptance. The ignored child entry
+adds one intentional helper skip in future hosted suites. The existing Windows
+output fixture now retries without a UI/cache index and requires exact recovered
+index identity; all successor Rust tests await source-matched hosted evidence.
+Targeted rustfmt/diff checks cannot prove compilation or test success, and the
+known missing localMSVClink is not retried. No current render route/capability,
+semantic QC, active graph or public longform flag is enabled by this journal.
+
+#### Private native chunk callback transport v1 (pending source)
+
+The existing Python encoder calls capacity/runtime callbacks while consuming
+bounded output. Those checks must execute in its native supervisor, where the
+current token, canonical volumes, aggregate quota/reserve and runtime closure
+are authoritative. A new private Review child channel carries only exact bound
+requests, acknowledgements and one unadmitted result. It does not alter the
+original worker daemon/event protocol, original producer/model pins, SQLite,
+DATA-v1 or the completed original job. Its separate version1 contract refuses
+unknown versions, fields, operations, sequence reuse or binding changes; there
+is no implicit compatibility conversion or replay after a refused callback.
+
+The native binding contains current context/plan/local chunk/environment hashes.
+Each canonical UTF8 JSON frame ends in one LF and is bounded64KiB, total child
+stdout16MiB and4096requests per process. Capacity is a canonical decimal0..512MiB;
+a fence request carries zero bytes. Acknowledgements bind the complete exact
+request hash, sequence and native binding, and can only report accepted=true.
+Any native refusal ends the contained process instead of sending a reusable
+negative grant. A final result preserves its exact nested JSON bytes, but is
+transport data only: existing encoded-candidate/physical source-clock/AV/QC
+admission must still independently validate it before retention/publication.
+
+The native collector reuses AdapterProcess/WorkerTree and attaches containment
+before the owned Python byte gate. One absolute native deadline of at most900s
+covers request handling, process completion and every callback; it is never
+renewed per message. Pipe readers use a bounded16event queue and bounded line
+reads. A dedicated writer and one-entry acknowledgement queue prevent a child
+that stops reading stdin from blocking supervisor deadline/cancel observation.
+The lightweight native observation callback runs between bounded polls; each
+capacity/runtime request invokes its separate authoritative native check. No
+storage writer should cross those callbacks. Empty stderr, complete stdout EOF,
+zero exit and all acknowledgements written are required before returning one
+result. Extra/truncated/oversized/replayed packets, pipe errors, diagnostics,
+cancel or timeout refuse. Error paths terminate/reap the owned process tree,
+release pipe queues and bound worker-thread cleanup; a partial result is never
+returned as success. Original collect callers retain their existing behavior.
+
+NativeChunkChannel connects encode_chunk's existing live capacity/environment/
+cancel callbacks to this transport and emits its sole result only after encoder
+success. The caller cannot substitute those callbacks. Native requests and
+acknowledgements must keep the same exact context/plan/chunk/environment; a
+refused or malformed acknowledgement or an encoder error poisons the channel.
+This helper grants no filesystem, processing-release or media authority and is
+not a public worker capability or a browser-provided command entrypoint.
+
+Seven new owned-Python cases passed, including an actual isolated owned child with
+live capacity/fence/result pipe exchange, foreign/replayed/noncanonical/oversize
+acknowledgements, encoder callback wiring/failure, callback replacement refusal,
+wide integers and request/deadline/result bounds. Shared exact request/ack/result
+golden frames are consumed by both Python and the authored native protocol test;
+only the Python side has executed. The test wrapper's trailing-LF assertion
+failed after the seven-test exit0/PASS record on Windows CRLF diagnostics. A
+separate read-only audit checks the unchanged raw log and source pins without
+replaying tests; production transport bytes still require exact LF/canonical
+framing. The failed QA wrapper is retained. The real pipe fixture has no
+media/descendants and uses a Python test parent; it does not prove the authored
+Rust collector's actual Windows containment or product crash behavior. Three
+new native protocol/refusal tests are AUTHORED/NOT_RUN; localMSVClink is missing
+and not retried. The admitted processing-release dispatcher/current token and
+source indexed-window admission, complete font/codec/OS closure, concrete native
+capacity implementation, full encoder-worker/native pipe integration, final
+audio/mux/AV/QC/CAS/current renderer/installed GUI/actualcrash/real4h gates still
+require implementation/qualification. Neither this transport nor its component
+tests enable effective-render-v1/chunked_longform or change standard exports.
+
+#### Native chunk private-capacity extents v1 (pending source)
+
+The native callback transport needs a concrete private-work capacity fence that
+does not retain the output-wide writer throughout encoding. Each native job and
+current scope receives one sparse regular control file under its existing
+retained job store. Its logical length accounts for the bounded private-work
+allowance plus its small header. Existing used_bytes already counts every
+regular logical file length, including foreign/orphan files and every job, so
+older quota writers account for this allowance without a new namespace parser.
+The shared32GiB quota and fresh2GiB caller reserve remain unchanged. Sparse
+allocation reserves logical quota; fresh physical caller-free space is observed
+separately for every requested allocation and output volume GUID.
+
+The closed version1 canonical header contains native job namespace/scope/private
+limit and the pinned work directory identity. It is prefixed by a four-byte
+big-endian length and bounded4096bytes; the full logical length must equal that
+prefix/header plus native private allowance. The native maximum is512MiB media
+plus64MiB auxiliary metadata. The dispatcher must derive the actual scope and
+allowance from admitted current/source/processing recipe/local chunk/runtime
+bindings. Worker/browser packets cannot select paths or grant that admission.
+The native work path derives only from output/job/scope. It is separate from old
+original jobs/checkpoints; preexisting nonempty work cannot be adopted as a new
+reservation. Same-scope recovery requires the exact sealed header/limit and work
+identity. A live control owner refuses competing recovery.
+
+Creation/recovery runs under the short existing output writer. Its returned
+opaque control/work handles survive after that writer drops. Windows disallows
+delete-share for these pinned handles; the control owns an independent OS lock.
+Each native capacity callback reacquires the normal output store, rechecks
+control identity/readonly/single-link/no-follow/header/sparse/logical size and
+work directory identity, walks bounded private regular files, and enforces
+existing private bytes plus requested additional bytes within the allowance.
+The walk is cancellation/deadline aware, at most4096entries/depth4, and refuses
+links or unknown nonregular entries. It checks shared old/undo/orphan/alljob
+quota and fresh caller-free bytes on the original NTFS volume before returning.
+No output-wide writer crosses a worker callback or current/runtime fence.
+
+Drop or process death releases handles while preserving the complete counted
+extent and all private work. A new native caller may recover the same exact
+scope after owner exit; corrupt/unsealed/wrong-limit/foreign-job/work-identity
+changes refuse with explicit recovery required. Explicit successful release
+requires zero private files, including zero-byte files. It clears only its own
+control seal and requests Windows deletion by the pinned DELETE-capable handle,
+then confirms the extent is absent. No workspace/media/evidence file is deleted
+by this API, and empty native work directories remain. This resource lifecycle
+does not authorize retrying any previously denied payload cleanup. A dispatcher
+still must validate/retain completed media, publish the native journal and retire
+only its fresh owned scratch before requesting release. Crash orphan recovery
+and final cleanup ordering remain product acceptance requirements.
+
+The sparse control extent is quota metadata, with exact bounded header checks;
+all retained media and JSON records retain their separate full-byte SHA/physical
+and semantic admission. Original worker/SQL/model/runtime formats, DATA-v1 and
+canonical retained locators are unchanged. Older controllers continue counting
+the regular extent and may leave an unfamiliar resource for explicit recovery;
+they must not overwrite/evict it. No existing original root/job is repinned.
+Windows uses documented [FSCTL_SET_SPARSE](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_set_sparse),
+[SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)
+and one-byte [FILE_DISPOSITION_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_disposition_info).
+An independent owned-Python Win32 API probe passed on actual fixed NTFS: its
+8388941logical-byte quota extent allocated65536physical bytes, remained readable
+for a legacy metadata-length observer, blocked active-owner recovery and file/
+directory rename, reopened with identical header/identity after owner handle
+close, and released only the pinned control handle. The fresh empty fixture was
+removed. This API component probe executed no Rust/media/worker/product/crash
+path. Six native capacity tests are AUTHORED/NOT_RUN for alljob quota/writer
+release, remaining private bytes/caller space/cancel, owner recovery and empty-
+work release, foreign job/limit/seal/header refusals, depth/directory identity/
+Windows rename protection and missing-work refusal without implicit recreation.
+Native compiled execution, complete dispatcher/runtime/source-clock/AV/QC/CAS,
+installed GUI/crash/real4h qualification remain unproven. No public capability
+or current renderer route is enabled by these capacity primitives.

@@ -3,7 +3,7 @@
 //! canonical storage crate owns locator/path validation. Standard export does
 //! not depend on this optional local-NTFS Review path.
 use super::review_assets::{
-    ExportCopyInput, ExportFileSpec, MixStorageBudget, PcmPin, RetainedCueAudio,
+    ChunkCapacity, ExportCopyInput, ExportFileSpec, MixStorageBudget, PcmPin, RetainedCueAudio,
     RetainedFileFormat, RetainedFilePin, RetainedMixAudio, RetainedMixStore, RetainedRenderFile,
 };
 use super::{SupervisorError, SupervisorResult};
@@ -865,6 +865,103 @@ impl NativeMixStore {
         same_volume(&self.volume_id, &probe(&self.root)?)?;
         self.verify_file(object, deadline)?;
         Ok(raw)
+    }
+
+    pub(super) fn publish_chunk_checkpoint(
+        &self,
+        plan: &str,
+        ordinal: u16,
+        raw: &str,
+        deadline: Instant,
+    ) -> SupervisorResult<String> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let saved = self.objects.publish_chunk_checkpoint(
+            plan,
+            ordinal,
+            raw,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&self.volume_id, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            deadline,
+        )?;
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        Ok(saved)
+    }
+
+    pub(super) fn reserve_chunk_capacity(
+        &self,
+        scope: &str,
+        maximum: u64,
+        deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> SupervisorResult<ChunkCapacity> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let result = self.objects.reserve_chunk_capacity(
+            scope,
+            maximum,
+            |path| {
+                let observation = probe(path)?;
+                same_volume(&self.volume_id, &observation)?;
+                Ok(observation.available_bytes)
+            },
+            deadline,
+            cancelled,
+        )?;
+        same_volume(&self.volume_id, &probe(result.work_root())?)?;
+        Ok(result)
+    }
+
+    pub(super) fn check_chunk_capacity(
+        &self,
+        token: &ChunkCapacity,
+        additional: u64,
+        deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> SupervisorResult<()> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        self.objects.check_chunk_capacity(
+            token,
+            additional,
+            |path| {
+                let observation = probe(path)?;
+                same_volume(&self.volume_id, &observation)?;
+                Ok(observation.available_bytes)
+            },
+            deadline,
+            cancelled,
+        )?;
+        same_volume(&self.volume_id, &probe(token.work_root())?)?;
+        Ok(())
+    }
+
+    pub(super) fn release_chunk_capacity(
+        &self,
+        token: ChunkCapacity,
+        deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> SupervisorResult<()> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        same_volume(&self.volume_id, &probe(token.work_root())?)?;
+        self.objects
+            .release_chunk_capacity(token, deadline, cancelled)?;
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        Ok(())
+    }
+
+    pub(super) fn read_chunk_checkpoints(
+        &self,
+        plan: &str,
+        deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> SupervisorResult<Vec<(u16, String)>> {
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        let records = self
+            .objects
+            .read_chunk_checkpoints(plan, deadline, cancelled)?;
+        same_volume(&self.volume_id, &probe(&self.root)?)?;
+        Ok(records)
     }
 
     pub(super) fn verify_file(

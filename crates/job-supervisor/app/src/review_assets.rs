@@ -23,6 +23,13 @@ const MAX_RIFF_CHUNKS: usize = 1024;
 const MAX_MIX_STORE_ENTRIES: usize = 65536;
 const MAX_RETAINED_METADATA_BYTES: usize = 64 * 1024;
 
+#[path = "review_chunk_journal.rs"]
+mod chunk_journal;
+
+#[path = "review_chunk_capacity.rs"]
+mod chunk_capacity;
+pub(super) use chunk_capacity::ChunkCapacity;
+
 #[path = "review_export_copy.rs"]
 mod export_copy;
 pub(super) use export_copy::{verify_export_files, ExportCopyInput, ExportFileSpec};

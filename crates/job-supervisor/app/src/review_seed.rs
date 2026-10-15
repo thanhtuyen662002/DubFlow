@@ -16,6 +16,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+#[path = "review_chunk_bridge.rs"]
+mod chunk_bridge;
+pub(super) use chunk_bridge::{collect_chunk_worker, ChunkWorkerBinding, NativeChunkRequest};
+
 const LIMIT: usize = 64 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(60);
 

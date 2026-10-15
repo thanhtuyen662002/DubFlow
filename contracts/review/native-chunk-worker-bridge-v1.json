@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private Review chunk native callback transport; no processing/media/QC/publication grant",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/ack"
+    },
+    {
+      "$ref": "#/$defs/result"
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "$ref": "longform-plan-v1.json#/$defs/hash"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "context_sha256",
+        "plan_sha256",
+        "chunk_identity",
+        "runtime_environment_sha256"
+      ],
+      "properties": {
+        "context_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "chunk_identity": {
+          "$ref": "#/$defs/hash"
+        },
+        "runtime_environment_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "binding",
+        "sequence",
+        "operation",
+        "additional_bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "review_chunk_native_request"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "operation": {
+          "enum": [
+            "capacity",
+            "fence"
+          ]
+        },
+        "additional_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,8})$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "fence"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "additional_bytes": {
+                "const": "0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "binding",
+        "sequence",
+        "request_sha256",
+        "accepted",
+        "runtime_environment_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "review_chunk_native_ack"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "accepted": {
+          "const": true
+        },
+        "runtime_environment_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "binding",
+        "sequence",
+        "result_json"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "review_chunk_worker_result"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4097
+        },
+        "result_json": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 65535
+        }
+      }
+    }
+  },
+  "$comment": "Every frame is exact canonical UTF8 JSON plus one LF, <=65536 total bytes; native stdout aggregate16MiB, requests4096, capacity0..536870912 integer bytes, no pipelined assumption or blocking supervisor acknowledgement. Binding comes only from native admission. Native attaches existing WorkerTree before byte gate; one absolute<=900s deadline, bounded stdout queue16/ack queue1, stderr<=4096 and must be empty, EOF+zero exit+all acknowledgements written before returning result. On refusal/cancel/timeout/pipe error terminate/reap contained child and join pipe threads with bounded cleanup. No mutation/replay/partial-result repair. Native callback must independently enforce current/source/runtime closure/quota/volume/reserve with its absolute deadline; hash/callback/ack supplies no such admission. Python encoder callbacks use this channel; native admitted processing dispatcher/current render integration remains required. Original daemon worker protocol/SQL/model/runtime compatibility and DATA-v1 are unchanged. No public longform/correction/QC/active graph flag is enabled.",
+  "examples": [
+    {
+      "request_json": "{\"additional_bytes\":\"0\",\"binding\":{\"chunk_identity\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"context_sha256\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_sha256\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"runtime_environment_sha256\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"kind\":\"review_chunk_native_request\",\"operation\":\"capacity\",\"schema_version\":1,\"sequence\":1}",
+      "ack_json": "{\"accepted\":true,\"binding\":{\"chunk_identity\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"context_sha256\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_sha256\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"runtime_environment_sha256\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"kind\":\"review_chunk_native_ack\",\"request_sha256\":\"sha256:f6da1cee5c75c8f59ff738ef02fd0c6d769f1678619b7ef6559158763fb9c0ed\",\"runtime_environment_sha256\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"schema_version\":1,\"sequence\":1}",
+      "result_json": "{\"binding\":{\"chunk_identity\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"context_sha256\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_sha256\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"runtime_environment_sha256\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"kind\":\"review_chunk_worker_result\",\"result_json\":\"{\\\"wide\\\":9007199254740993}\",\"schema_version\":1,\"sequence\":2}"
+    }
+  ]
+}

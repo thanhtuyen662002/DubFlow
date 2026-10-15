@@ -13,6 +13,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[path = "review_chunk_output.rs"]
+mod output;
+pub(super) use output::{
+    schedule_output, OutputChunkExecutor, OutputScheduleInputs, OutputScheduledChunks,
+};
+
 const MAX_PLAN: usize = 4 * 1024 * 1024;
 const CHUNK_FIELDS: &[&str] = &[
     "start_tick",
@@ -614,6 +620,7 @@ pub(super) struct ScheduledChunks {
 
 trait ScheduleBackend {
     type Kept;
+    type Index;
     fn fence(&mut self, deadline: Instant) -> SupervisorResult<()>;
     fn reopen(
         &mut self,
@@ -628,11 +635,15 @@ trait ScheduleBackend {
         deadline: Instant,
     ) -> SupervisorResult<Self::Kept>;
     fn receipt(kept: &Self::Kept) -> Value;
-    fn checkpoint(
-        &mut self,
-        packet: &Value,
-        deadline: Instant,
-    ) -> SupervisorResult<AcceptedJsonDocument>;
+    fn index_packet(
+        job: &str,
+        plan: &BoundPlan,
+        entry: &Value,
+        ordinal: usize,
+        previous: Option<&Self::Index>,
+        complete: bool,
+    ) -> SupervisorResult<Value>;
+    fn checkpoint(&mut self, packet: &Value, deadline: Instant) -> SupervisorResult<Self::Index>;
 }
 
 fn guard(
@@ -659,7 +670,7 @@ fn drive<B: ScheduleBackend>(
     deadline: Instant,
     backend: &mut B,
     cancelled: &mut impl FnMut() -> bool,
-) -> SupervisorResult<(AcceptedJsonDocument, Vec<B::Kept>, usize, usize)> {
+) -> SupervisorResult<(B::Index, Vec<B::Kept>, usize, usize)> {
     super::validate_job_id(job)?;
     guard(backend, deadline, cancelled)?;
     let mut files = Vec::new();
@@ -688,7 +699,7 @@ fn drive<B: ScheduleBackend>(
         };
         guard(backend, phase, cancelled)?;
         let entry = json!({"chunk_identity":id,"receipt":B::receipt(&kept)});
-        let packet = index_packet(
+        let packet = B::index_packet(
             job,
             plan,
             &entry,
@@ -721,6 +732,17 @@ struct PhysicalSchedule<'a, 'b, E> {
 }
 impl<E: NativeChunkExecutor> ScheduleBackend for PhysicalSchedule<'_, '_, E> {
     type Kept = PhysicalChunk;
+    type Index = AcceptedJsonDocument;
+    fn index_packet(
+        job: &str,
+        p: &BoundPlan,
+        e: &Value,
+        n: usize,
+        previous: Option<&AcceptedJsonDocument>,
+        complete: bool,
+    ) -> SupervisorResult<Value> {
+        index_packet(job, p, e, n, previous, complete)
+    }
     fn fence(&mut self, d: Instant) -> SupervisorResult<()> {
         self.executor.fence(d)
     }
@@ -955,6 +977,17 @@ mod tests {
     }
     impl ScheduleBackend for MockSchedule {
         type Kept = Value;
+        type Index = AcceptedJsonDocument;
+        fn index_packet(
+            job: &str,
+            p: &BoundPlan,
+            e: &Value,
+            n: usize,
+            previous: Option<&AcceptedJsonDocument>,
+            complete: bool,
+        ) -> SupervisorResult<Value> {
+            index_packet(job, p, e, n, previous, complete)
+        }
         fn fence(&mut self, _: Instant) -> SupervisorResult<()> {
             if self.stale {
                 Err(invalid("changed current native fence"))
