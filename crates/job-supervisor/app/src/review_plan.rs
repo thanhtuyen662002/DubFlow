@@ -285,10 +285,10 @@ mod tests {
         let before = AdmittedSnapshot::read(
             &f["before"].to_string(),
             f["before"]["job_id"].as_str().unwrap(),
-            0,
+            f["before"]["revision"].as_u64().unwrap(),
         )
         .unwrap();
-        let current = json!({"job_id":before.job(),"revision":"0","snapshot_sha256":before.sha256(),"graph_sha256":format!("sha256:{}","b".repeat(64)),"original_manifest_sha256":f["manifest_sha256"]});
+        let current = json!({"job_id":before.job(),"revision":before.revision().to_string(),"snapshot_sha256":before.sha256(),"graph_sha256":format!("sha256:{}","b".repeat(64)),"original_manifest_sha256":f["manifest_sha256"]});
         let translated = proposal(
             &before,
             &current,
@@ -298,6 +298,8 @@ mod tests {
             &json!({"translation":"New words"}),
         )
         .unwrap();
+        assert_eq!(translated["current_token"]["revision"], "9007199254740994");
+        assert_eq!(translated["candidate_revision"], "9007199254740995");
         assert_eq!(
             translated["plan"]["stages_to_rerun"],
             json!([
