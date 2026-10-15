@@ -3230,3 +3230,34 @@ The native directory regression checks the52byte ABI, stable reopened directory
 identity, regular-file refusal on the directory path and continued directory
 refusal on the media path. Hosted newsource Windows execution remains required;
 the earlier independent Win32 primitive probe did not execute this Rust helper.
+
+#### Native chunk encoder recipe derivation (pending source)
+
+The native processing-release reader now derives the existing Python encoder
+recipe from freshly fingerprinted inventoried FFmpeg/ffprobe bytes and the exact
+eight encoder helper files. It first requires the separate closed private chunk
+dispatch capability and the complete original/protected processing inventories.
+Missing or altered helpers and foreign executable paths refuse before a recipe
+is returned. No helper is copied into an old producer or silently repinned.
+
+The typed native selection bounds source geometry, requires a positive reduced
+signed64 time base, preserves the selected video-stream index and burn-in choice,
+and includes the independently supplied native environment SHA. Native hashing
+uses the same closed sorted canonical object as Python, including decimal-string
+file sizes in context pins versus numeric sizes in the release inventory. Every
+helper/executable/configuration/environment input contributes to the identity.
+A Python-generated oracle covers B1 non-burn and B2 burn metadata selections,
+including a non-unit rational time base. Native regressions compare exact bytes
+and hashes, reject malformed/missing/extra dependencies and reopen actual helper
+files to refuse same-size corruption or disappearance.
+
+A recipe identity is not an admission of the selected current graph, source
+geometry/decoded clock or codec/font/provider/OS dependency closure. Those values
+must still come from independent native readers before the contained executor
+may consume this receipt. The receipt therefore keeps all current/source,
+environment, semantic-QC, public-longform and publication flags false. Existing
+effective-render-v1 and all original worker/model/runtime/job bindings remain
+unchanged. The source dispatcher, indexed clock windows, native capacity and
+output-journal connection, final audio/seam/AV/QC/CAS and real installed B1/B2,
+GUI/liveness/actual-processing-crash/representative-four-hour acceptance remain
+mandatory; fixture or recipe equality cannot substitute for any of them.
