@@ -308,9 +308,177 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<
     }
 }
 
+fn export_confirmation<'a>(input: &'a Value, actual: &Value) -> SupervisorResult<&'a str> {
+    closed(
+        input,
+        &[
+            "schema_version",
+            "kind",
+            "confirm",
+            "format",
+            "current_token",
+        ],
+    )?;
+    closed(
+        &input["current_token"],
+        &[
+            "job_id",
+            "revision",
+            "snapshot_sha256",
+            "graph_sha256",
+            "original_manifest_sha256",
+        ],
+    )?;
+    if input["schema_version"].as_u64() != Some(1)
+        || input["kind"] != "review_current_export_confirmation"
+        || input["confirm"] != true
+        || exact(&input["current_token"])? != exact(actual)?
+    {
+        return Err(invalid(
+            "explicit export confirmation differs from the actual current token",
+        ));
+    }
+    match input["format"].as_str() {
+        Some(value @ ("standard" | "editable")) => Ok(value),
+        _ => Err(invalid("unsupported confirmed current export format")),
+    }
+}
+
+/// Standard publication needs no processing capability. Editable publication
+/// selects this executable's existing source-bound installed release, then the
+/// original native publisher performs full current/processing/media admission.
+pub(super) fn run_export_confirmed(
+    mut args: impl Iterator<Item = OsString>,
+) -> SupervisorResult<()> {
+    let mut data = None;
+    let mut request = None;
+    while let Some(flag) = args.next() {
+        let flag = flag
+            .into_string()
+            .map_err(|_| invalid("export confirmation flag is not UTF-8"))?;
+        let value = args
+            .next()
+            .ok_or_else(|| invalid("export confirmation value missing"))?;
+        match flag.as_str() {
+            "--data-root" if data.is_none() => data = Some(PathBuf::from(value)),
+            "--request-json" if request.is_none() => {
+                request = Some(
+                    value
+                        .into_string()
+                        .map_err(|_| invalid("export request is not UTF-8"))?,
+                )
+            }
+            _ => return Err(invalid(
+                "unknown or duplicate confirmed export argument; processing roots are native-owned",
+            )),
+        }
+    }
+    let data = data.ok_or_else(|| invalid("export control root missing"))?;
+    if !data.is_absolute() || data.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(invalid("confirmed export control root must be absolute"));
+    }
+    let request = decode(
+        &request.ok_or_else(|| invalid("explicit export request missing"))?,
+        16 * 1024,
+    )?;
+    // Reject all open/request/target fields before opening durable state.
+    closed(
+        &request,
+        &[
+            "schema_version",
+            "kind",
+            "confirm",
+            "format",
+            "current_token",
+        ],
+    )?;
+    closed(
+        &request["current_token"],
+        &[
+            "job_id",
+            "revision",
+            "snapshot_sha256",
+            "graph_sha256",
+            "original_manifest_sha256",
+        ],
+    )?;
+    let job = text(&request["current_token"]["job_id"], 128)?;
+    super::validate_job_id(job)?;
+    super::review_pin::plain(&data)?;
+    let db = data.join("control/jobs.sqlite3");
+    super::review_pin::plain(&db)?;
+    let store = DurableStore::open_read_only(&db)?;
+    let state = store
+        .review_graph_state(job)?
+        .ok_or_else(|| invalid("Review graph is not initialized"))?;
+    let current = super::review_publication::token(&state);
+    let format = export_confirmation(&request, &current)?;
+    let result = match format {
+        "standard" => super::review_export_publication::publish(&store, &data, &state)?,
+        "editable" => {
+            let selected = installed_processing()?;
+            let processing = super::review_runtime::AdmittedProcessingRuntime::read(
+                &store,
+                job,
+                &selected.root,
+                &selected.manifest,
+                &selected.source,
+            )?;
+            super::review_editable::publish(&store, &data, &state, &processing)?
+        }
+        _ => return Err(invalid("confirmed export format changed")),
+    };
+    if store.review_graph_state(job)?.as_ref() != Some(&state) || result["current_token"] != current
+    {
+        return Err(invalid(
+            "current generation changed during confirmed export; reload",
+        ));
+    }
+    super::emit_value(&mut std::io::stdout().lock(), result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standard_and_editable_confirmations_require_exact_wide_current_token_and_closed_authority() {
+        let current = json!({"job_id":"job-export","revision":"9007199254740993","snapshot_sha256":hash(b"snapshot"),"graph_sha256":hash(b"graph"),"original_manifest_sha256":hash(b"original")});
+        for format in ["standard", "editable"] {
+            let request = json!({"schema_version":1,"kind":"review_current_export_confirmation","confirm":true,"format":format,"current_token":current});
+            assert_eq!(export_confirmation(&request, &current).unwrap(), format);
+            for mutation in 0..10 {
+                let mut bad = request.clone();
+                match mutation {
+                    0 => bad["confirm"] = json!(false),
+                    1 => bad["format"] = json!("vendor-project"),
+                    2 => bad["current_token"]["revision"] = json!(9007199254740993u64),
+                    3 => bad["current_token"]["revision"] = json!("0"),
+                    4 => bad["current_token"]["snapshot_sha256"] = json!(hash(b"foreign")),
+                    5 => bad["current_token"]["graph_sha256"] = json!(hash(b"foreign")),
+                    6 => bad["current_token"]["original_manifest_sha256"] = json!(hash(b"foreign")),
+                    7 => bad["processing_root"] = json!("foreign"),
+                    8 => bad["output_root"] = json!("foreign"),
+                    _ => bad["current_token"]["path"] = json!("foreign"),
+                }
+                assert!(export_confirmation(&bad, &current).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn confirmed_export_cli_refuses_processing_paths_and_duplicate_fields_before_state_access() {
+        for args in [
+            vec!["--processing-root", "foreign"],
+            vec!["--data-root", "unused", "--data-root", "unused"],
+            vec!["--request-json", "{}", "--request-json", "{}"],
+        ] {
+            let error = run_export_confirmed(args.into_iter().map(OsString::from)).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("unknown or duplicate confirmed export argument"));
+        }
+    }
     #[test]
     fn explicit_confirmation_is_exact_and_cannot_upgrade_a_plan_into_published_authority() {
         let plan = json!({"current_token":{"revision":"9007199254740993"},"candidate_snapshot_sha256":hash(b"candidate"),"cue_id":"cue-a","changes":{"translation":"New"},"read_only":true,"execution_ready":false});

@@ -526,3 +526,70 @@ before worker/context mutation. Preparation commands reject confirmation fields.
 No durable schema or original job pin changes. Four new native tests remain
 authored/unrun; source/format checks do not replace exact-head CI, actual native
 execution, desktop apply/undo/export or full product acceptance.
+
+### Current desktop apply result
+
+`desktop-current-apply-result-v1.json` contains the actual before token, a new
+host session ID and a fresh schema-v3 current snapshot after native CAS and full
+physical readmission. The host consumes its exact saved plan once; browser paths
+or hash claims cannot substitute for it. Native confirmation still re-derives
+the plan and performs full processing/result admission before CAS.
+
+The final snapshot hash may differ from the logical candidate because native
+retained preview paths are included only after result validation. Revisions
+remain exact decimal strings. Client/session rotation requires exact source,
+cue/plan and immutable-field preservation. Cancellation or an uncertain reply
+invalidates the session and requires discovery; it never auto-retries. Current
+undo/export/initialization and installed/crash/long-form acceptance remain open.
+
+### Explicit desktop current undo
+
+`desktop-current-undo-v1.json` closes the confirmation request over all five
+actual current token fields, with no caller-selected target, path or graph. The
+host requires the exact native current session, consumes every older session and
+saved plan for that job and shares the existing per-job apply guard. A fresh
+native current read must equal the bound token before calling the existing
+`review-undo-active`. That command physically admits current and prior graphs and
+performs its existing monotonic CAS under the job execution guard; no worker,
+producer, model, SQLite schema or original version pin is changed.
+
+The acknowledgement must match a newly physically admitted schema3 snapshot,
+including exact decimal next revision, source-manifest/hash identity and all
+snapshot metadata. Source findings, cue IDs, integer ranges, confidence and
+warnings remain exact; only prior translation, voice, preview and last-plan
+content may be restored. Prior graph content may be reused, but the public token
+counter never moves backwards. Only this checked result grants a replacement
+native session. Cancellation, stale input or an uncertain outcome requires fresh
+discovery and cannot automatically resend undo or revive an old plan.
+
+The UI asks for an explicit second confirmation. A positive revision alone is
+not proof of remaining undo history; native refusal is authoritative and does
+not manufacture an undo target. Source/client tests are not physical native,
+installed GUI, crash, cumulative/after-undo or long-form qualification. All
+standard/editable export and full172/174/175 acceptance gates remain required.
+
+### Confirmed current desktop standard and editable export
+
+`desktop-current-export-v1.json` closes the request over explicit confirmation,
+format and all five actual current token fields. No destination, processing root,
+worker entry or vendor target is accepted. `review-confirm-current-export` binds
+the request to the durable current token and dispatches the existing native
+publisher. Standard publication selects no processing release. Editable
+publication uses only the executable's existing compiled-source/installed-layout/
+manifest/native-byte selector and the full processing admission before the
+existing editable publisher; it still requires the exact current standard bundle.
+
+Tauri consumes old job sessions/plans and shares the apply/undo guard. Before and
+after publication, full physical current reads and original pin checks must agree
+without advancing the graph/token. Native publication flags, format, mode-derived
+file count and manifest identities must match before a replacement session and
+small display receipt are returned. A display path never becomes browser IO,
+media playback or automatic vendor launch authority. Editable receipts retain
+the exact standard-bundle manifest binding; its failure cannot change a prior
+standard result. Cancellation or uncertainty requires actual reload, not retry.
+
+UI confirmation and receipts are separate for the two formats. The client first
+validates the current standard receipt, then permits an editable request bound
+to it. Editing/undo clears those in-memory bindings; published files remain.
+The source is pending and new Rust tests are unrun. Actual installed/current
+B1B2/physical publication/vendor/timing/GUI/crash/long-form acceptance is separate.

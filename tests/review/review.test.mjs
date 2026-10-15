@@ -7,6 +7,9 @@ import { correctionRequest, acceptCorrectionResponse, previewRequest } from "../
 import { ReviewConnection } from "../../apps/desktop/src/features/review/connection.ts";
 import { nativeReviewTransport } from "../../apps/desktop/src/features/review/transport.ts";
 import { currentPlanRequest, sameCurrentPlanRequest, readCurrentPlan } from "../../apps/desktop/src/features/review/current-plan.ts";
+import { currentConfirmation, readCurrentConfirmation, readAppliedCurrent } from "../../apps/desktop/src/features/review/current-apply.ts";
+import { currentUndoRequest, readCurrentUndoRequest, readUndoneCurrent } from "../../apps/desktop/src/features/review/current-undo.ts";
+import { currentExportRequest, readCurrentExportRequest, readExportedCurrent } from "../../apps/desktop/src/features/review/current-export.ts";
 
 const finding = {
   finding_id: "cue-1",
@@ -430,4 +433,260 @@ assert(planCalls.some(c => c.command === "review_cancel_v1" && c.args.requestId 
 pendingPlans[0].resolve(planResponse(beforePlan, proposalRequest));
 await assert.rejects(latePlan, { name: "AbortError" });
 assert.equal(planner.snapshot(), null); planner.dispose();
-console.log("legacy/Python v2, current full-token audio and read-only native correction-plan scope/cancellation tests passed");
+function appliedResponse(before, confirmation, sessionId) {
+  const next = structuredClone(before), plan = confirmation.plan;
+  next.current_token.revision = plan.candidate_revision;
+  next.current_token.snapshot_sha256 = "sha256:" + "9".repeat(64);
+  next.current_token.graph_sha256 = "sha256:" + "7".repeat(64);
+  next.last_plan = structuredClone(plan.plan);
+  for (const item of next.findings) {
+    item.output_preview = "native-retained-render-after-apply";
+    if (item.cue_id !== plan.cue_id) continue;
+    if (plan.changes.translation !== undefined) item.translated_text = plan.changes.translation;
+    if (plan.changes.voice !== undefined) item.voice = plan.changes.voice;
+  }
+  return { schema_version: 1, kind: "review_desktop_applied_current", before_token: structuredClone(before.current_token), session_id: sessionId, snapshot: next };
+}
+const explicit = currentConfirmation(beforePlan, planResponse(beforePlan, proposalRequest));
+const applied = appliedResponse(beforePlan, explicit, "request-apply-result-0001");
+assert.equal(readAppliedCurrent(beforePlan, explicit, applied).current_token.revision, "9007199254740994");
+assert.notEqual(applied.snapshot.current_token.snapshot_sha256, explicit.plan.candidate_snapshot_sha256);
+assert.deepEqual(beforePlan, playable);
+for (const change of [r => { r.confirm = false; }, r => { r.path = "D:/foreign"; }, r => { r.plan.current_token.revision = "0"; }]) {
+  const forged = structuredClone(explicit); change(forged);
+  assert.throws(() => readCurrentConfirmation(beforePlan, forged));
+}
+// The client validates structure/scope, not a hash over durable snapshot bytes.
+// An otherwise valid substituted text is refused by the host-held saved-plan
+// comparison (native unit case), not authenticated by a browser hash claim.
+const clientOnlyChange = structuredClone(explicit); clientOnlyChange.plan.changes.translation = "Substituted";
+assert.equal(readCurrentConfirmation(beforePlan, clientOnlyChange).plan.changes.translation, "Substituted");
+for (const change of [r => { r.before_token.graph_sha256 = "sha256:" + "f".repeat(64); }, r => { r.snapshot.current_token.revision = "0"; },
+  r => { r.snapshot.current_token.original_manifest_sha256 = "sha256:" + "0".repeat(64); }, r => { r.snapshot.current_token.graph_sha256 = beforePlan.current_token.graph_sha256; },
+  r => { r.snapshot.findings[0].source_text = "Lost source"; }, r => { r.snapshot.findings[0].range.start_ticks = "1"; },
+  r => { r.snapshot.findings[0].confidence = "0.99"; }, r => { r.snapshot.findings[0].translated_text = "Different edit"; },
+  r => { r.snapshot.last_plan.stages_to_rerun.reverse(); }, r => { r.snapshot.findings[0].output_preview = null; },
+  r => { r.snapshot.mode = "b1"; }, r => { r.path = "foreign"; }, r => { r.snapshot.findings.pop(); }]) {
+  const forged = structuredClone(applied); change(forged);
+  assert.notDeepEqual(forged, applied); assert.throws(() => readAppliedCurrent(beforePlan, explicit, forged));
+}
+let applyId = 0, waitApply = false, appliedClientView = structuredClone(beforePlan);
+const applyCalls = [], applyPending = [];
+const applyTransport = nativeReviewTransport(async (command, args) => {
+  applyCalls.push({ command, args });
+  if (command === "review_cancel_v1") return;
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: structuredClone(appliedClientView) };
+  if (command === "review_plan_v1") return planResponse(appliedClientView, args.request);
+  if (command === "review_apply_v1") {
+    assert.deepEqual(Object.keys(args).sort(), ["confirmation", "requestId", "sessionId"]);
+    assert.equal(args.confirmation.confirm, true);
+    const response = appliedResponse(appliedClientView, args.confirmation, args.requestId);
+    if (waitApply) return new Promise(resolve => applyPending.push({ args, response, resolve }));
+    appliedClientView = structuredClone(response.snapshot); return response;
+  }
+  if (command === "review_audio_v2") return new ArrayBuffer(44);
+  throw new Error("unsupported apply route");
+}, async () => {}, () => `request-apply-native-${++applyId}`);
+const applying = new ReviewConnection(applyTransport);
+await applying.load(beforePlan.job_id);
+const shown = await applying.actions().planCurrent(proposalRequest, new AbortController().signal);
+const confirmed = currentConfirmation(applying.snapshot(), shown);
+const updated = await applying.actions().applyCurrent(confirmed, new AbortController().signal);
+assert.equal(updated.current_token.revision, "9007199254740994");
+assert.deepEqual(applying.snapshot(), updated);
+const nativeApply = applyCalls.find(c => c.command === "review_apply_v1");
+await applying.actions().preview(previewRequest(updated, updated.findings[0].finding_id), new AbortController().signal);
+assert.equal(applyCalls.findLast(c => c.command === "review_audio_v2").args.sessionId, nativeApply.args.requestId);
+await assert.rejects(applying.actions().applyCurrent(confirmed, new AbortController().signal));
+assert.equal(applyCalls.filter(c => c.command === "review_apply_v1").length, 1);
+
+const retryRequest = currentPlanRequest(updated, { finding_id: updated.findings[0].finding_id, voice: "voice-for-next-apply" });
+const nextPlan = await applying.actions().planCurrent(retryRequest, new AbortController().signal);
+const nextConfirmation = currentConfirmation(updated, nextPlan);
+waitApply = true;
+const applyingAbort = new AbortController(), pendingApply = applying.actions().applyCurrent(nextConfirmation, applyingAbort.signal);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(applyPending.length, 1);
+await assert.rejects(applying.actions().applyCurrent(nextConfirmation, new AbortController().signal), /already in progress/);
+applyingAbort.abort();
+assert(applyCalls.some(c => c.command === "review_cancel_v1" && c.args.requestId === applyPending[0].args.requestId));
+applyPending[0].resolve(applyPending[0].response);
+await assert.rejects(pendingApply, { name: "AbortError" });
+assert.equal(applying.snapshot(), null);
+assert.equal(applyCalls.filter(c => c.command === "review_apply_v1").length, 2);
+applying.dispose();
+
+let uncertainApplyCalls = 0;
+const uncertainApply = new ReviewConnection({ async snapshot() { return beforePlan; }, async preview() {},
+  async applyCurrent() { uncertainApplyCalls++; throw new Error("reply lost after possible commit"); } });
+await uncertainApply.load(beforePlan.job_id);
+await assert.rejects(uncertainApply.actions().applyCurrent(explicit, new AbortController().signal), /reply lost/);
+assert.equal(uncertainApplyCalls, 1); assert.equal(uncertainApply.snapshot(), null);
+assert.throws(() => uncertainApply.actions(), /has not loaded/); uncertainApply.dispose();
+const b1Confirmed = currentConfirmation(b1PlanSnapshot, planResponse(b1PlanSnapshot, b1Plan));
+assert.equal(readAppliedCurrent(b1PlanSnapshot, b1Confirmed, appliedResponse(b1PlanSnapshot, b1Confirmed, "request-apply-b1-0001")).mode, "b1");
+// Undo restores native prior content at a NEW public revision. It never turns a
+// browser-supplied target into authority or reuses a pre-undo public counter.
+function undoneResponse(before, prior, sessionId) {
+  const next = structuredClone(prior);
+  next.current_token = { ...before.current_token, revision: String(BigInt(before.current_token.revision) + 1n),
+    snapshot_sha256: "sha256:" + "6".repeat(64), graph_sha256: prior.current_token.graph_sha256 };
+  return { schema_version: 1, kind: "review_desktop_undone_current", before_token: structuredClone(before.current_token), session_id: sessionId, snapshot: next };
+}
+const undoBefore = structuredClone(updated), undoRequest = currentUndoRequest(undoBefore);
+const undoneResult = undoneResponse(undoBefore, beforePlan, "request-undo-result-0001");
+assert.equal(readUndoneCurrent(undoBefore, undoRequest, undoneResult).current_token.revision, "9007199254740995");
+assert.equal(undoneResult.snapshot.findings[0].translated_text, beforePlan.findings[0].translated_text);
+assert.notEqual(undoneResult.snapshot.current_token.revision, beforePlan.current_token.revision);
+for (const change of [r => { r.confirm = false; }, r => { r.target_snapshot = beforePlan; }, r => { r.path = "D:/foreign"; },
+  r => { r.current_token.revision = "0"; }, r => { r.current_token.graph_sha256 = beforePlan.current_token.graph_sha256; },
+  r => { r.current_token.original_manifest_sha256 = "sha256:" + "f".repeat(64); }, r => { r.current_token.revision = 9007199254740994; }]) {
+  const forged = structuredClone(undoRequest); change(forged); assert.notDeepEqual(forged, undoRequest);
+  assert.throws(() => readCurrentUndoRequest(undoBefore, forged));
+}
+for (const revision of ["0", "9223372036854775807"]) {
+  const invalid = structuredClone(undoBefore); invalid.current_token.revision = revision;
+  assert.throws(() => currentUndoRequest(invalid));
+}
+for (const change of [r => { r.before_token.snapshot_sha256 = "sha256:" + "e".repeat(64); },
+  r => { r.snapshot.current_token.revision = beforePlan.current_token.revision; }, r => { r.snapshot.current_token.graph_sha256 = undoBefore.current_token.graph_sha256; },
+  r => { r.snapshot.current_token.original_manifest_sha256 = "sha256:" + "a".repeat(64); }, r => { r.snapshot.findings[0].source_text = "Changed source"; },
+  r => { r.snapshot.findings[0].range.start_ticks = "1"; }, r => { r.snapshot.findings[0].confidence = "0.98"; },
+  r => { r.snapshot.findings[0].cue_id = "foreign"; }, r => { r.snapshot.mode = "b1"; }, r => { r.snapshot.findings.pop(); },
+  r => { r.session_id = "invalid"; }, r => { r.path = "foreign"; }]) {
+  const forged = structuredClone(undoneResult); change(forged); assert.notDeepEqual(forged, undoneResult);
+  assert.throws(() => readUndoneCurrent(undoBefore, undoRequest, forged));
+}
+let undoId = 0, deferUndo = false, undoClientView = structuredClone(undoBefore);
+const undoCalls = [], undoPending = [];
+const undoTransport = nativeReviewTransport(async (command, args) => {
+  undoCalls.push({ command, args });
+  if (command === "review_cancel_v1") return;
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: structuredClone(undoClientView) };
+  if (command === "review_undo_v1") {
+    assert.deepEqual(Object.keys(args).sort(), ["request", "requestId", "sessionId"]);
+    assert.deepEqual(args.request, currentUndoRequest(undoClientView));
+    const response = undoneResponse(undoClientView, beforePlan, args.requestId);
+    if (deferUndo) return new Promise(resolve => undoPending.push({ args, response, resolve }));
+    undoClientView = structuredClone(response.snapshot); return response;
+  }
+  if (command === "review_audio_v2") return new ArrayBuffer(44);
+  if (command === "review_plan_v1") return planResponse(undoClientView, args.request);
+  throw new Error("undo must not invoke apply, worker or original correction");
+}, async () => {}, () => `request-undo-native-${++undoId}`);
+const undoing = new ReviewConnection(undoTransport);
+await undoing.load(undoBefore.job_id);
+const undoAfter = await undoing.actions().undoCurrent(undoRequest, new AbortController().signal);
+assert.deepEqual(undoing.snapshot(), undoAfter);
+const nativeUndo = undoCalls.find(c => c.command === "review_undo_v1");
+await undoing.actions().preview(previewRequest(undoAfter, undoAfter.findings[0].finding_id), new AbortController().signal);
+assert.equal(undoCalls.findLast(c => c.command === "review_audio_v2").args.sessionId, nativeUndo.args.requestId);
+await assert.rejects(undoing.actions().undoCurrent(undoRequest, new AbortController().signal));
+assert.equal(undoCalls.filter(c => c.command === "review_undo_v1").length, 1);
+// A later edit plan uses the restored content and actual monotonic token. This
+// is client routing evidence, not physical native after-undo qualification.
+const afterUndoEdit = currentPlanRequest(undoAfter, { finding_id: undoAfter.findings[0].finding_id, translation: "Bản dịch sau hoàn tác" });
+const afterUndoPlan = await undoing.actions().planCurrent(afterUndoEdit, new AbortController().signal);
+assert.equal(afterUndoPlan.current_token.revision, "9007199254740995");
+assert.equal(afterUndoPlan.candidate_revision, "9007199254740996");
+assert.deepEqual(undoing.snapshot(), undoAfter);
+undoing.dispose();
+undoClientView = structuredClone(undoBefore); deferUndo = true;
+const abortingUndo = new ReviewConnection(undoTransport); await abortingUndo.load(undoBefore.job_id);
+const undoAbort = new AbortController(), pendingUndo = abortingUndo.actions().undoCurrent(undoRequest, undoAbort.signal);
+await new Promise(resolve => setImmediate(resolve)); assert.equal(undoPending.length, 1);
+await assert.rejects(abortingUndo.actions().undoCurrent(undoRequest, new AbortController().signal), /already in progress/);
+await assert.rejects(abortingUndo.actions().applyCurrent(confirmed, new AbortController().signal), /already in progress/);
+undoAbort.abort();
+assert(undoCalls.some(c => c.command === "review_cancel_v1" && c.args.requestId === undoPending[0].args.requestId));
+undoPending[0].resolve(undoPending[0].response);
+await assert.rejects(pendingUndo, { name: "AbortError" }); assert.equal(abortingUndo.snapshot(), null); abortingUndo.dispose();
+let uncertainUndoCalls = 0;
+const uncertainUndo = new ReviewConnection({ async snapshot() { return undoBefore; }, async preview() {},
+  async undoCurrent() { uncertainUndoCalls++; throw new Error("undo reply lost after possible CAS"); } });
+await uncertainUndo.load(undoBefore.job_id);
+await assert.rejects(uncertainUndo.actions().undoCurrent(undoRequest, new AbortController().signal), /reply lost/);
+assert.equal(uncertainUndoCalls, 1); assert.equal(uncertainUndo.snapshot(), null);
+assert.throws(() => uncertainUndo.actions(), /has not loaded/); uncertainUndo.dispose();
+const b1UndoBefore = readAppliedCurrent(b1PlanSnapshot, b1Confirmed, appliedResponse(b1PlanSnapshot, b1Confirmed, "request-apply-b1-0001"));
+assert.equal(readUndoneCurrent(b1UndoBefore, currentUndoRequest(b1UndoBefore), undoneResponse(b1UndoBefore, b1PlanSnapshot, "request-undo-b1-0001")).mode, "b1");
+function exportResponse(before, format, sessionId) {
+  return { schema_version: 1, kind: "review_desktop_exported_current", format, current_token: structuredClone(before.current_token), session_id: sessionId, snapshot: structuredClone(before),
+    receipt: { schema_version: 1, kind: "review_desktop_export_receipt", format, generation: "a".repeat(64), path: format === "standard" ? "D:/exports/standard" : "D:/exports/import-pack",
+      manifest_sha256: "sha256:" + (format === "standard" ? "2" : "3").repeat(64), standard_manifest_sha256: "sha256:" + "2".repeat(64),
+      files_verified: before.mode === "b1" ? format === "standard" ? 7 : 10 : format === "standard" ? 10 : 13,
+      standard_bundle_published: true, production_editable_pack_published: format === "editable", vendor_execution: false } };
+}
+const exportBefore = structuredClone(undoBefore), standardRequest = currentExportRequest(exportBefore, "standard"), editableRequest = currentExportRequest(exportBefore, "editable");
+const standardResponse = exportResponse(exportBefore, "standard", "request-export-standard-0001");
+const standardChecked = readExportedCurrent(exportBefore, standardRequest, standardResponse);
+assert.deepEqual(standardChecked.snapshot, exportBefore);
+const editableResponse = exportResponse(exportBefore, "editable", "request-export-editable-0001");
+assert.equal(readExportedCurrent(exportBefore, editableRequest, editableResponse, standardChecked.receipt).receipt.production_editable_pack_published, true);
+assert.throws(() => readExportedCurrent(exportBefore, editableRequest, editableResponse), /standard bundle/);
+for (const change of [r => { r.confirm = false; }, r => { r.format = "vendor"; }, r => { r.processing_root = "foreign"; }, r => { r.output_path = "foreign"; },
+  r => { r.current_token.revision = "0"; }, r => { r.current_token.graph_sha256 = "sha256:" + "f".repeat(64); }, r => { r.current_token.original_manifest_sha256 = "sha256:" + "f".repeat(64); }]) {
+  const forged = structuredClone(standardRequest); change(forged); assert.notDeepEqual(forged, standardRequest);
+  assert.throws(() => readCurrentExportRequest(exportBefore, forged));
+}
+for (const change of [r => { r.current_token.revision = "0"; }, r => { r.snapshot.current_token.revision = "0"; }, r => { r.snapshot.findings[0].source_text = "foreign"; },
+  r => { r.snapshot.findings[0].translated_text = "unexpected edit"; }, r => { r.receipt.standard_bundle_published = false; }, r => { r.receipt.vendor_execution = true; },
+  r => { r.receipt.files_verified = 7; }, r => { r.receipt.format = "editable"; }, r => { r.receipt.path = "../foreign"; }, r => { r.receipt.manifest_sha256 = "foreign"; },
+  r => { r.receipt.standard_manifest_sha256 = "sha256:" + "f".repeat(64); }, r => { r.output_root = "foreign"; }]) {
+  const forged = structuredClone(standardResponse); change(forged); assert.notDeepEqual(forged, standardResponse);
+  assert.throws(() => readExportedCurrent(exportBefore, standardRequest, forged));
+}
+const foreignBundle = structuredClone(editableResponse); foreignBundle.receipt.generation = "b".repeat(64);
+assert.throws(() => readExportedCurrent(exportBefore, editableRequest, foreignBundle, standardChecked.receipt));
+for (const format of ["standard", "editable"]) {
+  const standardB1 = exportResponse(b1UndoBefore, "standard", "request-export-b1-standard");
+  assert.equal(readExportedCurrent(b1UndoBefore, currentExportRequest(b1UndoBefore, format), exportResponse(b1UndoBefore, format, "request-export-b1-format"), standardB1.receipt).snapshot.mode, "b1");
+}
+let exportId = 0, waitExport = false, failEditable = false;
+const exportCalls = [], exportPending = [];
+const exportTransport = nativeReviewTransport(async (command, args) => {
+  exportCalls.push({ command, args });
+  if (command === "review_cancel_v1") return;
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: structuredClone(exportBefore) };
+  if (command === "review_export_v1") {
+    assert.deepEqual(Object.keys(args).sort(), ["request", "requestId", "sessionId"]);
+    assert.deepEqual(args.request, currentExportRequest(exportBefore, args.request.format));
+    if (failEditable && args.request.format === "editable") throw new Error("editable capability unavailable; existing standard remains valid");
+    const response = exportResponse(exportBefore, args.request.format, args.requestId);
+    if (waitExport) return new Promise(resolve => exportPending.push({ args, response, resolve }));
+    return response;
+  }
+  if (command === "review_audio_v2") return new ArrayBuffer(44);
+  throw new Error("export must not invoke apply, undo or vendor launch");
+}, async () => {}, () => `request-export-native-${++exportId}`);
+const exporting = new ReviewConnection(exportTransport); await exporting.load(exportBefore.job_id);
+await assert.rejects(exporting.actions().exportCurrent(editableRequest, new AbortController().signal), /standard bundle/);
+assert.equal(exportCalls.filter(c => c.command === "review_export_v1").length, 0);
+const standardReceipt = await exporting.actions().exportCurrent(standardRequest, new AbortController().signal);
+assert.deepEqual(exporting.snapshot(), exportBefore);
+await exporting.actions().preview(previewRequest(exportBefore, exportBefore.findings[0].finding_id), new AbortController().signal);
+assert.equal(exportCalls.findLast(c => c.command === "review_audio_v2").args.sessionId, exportCalls.findLast(c => c.command === "review_export_v1").args.requestId);
+const editableReceipt = await exporting.actions().exportCurrent(editableRequest, new AbortController().signal);
+assert.equal(editableReceipt.standard_manifest_sha256, standardReceipt.manifest_sha256);
+assert.deepEqual(exporting.snapshot(), exportBefore); exporting.dispose();
+const failingEditable = new ReviewConnection(exportTransport); await failingEditable.load(exportBefore.job_id);
+const preservedStandard = await failingEditable.actions().exportCurrent(standardRequest, new AbortController().signal), preservedCopy = structuredClone(preservedStandard);
+failEditable = true;
+await assert.rejects(failingEditable.actions().exportCurrent(editableRequest, new AbortController().signal), /existing standard/);
+assert.deepEqual(preservedStandard, preservedCopy); assert.equal(failingEditable.snapshot(), null);
+assert.equal(exportCalls.filter(c => c.command === "review_export_v1" && c.args.request.format === "standard").length, 2);
+failingEditable.dispose(); failEditable = false; waitExport = true;
+const abortingExport = new ReviewConnection(exportTransport); await abortingExport.load(exportBefore.job_id);
+const exportAbort = new AbortController(), pendingExport = abortingExport.actions().exportCurrent(standardRequest, exportAbort.signal);
+await new Promise(resolve => setImmediate(resolve)); assert.equal(exportPending.length, 1);
+await assert.rejects(abortingExport.actions().undoCurrent(currentUndoRequest(exportBefore), new AbortController().signal), /already in progress/);
+await assert.rejects(abortingExport.actions().exportCurrent(standardRequest, new AbortController().signal), /already in progress/);
+exportAbort.abort(); assert(exportCalls.some(c => c.command === "review_cancel_v1" && c.args.requestId === exportPending[0].args.requestId));
+exportPending[0].resolve(exportPending[0].response); await assert.rejects(pendingExport, { name: "AbortError" }); assert.equal(abortingExport.snapshot(), null); abortingExport.dispose();
+let uncertainExportCalls = 0;
+const uncertainExport = new ReviewConnection({ async snapshot() { return exportBefore; }, async preview() {},
+  async exportCurrent() { uncertainExportCalls++; throw new Error("export reply lost after possible publication"); } });
+await uncertainExport.load(exportBefore.job_id);
+await assert.rejects(uncertainExport.actions().exportCurrent(standardRequest, new AbortController().signal), /reply lost/);
+assert.equal(uncertainExportCalls, 1); assert.equal(uncertainExport.snapshot(), null); uncertainExport.dispose();
+console.log("legacy/Python v2, current full-token audio/plan/apply/undo/standard-editable export routing, immutable evidence and uncertain-result cancellation tests passed");

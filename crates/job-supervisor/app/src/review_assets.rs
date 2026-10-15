@@ -2791,6 +2791,97 @@ mod tests {
         assert_eq!(fs::read(fresh).unwrap(), b"new bytes");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn export_raw_windows_rename_encodes_wide_absolute_paths_without_locator_rewrite() {
+        let encoded = |path: &str| {
+            let value = export_copy::windows_rename_path(Path::new(path)).unwrap();
+            assert_eq!(value.last(), Some(&0));
+            String::from_utf16(&value[..value.len() - 1]).unwrap()
+        };
+        assert_eq!(
+            encoded("C:/owned/tiếng Việt.mp4"),
+            r"\\?\C:\owned\tiếng Việt.mp4"
+        );
+        assert_eq!(encoded(r"\\?\D:\owned\file.mp4"), r"\\?\D:\owned\file.mp4");
+        assert_eq!(
+            encoded(r"\\server\share\owned\file.mp4"),
+            r"\\?\UNC\server\share\owned\file.mp4"
+        );
+        assert_eq!(
+            encoded(r"\\?\UNC\server\share\owned\file.mp4"),
+            r"\\?\UNC\server\share\owned\file.mp4"
+        );
+        for bad in [
+            "relative.mp4",
+            r"C:relative.mp4",
+            r"C:\owned\..\foreign.mp4",
+            r"C:\owned\.\file.mp4",
+            "C:\\owned\\bad\0.mp4",
+            r"\\.\PhysicalDrive0",
+        ] {
+            assert!(export_copy::windows_rename_path(Path::new(bad)).is_err());
+        }
+        let oversized = format!(r"C:\{}\file.mp4", "x".repeat(32767));
+        assert!(export_copy::windows_rename_path(Path::new(&oversized)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn export_atomic_rename_keeps_deep_file_and_directory_paths_and_refuses_replacement() {
+        use std::os::windows::ffi::OsStrExt;
+        let (fixture, _, _) = fixture();
+        let root = fixture
+            .0
+            .join("long native export rename")
+            .join("a".repeat(90))
+            .join("b".repeat(90));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("sealed.partial");
+        let target = root.join("final_vi.mp4");
+        assert!(source.as_os_str().encode_wide().count() > 260);
+        fs::write(&source, b"new sealed bytes").unwrap();
+        let mut permissions = fs::metadata(&source).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&source, permissions).unwrap();
+        export_copy::rename_new(&source, &target).unwrap();
+        assert!(!source.exists());
+        assert_eq!(fs::read(&target).unwrap(), b"new sealed bytes");
+        assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        let modified = fs::metadata(&target).unwrap().modified().unwrap();
+        let conflict = root.join("conflict.partial");
+        fs::write(&conflict, b"keep new bytes").unwrap();
+        assert!(export_copy::rename_new(&conflict, &target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"new sealed bytes");
+        assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), modified);
+        assert_eq!(fs::read(&conflict).unwrap(), b"keep new bytes");
+        let pending = root.join("pending-directory");
+        let published = root.join("published-directory");
+        fs::create_dir(&pending).unwrap();
+        fs::write(pending.join("retained.json"), b"directory bytes").unwrap();
+        export_copy::rename_new(&pending, &published).unwrap();
+        assert!(!pending.exists());
+        assert_eq!(
+            fs::read(published.join("retained.json")).unwrap(),
+            b"directory bytes"
+        );
+        fs::create_dir(&pending).unwrap();
+        fs::write(pending.join("other.json"), b"keep prior staging").unwrap();
+        assert!(export_copy::rename_new(&pending, &published).is_err());
+        assert_eq!(
+            fs::read(pending.join("other.json")).unwrap(),
+            b"keep prior staging"
+        );
+        assert_eq!(
+            fs::read(published.join("retained.json")).unwrap(),
+            b"directory bytes"
+        );
+        // Only this freshly created fixture's sealed file needs unsealing.
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&target, permissions).unwrap();
+    }
+
     #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn export_directory_fence_refusal_preserves_staging_and_restart_recovers_published_version() {

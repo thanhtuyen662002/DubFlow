@@ -15,9 +15,13 @@ drafts can request `review_plan_v1` explicitly before confirmation. The native
 reader checks the actual current content/token and mode, then returns the exact
 scope and candidate metadata hash without running inference or changing durable
 state. The client keeps the current token, rejects substituted scope/changes and
-cancels a check when the draft or selection changes. Apply remains disabled until
-the full-token execution/CAS route is integrated and qualified. Full-token mutation/
-undo/export actions remain to integrate. A current native admission failure
+cancels a check when the draft or selection changes. The versioned apply route
+consumes the native session's exact checked plan once after explicit confirmation.
+The UI updates only from a fresh physically readmitted committed snapshot and a
+new native session/token. Duplicate requests refuse; loss or cancellation of the
+reply clears the binding and requires reload, never automatic retry. The current
+source is pending native/installed qualification. Current initialization, undo
+and export actions remain to integrate. A current native admission failure
 propagates; it does not select an old original snapshot. Standard output remains
 usable independently of Review.
 Component tests and type checks do not qualify native binaries, installed GUI,
@@ -107,3 +111,38 @@ producer/store, validates its acknowledgement in TypeScript and rejects changed
 job/revision/source/range/unrelated finding/voice/plan responses. Browser QA
 provides additional DOM/interaction evidence; it is not a substitute for full
 installed review, targeted regeneration and physical replacement/undo evidence.
+
+## Current undo
+
+Current views expose a separate two-step undo confirmation. The closed request
+contains the actual complete native token and no target paths or snapshot. The
+host selects and admits the prior graph through the existing native undo/CAS
+route. Client/session validation requires a newly physically read current view
+at the next monotonic revision, unchanged source evidence, cue IDs, exact ranges,
+confidence and warnings. Translations, voices, preview descriptors and last-plan
+content can be restored from native history. There is no original-audio fallback
+for missing current B2 audio, and B1 undo does not invent synthesized speech.
+
+Apply and undo share one in-flight mutation per job. Draft edits must be discarded
+before choosing undo. The old plan and session cannot be reused after attempting
+a mutation. Cancellation/selection changes/lost replies require actual reload;
+no automatic retry occurs. A positive counter does not prove remaining history;
+native refusal remains authoritative. Source/client tests are distinct from
+installed UI, native physical undo/crash and full long-form acceptance.
+
+## Current standard and editable publication
+
+The current view offers separate explicit confirmations for standard output and
+an editable import pack. It validates standard output first, then binds an
+editable receipt to the same generation and exact standard manifest. Each native
+response must preserve the complete current snapshot/token while rotating the
+session. Apply, undo and exports share one in-flight operation. An editable
+capability/refusal does not erase the prior standard receipt or files.
+
+The UI displays the validated output directory as text with its exact revision.
+It never turns that path into a media URL, file-read capability or automatic
+editor launch. No browser path/processing selection is sent to native code.
+Cancellation/late/lost replies invalidate the binding and require actual reload;
+there is no automatic resubmission. A new edit/undo clears old in-memory receipts
+while previously published versions remain retained. The changed Node component
+suite/typecheck are distinct from installed GUI and actual native publication.

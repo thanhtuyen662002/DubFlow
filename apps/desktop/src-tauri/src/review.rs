@@ -1,8 +1,8 @@
-//! Optional read-only review IPC. Every audio buffer is bound to a native
-//! completed-export session; the webview supplies identities, never paths.
+//! Optional Review IPC. Read and explicit apply requests are bound to native
+//! completed-export/current sessions; the webview never selects media roots.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -49,11 +49,13 @@ struct Session {
     pin: ExportPin,
     created: Instant,
     binding: SessionBinding,
+    pending_plan: Option<Value>,
 }
 #[derive(Default)]
 struct Registry {
     requests: HashMap<String, RequestSlot>,
     sessions: HashMap<String, Session>,
+    applying_jobs: HashSet<String>,
 }
 
 #[derive(Clone, Default)]
@@ -104,6 +106,18 @@ struct RequestGuard {
     host: ReviewHost,
     id: String,
     cancelled: Arc<AtomicBool>,
+}
+
+struct ApplyGuard {
+    host: ReviewHost,
+    job: String,
+}
+impl Drop for ApplyGuard {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.host.registry.lock() {
+            registry.applying_jobs.remove(&self.job);
+        }
+    }
 }
 impl Drop for RequestGuard {
     fn drop(&mut self) {
@@ -195,6 +209,9 @@ impl ReviewHost {
         if request.cancelled.load(Ordering::SeqCst) {
             return Err("Review đã bị hủy".into());
         }
+        if registry.applying_jobs.contains(&pin.job_id) {
+            return Err("Video đang áp dụng thay đổi; hãy tải lại sau khi tác vụ kết thúc".into());
+        }
         if registry.sessions.len() >= SESSION_LIMIT {
             return Err("Có quá nhiều video review đang mở; hãy đóng video cũ".into());
         }
@@ -204,6 +221,7 @@ impl ReviewHost {
                 pin,
                 created: Instant::now(),
                 binding,
+                pending_plan: None,
             },
         );
         Ok(())
@@ -248,6 +266,200 @@ impl ReviewHost {
             _ => Err("Review đã hết hạn hoặc đổi video; hãy tải lại".into()),
         }
     }
+
+    fn save_plan(
+        &self,
+        session: &str,
+        token: &CurrentToken,
+        request: &RequestGuard,
+        plan: Value,
+    ) -> Result<(), String> {
+        let supplied: CurrentToken = serde_json::from_value(plan["current_token"].clone())
+            .map_err(|_| "Token kế hoạch không hợp lệ")?;
+        if supplied != *token
+            || serde_json::to_vec(&plan)
+                .map_err(|_| "Kế hoạch không hợp lệ")?
+                .len()
+                > 64 * 1024
+        {
+            return Err("Kế hoạch không khớp phiên hoặc vượt giới hạn".into());
+        }
+        let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        registry.prune();
+        if request.cancelled.load(Ordering::SeqCst)
+            || registry.applying_jobs.contains(&token.job_id)
+        {
+            return Err("Kế hoạch đã bị hủy hoặc đang được áp dụng; hãy tải lại".into());
+        }
+        let saved = registry
+            .sessions
+            .get_mut(session)
+            .ok_or("Phiên review đã hết hạn; hãy tải lại")?;
+        if saved.binding != SessionBinding::Current(token.clone()) {
+            return Err("Phiên kế hoạch đã đổi; hãy tải lại".into());
+        }
+        saved.pending_plan = Some(plan);
+        Ok(())
+    }
+
+    /// Consume once before starting work. Other sessions for this job are
+    /// invalidated even on an uncertain result; a reload observes durable CAS.
+    fn consume_plan(
+        &self,
+        session: &str,
+        plan: &Value,
+    ) -> Result<(ExportPin, CurrentToken, ApplyGuard), String> {
+        request_id(session)?;
+        let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        registry.prune();
+        let saved = registry
+            .sessions
+            .get(session)
+            .ok_or("Phiên áp dụng đã hết hạn; hãy tải lại")?;
+        let token = match &saved.binding {
+            SessionBinding::Current(t) => t.clone(),
+            _ => return Err("Áp dụng cần phiên hiện hành; hãy tải lại".into()),
+        };
+        let supplied: CurrentToken = serde_json::from_value(plan["current_token"].clone())
+            .map_err(|_| "Token xác nhận không hợp lệ")?;
+        if supplied != token
+            || saved.pending_plan.as_ref() != Some(plan)
+            || registry.applying_jobs.contains(&token.job_id)
+        {
+            return Err(
+                "Kế hoạch chưa được kiểm tra, đã thay đổi hoặc đang được áp dụng; hãy tải lại"
+                    .into(),
+            );
+        }
+        let pin = saved.pin.clone();
+        let job = token.job_id.clone();
+        registry.sessions.retain(|_, s| s.pin.job_id != job);
+        registry.applying_jobs.insert(job.clone());
+        Ok((
+            pin,
+            token,
+            ApplyGuard {
+                host: self.clone(),
+                job,
+            },
+        ))
+    }
+
+    fn consume_undo(
+        &self,
+        session: &str,
+        supplied: &CurrentToken,
+    ) -> Result<(ExportPin, CurrentToken, ApplyGuard), String> {
+        request_id(session)?;
+        let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        registry.prune();
+        let saved = registry
+            .sessions
+            .get(session)
+            .ok_or("Phiên hoàn tác đã hết hạn; hãy tải lại")?;
+        let token = match &saved.binding {
+            SessionBinding::Current(token) if token == supplied => token.clone(),
+            _ => return Err("Hoàn tác cần đúng phiên hiện hành; hãy tải lại".into()),
+        };
+        let revision = token
+            .revision
+            .parse::<u64>()
+            .map_err(|_| "Phiên hoàn tác không hợp lệ")?;
+        if revision == 0
+            || revision >= i64::MAX as u64
+            || registry.applying_jobs.contains(&token.job_id)
+        {
+            return Err("Chưa thể hoàn tác phiên này; hãy tải lại để kiểm tra".into());
+        }
+        let pin = saved.pin.clone();
+        let job = token.job_id.clone();
+        // Share the apply guard: every older plan/session is consumed even if
+        // the subsequent native undo has an uncertain outcome.
+        registry.sessions.retain(|_, saved| saved.pin.job_id != job);
+        registry.applying_jobs.insert(job.clone());
+        Ok((
+            pin,
+            token,
+            ApplyGuard {
+                host: self.clone(),
+                job,
+            },
+        ))
+    }
+
+    fn consume_export(
+        &self,
+        session: &str,
+        supplied: &CurrentToken,
+    ) -> Result<(ExportPin, CurrentToken, ApplyGuard), String> {
+        request_id(session)?;
+        let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        registry.prune();
+        let saved = registry
+            .sessions
+            .get(session)
+            .ok_or("Phiên xuất đã hết hạn; hãy tải lại")?;
+        let token = match &saved.binding {
+            SessionBinding::Current(token) if token == supplied => token.clone(),
+            _ => return Err("Xuất kết quả cần đúng phiên hiện hành; hãy tải lại".into()),
+        };
+        if registry.applying_jobs.contains(&token.job_id) {
+            return Err("Video đang thực hiện một tác vụ; hãy đợi tác vụ kết thúc".into());
+        }
+        let pin = saved.pin.clone();
+        let job = token.job_id.clone();
+        registry.sessions.retain(|_, saved| saved.pin.job_id != job);
+        registry.applying_jobs.insert(job.clone());
+        Ok((
+            pin,
+            token,
+            ApplyGuard {
+                host: self.clone(),
+                job,
+            },
+        ))
+    }
+
+    /// Only the caller holding this host's live mutation guard may publish the
+    /// freshly readmitted post-CAS session. Snapshot readers cannot recreate an
+    /// old session while the apply is in flight.
+    fn finish_apply_session(
+        &self,
+        request: &RequestGuard,
+        pin: ExportPin,
+        token: CurrentToken,
+        applying: &ApplyGuard,
+    ) -> Result<(), String> {
+        if !Arc::ptr_eq(&self.registry, &applying.host.registry)
+            || !Arc::ptr_eq(&self.registry, &request.host.registry)
+            || applying.job != token.job_id
+            || pin.job_id != token.job_id
+            || pin.manifest_sha256 != token.original_manifest_sha256
+        {
+            return Err("Phiên áp dụng không khớp tác vụ hiện hành".into());
+        }
+        let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        registry.prune();
+        if request.cancelled.load(Ordering::SeqCst)
+            || !registry.applying_jobs.contains(&token.job_id)
+            || registry.sessions.len() >= SESSION_LIMIT
+        {
+            return Err("Phiên áp dụng đã hết hạn hoặc bị hủy; hãy tải lại để kiểm tra".into());
+        }
+        registry
+            .sessions
+            .retain(|_, s| s.pin.job_id != token.job_id);
+        registry.sessions.insert(
+            request.id.clone(),
+            Session {
+                pin,
+                created: Instant::now(),
+                binding: SessionBinding::Current(token),
+                pending_plan: None,
+            },
+        );
+        Ok(())
+    }
 }
 
 fn capture(mut reader: impl Read, limit: usize) -> Result<Vec<u8>, String> {
@@ -261,6 +473,527 @@ fn capture(mut reader: impl Read, limit: usize) -> Result<Vec<u8>, String> {
         return Err("Phản hồi review vượt giới hạn".into());
     }
     Ok(result)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentConfirmation {
+    schema_version: u32,
+    kind: String,
+    confirm: bool,
+    plan: Value,
+}
+
+fn applied_token(
+    before: &CurrentToken,
+    plan: &Value,
+    ack: &Value,
+    fresh: &Value,
+) -> Result<CurrentToken, String> {
+    let error = || "Kết quả áp dụng chưa khớp bản hiện hành; hãy tải lại để kiểm tra".to_owned();
+    let fields = [
+        "schema_version",
+        "kind",
+        "job_id",
+        "revision",
+        "snapshot_sha256",
+        "graph_sha256",
+        "snapshot",
+        "active_graph_published",
+        "correction_ready",
+    ];
+    let expected = before
+        .revision
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_add(1))
+        .filter(|n| *n <= i64::MAX as u64)
+        .ok_or_else(error)?;
+    if ack
+        .as_object()
+        .is_none_or(|o| o.len() != fields.len() || fields.iter().any(|k| !o.contains_key(*k)))
+        || ack["schema_version"].as_u64() != Some(1)
+        || ack["kind"] != "review_native_committed_render"
+        || ack["job_id"] != before.job_id
+        || ack["revision"] != expected.to_string()
+        || plan["candidate_revision"] != expected.to_string()
+        || ack["active_graph_published"] != true
+        || ack["correction_ready"] != false
+        || ack["snapshot"]["job_id"] != before.job_id
+        || ack["snapshot"].as_object().is_none_or(|o| {
+            o.len() != 6
+                || [
+                    "schema_version",
+                    "job_id",
+                    "revision",
+                    "time_base",
+                    "findings",
+                    "last_plan",
+                ]
+                .iter()
+                .any(|k| !o.contains_key(*k))
+        })
+        || ack["snapshot"]["schema_version"].as_u64() != Some(2)
+        || ack["snapshot"]["revision"].as_u64() != Some(expected)
+        || ack["snapshot"]["time_base"] != fresh["time_base"]
+        || ack["snapshot"]["findings"] != fresh["findings"]
+        || ack["snapshot"]["last_plan"] != fresh["last_plan"]
+    {
+        return Err(error());
+    }
+    let after: CurrentToken =
+        serde_json::from_value(fresh["current_token"].clone()).map_err(|_| error())?;
+    if after.job_id != before.job_id
+        || after.revision != expected.to_string()
+        || after.original_manifest_sha256 != before.original_manifest_sha256
+        || !is_sha(&after.snapshot_sha256)
+        || !is_sha(&after.graph_sha256)
+        || after.snapshot_sha256 == before.snapshot_sha256
+        || after.graph_sha256 == before.graph_sha256
+        || ack["snapshot_sha256"] != after.snapshot_sha256
+        || ack["graph_sha256"] != after.graph_sha256
+        || fresh["mode"] != plan["mode"]
+    {
+        return Err(error());
+    }
+    Ok(after)
+}
+
+fn current_apply(
+    host: ReviewHost,
+    session: String,
+    id: String,
+    confirmation: CurrentConfirmation,
+) -> Result<Value, String> {
+    if confirmation.schema_version != 1
+        || confirmation.kind != "review_current_confirmation"
+        || !confirmation.confirm
+    {
+        return Err("Cần xác nhận kế hoạch đã kiểm tra trước khi áp dụng".into());
+    }
+    let request = host.begin(&id)?;
+    let (pin, before, applying) = host.consume_plan(&session, &confirmation.plan)?;
+    let root = super::version_root()?;
+    let data = data_root()?;
+    if trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin {
+        return Err("Bản xuất gốc đã thay đổi; hãy tải lại review".into());
+    }
+    let body = serde_json::json!({"schema_version":1,"kind":"review_current_confirmation","confirm":true,"plan":confirmation.plan});
+    let encoded = serde_json::to_string(&body).map_err(|_| "Không đọc được xác nhận sửa câu")?;
+    // Windows CreateProcess has a UTF-16 command-line bound. Never truncate an
+    // admitted change; refuse before spawning if the complete request is large.
+    if encoded.encode_utf16().count()
+        + data.as_os_str().to_string_lossy().encode_utf16().count()
+        + root.as_os_str().to_string_lossy().encode_utf16().count()
+        > 28000
+    {
+        return Err("Yêu cầu sửa vượt giới hạn; hãy tải lại trước khi tiếp tục".into());
+    }
+    let mut command = Command::new(owned_file(&root, "app/bin/dubflow-supervisor.exe")?);
+    command
+        .arg("review-confirm-current")
+        .arg("--data-root")
+        .arg(&data)
+        .arg("--confirmation-json")
+        .arg(encoded);
+    // Native operations retain their own phase/chunk deadlines. This overall
+    // host bound does not impose the short read-preview timeout on rendering.
+    // Cancellation kills the owned native process; its existing Windows
+    // non-inherited kill-on-close WorkerTree owns each worker before byte-gate.
+    let bytes = run_bounded(
+        command,
+        JSON_LIMIT,
+        Duration::from_secs(8 * 3600),
+        &request.cancelled,
+    )?;
+    let ack: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "Kết quả áp dụng chưa rõ; hãy tải lại để kiểm tra")?;
+    if request.cancelled.load(Ordering::SeqCst)
+        || trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin
+    {
+        return Err("Tác vụ đã bị hủy hoặc dữ liệu thay đổi; hãy tải lại để kiểm tra".into());
+    }
+    let fresh = current_state(&root, &data, &before.job_id, &pin, &request.cancelled)?
+        .ok_or("Không đọc được bản đã áp dụng; hãy tải lại")?;
+    let after = applied_token(&before, &body["plan"], &ack, &fresh)?;
+    if request.cancelled.load(Ordering::SeqCst)
+        || trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin
+    {
+        return Err("Kết quả đến sau khi tác vụ bị hủy; hãy tải lại để kiểm tra".into());
+    }
+    host.finish_apply_session(&request, pin, after, &applying)?;
+    Ok(
+        serde_json::json!({"schema_version":1,"kind":"review_desktop_applied_current","before_token":body["plan"]["current_token"],"session_id":id,"snapshot":fresh}),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentUndoRequest {
+    schema_version: u32,
+    kind: String,
+    confirm: bool,
+    current_token: CurrentToken,
+}
+
+fn undone_token(
+    before: &CurrentToken,
+    previous: &Value,
+    ack: &Value,
+    fresh: &Value,
+) -> Result<CurrentToken, String> {
+    let error = || "Kết quả hoàn tác chưa khớp bản hiện hành; hãy tải lại để kiểm tra".to_owned();
+    let expected = before
+        .revision
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_add(1))
+        .filter(|n| *n <= i64::MAX as u64)
+        .ok_or_else(error)?;
+    let fields = [
+        "schema_version",
+        "kind",
+        "job_id",
+        "revision",
+        "snapshot_sha256",
+        "graph_sha256",
+        "snapshot",
+        "active_graph_published",
+        "correction_ready",
+    ];
+    let snapshot_fields = [
+        "schema_version",
+        "job_id",
+        "revision",
+        "time_base",
+        "findings",
+        "last_plan",
+    ];
+    if ack
+        .as_object()
+        .is_none_or(|o| o.len() != fields.len() || fields.iter().any(|k| !o.contains_key(*k)))
+        || ack["schema_version"].as_u64() != Some(1)
+        || ack["kind"] != "review_active_native_state"
+        || ack["job_id"] != before.job_id
+        || ack["revision"] != expected.to_string()
+        || ack["active_graph_published"].as_bool().is_none()
+        || ack["correction_ready"] != false
+        || ack["snapshot"].as_object().is_none_or(|o| {
+            o.len() != snapshot_fields.len() || snapshot_fields.iter().any(|k| !o.contains_key(*k))
+        })
+        || ack["snapshot"]["schema_version"].as_u64() != Some(2)
+        || ack["snapshot"]["job_id"] != before.job_id
+        || ack["snapshot"]["revision"].as_u64() != Some(expected)
+        || ack["snapshot"]["time_base"] != fresh["time_base"]
+        || ack["snapshot"]["findings"] != fresh["findings"]
+        || ack["snapshot"]["last_plan"] != fresh["last_plan"]
+        || previous["mode"] != fresh["mode"]
+        || previous["time_base"] != fresh["time_base"]
+    {
+        return Err(error());
+    }
+    let after: CurrentToken =
+        serde_json::from_value(fresh["current_token"].clone()).map_err(|_| error())?;
+    if after.job_id != before.job_id
+        || after.revision != expected.to_string()
+        || after.original_manifest_sha256 != before.original_manifest_sha256
+        || !is_sha(&after.snapshot_sha256)
+        || !is_sha(&after.graph_sha256)
+        || after.snapshot_sha256 == before.snapshot_sha256
+        || after.graph_sha256 == before.graph_sha256
+        || ack["snapshot_sha256"] != after.snapshot_sha256
+        || ack["graph_sha256"] != after.graph_sha256
+    {
+        return Err(error());
+    }
+    let old = previous["findings"].as_array().ok_or_else(error)?;
+    let next = fresh["findings"].as_array().ok_or_else(error)?;
+    if old.len() != next.len() {
+        return Err(error());
+    }
+    for (source, restored) in old.iter().zip(next) {
+        if !source.is_object() || !restored.is_object() {
+            return Err(error());
+        }
+        let mut preserved = source.clone();
+        for key in ["translated_text", "voice", "output_preview"] {
+            if !source.as_object().unwrap().contains_key(key)
+                || !restored.as_object().unwrap().contains_key(key)
+            {
+                return Err(error());
+            }
+            preserved[key] = restored[key].clone();
+        }
+        if preserved != *restored {
+            return Err(error());
+        }
+    }
+    Ok(after)
+}
+
+fn current_undo(
+    host: ReviewHost,
+    session: String,
+    id: String,
+    input: CurrentUndoRequest,
+) -> Result<Value, String> {
+    if input.schema_version != 1 || input.kind != "review_current_undo" || !input.confirm {
+        return Err("Cần xác nhận hoàn tác bản hiện hành".into());
+    }
+    job_id(&input.current_token.job_id)?;
+    let request = host.begin(&id)?;
+    let (pin, before, applying) = host.consume_undo(&session, &input.current_token)?;
+    let root = super::version_root()?;
+    let data = data_root()?;
+    if trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin {
+        return Err("Bản xuất gốc đã thay đổi; hãy tải lại review".into());
+    }
+    let previous = current_state(&root, &data, &before.job_id, &pin, &request.cancelled)?
+        .ok_or("Không đọc được bản trước hoàn tác; hãy tải lại")?;
+    let actual: CurrentToken = serde_json::from_value(previous["current_token"].clone())
+        .map_err(|_| "Token hiện hành không hợp lệ")?;
+    if actual != before {
+        return Err("Review đã thay đổi trước hoàn tác; hãy tải lại".into());
+    }
+    let mut command = Command::new(owned_file(&root, "app/bin/dubflow-supervisor.exe")?);
+    command
+        .arg("review-undo-active")
+        .arg("--data-root")
+        .arg(&data)
+        .arg("--job-id")
+        .arg(&before.job_id)
+        .arg("--revision")
+        .arg(&before.revision)
+        .arg("--snapshot-sha256")
+        .arg(&before.snapshot_sha256)
+        .arg("--graph-sha256")
+        .arg(&before.graph_sha256);
+    // This existing native command physically admits current+prior graphs and
+    // performs monotonic CAS under JobExecutionGuard. No producer is executed.
+    let bytes = run_bounded(
+        command,
+        JSON_LIMIT,
+        Duration::from_secs(740),
+        &request.cancelled,
+    )?;
+    let ack: Value =
+        serde_json::from_slice(&bytes).map_err(|_| "Kết quả hoàn tác chưa rõ; hãy tải lại")?;
+    if request.cancelled.load(Ordering::SeqCst)
+        || trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin
+    {
+        return Err("Hoàn tác đã bị hủy hoặc dữ liệu đổi; hãy tải lại để kiểm tra".into());
+    }
+    let fresh = current_state(&root, &data, &before.job_id, &pin, &request.cancelled)?
+        .ok_or("Không đọc được bản sau hoàn tác; hãy tải lại")?;
+    let after = undone_token(&before, &previous, &ack, &fresh)?;
+    if request.cancelled.load(Ordering::SeqCst)
+        || trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin
+    {
+        return Err("Kết quả hoàn tác đến sau khi hủy; hãy tải lại để kiểm tra".into());
+    }
+    host.finish_apply_session(&request, pin, after, &applying)?;
+    Ok(
+        serde_json::json!({"schema_version":1,"kind":"review_desktop_undone_current","before_token":previous["current_token"],"session_id":id,"snapshot":fresh}),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentExportRequest {
+    schema_version: u32,
+    kind: String,
+    confirm: bool,
+    format: String,
+    current_token: CurrentToken,
+}
+
+fn exported_receipt(
+    before: &CurrentToken,
+    format: &str,
+    mode: &str,
+    ack: &Value,
+) -> Result<Value, String> {
+    let error = || "Bản xuất chưa khớp phiên hiện hành; hãy tải lại để kiểm tra".to_owned();
+    let mut fields = vec![
+        "schema_version",
+        "kind",
+        "current_token",
+        "generation",
+        "path",
+        "manifest_sha256",
+        "files_verified",
+        "standard_bundle_published",
+        "production_editable_pack_published",
+        "current_generation_checked",
+        "correction_ready",
+    ];
+    if format == "editable" {
+        fields.extend([
+            "bundle_manifest_sha256",
+            "processing_receipt",
+            "context_sha256",
+            "worker",
+            "vendor_execution",
+            "active_graph_changed",
+        ]);
+    }
+    let token: CurrentToken =
+        serde_json::from_value(ack["current_token"].clone()).map_err(|_| error())?;
+    let expected = match (format, mode) {
+        ("standard", "b1") => 7,
+        ("standard", "b2") => 10,
+        ("editable", "b1") => 10,
+        ("editable", "b2") => 13,
+        _ => return Err(error()),
+    };
+    if ack
+        .as_object()
+        .is_none_or(|o| o.len() != fields.len() || fields.iter().any(|k| !o.contains_key(*k)))
+        || ack["schema_version"].as_u64() != Some(1)
+        || token != *before
+        || ack["kind"]
+            != if format == "standard" {
+                "review_native_current_export_result"
+            } else {
+                "review_native_current_editable_result"
+            }
+        || ack["files_verified"].as_u64() != Some(expected)
+        || ack["standard_bundle_published"] != true
+        || ack["production_editable_pack_published"] != (format == "editable")
+        || ack["current_generation_checked"] != true
+        || ack["correction_ready"] != false
+    {
+        return Err(error());
+    }
+    let generation = ack["generation"].as_str().ok_or_else(error)?;
+    let manifest = ack["manifest_sha256"].as_str().ok_or_else(error)?;
+    let path = ack["path"].as_str().ok_or_else(error)?;
+    if generation.len() != 64
+        || !generation
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        || !is_sha(manifest)
+        || path.is_empty()
+        || path.encode_utf16().count() > 32767
+        || path.chars().any(char::is_control)
+        || !Path::new(path).is_absolute()
+        || Path::new(path)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(error());
+    }
+    let standard_manifest = if format == "editable" {
+        let recipe = &ack["processing_receipt"];
+        let digest = ack["bundle_manifest_sha256"].as_str().ok_or_else(error)?;
+        if !is_sha(digest)
+            || !ack["context_sha256"].as_str().is_some_and(is_sha)
+            || recipe["schema_version"].as_u64() != Some(1)
+            || recipe["kind"] != "review_admitted_editable_pack"
+            || recipe["capability"] != "review_editable_pack_v1"
+            || !recipe["recipe_identity"].as_str().is_some_and(is_sha)
+            || !recipe["execution_identity"].as_str().is_some_and(is_sha)
+            || recipe["current_generation_admitted"] != false
+            || recipe["model_provisioning"] != false
+            || recipe["vendor_execution"] != false
+            || recipe["active_graph_published"] != false
+            || recipe["correction_ready"] != false
+            || ack["vendor_execution"] != false
+            || ack["active_graph_changed"] != false
+            || !(ack["worker"].is_null() || ack["worker"].is_object())
+        {
+            return Err(error());
+        }
+        digest
+    } else {
+        manifest
+    };
+    // Only display data crosses this boundary. There is no open-file, media URL
+    // or vendor-launch authority attached to the returned path.
+    Ok(
+        serde_json::json!({"schema_version":1,"kind":"review_desktop_export_receipt","format":format,"generation":generation,"path":path,
+        "manifest_sha256":manifest,"standard_manifest_sha256":standard_manifest,"files_verified":expected,
+        "standard_bundle_published":true,"production_editable_pack_published":format=="editable","vendor_execution":false}),
+    )
+}
+
+fn current_export(
+    host: ReviewHost,
+    session: String,
+    id: String,
+    input: CurrentExportRequest,
+) -> Result<Value, String> {
+    if input.schema_version != 1
+        || input.kind != "review_current_export_confirmation"
+        || !input.confirm
+        || !matches!(input.format.as_str(), "standard" | "editable")
+    {
+        return Err("Cần xác nhận định dạng xuất cho bản hiện hành".into());
+    }
+    job_id(&input.current_token.job_id)?;
+    let request = host.begin(&id)?;
+    let (pin, before, applying) = host.consume_export(&session, &input.current_token)?;
+    let root = super::version_root()?;
+    let data = data_root()?;
+    if trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin {
+        return Err("Bản xuất gốc đã đổi; hãy tải lại".into());
+    }
+    let previous = current_state(&root, &data, &before.job_id, &pin, &request.cancelled)?
+        .ok_or("Không đọc được bản hiện hành; hãy tải lại")?;
+    let actual: CurrentToken = serde_json::from_value(previous["current_token"].clone())
+        .map_err(|_| "Token xuất không hợp lệ")?;
+    if actual != before {
+        return Err("Phiên xuất đã đổi; hãy tải lại".into());
+    }
+    let body = serde_json::json!({"schema_version":1,"kind":"review_current_export_confirmation","confirm":true,"format":input.format,"current_token":previous["current_token"]});
+    let encoded = serde_json::to_string(&body).map_err(|_| "Không đọc được xác nhận xuất")?;
+    if encoded.encode_utf16().count()
+        + root.as_os_str().to_string_lossy().encode_utf16().count()
+        + data.as_os_str().to_string_lossy().encode_utf16().count()
+        > 28000
+    {
+        return Err("Yêu cầu xuất vượt giới hạn đường dẫn; hãy tải lại để kiểm tra".into());
+    }
+    let mut command = Command::new(owned_file(&root, "app/bin/dubflow-supervisor.exe")?);
+    command
+        .arg("review-confirm-current-export")
+        .arg("--data-root")
+        .arg(&data)
+        .arg("--request-json")
+        .arg(encoded);
+    let bytes = run_bounded(
+        command,
+        JSON_LIMIT,
+        Duration::from_secs(8 * 3600),
+        &request.cancelled,
+    )?;
+    let ack: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "Kết quả xuất chưa rõ; hãy tải lại để kiểm tra")?;
+    if request.cancelled.load(Ordering::SeqCst)
+        || trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin
+    {
+        return Err("Xuất đã bị hủy hoặc dữ liệu đổi; hãy tải lại".into());
+    }
+    let receipt = exported_receipt(
+        &before,
+        &input.format,
+        previous["mode"]
+            .as_str()
+            .ok_or("Chế độ xuất không hợp lệ")?,
+        &ack,
+    )?;
+    let fresh = current_state(&root, &data, &before.job_id, &pin, &request.cancelled)?
+        .ok_or("Không đọc được bản sau xuất; hãy tải lại")?;
+    if fresh != previous
+        || request.cancelled.load(Ordering::SeqCst)
+        || trusted_pin(&root, &data, &before.job_id, &request.cancelled)? != pin
+    {
+        return Err("Review đã đổi trong khi xuất; hãy tải lại để kiểm tra".into());
+    }
+    host.finish_apply_session(&request, pin, before, &applying)?;
+    Ok(
+        serde_json::json!({"schema_version":1,"kind":"review_desktop_exported_current","format":input.format,"current_token":fresh["current_token"],"session_id":id,"snapshot":fresh,"receipt":receipt}),
+    )
 }
 
 /// Readers drain both pipes concurrently. A finite deadline covers process
@@ -726,6 +1459,7 @@ fn current_plan(
     {
         return Err("Kế hoạch không còn gắn với thay đổi đang xem; hãy tải lại".into());
     }
+    host.save_plan(&session, &token, &request, result.clone())?;
     Ok(result)
 }
 
@@ -911,6 +1645,51 @@ pub async fn review_plan_v1(
 }
 
 #[tauri::command]
+pub async fn review_apply_v1(
+    host: tauri::State<'_, ReviewHost>,
+    session_id: String,
+    request_id: String,
+    confirmation: CurrentConfirmation,
+) -> Result<Value, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        current_apply(host, session_id, request_id, confirmation)
+    })
+    .await
+    .map_err(|_| "Tác vụ sửa câu bị gián đoạn; hãy tải lại để kiểm tra kết quả".to_owned())?
+}
+
+#[tauri::command]
+pub async fn review_undo_v1(
+    host: tauri::State<'_, ReviewHost>,
+    session_id: String,
+    request_id: String,
+    request: CurrentUndoRequest,
+) -> Result<Value, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        current_undo(host, session_id, request_id, request)
+    })
+    .await
+    .map_err(|_| "Tác vụ hoàn tác bị gián đoạn; hãy tải lại để kiểm tra".to_owned())?
+}
+
+#[tauri::command]
+pub async fn review_export_v1(
+    host: tauri::State<'_, ReviewHost>,
+    session_id: String,
+    request_id: String,
+    request: CurrentExportRequest,
+) -> Result<Value, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        current_export(host, session_id, request_id, request)
+    })
+    .await
+    .map_err(|_| "Tác vụ xuất bị gián đoạn; hãy tải lại để kiểm tra".to_owned())?
+}
+
+#[tauri::command]
 pub async fn review_audio_v1(
     host: tauri::State<'_, ReviewHost>,
     session_id: String,
@@ -936,6 +1715,401 @@ pub fn review_cancel_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn apply_fixture() -> (ReviewHost, CurrentToken, Value) {
+        let host = ReviewHost::default();
+        let pin = ExportPin {
+            schema_version: 1,
+            kind: "review_export_pin".into(),
+            job_id: "job-apply".into(),
+            manifest_path: std::env::temp_dir().join("manifest.json"),
+            manifest_sha256: format!("sha256:{}", "a".repeat(64)),
+            manifest_size_bytes: 10,
+            attempt: 1,
+        };
+        let token = CurrentToken {
+            job_id: pin.job_id.clone(),
+            revision: "9007199254740993".into(),
+            snapshot_sha256: format!("sha256:{}", "b".repeat(64)),
+            graph_sha256: format!("sha256:{}", "c".repeat(64)),
+            original_manifest_sha256: pin.manifest_sha256.clone(),
+        };
+        let plan = serde_json::json!({"current_token":{"job_id":token.job_id,"revision":token.revision,"snapshot_sha256":token.snapshot_sha256,"graph_sha256":token.graph_sha256,"original_manifest_sha256":token.original_manifest_sha256},
+            "candidate_revision":"9007199254740994","mode":"b2","cue_id":"cue-a","changes":{"translation":"Changed"}});
+        let request = host.begin("request-apply-session-0001").unwrap();
+        host.save_bound_session(&request, pin, SessionBinding::Current(token.clone()))
+            .unwrap();
+        drop(request);
+        (host, token, plan)
+    }
+
+    #[test]
+    fn export_shares_the_job_guard_and_rotates_the_session_without_advancing_the_token() {
+        let (host, token, plan) = apply_fixture();
+        let mut foreign = token.clone();
+        foreign.original_manifest_sha256 = format!("sha256:{}", "f".repeat(64));
+        assert!(host
+            .consume_export("request-apply-session-0001", &foreign)
+            .is_err());
+        let (pin, before, guard) = host
+            .consume_export("request-apply-session-0001", &token)
+            .unwrap();
+        assert!(host
+            .consume_plan("request-apply-session-0001", &plan)
+            .is_err());
+        assert!(host
+            .consume_undo("request-apply-session-0001", &token)
+            .is_err());
+        let request = host.begin("request-export-complete-0001").unwrap();
+        assert!(host
+            .save_bound_session(
+                &request,
+                pin.clone(),
+                SessionBinding::Current(token.clone())
+            )
+            .is_err());
+        host.finish_apply_session(&request, pin, before, &guard)
+            .unwrap();
+        assert_eq!(
+            host.current_session(&request.id, &token.job_id)
+                .unwrap()
+                .1
+                .revision,
+            token.revision
+        );
+        assert!(host
+            .registry
+            .lock()
+            .unwrap()
+            .sessions
+            .get(&request.id)
+            .unwrap()
+            .pending_plan
+            .is_none());
+    }
+
+    #[test]
+    fn standard_and_editable_receipts_require_native_current_identity_and_correct_publication_flags(
+    ) {
+        let (_, before, plan) = apply_fixture();
+        let path = std::env::temp_dir().join("export-receipt-no-io");
+        let standard = serde_json::json!({"schema_version":1,"kind":"review_native_current_export_result","current_token":plan["current_token"],"generation":"d".repeat(64),"path":path,
+            "manifest_sha256":format!("sha256:{}","e".repeat(64)),"files_verified":10,"standard_bundle_published":true,"production_editable_pack_published":false,"current_generation_checked":true,"correction_ready":false});
+        let receipt = exported_receipt(&before, "standard", "b2", &standard).unwrap();
+        assert_eq!(
+            receipt["standard_manifest_sha256"],
+            standard["manifest_sha256"]
+        );
+        assert_eq!(receipt["vendor_execution"], false);
+        assert!(exported_receipt(&before, "standard", "b1", &standard).is_err());
+        let mut editable = standard.clone();
+        editable["kind"] = serde_json::json!("review_native_current_editable_result");
+        editable["files_verified"] = serde_json::json!(13);
+        editable["production_editable_pack_published"] = serde_json::json!(true);
+        editable["bundle_manifest_sha256"] = standard["manifest_sha256"].clone();
+        editable["manifest_sha256"] = serde_json::json!(format!("sha256:{}", "f".repeat(64)));
+        editable["context_sha256"] = serde_json::json!(format!("sha256:{}", "1".repeat(64)));
+        editable["processing_receipt"] = serde_json::json!({"schema_version":1,"kind":"review_admitted_editable_pack","capability":"review_editable_pack_v1","recipe_identity":format!("sha256:{}","2".repeat(64)),"execution_identity":format!("sha256:{}","3".repeat(64)),"current_generation_admitted":false,"model_provisioning":false,"vendor_execution":false,"active_graph_published":false,"correction_ready":false});
+        editable["worker"] = Value::Null;
+        editable["vendor_execution"] = serde_json::json!(false);
+        editable["active_graph_changed"] = serde_json::json!(false);
+        assert_eq!(
+            exported_receipt(&before, "editable", "b2", &editable).unwrap()
+                ["standard_manifest_sha256"],
+            standard["manifest_sha256"]
+        );
+        for change in 0..10 {
+            let mut bad = editable.clone();
+            match change {
+                0 => bad["current_token"]["revision"] = serde_json::json!("0"),
+                1 => {
+                    bad["current_token"]["original_manifest_sha256"] = serde_json::json!("foreign")
+                }
+                2 => bad["standard_bundle_published"] = serde_json::json!(false),
+                3 => bad["current_generation_checked"] = serde_json::json!(false),
+                4 => bad["files_verified"] = serde_json::json!(10),
+                5 => bad["processing_receipt"]["model_provisioning"] = serde_json::json!(true),
+                6 => bad["vendor_execution"] = serde_json::json!(true),
+                7 => bad["active_graph_changed"] = serde_json::json!(true),
+                8 => bad["path"] = serde_json::json!("../foreign"),
+                _ => bad["manifest_sha256"] = serde_json::json!("foreign"),
+            }
+            assert!(exported_receipt(&before, "editable", "b2", &bad).is_err());
+        }
+    }
+
+    #[test]
+    fn undo_consumes_full_token_and_shares_the_apply_job_guard() {
+        let (host, token, plan) = apply_fixture();
+        let mut foreign = token.clone();
+        foreign.graph_sha256 = format!("sha256:{}", "f".repeat(64));
+        assert!(host
+            .consume_undo("request-apply-session-0001", &foreign)
+            .is_err());
+        assert!(host
+            .current_session("request-apply-session-0001", &token.job_id)
+            .is_ok());
+        let planning = host.begin("request-undo-plan-0002").unwrap();
+        host.save_plan(
+            "request-apply-session-0001",
+            &token,
+            &planning,
+            plan.clone(),
+        )
+        .unwrap();
+        let (pin, _, guard) = host
+            .consume_undo("request-apply-session-0001", &token)
+            .unwrap();
+        assert!(host
+            .consume_plan("request-apply-session-0001", &plan)
+            .is_err());
+        assert!(host
+            .consume_undo("request-apply-session-0001", &token)
+            .is_err());
+        let racing = host.begin("request-undo-racing-0003").unwrap();
+        assert!(host
+            .save_bound_session(&racing, pin.clone(), SessionBinding::Current(token.clone()))
+            .is_err());
+        host.cancel(&racing.id).unwrap();
+        assert!(host
+            .finish_apply_session(&racing, pin.clone(), token.clone(), &guard)
+            .is_err());
+        drop(guard);
+        assert!(host
+            .current_session("request-apply-session-0001", &token.job_id)
+            .is_err());
+        let reload = host.begin("request-undo-reload-0004").unwrap();
+        host.save_bound_session(&reload, pin, SessionBinding::Current(token.clone()))
+            .unwrap();
+        assert!(host.consume_undo(&reload.id, &token).is_ok());
+    }
+
+    #[test]
+    fn undo_requires_explicit_closed_request_before_runtime_and_refuses_initial_revision() {
+        let (host, token, _) = apply_fixture();
+        let request = CurrentUndoRequest {
+            schema_version: 1,
+            kind: "review_current_undo".into(),
+            confirm: false,
+            current_token: token.clone(),
+        };
+        assert!(current_undo(
+            host.clone(),
+            "request-apply-session-0001".into(),
+            "request-undo-false-0001".into(),
+            request
+        )
+        .is_err());
+        assert!(host
+            .current_session("request-apply-session-0001", &token.job_id)
+            .is_ok());
+        let raw = serde_json::json!({"schema_version":1,"kind":"review_current_undo","confirm":true,"current_token":{
+            "job_id":token.job_id,"revision":token.revision,"snapshot_sha256":token.snapshot_sha256,"graph_sha256":token.graph_sha256,"original_manifest_sha256":token.original_manifest_sha256},"target_path":"foreign"});
+        assert!(serde_json::from_value::<CurrentUndoRequest>(raw).is_err());
+        let pin = host
+            .current_session("request-apply-session-0001", &token.job_id)
+            .unwrap()
+            .0;
+        for revision in ["0", "9223372036854775807"] {
+            let mut t = token.clone();
+            t.revision = revision.into();
+            let id = format!("request-undo-bound-{}", revision);
+            let request = host.begin(&id).unwrap();
+            host.save_bound_session(&request, pin.clone(), SessionBinding::Current(t.clone()))
+                .unwrap();
+            assert!(host.consume_undo(&id, &t).is_err());
+        }
+    }
+
+    #[test]
+    fn undo_ack_reopens_same_native_metadata_and_preserves_immutable_evidence_at_wide_revision() {
+        let (_, before, _) = apply_fixture();
+        let previous = serde_json::json!({"mode":"b2","time_base":{"numerator":"1","denominator":"90000"},"findings":[
+            {"finding_id":"f1","cue_id":"c1","source_text":"Source","confidence":0.9838564395904541f64,"range":{"start_ticks":"10","end_ticks":"20"},"translated_text":"Changed","voice":"voice-new","output_preview":"retained-new"},
+            {"finding_id":"f2","cue_id":"c2","source_text":"Other","translated_text":"Changed too","voice":"voice-b","output_preview":"retained-new"}]});
+        let mut findings = previous["findings"].clone();
+        findings[0]["translated_text"] = serde_json::json!("Prior");
+        findings[0]["voice"] = Value::Null;
+        findings[0]["output_preview"] = Value::Null;
+        findings[1]["translated_text"] = serde_json::json!("Prior too");
+        let ack = serde_json::json!({"schema_version":1,"kind":"review_active_native_state","job_id":before.job_id,"revision":"9007199254740994", "snapshot_sha256":format!("sha256:{}","d".repeat(64)),"graph_sha256":format!("sha256:{}","e".repeat(64)),
+            "snapshot":{"schema_version":2,"job_id":before.job_id,"revision":9007199254740994u64,"time_base":previous["time_base"],"findings":findings,"last_plan":null},"active_graph_published":false,"correction_ready":false});
+        let fresh = serde_json::json!({"mode":"b2","current_token":{"job_id":before.job_id,"revision":"9007199254740994","snapshot_sha256":ack["snapshot_sha256"],"graph_sha256":ack["graph_sha256"],"original_manifest_sha256":before.original_manifest_sha256},"time_base":previous["time_base"],"findings":ack["snapshot"]["findings"],"last_plan":null});
+        assert_eq!(
+            undone_token(&before, &previous, &ack, &fresh)
+                .unwrap()
+                .revision,
+            "9007199254740994"
+        );
+        let mut retained = ack.clone();
+        retained["active_graph_published"] = Value::Bool(true);
+        assert!(undone_token(&before, &previous, &retained, &fresh).is_ok());
+        for change in 0..12 {
+            let mut a = ack.clone();
+            let mut f = fresh.clone();
+            match change {
+                0 => a["kind"] = serde_json::json!("review_native_committed_render"),
+                1 => a["revision"] = serde_json::json!("0"),
+                2 => a["snapshot"]["revision"] = serde_json::json!(9007199254740993u64),
+                3 => f["current_token"]["original_manifest_sha256"] = serde_json::json!("foreign"),
+                4 => a["graph_sha256"] = serde_json::json!("foreign"),
+                5 => f["current_token"]["graph_sha256"] = serde_json::json!(before.graph_sha256),
+                6 => f["mode"] = serde_json::json!("b1"),
+                7 => {
+                    f["time_base"]["numerator"] = serde_json::json!("2");
+                    a["snapshot"]["time_base"] = f["time_base"].clone();
+                }
+                8 => f["last_plan"] = serde_json::json!({"invented":true}),
+                9 => {
+                    f["findings"][0]["source_text"] = serde_json::json!("Lost source");
+                    a["snapshot"]["findings"] = f["findings"].clone();
+                }
+                10 => {
+                    f["findings"][0]["confidence"] = serde_json::json!(0.98);
+                    a["snapshot"]["findings"] = f["findings"].clone();
+                }
+                _ => {
+                    f["findings"].as_array_mut().unwrap().pop();
+                    a["snapshot"]["findings"] = f["findings"].clone();
+                }
+            }
+            assert!(undone_token(&before, &previous, &a, &f).is_err());
+        }
+    }
+
+    #[test]
+    fn native_plan_is_consumed_once_and_uncertain_apply_requires_a_new_current_session() {
+        let (host, token, plan) = apply_fixture();
+        assert!(host
+            .consume_plan("request-apply-session-0001", &plan)
+            .is_err());
+        let request = host.begin("request-apply-plan-0001").unwrap();
+        host.save_plan("request-apply-session-0001", &token, &request, plan.clone())
+            .unwrap();
+        let mut changed = plan.clone();
+        changed["changes"]["translation"] = serde_json::json!("Substituted");
+        assert!(host
+            .consume_plan("request-apply-session-0001", &changed)
+            .is_err());
+        let (pin, saved, guard) = host
+            .consume_plan("request-apply-session-0001", &plan)
+            .unwrap();
+        assert_eq!(saved.revision, token.revision);
+        assert!(host
+            .consume_plan("request-apply-session-0001", &plan)
+            .is_err());
+        assert!(host
+            .current_session("request-apply-session-0001", "job-apply")
+            .is_err());
+        assert!(host
+            .registry
+            .lock()
+            .unwrap()
+            .applying_jobs
+            .contains("job-apply"));
+        let competing = host.begin("request-apply-reload-0001").unwrap();
+        assert!(host
+            .save_bound_session(
+                &competing,
+                pin.clone(),
+                SessionBinding::Current(token.clone())
+            )
+            .is_err());
+        let finished = host.begin("request-apply-finish-0001").unwrap();
+        let mut next = token.clone();
+        next.revision = "9007199254740994".into();
+        host.finish_apply_session(&finished, pin, next.clone(), &guard)
+            .unwrap();
+        assert_eq!(
+            host.current_session("request-apply-finish-0001", "job-apply")
+                .unwrap()
+                .1
+                .revision,
+            next.revision
+        );
+        assert!(host
+            .save_bound_session(
+                &competing,
+                host.current_session("request-apply-finish-0001", "job-apply")
+                    .unwrap()
+                    .0,
+                SessionBinding::Current(token.clone())
+            )
+            .is_err());
+        drop(guard);
+        assert!(!host
+            .registry
+            .lock()
+            .unwrap()
+            .applying_jobs
+            .contains("job-apply"));
+        assert!(host
+            .current_session("request-apply-session-0001", "job-apply")
+            .is_err());
+    }
+
+    #[test]
+    fn cancelled_or_foreign_plan_is_not_saved_and_does_not_authorize_apply() {
+        let (host, token, plan) = apply_fixture();
+        let request = host.begin("request-apply-plan-0002").unwrap();
+        let mut foreign = plan.clone();
+        foreign["current_token"]["graph_sha256"] = serde_json::json!("foreign");
+        assert!(host
+            .save_plan("request-apply-session-0001", &token, &request, foreign)
+            .is_err());
+        host.cancel(&request.id).unwrap();
+        assert!(host
+            .save_plan("request-apply-session-0001", &token, &request, plan.clone())
+            .is_err());
+        assert!(host
+            .consume_plan("request-apply-session-0001", &plan)
+            .is_err());
+        assert_eq!(
+            host.current_session("request-apply-session-0001", "job-apply")
+                .unwrap()
+                .1
+                .revision,
+            token.revision
+        );
+    }
+
+    #[test]
+    fn committed_ack_and_fresh_current_must_agree_on_actual_wide_revision_and_graph() {
+        let (_, before, plan) = apply_fixture();
+        let ack = serde_json::json!({"schema_version":1,"kind":"review_native_committed_render","job_id":"job-apply","revision":"9007199254740994",
+            "snapshot_sha256":format!("sha256:{}","d".repeat(64)),"graph_sha256":format!("sha256:{}","e".repeat(64)),"snapshot":{"schema_version":2,"job_id":"job-apply","revision":9007199254740994u64,"time_base":{"numerator":"1","denominator":"90000"},"findings":[{"source_text":"Original evidence"}],"last_plan":null},"active_graph_published":true,"correction_ready":false});
+        let fresh = serde_json::json!({"mode":"b2","current_token":{"job_id":"job-apply","revision":"9007199254740994","snapshot_sha256":ack["snapshot_sha256"],"graph_sha256":ack["graph_sha256"],"original_manifest_sha256":before.original_manifest_sha256},"time_base":ack["snapshot"]["time_base"],"findings":ack["snapshot"]["findings"],"last_plan":null});
+        assert_eq!(
+            applied_token(&before, &plan, &ack, &fresh)
+                .unwrap()
+                .revision,
+            "9007199254740994"
+        );
+        for change in 0..9 {
+            let mut bad_ack = ack.clone();
+            let mut bad_fresh = fresh.clone();
+            match change {
+                0 => bad_ack["active_graph_published"] = serde_json::json!(false),
+                1 => bad_ack["revision"] = serde_json::json!("0"),
+                2 => {
+                    bad_fresh["current_token"]["graph_sha256"] =
+                        serde_json::json!(before.graph_sha256)
+                }
+                3 => {
+                    bad_fresh["current_token"]["original_manifest_sha256"] =
+                        serde_json::json!("foreign")
+                }
+                4 => bad_fresh["current_token"]["revision"] = serde_json::json!("9007199254740995"),
+                5 => bad_ack["snapshot"]["revision"] = serde_json::json!(9007199254740993u64),
+                6 => {
+                    bad_fresh["findings"][0]["source_text"] = serde_json::json!("Changed evidence")
+                }
+                7 => bad_ack["snapshot"]["time_base"]["numerator"] = serde_json::json!("2"),
+                _ => bad_fresh["last_plan"] = serde_json::json!({"invented":true}),
+            }
+            assert!(applied_token(&before, &plan, &bad_ack, &bad_fresh).is_err());
+        }
+    }
 
     #[test]
     fn current_plan_refuses_forged_full_token_and_unknown_changes_before_runtime_launch() {

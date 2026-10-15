@@ -3,6 +3,10 @@ import { previewProductionCorrection, readReviewPayload, reviewRangeLabel,
   type ProductionCorrection, type ProductionFinding, type ReviewPayload } from "./wire.ts";
 import { acceptCorrectionResponse, correctionRequest, previewRequest, type ReviewCorrectionRequest, type ReviewPreviewRequest } from "./session.ts";
 import { currentPlanRequest, type CurrentPlanRequest, type CurrentCorrectionPlan } from "./current-plan.ts";
+import { currentConfirmation, type CurrentConfirmation } from "./current-apply.ts";
+import { currentUndoRequest, type CurrentUndoRequest } from "./current-undo.ts";
+import { currentExportRequest, type CurrentExportRequest, type CurrentExportReceipt, type CurrentExportFormat } from "./current-export.ts";
+import type { CurrentReviewSnapshot } from "./wire.ts";
 
 export type ReviewVoice = { voice_id: string; label: string };
 export type ReviewActions = {
@@ -11,6 +15,9 @@ export type ReviewActions = {
   preview?: (request: ReviewPreviewRequest, signal: AbortSignal) => Promise<void>;
   correct?: (request: ReviewCorrectionRequest) => Promise<unknown>;
   planCurrent?: (request: CurrentPlanRequest, signal: AbortSignal) => Promise<CurrentCorrectionPlan>;
+  applyCurrent?: (confirmation: CurrentConfirmation, signal: AbortSignal) => Promise<CurrentReviewSnapshot>;
+  undoCurrent?: (request: CurrentUndoRequest, signal: AbortSignal) => Promise<CurrentReviewSnapshot>;
+  exportCurrent?: (request: CurrentExportRequest, signal: AbortSignal) => Promise<CurrentExportReceipt>;
 };
 const LABELS: Record<ReviewReason, string> = {
   ASR_OCR_CONFLICT: "Lời nói và chữ trên hình", SPEAKER_UNCERTAINTY: "Người nói",
@@ -35,10 +42,13 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
   let group: ReviewReason = payload.findings[0]?.reason ?? "TRANSLATION_ANOMALY";
   let page = 0, epoch = 0;
   let selected: string | null = payload.findings[0]?.finding_id ?? null;
-  let busy = false, stale = false, dirty = false, destroyed = false, message = "";
+  let busy = false, stale = false, dirty = false, destroyed = false, message = "", undoArmed = false;
+  let exportArmed: CurrentExportFormat | undefined;
+  let publications: Partial<Record<CurrentExportFormat, { receipt: CurrentExportReceipt; revision: string }>> = {};
   let previewAbort: AbortController | null = null;
   let planAbort: AbortController | null = null;
-  const invalidate = () => { epoch++; previewAbort?.abort(); previewAbort = null; planAbort?.abort(); planAbort = null; return epoch; };
+  let applyAbort: AbortController | null = null;
+  const invalidate = () => { epoch++; previewAbort?.abort(); previewAbort = null; planAbort?.abort(); planAbort = null; applyAbort?.abort(); applyAbort = null; return epoch; };
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
     const node = doc.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -67,6 +77,81 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
     root.append(el("p", payload.schema_version === 3 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.current_token.revision}` : payload.schema_version === 2 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.revision}` :
       "Bản review cũ: chỉ xem nội dung, chưa có mốc thời gian xác thực."));
     const status = el("p", message, "review-status"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); root.append(status);
+    if (payload.schema_version === 3 && actions.undoCurrent && BigInt(payload.current_token.revision) > 0n && BigInt(payload.current_token.revision) < 9223372036854775807n) {
+      const undo = el("section"); undo.setAttribute("aria-label", "Hoàn tác lời thoại");
+      if (!undoArmed) undo.append(button("Hoàn tác thay đổi gần nhất", () => { invalidate(); undoArmed = true; render(); }, !!exportArmed));
+      else {
+        undo.append(el("p", "Khôi phục bản hợp lệ trước đó từ lịch sử đã lưu. Kết quả hiện tại vẫn được giữ lại."));
+        undo.append(button("Xác nhận hoàn tác", () => {
+          if (payload.schema_version !== 3 || !actions.undoCurrent) return;
+          const previous = payload, request = currentUndoRequest(previous), at = invalidate();
+          const controller = new AbortController(); applyAbort = controller;
+          undoArmed = false; busy = true; message = "Đang kiểm tra và khôi phục bản trước…"; render();
+          void Promise.resolve().then(() => {
+            if (controller.signal.aborted) throw new Error("undo cancelled");
+            return actions.undoCurrent!(request, controller.signal);
+          }).then(next => {
+            if (at !== epoch || destroyed) return;
+            try {
+              if (controller.signal.aborted) throw new Error("undo cancelled");
+              const checked = readReviewPayload(next);
+              if (checked.schema_version !== 3 || checked.job_id !== previous.job_id ||
+                checked.current_token.revision !== String(BigInt(previous.current_token.revision) + 1n)) throw new Error("undo snapshot changed");
+              payload = checked; publications = {}; exportArmed = undefined; busy = stale = false; message = "Đã hoàn tác và kiểm tra bản hiện hành.";
+            } catch { busy = false; stale = true; message = "Chưa xác nhận được bản sau hoàn tác. Hãy tải lại lời thoại để kiểm tra."; }
+            render();
+          }, () => {
+            if (at === epoch && !destroyed) { busy = false; stale = true; message = "Không xác nhận được kết quả hoàn tác. Hãy tải lại lời thoại trước khi tiếp tục."; render(); }
+          }).finally(() => { if (applyAbort === controller) applyAbort = null; });
+        }));
+        undo.append(button("Giữ bản hiện tại", () => { undoArmed = false; render(); }));
+      }
+      root.append(undo);
+    }
+    if (payload.schema_version === 3 && actions.exportCurrent && BigInt(payload.current_token.revision) > 0n) {
+      const output = el("section"); output.setAttribute("aria-label", "Xuất bản lời thoại đã sửa");
+      if (!exportArmed) {
+        output.append(button("Xuất kết quả chuẩn", () => { invalidate(); exportArmed = "standard"; render(); }, undoArmed));
+        output.append(button("Tạo gói chỉnh sửa", () => { invalidate(); exportArmed = "editable"; render(); }, undoArmed || !publications.standard));
+      } else {
+        const format = exportArmed;
+        output.append(el("p", format === "standard" ? "Tạo video, phụ đề và tài nguyên chuẩn cho bản đang xem." : "Gói gồm media, phụ đề và hướng dẫn nhập vào trình biên tập."));
+        output.append(button(format === "standard" ? "Xác nhận xuất chuẩn" : "Xác nhận tạo gói", () => {
+          if (payload.schema_version !== 3 || !actions.exportCurrent) return;
+          const previous = payload, request = currentExportRequest(previous, format), at = invalidate();
+          const controller = new AbortController(); applyAbort = controller;
+          exportArmed = undefined; busy = true; message = "Đang tạo và kiểm tra bản xuất. Các bản đã có được giữ lại…"; render();
+          void Promise.resolve().then(() => {
+            if (controller.signal.aborted) throw new Error("export cancelled");
+            return actions.exportCurrent!(request, controller.signal);
+          }).then(receipt => {
+            if (at !== epoch || destroyed) return;
+            try {
+              if (controller.signal.aborted || receipt.format !== format) throw new Error("export result changed");
+              publications[format] = { receipt: structuredClone(receipt), revision: previous.current_token.revision };
+              busy = false; message = format === "standard" ? "Đã tạo và kiểm tra kết quả chuẩn." : "Đã tạo và kiểm tra gói chỉnh sửa.";
+            } catch { busy = false; stale = true; message = "Chưa xác nhận được bản xuất. Hãy tải lại lời thoại để kiểm tra."; }
+            render();
+          }, () => {
+            if (at === epoch && !destroyed) { busy = false; stale = true; message = "Không xác nhận được kết quả xuất. Các bản đã tạo vẫn được giữ lại; hãy tải lại trước khi tiếp tục."; render(); }
+          }).finally(() => { if (applyAbort === controller) applyAbort = null; });
+        }));
+        output.append(button("Để sau", () => { exportArmed = undefined; render(); }));
+      }
+      root.append(output);
+    }
+    for (const format of ["standard", "editable"] as const) {
+      const published = publications[format]; if (!published) continue;
+      const output = el("section");
+      output.append(el("h3", `${format === "standard" ? "Kết quả chuẩn" : "Gói chỉnh sửa"} · Phiên bản ${published.revision}`));
+      output.append(el("code", published.receipt.path)); root.append(output);
+    }
+    if (busy && applyAbort) {
+      const cancel = el("button", "Dừng tác vụ"); cancel.type = "button";
+      cancel.addEventListener("click", () => { cancel.disabled = true; applyAbort?.abort();
+        status.textContent = "Đang dừng tác vụ. Hãy tải lại lời thoại sau khi dừng để kiểm tra bản hiện hành."; });
+      root.append(cancel);
+    }
     const nav = el("nav", undefined, "review-groups"); nav.setAttribute("aria-label", "Nhóm cảnh báo");
     for (const reason of Object.keys(LABELS) as ReviewReason[]) {
       const count = payload.findings.filter(item => item.reason === reason).length;
@@ -107,7 +192,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
       if (bound?.warning) detail.append(el("p", bound.warning, "review-warning"));
       const canEdit = payload.schema_version === 2 && !!bound?.cue_id && !!bound.range && !!actions.correct;
       const canPlan = payload.schema_version === 3 && !!bound?.cue_id && !!bound.range && !!actions.planCurrent;
-      const canDraft = canEdit || canPlan;
+      const canDraft = (canEdit || canPlan) && !undoArmed && !exportArmed;
       const canPreview = (payload.schema_version === 2 || payload.schema_version === 3 && payload.mode === "b2") && !!bound?.cue_id && !!bound.output_preview && !!actions.preview;
       const listen = button("Nghe câu này", () => {
         if (payload.schema_version === 1 || !bound?.cue_id || !actions.preview) return;
@@ -138,7 +223,8 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
       const submit = el("button", "Xác nhận sửa câu này"); submit.type = "submit"; submit.disabled = true;
       const discard = el("button", "Bỏ thay đổi chưa lưu"); discard.type = "button"; discard.disabled = true;
       const inspect = el("button", "Xem phạm vi chạy lại"); inspect.type = "button"; inspect.disabled = true;
-      if (canPlan) { submit.textContent = "Chưa thể áp dụng thay đổi"; }
+      let verifiedPlan: CurrentCorrectionPlan | null = null;
+      if (canPlan) { submit.textContent = actions.applyCurrent ? "Xác nhận và dựng lại câu này" : "Chưa thể áp dụng thay đổi"; }
       function candidateCorrection() {
         const correction: ProductionCorrection = { finding_id: item!.finding_id };
         if (translation.value.trim() !== item!.translated_text) correction.translation = payload.schema_version === 3 ? translation.value.trim() : translation.value;
@@ -155,6 +241,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
       function refreshPlan() {
         submit.disabled = true;
         inspect.disabled = true;
+        verifiedPlan = null;
         planAbort?.abort(); planAbort = null;
         if (!canDraft || busy || stale) return;
         dirty = translation.value.trim() !== item!.translated_text || voice.value !== (item!.voice ?? "");
@@ -183,13 +270,37 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
         const at = epoch; inspect.disabled = true; planText.textContent = "Đang kiểm tra bản hiện hành và phạm vi chạy lại…";
         void actions.planCurrent(request, abort.signal).then(result => {
           if (at !== epoch || destroyed || abort.signal.aborted) return;
+          verifiedPlan = result; submit.disabled = !actions.applyCurrent;
           planText.textContent = "Chạy lại: " + result.plan.stages_to_rerun.map(stage => STAGES[stage] ?? stage).join(" → ") +
             ". Giữ kết quả nhận dạng lời nói và chữ trên hình. Kế hoạch chưa được áp dụng; bản xuất hiện tại được giữ nguyên.";
         }, () => { if (at === epoch && !destroyed && !abort.signal.aborted) planText.textContent = "Chưa xác thực được kế hoạch. Hãy tải lại lời thoại trước khi tiếp tục.";
         }).finally(() => { if (planAbort === abort) { planAbort = null; if (at === epoch && !destroyed) inspect.disabled = false; } });
       });
       form.addEventListener("submit", event => {
-        event.preventDefault(); if (!canEdit || busy || stale || destroyed || payload.schema_version !== 2 || !actions.correct) return;
+        event.preventDefault(); if (busy || stale || destroyed) return;
+        if (canPlan && payload.schema_version === 3 && actions.applyCurrent && verifiedPlan) {
+          let confirmation: CurrentConfirmation;
+          try {
+            const selected = currentPlanRequest(payload, candidateCorrection());
+            if (JSON.stringify(selected.changes) !== JSON.stringify(verifiedPlan.changes)) throw new Error("draft changed");
+            confirmation = currentConfirmation(payload, verifiedPlan);
+          } catch { refreshPlan(); return; }
+          const before = payload, at = invalidate(), abort = new AbortController(); applyAbort = abort;
+          busy = true; message = "Đang dựng và kiểm tra bản thay thế. Bản xuất hiện tại được giữ nguyên…"; render();
+          void actions.applyCurrent(confirmation, abort.signal).then(next => {
+            if (at !== epoch || destroyed || abort.signal.aborted) return;
+            try {
+              const checked = readReviewPayload(next);
+              if (checked.schema_version !== 3 || checked.job_id !== before.job_id || checked.current_token.revision !== confirmation.plan.candidate_revision) throw new Error("applied version changed");
+              payload = checked; publications = {}; exportArmed = undefined; message = "Đã kiểm tra và áp dụng bản thay thế. Lời thoại đang hiển thị là bản hiện hành.";
+            } catch { stale = true; message = "Kết quả đã đổi phiên bản. Hãy tải lại để kiểm tra trước khi sửa tiếp."; }
+          }, () => { if (at === epoch && !destroyed) { stale = true;
+            message = "Chưa xác định tác vụ đã áp dụng hay chưa. Hãy tải lại lời thoại để kiểm tra; không tự gửi lại yêu cầu.";
+          } }).finally(() => { if (applyAbort === abort) applyAbort = null;
+            if (at === epoch && !destroyed) { busy = false; render(); } });
+          return;
+        }
+        if (!canEdit || payload.schema_version !== 2 || !actions.correct) return;
         let change: ReturnType<typeof candidate>;
         try { change = candidate(); } catch { refreshPlan(); return; }
         const before = payload, request = correctionRequest(before, change.correction), at = invalidate();
@@ -213,7 +324,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
   render();
   return {
     replace(value: unknown) { const next = readReviewPayload(value); if (destroyed) throw new Error("review view was destroyed");
-      invalidate(); payload = next; busy = stale = false; message = ""; page = 0;
+      invalidate(); payload = next; publications = {}; exportArmed = undefined; busy = stale = undoArmed = false; message = ""; page = 0;
       group = payload.findings[0]?.reason ?? "TRANSLATION_ANOMALY"; selected = payload.findings[0]?.finding_id ?? null; render(); },
     destroy() { invalidate(); destroyed = true; container.replaceChildren(); },
   };

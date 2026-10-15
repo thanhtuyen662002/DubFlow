@@ -2192,3 +2192,203 @@ Integration and Windows Release success, with stable publication skipped.
 Returned Windows/Integration logs are truncated, so unseen counts are unclaimed.
 That terminal evidence covers published bb6 only; pending cumulative/export/
 desktop/confirmation source requires its own exact-head CI and native acceptance.
+
+##### Current desktop apply session and uncertain-result recovery
+
+The versioned desktop apply handler consumes an explicit confirmation of the
+exact proposal returned by the native plan reader. Each current host session
+retains at most one bounded pending plan; changing the native plan replaces it.
+The host compares complete plan bytes as structured values and every token field,
+then consumes the plan once. It invalidates existing sessions for that job and
+holds a host mutation claim until the operation ends. A concurrent duplicate or
+an attempt to confirm an unobserved/substituted plan refuses before native work.
+The existing durable job lock/CAS still arbitrates other processes.
+Snapshot readers cannot save sessions for the job while this claim is held.
+Only the apply caller holding the same host's mutation guard may save the fresh
+post-CAS session; a racing reload therefore cannot recreate its old token.
+
+Only `review-confirm-current` may execute this request. Browser arguments contain
+no paths or selected processing release. The native command independently
+re-derives the proposal, selects its own source-bound installed processing and
+passes through the existing physical/runtime/model/volume/quota/render/QC/CAS
+gates. The old public v1/v2 correction routes and immutable original readers are
+not used for current-state mutation. Snapshot `correction_ready:false` and plan
+`execution_ready:false` remain provenance/qualification limits; this opt-in
+handler does not turn a read-only plan into processing or product qualification.
+
+The apply call runs off the UI thread with a bounded overall eight-hour host
+observation window, separate from existing native phase/chunk bounds. Windows
+cancellation kills its owned native process; that process already owns workers
+through private non-inherited kill-on-close jobs before their execution byte
+gate. This source relationship is not new physical cancellation/crash evidence.
+An uncertain/cancelled result never authorizes automatic resubmission or a claim
+that nothing committed. The client discards its binding and requires fresh
+native discovery of the actual durable head. Standard output remains usable.
+
+After native commit, Tauri compares the exact decimal acknowledgement with a
+fresh physically admitted current graph, including revision, snapshot/graph SHA,
+job/original binding and mode. A concurrent head advance refuses delivery as
+uncertain. It creates a new native session only after those checks; no numeric
+revision conversion or logical candidate hash is used as produced-media proof.
+The acknowledgement's complete findings, time base and last-plan metadata must
+also equal the fresh display projection; token agreement alone cannot hide a
+different metadata response.
+The logical proposal hash can differ from the final snapshot hash because only
+native-retained preview paths are added after physical render admission.
+
+The transport rotates to this fresh session/token only on a matching response.
+The connection rejects changed source ticks/text/confidence/provenance, unrelated
+cue content, mode, stage plan or unexpected revision. All finding preview paths
+must identify the one retained render; they remain display data, not browser IO
+authority. The client does not authenticate a proposed text/hash relationship;
+the host-held exact plan and native re-derivation provide that authority.
+
+Current B1/B2 views now separate draft, explicit scope check and user confirmation.
+Editing/discarding a draft invalidates its checked plan. A duplicate submission
+is blocked, cancellation is exposed during apply, and loss/mismatch of the reply
+requires reload. The UI refreshes only from the fresh native committed snapshot.
+Source initialization, current undo/export actions and measured progress/liveness
+still require their own full workflow integration and physical acceptance.
+
+TypeScript no-emit and the changed Node client suite pass for exact wide tokens,
+B1/B2 current results, session rotation, duplicate/stale confirmations, immutable
+source evidence and uncertain/cancelled replies. The first suite invocation was
+a QA syntax failure from reusing a prior test's variable name; its log is retained,
+the added identifiers are distinct, and the full suite then passed. Three new
+Tauri unit tests are authored but unrun for saved-plan consumption/cancellation
+and commit/fresh-head identity. Local MSVC compilation remains unavailable.
+This pending source was not included in the in-progress f5 Windows build and
+does not qualify installed GUI, native worker execution, actual crash or long
+form. All full172/174/175 acceptance gates remain mandatory.
+
+### Explicit full-token desktop undo integration
+
+The optional desktop adds `review_undo_v1` and the closed
+`desktop-current-undo-v1.json` request/result envelopes. They add no durable
+schema, graph format, native undo command, processing version selection, worker
+protocol or model/runtime pin. The webview confirms all five actual current token
+fields; it cannot select an undo snapshot, graph, output root or filename.
+
+The host consumes the bound current session before reading or mutating and
+invalidates every older session and checked plan for the same job. Undo shares
+the apply job guard, including refusal of racing snapshot-session admission. The
+original export pin is rechecked before and after work. A fresh physical native
+current read must equal the complete host token before calling the existing
+`review-undo-active` with its exact revision/snapshot/graph binding. That command
+already readmits both current and prior physical graphs and performs monotonic
+undo under JobExecutionGuard. No native reader guard is relaxed or old job
+producer repinned, and no inference/render is dispatched by the undo route.
+
+After the command, its closed acknowledgement must agree with a newly physically
+readmitted native schema3 projection: next signed64-range decimal revision,
+snapshot/graph hashes, original manifest identity, all findings/time-base/last
+plan metadata and the same B1/B2 mode. Restoration may reuse a prior content graph
+but never its older public revision. Source text, cue/finding identities, integer
+ranges, confidence, warnings and other immutable evidence remain exact; only
+translation, voice, preview and last-plan content can return to a prior value.
+Only the request holding the live job guard can admit the replacement session.
+
+The UI requires an explicit second confirmation, blocks apply during undo and
+offers cancellation without discarding existing exports. An old/foreign token,
+offline/corrupt/no-history native refusal, cancellation or uncertain reply cannot
+silently fall back, automatically resubmit or revive an old binding. Reload must
+discover the actual durable head. A positive revision is not an availability
+claim for remaining undo entries; native history remains the authority.
+
+The changed Node suite executes actual client routing and the existing isolated
+owned-Python component cases, including wide counters, stale/foreign token,
+immutable-evidence refusal, post-undo planning/session rotation, B1, shared
+mutation blocking and late cancelled/uncertain results. TypeScript noEmit passes.
+Three additional Tauri unit tests are authored for request/guard/ack boundaries;
+they have not run because local MSVC link.exe remains unavailable. Rustfmt/parser
+checks are not Rust execution. No installed GUI/native undo/actual crash/long-form
+test has run for this pending source. Source initialization, current standard and
+editable desktop actions, measured liveness and all full172/174/175 cumulative,
+after-undo, current whole B1B2, GUI/crash/real4h gates remain mandatory.
+
+### Explicit current standard/editable desktop publication
+
+The optional `review-confirm-current-export` broker consumes a closed explicit
+`desktop-current-export-v1.json` confirmation over format and the actual complete
+current token. It accepts only an owned control root and request JSON on its CLI;
+browser-supplied processing/destination/worker/vendor paths are forbidden. It
+opens durable state read-only and requires exact current-token equality before
+publication. Standard format calls the existing native standard publisher without
+processing capability selection. Editable format reuses the existing executable
+compiled-source/installed-layout/release-manifest/native-full-hash selector,
+performs full AdmittedProcessingRuntime admission and calls the existing native
+editable publisher. That publisher still requires the exact published current
+standard bundle. No old producer is repinned or worker copied into an old root.
+
+Both publishers retain existing physical original/current graph admission, fixed
+output-volume/canonical locator fences, aggregate quota/reserve, job and output
+writer guards, streamed full hashes, sealed immutable resources and atomic
+directory publication. Existing publishers and processing selection bodies are
+unchanged. The broker rechecks the whole durable current state and result token
+after publication; it performs no active graph mutation, schema migration, model
+provisioning or vendor execution. Existing original and previous exports remain.
+
+`review_export_v1` in Tauri requires the exact full-token current session,
+consumes every older session/plan for the job and shares the apply/undo job guard.
+It rechecks the original export pin and a full physical current read before and
+after the owned native command. Fresh current content/token must remain exact;
+exports never invent a revision increment. Closed native receipt fields must
+agree on format, source-bound token, generation, manifest hashes and B1/B2 file
+count. Editable processing/standard binding and no-vendor/no-graph-change flags
+are checked before returning a smaller receipt and replacement session.
+
+The client requires an admitted standard receipt before an editable action and
+compares the editable generation/standard-manifest hash to it. UI confirmations
+are separate; an editable failure preserves prior standard output/receipt.
+Output directories are display text, not browser IO/playback/launch capabilities.
+Old/foreign/cancelled/late/lost responses require discovery and never auto-retry.
+Apply/undo invalidate in-memory export bindings, retaining actual old files.
+Mixed versions, missing processing capability or original-only/non-exportable
+graphs refuse; existing canonical standard output remains independent of Review.
+
+Actual changed Node client/owned-Python component tests and TypeScript noEmit
+pass, including both formats/B1B2, exact unchanged wide tokens and immutable
+evidence, standard/editable linkage, session rotation, failed editable capability,
+shared operation blocking and uncertain/cancelled replies. Two supervisor broker
+tests and two Tauri boundary tests are authored but unrun; local MSVC link.exe
+remains unavailable. Source initialization, action availability/measured liveness
+and actual source-matched whole B1B2/cumulative/after-undo/standard+editable/GUI/
+crash/real4h/full172/vendor/timing/175 acceptance remain mandatory. In particular,
+the PR183 editable worker is still pending and absent from the published f5
+bundle; no combined172+174 installation qualification is implied by this source.
+
+### Windows raw export rename boundary repair
+
+Exact f5 Windows38694611823/job116288155182 completed with237 supervisor passes,
+2 failures and2 ignored tests. Both owned export-resume/directory tests failed
+with Windows error3 at the successful-copy unwrap (review_assets.rs2643/2837).
+The raw `MoveFileExW` boundary passed ordinary DOS paths directly while the Rust
+filesystem calls had created/hashed/sealed deeply nested generation files.
+Microsoft documents MAX_PATH by default unless extended path spelling or process/
+OS long-path opt-in applies:
+https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw.
+This source boundary is the diagnosed portability defect; actual successor
+Windows execution is still required to prove those failures are repaired.
+
+The Windows-only marshaller requires an already admitted absolute disk/UNC/
+verbatim path, refuses device/relative/dot/parent/NUL/overbound input and encodes
+the extended UTF16 form only for the raw call. Existing verbatim spelling is
+preserved; stored locators, source roots and all native path/volume authority
+remain unchanged. No canonicalize/samefile/prefix removal, source repin, fixture
+shortening, registry/manifest opt-in or deadline increase is introduced.
+`MOVEFILE_WRITE_THROUGH` stays set with neither replacement nor cross-volume copy
+allowed. All existing no-follow/regular-file/full-hash/seal/identity/quota/reserve/
+writer/current-state fences remain around the rename.
+
+Two new Windows tests cover Unicode/DOS/verbatim/UNC encoding and refusal, plus
+physical paths exceeding260 UTF16 units for sealed file and directory moves,
+no-replacement preservation of both sides, content/mtime/seal and staging recovery.
+Existing failing tests remain unchanged. Local rustfmt/parser/diff passes; the
+new Rust tests are unrun because MSVC link.exe remains unavailable.
+
+Two OS API diagnostic hosts on this machine accepted ordinary long paths, so they
+do not reproduce the hosted failure or qualify this Rust repair. Their fresh
+fixtures/results are retained. The second diagnostic's reproduction assertion
+failed after a successful rename; it is QA evidence, not a native product failure.
+No unmodified diagnostic/old native driver is retried. Published f5 remains
+FAILED; successor exact Required-CI and actual product acceptance are mandatory.

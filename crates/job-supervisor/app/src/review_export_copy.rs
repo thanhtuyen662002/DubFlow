@@ -93,6 +93,58 @@ fn valid_name(name: &str) -> bool {
     })
 }
 
+/// Marshal an already admitted absolute path for the raw Win32 call. Rust's fs
+/// APIs support long paths independently; raw MoveFileExW otherwise depends on
+/// process/OS MAX_PATH opt-in. This changes no stored locator or IO authority.
+#[cfg(windows)]
+pub(super) fn windows_rename_path(path: &Path) -> SupervisorResult<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+    if !path.is_absolute()
+        || !matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_) | Prefix::UNC(_, _) | Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _) | Prefix::Verbatim(_)))
+        || path
+            .components()
+            .any(|p| matches!(p, Component::ParentDir | Component::CurDir))
+    {
+        return Err(invalid("export rename requires an admitted absolute path"));
+    }
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(invalid("export path contains NUL"));
+    }
+    for c in &mut wide {
+        if *c == u16::from(b'/') {
+            *c = u16::from(b'\\');
+        }
+    }
+    if wide
+        .split(|c| *c == u16::from(b'\\'))
+        .any(|p| p == [u16::from(b'.')] || p == [u16::from(b'.'), u16::from(b'.')])
+    {
+        return Err(invalid("export rename refuses dot path components"));
+    }
+    let extended: Vec<u16> = "\\\\?\\".encode_utf16().collect();
+    let mut result = if wide.starts_with(&extended) {
+        wide
+    } else if wide.len() >= 3 && wide[1] == u16::from(b':') && wide[2] == u16::from(b'\\') {
+        extended.into_iter().chain(wide).collect()
+    } else if wide.starts_with(&[u16::from(b'\\'), u16::from(b'\\')]) {
+        "\\\\?\\UNC\\"
+            .encode_utf16()
+            .chain(wide.into_iter().skip(2))
+            .collect()
+    } else {
+        return Err(invalid("export rename path namespace unsupported"));
+    };
+    if result.len() >= 32767 {
+        return Err(invalid(
+            "export rename path exceeds the Win32 wide-path bound",
+        ));
+    }
+    result.push(0);
+    Ok(result)
+}
+
 /// Atomic same-volume rename, explicitly refusing replacement on both supported
 /// platforms. A preflight existence check alone cannot provide this guarantee.
 /// API references: https://man7.org/linux/man-pages/man2/rename.2.html and
@@ -133,16 +185,12 @@ pub(super) fn rename_new(source: &Path, target: &Path) -> SupervisorResult<()> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
         #[link(name = "kernel32")]
         unsafe extern "system" {
             fn MoveFileExW(old: *const u16, new: *const u16, flags: u32) -> i32;
         }
-        let old: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-        let new: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-        if old[..old.len() - 1].contains(&0) || new[..new.len() - 1].contains(&0) {
-            return Err(invalid("export path contains NUL"));
-        }
+        let old = windows_rename_path(source)?;
+        let new = windows_rename_path(target)?;
         // WRITE_THROUGH, without REPLACE_EXISTING or cross-volume COPY_ALLOWED.
         if unsafe { MoveFileExW(old.as_ptr(), new.as_ptr(), 8) } == 0 {
             return Err(std::io::Error::last_os_error().into());
