@@ -739,7 +739,12 @@ mod tests {
             }
             assert!(store.review_graph_revision(&bad).is_err());
         }
-        store.connection.execute("UPDATE review_graph_revisions SET snapshot_json='corrupted' WHERE job_id='job-r' AND revision='1'", []).unwrap();
+        // Keep the schema's byte-count invariant valid so the reader, rather
+        // than the SQLite CHECK, must detect the changed historical bytes.
+        let corrupted = one.snapshot_json.replace("Changed cue", "Damaged cue");
+        assert_ne!(corrupted, one.snapshot_json);
+        assert_eq!(corrupted.len(), one.snapshot_json.len());
+        store.connection.execute("UPDATE review_graph_revisions SET snapshot_json=?1 WHERE job_id='job-r' AND revision='1'", params![corrupted]).unwrap();
         assert!(store.review_graph_revision(&one.token).is_err());
         assert_eq!(store.review_graph_state("job-r").unwrap(), Some(two));
         assert_eq!(count(&store), 3);
