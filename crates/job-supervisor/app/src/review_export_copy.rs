@@ -204,7 +204,7 @@ fn verify_sealed(
     let after = regular(path)?;
     if single_cue_file(&after)? != identity
         || single_cue_file(&file)? != identity
-        || after.metadata()?.modified() != before.modified()?
+        || after.metadata()?.modified()? != before.modified()?
         || after.metadata()?.len() != input.size_bytes
         || !after.metadata()?.permissions().readonly()
     {
@@ -414,8 +414,8 @@ impl RetainedMixStore {
         let source_fence = |source: &mut File| -> SupervisorResult<()> {
             let mut fresh = regular(input.source)?;
             stream_hash(&mut fresh, input.sha256, input.size_bytes, deadline)?;
-            if source.metadata()?.modified() != source_before.modified()?
-                || fresh.metadata()?.modified() != source_before.modified()?
+            if source.metadata()?.modified()? != source_before.modified()?
+                || fresh.metadata()?.modified()? != source_before.modified()?
                 || source.metadata()?.len() != input.size_bytes
             {
                 return Err(invalid("export source changed during copy"));
