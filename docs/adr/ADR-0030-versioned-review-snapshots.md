@@ -3301,3 +3301,103 @@ chunked_longform remains false. The Python stream-timeline oracle and authored
 native parser/interval regressions are component evidence only; complete current
 installed B1/B2, corrected standard/editable outputs, GUI/liveness, actual worker
 crash/recovery and representative real-four-hour acceptance remain mandatory.
+
+
+#### Resumable decoded source-clock windows v1 (pending source)
+
+The previous one-shot probe remains supported. The additive resumable path uses
+app-owned ffprobe with selected-stream decoded PTS, keyframe/packet positions and
+exact source/executable pins. One packet-limited process is bounded by 16MiB
+stdout, 65536 decoded frames, at most16384 selected packets and180seconds.
+An approximate microsecond seek only locates a candidate. The first resumed
+decoded frame must equal the saved integer PTS, keyframe and packet position.
+No floating time/FPS/frame ordinal replaces canonical signed64 source identity.
+
+A non-final window requires three advancing observed keyframes and ends at the
+third-last one. Lookahead extends through the second-last keyframe only. This
+keeps a complete guard GOP before the packet-limited decoder flush tail: that
+tail can emit a final keyframe before its preceding B frames have even been read.
+The next observation must reproduce the exact stable lookahead before new points
+are usable. The comparison is never relaxed to subsequence or approximate PTS.
+Saved records also cross-check overlapping PTS before planning. Seeking or a
+packet limit does not grant complete coverage. A short packet-limited candidate
+must match an independently executed suffix with no packet/end limit under the
+same remaining absolute deadline and byte/frame limits. EOF is accepted only
+when the last decoded PTS plus its explicit positive duration equals the native
+archived exact source end. Missing timestamps, packet positions, keyframe
+lookahead, exact duration, unknown shapes or incompatible seek ranges refuse
+with compatibility evidence; no best-effort or inferred timestamp is substituted.
+
+A closed canonical record binds the source/executable/stream/time-base/full
+interval specification and stores bounded exact PTS plus next-anchor/lookahead.
+Native-owned read/checkpoint/fence callbacks reopen the contiguous saved prefix,
+publish each immutable record and return exactly independently reopened bytes.
+Each invocation decodes at most the configured number of new windows, allowing
+pause/crash recovery to reuse saved observations. The journal has4096records,
+16MiB aggregate metadata and1000000frames limits; only hashes of prior records
+remain in memory. A complete plan streams PTS by independently reopening every
+record again and uses the existing interval-local dependency planner.
+
+This adapter writes no worker-owned SQLite, publication pointer or file. The
+native caller must implement contained workers, full source/current/runtime
+admission, immutable output-volume journal/capacity and authoritative contiguous
+inventory. A record/seek/packet position/hash is not native decoded-media or
+codec/font/provider/OS authority; both media/QC admission flags remain false.
+A complete native decoder/index policy for supported codecs, concrete longform
+executor, audio/finalmux/seam/fullAVQC/CAS/currentrenderer, installed wholeB1B2,
+standard/editable publication, GUI/liveness/actualprocessingcrash/real4h gates
+remain mandatory. Existing effective-render-v1/chunked_longform=false and old
+producer/model/runtime/job pins are unchanged; older releases simply lack this
+private entry and cannot consume the new format. No SQL migration is needed.
+
+FFprobe documentation explicitly distinguishes requested seek start from the
+actual start and defines packet-count interval stops. The implementation keeps
+these positions as non-authoritative locators:
+https://ffmpeg.org/ffprobe.html#Main-options
+
+
+#### Native output-volume clock journal v1 (pending source)
+
+CurrentChunkSource now derives the Python clock specification from its already
+native-selected primary stream/source interval and exact owned ffprobe pin.
+The physical journal namespace is domain separated from video-plan checkpoints
+and includes the complete native processing recipe identity. Unrelated cue
+edits do not change decoded source-clock identity, while a changed source,
+probe/processing recipe, stream or rational requires a different namespace.
+
+Native independently parses canonical window bytes before retention or reuse.
+It checks exact signed64 PTS/anchor text, numeric wide lookahead PTS/packet
+positions, strict source coverage, per-window frame hashes, exact overlapping
+PTS, EOF/full-interval shape and false media/QC authority flags. The contiguous
+journal keeps the existing4096ordinal,16MiB raw metadata and1000000frame limits.
+Window/marker/page bytes alone never prove that a trusted contained decoder
+produced them; actual decoder admission remains a separate required step.
+
+A window is at most4MiB. It is divided into immutable24KiB byte pages encoded as
+lowercase hex in small canonical JSON, each below the existing64KiB record
+limit. Each page binds namespace, complete record SHA, exact byte offset and
+the next page's native canonical output locator. Pages are sealed from tail to
+head; only after all are reopened/hash-checked is a small ordinal marker
+published. Recovery reconstructs the exact UTF8 record through at most172pages,
+refuses cycles/noncontiguous offsets/foreign namespaces/changed sizes or hashes,
+then independently checks the complete native clock prefix.
+
+This reuses the existing NativeMixStore writer, same actual volume identity,
+read-only single-link/no-follow/fullSHA checks, aggregate32GiB old/undo/orphan/
+other-job accounting, fresh2GiB caller reserve and immutable ordinal marker
+publication. Existing64KiB small-record limits are unchanged. No larger-record
+waiver, DATA fallback, SQLite stage, mutable head or old-object cleanup is added.
+A failed page/marker publication leaves ordinary accounted orphan bytes;
+a changed collision refuses rather than overwriting. Current/source/processing
+fences run before and after; no output-wide writer crosses the final fence.
+
+Native metadata and physical page tests are authored but not executed locally
+because the known MSVC linker is absent. Python independently admits negative
+and above2^53 golden source-clock records; that does not qualify the Rust code.
+Actual contained decoder dispatch/new processing capability and entry, complete
+codec/font/provider/OS admission, indexed-clock production, capacity integration,
+final audio/mux/seams/AV-QC-CAS/currentrenderer and full installed B1/B2,
+standard/editable, GUI/liveness/actualprocessingcrash/real4h remain required.
+Publicchunked_longform=false and all old producer/model/runtime/job pins remain
+unchanged. Old releases/other record kinds cannot interpret this distinct
+private page/marker format; no automatic format or SQL migration occurs.

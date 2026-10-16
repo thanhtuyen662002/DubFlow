@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "kind": "review_native_decoded_clock_window_oracle",
+  "cases": [
+    {
+      "spec": {
+        "schema_version": 1,
+        "recipe": "review-decoded-pts-keyframe-packet-window-v1",
+        "source_sha256": "sha256:41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d",
+        "ffprobe_sha256": "sha256:ba9c736f19e7f60b7f6764adb0b7908c0a2b394e09b6c09863528c7f2bc86095",
+        "video_stream_index": 2,
+        "time_base": {
+          "numerator": "1",
+          "denominator": "1000"
+        },
+        "source_interval": {
+          "start_tick": "-50",
+          "end_tick": "30"
+        }
+      },
+      "spec_sha256": "sha256:3063d0fc44afd0a0757ba3e2bb27bbc3c289fd9cb26eefbd27a0b7d13ac2a5ee",
+      "start": "-50",
+      "end": "30",
+      "windows": [
+        "{\"anchor\":null,\"clock_spec_sha256\":\"sha256:3063d0fc44afd0a0757ba3e2bb27bbc3c289fd9cb26eefbd27a0b7d13ac2a5ee\",\"complete\":false,\"end_tick\":\"-20\",\"frame_clock_sha256\":\"sha256:cd5100fabb41deb7bc5c4fbbaf8f61cdd9b88d3a605b858d8b2e8789b373dd9e\",\"kind\":\"review_decoded_clock_window\",\"native_media_admitted\":false,\"next_anchor\":{\"packet_pos\":\"103\",\"pts\":\"-20\"},\"observation_sha256\":\"sha256:163cd4ae62bd6bbd167f19ae8215164e2e501961a5d38916a18b857ad66c260e\",\"overlap\":[{\"duration\":10,\"key_frame\":1,\"packet_pos\":103,\"pts\":-20},{\"duration\":10,\"key_frame\":1,\"packet_pos\":104,\"pts\":-10}],\"pts\":[\"-50\",\"-40\",\"-30\"],\"schema_version\":1,\"semantic_qc_admitted\":false,\"start_tick\":\"-50\"}",
+        "{\"anchor\":{\"packet_pos\":\"103\",\"pts\":\"-20\"},\"clock_spec_sha256\":\"sha256:3063d0fc44afd0a0757ba3e2bb27bbc3c289fd9cb26eefbd27a0b7d13ac2a5ee\",\"complete\":true,\"end_tick\":\"30\",\"frame_clock_sha256\":\"sha256:3733e6b0452bd90a0f9f74ef1778eb4f2fec06eade3ca2e7bf3118db6ccdecf8\",\"kind\":\"review_decoded_clock_window\",\"native_media_admitted\":false,\"next_anchor\":null,\"observation_sha256\":\"sha256:163cd4ae62bd6bbd167f19ae8215164e2e501961a5d38916a18b857ad66c260e\",\"overlap\":[],\"pts\":[\"-20\",\"-10\",\"0\",\"10\",\"20\"],\"schema_version\":1,\"semantic_qc_admitted\":false,\"start_tick\":\"-20\"}"
+      ],
+      "window_sha256": [
+        "sha256:840ffb4b54bff3dd8d0a104e8362617a97dc875fc0bac5cefb98f788a081e063",
+        "sha256:4920a91d81eae44f9665a45e8de31e06a88d36fa1b3901125900cefc7f7a4535"
+      ]
+    },
+    {
+      "spec": {
+        "schema_version": 1,
+        "recipe": "review-decoded-pts-keyframe-packet-window-v1",
+        "source_sha256": "sha256:41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d",
+        "ffprobe_sha256": "sha256:ba9c736f19e7f60b7f6764adb0b7908c0a2b394e09b6c09863528c7f2bc86095",
+        "video_stream_index": 2,
+        "time_base": {
+          "numerator": "1",
+          "denominator": "1000"
+        },
+        "source_interval": {
+          "start_tick": "9007199254740995",
+          "end_tick": "9007199254741075"
+        }
+      },
+      "spec_sha256": "sha256:acd992d7cc5fc189ef61c33b842e16759687f80b6a08dde5fce0b94a841f4b0d",
+      "start": "9007199254740995",
+      "end": "9007199254741075",
+      "windows": [
+        "{\"anchor\":null,\"clock_spec_sha256\":\"sha256:acd992d7cc5fc189ef61c33b842e16759687f80b6a08dde5fce0b94a841f4b0d\",\"complete\":false,\"end_tick\":\"9007199254741025\",\"frame_clock_sha256\":\"sha256:cfde7d0dd0b7e82a5128f11047369743592f1e5fbf8c9365ef7436ff493f710e\",\"kind\":\"review_decoded_clock_window\",\"native_media_admitted\":false,\"next_anchor\":{\"packet_pos\":\"103\",\"pts\":\"9007199254741025\"},\"observation_sha256\":\"sha256:163cd4ae62bd6bbd167f19ae8215164e2e501961a5d38916a18b857ad66c260e\",\"overlap\":[{\"duration\":10,\"key_frame\":1,\"packet_pos\":103,\"pts\":9007199254741025},{\"duration\":10,\"key_frame\":1,\"packet_pos\":104,\"pts\":9007199254741035}],\"pts\":[\"9007199254740995\",\"9007199254741005\",\"9007199254741015\"],\"schema_version\":1,\"semantic_qc_admitted\":false,\"start_tick\":\"9007199254740995\"}",
+        "{\"anchor\":{\"packet_pos\":\"103\",\"pts\":\"9007199254741025\"},\"clock_spec_sha256\":\"sha256:acd992d7cc5fc189ef61c33b842e16759687f80b6a08dde5fce0b94a841f4b0d\",\"complete\":true,\"end_tick\":\"9007199254741075\",\"frame_clock_sha256\":\"sha256:88bd7dcd2efa20b7a7cb542a8e168c1b76a2b11b0cc9e42626ad18fc7370fda3\",\"kind\":\"review_decoded_clock_window\",\"native_media_admitted\":false,\"next_anchor\":null,\"observation_sha256\":\"sha256:163cd4ae62bd6bbd167f19ae8215164e2e501961a5d38916a18b857ad66c260e\",\"overlap\":[],\"pts\":[\"9007199254741025\",\"9007199254741035\",\"9007199254741045\",\"9007199254741055\",\"9007199254741065\"],\"schema_version\":1,\"semantic_qc_admitted\":false,\"start_tick\":\"9007199254741025\"}"
+      ],
+      "window_sha256": [
+        "sha256:1b051df7259c0375bd5445dc3f982d5163f9a7010258ce3e95ffecb83d811123",
+        "sha256:c51c19e0892f4388a5b954cc859b252d4a94b844073b584bd735386e1a0d13d6"
+      ]
+    }
+  ]
+}

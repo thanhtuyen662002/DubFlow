@@ -182,3 +182,9 @@ def probe_plan(*, ffprobe_path, media_root, executable_pin, source_pin, source_r
     if check_pins() != source:
         raise ReviewError("decoded clock source locator changed during observation")
     return result
+
+
+def probe_plan_resumable(**native_args):
+    """Native-checkpointed source-clock windows; original one-shot API is stable."""
+    from .longform_windows import resume_plan
+    return resume_plan(**native_args)

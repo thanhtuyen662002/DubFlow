@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private decoded source-clock window observation v1",
+  "description": "Native-owned checkpoint callbacks must independently admit producer/source/process/physical journal. This format alone grants no decoded media, QC, environment or publication authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "clock_spec_sha256",
+    "start_tick",
+    "end_tick",
+    "anchor",
+    "next_anchor",
+    "complete",
+    "pts",
+    "frame_clock_sha256",
+    "observation_sha256",
+    "overlap",
+    "native_media_admitted",
+    "semantic_qc_admitted"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_decoded_clock_window"
+    },
+    "clock_spec_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "start_tick": {
+      "$ref": "#/$defs/tick"
+    },
+    "end_tick": {
+      "$ref": "#/$defs/tick"
+    },
+    "anchor": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/anchor"
+        }
+      ]
+    },
+    "next_anchor": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/anchor"
+        }
+      ]
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "pts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 65536,
+      "items": {
+        "$ref": "#/$defs/tick"
+      }
+    },
+    "frame_clock_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "observation_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "overlap": {
+      "type": "array",
+      "maxItems": 65536,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pts",
+          "key_frame",
+          "packet_pos",
+          "duration"
+        ],
+        "properties": {
+          "pts": {
+            "type": "integer",
+            "minimum": -9223372036854776000,
+            "maximum": 9223372036854776000
+          },
+          "key_frame": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "packet_pos": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854776000
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854776000
+              }
+            ]
+          }
+        }
+      }
+    },
+    "native_media_admitted": {
+      "const": false
+    },
+    "semantic_qc_admitted": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "tick": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]{0,18})$"
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pts",
+        "packet_pos"
+      ],
+      "properties": {
+        "pts": {
+          "$ref": "#/$defs/tick"
+        },
+        "packet_pos": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,18})$"
+        }
+      }
+    }
+  }
+}
