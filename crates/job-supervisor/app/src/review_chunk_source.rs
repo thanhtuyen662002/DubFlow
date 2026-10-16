@@ -6,6 +6,10 @@ use super::super::review_runtime::ChunkRecipeSelection;
 use super::*;
 use std::collections::HashSet;
 
+#[path = "review_clock_journal.rs"]
+mod clock_journal;
+pub(crate) use clock_journal::{run_clock, CurrentClockJournal};
+
 struct SourceStream {
     geometry: [u32; 2],
     clock: [u64; 2],

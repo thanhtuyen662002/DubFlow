@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "kind": "review_processing_clock_dispatch_capability",
+  "capability": "review_clock_window_dispatch_v1",
+  "entrypoint": "engine/dubflow/review/longform_clock_execution.py",
+  "context_format": "review_native_clock_execution_context_v1",
+  "decoder": "review-decoded-pts-keyframe-packet-window-v1",
+  "maximum_context_bytes": 4194304,
+  "maximum_result_bytes": 8404992,
+  "maximum_window_bytes": 4194304,
+  "maximum_seconds": 180,
+  "maximum_packets": 16384,
+  "result": "review_private_clock_window_result",
+  "native_decoded_clock_admitted": false,
+  "native_environment_admitted": false,
+  "semantic_qc_admitted": false,
+  "chunked_longform": false,
+  "active_graph_publication": false
+}

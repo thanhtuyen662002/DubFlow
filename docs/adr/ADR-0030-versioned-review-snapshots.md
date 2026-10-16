@@ -3301,3 +3301,253 @@ chunked_longform remains false. The Python stream-timeline oracle and authored
 native parser/interval regressions are component evidence only; complete current
 installed B1/B2, corrected standard/editable outputs, GUI/liveness, actual worker
 crash/recovery and representative real-four-hour acceptance remain mandatory.
+
+
+#### Resumable decoded source-clock windows v1 (pending source)
+
+The previous one-shot probe remains supported. The additive resumable path uses
+app-owned ffprobe with selected-stream decoded PTS, keyframe/packet positions and
+exact source/executable pins. One packet-limited process is bounded by 16MiB
+stdout, 65536 decoded frames, at most16384 selected packets and180seconds.
+An approximate microsecond seek only locates a candidate. The first resumed
+decoded frame must equal the saved integer PTS, keyframe and packet position.
+No floating time/FPS/frame ordinal replaces canonical signed64 source identity.
+
+A non-final window requires three advancing observed keyframes and ends at the
+third-last one. Lookahead extends through the second-last keyframe only. This
+keeps a complete guard GOP before the packet-limited decoder flush tail: that
+tail can emit a final keyframe before its preceding B frames have even been read.
+The next observation must reproduce the exact stable lookahead before new points
+are usable. The comparison is never relaxed to subsequence or approximate PTS.
+Saved records also cross-check overlapping PTS before planning. Seeking or a
+packet limit does not grant complete coverage. A short packet-limited candidate
+must match an independently executed suffix with no packet/end limit under the
+same remaining absolute deadline and byte/frame limits. EOF is accepted only
+when the last decoded PTS plus its explicit positive duration equals the native
+archived exact source end. Missing timestamps, packet positions, keyframe
+lookahead, exact duration, unknown shapes or incompatible seek ranges refuse
+with compatibility evidence; no best-effort or inferred timestamp is substituted.
+
+A closed canonical record binds the source/executable/stream/time-base/full
+interval specification and stores bounded exact PTS plus next-anchor/lookahead.
+Native-owned read/checkpoint/fence callbacks reopen the contiguous saved prefix,
+publish each immutable record and return exactly independently reopened bytes.
+Each invocation decodes at most the configured number of new windows, allowing
+pause/crash recovery to reuse saved observations. The journal has4096records,
+16MiB aggregate metadata and1000000frames limits; only hashes of prior records
+remain in memory. A complete plan streams PTS by independently reopening every
+record again and uses the existing interval-local dependency planner.
+
+This adapter writes no worker-owned SQLite, publication pointer or file. The
+native caller must implement contained workers, full source/current/runtime
+admission, immutable output-volume journal/capacity and authoritative contiguous
+inventory. A record/seek/packet position/hash is not native decoded-media or
+codec/font/provider/OS authority; both media/QC admission flags remain false.
+A complete native decoder/index policy for supported codecs, concrete longform
+executor, audio/finalmux/seam/fullAVQC/CAS/currentrenderer, installed wholeB1B2,
+standard/editable publication, GUI/liveness/actualprocessingcrash/real4h gates
+remain mandatory. Existing effective-render-v1/chunked_longform=false and old
+producer/model/runtime/job pins are unchanged; older releases simply lack this
+private entry and cannot consume the new format. No SQL migration is needed.
+
+FFprobe documentation explicitly distinguishes requested seek start from the
+actual start and defines packet-count interval stops. The implementation keeps
+these positions as non-authoritative locators:
+https://ffmpeg.org/ffprobe.html#Main-options
+
+
+#### Native output-volume clock journal v1 (pending source)
+
+CurrentChunkSource now derives the Python clock specification from its already
+native-selected primary stream/source interval and exact owned ffprobe pin.
+The physical journal namespace is domain separated from video-plan checkpoints
+and includes the complete native processing recipe identity. Unrelated cue
+edits do not change decoded source-clock identity, while a changed source,
+probe/processing recipe, stream or rational requires a different namespace.
+
+Native independently parses canonical window bytes before retention or reuse.
+It checks exact signed64 PTS/anchor text, numeric wide lookahead PTS/packet
+positions, strict source coverage, per-window frame hashes, exact overlapping
+PTS, EOF/full-interval shape and false media/QC authority flags. The contiguous
+journal keeps the existing4096ordinal,16MiB raw metadata and1000000frame limits.
+Window/marker/page bytes alone never prove that a trusted contained decoder
+produced them; actual decoder admission remains a separate required step.
+
+A window is at most4MiB. It is divided into immutable24KiB byte pages encoded as
+lowercase hex in small canonical JSON, each below the existing64KiB record
+limit. Each page binds namespace, complete record SHA, exact byte offset and
+the next page's native canonical output locator. Pages are sealed from tail to
+head; only after all are reopened/hash-checked is a small ordinal marker
+published. Recovery reconstructs the exact UTF8 record through at most172pages,
+refuses cycles/noncontiguous offsets/foreign namespaces/changed sizes or hashes,
+then independently checks the complete native clock prefix.
+
+This reuses the existing NativeMixStore writer, same actual volume identity,
+read-only single-link/no-follow/fullSHA checks, aggregate32GiB old/undo/orphan/
+other-job accounting, fresh2GiB caller reserve and immutable ordinal marker
+publication. Existing64KiB small-record limits are unchanged. No larger-record
+waiver, DATA fallback, SQLite stage, mutable head or old-object cleanup is added.
+A failed page/marker publication leaves ordinary accounted orphan bytes;
+a changed collision refuses rather than overwriting. Current/source/processing
+fences run before and after; no output-wide writer crosses the final fence.
+
+Native metadata and physical page tests are authored but not executed locally
+because the known MSVC linker is absent. Python independently admits negative
+and above2^53 golden source-clock records; that does not qualify the Rust code.
+Actual contained decoder dispatch/new processing capability and entry, complete
+codec/font/provider/OS admission, indexed-clock production, capacity integration,
+final audio/mux/seams/AV-QC-CAS/currentrenderer and full installed B1/B2,
+standard/editable, GUI/liveness/actualprocessingcrash/real4h remain required.
+Publicchunked_longform=false and all old producer/model/runtime/job pins remain
+unchanged. Old releases/other record kinds cannot interpret this distinct
+private page/marker format; no automatic format or SQL migration occurs.
+
+
+#### Contained native source-clock execution v1 (pending source)
+
+The explicit processing-clock-dispatch-v1 capability introduces one owned
+isolated Python entry for one bounded clock window. Native first revalidates
+the complete original/protected processing release and all20 direct clock
+dependency files plus the owned ffprobe executable. The recipe binds the closed
+capability, exact file/executable pins and complete processing-release identity.
+Missing/unknown capability or changed imports refuse before Python starts;
+nothing is copied into or repinned inside an old job/producer/model tree.
+
+CurrentChunkSource advances at most one ordinal selected from its physically
+reopened native clock journal. Native derives/seals the source specification,
+current cursor, exact anchor/lookahead, source/probe paths and pins, decoder
+recipe/release hashes and bounded packet/time policy. No browser-selected
+command/root/geometry/clock can supply these values. A changed complete
+processing release now uses a domain-separated namespace_v2 identity; prior
+private clock markers remain immutable and are not rewritten or auto-migrated.
+
+The owned entry requires Python-I-S-B and the native byte gate before engine
+imports or context reads. Its read-only regular single-link context is at most
+4MiB and uses exact handle/path identity/fullSHA/size/mtime checks before and
+after decoding. The file role distinction is preserved: inventoried executable
+dedup hard links are validated by the existing owned-executable reader; media
+source/context retain single-link/no-reparse checks. The first actual isolated
+fixture exposed this distinction and failed before decoding; the scoped role
+repair and regression preserve that failure observation.
+
+A separate native collector leaves the original metadata collector unchanged.
+It attaches WorkerTree before opening the byte gate, uses bounded stdout and
+4096byte diagnostic readers, one absolute at-most180second deadline and native
+cancel/current observations. Failure/deadline/pipe overflow/diagnostics refuse
+the result; the tree is terminated and readers are joined under a bounded
+cleanup interval. Successful child exit alone never authorizes a journal append.
+
+The sole closed result binds exact context/spec/decoder-recipe/ordinal and
+complete window bytes/hash, with all media/environment/QC/graph flags false.
+After child completion native rereads the sealed context, re-admits the complete
+processing receipt and current/source dependencies, independently validates
+the result and window prefix, then calls the existing output journal append.
+No writer lock crosses execution/current-runtime fences. The worker writes no
+durable SQLite or checkpoint file. Actual full native execution/containment and
+processing crash qualification must still be demonstrated with source-matched
+Windows binaries, complete source coverage/index policy and installed product.
+
+Two schema signed64 extrema were authored through a JavaScript numeric path
+that rounded them. The pending correction writes exact decimal JSON integer
+tokens -9223372036854775808 and9223372036854775807 in both affected contracts,
+with an independent Python exact-integer regression. Native existing signed64
+bounds remain unchanged; no runtime clock compatibility or precision waiver.
+
+Local Python context/gate/result/refusal/schema cases and an actual isolated
+owned-ffprobe tinyVFR entry are component tests. Native collector/capability/
+result tests are authored but locally NOT_RUN due known missing MSVC linker.
+Full decoded coverage, codec/font/provider/OS closure, admitted chunk execution,
+capacity/writerwait/scratch retirement, final audio/mux/seams/fullAVQC/CAS/current
+renderer, whole installedB1B2/cumulative/newafterundo/standardeditable/GUI/liveness/
+actualprocessingcrash/real4h and full172/175 gates remain mandatory. Public
+chunked_longform=false and existing effective-render-v1/old runtime-model-job
+pins are unchanged. Unknown context/capability versions refuse; no SQL migration
+or implicit public protocol/graph-format conversion is introduced.
+
+
+#### Native source-clock command and decoder-only reuse namespace v3 (pending source)
+
+The private `review-advance-source-clock` command now reaches the native
+contained one-window collector and physical clock journal from the supervisor
+command dispatcher. It accepts only an absolute control root, job, all five
+actual current-token fields and the explicit processing-release selection.
+Unknown/duplicate/incomplete flags refuse, including caller source/probe, clock,
+ordinal, candidate text/voice and encoder environment. JobExecutionGuard covers
+the invocation; SQLite is opened read-only. Fresh native current/original
+admission determines the immutable original manifest, selected primary stream,
+source-derived signed64 ticks/reduced rational, source full bytes and output
+volume. The command never synthesizes a cue, creates a candidate correction or
+mixes audio to decode the original source clock. It supports original/current
+B1 and B2 through the same typed current reader without changing their meaning.
+
+This supersedes only the earlier pending clock API placement on
+CurrentChunkSource: decoder execution now has a separate CurrentSourceClock
+type with a full admitted clock-processing receipt. The encoder-plan type and
+its environment checks remain unchanged. No synthetic environment identity or
+encoder recipe is required or supplied as decoder authority. Namespace_v3 binds
+the complete clock specification, full decoder recipe and complete processing
+release hash. It intentionally excludes candidate edits and encoder labels so
+unchanged source observations can be reopened after an unrelated edit/undo.
+Old v1/v2 namespaces and pages remain immutable, without conversion, rewrite,
+eviction or cleanup. A future caller must independently join complete source
+coverage to its current encoder plan; reuse never grants that admission itself.
+
+One call reopens the physically verified prefix, derives the next ordinal and
+exact overlap/anchor, executes at most one <=180second contained window and
+appends only after native result/source/current/processing revalidation. An
+already complete prefix is returned without another decoder process. Existing
+720second phase bound, output NTFS volume/no-follow/singlelink/read-only/fullSHA,
+32GiB shared old/undo/orphan/other-job quota, fresh2GiB reserve and writer-drop
+fences apply. A worker or failed invocation writes no SQLite state or mutable
+clock head. Process interruption leaves only existing accounted immutable
+pages/markers; full actual processing crash/Windows qualification is pending.
+
+The closed native-source-clock-progress-v1 observation includes the actual
+current token and journal cursor/count/complete flag; all decoded admission,
+environment, semantic QC, chunked_longform and graph flags remain false. This
+private command/format has no public desktop capability, migration or old-job
+producer/model/runtime repin. Existing apply/render/publication routes remain
+unchanged. Native token/parser/namespace regressions are authored, locally
+NOT_RUN because the known MSVC linker is absent. Source-matched hosted tests
+and actual installed producer execution are still required, along with full
+clock coverage/index policy, codec/font/provider/OS closure, contained chunk
+encoding/capacity/writerwait/scratch retirement, audio/finalmux/AV-seams/QC/CAS,
+whole installed B1B2/cumulative/newafterundo/standardeditable, GUI/liveness,
+actualprocessingcrash/real4h and every full Issue172/175 acceptance gate.
+
+#### Fresh processing receipt path admission (source preparation)
+
+Actual source-matched d8 Windows qualification observed 864.437 seconds for
+current B2 CAS, 191.703 seconds for a separate current reopen and 401.765
+seconds for current standard export. These whole native operations repeatedly
+walk complete runtime inventories. The raw stage evidence records separate
+epochs, never a global unique-file total or controlled OS-cold benchmark.
+
+A private preparation_paths helper now returns both effective-cue and native
+dispatch paths after one fresh effective_entry admission and the full pinned
+dispatch fingerprint. receipt consumes that pair directly. The public
+preparation_dispatch wrapper performs the same fresh helper call on every
+invocation. No admitted paths or inventory result is cached across calls.
+
+This removes the duplicate effective_entry call within one receipt. The
+complete original and processing final inventory walks remain in the unchanged
+effective_entry body. Both manifests, the capability and effective entry are
+reopened there; the native dispatch fingerprint still runs after that fence.
+Original AdmittedRuntime methods, complete full-hash import admission,
+missing/extra/link refusals, deadlines, current and publication fences,
+processing receipts, recipes, public capability flags and job/model bindings
+retain their existing meanings. No schema, SQLite, worker format or package
+migration is needed. Rollback uses the old implementation with unchanged
+receipt bytes and old immutable jobs/producer roots.
+
+A new native regression first creates a valid receipt, then changes each
+entry/capability/release with equal-length bytes, introduces an unlisted import
+and removes an expected import in either tree. Every subsequent receipt must
+refuse; restoring exact bytes/inventory must restore the same receipt. It is
+authored but NOT_RUN locally because the known MSVC linker is unavailable.
+Rustfmt/static source guards do not qualify runtime behavior or latency.
+Source-specific hosted compilation and actual Windows whole-pipeline timing
+remain required. Existing d8 native results do not qualify this new source.
+All full Issue172/174/175 cumulative/undo/new-after-undo/current standard and
+production editable/installed GUI/liveness/actual crash/longform/real4h gates
+remain mandatory. Public chunked_longform and authority flags stay false.

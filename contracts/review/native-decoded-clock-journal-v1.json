@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native private decoded clock journal v1",
+  "description": "Physical metadata only. Native full-byte/volume/identity/quota/current/source/processing checks remain mandatory. A window/page/marker is not independently decoded coverage, OS environment, media QC or graph publication authority.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "namespace_sha256",
+        "record_sha256",
+        "offset",
+        "hex",
+        "next"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "review_native_clock_window_page"
+        },
+        "namespace_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "record_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "offset": {
+          "$ref": "#/$defs/decimal"
+        },
+        "hex": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 49152,
+          "pattern": "^(?:[0-9a-f]{2})+$"
+        },
+        "next": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/descriptor"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "job_id",
+        "namespace_sha256",
+        "ordinal",
+        "record_sha256",
+        "size_bytes",
+        "first_page"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "review_native_clock_window_checkpoint"
+        },
+        "job_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "namespace_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "record_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "size_bytes": {
+          "$ref": "#/$defs/decimal"
+        },
+        "first_page": {
+          "$ref": "#/$defs/descriptor"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,18})$"
+    },
+    "descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path_hint",
+        "format",
+        "locator"
+      ],
+      "properties": {
+        "path_hint": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "format": {
+          "const": "json"
+        },
+        "locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "volume_id",
+            "root_kind",
+            "relative_path",
+            "content_hash",
+            "size_bytes"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": 1
+            },
+            "volume_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "root_kind": {
+              "const": "output"
+            },
+            "relative_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "content_hash": {
+              "$ref": "#/$defs/hash"
+            },
+            "size_bytes": {
+              "$ref": "#/$defs/decimal"
+            }
+          }
+        }
+      }
+    }
+  }
+}
