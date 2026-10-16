@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private native source-clock progress v1",
+  "description": "One native review-advance-source-clock invocation reopens the source-bound physical journal and advances at most one window. Complete observation is not independent decoded coverage, environment, media QC or publication admission. Caller token selects no source, decoder, clock, ordinal or encoder environment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "current_token", "journal", "native_decoded_clock_admitted", "native_environment_admitted", "semantic_qc_admitted", "chunked_longform", "active_graph_published"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_native_source_clock_progress"},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "journal": {"$ref": "#/$defs/journal"},
+    "native_decoded_clock_admitted": {"const": false},
+    "native_environment_admitted": {"const": false},
+    "semantic_qc_admitted": {"const": false},
+    "chunked_longform": {"const": false},
+    "active_graph_published": {"const": false}
+  },
+  "$defs": {
+    "journal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "clock_spec", "namespace_sha256", "window_count", "next_tick", "next_anchor", "complete_observation", "native_decoded_clock_admitted", "native_environment_admitted", "semantic_qc_admitted", "chunked_longform", "active_graph_published"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "kind": {"const": "review_native_current_clock_journal"},
+        "clock_spec": {"$ref": "native-clock-execution-context-v1.json#/$defs/spec"},
+        "namespace_sha256": {"$ref": "native-clock-execution-context-v1.json#/$defs/hash"},
+        "window_count": {"type": "integer", "minimum": 0, "maximum": 4096},
+        "next_tick": {"$ref": "native-clock-execution-context-v1.json#/$defs/tick"},
+        "next_anchor": {"anyOf": [{"type": "null"}, {"$ref": "native-clock-execution-context-v1.json#/$defs/anchor"}]},
+        "complete_observation": {"type": "boolean"},
+        "native_decoded_clock_admitted": {"const": false},
+        "native_environment_admitted": {"const": false},
+        "semantic_qc_admitted": {"const": false},
+        "chunked_longform": {"const": false},
+        "active_graph_published": {"const": false}
+      }
+    }
+  }
+}

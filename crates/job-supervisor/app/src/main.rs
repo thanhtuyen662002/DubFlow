@@ -629,6 +629,9 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-advance-source-clock")) {
+        return review_render::run_clock(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-confirm-current-export")) {
         return review_apply::run_export_confirmed(std::env::args_os().skip(2));
     }

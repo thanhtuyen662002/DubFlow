@@ -22,6 +22,8 @@ const IMPORT_DEADLINE: Duration = Duration::from_secs(180);
 mod chunk_recipe;
 #[path = "review_chunk_runtime.rs"]
 mod chunk_runtime;
+#[path = "review_clock_runtime.rs"]
+mod clock_runtime;
 pub(super) use chunk_recipe::ChunkRecipeSelection;
 
 /// One cooperative deadline covers enumeration, queued files and all workers.

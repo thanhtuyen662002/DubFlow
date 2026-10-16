@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 #[path = "review_clock_journal.rs"]
 mod clock_journal;
-pub(crate) use clock_journal::CurrentClockJournal;
+pub(crate) use clock_journal::{run_clock, CurrentClockJournal};
 
 struct SourceStream {
     geometry: [u32; 2],

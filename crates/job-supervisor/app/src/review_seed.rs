@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 #[path = "review_chunk_bridge.rs"]
 mod chunk_bridge;
 pub(super) use chunk_bridge::{collect_chunk_worker, ChunkWorkerBinding, NativeChunkRequest};
+#[path = "review_clock_collect.rs"]
+mod clock_collect;
+pub(crate) use clock_collect::collect_clock_worker;
 
 const LIMIT: usize = 64 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(60);

@@ -3,6 +3,11 @@
 use super::*;
 use crate::review_retention::NativeMixStore;
 
+#[path = "review_clock_command.rs"]
+mod command;
+pub(crate) use command::run_clock;
+use command::{CurrentSourceClock, SourceClockInputs};
+
 const RECORD: usize = 4 * 1024 * 1024;
 const TOTAL: usize = 16 * 1024 * 1024;
 const PAGE: usize = 24 * 1024;
@@ -334,6 +339,28 @@ pub(crate) struct CurrentClockJournal {
     records: Vec<String>,
     prefix: Prefix,
 }
+fn decoder_namespace(spec: &Value, dispatch: &Value) -> SupervisorResult<String> {
+    let recipe = hash_value(&dispatch["processing_clock_recipe_sha256"])?;
+    let release = hash_value(&dispatch["processing_release_sha256"])?;
+    if !dispatch["processing_release"].is_object()
+        || hash(exact(&dispatch["processing_release"])?.as_bytes()) != release
+        || hash(exact(&dispatch["recipe"])?.as_bytes()) != recipe
+    {
+        return Err(invalid(
+            "source clock decoder/full release hash binding changed",
+        ));
+    }
+    // Clock reuse does not depend on a candidate edit or encoder environment.
+    // Prior v1/v2 markers remain immutable in their distinct namespaces.
+    Ok(hash(
+        exact(
+            &json!({"kind":"review_native_decoded_clock_journal_namespace_v3",
+        "clock_spec":spec,"processing_clock_recipe_sha256":recipe,
+        "processing_release_sha256":release}),
+        )?
+        .as_bytes(),
+    ))
+}
 impl CurrentClockJournal {
     pub(crate) fn packet(&self) -> Value {
         json!({"schema_version":1,"kind":"review_native_current_clock_journal","clock_spec":self.spec,
@@ -349,9 +376,9 @@ impl CurrentClockJournal {
         Ok(self.records.get(ordinal - 1).map(String::as_str))
     }
 }
-impl CurrentChunkSource {
+impl CurrentSourceClock {
     fn clock_spec(&self) -> SupervisorResult<Value> {
-        let probe = &self.recipe["executables"]["ffprobe"]["pin"]["sha256"];
+        let probe = &self.dispatch["ffprobe"]["pin"]["sha256"];
         hash_value(probe)?;
         hash_value(&self.source_pin["sha256"])?;
         Ok(
@@ -363,16 +390,7 @@ impl CurrentChunkSource {
     }
     fn journal_identity(&self) -> SupervisorResult<(Value, String)> {
         let spec = self.clock_spec()?;
-        let native_recipe = &self.recipe["processing_recipe_sha256"];
-        hash_value(native_recipe)?;
-        // Domain separated from video plan journals despite sharing proven small-marker IO.
-        let namespace = hash(
-            exact(
-                &json!({"kind":"review_native_decoded_clock_journal_namespace",
-            "clock_spec":spec,"native_processing_recipe_sha256":native_recipe}),
-            )?
-            .as_bytes(),
-        );
+        let namespace = decoder_namespace(&spec, &self.dispatch)?;
         Ok((spec, namespace))
     }
     fn scan_clock(
@@ -428,7 +446,7 @@ impl CurrentChunkSource {
     }
     pub(crate) fn read_clock_journal(
         &self,
-        input: &EffectiveRenderInputs<'_>,
+        input: &SourceClockInputs<'_>,
         deadline: Instant,
         cancelled: &mut impl FnMut() -> bool,
     ) -> SupervisorResult<CurrentClockJournal> {
@@ -445,7 +463,7 @@ impl CurrentChunkSource {
     }
     pub(crate) fn append_clock_window(
         &self,
-        input: &EffectiveRenderInputs<'_>,
+        input: &SourceClockInputs<'_>,
         ordinal: u16,
         raw: &str,
         deadline: Instant,
@@ -647,6 +665,256 @@ mod tests {
             let mut wrong = marker.clone();
             wrong["size_bytes"] = json!((raw.len() + 1).to_string());
             assert!(read_pages(&store, &namespace, &wrong, until).is_err());
+        }
+    }
+}
+
+fn admit_clock_result(raw: &str, context: &Value, context_sha: &str) -> SupervisorResult<String> {
+    let value = decode(raw, 8 * 1024 * 1024 + 16384)?;
+    closed(
+        &value,
+        &[
+            "schema_version",
+            "kind",
+            "context_sha256",
+            "clock_spec_sha256",
+            "processing_clock_recipe_sha256",
+            "ordinal",
+            "window_json",
+            "window_sha256",
+            "native_decoded_clock_admitted",
+            "native_environment_admitted",
+            "semantic_qc_admitted",
+            "active_graph_published",
+        ],
+    )?;
+    if exact(&value)? != raw
+        || value["schema_version"].as_u64() != Some(1)
+        || value["kind"] != "review_private_clock_window_result"
+        || value["context_sha256"] != context_sha
+        || value["clock_spec_sha256"] != hash(exact(&context["clock_spec"])?.as_bytes())
+        || value["processing_clock_recipe_sha256"] != context["processing_clock_recipe_sha256"]
+        || value["ordinal"] != context["ordinal"]
+        || value["native_decoded_clock_admitted"] != false
+        || value["native_environment_admitted"] != false
+        || value["semantic_qc_admitted"] != false
+        || value["active_graph_published"] != false
+    {
+        return Err(invalid(
+            "clock worker result substituted native binding or claimed authority",
+        ));
+    }
+    let window = value["window_json"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= RECORD)
+        .ok_or_else(|| invalid("clock worker result window exceeds native record bound"))?;
+    if hash_value(&value["window_sha256"])? != hash(window.as_bytes()) {
+        return Err(invalid("clock worker result changed exact window bytes"));
+    }
+    Ok(window.into())
+}
+impl CurrentSourceClock {
+    /// Executes at most one new contained window; every ordinal comes from the
+    /// physically reopened native journal. This is not a public render route.
+    pub(crate) fn advance_clock_window(
+        &self,
+        input: &SourceClockInputs<'_>,
+        deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> SupervisorResult<CurrentClockJournal> {
+        if deadline
+            .checked_duration_since(Instant::now())
+            .is_none_or(|n| n.is_zero() || n > Duration::from_secs(720))
+        {
+            return Err(invalid(
+                "native current clock phase exceeds existing bounded admission policy",
+            ));
+        }
+        observe(deadline, cancelled)?;
+        let saved = self.read_clock_journal(input, deadline, cancelled)?;
+        if saved.prefix.complete {
+            return Ok(saved);
+        }
+        self.revalidate(input, deadline)?;
+        let dispatch = input.processing.clock_execution_receipt()?;
+        if exact(&dispatch)? != exact(&self.dispatch)? {
+            return Err(invalid(
+                "clock processing source/probe differs from current native recipe",
+            ));
+        }
+        observe(deadline, cancelled)?;
+        let worker_deadline = std::cmp::min(deadline, Instant::now() + Duration::from_secs(180));
+        let seconds = worker_deadline
+            .saturating_duration_since(Instant::now())
+            .as_secs()
+            .min(180);
+        if seconds == 0 {
+            return Err(invalid("clock admission left no bounded worker time"));
+        }
+        let probe = dispatch["ffprobe"]["path"]
+            .as_str()
+            .ok_or_else(|| invalid("clock native probe path missing"))?;
+        let media = Path::new(probe)
+            .parent()
+            .ok_or_else(|| invalid("clock native probe root missing"))?;
+        let ordinal = saved.records.len() + 1;
+        let context = json!({"schema_version":1,"kind":"review_native_clock_execution_context",
+            "clock_spec":saved.spec,"ordinal":ordinal,"cursor":saved.prefix.cursor.to_string(),
+            "anchor":saved.prefix.anchor,"overlap":saved.prefix.overlap,"source":self.source_pin,
+            "source_root":self.source_root,
+            "ffprobe":{"path":probe,"sha256":dispatch["ffprobe"]["pin"]["sha256"],
+                "size_bytes":dispatch["ffprobe"]["pin"]["size_bytes"]},
+            "media_root":media,"processing_clock_recipe_sha256":dispatch["processing_clock_recipe_sha256"],
+            "processing_release_sha256":dispatch["processing_release_sha256"],
+            "packet_limit":4096,"timeout_seconds":seconds});
+        let context_raw = exact(&context)?;
+        if context_raw.len() > RECORD {
+            return Err(invalid("clock native context exceeds specific byte bound"));
+        }
+        let object = input.assets.accept_json(&context_raw)?;
+        if object.sha256 != hash(context_raw.as_bytes())
+            || input.assets.read_json(&object)? != context_raw
+        {
+            return Err(invalid("clock context changed at native sealing"));
+        }
+        let entry = PathBuf::from(
+            dispatch["entry"]["path"]
+                .as_str()
+                .ok_or_else(|| invalid("clock native entry missing"))?,
+        );
+        let scratch = crate::review_correction::candidate_scratch(input.candidates)?;
+        let mut command =
+            crate::review_correction::cue_command(input.processing.runtime(), &entry, &scratch)?;
+        command.args([
+            std::ffi::OsString::from("--context"),
+            object.path.as_os_str().to_owned(),
+            std::ffi::OsString::from("--context-sha256"),
+            std::ffi::OsString::from(&object.sha256),
+        ]);
+        let mut last_poll = Instant::now();
+        let mut watch = |until: Instant| -> SupervisorResult<()> {
+            observe(until, cancelled)?;
+            if last_poll.elapsed() >= Duration::from_millis(250) {
+                if input
+                    .store
+                    .review_graph_state(&input.state.token.job_id)?
+                    .as_ref()
+                    != Some(input.state)
+                {
+                    return Err(invalid(
+                        "current clock invocation changed during processing",
+                    ));
+                }
+                last_poll = Instant::now();
+            }
+            Ok(())
+        };
+        let raw = crate::review_seed::collect_clock_worker(
+            command,
+            worker_deadline,
+            8 * 1024 * 1024 + 16384,
+            &mut watch,
+        )?;
+        drop(watch);
+        observe(deadline, cancelled)?;
+        if input.assets.read_json(&object)? != context_raw
+            || exact(&input.processing.clock_execution_receipt()?)? != exact(&dispatch)?
+        {
+            return Err(invalid(
+                "clock context/processing release changed during contained execution",
+            ));
+        }
+        self.revalidate(input, deadline)?;
+        let window = admit_clock_result(&raw, &context, &object.sha256)?;
+        let mut prefix = saved.prefix.clone();
+        prefix.admit(&window, &hash(exact(&saved.spec)?.as_bytes()))?;
+        self.append_clock_window(input, ordinal as u16, &window, deadline, cancelled)
+    }
+}
+
+#[cfg(test)]
+mod execution_tests {
+    use super::*;
+    #[test]
+    fn native_source_clock_namespace_binds_decoder_and_full_release_without_encoder_environment() {
+        let spec = json!({"source_sha256":hash(b"source"),"ffprobe_sha256":hash(b"probe")});
+        let dispatch = |recipe: Value, release: Value| {
+            json!({
+            "processing_clock_recipe_sha256":hash(exact(&recipe).unwrap().as_bytes()),
+            "processing_release_sha256":hash(exact(&release).unwrap().as_bytes()),
+            "recipe":recipe,"processing_release":release})
+        };
+        let original = dispatch(json!({"decoder":"one"}), json!({"source":"one"}));
+        let namespace = decoder_namespace(&spec, &original).unwrap();
+        for changed in [
+            dispatch(json!({"decoder":"two"}), json!({"source":"one"})),
+            dispatch(json!({"decoder":"one"}), json!({"source":"two"})),
+        ] {
+            assert_ne!(decoder_namespace(&spec, &changed).unwrap(), namespace);
+        }
+        for key in ["recipe", "processing_release"] {
+            let mut forged = original.clone();
+            forged[key] = json!({"forged":true});
+            assert!(decoder_namespace(&spec, &forged).is_err());
+        }
+        let mut irrelevant = original.clone();
+        irrelevant["encoder_environment"] = json!("untrusted caller label, never read");
+        assert_eq!(decoder_namespace(&spec, &irrelevant).unwrap(), namespace);
+    }
+    fn sample() -> (Value, String, String) {
+        let fixture = decode(
+            include_str!("../../../../tests/review/native_decoded_clock_windows_v1.json"),
+            64 * 1024,
+        )
+        .unwrap();
+        let case = &fixture["cases"][0];
+        let window = case["windows"][0].as_str().unwrap();
+        let context = json!({"clock_spec":case["spec"],"ordinal":1,
+            "processing_clock_recipe_sha256":hash(b"clock recipe")});
+        let digest = hash(b"native sealed context");
+        let raw = exact(
+            &json!({"schema_version":1,"kind":"review_private_clock_window_result",
+            "context_sha256":digest,"clock_spec_sha256":case["spec_sha256"],
+            "processing_clock_recipe_sha256":context["processing_clock_recipe_sha256"],
+            "ordinal":1,"window_json":window,"window_sha256":hash(window.as_bytes()),
+            "native_decoded_clock_admitted":false,"native_environment_admitted":false,
+            "semantic_qc_admitted":false,"active_graph_published":false}),
+        )
+        .unwrap();
+        (context, digest, raw)
+    }
+    #[test]
+    fn native_clock_result_keeps_exact_window_binding_without_claiming_graph_authority() {
+        let (context, digest, raw) = sample();
+        let window = admit_clock_result(&raw, &context, &digest).unwrap();
+        assert_eq!(
+            decode(&window, RECORD).unwrap()["native_media_admitted"],
+            false
+        );
+        assert!(admit_clock_result(&raw, &context, &hash(b"foreign context")).is_err());
+    }
+    #[test]
+    fn native_clock_result_refuses_stale_ordinal_recipe_hash_and_false_authority() {
+        let (context, digest, raw) = sample();
+        for (field, value) in [
+            ("ordinal", json!(2)),
+            (
+                "processing_clock_recipe_sha256",
+                json!(hash(b"wrong recipe")),
+            ),
+            ("window_sha256", json!(hash(b"wrong window"))),
+            ("native_decoded_clock_admitted", json!(true)),
+            ("native_environment_admitted", json!(true)),
+            ("semantic_qc_admitted", json!(true)),
+            ("active_graph_published", json!(true)),
+            ("extra", json!("foreign")),
+        ] {
+            let mut v = decode(&raw, 8 * 1024 * 1024 + 16384).unwrap();
+            v[field] = value;
+            assert!(
+                admit_clock_result(&exact(&v).unwrap(), &context, &digest).is_err(),
+                "{field}"
+            );
         }
     }
 }

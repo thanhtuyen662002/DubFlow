@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 #[path = "review_chunk_source.rs"]
 mod chunk_source;
+pub(super) use chunk_source::run_clock;
 pub(super) use chunk_source::{prepare_current_chunk_source, CurrentChunkPlan, CurrentChunkSource};
 
 const LIMIT: usize = 64 * 1024 * 1024;
