@@ -696,8 +696,7 @@ impl AdmittedProcessingRuntime {
     }
 
     pub(super) fn receipt(&self) -> SupervisorResult<Value> {
-        let entry = self.effective_entry()?;
-        let dispatch = self.preparation_dispatch()?;
+        let (entry, dispatch) = self.preparation_paths()?;
         let mut origin = String::new();
         super::review_document::canonical(&self.origin_producer, &mut origin)?;
         Ok(
@@ -721,7 +720,16 @@ impl AdmittedProcessingRuntime {
     }
 
     pub(super) fn preparation_dispatch(&self) -> SupervisorResult<PathBuf> {
-        self.effective_entry()?;
+        self.preparation_paths().map(|(_, dispatch)| dispatch)
+    }
+
+    // A receipt needs both paths from the same fresh admission. Do not call
+    // effective_entry again through preparation_dispatch: it repeats the two
+    // complete final inventory walks without crossing an execution boundary.
+    // Nothing is stored for a later caller; every call still reopens both
+    // manifests, the capability and both entries, and both import inventories.
+    fn preparation_paths(&self) -> SupervisorResult<(PathBuf, PathBuf)> {
+        let entry = self.effective_entry()?;
         let pin = self
             .runtime
             .inventory
@@ -731,7 +739,7 @@ impl AdmittedProcessingRuntime {
             })?;
         let path = self.runtime.root.join(PROCESSING_DISPATCH_ENTRY);
         fingerprint(&path, pin, false, 64 * 1024 * 1024)?;
-        Ok(path)
+        Ok((entry, path))
     }
 
     /// Additional explicit capability; preparation-only releases still admit
@@ -1537,6 +1545,62 @@ mod tests {
             }
         }
         result
+    }
+
+    #[test]
+    fn processing_receipt_reopens_paths_and_both_inventories_after_prior_success() {
+        let original = fixture();
+        let (processing, manifest) = processing_fixture();
+        let admitted = AdmittedProcessingRuntime::from_origin(
+            &original.producer,
+            &processing.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        let receipt = admitted.receipt().unwrap();
+        assert_eq!(
+            receipt["effective_cue_entry"]["path"],
+            json!(processing.root.join(EFFECTIVE_ENTRY))
+        );
+        assert_eq!(
+            receipt["native_dispatch_entry"]["path"],
+            json!(processing.root.join(PROCESSING_DISPATCH_ENTRY))
+        );
+        assert_eq!(
+            admitted.preparation_dispatch().unwrap(),
+            processing.root.join(PROCESSING_DISPATCH_ENTRY)
+        );
+        for name in [
+            EFFECTIVE_ENTRY,
+            PROCESSING_DISPATCH_ENTRY,
+            PROCESSING_DECLARATION,
+            "release-manifest.json",
+        ] {
+            let path = processing.root.join(name);
+            let saved = fs::read(&path).unwrap();
+            let mut changed = saved.clone();
+            changed[0] ^= 1;
+            fs::write(&path, changed).unwrap();
+            assert!(admitted.receipt().is_err(), "late changed {name}");
+            fs::write(&path, saved).unwrap();
+            assert_eq!(admitted.receipt().unwrap(), receipt);
+        }
+        for root in [&original.root, &processing.root] {
+            let extra = root.join("app/engine/late_unlisted_import.py");
+            fs::write(&extra, b"unlisted after successful receipt").unwrap();
+            assert!(admitted.receipt().is_err());
+            fs::remove_file(&extra).unwrap();
+            assert_eq!(admitted.receipt().unwrap(), receipt);
+
+            let path = root.join("app/engine/dubflow/worker/production_job.py");
+            let held = root.join("held-test-import");
+            fs::rename(&path, &held).unwrap();
+            assert!(admitted.receipt().is_err());
+            fs::rename(&held, &path).unwrap();
+            assert_eq!(admitted.receipt().unwrap(), receipt);
+        }
+        assert_eq!(original.producer, admitted.origin_producer);
     }
 
     #[test]

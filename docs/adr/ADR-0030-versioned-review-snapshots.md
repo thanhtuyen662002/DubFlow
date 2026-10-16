@@ -3514,3 +3514,40 @@ clock coverage/index policy, codec/font/provider/OS closure, contained chunk
 encoding/capacity/writerwait/scratch retirement, audio/finalmux/AV-seams/QC/CAS,
 whole installed B1B2/cumulative/newafterundo/standardeditable, GUI/liveness,
 actualprocessingcrash/real4h and every full Issue172/175 acceptance gate.
+
+#### Fresh processing receipt path admission (source preparation)
+
+Actual source-matched d8 Windows qualification observed 864.437 seconds for
+current B2 CAS, 191.703 seconds for a separate current reopen and 401.765
+seconds for current standard export. These whole native operations repeatedly
+walk complete runtime inventories. The raw stage evidence records separate
+epochs, never a global unique-file total or controlled OS-cold benchmark.
+
+A private preparation_paths helper now returns both effective-cue and native
+dispatch paths after one fresh effective_entry admission and the full pinned
+dispatch fingerprint. receipt consumes that pair directly. The public
+preparation_dispatch wrapper performs the same fresh helper call on every
+invocation. No admitted paths or inventory result is cached across calls.
+
+This removes the duplicate effective_entry call within one receipt. The
+complete original and processing final inventory walks remain in the unchanged
+effective_entry body. Both manifests, the capability and effective entry are
+reopened there; the native dispatch fingerprint still runs after that fence.
+Original AdmittedRuntime methods, complete full-hash import admission,
+missing/extra/link refusals, deadlines, current and publication fences,
+processing receipts, recipes, public capability flags and job/model bindings
+retain their existing meanings. No schema, SQLite, worker format or package
+migration is needed. Rollback uses the old implementation with unchanged
+receipt bytes and old immutable jobs/producer roots.
+
+A new native regression first creates a valid receipt, then changes each
+entry/capability/release with equal-length bytes, introduces an unlisted import
+and removes an expected import in either tree. Every subsequent receipt must
+refuse; restoring exact bytes/inventory must restore the same receipt. It is
+authored but NOT_RUN locally because the known MSVC linker is unavailable.
+Rustfmt/static source guards do not qualify runtime behavior or latency.
+Source-specific hosted compilation and actual Windows whole-pipeline timing
+remain required. Existing d8 native results do not qualify this new source.
+All full Issue172/174/175 cumulative/undo/new-after-undo/current standard and
+production editable/installed GUI/liveness/actual crash/longform/real4h gates
+remain mandatory. Public chunked_longform and authority flags stay false.
