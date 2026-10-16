@@ -727,6 +727,32 @@ impl NativeMixStore {
         Self::open(pin, job, budget, true)
     }
 
+    pub(super) fn new_until(
+        pin: &NativeOutputPin,
+        job: &str,
+        budget: MixStorageBudget,
+        deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> SupervisorResult<Self> {
+        if cancelled() || Instant::now() >= deadline {
+            return Err(invalid("native output writer wait cancelled or expired"));
+        }
+        let observed = probe(&pin.root)?;
+        same_volume(&pin.volume_id, &observed)?;
+        let objects = RetainedMixStore::new_until(&pin.root, job, budget, deadline, cancelled)?;
+        // Acquisition may have waited for another supervisor. Never carry an
+        // earlier volume observation across that wait as a fresh admission.
+        same_volume(&pin.volume_id, &probe(&pin.root)?)?;
+        if cancelled() || Instant::now() >= deadline {
+            return Err(invalid("native output writer wait exhausted its phase"));
+        }
+        Ok(Self {
+            root: pin.root.clone(),
+            volume_id: observed.volume_id,
+            objects,
+        })
+    }
+
     fn open(
         pin: &NativeOutputPin,
         job: &str,

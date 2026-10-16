@@ -454,7 +454,13 @@ impl CurrentSourceClock {
         self.revalidate(input, deadline)?;
         let job = &input.state.token.job_id;
         let result = {
-            let store = NativeMixStore::new(input.output_pin, job, storage_budget())?;
+            let store = NativeMixStore::new_until(
+                input.output_pin,
+                job,
+                storage_budget(),
+                deadline,
+                cancelled,
+            )?;
             self.scan_clock(&store, job, deadline, cancelled)?
         };
         self.revalidate(input, deadline)?;
@@ -476,7 +482,13 @@ impl CurrentSourceClock {
         }
         let job = &input.state.token.job_id;
         {
-            let store = NativeMixStore::new(input.output_pin, job, storage_budget())?;
+            let store = NativeMixStore::new_until(
+                input.output_pin,
+                job,
+                storage_budget(),
+                deadline,
+                cancelled,
+            )?;
             let mut saved = self.scan_clock(&store, job, deadline, cancelled)?;
             if let Some(old) = saved.records.get(usize::from(ordinal) - 1) {
                 if old != raw {

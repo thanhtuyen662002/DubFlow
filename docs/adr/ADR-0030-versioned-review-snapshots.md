@@ -3551,3 +3551,44 @@ remain required. Existing d8 native results do not qualify this new source.
 All full Issue172/174/175 cumulative/undo/new-after-undo/current standard and
 production editable/installed GUI/liveness/actual crash/longform/real4h gates
 remain mandatory. Public chunked_longform and authority flags stay false.
+
+
+#### Bounded source-clock output writer contention (pending native qualification)
+
+The current source-clock journal's actual read/append path now uses an explicit
+short writer wait. Existing generic storage constructors retain their immediate
+contention refusal. The new path waits at most five seconds and never beyond the
+caller's existing absolute phase deadline; it polls cancellation between native
+nonblocking lock attempts and sleeps at most25ms per interval. A deadline or
+cancellation before open creates no namespace, lock or job directory. Reaching
+the bound refuses the operation without retrying a child or changing any source.
+
+One opened writer handle is retained for the complete wait. On acquisition its
+regular/single-link/no-follow physical identity is compared with a fresh open of
+the same lock path. A replaced path cannot authorize locking a second file while
+an earlier supervisor still owns the original writer. The empty writer file is
+never truncated, unlinked, cloned or unlocked early. The existing all-job quota,
+old/undo/orphan accounting, fresh reserve and immutable page/marker rules remain.
+Native fixed writable NTFS/GUID identity is checked both before and after a wait;
+no drive-letter hint or previous volume observation becomes fresh authority.
+
+The source-clock caller retains its pre/post current/source/processing fences,
+one-window limit and original phase deadline. No writer crosses those fences.
+This change does not add an encoding/current-render route or grant decoded media,
+codec/font/provider/OS closure, semantic QC, graph or public longform authority.
+It does not alter any SQLite schema, durable format, worker protocol, producer,
+model or existing job pin. Old releases preserve immediate contention refusal;
+rollback requires no migration and keeps every saved clock page/marker intact.
+
+Three native regressions are authored: real OS-lock contention across jobs with
+release, cancellation/deadline without taking the current owner's lock, and a
+Unix late-path replacement refusal. Rustfmt/parser and exact-source guards are
+static evidence only. Local native compilation/execution remains NOT_RUN because
+the required MSVC linker is known missing; no repeated compiler/SDK/cache action
+is attempted. Own-source hosted CI and Windows physical integration remain
+required. This is one connected contention fix, not complete chunk execution or
+product acceptance. All full172/174/175, current installed B1/B2 cumulative edits,
+standard/editable outputs, GUI/actionable liveness, actual processing crash,
+source coverage/index, environment closure, chunk capacity/scratch/audio/finalmux/
+seam/fullAVQC/CAS/current renderer and representative real4h gates remain required.
+Publicchunked_longform stays false and defaultTrucLy25voices is unchanged.

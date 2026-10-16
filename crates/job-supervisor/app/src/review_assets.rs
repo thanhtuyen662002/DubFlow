@@ -828,7 +828,7 @@ pub(super) struct RetainedMixStore {
     _lease: File,
 }
 
-fn mix_writer_lock(namespace: &Path, create: bool) -> SupervisorResult<File> {
+fn mix_writer_file(namespace: &Path, create: bool) -> SupervisorResult<File> {
     let path = namespace.join(".writer.lock");
     match fs::symlink_metadata(&path) {
         Ok(_) => {
@@ -867,12 +867,64 @@ fn mix_writer_lock(namespace: &Path, create: bool) -> SupervisorResult<File> {
             return Err(invalid("mix writer lock cannot be a reparse point"));
         }
     }
+    Ok(file)
+}
+
+fn mix_writer_lock(namespace: &Path, create: bool) -> SupervisorResult<File> {
+    let file = mix_writer_file(namespace, create)?;
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(TryLockError::WouldBlock) => Err(invalid(
             "another supervisor owns mix storage; wait for its checkpoint",
         )),
         Err(TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+fn mix_writer_lock_until(
+    namespace: &Path,
+    create: bool,
+    deadline: Instant,
+    cancelled: &mut impl FnMut() -> bool,
+) -> SupervisorResult<File> {
+    let until = deadline.min(Instant::now() + std::time::Duration::from_secs(5));
+    let observe = |cancelled: &mut dyn FnMut() -> bool| {
+        if cancelled() || Instant::now() >= until {
+            Err(invalid(
+                "output writer wait cancelled or reached its bounded deadline",
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    observe(cancelled)?;
+    // Keep one handle for the entire wait. Reopening each retry could lock a
+    // replacement pathname while the original writer still owns the old file.
+    let file = mix_writer_file(namespace, create)?;
+    let identity = single_cue_file(&file)?;
+    loop {
+        observe(cancelled)?;
+        match file.try_lock() {
+            Ok(()) => {
+                let fresh = regular(&namespace.join(".writer.lock"))?;
+                if single_cue_file(&file)? != identity
+                    || single_cue_file(&fresh)? != identity
+                    || file.metadata()?.len() != 0
+                    || fresh.metadata()?.len() != 0
+                {
+                    return Err(invalid("output writer identity changed during its wait"));
+                }
+                observe(cancelled)?;
+                return Ok(file);
+            }
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(
+                    std::time::Duration::from_millis(25)
+                        .min(until.saturating_duration_since(Instant::now())),
+                );
+            }
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
     }
 }
 
@@ -1050,6 +1102,35 @@ impl RetainedMixStore {
         budget: MixStorageBudget,
         create: bool,
     ) -> SupervisorResult<Self> {
+        Self::open_with_writer(output_root, job_id, budget, create, mix_writer_lock)
+    }
+
+    /// Explicit short wait for callers that already own a bounded phase and
+    /// cancellation observation. Existing fail-fast constructors stay unchanged.
+    pub(super) fn new_until(
+        output_root: &Path,
+        job_id: &str,
+        budget: MixStorageBudget,
+        deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> SupervisorResult<Self> {
+        if cancelled() || Instant::now() >= deadline {
+            return Err(invalid(
+                "output writer wait cancelled or expired before open",
+            ));
+        }
+        Self::open_with_writer(output_root, job_id, budget, true, |namespace, create| {
+            mix_writer_lock_until(namespace, create, deadline, cancelled)
+        })
+    }
+
+    fn open_with_writer(
+        output_root: &Path,
+        job_id: &str,
+        budget: MixStorageBudget,
+        create: bool,
+        writer: impl FnOnce(&Path, bool) -> SupervisorResult<File>,
+    ) -> SupervisorResult<Self> {
         super::validate_job_id(job_id)?;
         if budget.maximum_bytes == 0
             || output_root
@@ -1070,7 +1151,7 @@ impl RetainedMixStore {
         } else {
             plain(&namespace)?;
         }
-        let lease = mix_writer_lock(&namespace, create)?;
+        let lease = writer(&namespace, create)?;
         let root = namespace.join(format!("{:x}", Sha256::digest(job_id.as_bytes())));
         if create {
             directory(&root)?;
@@ -2512,6 +2593,124 @@ mod tests {
         let next = RetainedMixStore::new(&fixture.0, "job-b", budget(10000)).unwrap();
         assert_eq!(next.namespace.join(".writer.lock"), lock);
         assert_eq!(fs::metadata(lock).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn bounded_output_writer_wait_acquires_after_other_job_releases_same_lock() {
+        let (fixture, _, _) = fixture();
+        let held = RetainedMixStore::new(&fixture.0, "job-held", budget(10000)).unwrap();
+        let lock = held.namespace.join(".writer.lock");
+        let identity = single_cue_file(&regular(&lock).unwrap()).unwrap();
+        let (release, receive) = std::sync::mpsc::sync_channel(1);
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                receive
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .unwrap();
+                drop(held);
+            });
+            let mut polls = 0;
+            let next = RetainedMixStore::new_until(
+                &fixture.0,
+                "job-waiting",
+                budget(10000),
+                Instant::now() + std::time::Duration::from_secs(2),
+                &mut || {
+                    polls += 1;
+                    if polls == 4 {
+                        release.send(()).unwrap();
+                    }
+                    false
+                },
+            )
+            .unwrap();
+            assert!(polls >= 4);
+            assert_eq!(single_cue_file(&regular(&lock).unwrap()).unwrap(), identity);
+            assert!(RetainedMixStore::new(&fixture.0, "job-third", budget(10000)).is_err());
+            assert!(next.objects.root.is_dir());
+        });
+        assert_eq!(single_cue_file(&regular(&lock).unwrap()).unwrap(), identity);
+        assert_eq!(fs::metadata(lock).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn bounded_output_writer_wait_refuses_cancel_expiry_and_preserves_current_owner() {
+        let (fixture, _, _) = fixture();
+        let namespace = fixture.0.join(".dubflow-review-media-v1");
+        assert!(RetainedMixStore::new_until(
+            &fixture.0,
+            "job-cancelled",
+            budget(10000),
+            deadline(),
+            &mut || true,
+        )
+        .is_err());
+        assert!(!namespace.exists());
+        assert!(RetainedMixStore::new_until(
+            &fixture.0,
+            "job-expired",
+            budget(10000),
+            Instant::now(),
+            &mut || false,
+        )
+        .is_err());
+        assert!(!namespace.exists());
+        let owner = RetainedMixStore::new(&fixture.0, "job-owner", budget(10000)).unwrap();
+        let lock = namespace.join(".writer.lock");
+        let identity = single_cue_file(&regular(&lock).unwrap()).unwrap();
+        let started = Instant::now();
+        assert!(RetainedMixStore::new_until(
+            &fixture.0,
+            "job-deadline",
+            budget(10000),
+            started + std::time::Duration::from_millis(40),
+            &mut || false,
+        )
+        .is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let mut polls = 0;
+        assert!(RetainedMixStore::new_until(
+            &fixture.0,
+            "job-late-cancel",
+            budget(10000),
+            deadline(),
+            &mut || {
+                polls += 1;
+                polls >= 4
+            },
+        )
+        .is_err());
+        assert!(RetainedMixStore::new(&fixture.0, "job-other", budget(10000)).is_err());
+        assert_eq!(single_cue_file(&regular(&lock).unwrap()).unwrap(), identity);
+        assert_eq!(fs::metadata(lock).unwrap().len(), 0);
+        assert_eq!(fs::read_dir(namespace).unwrap().count(), 2);
+        drop(owner);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_output_writer_wait_never_adopts_a_replacement_lock_path() {
+        let (fixture, _, _) = fixture();
+        let mut owner =
+            Some(RetainedMixStore::new(&fixture.0, "job-owner", budget(10000)).unwrap());
+        let namespace = owner.as_ref().unwrap().namespace.clone();
+        let lock = namespace.join(".writer.lock");
+        let held = namespace.join("held-test-writer-lock");
+        let mut polls = 0;
+        assert!(
+            mix_writer_lock_until(&namespace, true, deadline(), &mut || {
+                polls += 1;
+                if polls == 4 {
+                    fs::rename(&lock, &held).unwrap();
+                    File::create(&lock).unwrap();
+                    drop(owner.take());
+                }
+                false
+            })
+            .is_err()
+        );
+        assert_eq!(fs::metadata(lock).unwrap().len(), 0);
+        assert_eq!(fs::metadata(held).unwrap().len(), 0);
     }
 
     #[test]
