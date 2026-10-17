@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private native editable worker context; native owns volume/lease/current admission",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "current_token", "bundle_root", "bundle_manifest_sha256", "generation", "storage_root", "output_volume_id", "processing_recipe_identity", "maximum_bytes", "minimum_free_bytes"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_editable_pack_context"},
+    "current_token": {"$ref": "#/$defs/token"},
+    "bundle_root": {"type": "string", "minLength": 1, "maxLength": 32767},
+    "bundle_manifest_sha256": {"$ref": "schema-v2.json#/$defs/hash"},
+    "generation": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "storage_root": {"type": "string", "minLength": 1, "maxLength": 32767},
+    "output_volume_id": {"type": "string", "pattern": "^(windows-volume-guid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|posix-device:[0-9]+)$"},
+    "processing_recipe_identity": {"$ref": "schema-v2.json#/$defs/hash"},
+    "maximum_bytes": {"$ref": "#/$defs/decimal"},
+    "minimum_free_bytes": {"$ref": "#/$defs/decimal"}
+  },
+  "$defs": {
+    "decimal": {"type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 19},
+    "token": {
+      "type": "object", "additionalProperties": false,
+      "required": ["job_id", "revision", "snapshot_sha256", "graph_sha256", "original_manifest_sha256"],
+      "properties": {
+        "job_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$"},
+        "revision": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 19},
+        "snapshot_sha256": {"$ref": "schema-v2.json#/$defs/hash"},
+        "graph_sha256": {"$ref": "schema-v2.json#/$defs/hash"},
+        "original_manifest_sha256": {"$ref": "schema-v2.json#/$defs/hash"}
+      }
+    }
+  }
+}

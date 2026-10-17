@@ -2449,9 +2449,15 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::OnceCell;
     use std::sync::atomic::Ordering;
+    use std::sync::{Mutex, MutexGuard};
 
-    struct Temporary(PathBuf);
+    // Scripted child-process fixtures share the runner's cold Python/process
+    // resources. Keep one such fixture alive at a time, including its reopen
+    // and teardown, without changing any production/event timeout assertion.
+    static RECORDED_FIXTURE: Mutex<()> = Mutex::new(());
+    struct Temporary(PathBuf, OnceCell<MutexGuard<'static, ()>>);
     impl Temporary {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
@@ -2461,7 +2467,7 @@ mod tests {
                 super::super::ID_COUNTER.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir(&path).unwrap();
-            Self(path.canonicalize().unwrap())
+            Self(path.canonicalize().unwrap(), OnceCell::new())
         }
         fn runtime(&self) -> Runtime {
             let root = self.0.join("bundle");
@@ -2479,6 +2485,11 @@ mod tests {
             }
         }
         fn recorded_runtime(&self) -> Runtime {
+            self.1.get_or_init(|| {
+                RECORDED_FIXTURE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            });
             let mut runtime = self.runtime();
             // CI test interpreter and scripted SDK substitute only. Production
             // Runtime::admit accepts exclusively inventory-verified entry points.
@@ -2787,13 +2798,19 @@ while True:
         serde_json::from_value(value).unwrap()
     }
     fn pump(server: &mut Server) {
-        let wire = server
-            .active
-            .as_ref()
-            .unwrap()
+        let active = server.active.as_mut().unwrap();
+        let started = Instant::now();
+        let wire = active
             .events
             .recv_timeout(Duration::from_secs(10))
-            .unwrap();
+            .unwrap_or_else(|error| {
+                panic!(
+                    "recorded source event: {error:?}, elapsed={:?}, pid={}, child={:?}",
+                    started.elapsed(),
+                    active.child.id(),
+                    active.child.try_wait()
+                )
+            });
         server.event(wire).unwrap();
     }
 

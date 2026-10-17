@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Closed native current export confirmation and physically admitted desktop receipt",
+  "oneOf": [{"$ref": "#/$defs/request"}, {"$ref": "#/$defs/result"}],
+  "$defs": {
+    "format": {"enum": ["standard", "editable"]},
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "confirm", "format", "current_token"],
+      "properties": {
+        "schema_version": {"const": 1}, "kind": {"const": "review_current_export_confirmation"}, "confirm": {"const": true},
+        "format": {"$ref": "#/$defs/format"}, "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"}
+      }
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "format", "generation", "path", "manifest_sha256", "standard_manifest_sha256", "files_verified", "standard_bundle_published", "production_editable_pack_published", "vendor_execution"],
+      "properties": {
+        "schema_version": {"const": 1}, "kind": {"const": "review_desktop_export_receipt"}, "format": {"$ref": "#/$defs/format"},
+        "generation": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "path": {"type": "string", "minLength": 1, "maxLength": 32767},
+        "manifest_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"}, "standard_manifest_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+        "files_verified": {"enum": [7, 10, 13]}, "standard_bundle_published": {"const": true}, "production_editable_pack_published": {"type": "boolean"}, "vendor_execution": {"const": false}
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "format", "current_token", "session_id", "snapshot", "receipt"],
+      "properties": {
+        "schema_version": {"const": 1}, "kind": {"const": "review_desktop_exported_current"}, "format": {"$ref": "#/$defs/format"},
+        "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+        "session_id": {"type": "string", "pattern": "^[A-Za-z0-9-]{16,64}$"}, "snapshot": {"$ref": "schema-v3.json"}, "receipt": {"$ref": "#/$defs/receipt"}
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native current-assignment mix context; client paths are never authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "preparation_context_json", "preparation_context_sha256", "bindings_json", "bindings_sha256", "request_json", "request_sha256", "accepted_tts_document", "accepted_spoken_text", "accept_context"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_native_effective_mix_context"},
+    "preparation_context_json": {"type": "string", "minLength": 1, "maxLength": 67108864},
+    "preparation_context_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "bindings_json": {"type": "string", "minLength": 1, "maxLength": 67108864},
+    "bindings_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "request_json": {"type": "string", "minLength": 1, "maxLength": 32768},
+    "request_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "accepted_tts_document": {"$ref": "native-effective-cue-bindings-v1.json#/$defs/document", "required": ["metadata_root"]},
+    "accepted_spoken_text": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "accept_context": {"$ref": "native-effective-state-v1.json#/$defs/document"}
+  }
+}

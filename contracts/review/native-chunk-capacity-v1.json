@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private native chunk logical quota extent header; no artifact/source/runtime/graph authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_namespace", "scope_sha256", "maximum_private_bytes", "work_identity"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_chunk_capacity"},
+    "job_namespace": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "scope_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "maximum_private_bytes": {"type": "string", "pattern": "^[1-9][0-9]{0,8}$"},
+    "work_identity": {"type": "object", "additionalProperties": false, "required": ["volume", "file"],
+      "properties": {"volume": {"$ref": "#/$defs/u64"}, "file": {"$ref": "#/$defs/u64"}}}
+  },
+  "$defs": {"u64": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$"}},
+  "$comment": "Native maximum private allowance is1..603979776bytes (512MiB media plus64MiB auxiliary); current/source/processing recipe/local chunk/environment scope must be independently derived by the dispatcher. Filename .chunk-capacity-v1-<64scopehex>.bin under the native job retained store. Four-byte big-endian header byte length, exact canonical UTF8 header<=4096bytes, followed by sparse zero extent; logical file length=4+header_bytes+maximum_private_bytes. Existing alljob used_bytes counts its entire logical length alongside every old/undo/orphan/otherjob regular byte. Work root derives only from admitted output/.dubflow-review-candidates/<job_namespace>/chunk-capacity-v1-<scopehex>; no header path hint authorizes IO. Native control/work handles pin identity; control readonly/single-link/no-follow/header/size/sparse checks, actual work inventory<=4096entries/depth4/no-follow/regular/single-link and current bytes+requested additional<=allowance. Fresh native NTFS GUID/caller available>=additional+2GiB and shared32GiB quota checks on every callback. Capacity is logical quota; caller-free physical space is independently reobserved. Drop/crash preserves extent/work, live ownership refuses reacquisition, same native scope/header/limit/work identity may reopen after owner exit. Explicit release requires zero work files, deletes only its pinned quota control handle on Windows, preserves all workspace/media/evidence files and empty directories. No general cleanup/eviction or implicit repin/migration, source-QC-CAS/current render/public longform grant. Actual crash workflow and complete native processing integration remain mandatory."
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native current-cue TTS plus retained current mix; no render or publication",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "current_token", "context", "bindings", "request", "proposal", "effective_composition", "accepted_cue", "processing_synthesis", "tts_executed", "mix_executed", "render_executed", "model_weights_verified", "active_graph_published", "correction_ready", "private_mix"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_native_mixed_effective_cue"},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "context": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "bindings": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "request": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "proposal": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "effective_composition": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "accepted_cue": {"$ref": "native-speech-inventory-v1.json#/properties/cues/items/properties/accepted_cue"},
+    "processing_synthesis": {"$ref": "native-processing-cue-synthesis-v1.json"},
+    "tts_executed": {"const": true}, "mix_executed": {"const": true},
+    "render_executed": {"const": false}, "model_weights_verified": {"const": true},
+    "active_graph_published": {"const": false}, "correction_ready": {"const": false},
+    "private_mix": {"type": "object", "additionalProperties": false,
+      "required": ["processing_mix", "retained_mix", "active_graph_published"],
+      "properties": {
+        "processing_mix": {"$ref": "native-processing-effective-mix-v1.json"},
+        "retained_mix": {"$ref": "native-publication-v2.json#/properties/mixed"},
+        "active_graph_published": {"const": false}
+      }}
+  }
+}

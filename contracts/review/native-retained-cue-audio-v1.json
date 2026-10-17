@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native output-volume single-cue PCM locator; hints grant no read authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["kind", "path_hint", "locator", "sample_rate", "channels", "frame_count"],
+  "properties": {
+    "kind": {"const": "review_retained_cue_audio"},
+    "path_hint": {"type": "string", "maxLength": 4096},
+    "sample_rate": {"const": 48000},
+    "channels": {"const": 1},
+    "frame_count": {"type": "string", "pattern": "^[1-9][0-9]*$", "maxLength": 19},
+    "locator": {"$ref": "native-retained-mix-context-v1.json#/properties/retained_mix_audio/items/properties/audio/properties/locator"}
+  }
+}

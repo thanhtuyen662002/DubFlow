@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Separate source-matched editable copy capability; no native current/publication authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "capability", "processing_release", "capability_document", "entry", "recipe_dependencies", "recipe_identity", "execution_identity", "current_generation_admitted", "model_provisioning", "vendor_execution", "active_graph_published", "correction_ready"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_admitted_editable_pack"},
+    "capability": {"const": "review_editable_pack_v1"},
+    "processing_release": {"$ref": "native-processing-release-v1.json"},
+    "capability_document": {"$ref": "native-processing-release-v1.json#/$defs/metadata"},
+    "entry": {"$ref": "native-processing-release-v1.json#/properties/effective_cue_entry"},
+    "recipe_dependencies": {"type": "array", "minItems": 10, "maxItems": 10,
+      "items": {"$ref": "native-processing-cue-synthesis-v1.json#/properties/recipe_dependencies/items"}},
+    "recipe_identity": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "execution_identity": {"type": "string", "pattern": "^(sha256:[0-9a-f]{64})?$"},
+    "current_generation_admitted": {"const": false}, "model_provisioning": {"const": false},
+    "vendor_execution": {"const": false}, "active_graph_published": {"const": false}, "correction_ready": {"const": false}
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private physical-only native longform chunk checkpoint; no semantic QC or graph authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "source_sha256", "processing_recipe_sha256", "time_base", "chunk", "origin_plan_sha256", "origin_context_sha256", "file", "semantic_qc_admitted", "active_graph_published"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_retained_chunk"},
+    "job_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "source_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "processing_recipe_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "origin_plan_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "origin_context_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "time_base": {"$ref": "longform-plan-v1.json#/properties/time_base"},
+    "chunk": {"$ref": "longform-plan-v1.json#/$defs/chunk"},
+    "file": {"type": "object", "additionalProperties": false, "required": ["path_hint", "format", "locator"],
+      "properties": {"path_hint": {"type": "string", "maxLength": 4096}, "format": {"const": "mp4"},
+        "locator": {"type": "object", "additionalProperties": false,
+          "required": ["schema_version", "volume_id", "root_kind", "relative_path", "content_hash", "size_bytes"],
+          "properties": {"schema_version": {"const": 1}, "volume_id": {"type": "string", "minLength": 1},
+            "root_kind": {"const": "output"}, "relative_path": {"type": "string", "minLength": 1},
+            "content_hash": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+            "size_bytes": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"}}}}},
+    "semantic_qc_admitted": {"const": false}, "active_graph_published": {"const": false}
+  }
+}

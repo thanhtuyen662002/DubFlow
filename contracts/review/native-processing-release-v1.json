@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native separately admitted compatible processing release; preparation only",
+  "type": ["object", "null"], "additionalProperties": false,
+  "required": ["schema_version", "kind", "capability", "source_sha", "processing_root", "release_manifest", "capability_document", "effective_cue_entry", "native_dispatch_entry", "original_producer_sha256", "original_release_sha256", "protected_inventory_sha256", "original_model_root", "original_job_binding_changed", "model_weights_verified", "cumulative_execution_admitted", "active_graph_published"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_admitted_processing_release"},
+    "capability": {"const": "review_effective_cue_preparation_v1"},
+    "source_sha": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+    "processing_root": {"$ref": "native-processing-release-v1.json#/$defs/path"},
+    "release_manifest": {"$ref": "native-processing-release-v1.json#/$defs/manifest"},
+    "capability_document": {"$ref": "native-processing-release-v1.json#/$defs/metadata"},
+    "effective_cue_entry": {
+      "type": "object", "additionalProperties": false, "required": ["path", "pin"],
+      "properties": {
+        "path": {"$ref": "native-processing-release-v1.json#/$defs/path"},
+        "pin": {"$ref": "native-processing-release-v1.json#/$defs/metadata"}
+      }
+    },
+    "native_dispatch_entry": {"$ref": "native-processing-release-v1.json#/properties/effective_cue_entry"},
+    "original_producer_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "original_release_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "protected_inventory_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "original_model_root": {"$ref": "native-processing-release-v1.json#/$defs/path"},
+    "original_job_binding_changed": {"const": false},
+    "model_weights_verified": {"const": false},
+    "cumulative_execution_admitted": {"const": false},
+    "active_graph_published": {"const": false}
+  },
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "maxLength": 32767},
+    "metadata": {
+      "type": "object", "additionalProperties": false, "required": ["sha256", "size_bytes"],
+      "properties": {
+        "sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 67108864}
+      }
+    },
+    "manifest": {
+      "type": "object", "additionalProperties": false, "required": ["sha256", "size_bytes"],
+      "properties": {
+        "sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216}
+      }
+    }
+  }
+}

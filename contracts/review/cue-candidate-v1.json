@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Owned physically admitted single-cue candidate v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "request_sha256", "recipe_identity", "tts_document_json", "tts_document_sha256", "spoken_text_json", "spoken_text_sha256", "model_weights_verified"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_cue_candidate"},
+    "request_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "recipe_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "tts_document_json": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "tts_document_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "spoken_text_json": {"type": "string", "minLength": 1, "maxLength": 65536},
+    "spoken_text_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "model_weights_verified": {"const": true}
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private first-generation B2 publication with complete speech references; cumulative successor pending",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "before", "proposal", "corrected_timeline", "context", "retained_render", "prepared_snapshot", "execution_identity", "output_volume_id", "mixed", "speech_inventory"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "kind": {"const": "review_native_publication_v2"},
+    "before": {
+      "type": "object", "additionalProperties": false,
+      "required": ["job_id", "revision", "original_artifact_id", "original_manifest_sha256", "snapshot", "graph"],
+      "properties": {
+        "job_id": {"$ref": "cue-synthesis-v1.json#/$defs/id"},
+        "revision": {"const": "0"},
+        "original_artifact_id": {"$ref": "cue-synthesis-v1.json#/$defs/id"},
+        "original_manifest_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+        "snapshot": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "graph": {"$ref": "native-effective-state-v1.json#/$defs/document"}
+      }
+    },
+    "proposal": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "corrected_timeline": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "context": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "retained_render": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "prepared_snapshot": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "execution_identity": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "output_volume_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "speech_inventory": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "mixed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["context", "composition", "candidate_mix_document", "mix_document", "private_audio_verified", "retained_audio", "active_graph_published", "mix_metadata_retargeted", "retained_mix_audio"],
+      "properties": {
+        "context": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "composition": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "candidate_mix_document": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "mix_document": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+        "private_audio_verified": {"const": true},
+        "retained_audio": {"const": true},
+        "active_graph_published": {"const": false},
+        "mix_metadata_retargeted": {"const": true},
+        "retained_mix_audio": {"$ref": "native-retained-mix-context-v1.json#/properties/retained_mix_audio"}
+      }
+    }
+  }
+}

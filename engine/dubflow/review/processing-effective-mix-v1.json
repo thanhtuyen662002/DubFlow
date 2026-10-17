@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "review_processing_effective_mix_capability",
+  "capability": "review_effective_mix_v1",
+  "entrypoint": "engine/dubflow/review/effective_mix_execution.py",
+  "context_format": "review_native_effective_mix_context_v1",
+  "composition_formats": [1, 2],
+  "sample_rate": 48000,
+  "channels": 2,
+  "roles": ["original_audio", "dialogue_stem", "final_mix"],
+  "dsp_policy": {"attack_ticks": 40, "release_ticks": 120, "duck_gain_milli": 350, "max_segments_per_chunk": 8},
+  "tts_execution": false,
+  "model_provisioning": false,
+  "render_execution": false,
+  "cumulative_publication": false,
+  "active_graph_publication": false
+}

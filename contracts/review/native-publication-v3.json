@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native cumulative B1/B2 publication; every prior state and physical role must be recovered before CAS",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "before_state", "origin_token", "proposal", "corrected_timeline", "context", "retained_render", "processing_render", "prepared_snapshot", "execution_identity", "output_volume_id", "mixed", "mix_packet", "processing_mix", "speech_inventory"],
+  "properties": {
+    "schema_version": {"const": 3},
+    "kind": {"const": "review_native_publication_v3"},
+    "before_state": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "origin_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "proposal": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "corrected_timeline": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "context": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "retained_render": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "processing_render": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "prepared_snapshot": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+    "execution_identity": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "output_volume_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "mixed": {"oneOf": [{"type": "null"}, {"$ref": "native-publication-v2.json#/properties/mixed"}]},
+    "mix_packet": {"oneOf": [{"type": "null"}, {"$ref": "native-effective-state-v1.json#/$defs/document"}]},
+    "processing_mix": {"oneOf": [{"type": "null"}, {"$ref": "native-effective-state-v1.json#/$defs/document"}]},
+    "speech_inventory": {"oneOf": [{"type": "null"}, {"$ref": "native-effective-state-v1.json#/$defs/document"}]}
+  },
+  "allOf": [{"if": {"properties": {"mixed": {"type": "null"}}},
+    "then": {"properties": {"mix_packet": {"type": "null"}, "processing_mix": {"type": "null"}, "speech_inventory": {"type": "null"}}},
+    "else": {"properties": {
+      "mix_packet": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+      "processing_mix": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+      "speech_inventory": {"$ref": "native-effective-state-v1.json#/$defs/document"}
+    }}
+  }]
+}

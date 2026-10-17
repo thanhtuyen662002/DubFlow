@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "scope": "archived source-stream metadata oracle; not live source/decoded-frame admission",
+  "cases": [
+    {
+      "probe": {
+        "streams": [
+          {
+            "index": 3,
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "time_base": {
+              "numerator": 1,
+              "denominator": 48000
+            },
+            "start_pts": 0,
+            "duration_ts": 48000,
+            "duration_ticks": 48000,
+            "width": null,
+            "height": null,
+            "sample_rate": 48000,
+            "channels": 2,
+            "frame_rate": null
+          },
+          {
+            "index": 2,
+            "codec_type": "video",
+            "codec_name": "h264",
+            "time_base": {
+              "numerator": 1,
+              "denominator": 90000
+            },
+            "start_pts": 9007199254740993,
+            "duration_ts": 450001,
+            "duration_ticks": 450001,
+            "width": 306,
+            "height": 544,
+            "sample_rate": null,
+            "channels": null,
+            "frame_rate": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          }
+        ],
+        "canonical_time_base": {
+          "numerator": 1,
+          "denominator": 1000
+        },
+        "canonical_duration_ticks": 5001,
+        "video_timeline": {
+          "time_base": {
+            "numerator": 1,
+            "denominator": 1000
+          },
+          "start_pts": 100079991719344,
+          "duration_ticks": 5001,
+          "end_pts": 100079991724345
+        }
+      },
+      "expected": {
+        "geometry": [
+          306,
+          544
+        ],
+        "video_stream_index": 2,
+        "time_base": {
+          "numerator": "1",
+          "denominator": "90000"
+        },
+        "source_interval": {
+          "start_tick": "9007199254740993",
+          "end_tick": "9007199255190994"
+        }
+      }
+    },
+    {
+      "probe": {
+        "streams": [
+          {
+            "index": 8,
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "time_base": {
+              "numerator": 1,
+              "denominator": 48000
+            },
+            "start_pts": 0,
+            "duration_ts": 48000,
+            "duration_ticks": 48000,
+            "width": null,
+            "height": null,
+            "sample_rate": 48000,
+            "channels": 2,
+            "frame_rate": null
+          },
+          {
+            "index": 7,
+            "codec_type": "video",
+            "codec_name": "h264",
+            "time_base": {
+              "numerator": 1001,
+              "denominator": 30000
+            },
+            "start_pts": -450000,
+            "duration_ts": 300,
+            "duration_ticks": 300,
+            "width": 96,
+            "height": 64,
+            "sample_rate": null,
+            "channels": null,
+            "frame_rate": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          }
+        ],
+        "canonical_time_base": {
+          "numerator": 1,
+          "denominator": 1000
+        },
+        "canonical_duration_ticks": 10010,
+        "video_timeline": {
+          "time_base": {
+            "numerator": 1,
+            "denominator": 1000
+          },
+          "start_pts": -15015000,
+          "duration_ticks": 10010,
+          "end_pts": -15004990
+        }
+      },
+      "expected": {
+        "geometry": [
+          96,
+          64
+        ],
+        "video_stream_index": 7,
+        "time_base": {
+          "numerator": "1001",
+          "denominator": "30000"
+        },
+        "source_interval": {
+          "start_tick": "-450000",
+          "end_tick": "-449700"
+        }
+      }
+    },
+    {
+      "probe": {
+        "streams": [
+          {
+            "index": 1,
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "time_base": {
+              "numerator": 1,
+              "denominator": 48000
+            },
+            "start_pts": 0,
+            "duration_ts": 48000,
+            "duration_ticks": 48000,
+            "width": null,
+            "height": null,
+            "sample_rate": 48000,
+            "channels": 2,
+            "frame_rate": null
+          },
+          {
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": "h264",
+            "time_base": {
+              "numerator": 1,
+              "denominator": 1000
+            },
+            "start_pts": 0,
+            "duration_ts": 21600000,
+            "duration_ticks": 21600000,
+            "width": 1920,
+            "height": 1080,
+            "sample_rate": null,
+            "channels": null,
+            "frame_rate": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          }
+        ],
+        "canonical_time_base": {
+          "numerator": 1,
+          "denominator": 1000
+        },
+        "canonical_duration_ticks": 21600000,
+        "video_timeline": {
+          "time_base": {
+            "numerator": 1,
+            "denominator": 1000
+          },
+          "start_pts": 0,
+          "duration_ticks": 21600000,
+          "end_pts": 21600000
+        }
+      },
+      "expected": {
+        "geometry": [
+          1920,
+          1080
+        ],
+        "video_stream_index": 0,
+        "time_base": {
+          "numerator": "1",
+          "denominator": "1000"
+        },
+        "source_interval": {
+          "start_tick": "0",
+          "end_tick": "21600000"
+        }
+      }
+    }
+  ]
+}

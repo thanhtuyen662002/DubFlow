@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Read-only native current correction proposal; never a published generation",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "current_token", "finding_id", "cue_id", "changes", "mode", "plan", "candidate_revision", "candidate_snapshot_sha256", "read_only", "processing_release_admitted", "active_graph_published", "execution_ready"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_current_correction_plan"},
+    "job_id": {"$ref": "schema-v2.json#/$defs/id"}, "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "finding_id": {"$ref": "schema-v2.json#/$defs/id"}, "cue_id": {"$ref": "schema-v2.json#/$defs/id"},
+    "changes": {"$ref": "#/$defs/changes"}, "mode": {"enum": ["b1", "b2"]},
+    "plan": {"$ref": "schema-v2.json#/$defs/plan"},
+    "candidate_revision": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$"},
+    "candidate_snapshot_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "read_only": {"const": true}, "processing_release_admitted": {"const": false},
+    "active_graph_published": {"const": false}, "execution_ready": {"const": false}
+  },
+  "$defs": {
+    "changes": {"type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {"translation": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "voice": {"$ref": "schema-v2.json#/$defs/id"}}},
+    "request": {"type": "object", "additionalProperties": false,
+      "required": ["job_id", "current_token", "finding_id", "cue_id", "changes"],
+      "properties": {"job_id": {"$ref": "schema-v2.json#/$defs/id"}, "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+        "finding_id": {"$ref": "schema-v2.json#/$defs/id"}, "cue_id": {"$ref": "schema-v2.json#/$defs/id"}, "changes": {"$ref": "#/$defs/changes"}}}
+  }
+}

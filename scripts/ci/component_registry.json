@@ -886,6 +886,7 @@
       "id": "review-center",
       "roots": [
         "contracts/review",
+        "engine/dubflow/review",
         "apps/desktop/src/features/review",
         "tests/review"
       ],
@@ -894,6 +895,16 @@
           "node",
           "--experimental-strip-types",
           "tests/review/review.test.mjs"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/review",
+          "-p",
+          "test_*.py"
         ]
       ]
     },

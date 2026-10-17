@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit full-token desktop undo and fresh native session result",
+  "oneOf": [{"$ref": "#/$defs/request"}, {"$ref": "#/$defs/result"}],
+  "$defs": {
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "confirm", "current_token"],
+      "properties": {
+        "schema_version": {"const": 1}, "kind": {"const": "review_current_undo"}, "confirm": {"const": true},
+        "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"}
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "before_token", "session_id", "snapshot"],
+      "properties": {
+        "schema_version": {"const": 1}, "kind": {"const": "review_desktop_undone_current"},
+        "before_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+        "session_id": {"type": "string", "pattern": "^[A-Za-z0-9-]{16,64}$"},
+        "snapshot": {"$ref": "schema-v3.json"}
+      }
+    }
+  }
+}

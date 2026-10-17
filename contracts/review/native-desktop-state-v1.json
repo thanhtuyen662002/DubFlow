@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Read-only native current discovery; original fallback requires absent graph",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "status", "snapshot"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_desktop_state"},
+    "job_id": {"$ref": "schema-v2.json#/$defs/id"}, "status": {"enum": ["current", "original_only"]},
+    "snapshot": {"oneOf": [{"type": "null"}, {"$ref": "schema-v3.json"}]}
+  },
+  "allOf": [{"if": {"properties": {"status": {"const": "current"}}}, "then": {"properties": {"snapshot": {"$ref": "schema-v3.json"}}}, "else": {"properties": {"snapshot": {"type": "null"}}}}]
+}

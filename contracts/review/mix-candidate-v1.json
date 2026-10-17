@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Owned private mix candidate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "context_sha256",
+    "composition_json",
+    "composition_sha256",
+    "mix_document_json",
+    "mix_document_sha256",
+    "active_graph_published"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_private_mix_candidate"
+    },
+    "context_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "composition_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "composition_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "mix_document_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "mix_document_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "active_graph_published": {
+      "const": false
+    }
+  }
+}

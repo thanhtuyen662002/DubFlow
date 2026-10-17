@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private immutable native chunk checkpoint node; no semantic or graph authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "source_sha256", "processing_recipe_sha256", "time_base", "origin_plan_sha256", "origin_context_sha256", "ordinal", "previous", "chunk", "complete", "semantic_qc_admitted", "active_graph_published"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_chunk_checkpoint_index"},
+    "job_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "source_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "processing_recipe_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "time_base": {"$ref": "longform-plan-v1.json#/properties/time_base"},
+    "origin_plan_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "origin_context_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "ordinal": {"type": "integer", "minimum": 1, "maximum": 4096},
+    "previous": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/document"}]},
+    "chunk": {"type": "object", "additionalProperties": false, "required": ["chunk_identity", "receipt"],
+      "properties": {"chunk_identity": {"$ref": "longform-plan-v1.json#/$defs/hash"}, "receipt": {"$ref": "#/$defs/document"}}},
+    "complete": {"type": "boolean"}, "semantic_qc_admitted": {"const": false}, "active_graph_published": {"const": false}
+  },
+  "allOf": [{"if": {"properties": {"ordinal": {"const": 1}}},
+    "then": {"properties": {"previous": {"type": "null"}}},
+    "else": {"properties": {"previous": {"$ref": "#/$defs/document"}}}}],
+  "$defs": {
+    "document": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "size_bytes"],
+      "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 65536}}},
+    "work": {"type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "plan_json", "plan_sha256", "context_sha256", "chunk_identity", "runtime_environment_sha256"],
+      "properties": {"schema_version": {"const": 1}, "kind": {"const": "review_native_chunk_work"},
+        "plan_json": {"type": "string", "minLength": 1, "maxLength": 4194304},
+        "plan_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+        "context_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+        "chunk_identity": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+        "runtime_environment_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"}}}
+  },
+  "$comment": "The native walker reopens every content-addressed metadata node, checks exact bytes/hash/size, same job/source/recipe/clock/origin pins, decreasing ordinal, unique chunk keys, root and completed current prefix. At most4096nodes/16MiB total. Every selected physical receipt must independently reopen under existing volume/no-follow/readonly/fullSHA/quota fences. complete is only this originating plan's physical prefix, never source coverage, codec/font closure, AV/QC or graph permission. Work packets supply no processing or IO grant. Native encoder/process containment, complete source-clock index/runtime closure, durable pointer callback, aggregate metadata capacity and final AV/QC/CAS are separate mandatory admissions. Current longform capability remains false."
+}

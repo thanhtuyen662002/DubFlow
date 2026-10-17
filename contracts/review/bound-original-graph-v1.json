@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native bound original Review graph v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "source_graph_json", "accepted_documents"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_bound_original_graph"},
+    "source_graph_json": {"type": "string", "minLength": 2, "maxLength": 67108864},
+    "accepted_documents": {
+      "type": "object", "additionalProperties": false,
+      "required": ["job_manifest", "editable_timeline", "qc_report"],
+      "properties": {
+        "job_manifest": {"$ref": "#/$defs/descriptor"},
+        "editable_timeline": {"$ref": "#/$defs/descriptor"},
+        "qc_report": {"$ref": "#/$defs/descriptor"},
+        "tts_document": {"$ref": "#/$defs/descriptor"},
+        "dubbing_placement": {"$ref": "#/$defs/descriptor"},
+        "dubbing_spoken_text": {"$ref": "#/$defs/descriptor"},
+        "mix_document": {"$ref": "#/$defs/descriptor"}
+      },
+      "oneOf": [
+        {"maxProperties": 3},
+        {"minProperties": 7, "maxProperties": 7,
+         "required": ["tts_document", "dubbing_placement", "dubbing_spoken_text", "mix_document"]}
+      ]
+    }
+  },
+  "$defs": {
+    "descriptor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 67108864}
+      }
+    }
+  }
+}

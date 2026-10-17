@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "native-render-context-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "job_id",
+    "mode",
+    "before_snapshot_json",
+    "after_snapshot_json",
+    "original_manifest_json",
+    "original_manifest_sha256",
+    "original_timeline_json",
+    "corrected_timeline_json",
+    "corrected_timeline_sha256",
+    "original_output_root",
+    "source",
+    "retained_mix",
+    "burn_in_subtitles"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_native_render_context"
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "mode": {
+      "enum": [
+        "b1",
+        "b2"
+      ]
+    },
+    "before_snapshot_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "after_snapshot_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "original_manifest_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "original_manifest_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "original_timeline_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "corrected_timeline_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "corrected_timeline_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "original_output_root": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32767
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "artifact_root"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32767
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "artifact_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32767
+        }
+      }
+    },
+    "retained_mix": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "mix_document_json",
+        "mix_document_sha256",
+        "composition_json",
+        "composition_sha256",
+        "artifact_root"
+      ],
+      "properties": {
+        "mix_document_json": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 67108864
+        },
+        "mix_document_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "composition_json": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 67108864
+        },
+        "composition_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "artifact_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32767
+        }
+      }
+    },
+    "burn_in_subtitles": {
+      "type": "boolean"
+    }
+  }
+}

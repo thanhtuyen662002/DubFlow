@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+mod review;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -273,6 +274,68 @@ fn job_status(job_id: String) -> Result<Option<Value>, String> {
     Ok(Some(json!({"status": envelope.status, "output_path": envelope.output_path})))
 }
 
+fn validated_import_pack(root: &Path, control: &Path, job_id: &str) -> Result<Value, String> {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+    let path = status_path(control, job_id)?;
+    let file = fs::File::open(path).map_err(|_| fail("Chưa có kết quả của job"))?;
+    let mut status_bytes = Vec::new();
+    file.take(1_048_577).read_to_end(&mut status_bytes).map_err(|_| fail("Không đọc được kết quả"))?;
+    if status_bytes.len() > 1_048_576 { return Err(fail("Kết quả vượt giới hạn")); }
+    let envelope: StatusEnvelope = serde_json::from_slice(&status_bytes).map_err(|_| fail("Kết quả không hợp lệ"))?;
+    if envelope.status.get("state").and_then(Value::as_str) != Some("COMPLETED") {
+        return Err(fail("Job chưa hoàn tất"));
+    }
+    let video = absolute_file(envelope.output_path.as_deref().ok_or_else(|| fail("Chưa có video đầu ra"))?, "output_path")?;
+    if video.file_name().and_then(|value| value.to_str()) != Some("final_vi.mp4") {
+        return Err(fail("Đường dẫn kết quả không hợp lệ"));
+    }
+    let export = video.parent().ok_or_else(|| fail("Thiếu thư mục kết quả"))?;
+    let python = root.join("runtime/python.exe");
+    let script = root.join("app/engine/dubflow/worker/editable_pack.py");
+    if !python.is_file() || !script.is_file() { return Err(fail("Phiên bản này chưa hỗ trợ xác minh gói")); }
+    let mut command = command_with_no_window(&python);
+    command.args(["-I", "-S", "-B"]).arg(script).arg("--export-dir").arg(export).arg("--job-id").arg(job_id);
+    command.stdout(Stdio::piped());
+    let mut child = command.spawn().map_err(|_| fail("Không khởi động được kiểm tra gói"))?;
+    let pipe = match child.stdout.take() {
+        Some(pipe) => pipe,
+        None => { let _ = child.kill(); let _ = child.wait(); return Err(fail("Không đọc được báo cáo gói")); }
+    };
+    // Consume the bounded report concurrently to avoid pipe-buffer deadlock.
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.take(65_537).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let started = Instant::now();
+    let completion = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if started.elapsed() < Duration::from_secs(60) => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => break Err(fail("Kiểm tra gói quá thời gian; hãy kiểm tra lại khi ổ đĩa sẵn sàng")),
+            Err(_) => break Err(fail("Không đọc được tiến trình kiểm tra gói")),
+        }
+    };
+    if completion.is_err() { let _ = child.kill(); let _ = child.wait(); }
+    let bytes = reader.join().map_err(|_| fail("Không đọc được báo cáo gói"))?
+        .map_err(|_| fail("Không đọc được báo cáo gói"))?;
+    if !completion?.success() || bytes.len() > 65_536 { return Err(fail("Báo cáo gói không hợp lệ")); }
+    let report: Value = serde_json::from_slice(&bytes).map_err(|_| fail("Báo cáo gói không hợp lệ"))?;
+    if report.get("schema_version").and_then(Value::as_u64) != Some(1) {
+        return Err(fail("Phiên bản báo cáo gói chưa hỗ trợ"));
+    }
+    Ok(report)
+}
+
+#[tauri::command]
+async fn import_pack_status(job_id: String) -> Result<Value, String> {
+    validate_id(&job_id)?;
+    let root = version_root()?;
+    let control = control_root()?;
+    tauri::async_runtime::spawn_blocking(move || validated_import_pack(&root, &control, &job_id))
+        .await.map_err(|_| fail("Không hoàn tất kiểm tra gói"))?
+}
+
 #[tauri::command]
 fn cancel_job(job_id: String) -> Result<(), String> {
     validate_id(&job_id)?;
@@ -293,7 +356,9 @@ fn main() {
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job])
+        .manage(review::ReviewHost::default())
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, import_pack_status, cancel_job,
+            review::review_snapshot_v1, review::review_snapshot_v2, review::review_audio_v1, review::review_audio_v2, review::review_plan_v1, review::review_apply_v1, review::review_undo_v1, review::review_export_v1, review::review_initialize_v1, review::review_request_stage_v1, review::review_request_status_v1, review::review_cancel_v1])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
 }

@@ -3,6 +3,9 @@ import { connectDesktopShell } from "./shell/desktop_shell.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, voiceLabel, type VoiceCatalog } from "./features/voices/model.ts";
 import type { JobStatus } from "./features/job_status/status.ts";
+import { mountDesktopReview } from "./features/review/host.ts";
+import { nativeReviewTransport } from "./features/review/transport.ts";
+import { importPackMessage, parseImportPackStatus, type ImportPackStatus } from "./features/import_pack/model.ts";
 
 type ReleaseInfo = { version: string; channel: string; backend: string };
 
@@ -31,6 +34,9 @@ type StatusResponse = { status: JobStatus; output_path: string | null };
 
 const queue = new QueueController(browserStorage());
 const pollers = new Map<string, number>();
+// Verification is session-local: persisted paths never imply valid file hashes.
+const importPacks = new Map<string, ImportPackStatus>();
+const packChecks = new Set<string>();
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const element = document.querySelector<T>(selector);
@@ -42,6 +48,11 @@ const summary = $("#queue-summary");
 const queueState = $("#queue-state");
 const queueList = $("#queue-list");
 const detail = $("#job-detail");
+const reviewContainer = document.createElement("section");
+reviewContainer.hidden = true;
+reviewContainer.className = "desktop-review-panel";
+$(".workspace").after(reviewContainer);
+const reviewPanel = mountDesktopReview(reviewContainer, nativeReviewTransport(invoke));
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const voiceSelect = $<HTMLSelectElement>("#tts-voice");
@@ -107,6 +118,7 @@ function renderVoiceControls(job: QueueJob | undefined): void {
 function render(model: Parameters<Parameters<typeof connectDesktopShell>[1]>[0]): void {
   const { view } = model;
   renderVoiceControls(view.selected ?? undefined);
+  reviewPanel.select(view.selected ? { id: view.selected.id, completed: view.selected.status.state === "COMPLETED" } : null);
   const total = view.summary.total;
   summary.textContent = `${total} video${total === 1 ? "" : "s"}`;
   queueState.textContent = total === 0 ? "Sẵn sàng" : `${view.summary.queued} đang chờ`;
@@ -156,9 +168,48 @@ function render(model: Parameters<Parameters<typeof connectDesktopShell>[1]>[0])
     card.append(term, description);
   }
   detail.append(card);
+  if (view.selected.status.state === "COMPLETED") {
+    const status = importPacks.get(view.selected.id);
+    const term = document.createElement("dt");
+    term.textContent = "Gói chỉnh sửa";
+    const path = document.createElement("dd");
+    path.textContent = importPackMessage(status);
+    card.append(term, path);
+    if (status?.state === "available" && status.capcutReason === "CAPCUT_VERSION_UNSUPPORTED") {
+      const advisory = document.createElement("p");
+      advisory.textContent = "Phiên bản CapCut này chưa hỗ trợ mở dự án trực tiếp. Bạn có thể nhập các file trong gói chỉnh sửa.";
+      detail.append(advisory);
+    }
+    const check = document.createElement("button");
+    check.type = "button";
+    check.textContent = "Kiểm tra lại gói";
+    check.disabled = packChecks.has(view.selected.id);
+    const jobId = view.selected.id;
+    check.addEventListener("click", () => void refreshImportPack(jobId, true));
+    detail.append(check);
+  }
 }
 
 const shell = connectDesktopShell(queue, render);
+
+async function refreshImportPack(jobId: string, force = false): Promise<void> {
+  if (packChecks.has(jobId) || (!force && importPacks.has(jobId))) return;
+  packChecks.add(jobId);
+  importPacks.set(jobId, { state: "checking" });
+  const redraw = () => {
+    const current = queue.getSnapshot().jobs.find((job) => job.id === jobId);
+    if (current) queue.updateStatus(jobId, current.status, current.outputPath);
+  };
+  redraw();
+  try {
+    importPacks.set(jobId, parseImportPackStatus(await invoke<unknown>("import_pack_status", { jobId })));
+  } catch {
+    importPacks.set(jobId, { state: "unavailable", reason: "IMPORT_PACK_VALIDATION_FAILED" });
+  } finally {
+    packChecks.delete(jobId);
+    redraw();
+  }
+}
 
 async function refreshJob(jobId: string): Promise<void> {
   try {
@@ -171,6 +222,7 @@ async function refreshJob(jobId: string): Promise<void> {
       const timer = pollers.get(jobId);
       if (timer !== undefined) window.clearInterval(timer);
       pollers.delete(jobId);
+      if (response.status.state === "COMPLETED") void refreshImportPack(jobId);
     }
   } catch (error) {
     const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === jobId);
@@ -291,6 +343,7 @@ for (const filter of [genderFilter, accentFilter, styleFilter]) {
 }
 void invoke<unknown>("voice_catalog").then((data) => {
   voiceCatalog = parseVoiceCatalog(data);
+  reviewPanel.setVoices(voiceCatalog.voices.map(voice => ({ voice_id: voice.voice_id, label: voiceLabel(voice) })));
   for (const [select, key] of [[genderFilter, "gender"], [accentFilter, "accent"], [styleFilter, "style"]] as const) {
     for (const value of new Set(voiceCatalog.voices.map((voice) => voice[key]))) {
       const option = document.createElement("option");
@@ -317,4 +370,4 @@ void invoke<ReleaseInfo>("release_info")
     $("#release-version").textContent = "development";
   });
 
-window.addEventListener("beforeunload", () => shell.dispose());
+window.addEventListener("beforeunload", () => { reviewPanel.destroy(); shell.dispose(); });

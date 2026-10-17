@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "scope": "cross-language recipe metadata only; no media/environment admission",
+  "cases": [
+    {
+      "input": {
+        "geometry": [
+          96,
+          64
+        ],
+        "time_base": [
+          1,
+          1000
+        ],
+        "video_stream_index": 0,
+        "burn_in_subtitles": false,
+        "runtime_environment_sha256": "sha256:ce1276a9c85bd9bf949d43e520571036f9c3ecb0b2d94a403aeb4f8ccd9439a6",
+        "ffmpeg_inventory": {
+          "sha256": "sha256:d8aa1a758517f8a86cbebc883634a6b001fe4013635dc1dcf63a02bbea9058dd",
+          "size_bytes": 4829696
+        },
+        "ffprobe_inventory": {
+          "sha256": "sha256:1becb1e274174e358b6824db5aadef65b844fbc42c9a09d68fe626e6fa2abcad",
+          "size_bytes": 4591232
+        },
+        "sources": {
+          "longform_encode.py": "sha256:b9ad4f10f259d4edebb2f405151b5e7a90ef997c621ad1dce2e16e4e93b87a1a",
+          "longform_captions.py": "sha256:ef16eeb17be7dae350f57a42f8251e605300d81fc4337019e8528d52ff076298",
+          "longform_fragments.py": "sha256:26ed3c340638efc551e3bff55601780fa1d4e9a356b17f08bd28bef54e2a5741",
+          "longform_plan.py": "sha256:7caa23b7092fc58c648c63bfc6bb39623a78c4af47659aeb6345c856ea3c0e87",
+          "longform_clock.py": "sha256:043a9deba2f3362e39bf6d359ccb43d6492d6412ba0f1a838f673972a7442609",
+          "longform_probe.py": "sha256:e40fd37eaea3adc19f4d375cd28c8a4b7d42511c073ed11ffe404a6fedfe1cb0",
+          "render_execution.py": "sha256:ae8d8617ad642d198dc3d1a7fd85c633727cf850236bc89cea3b103e350b6f55",
+          "synthesis_worker.py": "sha256:c17335a72e64f226f87824db401fc8a7bc6deaa459378e2f6e3b8124d3196164"
+        }
+      },
+      "python_recipe_json": "{\"b_frames\":0,\"burn_in_subtitles\":false,\"caption_window\":\"review_ass_global_window_v1\",\"encoder\":\"h264_mf\",\"ffmpeg\":{\"sha256\":\"sha256:d8aa1a758517f8a86cbebc883634a6b001fe4013635dc1dcf63a02bbea9058dd\",\"size_bytes\":\"4829696\"},\"ffprobe\":{\"sha256\":\"sha256:1becb1e274174e358b6824db5aadef65b844fbc42c9a09d68fe626e6fa2abcad\",\"size_bytes\":\"4591232\"},\"fragment_layout\":\"empty_moov_frag_keyframe_default_base_moof\",\"geometry\":[96,64],\"hw_encoding\":0,\"kind\":\"review_private_chunk_encoder_recipe\",\"pixel_format\":\"yuv420p\",\"quality\":90,\"recipe\":\"review-h264-mf-software-global-ass-chunk-v1\",\"runtime_environment_sha256\":\"sha256:ce1276a9c85bd9bf949d43e520571036f9c3ecb0b2d94a403aeb4f8ccd9439a6\",\"schema_version\":1,\"sources\":{\"longform_captions.py\":\"sha256:ef16eeb17be7dae350f57a42f8251e605300d81fc4337019e8528d52ff076298\",\"longform_clock.py\":\"sha256:043a9deba2f3362e39bf6d359ccb43d6492d6412ba0f1a838f673972a7442609\",\"longform_encode.py\":\"sha256:b9ad4f10f259d4edebb2f405151b5e7a90ef997c621ad1dce2e16e4e93b87a1a\",\"longform_fragments.py\":\"sha256:26ed3c340638efc551e3bff55601780fa1d4e9a356b17f08bd28bef54e2a5741\",\"longform_plan.py\":\"sha256:7caa23b7092fc58c648c63bfc6bb39623a78c4af47659aeb6345c856ea3c0e87\",\"longform_probe.py\":\"sha256:e40fd37eaea3adc19f4d375cd28c8a4b7d42511c073ed11ffe404a6fedfe1cb0\",\"render_execution.py\":\"sha256:ae8d8617ad642d198dc3d1a7fd85c633727cf850236bc89cea3b103e350b6f55\",\"synthesis_worker.py\":\"sha256:c17335a72e64f226f87824db401fc8a7bc6deaa459378e2f6e3b8124d3196164\"},\"time_base\":[1,1000],\"timestamps\":\"source_pts_trim_global_ass_then_local_origin\",\"video_stream_index\":0}",
+      "python_recipe_sha256": "sha256:91d69f863349f6dc1bf33f412f6a1ca6b75e7c176a658bdd937c9ce48c164e96"
+    },
+    {
+      "input": {
+        "geometry": [
+          306,
+          544
+        ],
+        "time_base": [
+          1001,
+          30000
+        ],
+        "video_stream_index": 3,
+        "burn_in_subtitles": true,
+        "runtime_environment_sha256": "sha256:ce1276a9c85bd9bf949d43e520571036f9c3ecb0b2d94a403aeb4f8ccd9439a6",
+        "ffmpeg_inventory": {
+          "sha256": "sha256:d8aa1a758517f8a86cbebc883634a6b001fe4013635dc1dcf63a02bbea9058dd",
+          "size_bytes": 4829696
+        },
+        "ffprobe_inventory": {
+          "sha256": "sha256:1becb1e274174e358b6824db5aadef65b844fbc42c9a09d68fe626e6fa2abcad",
+          "size_bytes": 4591232
+        },
+        "sources": {
+          "longform_encode.py": "sha256:b9ad4f10f259d4edebb2f405151b5e7a90ef997c621ad1dce2e16e4e93b87a1a",
+          "longform_captions.py": "sha256:ef16eeb17be7dae350f57a42f8251e605300d81fc4337019e8528d52ff076298",
+          "longform_fragments.py": "sha256:26ed3c340638efc551e3bff55601780fa1d4e9a356b17f08bd28bef54e2a5741",
+          "longform_plan.py": "sha256:7caa23b7092fc58c648c63bfc6bb39623a78c4af47659aeb6345c856ea3c0e87",
+          "longform_clock.py": "sha256:043a9deba2f3362e39bf6d359ccb43d6492d6412ba0f1a838f673972a7442609",
+          "longform_probe.py": "sha256:e40fd37eaea3adc19f4d375cd28c8a4b7d42511c073ed11ffe404a6fedfe1cb0",
+          "render_execution.py": "sha256:ae8d8617ad642d198dc3d1a7fd85c633727cf850236bc89cea3b103e350b6f55",
+          "synthesis_worker.py": "sha256:c17335a72e64f226f87824db401fc8a7bc6deaa459378e2f6e3b8124d3196164"
+        }
+      },
+      "python_recipe_json": "{\"b_frames\":0,\"burn_in_subtitles\":true,\"caption_window\":\"review_ass_global_window_v1\",\"encoder\":\"h264_mf\",\"ffmpeg\":{\"sha256\":\"sha256:d8aa1a758517f8a86cbebc883634a6b001fe4013635dc1dcf63a02bbea9058dd\",\"size_bytes\":\"4829696\"},\"ffprobe\":{\"sha256\":\"sha256:1becb1e274174e358b6824db5aadef65b844fbc42c9a09d68fe626e6fa2abcad\",\"size_bytes\":\"4591232\"},\"fragment_layout\":\"empty_moov_frag_keyframe_default_base_moof\",\"geometry\":[306,544],\"hw_encoding\":0,\"kind\":\"review_private_chunk_encoder_recipe\",\"pixel_format\":\"yuv420p\",\"quality\":90,\"recipe\":\"review-h264-mf-software-global-ass-chunk-v1\",\"runtime_environment_sha256\":\"sha256:ce1276a9c85bd9bf949d43e520571036f9c3ecb0b2d94a403aeb4f8ccd9439a6\",\"schema_version\":1,\"sources\":{\"longform_captions.py\":\"sha256:ef16eeb17be7dae350f57a42f8251e605300d81fc4337019e8528d52ff076298\",\"longform_clock.py\":\"sha256:043a9deba2f3362e39bf6d359ccb43d6492d6412ba0f1a838f673972a7442609\",\"longform_encode.py\":\"sha256:b9ad4f10f259d4edebb2f405151b5e7a90ef997c621ad1dce2e16e4e93b87a1a\",\"longform_fragments.py\":\"sha256:26ed3c340638efc551e3bff55601780fa1d4e9a356b17f08bd28bef54e2a5741\",\"longform_plan.py\":\"sha256:7caa23b7092fc58c648c63bfc6bb39623a78c4af47659aeb6345c856ea3c0e87\",\"longform_probe.py\":\"sha256:e40fd37eaea3adc19f4d375cd28c8a4b7d42511c073ed11ffe404a6fedfe1cb0\",\"render_execution.py\":\"sha256:ae8d8617ad642d198dc3d1a7fd85c633727cf850236bc89cea3b103e350b6f55\",\"synthesis_worker.py\":\"sha256:c17335a72e64f226f87824db401fc8a7bc6deaa459378e2f6e3b8124d3196164\"},\"time_base\":[1001,30000],\"timestamps\":\"source_pts_trim_global_ass_then_local_origin\",\"video_stream_index\":3}",
+      "python_recipe_sha256": "sha256:6b18b6d12911744c90aee50fda02e3c59e0136849729e1ee4f43765dc4619560"
+    }
+  ]
+}

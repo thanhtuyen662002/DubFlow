@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native retained full-mix metadata context v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "job_id",
+    "output_root",
+    "volume_id",
+    "candidate_mix_json",
+    "candidate_mix_sha256",
+    "composition_sha256",
+    "retained_mix_audio"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_native_retained_mix_context"
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "output_root": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32767
+    },
+    "volume_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "candidate_mix_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "candidate_mix_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "composition_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "retained_mix_audio": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "audio"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "original_audio",
+              "dialogue_stem",
+              "final_mix"
+            ]
+          },
+          "audio": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path_hint",
+              "locator",
+              "sample_rate",
+              "channels",
+              "frame_count"
+            ],
+            "properties": {
+              "path_hint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32767
+              },
+              "locator": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "schema_version",
+                  "volume_id",
+                  "root_kind",
+                  "relative_path",
+                  "content_hash",
+                  "size_bytes"
+                ],
+                "properties": {
+                  "schema_version": {
+                    "const": 1
+                  },
+                  "volume_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "root_kind": {
+                    "const": "output"
+                  },
+                  "relative_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32767
+                  },
+                  "content_hash": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "size_bytes": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 20,
+                    "pattern": "^(0|[1-9][0-9]*)$"
+                  }
+                }
+              },
+              "sample_rate": {
+                "const": 48000
+              },
+              "channels": {
+                "const": 2
+              },
+              "frame_count": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 20,
+                "pattern": "^(0|[1-9][0-9]*)$"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

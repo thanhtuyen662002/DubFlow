@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bound desktop Review failure details with unconfirmed durable outcome",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "request_id", "job_id", "operation", "outcome", "phase", "native_stage", "message", "diagnostic"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_desktop_request_failure"},
+    "request_id": {"type": "string", "pattern": "^[A-Za-z0-9-]{16,64}$"}, "job_id": {"$ref": "schema-v2.json#/$defs/id"},
+    "operation": {"enum": ["initialize", "apply", "undo", "standard_export", "editable_export"]},
+    "outcome": {"const": "unconfirmed"}, "phase": {"enum": ["checking", "processing", "verifying"]},
+    "native_stage": {"oneOf": [{"type": "null"}, {"$ref": "native-stage-observation-v1.json#/$defs/event/properties/stage"}]},
+    "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "diagnostic": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 4096}]}
+  },
+  "$comment": "Native/client additionally limit UTF8 message<=1024B and diagnostic<=4096B, filter control characters except newline/tab, and require exact invocation request/job/operation. Only actual nonzero native stderr supplies diagnostic; success stderr is not an error. The last failing host phase/native observation is display context only. No retryable/not-committed/success flag, paths-as-authority, token, root, snapshot or replacement receipt. IPC pre-binding errors may remain legacy strings; invalid, lost, late and cancelled errors retain reload/no-auto-retry. Details are inert textContent, never HTML/URL/executable authority. No durable or worker schema changes."
+}

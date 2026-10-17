@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Separate current render recipe with twelve ordered native fingerprints",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "capability", "processing_timeline", "capability_document", "entry", "ffprobe", "recipe_dependencies", "execution_identity", "active_graph_published", "correction_ready"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_admitted_effective_render"},
+    "capability": {"const": "review_effective_render_v1"},
+    "processing_timeline": {"$ref": "native-processing-effective-timeline-v1.json"},
+    "capability_document": {"$ref": "native-processing-release-v1.json#/$defs/metadata"},
+    "entry": {"$ref": "native-processing-release-v1.json#/properties/effective_cue_entry"},
+    "ffprobe": {"$ref": "native-processing-release-v1.json#/properties/effective_cue_entry"},
+    "recipe_dependencies": {"type": "array", "minItems": 12, "maxItems": 12,
+      "items": {"$ref": "native-processing-cue-synthesis-v1.json#/properties/recipe_dependencies/items"}},
+    "execution_identity": {"type": "string", "pattern": "^(sha256:[0-9a-f]{64})?$"},
+    "active_graph_published": {"const": false}, "correction_ready": {"const": false}
+  }
+}

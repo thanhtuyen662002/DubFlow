@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DubFlow · Review widget QA</title>
+<link rel="stylesheet" href="/apps/desktop/src/features/review/review.css">
+<style>body { margin: 24px auto; padding: 0 16px; max-width: 1280px; background: #0b111b; color: #e9edf5; font-family: system-ui; } .qa-controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; } .qa-controls button { padding: 10px; } #qa-log { white-space: pre-wrap; overflow-wrap: anywhere; }</style></head>
+<body><h1>DubFlow · Kiểm tra giao diện review</h1>
+<p>Trang QA dùng dữ liệu tổng hợp và callback mô phỏng. Không phát âm thanh, không sửa video hoặc trạng thái job thật.</p>
+<div class="qa-controls"><button id="reset">Nạp lại fixture</button><button id="legacy">Nạp review cũ</button>
+<button id="delay">Trì hoãn phản hồi</button><button id="release">Trả phản hồi đang chờ</button><button id="reject">Phản hồi sai job</button></div>
+<div id="review"></div><h2>Yêu cầu quan sát được</h2><pre id="qa-log" aria-live="polite"></pre>
+<script type="module" src="./view-preview.ts"></script></body></html>

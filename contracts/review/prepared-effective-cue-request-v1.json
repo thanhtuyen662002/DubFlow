@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Prepared current-generation cue request; no execution or publication admission",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "context_sha256", "before_token", "current_composition_sha256", "composition_snapshot_sha256", "effective_composition_json", "effective_composition_sha256", "request_json", "request_sha256", "config", "voice", "model_weights_verified", "active_graph_published"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_prepared_effective_cue_request"},
+    "context_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "before_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "current_composition_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "composition_snapshot_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "effective_composition_json": {"type": "string", "minLength": 1, "maxLength": 67108864},
+    "effective_composition_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "request_json": {"type": "string", "minLength": 1, "maxLength": 32768},
+    "request_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "config": {"$ref": "cue-synthesis-v1.json#/$defs/config"},
+    "voice": {"$ref": "cue-synthesis-v1.json#/$defs/voice"},
+    "model_weights_verified": {"const": false},
+    "active_graph_published": {"const": false}
+  }
+}

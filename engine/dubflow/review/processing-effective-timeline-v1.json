@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "kind": "review_processing_effective_timeline_capability",
+  "capability": "review_effective_timeline_v1",
+  "entrypoint": "engine/dubflow/review/effective_timeline_execution.py",
+  "context_format": "review_native_effective_timeline_context_v1",
+  "modes": ["b1", "b2"],
+  "timeline_format": 1,
+  "public_counter_normalization": false,
+  "media_execution": false,
+  "model_provisioning": false,
+  "active_graph_publication": false
+}

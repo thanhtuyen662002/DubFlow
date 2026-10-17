@@ -28,6 +28,14 @@ class ComponentSelectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.component = {"id": "tts", "roots": ["engine/dubflow/tts"]}
 
+    def test_review_producer_changes_execute_registered_python_regressions(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        review = next(component for component in registry["components"] if component["id"] == "review-center")
+        for path in ("engine/dubflow/review/production.py", "tests/review/test_production.py"):
+            with self.subTest(path=path):
+                self.assertTrue(selector.component_affected(review, {path}))
+        self.assertIn(["python", "-m", "unittest", "discover", "-s", "tests/review", "-p", "test_*.py"], review["commands"])
+
     def test_unknown_diff_selects_component(self) -> None:
         self.assertTrue(selector.component_affected(self.component, None))
 

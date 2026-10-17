@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private native clock execution context/result v1",
+  "description": "Context <=4MiB/result <=8404992 bytes, one <=180s contained owned process. Native derives all fields and independently admits result/current/source/processing before journal mutation. No media, OS environment, QC or graph authority is granted.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "clock_spec",
+        "ordinal",
+        "cursor",
+        "anchor",
+        "overlap",
+        "source",
+        "source_root",
+        "ffprobe",
+        "media_root",
+        "processing_clock_recipe_sha256",
+        "processing_release_sha256",
+        "packet_limit",
+        "timeout_seconds"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "review_native_clock_execution_context"
+        },
+        "clock_spec": {
+          "$ref": "#/$defs/spec"
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "cursor": {
+          "$ref": "#/$defs/tick"
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/anchor"
+            }
+          ]
+        },
+        "overlap": {
+          "$ref": "#/$defs/overlap"
+        },
+        "source": {
+          "$ref": "#/$defs/file"
+        },
+        "source_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "ffprobe": {
+          "$ref": "#/$defs/file"
+        },
+        "media_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "processing_clock_recipe_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "processing_release_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "packet_limit": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 16384
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 180
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "context_sha256",
+        "clock_spec_sha256",
+        "processing_clock_recipe_sha256",
+        "ordinal",
+        "window_json",
+        "window_sha256",
+        "native_decoded_clock_admitted",
+        "native_environment_admitted",
+        "semantic_qc_admitted",
+        "active_graph_published"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "review_private_clock_window_result"
+        },
+        "context_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "clock_spec_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "processing_clock_recipe_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "window_json": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4194304
+        },
+        "window_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "native_decoded_clock_admitted": {
+          "const": false
+        },
+        "native_environment_admitted": {
+          "const": false
+        },
+        "semantic_qc_admitted": {
+          "const": false
+        },
+        "active_graph_published": {
+          "const": false
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "tick": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]{0,18})$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "size_bytes": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        }
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pts",
+        "packet_pos"
+      ],
+      "properties": {
+        "pts": {
+          "$ref": "#/$defs/tick"
+        },
+        "packet_pos": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,18})$"
+        }
+      }
+    },
+    "overlap": {
+      "type": "array",
+      "maxItems": 65536,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pts",
+          "key_frame",
+          "packet_pos",
+          "duration"
+        ],
+        "properties": {
+          "pts": {
+            "type": "integer",
+            "minimum": -9223372036854775808,
+            "maximum": 9223372036854775807
+          },
+          "key_frame": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "packet_pos": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807
+              }
+            ]
+          }
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "recipe",
+        "source_sha256",
+        "ffprobe_sha256",
+        "video_stream_index",
+        "time_base",
+        "source_interval"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "recipe": {
+          "const": "review-decoded-pts-keyframe-packet-window-v1"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "ffprobe_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "video_stream_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1023
+        },
+        "time_base": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "numerator",
+            "denominator"
+          ],
+          "properties": {
+            "numerator": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            "denominator": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$"
+            }
+          }
+        },
+        "source_interval": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start_tick",
+            "end_tick"
+          ],
+          "properties": {
+            "start_tick": {
+              "$ref": "#/$defs/tick"
+            },
+            "end_tick": {
+              "$ref": "#/$defs/tick"
+            }
+          }
+        }
+      }
+    }
+  }
+}

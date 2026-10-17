@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Separately admitted current cue TTS capability; no current mix/render/publication permission",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "capability", "processing_release", "capability_document", "synthesis_entry", "recipe_identity", "recipe_dependencies", "original_model_root", "model_weights_verified", "mix_execution_admitted", "render_execution_admitted", "active_graph_published"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_admitted_effective_cue_synthesis"},
+    "capability": {"const": "review_effective_cue_synthesis_v1"},
+    "processing_release": {"type": "object", "$ref": "native-processing-release-v1.json"},
+    "capability_document": {"$ref": "native-processing-release-v1.json#/$defs/metadata"},
+    "synthesis_entry": {"$ref": "native-processing-release-v1.json#/properties/effective_cue_entry"},
+    "recipe_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "recipe_dependencies": {
+      "type": "array", "minItems": 10, "maxItems": 10,
+      "items": {"type": "object", "additionalProperties": false, "required": ["path", "pin"],
+        "properties": {"path": {"$ref": "native-processing-release-v1.json#/$defs/path"},
+          "pin": {"$ref": "native-processing-release-v1.json#/$defs/metadata"}}}
+    },
+    "original_model_root": {"$ref": "native-processing-release-v1.json#/$defs/path"},
+    "model_weights_verified": {"const": false},
+    "mix_execution_admitted": {"const": false},
+    "render_execution_admitted": {"const": false},
+    "active_graph_published": {"const": false}
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit current correction confirmation; processing selection is native-owned",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "confirm", "plan"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_current_confirmation"},
+    "confirm": {"const": true}, "plan": {"$ref": "native-current-correction-plan-v1.json"}
+  }
+}

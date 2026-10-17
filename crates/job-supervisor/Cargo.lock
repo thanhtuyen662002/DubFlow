@@ -79,6 +79,14 @@ name = "dubflow-artifact-provenance"
 version = "0.1.0"
 
 [[package]]
+name = "dubflow-artifact-storage"
+version = "0.1.0"
+dependencies = [
+ "dubflow-job-storage",
+ "sha2",
+]
+
+[[package]]
 name = "dubflow-job-invalidation"
 version = "0.1.0"
 dependencies = [
@@ -131,7 +139,9 @@ dependencies = [
 name = "dubflow-supervisor"
 version = "0.1.0"
 dependencies = [
+ "dubflow-artifact-storage",
  "dubflow-job-state",
+ "dubflow-job-storage",
  "dubflow-source-queue",
  "dubflow-worker-protocol",
  "serde",

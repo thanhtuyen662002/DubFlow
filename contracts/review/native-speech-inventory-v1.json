@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Closed native per-cue accepted speech references for publication recovery",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "job_id", "manifest_sha256", "snapshot_sha256", "cues"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_native_speech_inventory"},
+    "job_id": {"$ref": "cue-synthesis-v1.json#/$defs/id"},
+    "manifest_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "snapshot_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "cues": {
+      "type": "array", "minItems": 1, "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["cue_id", "tts_document", "spoken_text", "accepted_cue"],
+        "properties": {
+          "cue_id": {"$ref": "cue-synthesis-v1.json#/$defs/id"},
+          "tts_document": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+          "spoken_text": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+          "accepted_cue": {
+            "type": ["object", "null"], "additionalProperties": false,
+            "required": ["audio", "tts_document", "spoken_text", "recipe_identity", "accept_context", "active_graph_published", "retained_cue_audio"],
+            "properties": {
+              "audio": {"$ref": "native-accepted-cue-context-v1.json#/properties/accepted_wave"},
+              "tts_document": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+              "spoken_text": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+              "recipe_identity": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "accept_context": {"$ref": "native-effective-state-v1.json#/$defs/document"},
+              "active_graph_published": {"const": false},
+              "retained_cue_audio": {"$ref": "native-retained-cue-audio-v1.json"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private pinned chunk execution context; native caller retains source/current/runtime/quota authority",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "binding", "processing_recipe_sha256", "plan", "plan_root", "source", "source_root", "executables", "media_root", "output_root", "geometry", "video_stream_index", "burn_in_subtitles", "captions", "max_chunk_bytes", "timeout_seconds"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_native_chunk_execution_context"},
+    "binding": {"$ref": "native-chunk-worker-bridge-v1.json#/$defs/binding"},
+    "processing_recipe_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "plan": {"$ref": "#/$defs/file"}, "source": {"$ref": "#/$defs/file"},
+    "plan_root": {"$ref": "#/$defs/path"}, "source_root": {"$ref": "#/$defs/path"},
+    "media_root": {"$ref": "#/$defs/path"}, "output_root": {"$ref": "#/$defs/path"},
+    "executables": {"type": "object", "additionalProperties": false, "required": ["ffmpeg", "ffprobe"],
+      "properties": {"ffmpeg": {"$ref": "#/$defs/file"}, "ffprobe": {"$ref": "#/$defs/file"}}},
+    "geometry": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1, "maximum": 32768}},
+    "video_stream_index": {"type": "integer", "minimum": 0, "maximum": 1023},
+    "burn_in_subtitles": {"type": "boolean"},
+    "captions": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false,
+      "required": ["file", "root"], "properties": {"file": {"$ref": "#/$defs/file"}, "root": {"$ref": "#/$defs/path"}}}]},
+    "max_chunk_bytes": {"type": "string", "pattern": "^[1-9][0-9]{0,8}$"},
+    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 900}
+  },
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "file": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "size_bytes"],
+      "properties": {"path": {"$ref": "#/$defs/path"}, "sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+        "size_bytes": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"}}}
+  },
+  "$comment": "Context canonical JSON<=128KiB is physically sealed/read-only/single-link/no-follow/hash/identity checked before and after execution. Plan<=4MiB and optional ASS<=64MiB are independently reopened with exact bytes; max_chunk_bytes<=256MiB. Plan hash and local identity/source/processing/environment remain separately bound. The Python entry requires -I -S -B and the native containment byte gate. Native callbacks must admit actual current/source/runtime environment/capacity; context fields are not authority to choose arbitrary roots or releases. Candidate output is unadmitted; native physical retention, media/source-clock/seam/audio/full-QC/CAS/installed/crash/real4h gates remain mandatory. Existing effective-render-v1 and public chunked_longform=false remain unchanged."
+}

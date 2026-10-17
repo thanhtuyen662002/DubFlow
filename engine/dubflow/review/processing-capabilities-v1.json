@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "kind": "review_processing_capabilities",
+  "capabilities": ["review_effective_cue_preparation_v1"],
+  "entrypoint_kind": "python_function",
+  "entrypoint_symbol": "prepare_effective_cue",
+  "entrypoints": {
+    "effective_cue_preparation": "engine/dubflow/review/effective_cue_plan.py",
+    "native_dispatch": "engine/dubflow/review/effective_cue_execution.py"
+  },
+  "dispatch_contract": "review_native_effective_cue_bindings_v1",
+  "formats": {
+    "snapshot": 2,
+    "audio_composition": [1, 2],
+    "effective_cue_context": 1,
+    "prepared_effective_cue_request": 1,
+    "tts_document": [1, 2],
+    "spoken_text": 1
+  },
+  "compatibility": "exact_original_runtime_tts_mix_models_media",
+  "cumulative_execution": false,
+  "active_graph_publication": false
+}

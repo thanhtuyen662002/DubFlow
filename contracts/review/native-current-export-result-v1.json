@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Versioned native corrected standard publication result; production editable adapter remains separate",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "current_token", "generation", "path", "manifest_sha256", "files_verified", "standard_bundle_published", "production_editable_pack_published", "current_generation_checked", "correction_ready"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "review_native_current_export_result"},
+    "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"},
+    "generation": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "maxLength": 32767},
+    "manifest_sha256": {"$ref": "cue-synthesis-v1.json#/$defs/hash"},
+    "files_verified": {"enum": [7, 10]},
+    "standard_bundle_published": {"const": true},
+    "production_editable_pack_published": {"const": false},
+    "current_generation_checked": {"const": true},
+    "correction_ready": {"const": false}
+  }
+}

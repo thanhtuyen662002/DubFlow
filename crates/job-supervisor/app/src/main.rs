@@ -31,6 +31,30 @@ mod worker_tree;
 use worker_tree::WorkerTree;
 mod source_owner;
 mod source_server;
+mod review_pin;
+mod review_assets;
+mod review_document;
+mod review_effective;
+mod review_publication;
+mod review_export;
+mod review_export_publication;
+mod review_editable;
+mod review_desktop;
+mod review_preview;
+mod review_plan;
+mod review_progress;
+mod review_apply;
+mod review_generation;
+mod review_speech;
+mod review_request;
+mod review_seed;
+mod review_runtime;
+mod review_correction;
+mod review_retention;
+mod review_timeline;
+mod review_render;
+mod review_chunks;
+mod review_active;
 
 const STAGE_ID: &str = "local-file";
 const STAGE_KIND: &str = "production-local-file";
@@ -605,6 +629,93 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-advance-source-clock")) {
+        return review_render::run_clock(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-confirm-current-export")) {
+        return review_apply::run_export_confirmed(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-confirm-current")) {
+        return review_apply::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-current-plan")) {
+        return review_plan::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-current-audio")) {
+        return review_preview::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-desktop-state")) {
+        return review_desktop::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-publish-active-editable-pack")) {
+        return review_editable::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-publish-active-export")) {
+        return review_export::run_publish(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-validate-export-bundle")) {
+        return review_export_publication::run_validate(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-prepare-active-export")) {
+        return review_export::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-effective-state")) {
+        return review_active::run_effective(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-prepare-effective-cue")) {
+        return review_generation::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-synthesize-effective-cue")) {
+        return review_generation::run_synthesis(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-mix-effective-cue")) {
+        return review_generation::run_mix(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-prepare-effective-timeline")) {
+        return review_generation::run_timeline(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-render-effective-b1")) {
+        return review_generation::run_render_b1(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-render-effective-b2")) {
+        return review_generation::run_render_b2(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-commit-effective-b1")) {
+        return review_generation::run_commit_b1(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-commit-effective-b2")) {
+        return review_generation::run_commit_b2(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-active")) {
+        return review_active::run(std::env::args_os().skip(2), false);
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-undo-active")) {
+        return review_active::run(std::env::args_os().skip(2), true);
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-commit-render-cue")) {
+        return review_correction::run_commit_render(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-render-cue")) {
+        return review_correction::run_render(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-retain-mix-cue")) {
+        return review_correction::run_retained_mix(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-prepare-cue")) {
+        return review_correction::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-synthesize-cue")) {
+        return review_correction::run_synthesis(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-mix-cue")) {
+        return review_correction::run_mix(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-original")) {
+        return review_seed::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-pin")) {
+        return review_pin::run(std::env::args_os().skip(2));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("source-serve")) {
         return source_server::run(std::env::args_os().skip(2)).map_err(|_| {
             SupervisorError::Invalid("source service stopped; inspect its scoped events".into())

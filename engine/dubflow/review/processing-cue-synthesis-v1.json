@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "kind": "review_processing_cue_synthesis_capability",
+  "capability": "review_effective_cue_synthesis_v1",
+  "entrypoint": "engine/dubflow/review/cue_execution.py",
+  "request_format": "review_cue_synthesis_input_v1",
+  "accepted_format": "review_native_accepted_cue_context_v1",
+  "compatibility": "exact_original_runtime_tts_mix_models_media",
+  "model_provisioning": false,
+  "mix_execution": false,
+  "render_execution": false,
+  "cumulative_execution": false,
+  "active_graph_publication": false
+}

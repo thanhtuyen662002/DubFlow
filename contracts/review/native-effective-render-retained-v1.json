@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Native retained current render; canonical volume locators and complete current token",
+  "required": [
+    "schema_version",
+    "kind",
+    "job_id",
+    "current_token",
+    "context",
+    "processing_render",
+    "candidate_result",
+    "execution_identity",
+    "artifacts",
+    "active_graph_published",
+    "correction_ready"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_native_retained_effective_render"
+    },
+    "job_id": {
+      "$ref": "cue-synthesis-v1.json#/$defs/id"
+    },
+    "current_token": {
+      "$ref": "effective-cue-context-v1.json#/$defs/token"
+    },
+    "context": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "processing_render": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "candidate_result": {
+      "$ref": "native-effective-state-v1.json#/$defs/document"
+    },
+    "execution_identity": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "artifacts": {
+      "$ref": "#/$defs/artifacts"
+    },
+    "active_graph_published": {
+      "const": false
+    },
+    "correction_ready": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "artifacts": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "file"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "final_video",
+              "captions_srt",
+              "captions_ass",
+              "corrected_timeline",
+              "qc_report"
+            ]
+          },
+          "file": {
+            "$ref": "#/$defs/file"
+          }
+        }
+      }
+    },
+    "file": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path_hint",
+        "format",
+        "locator"
+      ],
+      "properties": {
+        "path_hint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32767
+        },
+        "format": {
+          "enum": [
+            "mp4",
+            "srt",
+            "ass",
+            "json"
+          ]
+        },
+        "locator": {
+          "$ref": "native-retained-mix-context-v1.json#/properties/retained_mix_audio/items/properties/audio/properties/locator"
+        }
+      }
+    }
+  }
+}

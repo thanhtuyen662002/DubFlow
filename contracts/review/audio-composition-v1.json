@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/review/audio-composition/v1",
+  "title": "Supervisor-admitted immutable per-cue audio composition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "job_id",
+    "manifest_sha256",
+    "review_snapshot_sha256",
+    "source",
+    "documents",
+    "cues",
+    "mix_producer_pin"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "review_audio_composition"
+    },
+    "job_id": {
+      "$ref": "cue-synthesis-v1.json#/$defs/id"
+    },
+    "manifest_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "review_snapshot_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "start",
+        "end",
+        "source_id",
+        "layout"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sha256": {
+          "$ref": "cue-synthesis-v1.json#/$defs/hash"
+        },
+        "start": {
+          "$ref": "cue-synthesis-v1.json#/$defs/point"
+        },
+        "end": {
+          "$ref": "cue-synthesis-v1.json#/$defs/point"
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "layout": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "documents": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256",
+          "size_bytes",
+          "artifact_root"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "sha256": {
+            "$ref": "cue-synthesis-v1.json#/$defs/hash"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 67108864
+          },
+          "artifact_root": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "cues": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tts_input",
+          "document_sha256"
+        ],
+        "properties": {
+          "tts_input": {
+            "$ref": "cue-synthesis-v1.json#/$defs/input"
+          },
+          "document_sha256": {
+            "$ref": "cue-synthesis-v1.json#/$defs/hash"
+          }
+        }
+      }
+    },
+    "mix_producer_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer",
+        "producer_version",
+        "backend_id",
+        "runtime",
+        "timeline_contract",
+        "config_hash",
+        "requested_profile",
+        "hardware_profile",
+        "resource",
+        "non_destructive"
+      ],
+      "properties": {
+        "producer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "producer_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "backend_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "runtime": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "timeline_contract": {
+          "const": "timeline-v1"
+        },
+        "config_hash": {
+          "$ref": "cue-synthesis-v1.json#/$defs/hash"
+        },
+        "requested_profile": {
+          "enum": [
+            "auto",
+            "cpu",
+            "gpu",
+            "fixture"
+          ]
+        },
+        "hardware_profile": {
+          "enum": [
+            "cpu",
+            "gpu",
+            "fixture",
+            "mixed"
+          ]
+        },
+        "resource": {
+          "$ref": "cue-synthesis-v1.json#/$defs/resource"
+        },
+        "non_destructive": {
+          "const": true
+        }
+      }
+    }
+  }
+}

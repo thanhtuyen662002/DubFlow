@@ -3,7 +3,9 @@
 //! This crate is the only owner of the SQLite connection. Workers communicate
 //! through the versioned protocol and never receive a database handle.
 
-use rusqlite::{params, Connection, OptionalExtension};
+pub mod review_graph;
+
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fmt;
@@ -151,6 +153,18 @@ pub enum RecoveryEvent {
 pub struct DurableStore { connection: Connection }
 
 impl DurableStore {
+    /// Open an existing supported schema for observation only. This never
+    /// creates directories/database files, migrates or changes journal mode.
+    /// SQLite itself rejects durable mutations on the returned handle.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        let store = Self { connection };
+        let version = store.schema_version()?;
+        if version != MIGRATION_VERSION { return Err(StateError::UnsupportedMigration(version)); }
+        Ok(store)
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if path != Path::new(":memory:") {
@@ -700,6 +714,44 @@ mod tests {
         setup(&store);
         assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Queued);
         assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Pending);
+    }
+
+    #[test]
+    fn read_only_open_observes_existing_state_and_refuses_writes_or_creation() {
+        let path = temp_path("read-only", "sqlite");
+        assert!(DurableStore::open_read_only(&path).is_err());
+        assert!(!path.exists());
+        {
+            let writer = DurableStore::open(&path).unwrap();
+            setup(&writer);
+            let reader = DurableStore::open_read_only(&path).unwrap();
+            assert_eq!(reader.job_status("job-1").unwrap(), JobStatus::Queued);
+            assert!(reader.create_job("forbidden", "file:///other.mp4", 2).is_err());
+            assert!(matches!(writer.job_status("forbidden"), Err(StateError::NotFound { .. })));
+        }
+        let before = fs::read(&path).unwrap();
+        {
+            let reader = DurableStore::open_read_only(&path).unwrap();
+            assert_eq!(reader.schema_version().unwrap(), MIGRATION_VERSION);
+            assert_eq!(reader.job_status("job-1").unwrap(), JobStatus::Queued);
+        }
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn read_only_open_never_upgrades_an_old_schema() {
+        let path = temp_path("read-only-legacy", "sqlite");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at_ms INTEGER); INSERT INTO schema_migrations VALUES(1, 0);").unwrap();
+        }
+        let before = fs::read(&path).unwrap();
+        assert!(matches!(DurableStore::open_read_only(&path), Err(StateError::UnsupportedMigration(1))));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

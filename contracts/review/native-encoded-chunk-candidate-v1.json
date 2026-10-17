@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private encoded video chunk candidate; native physical, runtime and semantic admission remain mandatory",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "context_sha256", "plan_sha256", "source_sha256", "processing_recipe_sha256", "runtime_environment_sha256", "chunk_identity", "caption_window_sha256", "source_frame_clock_sha256", "frame_count", "file", "full_video_decode", "semantic_qc_admitted", "active_graph_published"],
+  "properties": {
+    "schema_version": {"const": 1}, "kind": {"const": "review_private_encoded_chunk_candidate"},
+    "context_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "plan_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "source_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "processing_recipe_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "runtime_environment_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "chunk_identity": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "caption_window_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "source_frame_clock_sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+    "frame_count": {"type": "string", "pattern": "^[1-9][0-9]{0,9}$"},
+    "file": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "size_bytes"],
+      "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "sha256": {"$ref": "longform-plan-v1.json#/$defs/hash"},
+        "size_bytes": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"}}},
+    "full_video_decode": {"const": true}, "semantic_qc_admitted": {"const": false},
+    "active_graph_published": {"const": false}
+  },
+  "$comment": "Path is a private candidate hint, never a retained locator or IO grant. Native must independently reopen under admitted volume/root/no-follow/fullSHA/quota fences, validate the source clock/stream/geometry/captions, complete runtime font/codec/provider closure and final AV/QC before checkpoint or graph authority. A caller-supplied callback/hash is not that admission. The current product capability remains chunked_longform=false."
+}
