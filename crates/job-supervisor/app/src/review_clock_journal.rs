@@ -339,6 +339,45 @@ pub(crate) struct CurrentClockJournal {
     records: Vec<String>,
     prefix: Prefix,
 }
+
+/// At most one bounded window is decoded at a time; no second whole-source
+/// point list, mutable cache or lossy seconds/frame-index conversion is used.
+struct JournalPoints<'a> {
+    records: std::slice::Iter<'a, String>,
+    points: std::vec::IntoIter<i64>,
+    failed: bool,
+}
+impl Iterator for JournalPoints<'_> {
+    type Item = SupervisorResult<i64>;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.failed {
+                return None;
+            }
+            if let Some(point) = self.points.next() {
+                return Some(Ok(point));
+            }
+            let raw = self.records.next()?;
+            let points = (|| {
+                let value = decode(raw, RECORD)?;
+                value["pts"]
+                    .as_array()
+                    .filter(|v| !v.is_empty() && v.len() <= 65536)
+                    .ok_or_else(|| invalid("reopened clock point window exceeds bound"))?
+                    .iter()
+                    .map(signed)
+                    .collect::<SupervisorResult<Vec<_>>>()
+            })();
+            match points {
+                Ok(points) => self.points = points.into_iter(),
+                Err(error) => {
+                    self.failed = true;
+                    return Some(Err(error));
+                }
+            }
+        }
+    }
+}
 fn decoder_namespace(spec: &Value, dispatch: &Value) -> SupervisorResult<String> {
     let recipe = hash_value(&dispatch["processing_clock_recipe_sha256"])?;
     let release = hash_value(&dispatch["processing_release_sha256"])?;
@@ -362,6 +401,27 @@ fn decoder_namespace(spec: &Value, dispatch: &Value) -> SupervisorResult<String>
     ))
 }
 impl CurrentClockJournal {
+    fn require_plan_clock(
+        &self,
+        plan: &BoundPlan,
+        deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> SupervisorResult<()> {
+        observe(deadline, cancelled)?;
+        if !self.prefix.complete || self.prefix.cursor != self.prefix.end {
+            return Err(invalid(
+                "chunk plan needs the complete reopened source clock",
+            ));
+        }
+        plan.require_frame_clock(
+            JournalPoints {
+                records: self.records.iter(),
+                points: Vec::new().into_iter(),
+                failed: false,
+            },
+            || observe(deadline, cancelled),
+        )
+    }
     pub(crate) fn packet(&self) -> Value {
         json!({"schema_version":1,"kind":"review_native_current_clock_journal","clock_spec":self.spec,
             "namespace_sha256":self.namespace,"window_count":self.records.len(),"next_tick":self.prefix.cursor.to_string(),
@@ -374,6 +434,41 @@ impl CurrentClockJournal {
             return Err(invalid("clock ordinal exceeds bound"));
         }
         Ok(self.records.get(ordinal - 1).map(String::as_str))
+    }
+}
+impl CurrentChunkSource {
+    pub(super) fn require_plan_clock(
+        &self,
+        input: &EffectiveRenderInputs<'_>,
+        plan: &BoundPlan,
+        deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> SupervisorResult<()> {
+        observe(deadline, cancelled)?;
+        let clock_input = SourceClockInputs {
+            processing: input.processing,
+            store: input.store,
+            data: input.data,
+            assets: input.assets,
+            state: input.state,
+            current: input.current,
+            output_pin: input.output_pin,
+            candidates: input.candidates,
+        };
+        let clock = CurrentSourceClock::prepare(&clock_input, deadline)?;
+        if clock.source_pin != self.source_pin
+            || clock.stream.descriptor() != self.stream.descriptor()
+        {
+            return Err(invalid(
+                "chunk plan and reopened clock use different native source",
+            ));
+        }
+        plan.require_source_bounds(clock.stream.clock, clock.stream.start, clock.stream.end)?;
+        let journal = clock.read_clock_journal(&clock_input, deadline, cancelled)?;
+        journal.require_plan_clock(plan, deadline, cancelled)?;
+        clock.revalidate(&clock_input, deadline)?;
+        self.revalidate(input, deadline)?;
+        observe(deadline, cancelled)
     }
 }
 impl CurrentSourceClock {
@@ -847,6 +942,72 @@ impl CurrentSourceClock {
 #[cfg(test)]
 mod execution_tests {
     use super::*;
+    fn plan_and_journal() -> (BoundPlan, CurrentClockJournal) {
+        let fixture = decode(
+            include_str!("../../../../tests/review/native_longform_plan_v1.json"),
+            64 * 1024,
+        )
+        .unwrap();
+        let raw = fixture["cases"][0]["plan_json"].as_str().unwrap();
+        let value = decode(raw, RECORD).unwrap();
+        let plan = BoundPlan::read(
+            raw,
+            &hash(raw.as_bytes()),
+            value["context_sha256"].as_str().unwrap(),
+            value["source_sha256"].as_str().unwrap(),
+            value["processing_recipe_sha256"].as_str().unwrap(),
+        )
+        .unwrap();
+        let stream = SourceStream {
+            geometry: [2, 2],
+            clock: [1, 1000],
+            stream: 0,
+            start: -100,
+            end: -40,
+        };
+        let mut prefix = Prefix::new(&stream);
+        prefix.complete = true;
+        prefix.cursor = stream.end;
+        let journal = CurrentClockJournal {
+            spec: Value::Null,
+            namespace: hash(b"test namespace only"),
+            records: vec![
+                exact(&json!({"pts":["-100","-99","-93"]})).unwrap(),
+                exact(&json!({"pts":["-70","-69","-50"]})).unwrap(),
+            ],
+            prefix,
+        };
+        (plan, journal)
+    }
+    #[test]
+    fn complete_clock_plan_gate_streams_across_windows_without_promoting_authority() {
+        let (plan, mut journal) = plan_and_journal();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        journal
+            .require_plan_clock(&plan, deadline, &mut || false)
+            .unwrap();
+        assert_eq!(journal.packet()["native_decoded_clock_admitted"], false);
+        assert_eq!(journal.packet()["chunked_longform"], false);
+        journal.prefix.complete = false;
+        assert!(journal
+            .require_plan_clock(&plan, deadline, &mut || false)
+            .is_err());
+    }
+    #[test]
+    fn clock_plan_gate_refuses_corrupt_saved_point_and_cancelled_revalidation() {
+        let (plan, mut journal) = plan_and_journal();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        assert!(journal
+            .require_plan_clock(&plan, deadline, &mut || true)
+            .is_err());
+        assert!(journal
+            .require_plan_clock(&plan, Instant::now(), &mut || false)
+            .is_err());
+        journal.records[1] = exact(&json!({"pts":["-70","-069","-50"]})).unwrap();
+        assert!(journal
+            .require_plan_clock(&plan, deadline, &mut || false)
+            .is_err());
+    }
     #[test]
     fn native_source_clock_namespace_binds_decoder_and_full_release_without_encoder_environment() {
         let spec = json!({"source_sha256":hash(b"source"),"ffprobe_sha256":hash(b"probe")});

@@ -160,7 +160,11 @@ impl CurrentChunkSource {
         raw_plan: &str,
         expected_plan: &str,
         deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
     ) -> SupervisorResult<CurrentChunkPlan> {
+        if cancelled() {
+            return Err(invalid("current chunk plan binding cancelled"));
+        }
         self.revalidate(input, deadline)?;
         let plan = BoundPlan::read(
             raw_plan,
@@ -185,7 +189,7 @@ impl CurrentChunkSource {
             plan_object,
             plan,
         };
-        prepared.revalidate(input, deadline)?;
+        prepared.revalidate(input, deadline, cancelled)?;
         Ok(prepared)
     }
 }
@@ -209,9 +213,12 @@ impl CurrentChunkPlan {
         &self,
         input: &EffectiveRenderInputs<'_>,
         deadline: Instant,
+        cancelled: &mut impl FnMut() -> bool,
     ) -> SupervisorResult<()> {
         self.source.revalidate(input, deadline)?;
         input.assets.read_json(&self.plan_object)?;
+        self.source
+            .require_plan_clock(input, &self.plan, deadline, cancelled)?;
         if Instant::now() >= deadline {
             return Err(invalid("chunk plan readback exhausted native deadline"));
         }

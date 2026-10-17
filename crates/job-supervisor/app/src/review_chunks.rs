@@ -252,6 +252,87 @@ impl BoundPlan {
         }
         Ok(())
     }
+
+    /// Compare every point from a separately reopened complete observation.
+    /// This closes the plan's counts/hashes/policy over that stream, without
+    /// granting decoder, environment, encoded-media or publication authority.
+    pub(super) fn require_frame_clock(
+        &self,
+        points: impl IntoIterator<Item = SupervisorResult<i64>>,
+        mut fence: impl FnMut() -> SupervisorResult<()>,
+    ) -> SupervisorResult<()> {
+        fence()?;
+        let chunks = self.value["chunks"].as_array().unwrap();
+        let max_frames = self.value["policy"]["max_frames"].as_u64().unwrap();
+        let target = tick(&self.value["policy"]["target_ticks"], true)?;
+        let end = signed(&self.value["source_interval"]["end_tick"])?;
+        let (mut ordinal, mut total, mut count) = (0usize, 0u64, 0u64);
+        let mut first = signed(&chunks[0]["start_tick"])?;
+        let mut previous = None;
+        let mut whole_hash = Sha256::new();
+        let mut chunk_hash = Sha256::new();
+        for point in points {
+            if total % 1024 == 0 {
+                fence()?;
+            }
+            let point = point?;
+            if point >= end || previous.is_some_and(|p| point <= p) {
+                return Err(invalid(
+                    "observed chunk clock is reordered or outside source",
+                ));
+            }
+            if count != 0
+                && (count >= max_frames
+                    || i128::from(point) - i128::from(first) >= i128::from(target))
+            {
+                let old = &chunks[ordinal];
+                if signed(&old["end_tick"])? != point
+                    || tick(&old["frame_count"], true)? != count
+                    || old["frame_clock_sha256"]
+                        != format!("sha256:{:x}", chunk_hash.finalize_reset())
+                {
+                    return Err(invalid(
+                        "chunk boundary/count/hash differs from observed policy",
+                    ));
+                }
+                ordinal += 1;
+                count = 0;
+                first = point;
+            }
+            let chunk = chunks
+                .get(ordinal)
+                .ok_or_else(|| invalid("observed clock has a suffix after planned chunks"))?;
+            let left = signed(&chunk["start_tick"])?;
+            if point < left || point >= signed(&chunk["end_tick"])? || (count == 0 && point != left)
+            {
+                return Err(invalid(
+                    "chunk cut does not follow exact observed source PTS",
+                ));
+            }
+            let encoded = format!("{point}\n");
+            whole_hash.update(encoded.as_bytes());
+            chunk_hash.update(encoded.as_bytes());
+            count += 1;
+            total = total
+                .checked_add(1)
+                .filter(|n| *n <= 1_000_000)
+                .ok_or_else(|| invalid("observed clock exceeds native journal frame bound"))?;
+            previous = Some(point);
+        }
+        let last = &chunks[ordinal];
+        if count == 0
+            || ordinal + 1 != chunks.len()
+            || tick(&last["frame_count"], true)? != count
+            || last["frame_clock_sha256"] != format!("sha256:{:x}", chunk_hash.finalize())
+            || tick(&self.value["frame_count"], true)? != total
+            || self.value["frame_clock_sha256"] != format!("sha256:{:x}", whole_hash.finalize())
+        {
+            return Err(invalid(
+                "observed clock loses planned final coverage or full digest",
+            ));
+        }
+        fence()
+    }
     pub(super) fn chunk(&self, identity: &str) -> SupervisorResult<BoundChunk> {
         hash_text(&json!(identity))?;
         let chunk = self.value["chunks"]
@@ -946,6 +1027,85 @@ mod tests {
             recipe
         )
         .is_err());
+    }
+    fn clock_case(case: &Value) -> (BoundPlan, Vec<i64>) {
+        let value = decode(case["plan_json"].as_str().unwrap(), MAX_PLAN).unwrap();
+        let points = case["source_pts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| signed(p).unwrap())
+            .collect();
+        (read(&value).unwrap(), points)
+    }
+    #[test]
+    fn complete_observed_clock_matches_every_negative_and_wide_vfr_plan_point() {
+        for case in fixture()["cases"].as_array().unwrap() {
+            let (plan, points) = clock_case(case);
+            plan.require_frame_clock(points.into_iter().map(Ok), || Ok(()))
+                .unwrap();
+        }
+    }
+    #[test]
+    fn observed_clock_refuses_missing_extra_changed_reordered_points_and_stream_errors() {
+        let (plan, points) = clock_case(&fixture()["cases"][0]);
+        for mutation in 0..5 {
+            let mut changed = points.clone();
+            match mutation {
+                0 => {
+                    changed.remove(2);
+                }
+                1 => changed.insert(2, -95),
+                2 => changed[1] = -98,
+                3 => changed.swap(1, 2),
+                _ => changed.push(-41),
+            }
+            assert!(
+                plan.require_frame_clock(changed.into_iter().map(Ok), || Ok(()))
+                    .is_err(),
+                "mutation{mutation}"
+            );
+        }
+        let broken = points
+            .into_iter()
+            .map(Ok)
+            .chain(std::iter::once(Err(invalid("point reader failed"))));
+        assert!(plan.require_frame_clock(broken, || Ok(())).is_err());
+    }
+    #[test]
+    fn observed_clock_refuses_valid_metadata_with_foreign_policy_or_whole_clock_digest() {
+        let case = &fixture()["cases"][0];
+        let (_, points) = clock_case(case);
+        let original = decode(case["plan_json"].as_str().unwrap(), MAX_PLAN).unwrap();
+        for n in 0..2 {
+            let mut value = original.clone();
+            if n == 0 {
+                value["policy"]["target_ticks"] = json!("1000000");
+                value["policy"]["max_frames"] = json!(1000);
+            } else {
+                value["frame_clock_sha256"] = json!(hash("different complete clock"));
+            }
+            // Metadata/hash admission alone accepts this self-consistent plan.
+            let plan = read(&value).unwrap();
+            assert!(plan
+                .require_frame_clock(points.iter().copied().map(Ok), || Ok(()))
+                .is_err());
+        }
+    }
+    #[test]
+    fn observed_clock_final_fence_refuses_late_cancel_or_expiry() {
+        let (plan, points) = clock_case(&fixture()["cases"][1]);
+        let mut checks = 0usize;
+        let result = plan.require_frame_clock(points.into_iter().map(Ok), || {
+            checks += 1;
+            if checks == 3 {
+                Err(invalid("cancelled after complete observation"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(checks, 3);
     }
     fn receipt(binding: &BoundChunk) -> Value {
         json!({"schema_version":1,"kind":"review_native_retained_chunk","job_id":"chunk-job",

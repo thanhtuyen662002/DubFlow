@@ -3592,3 +3592,42 @@ standard/editable outputs, GUI/actionable liveness, actual processing crash,
 source coverage/index, environment closure, chunk capacity/scratch/audio/finalmux/
 seam/fullAVQC/CAS/current renderer and representative real4h gates remain required.
 Publicchunked_longform stays false and defaultTrucLy25voices is unchanged.
+
+#### Native current plan versus complete reopened clock (source preparation)
+
+Native current chunk-plan binding and revalidation now require the complete
+physical source-clock journal for the same native source pin, exact stream and
+integer source interval. Preparation/readback use the existing admitted clock
+processing release and existing output-volume writer scope. The writer drops
+before the current/source/processing fences are checked again. The bind and
+revalidation APIs take the caller's cancellation observation and existing absolute
+deadline; no retry or larger deadline is introduced.
+
+One bounded window at a time supplies exact signed64 points. Native recomputes
+the complete and per-chunk newline-delimited point digests, counts and first/final
+coverage, and derives each cut from the pinned target-tick/max-frame policy.
+Missing, extra, changed, duplicate, reordered or noncanonical points, an incomplete
+prefix, a different source, a self-consistent plan with different clock hashes or
+non-policy cuts, cancellation, expiry and point-reader errors all refuse binding.
+Existing16MiB/4096-window/one-million-frame limits remain. No whole-source point
+array, persistent admission cache, FPS substitution or float-seconds identity is
+introduced. Existing physical marker/page verification remains unchanged.
+
+This is a connected additional check in the private current-plan API. A physically
+reopened observation still is not independently admitted decoded media, encoder/
+font/provider/OS closure, semantic QC, rendered chunks or graph/public capability.
+All existing packet authority flags remain false. The current render/clock command
+bodies, original job/model/runtime pins, SQL, worker protocols and on-disk formats
+are unchanged. No migration is needed; rollback accepts the same saved journal and
+plan formats, and cannot acquire new authority from this check.
+
+Six native regressions are authored for negative/wide VFR points, changed streams,
+valid metadata with foreign hashes/policy, late cancellation, multi-window
+iteration and incomplete/corrupt journals. They remain NOT_RUN locally because
+the known MSVC linker is absent; source formatting is not compilation or execution
+evidence. Own-source hosted compilation and actual native/installed qualification
+remain required. Full independent decoded/index admission, native chunk executor,
+capacity/scratch/audio/finalmux/seams/fullAVQC/CAS, current installed B1B2/cumulative/
+standardeditable/GUI/liveness, representative real4h and full172/174/175 acceptance
+are not waived. The pending CB B2 recovery cohort keeps its original source and
+producer while this isolated source preparation proceeds.
