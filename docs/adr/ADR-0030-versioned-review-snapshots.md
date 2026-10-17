@@ -3631,3 +3631,35 @@ capacity/scratch/audio/finalmux/seams/fullAVQC/CAS, current installed B1B2/cumul
 standardeditable/GUI/liveness, representative real4h and full172/174/175 acceptance
 are not waived. The pending CB B2 recovery cohort keeps its original source and
 producer while this isolated source preparation proceeds.
+
+
+#### Chunk worker observation after containment and before permission
+
+The bounded private chunk collector now performs a second native current/cancel
+observation after attaching the child to WorkerTree and before taking its pipes
+or starting the writer that sends the permission byte. Process creation and
+containment can consume time or overlap a head/cancellation change after the
+pre-spawn observation. A refusal at this point drops the already-owned process,
+terminates/reaps it and sends no permission byte. Successful observation is
+followed by the same absolute-deadline check, including late callback completion.
+
+This changes no worker frame/ack/result format, capability, byte bound, 900-second
+maximum, native callback, output quota/reserve or original metadata collector.
+No new current renderer/public executor is enabled and no decoded-clock, codec/
+font/provider/OS, semantic QC or active graph authority is granted. Original
+producer/model/job pins and every saved private/public format retain their
+meaning; rollback needs no migration. Published CB qualification stays pinned
+while this isolated successor source is prepared.
+
+One real-owned-child native regression is authored for both a post-containment
+current/cancel refusal and a callback that finishes after the shared deadline.
+The child records reaching its byte gate and records work only after receiving
+the permission byte; both refused cases require no work marker or native
+callback. The ignored helper is launched only by that test. Local native compile/
+execution remains NOT_RUN because the MSVC linker is known absent; formatting
+and source guards are static evidence only. Own-source hosted compilation and
+Windows execution remain required. This collector fence is not a complete chunk
+executor or product qualification. Full indexed/source/environment admission,
+capacity/output journal/scratch/audio/finalmux/seams/fullAVQC/CAS/current renderer,
+installed B1B2/cumulative/standardeditable/GUI/actionable liveness/real4h and
+all full172/174/175 gates remain mandatory; public chunked_longform stays false.

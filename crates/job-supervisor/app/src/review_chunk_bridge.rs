@@ -171,6 +171,10 @@ pub(crate) fn collect_chunk_worker(
         tree: None,
     };
     process.tree = Some(super::super::WorkerTree::attach(&process.child)?);
+    // Process creation/containment may outlive the pre-spawn current/cancel
+    // observation. Re-fence while the owned child still has no permission byte;
+    // a refusal drops AdapterProcess and reaps the gated child without imports.
+    observe(deadline)?;
     if Instant::now() >= deadline {
         return Err(invalid(
             "chunk process admission exhausted deadline before byte gate",
@@ -487,5 +491,114 @@ mod tests {
             .to_string()
             .contains("explicit native current/cancel refusal"));
         assert_eq!(calls, 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn chunk_gate_child_fixture() {
+        let ready = std::env::var_os("DUBFLOW_CHUNK_GATE_READY").unwrap();
+        let started = std::env::var_os("DUBFLOW_CHUNK_GATE_STARTED").unwrap();
+        std::fs::write(ready, b"owned child reached its byte gate").unwrap();
+        let mut gate = [0u8; 1];
+        std::io::stdin().read_exact(&mut gate).unwrap();
+        assert_eq!(gate, [1]);
+        std::fs::write(started, b"owned child received permission to work").unwrap();
+        std::thread::sleep(Duration::from_secs(10));
+    }
+
+    #[test]
+    fn chunk_post_containment_cancel_or_expiry_never_releases_worker_byte_gate() {
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let root = self.0.canonicalize().unwrap();
+                let parent = std::env::temp_dir().canonicalize().unwrap();
+                assert_eq!(root.parent(), Some(parent.as_path()));
+                assert!(root
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("dubflow-chunk-gate-"));
+                for entry in std::fs::read_dir(&root).unwrap() {
+                    let path = entry.unwrap().path();
+                    let metadata = std::fs::symlink_metadata(&path).unwrap();
+                    assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+                    assert!(matches!(
+                        path.file_name().unwrap().to_str().unwrap(),
+                        "ready" | "started"
+                    ));
+                    std::fs::remove_file(path).unwrap();
+                }
+                std::fs::remove_dir(root).unwrap();
+            }
+        }
+        for expire in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "dubflow-chunk-gate-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            let fixture = Fixture(root);
+            let ready = fixture.0.join("ready");
+            let started = fixture.0.join("started");
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--exact",
+                "review_seed::chunk_bridge::tests::chunk_gate_child_fixture",
+                "--ignored",
+                "--nocapture",
+                "--quiet",
+            ]);
+            command.env("DUBFLOW_CHUNK_GATE_READY", &ready);
+            command.env("DUBFLOW_CHUNK_GATE_STARTED", &started);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut observations = 0;
+            let result = collect_chunk_worker(
+                command,
+                &binding(),
+                deadline,
+                &mut |_| {
+                    observations += 1;
+                    if observations == 2 {
+                        let wait = Instant::now() + Duration::from_secs(2);
+                        while !ready.is_file() && Instant::now() < wait {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        assert!(ready.is_file(), "owned child must actually be running");
+                        if expire {
+                            std::thread::sleep(
+                                deadline.saturating_duration_since(Instant::now())
+                                    + Duration::from_millis(5),
+                            );
+                        } else {
+                            // Give an incorrectly released gate time to become
+                            // visible; the new post-attach fence keeps it shut.
+                            let wait = Instant::now() + Duration::from_millis(200);
+                            while !started.is_file() && Instant::now() < wait {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            return Err(invalid("current/cancel changed after containment"));
+                        }
+                    }
+                    Ok(())
+                },
+                &mut |_, _| panic!("refused byte gate must precede native callbacks"),
+            );
+            let message = result.unwrap_err().to_string();
+            assert!(message.contains(if expire {
+                "before byte gate"
+            } else {
+                "current/cancel changed after containment"
+            }));
+            assert_eq!(observations, 2);
+            assert!(
+                !started.exists(),
+                "refused native fence must not start work"
+            );
+        }
     }
 }
