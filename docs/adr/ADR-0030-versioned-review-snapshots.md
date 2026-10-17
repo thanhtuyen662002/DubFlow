@@ -3663,3 +3663,55 @@ executor or product qualification. Full indexed/source/environment admission,
 capacity/output journal/scratch/audio/finalmux/seams/fullAVQC/CAS/current renderer,
 installed B1B2/cumulative/standardeditable/GUI/actionable liveness/real4h and
 all full172/174/175 gates remain mandatory; public chunked_longform stays false.
+
+
+#### Identical physical processing inventory fence (source preparation)
+
+Actual current CB B2 caller qualification reached its unchanged2400s bound.
+The failed result, full native streams and complete unchanged revision2 SQLite
+closure remain preserved. The separate successful different-cue call observed
+342 runtime import-tree epochs; this label includes full hash admission and
+metadata-only final inventory, not342 proven full-hash passes or unique files.
+The original immutable runtime uses an NT path spelling and explicit processing
+selection uses a DOS spelling. Equal text/pins or stripped prefixes alone cannot
+prove physical identity.
+
+The processing receipt and editable receipt now select one fresh metadata walk
+only when their entire original and processing inventory maps are exactly equal
+and Windows independently proves both plain directory handles share a volume
+GUID path,64-bit volume serial and128-bit file ID. Bounded ancestor/root handles
+(up to64 per spelling) deny write/delete sharing through that one walk. Each
+probe/recheck has a one-second observation bound. The transient read root is
+derived only from the held handle's volume-GUID path; it is never serialized,
+reused as a job/worker root, accepted from a client or stored for a later phase.
+Both original spellings and held handles are reopened/rechecked before and after
+the complete unchanged file walker. Any selected-proof revalidation failure
+refuses; there is no retry through a changed path.
+
+Unavailable physical proof, unsupported platform/filesystem, excessive ancestry
+or any unequal pin map retains the original two independent complete walks.
+There is no admission cache, skipped per-file guard, relative path/prefix
+normalization waiver, original producer/model/job repin, quota/reserve/deadline
+increase or public authority change. Original full-byte runtime admissions,
+manifest/entry fingerprints and the metadata walk bodies remain unchanged.
+Later receipts and execution/publication fences perform new physical checks.
+Existing180s per walk and enclosing phase/caller bounds retain their values.
+No durable format or SQLite migration is needed; rollback uses the unchanged
+receipt/plan/worker/job formats with the previous duplicate walks.
+
+Win32 references: [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
+[FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info),
+[GetFinalPathNameByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew).
+The GUID-path observation does not grant media, environment, QC or graph authority.
+
+Four native regressions are authored: actual NT/DOS alias one-walk with fresh
+missing/extra/resized refusal, distinct roots/equal maps and same-root/different
+map refusal, held owned-root/parent replacement refusal followed by release, and
+bounded excessive ancestry. They are NOT_RUN locally because the MSVC linker is
+known absent; source formatting/static guards are not compilation or execution.
+Own-source hosted compilation and actual Windows native/installed timing and
+mutation tests remain required. No measured native speedup or full product
+acceptance is claimed. All complete172/174/175, installed B1B2/cumulative/exports,
+GUI/liveness, decoded/index/environment/chunk executor/capacity/scratch/audio/
+finalmux/seams/fullAVQC/CAS/current renderer/representative real4h gates remain.
+Publicchunked_longform stays false and approved TrucLy25voices is unchanged.

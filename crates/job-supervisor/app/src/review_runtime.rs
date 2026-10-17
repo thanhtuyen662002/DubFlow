@@ -18,6 +18,10 @@ const MAX_FILES: usize = 50000;
 const IMPORT_WORKERS: usize = 4;
 const IMPORT_DEADLINE: Duration = Duration::from_secs(180);
 
+#[cfg(windows)]
+#[path = "review_runtime_inventory.rs"]
+mod inventory_fence;
+
 #[path = "review_chunk_recipe.rs"]
 mod chunk_recipe;
 #[path = "review_chunk_runtime.rs"]
@@ -510,8 +514,7 @@ impl AdmittedProcessingRuntime {
         };
         result["recipe_identity"] = recipe_identity.into();
         result["execution_identity"] = execution.into();
-        final_inventory(&self.origin.root, &self.origin.inventory)?;
-        final_inventory(&self.runtime.root, &self.runtime.inventory)?;
+        processing_inventories_with(&self.origin, &self.runtime, final_inventory)?;
         Ok(result)
     }
 
@@ -690,8 +693,7 @@ impl AdmittedProcessingRuntime {
             .ok_or_else(|| invalid("processing entry pin unavailable"))?;
         let path = self.runtime.root.join(EFFECTIVE_ENTRY);
         fingerprint(&path, pin, false, 64 * 1024 * 1024)?;
-        final_inventory(&self.origin.root, &self.origin.inventory)?;
-        final_inventory(&self.runtime.root, &self.runtime.inventory)?;
+        processing_inventories_with(&self.origin, &self.runtime, final_inventory)?;
         Ok(path)
     }
 
@@ -1404,6 +1406,26 @@ impl AdmittedRuntime {
     }
 }
 
+// One phase may bind one physical inventory to both roles only with exact pin
+// maps and a fresh Windows handle proof. Each later caller starts over.
+fn processing_inventories_with(
+    original: &AdmittedRuntime,
+    processing: &AdmittedRuntime,
+    mut visit: impl FnMut(&Path, &HashMap<String, Value>) -> SupervisorResult<()>,
+) -> SupervisorResult<()> {
+    #[cfg(windows)]
+    if original.inventory == processing.inventory {
+        if let Some(shared) = inventory_fence::try_shared(&original.root, &processing.root) {
+            shared.verify()?;
+            visit(shared.canonical_root(), &original.inventory)?;
+            shared.verify()?;
+            return Ok(());
+        }
+    }
+    visit(&original.root, &original.inventory)?;
+    visit(&processing.root, &processing.inventory)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1545,6 +1567,141 @@ mod tests {
             }
         }
         result
+    }
+
+    fn original_processing_fixture(f: &Fixture, manifest: &Value) -> Value {
+        let mut producer = f.producer.clone();
+        producer["release_manifest"] = manifest.clone();
+        producer["worker"] = f.inventory["app/engine/dubflow/worker/production_job.py"].clone();
+        producer
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn identical_processing_inventory_reopens_one_fresh_windows_alias_tree() {
+        let (f, manifest) = processing_fixture();
+        let mut producer = original_processing_fixture(&f, &manifest);
+        producer["runtime_root"] = json!(fs::canonicalize(&f.root).unwrap());
+        let admitted =
+            AdmittedProcessingRuntime::from_origin(&producer, &f.root, &manifest, &"b".repeat(40))
+                .unwrap();
+        assert_eq!(admitted.origin.inventory, admitted.runtime.inventory);
+        assert_ne!(
+            admitted.origin.root.as_os_str(),
+            admitted.runtime.root.as_os_str()
+        );
+        let mut paths = Vec::new();
+        processing_inventories_with(&admitted.origin, &admitted.runtime, |root, pins| {
+            paths.push(root.to_path_buf());
+            final_inventory(root, pins)
+        })
+        .unwrap();
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].to_string_lossy().starts_with(r"\\?\Volume{"));
+        let receipt = admitted.receipt().unwrap();
+        let extra = f.root.join("app/late-unlisted.py");
+        fs::write(&extra, b"late file after successful receipt").unwrap();
+        assert!(admitted.receipt().is_err());
+        fs::remove_file(&extra).unwrap();
+        assert_eq!(admitted.receipt().unwrap(), receipt);
+        let path = f.root.join("runtime/Lib/site.py");
+        let held = f.root.join("held-original-import");
+        fs::rename(&path, &held).unwrap();
+        assert!(admitted.receipt().is_err());
+        fs::rename(&held, &path).unwrap();
+        let empty = f.root.join("runtime/Lib/empty.py");
+        fs::write(&empty, b"changed size").unwrap();
+        assert!(admitted.receipt().is_err());
+        fs::write(&empty, b"").unwrap();
+        assert_eq!(admitted.receipt().unwrap(), receipt);
+        assert_eq!(admitted.origin_producer, producer);
+    }
+
+    #[test]
+    fn different_processing_roots_or_pin_maps_keep_both_fresh_inventory_fences() {
+        let (original, manifest) = processing_fixture();
+        let producer = original_processing_fixture(&original, &manifest);
+        let (other, other_manifest) = processing_fixture();
+        let admitted = AdmittedProcessingRuntime::from_origin(
+            &producer,
+            &other.root,
+            &other_manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        assert_eq!(admitted.origin.inventory, admitted.runtime.inventory);
+        let mut count = 0;
+        processing_inventories_with(&admitted.origin, &admitted.runtime, |root, pins| {
+            count += 1;
+            final_inventory(root, pins)
+        })
+        .unwrap();
+        assert_eq!(count, 2);
+        let extra = other.root.join("app/second-root-only.py");
+        fs::write(&extra, b"must not be hidden by equal pin maps").unwrap();
+        assert!(admitted.receipt().is_err());
+        fs::remove_file(&extra).unwrap();
+        let mut same = AdmittedProcessingRuntime::from_origin(
+            &producer,
+            &original.root,
+            &manifest,
+            &"b".repeat(40),
+        )
+        .unwrap();
+        let pin = same
+            .runtime
+            .inventory
+            .get_mut("runtime/Lib/site.py")
+            .unwrap();
+        pin["size_bytes"] = json!(pin["size_bytes"].as_u64().unwrap() + 1);
+        count = 0;
+        assert!(
+            processing_inventories_with(&same.origin, &same.runtime, |root, pins| {
+                count += 1;
+                final_inventory(root, pins)
+            })
+            .is_err()
+        );
+        assert_eq!(count, 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shared_runtime_fence_holds_owned_root_and_parent_until_walk_finishes() {
+        let f = fixture();
+        let root = f.root.join("runtime");
+        let alias = fs::canonicalize(&root).unwrap();
+        let fence = inventory_fence::try_shared(&alias, &root).unwrap();
+        let moved_root = f.root.join("runtime-moved");
+        assert!(!moved_root.exists());
+        assert!(fs::rename(&root, &moved_root).is_err());
+        // f.root is this test's newly created parent, never the global Temp.
+        let moved_parent = f.root.with_file_name(format!(
+            "{}-held-move",
+            f.root.file_name().unwrap().to_string_lossy(),
+        ));
+        assert_eq!(moved_parent.parent(), f.root.parent());
+        assert!(!moved_parent.exists());
+        assert!(fs::rename(&f.root, &moved_parent).is_err());
+        fence.verify().unwrap();
+        drop(fence);
+        fs::rename(&root, &moved_root).unwrap();
+        fs::rename(&moved_root, &root).unwrap();
+        fs::rename(&f.root, &moved_parent).unwrap();
+        fs::rename(&moved_parent, &f.root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn overdeep_runtime_alias_uses_no_unbounded_directory_handle_proof() {
+        let f = fixture();
+        let mut deep = f.root.clone();
+        for _ in 0..65 {
+            deep.push("d");
+        }
+        fs::create_dir_all(&deep).unwrap();
+        let alias = fs::canonicalize(&deep).unwrap();
+        assert!(inventory_fence::try_shared(&alias, &deep).is_none());
     }
 
     #[test]
