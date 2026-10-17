@@ -45,12 +45,13 @@ fn open_directory(path: &Path, deadline: Instant) -> SupervisorResult<File> {
     {
         return Err(invalid("runtime identity needs a plain directory"));
     }
-    // Metadata access only. No write/delete access or share is requested.
-    // Denying write/delete sharing holds directory/ancestor replacement while
-    // the unchanged file walker independently checks every imported path.
+    // Directory-list READ access participates in Windows share checking.
+    // Attributes-only handles can permit a later DELETE-access open despite
+    // omitted delete sharing. Hold each directory/ancestor against replacement
+    // while the unchanged walker independently reopens every imported path.
     let file = OpenOptions::new()
         .read(true)
-        .access_mode(0x80) // FILE_READ_ATTRIBUTES.
+        .access_mode(0x81) // FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES.
         .share_mode(0x1) // FILE_SHARE_READ, without WRITE or DELETE.
         .custom_flags(0x0220_0000) // BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
         .open(path)?;

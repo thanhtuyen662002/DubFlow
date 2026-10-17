@@ -3715,3 +3715,39 @@ acceptance is claimed. All complete172/174/175, installed B1B2/cumulative/export
 GUI/liveness, decoded/index/environment/chunk executor/capacity/scratch/audio/
 finalmux/seams/fullAVQC/CAS/current renderer/representative real4h gates remain.
 Publicchunked_longform stays false and approved TrucLy25voices is unchanged.
+
+
+#### Directory read access required for Windows sharing exclusion
+
+The exact847 Windows supervisor suite compiled and ran311passing tests, one
+failing physical test and five ignored helpers. The unchanged owned-root/parent
+regression observed a successful root rename while the proposed fence was held.
+That failure remains preserved; no same-source rerun or artifact admission is
+authorized by the earlier Linux passes.
+
+The directory handle requested only FILE_READ_ATTRIBUTES (0x80). Attribute-only
+access does not establish the read/share exclusion needed to refuse a later
+DELETE-access open. A new owned Windows direct-access probe independently showed
+that such an open succeeds under0x80, whereas FILE_LIST_DIRECTORY combined with
+FILE_READ_ATTRIBUTES (0x81) refuses it with ERROR_SHARING_VIOLATION while held and
+permits it after release. All marker bytes/mtimes/inodes remained exact; the probe
+performed no delete or rename. An earlier Python os.rename hypothesis failed
+locally and remains recorded separately, without replay or a false pass claim.
+
+The optional proof now requests the minimal directory-list plus attribute READ
+access. Write/delete access and sharing remain absent. The complete ancestor
+handle lifetime, GUID/volume serial/file ID checks, both before/after path
+reopens, one-second probe bounds and complete file walker remain unchanged.
+A directory/ancestor that cannot grant this read access makes the optional proof
+unavailable and retains the existing two independent inventory walks. No
+authority, format, migration, quota/reserve/deadline, original job/model/runtime
+pin, processing root or worker protocol changes. The failing native physical
+test is unchanged and must pass on this successor's own Windows build.
+
+References: [CreateFileW sharing rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
+[directory access masks](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/access-mask),
+[Rust OpenOptionsExt access override](https://doc.rust-lang.org/std/os/windows/fs/trait.OpenOptionsExt.html).
+Local Rust compilation remains NOT_RUN with the known missing MSVC linker; no
+SDK/cache mutation or unchanged compile retry. The Win32 component observation
+does not qualify the native Rust implementation, latency, installed B1B2,
+cumulative edits/exports/GUI, longform or full172/174/175 acceptance.
