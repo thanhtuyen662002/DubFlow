@@ -21,6 +21,7 @@ export type SourcePhase = "queued" | "sending" | "submitted" | "preparing" | "en
 export type SourceRow = {
   scan_id: string; display_ref: string; provider: string; phase: SourcePhase;
   delivery: "pending" | "submitted" | "unknown" | null;
+  refresh_pending: boolean;
   enumeration_complete: boolean; enumeration_retired: boolean;
   items: Array<{ identity_key: string; status: string }>;
   selected_identity: string | null; local_queue: "added" | "present" | "error" | null; error: string | null;
@@ -80,6 +81,8 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
   const identities = new Set<string>();
   const itemsRequested = new Set<string>();
   const revisions = new Map<string, number>();
+  // Local view ownership only, never a native request ID or RPC correlation.
+  const deliveryOwners = new WeakMap<SourceRow, object>();
   let active: string | null = null, blocked = false, started = false, stopping = false;
   let starting: Promise<void> | null = null;
   let startPending = false;
@@ -109,23 +112,30 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
     }
   }
   function send(request: SourceRequest, row: SourceRow): Promise<boolean> {
+    const owner = request.command === "status" || request.command === "items" ? null : {};
+    if (owner) deliveryOwners.set(row, owner);
+    const ownsDelivery = () => owner !== null && deliveryOwners.get(row) === owner;
     const task = writes.then(async () => {
       if (state.disposed || stopping) return false;
       try {
         const reply = await invoke("source_service_send_v1", { request });
         if (state.disposed) return false;
         if (!record(reply) || reply.delivery !== "submitted") throw new Error("SOURCE_PROTOCOL_INVALID");
-        row.delivery = "submitted";
-        if (request.command === "start_video" && row.phase === "sending") row.phase = "submitted";
-        if (request.command === "download" && row.phase === "download_sending") row.phase = "download_submitted";
+        if (ownsDelivery()) {
+          row.delivery = "submitted";
+          if (request.command === "start_video" && row.phase === "sending") row.phase = "submitted";
+          if (request.command === "download" && row.phase === "download_sending") row.phase = "download_submitted";
+        }
         publish();
         return true;
       } catch (error) {
         if (!state.disposed) {
-          row.delivery = "unknown"; row.error = code(error);
+          const failure = code(error);
+          if (ownsDelivery()) { row.delivery = "unknown"; row.error = failure; }
           // A failed/uncertain pipe delivery is not a native rejection. Retain
-          // the row and stop online dispatch until explicit diagnosis/control.
-          blocked = true; setFailure(row.error);
+          // the real stream error globally, including failed read-only queries,
+          // without labelling a newer cancellation as submitted/unknown.
+          blocked = true; setFailure(failure);
         }
         return false;
       }
@@ -319,7 +329,7 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
         } catch { result.rejected.push(rejection(item.display_ref, "SOURCE_ID_INVALID")); continue; }
         identities.add(item.identity_key); references.set(scan, item.transport_url!);
         state.rows.push({ scan_id: scan, display_ref: item.display_ref, provider: item.provider, phase: "queued",
-          delivery: null, enumeration_complete: false, enumeration_retired: false,
+          delivery: null, refresh_pending: false, enumeration_complete: false, enumeration_retired: false,
           items: [], selected_identity: null, local_queue: null, error: null });
         result.online_staged.push(scan);
       }
@@ -330,11 +340,15 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
     poll,
     async refresh(scanId: string): Promise<boolean> {
       const row = rowFor(scanId);
-      if (!row || !row.enumeration_complete || terminal.has(row.phase) || row.phase === "cancelling"
+      if (!row || row.refresh_pending || !row.enumeration_complete || terminal.has(row.phase) || row.phase === "cancelling"
           || row.selected_identity || state.service !== "ready" || stopping || state.disposed) return false;
       // Explicit read-only recovery for a lost retirement observation. A
       // submitted query grants nothing; only its observed native status can.
-      return send({ command: "status", scan_id: scanId }, row);
+      // Publish before queuing so rerenders and subscriber reentry see pending.
+      // Read-only queries never take ownership of modifying-command delivery.
+      row.refresh_pending = true; publish();
+      try { return await send({ command: "status", scan_id: scanId }, row); }
+      finally { row.refresh_pending = false; if (!state.disposed) publish(); }
     },
     async download(scanId: string, identityKey: string): Promise<boolean> {
       const row = rowFor(scanId);
