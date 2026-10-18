@@ -3751,3 +3751,40 @@ Local Rust compilation remains NOT_RUN with the known missing MSVC linker; no
 SDK/cache mutation or unchanged compile retry. The Win32 component observation
 does not qualify the native Rust implementation, latency, installed B1B2,
 cumulative edits/exports/GUI, longform or full172/174/175 acceptance.
+
+#### Immediate current publication may carry prepare's private admission
+
+The actual f68 same-cue B2 caller reached its unchanged2400-second bound while
+runtime validation was still observed. Its original failure, native streams,
+checkpoints and unchanged revision2 state remain preserved. This successor
+removes one redundant initial reconstruction between prepare and the immediate
+current-only commit. It does not infer a measured latency improvement.
+
+Prepare still performs the complete existing physical v3 admission. It returns
+a process-local Rust value with private fields, no serialization/deserialization
+or Clone, consumed once by the current B1/B2 commit. The value binds the exact
+before token/state, original artifact/manifest and origin, sealed publication
+descriptor, proposal, snapshot and graph. Its existing prepare deadline must
+still be live when commit begins. Client JSON, an old receipt or a restarted
+process cannot mint or recover this value.
+
+Commit always creates a new RecoveryWalk and invokes the complete existing
+recursive publication reader. The final independent history/runtime/import and
+media verification, full hashes, missing/extra and no-follow checks, proof/read
+limits and720-second final admission budget remain mandatory. Fresh before,
+origin, snapshot, graph and record must equal prepare's admission. Sealed object
+and proposal are reread, current state is checked again, and the existing SQLite
+token CAS remains the publication boundary. A refusal leaves prior rows/media
+intact; a concurrent successful writer keeps its winning head. Legacy JSON
+commit and recovery readers retain their previous admissions unchanged.
+
+There is no stored admission cache, phase-wide verification reuse, durable format,
+schema, worker protocol, job/model/root repin, cleanup or deadline/quota change.
+Rollback reads the same saved records and restores the previous duplicate
+reconstruction; no migration is needed. Six new candidate Ubuntu regressions
+exercise orchestration, late mutation, expiry, exact comparison and CAS races.
+Their injected private oracle is not positive encoded-v3 native admission.
+Source-matched Windows supervisor/junction/native execution and actual timing on
+the final integrated source remain required. The previous caller failure is not
+relabelled. Full installed B1B2/cumulative/exports/GUI/liveness and172/174/175 gates
+remain; public chunked_longform stays false, AUD-0 and TrucLy25voices unchanged.
