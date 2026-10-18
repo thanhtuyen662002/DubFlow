@@ -8,6 +8,7 @@ reference benchmarks qualify this backend, callers retain the valid AUD-0 mix.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from hashlib import sha256
 import math
@@ -112,24 +113,6 @@ def _hash(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _atomic_write(path: Path, frames: bytes, channels: int, rate: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".partial", dir=str(path.parent))
-    try:
-        with os.fdopen(descriptor, "wb") as output:
-            with wave.open(output, "wb") as writer:
-                writer.setnchannels(channels)
-                writer.setsampwidth(2)
-                writer.setframerate(rate)
-                writer.writeframes(frames)
-                output.flush()
-                os.fsync(output.fileno())
-        os.replace(temporary_name, path)
-    except BaseException:
-        Path(temporary_name).unlink(missing_ok=True)
-        raise
-
-
 def _read_pcm_metadata(path: Path, config: SeparationConfig) -> tuple[int, int, int]:
     if not path.is_file() or path.is_symlink():
         raise SeparationError("AUDIO_INPUT_UNAVAILABLE", "source WAV is not a regular file")
@@ -171,8 +154,38 @@ def _iter_pcm(path: Path, channels: int, frames: int, *, chunk_frames: int = 409
         raise SeparationError("AUDIO_CORRUPT", str(error)) from error
 
 
+def _iter_levels(stream):
+    stream.seek(0)
+    while raw := stream.read(32 * 1024):
+        yield from (value for (value,) in struct.iter_unpack(">d", raw))
+
+
+def _noise_floor(stream) -> float:
+    """Exact positive-level 20th percentile in constant memory (radix select)."""
+    prefix = 0
+    rank = None
+    for shift in range(56, -1, -8):
+        counts = [0] * 256
+        stream.seek(0)
+        while raw := stream.read(32 * 1024):
+            for (bits,) in struct.iter_unpack(">Q", raw):
+                if bits and bits >> (shift + 8) == prefix:
+                    counts[(bits >> shift) & 255] += 1
+        if rank is None:
+            total = sum(counts)
+            if not total:
+                return 0.0
+            rank = total // 5
+        for bucket, count in enumerate(counts):
+            if rank < count:
+                prefix = (prefix << 8) | bucket
+                break
+            rank -= count
+    return struct.unpack(">d", prefix.to_bytes(8, "big"))[0]
+
+
 class CpuAttenuationBackend:
-    """Streaming-safe CPU gate that produces validated independent stems."""
+    """Bounded PCM gate publishing immutable, independently validated stems."""
 
     backend_id = "dubflow-cpu-gate-v2"
 
@@ -180,103 +193,77 @@ class CpuAttenuationBackend:
         self.config = config or SeparationConfig()
 
     def process(self, source_path: str | Path, output_dir: str | Path) -> SeparationResult:
+        from .publication import NAMES, prepare, publish
+
         source = Path(source_path).expanduser().resolve()
         destination = Path(output_dir).expanduser().resolve()
         rate, channels, frame_count = _read_pcm_metadata(source, self.config)
+        source_hash = _hash(source)
         window = max(1, rate * self.config.window_ms // 1000)
         hop = max(1, rate * self.config.hop_ms // 1000)
-        levels: list[float] = []
-        analysis_buffer: list[float] = []
-        for block in _iter_pcm(source, channels, frame_count):
-            # Average channel energies so opposite-phase stereo cannot cancel.
-            analysis_buffer.extend(sum(sample * sample for sample in frame) / channels for frame in block)
-            while len(analysis_buffer) >= window:
-                values = analysis_buffer[:window]
-                levels.append(math.sqrt(sum(values) / len(values)))
-                del analysis_buffer[:hop]
-        if analysis_buffer:
-            levels.append(math.sqrt(sum(analysis_buffer) / len(analysis_buffer)))
-        positive = sorted(level for level in levels if level > 0)
-        noise = positive[min(len(positive) - 1, len(positive) // 5)] if positive else 0
-        threshold = max(float(self.config.minimum_rms), noise * 2.4)
-        active: list[bool] = []
-        for level in levels:
-            active.append(level >= threshold)
-        destination.mkdir(parents=True, exist_ok=True)
-        source_copy = destination / "source_audio.wav"
-        dialogue_path = destination / "dialogue_stem.wav"
-        background_path = destination / "background_stem.wav"
-        temporary_paths: list[Path] = []
-        handles = []
-        writers = []
-        try:
-            for target in (source_copy, dialogue_path, background_path):
-                descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".partial", dir=str(destination))
-                handle = os.fdopen(descriptor, "wb")
-                handles.append(handle)
-                temporary_paths.append(Path(temporary_name))
-                writer = wave.open(handle, "wb")
+        pending, final = prepare(destination)
+        with ExitStack() as resources:
+            # Keep exact historical gate decisions without duration-sized lists.
+            levels = resources.enter_context(tempfile.TemporaryFile(mode="w+b"))
+            analysis_buffer: list[float] = []
+            for block in _iter_pcm(source, channels, frame_count):
+                analysis_buffer.extend(sum(sample * sample for sample in frame) / channels for frame in block)
+                while len(analysis_buffer) >= window:
+                    values = analysis_buffer[:window]
+                    levels.write(struct.pack(">d", math.sqrt(sum(values) / len(values))))
+                    del analysis_buffer[:hop]
+            if analysis_buffer:
+                levels.write(struct.pack(">d", math.sqrt(sum(analysis_buffer) / len(analysis_buffer))))
+            levels.flush()
+            threshold = max(float(self.config.minimum_rms), _noise_floor(levels) * 2.4)
+            decisions = iter(_iter_levels(levels))
+            level_index = -1
+            active = False
+            handles, writers = [], []
+            for name in NAMES:
+                handle = resources.enter_context((pending / name).open("xb"))
+                writer = resources.enter_context(wave.open(handle, "wb"))
                 writer.setnchannels(channels)
                 writer.setsampwidth(2)
                 writer.setframerate(rate)
+                handles.append(handle)
                 writers.append(writer)
-        except OSError as error:
-            for handle in handles:
-                handle.close()
-            for temporary in temporary_paths:
-                temporary.unlink(missing_ok=True)
-            raise SeparationError("AUDIO_OUTPUT_UNAVAILABLE", str(error), retryable=True) from error
-        active_samples = 0
-        clipped = 0
-        frame_index = 0
-        try:
+            active_samples = clipped = frame_index = 0
             for block in _iter_pcm(source, channels, frame_count):
+                payloads = [bytearray(), bytearray(), bytearray()]
                 for frame in block:
-                    window_index = min(len(active) - 1, frame_index // hop)
-                    is_active = active[window_index] if active else False
-                    if is_active:
+                    while level_index < frame_index // hop:
+                        level = next(decisions, None)
+                        if level is None:
+                            break
+                        active = level >= threshold
+                        level_index += 1
+                    if active:
                         active_samples += 1
-                    scale_background = 10 ** (-self.config.attenuation_db / 20.0) if is_active else 1.0
-                    scale_dialogue = 1.0 if is_active else 0.0
-                    source_bytes = b"".join(struct.pack("<h", sample) for sample in frame)
-                    dialogue_bytes = b"".join(struct.pack("<h", max(-32766, min(32766, int(round(sample * scale_dialogue))))) for sample in frame)
-                    background_bytes = b"".join(struct.pack("<h", max(-32766, min(32766, int(round(sample * scale_background))))) for sample in frame)
+                    scale_background = 10 ** (-self.config.attenuation_db / 20.0) if active else 1.0
+                    scale_dialogue = 1.0 if active else 0.0
+                    payloads[0].extend(struct.pack("<" + "h" * channels, *frame))
+                    payloads[1].extend(struct.pack("<" + "h" * channels, *(max(-32766, min(32766, int(round(sample * scale_dialogue)))) for sample in frame)))
+                    payloads[2].extend(struct.pack("<" + "h" * channels, *(max(-32766, min(32766, int(round(sample * scale_background)))) for sample in frame)))
                     clipped += sum(1 for sample in frame if abs(sample) >= 32767)
-                    writers[0].writeframesraw(source_bytes)
-                    writers[1].writeframesraw(dialogue_bytes)
-                    writers[2].writeframesraw(background_bytes)
                     frame_index += 1
+                for writer, payload in zip(writers, payloads):
+                    writer.writeframesraw(payload)
+            if _hash(source) != source_hash or _read_pcm_metadata(source, self.config) != (rate, channels, frame_count):
+                raise SeparationError("AUDIO_INPUT_CHANGED", "source changed during separation")
             for writer, handle in zip(writers, handles):
                 writer.close()
                 handle.flush()
                 os.fsync(handle.fileno())
-                handle.close()
-            for temporary, target in zip(temporary_paths, (source_copy, dialogue_path, background_path)):
-                os.replace(temporary, target)
-        except BaseException:
-            for writer in writers:
-                try:
-                    writer.close()
-                except Exception:
-                    pass
-            for handle in handles:
-                try:
-                    handle.close()
-                except Exception:
-                    pass
-            for temporary in temporary_paths:
-                temporary.unlink(missing_ok=True)
-            raise
-        active_fraction = (active_samples * 1000 + max(1, frame_count) // 2) // max(1, frame_count)
-        # Activity does not measure residual speech or background damage.
-        # Do not manufacture quality scores or promote an unqualified backend.
-        residual = None
-        artifact = None
-        clipping_fraction = clipped * 1_000_000 // max(1, frame_count * channels)
-        decision = "AUD-0"
-        metrics = SeparationMetrics(_hash(source_copy), _hash(dialogue_path), _hash(background_path), rate, channels, frame_count, active_fraction, residual, artifact, clipping_fraction, decision, self.backend_id)
+        active_fraction = (active_samples * 1000 + frame_count // 2) // frame_count
+        clipping_fraction = clipped * 1_000_000 // (frame_count * channels)
+        hashes = tuple(_hash(pending / name) for name in NAMES)
+        # Activity is not residual-speech/background-quality evidence.
+        metrics = SeparationMetrics(*hashes, rate, channels, frame_count, active_fraction, None, None, clipping_fraction, "AUD-0", self.backend_id)
         warnings = ("Residual speech and background artifacts are not measured; retain AUD-0 source ducking",)
-        return SeparationResult(source_copy, dialogue_path, background_path, metrics, warnings)
+        result = SeparationResult(*(final / name for name in NAMES), metrics, warnings)
+        publish(pending, final, result)
+        return result
 
 
 __all__ = ["CpuAttenuationBackend", "SeparationConfig", "SeparationError", "SeparationMetrics", "SeparationResult"]
