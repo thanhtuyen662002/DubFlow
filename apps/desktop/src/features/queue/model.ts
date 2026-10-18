@@ -234,6 +234,17 @@ export function createQueueJob(
   };
 }
 
+/** Ephemeral spelling comparison, not file identity or path validation.
+ * Only unambiguous absolute DOS-drive components share separator spelling.
+ * Keep case/dots/UNC/verbatim/URLs/POSIX untouched and never store this key.
+ */
+function localPathComparisonKey(path: string): string {
+  if (!/^[A-Za-z]:[\\/]/u.test(path)) return path;
+  const components = path.slice(3).split(/[\\/]/u);
+  if (components.some((part) => !part || part === "." || part === "..")) return path;
+  return path.replaceAll("\\", "/");
+}
+
 export class QueueController {
   private snapshot: QueueSnapshot;
   private readonly listeners = new Set<QueueListener>();
@@ -275,17 +286,18 @@ export class QueueController {
   }
 
   addPaths(paths: readonly string[]): string[] {
-    const existing = new Set(this.snapshot.jobs.map((job) => job.sourcePath));
+    const existing = new Set(this.snapshot.jobs.map((job) => localPathComparisonKey(job.sourcePath)));
     const added: string[] = [];
     for (const path of paths) {
       const trimmed = path.trim();
-      if (!trimmed || existing.has(trimmed)) continue;
+      const comparisonKey = localPathComparisonKey(trimmed);
+      if (!trimmed || existing.has(comparisonKey)) continue;
       if (this.snapshot.jobs.length >= this.queueLimit) {
         throw new Error(`Queue limit of ${this.queueLimit} jobs reached`);
       }
       const job = createQueueJob(this.allocateId(), trimmed, this.clock());
       this.snapshot.jobs.push(job);
-      existing.add(trimmed);
+      existing.add(comparisonKey);
       added.push(job.id);
     }
     if (added.length > 0) {

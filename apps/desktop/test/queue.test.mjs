@@ -89,4 +89,84 @@ assert.throws(() => parseImportPackStatus({ schema_version: 2, state: "unavailab
 assert.equal(parseImportPackStatus({ schema_version: 1, state: "unavailable", reason: "LEGACY_EXPORT_WITHOUT_IMPORT_PACK" }).state, "unavailable");
 assert.match(importPackMessage({ state: "unavailable", reason: "corrupt" }), /Video và phụ đề/);
 
+// Comparison only: no filesystem read/resolve or stored-path rewrite.
+const pastedDos = "D:/DubFlowQA/real-film-portrait-input-20261010/sintel-dialogue-portrait.mp4";
+const pickedDos = "D:\\DubFlowQA\\real-film-portrait-input-20261010\\sintel-dialogue-portrait.mp4";
+let dosId = 0;
+const dosIds = () => "dos-memory-" + (++dosId);
+const dosStorage = new MemorySnapshotStorage();
+const dosQueue = new QueueController(dosStorage, clock, 100, dosIds);
+const [dosOriginalId] = dosQueue.addPaths([pastedDos]);
+dosQueue.setDubbing(dosOriginalId, { enabled: true, voiceId: "vi-truc-ly-vieneu3-v1" });
+dosQueue.selectJob(dosOriginalId);
+dosQueue.updateStatus(dosOriginalId, { ...dosQueue.getSnapshot().jobs[0].status, state: "COMPLETED" }, "D:/memory/prior-output.mp4");
+const beforeDosDuplicate = dosQueue.getSnapshot();
+const beforeDosStorage = dosStorage.read();
+assert.deepEqual(dosQueue.addPaths([pickedDos]), [], "same DOS-drive path with alternate separators must not add a row");
+assert.deepEqual(dosQueue.getSnapshot(), beforeDosDuplicate);
+assert.equal(dosStorage.read(), beforeDosStorage);
+
+const reopenedDos = new QueueController(dosStorage, clock, 100, dosIds);
+assert.deepEqual(reopenedDos.addPaths([pickedDos, pastedDos]), []);
+assert.deepEqual(reopenedDos.getSnapshot(), beforeDosDuplicate);
+assert.equal(dosStorage.read(), beforeDosStorage);
+const dosRetry = reopenedDos.retryJob(dosOriginalId); // Explicit retry intentionally remains a new job.
+assert.notEqual(dosRetry, dosOriginalId);
+assert.deepEqual(reopenedDos.getSnapshot().jobs[0], beforeDosDuplicate.jobs[0]);
+assert.equal(reopenedDos.getSnapshot().selected_job_id, dosRetry);
+assert.equal(reopenedDos.getSnapshot().jobs[1].sourcePath, pastedDos);
+assert.equal(reopenedDos.getSnapshot().jobs[1].outputPath, null);
+assert.deepEqual(reopenedDos.getSnapshot().jobs[1].dubbing, beforeDosDuplicate.jobs[0].dubbing);
+assert.deepEqual(reopenedDos.addPaths([pickedDos]), []);
+assert.equal(reopenedDos.getSnapshot().jobs.length, 2);
+
+for (const [firstPath, secondPath] of [
+  [pastedDos, pickedDos], [pickedDos, pastedDos],
+  ["D:/Dữ liệu nguồn/Cảnh, phần 1.mp4", "D:\\Dữ liệu nguồn\\Cảnh, phần 1.mp4"],
+  ["E:\\mixed/parts\\clip.mp4", "E:/mixed\\parts/clip.mp4"],
+]) {
+  const batch = new QueueController(new MemorySnapshotStorage(), clock, 100, dosIds);
+  assert.equal(batch.addPaths([firstPath, secondPath]).length, 1);
+  assert.equal(batch.getSnapshot().jobs[0].sourcePath, firstPath);
+}
+const fullDos = new QueueController(new MemorySnapshotStorage(), clock, 1, dosIds);
+fullDos.addPaths([pickedDos]);
+assert.deepEqual(fullDos.addPaths([pastedDos]), []); // Duplicate is harmless even at capacity.
+
+// Pre-existing duplicates are historical rows, never silently merged/migrated.
+const legacyDos = structuredClone(beforeDosDuplicate);
+legacyDos.jobs.push({ ...structuredClone(legacyDos.jobs[0]), id: "legacy-dos-duplicate",
+  sourcePath: pickedDos, outputPath: "D:/memory/other-prior-output.mp4" });
+const legacyDosStorage = new MemorySnapshotStorage(JSON.stringify(legacyDos));
+const preservedDos = new QueueController(legacyDosStorage, clock, 100, dosIds);
+assert.deepEqual(preservedDos.getSnapshot(), legacyDos);
+assert.deepEqual(preservedDos.addPaths([pastedDos, pickedDos]), []);
+assert.deepEqual(preservedDos.getSnapshot(), legacyDos);
+assert.deepEqual(JSON.parse(legacyDosStorage.read()), legacyDos);
+
+// No authority over case, relative/dot paths, UNC/verbatim, URLs or POSIX aliases.
+for (const distinct of [
+  ["D:/one.mp4", "D:/two.mp4"],
+  ["D:/one.mp4", "E:/one.mp4"],
+  ["D:/Case/one.mp4", "D:/case/one.mp4"],
+  ["D:/one.mp4", "d:/one.mp4"],
+  ["D:relative/one.mp4", "D:relative\\one.mp4"],
+  ["D:/folder/./one.mp4", "D:/folder/one.mp4"],
+  ["D:/folder/../one.mp4", "D:/one.mp4"],
+  ["D:/folder/./one.mp4", "D:\\folder\\.\\one.mp4"],
+  ["D:/folder//one.mp4", "D:\\folder\\\\one.mp4"],
+  ["D:/folder/one.mp4/", "D:\\folder\\one.mp4\\"],
+  ["/media/folder/one.mp4", "\\media\\folder\\one.mp4"],
+  ["\\\\server\\share\\one.mp4", "//server/share/one.mp4"],
+  ["\\\\?\\D:\\folder\\one.mp4", "//?/D:/folder/one.mp4"],
+  ["\\\\?\\D:\\folder\\one.mp4", "D:/folder/one.mp4"],
+  ["https://example.test/scene/1", "https://example.test/scene//1"],
+  ["https://example.test/scene/1", "https://example.test/scene/1/"],
+  ["https://example.test/scene/1", "https://example.test/scene\\1"],
+]) {
+  const separate = new QueueController(new MemorySnapshotStorage(), clock, 100, dosIds);
+  assert.equal(separate.addPaths(distinct).length, 2, JSON.stringify(distinct));
+  assert.deepEqual(separate.getSnapshot().jobs.map((job) => job.sourcePath), distinct);
+}
+console.log("DOS-drive separator comparison regressions passed (calls/reload/batch; preserved completed/selected/voice/output; retry; narrow negative boundaries)");
 console.log("desktop queue and import pack tests passed");
