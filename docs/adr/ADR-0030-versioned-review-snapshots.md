@@ -3827,3 +3827,10 @@ regressions pass; final integrated source still needs its own required CI and
 Windows/native/GUI evidence. The separate execution-guard graceful-release
 finding remains open until its own changed-source proof. Full172/174/175 gates,
 old caller failures, public chunked_longform=false, AUD-0 and TrucLy25voices stay.
+
+The separately assigned execution-guard repair now applies the same explicit
+scope-exit unlock to JobExecutionGuard after successful acquisition. Acquire,
+canonical naming and prior alias/competing-handle/hard-kill behavior are unchanged.
+Its real-duplicate regression was RED before repair and candidate Ubuntu CI is
+GREEN, including actual spawned-child hard-kill/reacquisition. These candidate
+results do not replace the final integrated-source or Windows product gates.

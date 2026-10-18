@@ -128,10 +128,14 @@ mod tests {
         assert_eq!(after.len(), 0);
         assert!(JobExecutionGuard::acquire(&db, "job-one").is_err());
         drop(retained);
-        assert!(JobExecutionGuard::acquire(&db, "job-one").is_err(),
-            "late close of an old raw descriptor must not unlock the successor");
-        assert!(JobExecutionGuard::acquire(&db, "job-two").is_err(),
-            "another job's guard must keep its independent execution exclusion");
+        assert!(
+            JobExecutionGuard::acquire(&db, "job-one").is_err(),
+            "late close of an old raw descriptor must not unlock the successor"
+        );
+        assert!(
+            JobExecutionGuard::acquire(&db, "job-two").is_err(),
+            "another job's guard must keep its independent execution exclusion"
+        );
         drop(successor);
         let next = JobExecutionGuard::acquire(&db, "job-one").unwrap();
         assert!(JobExecutionGuard::acquire(&db, "job-one").is_err());
