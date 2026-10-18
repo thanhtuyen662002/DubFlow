@@ -923,3 +923,49 @@ const lateDiagnostic = lateDiagnosticConnection.actions().initializeCurrent(curr
 lateDiagnosticConnection.clear(); lateFailureReject(); await assert.rejects(lateDiagnostic); assert.equal(lateDiagnosticConnection.snapshot(), null);
 assert.equal(lateDiagnosticCalls.filter(c => c.command === "review_initialize_v1").length, 1); lateDiagnosticConnection.dispose();
 console.log("bound request failures: exact invocation, UTF8/control caps, inert details, unconfirmed outcome, stale/lost/late guards and no retry passed");
+
+// A held audio reply must never begin playback across a changed native session,
+// even when the caller did not separately abort its preview view signal.
+for (const scenario of ["undo-completed", "undo-in-flight", "export-new-session"]) {
+  let currentView = structuredClone(undoBefore), nextRequest = 0, audioReply, finishUndo;
+  let audioReads = 0, played = 0, undoRequests = 0;
+  const delayedTransport = nativeReviewTransport(async (command, args) => {
+    if (command === "review_cancel_v1") return;
+    if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId, snapshot: structuredClone(currentView) };
+    if (command === "review_audio_v2") {
+      audioReads++;
+      if (audioReads === 1) return new Promise(resolve => { audioReply = resolve; });
+      return new ArrayBuffer(44);
+    }
+    if (command === "review_undo_v1") {
+      undoRequests++;
+      const response = undoneResponse(currentView, beforePlan, args.requestId);
+      if (scenario === "undo-in-flight") await new Promise(resolve => { finishUndo = resolve; });
+      currentView = structuredClone(response.snapshot); return response;
+    }
+    if (command === "review_export_v1") return exportResponse(currentView, args.request.format, args.requestId);
+    throw new Error("unexpected delayed-audio route " + command);
+  }, async (bytes, signal) => { assert.equal(signal.aborted, false); assert.equal(bytes.byteLength, 44); played++; },
+  () => "request-late-audio-" + scenario + "-" + (++nextRequest));
+  const delayedConnection = new ReviewConnection(delayedTransport);
+  await delayedConnection.load(undoBefore.job_id);
+  const oldPreview = delayedConnection.actions().preview(previewRequest(delayedConnection.snapshot(), undoBefore.findings[0].finding_id), new AbortController().signal)
+    .then(() => ({ ok: true }), error => ({ ok: false, name: error.name }));
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(typeof audioReply, "function");
+  const mutation = scenario === "export-new-session" ?
+    delayedConnection.actions().exportCurrent(currentExportRequest(delayedConnection.snapshot(), "standard"), new AbortController().signal) :
+    delayedConnection.actions().undoCurrent(currentUndoRequest(delayedConnection.snapshot()), new AbortController().signal);
+  if (scenario === "undo-in-flight") {
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(typeof finishUndo, "function");
+  } else await mutation;
+  audioReply(new ArrayBuffer(44));
+  const obsolete = await oldPreview;
+  assert.equal(played, 0, scenario + ": obsolete response reached playback");
+  assert.deepEqual(obsolete, { ok: false, name: "AbortError" });
+  if (finishUndo) { finishUndo(); await mutation; }
+  const refreshed = delayedConnection.snapshot();
+  await delayedConnection.actions().preview(previewRequest(refreshed, refreshed.findings[0].finding_id), new AbortController().signal);
+  assert.equal(played, 1, scenario + ": current audio must remain usable");
+  assert.equal(undoRequests, scenario === "export-new-session" ? 0 : 1);
+  delayedConnection.dispose();
+}

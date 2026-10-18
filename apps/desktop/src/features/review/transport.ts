@@ -88,17 +88,23 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
         { job_id: binding.jobId, current_token: binding.token!, finding_id: request.finding_id, cue_id: request.cue_id } :
         { job_id: binding.jobId, revision: (request as { revision: number }).revision, finding_id: request.finding_id, cue_id: request.cue_id };
       if (!samePreviewRequest(expected, request)) throw new Error("native audio request has unsupported fields");
+      const sessionId = binding.id, nativeCurrent = binding.nativeCurrent;
+      const assertCurrentPreview = () => {
+        if (binding.applying || signal.aborted || binding.signal.aborted || current !== binding ||
+          binding.id !== sessionId || binding.nativeCurrent !== nativeCurrent) throw aborted();
+        if (nativeCurrent && (!expected.current_token || !binding.token || !sameCurrentToken(expected.current_token, binding.token))) throw aborted();
+      };
       const child = new AbortController();
       const id = nextId(), cancelRead = () => { child.abort(); cancel(id); };
       signal.addEventListener("abort", cancelRead, { once: true });
       binding.signal.addEventListener("abort", cancelRead, { once: true });
       try {
         if (signal.aborted || binding.signal.aborted) { cancelRead(); throw aborted(); }
-        const bytes = await invoke<ArrayBuffer>(binding.nativeCurrent ? "review_audio_v2" : "review_audio_v1", { sessionId: binding.id, requestId: id, request: structuredClone(request) });
-        if (signal.aborted || binding.signal.aborted || current !== binding) throw aborted();
+        const bytes = await invoke<ArrayBuffer>(nativeCurrent ? "review_audio_v2" : "review_audio_v1", { sessionId, requestId: id, request: structuredClone(expected) });
+        assertCurrentPreview();
         if (!(bytes instanceof ArrayBuffer) || bytes.byteLength < 44 || bytes.byteLength > 64 * 1024 * 1024) throw new Error("invalid review audio response");
         await play(bytes, child.signal);
-        if (signal.aborted || binding.signal.aborted || current !== binding) throw aborted();
+        assertCurrentPreview();
       } finally { signal.removeEventListener("abort", cancelRead); binding.signal.removeEventListener("abort", cancelRead); }
     },
     planCurrent: async (request: CurrentPlanRequest, signal) => {
