@@ -73,8 +73,19 @@ fn all_field_byte_limits_and_duplicate_rejection_preserve_valid_items() {
 
 #[test]
 fn typescript_producer_matches_native_limits_and_admission() {
-    let test_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file!());
-    let root = test_file.parent().unwrap().join("../../../..");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let test_file = manifest.join(file!());
+    // Cargo may report file!() relative to the workspace (app/tests/...) or
+    // package (tests/...), while the standalone Windows harness uses an
+    // absolute path. Locate the real repository instead of assuming one form.
+    let root = manifest
+        .ancestors()
+        .chain(test_file.ancestors())
+        .find(|path| {
+            path.join("apps/desktop/test/source_intake.test.mjs")
+                .is_file()
+        })
+        .expect("the actual checked-in TypeScript producer test must exist");
     // Required Integration must actually execute TS regressions; no missing-node
     // skip. No workflow/registry changes or new package dependencies are needed.
     let output = std::process::Command::new("node")
