@@ -31,5 +31,16 @@
     },
     "patch_sha256_lf": "984b039c2f1dacb86384a8e87dd0fd3849412309607f6c15d373e1856a1647da",
     "requires_host_configuration": "Manage SourceServiceHost::new(trusted LaunchPin, explicit finite AdmissionWindow) from installed-release bootstrap; patch intentionally cannot invent these trusted values."
+  },
+  "materialized0c1": {
+    "preimage_commit": "0c1e3662c21341a5d330039d82ff321d15c6a6ce",
+    "preimages": {
+      "apps/desktop/src/main.ts": {
+        "git_blob": "3f9e186be505c75b62fa70fbbb9a85c63456cb4f",
+        "sha256_lf": "c7c09bd1594d0d0600d13ed88586ff48bebc62c9431e16d785d04b81d2b8de1c"
+      }
+    },
+    "patch_sha256_lf": "5439c2c87520cd6cd869190c71e2dc39914a1f5c8895f5578bb5ffc5e740104c",
+    "requires_integration": "Call sourceEventPump.poll() from the one source observer after trusted native bootstrap; interval/rendering remains integrator-owned. Never use legacy enqueue or infer download from completed enumeration."
   }
 }

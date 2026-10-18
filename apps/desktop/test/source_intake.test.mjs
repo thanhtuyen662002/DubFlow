@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { parseSourceInput, supervisorSourceItems, SOURCE_BYTE_LIMITS, utf8Bytes } from "../src/features/source_intake/model.ts";
 import { submitSources } from "../src/features/source_intake/controller.ts";
 import { MemorySnapshotStorage, QueueController } from "../src/features/queue/model.ts";
+import "./source_materialized.test.mjs";
 
 const path = "C:\\Phim Việt\\Cảnh, phần 2 có dấu.mp4";
 const url = "https://example.test/clip,part2.mp4?q=a,b";
