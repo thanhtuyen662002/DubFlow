@@ -630,7 +630,8 @@ fn run_timeline_inner(
                 },
             )?;
             stage(Stage::Commit);
-            let committed = super::review_active::commit(&store, &data, &state, &rendered)?;
+            let committed =
+                super::review_active::commit_prepared_effective(&store, &data, &state, rendered)?;
             return super::emit_value(
                 &mut std::io::stdout().lock(),
                 super::review_active::committed_packet(&committed)?,
@@ -1160,7 +1161,8 @@ fn run_inner(
                     },
                 )?;
                 stage(Stage::Commit);
-                let committed = super::review_active::commit(&store, &data, &state, &publication)?;
+                let committed =
+                    super::review_active::commit_prepared_effective(&store, &data, &state, publication)?;
                 return super::emit_value(
                     &mut std::io::stdout().lock(),
                     super::review_active::committed_packet(&committed)?,

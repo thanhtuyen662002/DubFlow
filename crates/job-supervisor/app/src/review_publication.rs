@@ -515,9 +515,117 @@ pub(super) struct EffectivePublicationInputs<'a> {
     pub(super) output_pin: &'a super::review_retention::NativeOutputPin,
 }
 
+/// Process-local, single-use admission from prepare. Private fields and no
+/// deserializer prevent client JSON from authorizing the current-only commit.
+pub(super) struct PreparedEffectivePublication {
+    before: ReviewGraphState,
+    object: AcceptedJsonDocument,
+    proposal: AcceptedJsonDocument,
+    admitted: super::review_active::AdmittedPublication,
+    prepared_until: Instant,
+}
+
+impl PreparedEffectivePublication {
+    fn new(
+        before: &ReviewGraphState,
+        object: AcceptedJsonDocument,
+        proposal: AcceptedJsonDocument,
+        admitted: super::review_active::AdmittedPublication,
+        prepared_until: Instant,
+    ) -> SupervisorResult<Self> {
+        v3_shape(&admitted.record)?;
+        let graph = json!({"schema_version":1,"kind":"review_bound_retained_render_graph_v3",
+            "publication":descriptor(&object)})
+        .to_string();
+        if admitted.before != *before
+            || admitted.origin.original_artifact_id != before.original_artifact_id
+            || admitted.origin.token.original_manifest_sha256
+                != before.token.original_manifest_sha256
+            || admitted.record["origin_token"] != token(&admitted.origin)
+            || Some(admitted.snapshot.revision()) != before.token.revision.checked_add(1)
+            || admitted.record["proposal"] != descriptor(&proposal)
+            || admitted.record["prepared_snapshot"]["sha256"] != admitted.snapshot.sha256()
+            || admitted.graph != graph
+        {
+            return Err(invalid(
+                "prepared publication identity differs from its admission",
+            ));
+        }
+        Ok(Self {
+            before: before.clone(),
+            object,
+            proposal,
+            admitted,
+            prepared_until,
+        })
+    }
+
+    pub(super) fn revalidate(
+        self,
+        store: &DurableStore,
+        data: &std::path::Path,
+        before: &ReviewGraphState,
+    ) -> SupervisorResult<super::review_active::AdmittedPublication> {
+        // Always use a new complete physical/history/runtime walk. The held
+        // admission replaces only commit's redundant INITIAL reconstruction.
+        self.revalidate_with(store, data, before, |_, object, walk| {
+            super::review_active::read_publication_with_walk(
+                store,
+                data,
+                before,
+                &descriptor(object),
+                walk,
+            )
+        })
+    }
+
+    fn revalidate_with(
+        self,
+        store: &DurableStore,
+        data: &std::path::Path,
+        before: &ReviewGraphState,
+        read_final: impl FnOnce(
+            &AcceptedAudioStore,
+            &AcceptedJsonDocument,
+            &mut RecoveryWalk,
+        ) -> SupervisorResult<super::review_active::AdmittedPublication>,
+    ) -> SupervisorResult<super::review_active::AdmittedPublication> {
+        if self.before != *before || Instant::now() >= self.prepared_until {
+            return Err(invalid("prepared publication is stale or expired"));
+        }
+        require_current(store, before)?;
+        let assets = AcceptedAudioStore::open_existing(data, &before.token.job_id)?;
+        if decode(&assets.read_json(&self.object)?, LIMIT)? != self.admitted.record {
+            return Err(invalid(
+                "prepared publication bytes differ from its admission",
+            ));
+        }
+        assets.read_json(&self.proposal)?;
+        // Preserve the existing final admission budget and independent walk.
+        let mut walk = RecoveryWalk::new(Instant::now() + std::time::Duration::from_secs(720));
+        let final_fence = read_final(&assets, &self.object, &mut walk)?;
+        walk.check()?;
+        if final_fence.before != self.admitted.before
+            || final_fence.origin != self.admitted.origin
+            || final_fence.snapshot.json() != self.admitted.snapshot.json()
+            || final_fence.graph != self.admitted.graph
+            || final_fence.record != self.admitted.record
+        {
+            return Err(invalid("publication changed during the final native fence"));
+        }
+        assets.read_json(&self.object)?;
+        assets.read_json(&self.proposal)?;
+        require_current(store, before)?;
+        walk.check()?;
+        Ok(final_fence)
+    }
+}
+
 /// Prepare a new explicit v3 object, then exercise the complete read path before
 /// it can reach the existing CAS. Any refusal leaves the old head/undo intact.
-pub(super) fn prepare_effective(input: EffectivePublicationInputs<'_>) -> SupervisorResult<Value> {
+pub(super) fn prepare_effective(
+    input: EffectivePublicationInputs<'_>,
+) -> SupervisorResult<PreparedEffectivePublication> {
     let deadline = Instant::now() + std::time::Duration::from_secs(720);
     let state = input.current.state();
     require_current(input.store, state)?;
@@ -575,10 +683,526 @@ pub(super) fn prepare_effective(input: EffectivePublicationInputs<'_>) -> Superv
         ));
     }
     require_current(input.store, state)?;
-    let mut rendered = input.rendered.clone();
-    rendered["native_publication"] = descriptor(&object);
-    rendered["cumulative_publication_prepared"] = true.into();
-    Ok(rendered)
+    PreparedEffectivePublication::new(state, object, proposal, admitted, deadline)
+}
+
+#[cfg(test)]
+mod prepared_tests {
+    use super::super::review_active::AdmittedPublication;
+    use super::super::review_seed::tests::with_admitted_original;
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    // These are orchestration fixtures, not encoded v3 render admissions. The
+    // private oracle below uses the real fresh runtime and media hash readers;
+    // production revalidate() always calls the complete recursive v3 reader.
+    fn candidate(
+        assets: &AcceptedAudioStore,
+        before: &ReviewGraphState,
+        origin: &ReviewGraphState,
+    ) -> PreparedEffectivePublication {
+        let prior = AdmittedSnapshot::read(
+            &before.snapshot_json,
+            &before.token.job_id,
+            before.token.revision,
+        )
+        .unwrap();
+        let after = prior
+            .correction(
+                "finding-a",
+                Some(&format!("Edit {}", before.token.revision)),
+                None,
+                super::super::review_document::ReviewMode::Subtitles,
+            )
+            .unwrap();
+        let proposal = assets.accept_json(after.json()).unwrap();
+        let empty = assets.accept_json("{}").unwrap();
+        let record = json!({"schema_version":3,"kind":"review_native_publication_v3",
+            "before_state":descriptor(&empty),"origin_token":token(origin),"proposal":descriptor(&proposal),
+            "corrected_timeline":descriptor(&empty),"context":descriptor(&empty),
+            "retained_render":descriptor(&empty),"processing_render":descriptor(&empty),
+            "prepared_snapshot":descriptor(&proposal),"execution_identity":null,"output_volume_id":"unit-only",
+            "mixed":null,"mix_packet":null,"processing_mix":null,"speech_inventory":null});
+        let object = assets.accept_json(&record.to_string()).unwrap();
+        let admitted = AdmittedPublication {
+            before: before.clone(),
+            origin: origin.clone(),
+            snapshot: after,
+            graph: json!({"schema_version":1,"kind":"review_bound_retained_render_graph_v3",
+                "publication":descriptor(&object)})
+            .to_string(),
+            record,
+        };
+        PreparedEffectivePublication::new(
+            before,
+            object,
+            proposal,
+            admitted,
+            Instant::now() + Duration::from_secs(60),
+        )
+        .unwrap()
+    }
+
+    fn reopened(
+        assets: &AcceptedAudioStore,
+        object: &AcceptedJsonDocument,
+        before: &ReviewGraphState,
+        origin: &ReviewGraphState,
+    ) -> SupervisorResult<AdmittedPublication> {
+        let record = decode(&assets.read_json(object)?, LIMIT)?;
+        let prepared = accepted_json(&record["prepared_snapshot"], assets)?;
+        Ok(AdmittedPublication {
+            before: before.clone(),
+            origin: origin.clone(),
+            snapshot: AdmittedSnapshot::read(
+                &assets.read_json(&prepared)?,
+                &before.token.job_id,
+                before.token.revision + 1,
+            )?,
+            graph: json!({"schema_version":1,"kind":"review_bound_retained_render_graph_v3",
+                "publication":descriptor(object)})
+            .to_string(),
+            record,
+        })
+    }
+
+    fn runtime(store: &DurableStore, data: &Path) -> PathBuf {
+        let root = data.join("test-owned-runtime");
+        let files: [(&str, &[u8]); 10] = [
+            ("runtime/python.exe", b"owned python"),
+            ("runtime/media/ffmpeg.exe", b"owned ffmpeg"),
+            ("runtime/media/ffprobe.exe", b"owned ffprobe"),
+            ("runtime/Lib/late.py", b"module-a"),
+            ("runtime/Lib/empty.py", b""),
+            (
+                "app/engine/dubflow/worker/production_job.py",
+                b"owned worker",
+            ),
+            ("app/engine/dubflow/review/cue_plan.py", b"owned cue"),
+            (
+                "app/models/manifests/production-cpu-v1.json",
+                br#"{"tts_neural_profile":"models/manifests/voice.json"}"#,
+            ),
+            ("app/models/manifests/voice.json", br#"{"voices":[]}"#),
+            ("app/engine/helper.py", b"owned helper"),
+        ];
+        let mut pins = serde_json::Map::new();
+        let mut inventory = Vec::new();
+        for (name, raw) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, raw).unwrap();
+            let sha = format!("sha256:{:x}", Sha256::digest(raw));
+            pins.insert(name.into(), json!({"sha256":sha,"size_bytes":raw.len()}));
+            inventory
+                .push(json!({"path":name,"sha256":&sha[7..],"size_bytes":raw.len().to_string()}));
+        }
+        let release = json!({"schema_version":1,"artifacts":inventory}).to_string();
+        fs::write(root.join("release-manifest.json"), &release).unwrap();
+        let producer = json!({"runtime_root":root,"model_root":root.join("models-not-provisioned"),
+            "worker":pins["app/engine/dubflow/worker/production_job.py"],"python":pins["runtime/python.exe"],
+            "ffmpeg":pins["runtime/media/ffmpeg.exe"],"ffprobe":pins["runtime/media/ffprobe.exe"],
+            "release_manifest":{"sha256":hash(&release),"size_bytes":release.len()},
+            "model_manifests":[["production-cpu-v1.json",pins["app/models/manifests/production-cpu-v1.json"]],
+                ["voice.json",pins["app/models/manifests/voice.json"]]]});
+        store
+            .create_job_with_start_request(
+                "runtime-fixture",
+                "file:///fixture",
+                &json!({"schema_version":1,"producer":producer}).to_string(),
+                1,
+            )
+            .unwrap();
+        super::super::review_runtime::AdmittedRuntime::read(store, "runtime-fixture", &root)
+            .unwrap();
+        root
+    }
+
+    fn media(data: &Path, generation: u64) -> (PathBuf, Vec<u8>) {
+        // Small valid mono 16-bit PCM WAV; never executes an external tool.
+        let mut raw = b"RIFF".to_vec();
+        raw.extend_from_slice(&40u32.to_le_bytes());
+        raw.extend_from_slice(b"WAVEfmt ");
+        raw.extend_from_slice(&16u32.to_le_bytes());
+        raw.extend_from_slice(&1u16.to_le_bytes());
+        raw.extend_from_slice(&1u16.to_le_bytes());
+        raw.extend_from_slice(&16000u32.to_le_bytes());
+        raw.extend_from_slice(&32000u32.to_le_bytes());
+        raw.extend_from_slice(&2u16.to_le_bytes());
+        raw.extend_from_slice(&16u16.to_le_bytes());
+        raw.extend_from_slice(b"data");
+        raw.extend_from_slice(&4u32.to_le_bytes());
+        raw.extend_from_slice(&(generation as u32).to_le_bytes());
+        let path = data.join(format!("retained-generation-{generation}.wav"));
+        fs::write(&path, &raw).unwrap();
+        (path, raw)
+    }
+
+    fn verify_media(path: &Path, raw: &[u8], walk: &RecoveryWalk) -> SupervisorResult<()> {
+        let sha = format!("sha256:{:x}", Sha256::digest(raw));
+        super::super::review_render::verified(
+            path,
+            &sha,
+            raw.len() as u64,
+            false,
+            walk.deadline(),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_one_two_three_node_orchestration_reopens_once_and_keeps_prior_rows_and_pcm() {
+        with_admitted_original(|store, data, original| {
+            let assets = AcceptedAudioStore::open_existing(data, &original.token.job_id).unwrap();
+            let root = runtime(store, data);
+            let mut state = original.clone();
+            let mut rows = vec![original.clone()];
+            let mut audio = vec![media(data, 0)];
+            for revision in 1..=3 {
+                let prepared = candidate(&assets, &state, original);
+                let mut calls = 0;
+                let final_fence = prepared
+                    .revalidate_with(store, data, &state, |a, o, walk| {
+                        calls += 1;
+                        super::super::review_runtime::AdmittedRuntime::read(
+                            store,
+                            "runtime-fixture",
+                            &root,
+                        )?;
+                        for (path, raw) in &audio {
+                            verify_media(path, raw, walk)?;
+                        }
+                        reopened(a, o, &state, original)
+                    })
+                    .unwrap();
+                assert_eq!(
+                    calls, 1,
+                    "one final oracle, no duplicate initial reconstruction"
+                );
+                state = store
+                    .commit_review_graph(
+                        &state.token,
+                        final_fence.snapshot.json(),
+                        &final_fence.graph,
+                        10 + revision,
+                    )
+                    .unwrap();
+                assert_eq!(state.token.revision, revision);
+                assert_eq!(state.undo_depth as u64, revision);
+                for row in &rows {
+                    assert_eq!(
+                        store.review_graph_revision(&row.token).unwrap().as_ref(),
+                        Some(row)
+                    );
+                }
+                for (path, raw) in &audio {
+                    assert_eq!(fs::read(path).unwrap(), *raw);
+                }
+                rows.push(state.clone());
+                audio.push(media(data, revision));
+            }
+        });
+    }
+
+    #[test]
+    fn prepared_final_fence_refuses_late_same_size_restored_mtime_extra_missing_link_and_media() {
+        for fault in 0..5 {
+            with_admitted_original(|store, data, original| {
+                let assets =
+                    AcceptedAudioStore::open_existing(data, &original.token.job_id).unwrap();
+                let root = runtime(store, data);
+                let (path, raw) = media(data, 0);
+                let prepared = candidate(&assets, original, original);
+                let import = root.join("runtime/Lib/late.py");
+                let mut held_directory = None;
+                match fault {
+                    0 => {
+                        let meta = fs::metadata(&import).unwrap();
+                        fs::write(&import, b"module-b").unwrap();
+                        fs::File::options()
+                            .write(true)
+                            .open(&import)
+                            .unwrap()
+                            .set_times(fs::FileTimes::new().set_modified(meta.modified().unwrap()))
+                            .unwrap();
+                        assert_eq!(
+                            fs::metadata(&import).unwrap().modified().unwrap(),
+                            meta.modified().unwrap()
+                        );
+                        assert_eq!(fs::metadata(&import).unwrap().len(), meta.len());
+                    }
+                    1 => fs::write(root.join("runtime/Lib/unlisted.py"), b"extra").unwrap(),
+                    2 => fs::remove_file(&import).unwrap(),
+                    3 => {
+                        let dir = root.join("runtime/Lib");
+                        let held = data.join("held-test-lib");
+                        fs::rename(&dir, &held).unwrap();
+                        #[cfg(windows)]
+                        assert!(std::process::Command::new("cmd")
+                            .args(["/c", "mklink", "/J"])
+                            .arg(&dir)
+                            .arg(&held)
+                            .output()
+                            .unwrap()
+                            .status
+                            .success());
+                        #[cfg(unix)]
+                        std::os::unix::fs::symlink(&held, &dir).unwrap();
+                        held_directory = Some((dir, held));
+                    }
+                    _ => {
+                        let mut changed = raw.clone();
+                        *changed.last_mut().unwrap() ^= 1;
+                        fs::write(&path, changed).unwrap();
+                    }
+                }
+                let result = prepared.revalidate_with(store, data, original, |a, o, walk| {
+                    super::super::review_runtime::AdmittedRuntime::read(
+                        store,
+                        "runtime-fixture",
+                        &root,
+                    )?;
+                    verify_media(&path, &raw, walk)?;
+                    reopened(a, o, original, original)
+                });
+                if let Some((dir, held)) = held_directory {
+                    #[cfg(windows)]
+                    fs::remove_dir(&dir).unwrap();
+                    #[cfg(unix)]
+                    fs::remove_file(&dir).unwrap();
+                    fs::rename(held, dir).unwrap();
+                }
+                assert!(
+                    result.is_err(),
+                    "late fault {fault} must reach a fresh reader"
+                );
+                assert_eq!(
+                    store
+                        .review_graph_state(&original.token.job_id)
+                        .unwrap()
+                        .as_ref(),
+                    Some(original)
+                );
+                assert!(store.review_undo_target(&original.token).unwrap().is_none());
+                if fault != 4 {
+                    assert_eq!(fs::read(path).unwrap(), raw);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn prepared_binding_rejects_forged_identity_expiry_changed_seal_and_stale_token() {
+        with_admitted_original(|store, data, original| {
+            let assets = AcceptedAudioStore::open_existing(data, &original.token.job_id).unwrap();
+            for field in 0..7 {
+                let mut prepared = candidate(&assets, original, original);
+                match field {
+                    0 => prepared.admitted.before.token.graph_sha256 = hash("wrong token"),
+                    1 => prepared.admitted.origin.original_artifact_id = "foreign-original".into(),
+                    2 => {
+                        prepared.admitted.origin.token.original_manifest_sha256 =
+                            hash("foreign manifest")
+                    }
+                    3 => prepared.admitted.record["proposal"] = json!(null),
+                    4 => prepared.admitted.graph.push(' '),
+                    5 => {
+                        prepared.admitted.record["prepared_snapshot"]["sha256"] =
+                            hash("foreign snapshot").into()
+                    }
+                    _ => {
+                        prepared.admitted.snapshot = AdmittedSnapshot::read(
+                            &original.snapshot_json,
+                            &original.token.job_id,
+                            original.token.revision,
+                        )
+                        .unwrap()
+                    }
+                }
+                assert!(
+                    PreparedEffectivePublication::new(
+                        original,
+                        prepared.object,
+                        prepared.proposal,
+                        prepared.admitted,
+                        prepared.prepared_until
+                    )
+                    .is_err(),
+                    "forged identity {field}"
+                );
+            }
+            let mut expired = candidate(&assets, original, original);
+            expired.prepared_until = Instant::now() - Duration::from_secs(1);
+            assert!(expired
+                .revalidate_with(store, data, original, |_, _, _| panic!(
+                    "expired entered final reader"
+                ))
+                .is_err());
+            let mut changed_seal = candidate(&assets, original, original);
+            changed_seal.object = assets.accept_json("{}").unwrap();
+            assert!(changed_seal
+                .revalidate_with(store, data, original, |_, _, _| panic!(
+                    "changed seal entered final reader"
+                ))
+                .is_err());
+            let stale = candidate(&assets, original, original);
+            let next = candidate(&assets, original, original);
+            let current = store
+                .commit_review_graph(
+                    &original.token,
+                    next.admitted.snapshot.json(),
+                    &next.admitted.graph,
+                    20,
+                )
+                .unwrap();
+            assert!(stale
+                .revalidate_with(store, data, original, |_, _, _| panic!(
+                    "stale token entered final reader"
+                ))
+                .is_err());
+            assert_eq!(
+                store.review_graph_state(&original.token.job_id).unwrap(),
+                Some(current)
+            );
+        });
+    }
+
+    #[test]
+    fn prepared_final_comparison_cancellation_and_cas_race_leave_old_rows_and_audio() {
+        for fault in 0..9 {
+            with_admitted_original(|store, data, original| {
+                let assets =
+                    AcceptedAudioStore::open_existing(data, &original.token.job_id).unwrap();
+                let (path, raw) = media(data, 0);
+                let prepared = candidate(&assets, original, original);
+                let result = prepared.revalidate_with(store, data, original, |a, o, walk| {
+                    verify_media(&path, &raw, walk)?;
+                    if fault == 0 {
+                        return Err(invalid("simulated cancellation during final admission"));
+                    }
+                    let mut final_fence = reopened(a, o, original, original)?;
+                    match fault {
+                        1 => final_fence.before.token.graph_sha256 = hash("changed before"),
+                        2 => final_fence.origin.token.graph_sha256 = hash("changed origin"),
+                        3 => final_fence.graph.push(' '),
+                        4 => final_fence.record["output_volume_id"] = "changed volume".into(),
+                        5 => {
+                            final_fence.snapshot = AdmittedSnapshot::read(
+                                &original.snapshot_json,
+                                &original.token.job_id,
+                                original.token.revision,
+                            )
+                            .unwrap()
+                        }
+                        6 => {
+                            store.commit_review_graph(
+                                &original.token,
+                                final_fence.snapshot.json(),
+                                &final_fence.graph,
+                                30,
+                            )?;
+                        }
+                        7 => {
+                            let mut permissions = fs::metadata(&o.path)?.permissions();
+                            permissions.set_readonly(false);
+                            fs::set_permissions(&o.path, permissions)?;
+                            fs::remove_file(&o.path)?;
+                        }
+                        _ => walk.deadline = Instant::now() - Duration::from_secs(1),
+                    }
+                    Ok(final_fence)
+                });
+                assert!(result.is_err(), "final fault {fault}");
+                assert_eq!(
+                    store
+                        .review_graph_revision(&original.token)
+                        .unwrap()
+                        .as_ref(),
+                    Some(original)
+                );
+                assert_eq!(fs::read(path).unwrap(), raw);
+                let current = store
+                    .review_graph_state(&original.token.job_id)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(current.token.revision, if fault == 6 { 1 } else { 0 });
+                if fault == 6 {
+                    let next = candidate(&assets, &current, original);
+                    assert!(
+                        store
+                            .commit_review_graph(
+                                &original.token,
+                                next.admitted.snapshot.json(),
+                                &next.admitted.graph,
+                                31
+                            )
+                            .is_err(),
+                        "SQLite CAS still rejects a stale token"
+                    );
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn prepared_head_race_after_final_fence_still_requires_sqlite_cas() {
+        with_admitted_original(|store, data, original| {
+            let assets = AcceptedAudioStore::open_existing(data, &original.token.job_id).unwrap();
+            let (path, raw) = media(data, 0);
+            let ours = candidate(&assets, original, original)
+                .revalidate_with(store, data, original, |a, o, walk| {
+                    verify_media(&path, &raw, walk)?;
+                    reopened(a, o, original, original)
+                })
+                .unwrap();
+            let competing = candidate(&assets, original, original);
+            let winner = store
+                .commit_review_graph(
+                    &original.token,
+                    competing.admitted.snapshot.json(),
+                    &competing.admitted.graph,
+                    40,
+                )
+                .unwrap();
+            assert!(store
+                .commit_review_graph(&original.token, ours.snapshot.json(), &ours.graph, 41)
+                .is_err());
+            assert_eq!(
+                store.review_graph_state(&original.token.job_id).unwrap(),
+                Some(winner)
+            );
+            assert_eq!(
+                store
+                    .review_graph_revision(&original.token)
+                    .unwrap()
+                    .as_ref(),
+                Some(original)
+            );
+            assert_eq!(fs::read(path).unwrap(), raw);
+        });
+    }
+
+    #[test]
+    fn prepared_production_commit_cannot_turn_metadata_only_into_physical_v3_admission() {
+        with_admitted_original(|store, data, original| {
+            let assets = AcceptedAudioStore::open_existing(data, &original.token.job_id).unwrap();
+            let prepared = candidate(&assets, original, original);
+            assert!(super::super::review_active::commit_prepared_effective(
+                store, data, original, prepared
+            )
+            .is_err());
+            assert_eq!(
+                store
+                    .review_graph_state(&original.token.job_id)
+                    .unwrap()
+                    .as_ref(),
+                Some(original)
+            );
+            assert!(store.review_undo_target(&original.token).unwrap().is_none());
+        });
+    }
 }
 
 #[cfg(test)]
