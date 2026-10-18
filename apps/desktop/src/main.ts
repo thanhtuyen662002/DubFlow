@@ -6,10 +6,19 @@ import type { JobStatus } from "./features/job_status/status.ts";
 import { mountDesktopReview } from "./features/review/host.ts";
 import { nativeReviewTransport } from "./features/review/transport.ts";
 import { importPackMessage, parseImportPackStatus, type ImportPackStatus } from "./features/import_pack/model.ts";
+import { createSourceServiceController, type SourcePhase, type SourceServiceState } from "./features/source_intake/service_controller.ts";
 
 type ReleaseInfo = { version: string; channel: string; backend: string };
 
 const STORAGE_KEY = "dubflow.queue.v2";
+
+function showQueueStorageWarning(): void {
+  const notice = document.querySelector<HTMLElement>("#queue-storage-status");
+  if (notice) {
+    notice.hidden = false;
+    notice.textContent = "Chưa lưu được hàng đợi để mở lại. Bạn vẫn có thể xử lý trong phiên này; hãy giữ ứng dụng mở và lưu kết quả đã xuất.";
+  }
+}
 
 function browserStorage(): SnapshotStorage {
   return {
@@ -17,6 +26,7 @@ function browserStorage(): SnapshotStorage {
       try {
         return window.localStorage.getItem(STORAGE_KEY);
       } catch {
+        showQueueStorageWarning();
         return null;
       }
     },
@@ -24,7 +34,8 @@ function browserStorage(): SnapshotStorage {
       try {
         window.localStorage.setItem(STORAGE_KEY, value);
       } catch {
-        // The queue remains usable when a browser profile disallows storage.
+        // Preserve current-session local use while making reopen limits visible.
+        showQueueStorageWarning();
       }
     },
   };
@@ -370,4 +381,98 @@ void invoke<ReleaseInfo>("release_info")
     $("#release-version").textContent = "development";
   });
 
-window.addEventListener("beforeunload", () => { reviewPanel.destroy(); shell.dispose(); });
+const sourceController = createSourceServiceController(queue, (command, args) => invoke(command, args));
+const sourceInput = $<HTMLTextAreaElement>("#source-input");
+const sourceList = $("#source-list");
+const sourceFeedback = $("#source-feedback");
+const sourceStop = $<HTMLButtonElement>("#source-stop");
+const sourcePhases: Record<SourcePhase, string> = {
+  queued: "Đang chờ tiếp nhận", sending: "Đang gửi yêu cầu", submitted: "Đã gửi yêu cầu, chờ nguồn xác nhận",
+  preparing: "Đang chuẩn bị nguồn", enumerating: "Đang tìm video", enumerated: "Đã kiểm tra danh sách nguồn",
+  download_sending: "Đang gửi yêu cầu tải", download_submitted: "Đã gửi yêu cầu tải, chờ xác nhận",
+  download_preparing: "Đang chuẩn bị tải", downloading: "Đang tải video", downloaded: "Đã thêm video vào hàng xử lý",
+  queue_error: "Video đã nhận nhưng chưa xác nhận thêm vào hàng xử lý", cancelling: "Đã gửi yêu cầu hủy, chờ xác nhận",
+  cancelled: "Đã hủy nguồn này", paused: "Nguồn đã tạm dừng", failed: "Không tiếp nhận được nguồn", interrupted: "Nguồn bị gián đoạn",
+};
+function sourceProblem(code: string): string {
+  const messages: Record<string, string> = {
+    SOURCE_PROVIDER_UNSUPPORTED: "Nhà cung cấp này chưa được hỗ trợ. Hãy thêm video đã lưu trên máy.",
+    SOURCE_PUBLIC_REFERENCE_REQUIRED: "Cần URL công khai, không có thông tin đăng nhập.",
+    SOURCE_RECONCILIATION_REQUIRED: "Nguồn có kết quả cũ cần được kiểm tra trước khi tải tiếp.",
+    SOURCE_NO_ITEMS: "Không tìm thấy video trong nguồn này.",
+    SOURCE_RECEIPT_UNEXPECTED: "Kết quả nguồn chưa khớp video đã chọn.",
+    LOCAL_QUEUE_REJECTED: "Chưa thêm được video vào hàng xử lý. Hãy kiểm tra danh sách và dung lượng trống.",
+    SOURCE_MATERIALIZED_INVALID: "Kết quả tải chưa đủ thông tin để xử lý. Các video khác vẫn dùng được.",
+    DUPLICATE_SOURCE: "Nguồn này đã có trong danh sách.",
+    SOURCE_SETUP_MISSING: "Nguồn trực tuyến chưa sẵn sàng. Hãy kiểm tra bản cài đặt; video trên máy vẫn dùng được.",
+    SOURCE_SETUP_INVALID: "Cần kiểm tra lại bản cài đặt để dùng nguồn trực tuyến. Video trên máy vẫn dùng được.",
+  };
+  return messages[code] ?? "Nguồn chưa hoàn tất. Bạn có thể hủy hoặc dừng nguồn trực tuyến và tiếp tục với video trên máy.";
+}
+function renderSource(state: SourceServiceState): void {
+  const labels = {
+    idle: "Chưa mở nguồn trực tuyến.", admitting: "Đang chuẩn bị nguồn trực tuyến. Bạn vẫn có thể thêm video trên máy.",
+    ready: "Sẵn sàng tiếp nhận nguồn. Video chỉ vào hàng xử lý sau khi tải xong.",
+    stopping: "Đang dừng nguồn trực tuyến, chờ xác nhận.", unavailable: "Nguồn trực tuyến chưa sẵn sàng; video trên máy vẫn dùng được.",
+    stopped: state.retired ? "Nguồn trực tuyến đã dừng. Mở lại ứng dụng nếu muốn tiếp tục; video trên máy vẫn dùng được."
+      : "Chưa xác nhận nguồn trực tuyến đã dừng. Video trên máy vẫn dùng được.",
+  };
+  $("#source-service-status").textContent = state.failure ? sourceProblem(state.failure) : labels[state.service];
+  sourceStop.disabled = ["idle", "stopped", "unavailable"].includes(state.service) || state.disposed;
+  $("#source-rejections").replaceChildren(...state.rejected.map((item) => {
+    const line = document.createElement("li");
+    line.textContent = `${item.line ? `Dòng ${item.line}: ` : ""}${sourceProblem(item.code)}`;
+    return line;
+  }));
+  sourceList.replaceChildren(...state.rows.map((row) => {
+    const item = document.createElement("li");
+    const title = document.createElement("p"); title.textContent = row.display_ref;
+    const status = document.createElement("p"); status.className = "hint";
+    status.textContent = sourcePhases[row.phase] + (row.error ? `. ${sourceProblem(row.error)}` : "");
+    item.append(title, status);
+    if (row.phase === "enumerated" && !row.selected_identity) {
+      for (const media of row.items.filter((value) => value.status === "discovered")) {
+        const download = document.createElement("button"); download.type = "button"; download.textContent = "Tải video";
+        download.disabled = state.service !== "ready";
+        download.addEventListener("click", () => {
+          download.disabled = true;
+          void sourceController.download(row.scan_id, media.identity_key).then((sent) => {
+            if (!sent) sourceFeedback.textContent = "Chưa gửi được yêu cầu tải. Hãy kiểm tra trạng thái nguồn.";
+          });
+        });
+        item.append(download);
+      }
+    }
+    if (!["cancelled", "paused", "failed", "interrupted", "downloaded", "queue_error"].includes(row.phase)) {
+      const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Hủy nguồn này";
+      cancel.disabled = row.phase === "cancelling" || state.disposed;
+      cancel.addEventListener("click", () => { void sourceController.cancel(row.scan_id); });
+      item.append(cancel);
+    }
+    return item;
+  }));
+}
+sourceController.subscribe(renderSource);
+let sourceSubmission = 0;
+$("#source-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const input = sourceInput.value;
+  if (!input.trim()) return;
+  const request = ++sourceSubmission;
+  sourceInput.value = "";
+  sourceFeedback.textContent = "Đang tiếp nhận. Bạn có thể thêm video trên máy trong lúc chờ.";
+  void sourceController.submit(input).then((result) => {
+    if (request !== sourceSubmission) return;
+    sourceFeedback.textContent = `Đã thêm ${result.local_added} video trên máy; ${result.local_present} video đã có. ${result.online_staged.length} URL vào danh sách tiếp nhận.`;
+  }).catch(() => {
+    if (request === sourceSubmission) sourceFeedback.textContent = "Chưa tiếp nhận được nguồn. Bạn vẫn có thể dùng nút Thêm video.";
+  });
+});
+sourceStop.addEventListener("click", () => { void sourceController.stop(); });
+const sourcePoll = window.setInterval(() => { void sourceController.poll(); }, 1000);
+
+window.addEventListener("beforeunload", () => {
+  window.clearInterval(sourcePoll);
+  void sourceController.dispose();
+  reviewPanel.destroy(); shell.dispose();
+});

@@ -16,8 +16,8 @@
       <section class="hero">
         <div>
           <p class="eyebrow">DUBFLOW LOCAL</p>
-          <h1>Video localization workspace</h1>
-          <p class="lede">Chuẩn bị hàng đợi video để xử lý cục bộ.</p>
+          <h1>Xử lý video và lồng tiếng Việt</h1>
+          <p class="lede">Thêm video, chọn giọng và xem lại từng câu trước khi xuất.</p>
         </div>
         <div class="release-card">
           <span id="release-version">Đang đọc phiên bản…</span>
@@ -26,8 +26,8 @@
       </section>
 
       <section class="notice" role="status">
-        <strong>CPU local-file production profile.</strong>
-        <span>Chọn video trên máy, bấm bắt đầu để supervisor xử lý bằng runtime/model đã kiểm chứng; output gồm MP4 H.264/AAC, SRT, ASS và timeline editable.</span>
+        <strong>Video trên máy luôn có thể thêm riêng.</strong>
+        <span>Chọn video, bật lồng tiếng nếu cần rồi bấm bắt đầu. Sau khi xử lý, bạn có thể nghe, sửa từng câu và xuất kết quả.</span>
       </section>
 
       <section class="toolbar" aria-label="Queue actions">
@@ -35,6 +35,24 @@
         <button id="clear-queue" type="button">Xóa hàng đợi</button>
         <span id="queue-summary" class="summary">0 video</span>
       </section>
+
+      <p id="queue-storage-status" class="storage-warning" role="alert" hidden></p>
+      <details class="source-panel">
+        <summary>Thêm từ đường dẫn hoặc nguồn trực tuyến</summary>
+        <form id="source-form">
+          <label for="source-input">Mỗi dòng một đường dẫn video hoặc URL công khai</label>
+          <textarea id="source-input" rows="3" spellcheck="false" placeholder="Dán đường dẫn hoặc URL ở đây"></textarea>
+          <div class="source-actions">
+            <button class="primary" type="submit">Tiếp nhận nguồn</button>
+            <button id="source-stop" type="button" disabled>Dừng nguồn trực tuyến</button>
+          </div>
+        </form>
+        <p class="hint">URL được kiểm tra trước. Bấm “Tải video” khi tìm thấy nguồn; chỉ video tải xong mới được thêm vào hàng xử lý. Không dán mật khẩu hoặc liên kết chứa thông tin đăng nhập.</p>
+        <p id="source-service-status" class="hint" role="status">Chưa mở nguồn trực tuyến.</p>
+        <p id="source-feedback" class="hint" role="status"></p>
+        <ul id="source-rejections" class="source-rejections"></ul>
+        <ul id="source-list" class="source-list" aria-label="Nguồn trực tuyến"></ul>
+      </details>
 
       <section class="workspace">
         <div class="queue-panel">

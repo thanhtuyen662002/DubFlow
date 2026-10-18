@@ -54,3 +54,15 @@ h2 { margin: 0; font-size: 17px; }
 .voice-controls:disabled { opacity: .65; }
 .voice-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
 .voice-filters label:last-child { grid-column: 1 / -1; }
+.source-panel { margin: 0 0 20px; padding: 14px 16px; border: 1px solid #30405f; border-radius: 10px; background: #141c2f; }
+.source-panel summary { cursor: pointer; font-weight: 600; }
+.source-panel form { margin-top: 16px; }
+.source-panel label { display: block; margin-bottom: 8px; font-size: 13px; }
+.source-panel textarea { width: 100%; resize: vertical; min-height: 80px; padding: 10px; color: inherit; background: #101827; border: 1px solid #526487; border-radius: 6px; font: inherit; }
+.source-actions { display: flex; gap: 10px; margin-top: 10px; }
+.source-list, .source-rejections { list-style: none; padding: 0; }
+.source-list li { padding: 12px 0; border-top: 1px solid #30405f; }
+.source-list p { margin: 0 0 6px; overflow-wrap: anywhere; }
+.source-list button { margin: 6px 8px 0 0; }
+.source-rejections, .storage-warning { color: #ffe0a1; font-size: 13px; line-height: 1.5; }
+.storage-warning { padding: 12px 16px; border: 1px solid #72582c; border-radius: 8px; }
