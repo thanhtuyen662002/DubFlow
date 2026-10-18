@@ -438,7 +438,7 @@ function renderSource(state: SourceServiceState): void {
     item.append(title, status);
     if (row.phase === "enumerating" && row.enumeration_complete && !row.enumeration_retired) {
       const refresh = document.createElement("button"); refresh.type = "button"; refresh.textContent = "Kiểm tra trạng thái";
-      refresh.disabled = state.service !== "ready" || state.disposed || row.delivery === "pending";
+      refresh.disabled = state.service !== "ready" || state.disposed || row.refresh_pending || row.delivery === "pending";
       refresh.addEventListener("click", () => {
         refresh.disabled = true;
         void sourceController.refresh(row.scan_id).then((sent) => {
