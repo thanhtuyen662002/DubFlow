@@ -1,5 +1,6 @@
 //! Bounded one-shot source service I/O. Call on a blocking pool, never the UI thread.
 //! No pipe read, write, or join runs in the deadline observer.
+pub mod service;
 mod tree;
 
 /// Private candidate-184 JSONL bridge. Process cleanup precedes JSON parsing,

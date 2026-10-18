@@ -1,6 +1,10 @@
 # Source intake hardening handoff (#207 / Draft #208)
 
 Status: **NOT_INTEGRATED**. This PR changes independent modules/tests only.
+Current-service follow-up: read [CURRENT_SERVICE.md](CURRENT_SERVICE.md). The
+integration185 alternative now mounts the persistent source-serve host, replacing
+the earlier legacy UI/one-shot alternative. Do not apply that historical patch
+from commit3103822 to f68. Candidate184's isolated alternative remains separate.
 Main base: `2bd7f51129d19dc63ea1dc82f20f77e193da6fcb`. It does not change the
 integrator's worktree, shared entrypoints, manifests, lockfiles or workflows.
 The PR body records the final source HEAD and exact-head CI URLs.
@@ -38,7 +42,7 @@ The replacement APIs are:
   until assigned to a private kill-on-close Job Object. Every outcome retires
   the owned subtree and observes/reaps the child before joining I/O threads.
   `AtomicBool` cancellation also interrupts blocked writes/reads.
-- `source_transport/host.rs`: five async Tauri commands use `spawn_blocking`;
+- Legacy candidate184 `source_transport/host.rs`: five async Tauri commands use `spawn_blocking`;
   dropping the waiting future sets cancellation. `json_request` validates a
   single response after cleanup, with static redacted errors.
 
@@ -66,17 +70,17 @@ worktrees owned by this task, not in either worker's active checkout.
    per-item admission. Accepted entries checkpoint; rejected entries are
    returned separately. The patch intentionally does not implement downloading.
 3. On exact integration185 `f68d2e790df0b7577006f22357495317fc6cf3be`, use
-   `integration185.patch` instead. It preserves existing Review handlers and
-   wires the UI/Tauri modules only. **That tree has no candidate184 native
-   enqueue/status/pause/resume/cancel dispatch.** Until the integrator reconciles
-   source service plumbing, online input returns unavailable/rejected; local
-   intake remains useful. Do not call this alternative full integration.
-4. When reconciling candidate184 native plumbing into current main/185, use
-   the corrected `admit`/response code from candidate184.patch and rerun the
-   actual native stdio/durable-queue tests. Do not restore whole-batch typed
-   deserialization or synchronous source commands. Recheck current source-owner
-   and local-job recovery semantics rather than transplanting the old server
-   wholesale. Materialization review r4243121352 remains in #168/#184 scope.
+   the current `integration185.patch` instead. It registers only the persistent
+   service Tauri module/handlers, preserving Review. That tree already implements
+   the producer-bound `source-serve` service with a different closed API.
+   Follow CURRENT_SERVICE.md to manage the host using trusted immutable release
+   pins and an explicit finite admission budget. Those trusted bootstrap values
+   are not invented by this patch; without managed state the handlers fail closed.
+4. Do not transplant the candidate184 server or its enqueue schema into f68.
+   The old source UI's batch acknowledgement is not the current native protocol.
+   A current-service UI must consume native observations separately from pipe
+   delivery and orchestrate original-pin scans/downloads. Full materialization
+   and review r4243121352 remain in #168/#184 integration scope.
 5. Run focused/native/local regressions, both required lanes, and the host build
    after wiring. Refresh Tested-Base-SHA against current main. Keep Draft;
    this handoff authorizes no merge, release, or completed #168 claim.
@@ -92,14 +96,18 @@ PASS locally:
   exact/over UTF-8 limits, mixed lists, individual errors and network batching.
 - `npm test --prefix apps/desktop`: existing local queue and voice regressions.
 - `npm run build --prefix apps/desktop`: strict TS and bundle, including new
-  modules. Both privately assembled candidate184 and integration185 alternatives
-  also pass their own existing npm tests, source tests and TS/bundle build.
+  modules. The candidate184 assembly passes its npm/source tests and TS/bundle
+  build. Historical UI assembly on185 at3103822 also passed those tests, but is
+  superseded and is not evidence for the new persistent-service/native host.
 - Native Windows GNU/LLD standalone harness for the exact owned Rust test files:
   3 boundary tests (including executed TS-to-native producer compatibility) and
-  6 controlled-child transport tests. Partial/no-newline stdout, silent child,
+  6 original controlled-child transport tests. Partial/no-newline stdout, silent child,
   blocked stdin, full stderr, byte overflow, error exit, parse error, cancellation,
   live parent/descendant OS observations and unrelated-neighbor survival. The
   descendant-held-pipe deadline case checks cleanup after parent exit as well.
+- The follow-up adds 7 persistent-service Windows tests, including startup,
+  blocked delivery, event ordering, current closed schema, native-scan cancel
+  versus service retirement, caps, and last-handle parent/descendant cleanup.
 - `python scripts/validate_governance.py`; `git diff --check`.
 
 The ordinary local MSVC Cargo command **FAILED before compilation** because
@@ -111,7 +119,8 @@ the Rust boundary test actually invokes the TypeScript test rather than silently
 skipping it. The source app path selects `supervisor-workspace` in the existing
 registry; no required lane/workflow was edited.
 
-NOT_RUN: installed/native Tauri host build, fully compiled native candidate
+NOT_RUN: installed/native Tauri host build, managed current-service bootstrap,
+actual f68 installed supervisor/manifest startup, fully compiled native candidate
 wiring, live providers, complete materialization or desktop E2E, GPU/release.
 These remain integration/qualification work. Read final exact-head hosted CI
 results in the PR before treating the component tests as remotely passed.

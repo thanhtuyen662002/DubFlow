@@ -24,19 +24,12 @@
   "integration185": {
     "preimage_commit": "f68d2e790df0b7577006f22357495317fc6cf3be",
     "preimages": {
-      "apps/desktop/src/main.ts": {
-        "git_blob": "3f9e186be505c75b62fa70fbbb9a85c63456cb4f",
-        "sha256_lf": "c7c09bd1594d0d0600d13ed88586ff48bebc62c9431e16d785d04b81d2b8de1c"
-      },
-      "apps/desktop/index.html": {
-        "git_blob": "56110b24cdaf2b6027d94c4539961550d085c847",
-        "sha256_lf": "1e5d449eff97614ed9d17b71b1b1dafed5d2fba1b91db47316481e2102b12314"
-      },
       "apps/desktop/src-tauri/src/main.rs": {
         "git_blob": "ce055ac720b625a63ffa4b08b2c4b4e762f05818",
         "sha256_lf": "406c89dd4f0a11d0fac34912179beb36362b82168a16e12f438e7b34bd937719"
       }
     },
-    "patch_sha256_lf": "8d7e97a9a0a3c85401295b4dc14ad229897e22b45730ffe857fae412541f2e2b"
+    "patch_sha256_lf": "984b039c2f1dacb86384a8e87dd0fd3849412309607f6c15d373e1856a1647da",
+    "requires_host_configuration": "Manage SourceServiceHost::new(trusted LaunchPin, explicit finite AdmissionWindow) from installed-release bootstrap; patch intentionally cannot invent these trusted values."
   }
 }

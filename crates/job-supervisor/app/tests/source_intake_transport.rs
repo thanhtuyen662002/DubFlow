@@ -316,3 +316,287 @@ fn deadline_retires_descendant_holding_pipe_after_parent_exit() {
     done.send(()).unwrap();
     watcher.join().unwrap();
 }
+
+mod persistent {
+    use super::*;
+    use source_transport::service::{
+        AdmissionWindow, Client, Failure, LaunchPin, NativeRequest, Phase,
+    };
+
+    fn launch(mode: &str, startup: u64) -> (Client, PathBuf) {
+        let (command, path) = invocation(mode);
+        let mut bounds = limits();
+        bounds.timeout = Duration::from_millis(80);
+        (
+            Client::spawn(
+                command,
+                AdmissionWindow::new(Duration::from_millis(startup)).unwrap(),
+                bounds,
+            )
+            .unwrap(),
+            path,
+        )
+    }
+    fn phase(client: &Client, expected: Phase) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if client.snapshot().phase == expected {
+                return;
+            }
+            assert!(Instant::now() < deadline, "phase: {:?}", client.snapshot());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    fn ready(client: &Client) {
+        phase(client, Phase::Ready);
+        client.drain();
+    }
+    fn stopped(client: &Client, failure: Option<Failure>) {
+        phase(client, Phase::Stopped);
+        assert!(client.snapshot().retired, "retirement must be observed");
+        assert_eq!(client.snapshot().failure, failure);
+    }
+    fn status() -> NativeRequest {
+        NativeRequest::Status {
+            scan_id: "scan".into(),
+        }
+    }
+    fn send(client: &Client, request: NativeRequest) {
+        let result = client
+            .submit(request, Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        assert_eq!(result.delivery, "submitted");
+        assert!(!serde_json::to_string(&result).unwrap().contains("accepted"));
+    }
+    fn event(client: &Client, name: &str) -> Vec<source_transport::service::Observation> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut observed = Vec::new();
+        loop {
+            observed.extend(client.drain());
+            if observed.iter().any(|e| e.value["event"] == name) {
+                return observed;
+            }
+            assert!(Instant::now() < deadline, "native fixture event missing");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn cli_pin_and_closed_schema_match_current_native_service() {
+        let root = std::env::temp_dir().join("immutable release");
+        let data = std::env::temp_dir().join("source data");
+        let hash = "a".repeat(64);
+        let pin = LaunchPin {
+            root: root.clone(),
+            data_root: data.clone(),
+            manifest_sha256: hash.clone(),
+        };
+        let command = pin.command().unwrap();
+        assert_eq!(
+            command.get_program(),
+            root.join("app/bin/dubflow-supervisor.exe")
+        );
+        assert_eq!(
+            command
+                .get_args()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "source-serve".to_owned(),
+                "--root".into(),
+                root.to_string_lossy().into_owned(),
+                "--data-root".into(),
+                data.to_string_lossy().into_owned(),
+                "--manifest-sha256".into(),
+                hash
+            ]
+        );
+        let request = serde_json::json!({"command":"start_video","scan_id":"scan","provider_id":"generic","source_ref":"https://example.test/x"});
+        let native: NativeRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(native).unwrap(), request);
+        assert!(serde_json::from_value::<NativeRequest>(
+            serde_json::json!({"command":"enqueue_sources","items":[]})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<NativeRequest>(
+            serde_json::json!({"command":"status","scan_id":"scan","request_id":1})
+        )
+        .is_err());
+        assert!(AdmissionWindow::new(Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn full_startup_admission_is_distinct_from_short_request_bound() {
+        let (client, path) = launch("service_slow", 1500);
+        assert_eq!(
+            client.submit(status(), Arc::new(AtomicBool::new(false))),
+            Err(Failure::NotReady)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(client.snapshot().phase, Phase::Admitting); // exceeds 80ms request bound
+        ready(&client);
+        send(&client, status());
+        let values = event(&client, "source_status");
+        assert_eq!(
+            values
+                .iter()
+                .map(|e| e.value["event"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["source_download_progress", "source_status"]
+        );
+        assert!(values[0].sequence < values[1].sequence);
+        assert!(!PathBuf::from(format!("{}.eof", path.display())).exists());
+        client.stop();
+        stopped(&client, None);
+    }
+
+    #[test]
+    fn admission_timeout_wrong_ready_and_startup_cancellation_retire_child() {
+        let (client, path) = launch("service_admission_stall", 1500);
+        let live = observation::Live::open(pids(&path, 1)[0]);
+        stopped(&client, Some(Failure::AdmissionTimeout));
+        live.stopped();
+        let (client, _) = launch("service_wrong_ready", 1000);
+        stopped(&client, Some(Failure::Protocol));
+        let (client, path) = launch("service_admission_stall", 5000);
+        let live = observation::Live::open(pids(&path, 1)[0]);
+        client.stop();
+        stopped(&client, None);
+        live.stopped();
+    }
+
+    #[test]
+    fn native_scan_cancel_keeps_service_owner_and_stdin_alive_until_shutdown() {
+        let (client, path) = launch("service_live", 1500);
+        ready(&client);
+        let owner = observation::Live::open(pids(&path, 1)[0]);
+        send(
+            &client,
+            NativeRequest::StartVideo {
+                scan_id: "scan".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/clip,1".into(),
+            },
+        );
+        event(&client, "source_preparing");
+        let worker = observation::Live::open(pids(&path, 2)[1]);
+        send(
+            &client,
+            NativeRequest::Cancel {
+                scan_id: "scan".into(),
+            },
+        );
+        event(&client, "source_preparation_stopped");
+        worker.stopped();
+        assert_eq!(client.snapshot().phase, Phase::Ready);
+        send(&client, status());
+        event(&client, "source_status");
+        assert!(!PathBuf::from(format!("{}.eof", path.display())).exists());
+        send(&client, NativeRequest::Shutdown);
+        stopped(&client, None);
+        owner.stopped();
+        assert_eq!(
+            std::fs::read_to_string(format!("{}.commands", path.display())).unwrap(),
+            "start_video\ncancel\nstatus\nshutdown\n"
+        );
+    }
+
+    #[test]
+    fn full_stderr_partial_line_and_overflow_have_distinct_bounded_outcomes() {
+        let (client, _) = launch("service_stderr", 1500);
+        ready(&client);
+        send(&client, status());
+        event(&client, "source_status");
+        client.stop();
+        stopped(&client, None);
+        for (mode, failure) in [
+            ("service_partial", Failure::ResponseTimeout),
+            ("service_stdout_flood", Failure::StdoutLimit),
+            ("service_stderr_flood", Failure::StderrLimit),
+            ("service_events_flood", Failure::EventOverflow),
+        ] {
+            let (client, _) = launch(mode, 1500);
+            stopped(&client, Some(failure));
+        }
+    }
+
+    fn fill_pipe(client: &Client, flag: Arc<AtomicBool>) -> Failure {
+        for _ in 0..512 {
+            // finite legal line sizes eventually fill an unread OS pipe
+            let request = NativeRequest::Start {
+                scan_id: "scan".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/".to_owned() + &"a".repeat(4000),
+                page_size: 1,
+                max_items: 1,
+            };
+            match client.submit(request, flag.clone()) {
+                Ok(submitted) => assert_eq!(submitted.delivery, "submitted"),
+                Err(error) => return error,
+            }
+        }
+        panic!("fixture pipe did not become bounded/backpressured");
+    }
+    #[test]
+    fn blocked_request_write_times_out_and_cancelled_write_retires_service() {
+        let (client, path) = launch("service_ignore_stdin", 1500);
+        ready(&client);
+        let live = observation::Live::open(pids(&path, 1)[0]);
+        assert_eq!(
+            fill_pipe(&client, Arc::new(AtomicBool::new(false))),
+            Failure::RequestTimeout
+        );
+        stopped(&client, Some(Failure::RequestTimeout));
+        live.stopped();
+        let (client, path) = launch("service_ignore_stdin", 1500);
+        ready(&client);
+        let live = observation::Live::open(pids(&path, 1)[0]);
+        let flag = Arc::new(AtomicBool::new(false));
+        let signal = flag.clone();
+        let cancel = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            signal.store(true, Ordering::Release);
+        });
+        assert_eq!(fill_pipe(&client, flag), Failure::Cancelled);
+        cancel.join().unwrap();
+        // Cancellation before a queued write starts can be refused without
+        // touching the service; explicit retirement remains available either way.
+        client.stop();
+        phase(&client, Phase::Stopped);
+        assert!(client.snapshot().retired);
+        live.stopped();
+    }
+
+    #[test]
+    fn oversized_request_is_local_rejection_and_last_drop_retires_active_tree() {
+        let (client, path) = launch("service_live", 1500);
+        ready(&client);
+        assert_eq!(
+            client.submit(
+                NativeRequest::StartVideo {
+                    scan_id: "scan".into(),
+                    provider_id: "generic".into(),
+                    source_ref: "x".repeat(70_000)
+                },
+                Arc::new(AtomicBool::new(false))
+            ),
+            Err(Failure::RequestLimit)
+        );
+        send(&client, status());
+        event(&client, "source_status");
+        let owner = observation::Live::open(pids(&path, 1)[0]);
+        send(
+            &client,
+            NativeRequest::StartVideo {
+                scan_id: "scan".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/x".into(),
+            },
+        );
+        event(&client, "source_preparing");
+        let worker = observation::Live::open(pids(&path, 2)[1]);
+        drop(client);
+        owner.stopped();
+        worker.stopped();
+    }
+}

@@ -1,4 +1,5 @@
-//! Tauri glue compiled only by the integrator's entrypoint patch.
+//! Legacy candidate184-only glue. Never mount on f68/current source-serve.
+//! The current-service host is service_host.rs and keeps one native owner alive.
 use serde_json::{json, Value};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
