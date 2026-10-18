@@ -80,6 +80,7 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
   const revisions = new Map<string, number>();
   let active: string | null = null, blocked = false, started = false, stopping = false;
   let starting: Promise<void> | null = null;
+  let startPending = false;
   let polling: Promise<SourceServiceState> | null = null;
   let writes: Promise<unknown> = Promise.resolve();
   let lastSequence = 0;
@@ -144,14 +145,16 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
   async function ensureStarted() {
     if (starting) return starting;
     if (started || state.disposed || stopping) return;
-    started = true; state.service = "admitting"; publish();
+    // Set before publishing: a subscribed observer may synchronously poll.
+    // Deferred native setup has no client/event route until start resolves.
+    started = true; startPending = true; state.service = "admitting"; publish();
     starting = (async () => {
       try { const value = await invoke("source_service_start_v1"); if (!state.disposed && !stopping) readSnapshot(value); }
-      catch (error) { if (!state.disposed) { state.service = "unavailable"; blocked = true; state.failure = code(error); } }
+      catch (error) { if (!state.disposed && !stopping) { state.service = "unavailable"; blocked = true; state.failure = code(error); } }
       if (!state.disposed) publish();
     })();
-    await starting;
-    starting = null;
+    try { await starting; }
+    finally { starting = null; startPending = false; }
   }
   function release(row: SourceRow) { if (active === row.scan_id) active = null; }
   function event(observation: NativeObservation): boolean {
@@ -229,8 +232,10 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
     return allowed;
   });
   function poll(): Promise<SourceServiceState> {
+    // No event drain while deferred setup has no client, or after observed
+    // retirement. Neither boundary is an IPC failure requiring UI diagnosis.
+    if (state.disposed || state.retired || startPending || !started || state.service === "unavailable") return Promise.resolve(snapshot());
     if (polling) return polling;
-    if (state.disposed || !started || state.service === "unavailable") return Promise.resolve(snapshot());
     const task = (async () => {
       try {
         const result = await pump.poll();

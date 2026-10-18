@@ -310,3 +310,72 @@ test("native public-reference spelling refusals remain per-item before using the
   assert.equal(result.online_staged.length, 1);
   assert.equal(h.sent("start_video")[0].source_ref, "https://example.test/good,1?name=tiếng-Việt");
 });
+
+test("bootstrap polling: pending start never drains an absent client or leaves a fake ready error", async () => {
+  const h = fixture(), start = deferred();
+  h.gates.set("source_service_start_v1", start);
+  h.gates.set("source_service_events_v1", {
+    get promise() { return Promise.reject("SOURCE_NOT_STARTED"); },
+  });
+  // A subscribed UI can poll synchronously as soon as admitting is published.
+  const unsubscribe = h.controller.subscribe((state) => {
+    if (state.service === "admitting") void h.controller.poll();
+  });
+  const pending = h.controller.submit("https://example.test/one");
+  const waiting = await h.controller.poll();
+  assert.equal(waiting.service, "admitting");
+  assert.equal(waiting.failure, null);
+  assert.equal(h.count("source_service_events_v1"), 0);
+  assert.equal(h.count("source_service_state_v1"), 0);
+  assert.equal((await h.controller.submit(path)).local_added, 1);
+  unsubscribe();
+  h.gates.delete("source_service_events_v1");
+  start.resolve({ phase: "ready", failure: null, retired: false });
+  await pending; await h.controller.poll();
+  assert.equal(h.controller.getState().service, "ready");
+  assert.equal(h.controller.getState().failure, null);
+  assert.equal(h.sent("start_video").length, 1);
+});
+
+for (const outcome of ["late-ready", "late-cancelled"]) {
+  test("bootstrap polling: observed retirement suppresses dead IPC and " + outcome + " cannot revive setup", async () => {
+    const h = fixture(), start = deferred();
+    h.gates.set("source_service_start_v1", start);
+    const pending = h.controller.submit("https://example.test/one");
+    h.gates.set("source_service_stop_v1", { promise: Promise.resolve({ phase: "stopped", failure: "cancelled", retired: true }) });
+    const stopped = await h.controller.stop();
+    assert.equal(stopped.service, "stopped"); assert.equal(stopped.retired, true);
+    const calls = h.calls.length;
+    h.gates.set("source_service_events_v1", { get promise() { return Promise.reject("SOURCE_SETUP_CANCELLED: no client"); } });
+    h.gates.set("source_service_state_v1", { get promise() { return Promise.reject("SOURCE_SETUP_CANCELLED: no client"); } });
+    const retired = await h.controller.poll();
+    assert.equal(h.calls.length, calls);
+    assert.equal(retired.failure, stopped.failure);
+    if (outcome === "late-ready") start.resolve({ phase: "ready", failure: null, retired: false });
+    else start.reject("SOURCE_SETUP_CANCELLED: preparation cancelled");
+    await pending;
+    await h.controller.poll();
+    assert.equal(h.calls.length, calls);
+    assert.equal(h.controller.getState().service, "stopped");
+    assert.equal(h.controller.getState().retired, true);
+    assert.equal(h.controller.getState().failure, stopped.failure);
+    assert.equal(h.sent("start_video").length, 0);
+    assert.equal((await h.controller.submit(path)).local_added, 1);
+  });
+}
+
+test("bootstrap polling: cancelling a staged scan during pending setup never launches that scan", async () => {
+  const h = fixture(), start = deferred();
+  h.gates.set("source_service_start_v1", start);
+  const pending = h.controller.submit("https://example.test/one");
+  assert.equal(await h.controller.cancel("scan-1"), true);
+  assert.equal((await h.controller.poll()).failure, null);
+  assert.equal(h.count("source_service_events_v1"), 0);
+  assert.equal(h.sent("cancel").length, 0);
+  start.resolve({ phase: "ready", failure: null, retired: false });
+  await pending; await h.controller.poll();
+  assert.equal(h.sent("start_video").length, 0);
+  assert.equal(h.controller.getState().rows[0].phase, "cancelled");
+  assert.equal(h.controller.getState().failure, null);
+  assert.equal(h.count("source_service_stop_v1"), 0);
+});
