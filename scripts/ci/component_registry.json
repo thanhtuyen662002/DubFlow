@@ -778,6 +778,42 @@
       ]
     },
     {
+      "id": "desktop-source-intake",
+      "roots": [
+        "apps/desktop/src/features/source_intake",
+        "apps/desktop/test/source_intake.test.mjs",
+        "apps/desktop/test/source_materialized.test.mjs",
+        "apps/desktop/test/source_service_controller.test.mjs",
+        "apps/desktop/test/source_ui_messages.test.mjs",
+        "apps/desktop/src/main.ts",
+        "apps/desktop/index.html",
+        "apps/desktop/package.json",
+        "apps/desktop/src/features/queue/model.ts"
+      ],
+      "commands": [
+        [
+          "node",
+          "--experimental-strip-types",
+          "apps/desktop/test/source_intake.test.mjs"
+        ],
+        [
+          "node",
+          "--experimental-strip-types",
+          "apps/desktop/test/source_materialized.test.mjs"
+        ],
+        [
+          "node",
+          "--experimental-strip-types",
+          "apps/desktop/test/source_service_controller.test.mjs"
+        ],
+        [
+          "node",
+          "--experimental-strip-types",
+          "apps/desktop/test/source_ui_messages.test.mjs"
+        ]
+      ]
+    },
+    {
       "id": "native-source-controller",
       "roots": [
         "crates/job-supervisor/app/src/source_server.rs",
