@@ -146,6 +146,13 @@ fn observe(
         }
         if let Some(status) = child.child.try_wait().map_err(|_| Error::Io)? {
             if !status.success() {
+                // A capped reader publishes failure before closing the pipe.
+                // Preserve that cause if the broken pipe also exits the child.
+                while let Ok(event) = rx.try_recv() {
+                    if let Event::Failure(error) = event {
+                        return Err(error);
+                    }
+                }
                 return Err(Error::Exit);
             }
             if output.is_some() && stderr_done && written {

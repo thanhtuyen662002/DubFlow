@@ -12,8 +12,14 @@ use std::time::{Duration, Instant};
 fn fixture() -> &'static Path {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
-        let dir =
-            std::env::temp_dir().join(format!("dubflow-source-fixture-{}", std::process::id()));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "dubflow-source-fixture-{}-{nonce}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("fixture.rs");
         std::fs::write(&source, include_str!("source_intake/fixture.rs")).unwrap();
