@@ -1,5 +1,5 @@
-//! Current f68 source-serve Tauri surface. Config is supplied once by the trusted
-//! entrypoint; webview requests cannot select roots, manifest pins or budgets.
+//! Current source-serve Tauri surface. All potentially blocking host operations
+//! run off the UI thread. Requests cannot choose roots, pins or budgets.
 #[path = "host_state.rs"]
 mod host_state;
 use crate::source_transport::service::{NativeRequest, Observation, Snapshot, Submission};
@@ -14,49 +14,54 @@ impl Drop for CancelOnDrop {
         self.0.store(true, Ordering::Release);
     }
 }
-fn error(value: crate::source_transport::service::Failure) -> String {
-    host_state::service_error(value)
-}
 
 #[tauri::command]
-pub fn source_service_start_v1(
+pub async fn source_service_start_v1(
     state: tauri::State<'_, SourceServiceHost>,
 ) -> Result<Snapshot, String> {
-    state.start() // unavailable is an IPC error; local-file host may stay managed
+    let host = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.start())
+        .await
+        .map_err(|_| "SOURCE_HOST_TASK".to_owned())?
 }
 #[tauri::command]
-pub fn source_service_state_v1(
+pub async fn source_service_state_v1(
     state: tauri::State<'_, SourceServiceHost>,
 ) -> Result<Snapshot, String> {
-    state.state()
+    let host = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.state())
+        .await
+        .map_err(|_| "SOURCE_HOST_TASK".to_owned())?
 }
 #[tauri::command]
 pub async fn source_service_events_v1(
     state: tauri::State<'_, SourceServiceHost>,
 ) -> Result<Vec<Observation>, String> {
-    let client = state.client()?;
-    tauri::async_runtime::spawn_blocking(move || client.drain())
+    let host = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.events())
         .await
-        .map_err(|_| "SOURCE_HOST_TASK".into())
+        .map_err(|_| "SOURCE_HOST_TASK".to_owned())?
 }
 #[tauri::command]
 pub async fn source_service_send_v1(
     state: tauri::State<'_, SourceServiceHost>,
     request: NativeRequest,
 ) -> Result<Submission, String> {
-    let client = state.client()?;
+    let host = state.inner().clone();
     let cancelled = Arc::new(AtomicBool::new(false));
     let guard = CancelOnDrop(cancelled.clone());
-    let result = tauri::async_runtime::spawn_blocking(move || client.submit(request, cancelled))
+    let result = tauri::async_runtime::spawn_blocking(move || host.send(request, cancelled))
         .await
-        .map_err(|_| "SOURCE_HOST_TASK".to_owned())?
-        .map_err(error);
+        .map_err(|_| "SOURCE_HOST_TASK".to_owned())?;
     drop(guard);
-    result // submitted only: consume native events separately
+    result
 }
 #[tauri::command]
-pub fn source_service_stop_v1(
+pub async fn source_service_stop_v1(
     state: tauri::State<'_, SourceServiceHost>,
 ) -> Result<Snapshot, String> {
-    state.stop()
+    let host = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.stop())
+        .await
+        .map_err(|_| "SOURCE_HOST_TASK".to_owned())?
 }

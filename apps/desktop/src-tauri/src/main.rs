@@ -357,20 +357,15 @@ fn cancel_job(job_id: String) -> Result<(), String> {
 }
 
 fn installed_source_host() -> source_host::SourceServiceHost {
-    let pin = version_root().and_then(|root| {
-        control_root().and_then(|data| {
-            source_bootstrap::launch_pin(root, data).map_err(str::to_owned)
-        })
-    });
-    match pin {
-        Ok(pin) => source_host::SourceServiceHost::from_trusted_parts(
-            Some(pin),
-            source_transport::service::AdmissionWindow::new(std::time::Duration::from_secs(180)).ok(),
-        ),
-        Err(_) => source_host::SourceServiceHost::unavailable(
-            source_host::UnavailableReason::MissingTrustedRelease,
-        ),
-    }
+    source_host::SourceServiceHost::deferred(|| {
+        let root = version_root().map_err(|_| source_host::UnavailableReason::MissingTrustedRelease)?;
+        let data = control_root().map_err(|_| source_host::UnavailableReason::MissingTrustedRelease)?;
+        let pin = source_bootstrap::launch_pin(root, data)
+            .map_err(|_| source_host::UnavailableReason::InvalidTrustedRelease)?;
+        let admission = source_transport::service::AdmissionWindow::new(std::time::Duration::from_secs(180))
+            .map_err(|_| source_host::UnavailableReason::MissingAdmissionWindow)?;
+        Ok((pin, admission))
+    })
 }
 
 fn main() {

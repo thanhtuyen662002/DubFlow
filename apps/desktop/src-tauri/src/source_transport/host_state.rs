@@ -1,18 +1,19 @@
-//! Managed source state can always be installed while local-file mode starts.
-//! Configuration comes only from the trusted entrypoint, never IPC arguments.
+//! Native-only deferred configuration keeps optional source I/O off UI startup.
 use crate::source_transport::service::{
-    AdmissionWindow, Client, Failure, LaunchPin, NativeRequest, Observation, Snapshot, Submission,
+    AdmissionWindow, Client, Failure, LaunchPin, NativeRequest, Observation, Phase, Snapshot,
+    Submission,
 };
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
-/// Closed reasons prevent bootstrap errors containing private paths/pins from
-/// being copied into the webview. Every unavailable operation uses one static,
-/// bounded actionable message and performs no launch, owner acquisition or retry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnavailableReason {
     MissingTrustedRelease,
     InvalidTrustedRelease,
     MissingAdmissionWindow,
+    BootstrapCancelled,
 }
 impl UnavailableReason {
     pub fn message(self) -> &'static str {
@@ -20,19 +21,26 @@ impl UnavailableReason {
             Self::MissingTrustedRelease => "SOURCE_SETUP_MISSING: Nguồn trực tuyến chưa sẵn sàng. Hãy kiểm tra bản cài đặt DubFlow; tệp cục bộ vẫn dùng được.",
             Self::InvalidTrustedRelease => "SOURCE_SETUP_INVALID: Cấu hình nguồn trực tuyến không hợp lệ. Hãy sửa bản cài đặt DubFlow; tệp cục bộ vẫn dùng được.",
             Self::MissingAdmissionWindow => "SOURCE_SETUP_POLICY_MISSING: Thiết lập nguồn trực tuyến chưa hoàn tất. Hãy kiểm tra cấu hình DubFlow; tệp cục bộ vẫn dùng được.",
+            Self::BootstrapCancelled => "SOURCE_SETUP_CANCELLED: Đã hủy chuẩn bị nguồn trực tuyến. Tệp cục bộ vẫn dùng được.",
         }
     }
 }
+type Bootstrap =
+    Box<dyn FnOnce() -> Result<(LaunchPin, AdmissionWindow), UnavailableReason> + Send>;
 enum Configuration {
     Available {
         pin: LaunchPin,
         admission: AdmissionWindow,
     },
     Unavailable(UnavailableReason),
+    Deferred(Option<Bootstrap>),
+    Initializing,
 }
+#[derive(Clone)]
 pub struct SourceServiceHost {
-    configuration: Configuration,
-    client: Mutex<Option<Client>>,
+    configuration: Arc<Mutex<Configuration>>,
+    client: Arc<Mutex<Option<Client>>>,
+    bootstrap_cancelled: Arc<AtomicBool>,
 }
 impl Default for SourceServiceHost {
     fn default() -> Self {
@@ -40,26 +48,22 @@ impl Default for SourceServiceHost {
     }
 }
 impl SourceServiceHost {
-    /// Retains the exact trusted pin/window; syntactically malformed pins become
-    /// unavailable without filesystem probing or an attempted native launch.
-    /// Complete manifest/containment/ownership validation remains native.
+    fn configuration(value: Configuration) -> Self {
+        Self {
+            configuration: Arc::new(Mutex::new(value)),
+            client: Arc::new(Mutex::new(None)),
+            bootstrap_cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
     pub fn new(pin: LaunchPin, admission: AdmissionWindow) -> Self {
         if pin.command().is_err() {
             return Self::unavailable(UnavailableReason::InvalidTrustedRelease);
         }
-        Self {
-            configuration: Configuration::Available { pin, admission },
-            client: Mutex::new(None),
-        }
+        Self::configuration(Configuration::Available { pin, admission })
     }
     pub fn unavailable(reason: UnavailableReason) -> Self {
-        Self {
-            configuration: Configuration::Unavailable(reason),
-            client: Mutex::new(None),
-        }
+        Self::configuration(Configuration::Unavailable(reason))
     }
-    /// Optional bootstrap parts are host-only. No pin/budget is inferred and no
-    /// native process starts merely because managed state is constructed.
     pub fn from_trusted_parts(pin: Option<LaunchPin>, admission: Option<AdmissionWindow>) -> Self {
         match (pin, admission) {
             (None, _) => Self::unavailable(UnavailableReason::MissingTrustedRelease),
@@ -67,11 +71,51 @@ impl SourceServiceHost {
             (Some(pin), Some(admission)) => Self::new(pin, admission),
         }
     }
-    fn configured(&self) -> Result<(&LaunchPin, AdmissionWindow), String> {
-        match &self.configuration {
-            Configuration::Available { pin, admission } => Ok((pin, *admission)),
+    /// Saves a native closure without calling it. No filesystem access, process
+    /// launch or thread is required merely to construct/manage this state.
+    pub fn deferred(
+        bootstrap: impl FnOnce() -> Result<(LaunchPin, AdmissionWindow), UnavailableReason>
+            + Send
+            + 'static,
+    ) -> Self {
+        Self::configuration(Configuration::Deferred(Some(Box::new(bootstrap))))
+    }
+    fn configured(&self) -> Result<(LaunchPin, AdmissionWindow), String> {
+        match &*self.configuration.lock().map_err(|_| "SOURCE_HOST_LOCK")? {
+            Configuration::Available { pin, admission } => Ok((pin.clone(), *admission)),
             Configuration::Unavailable(reason) => Err(reason.message().to_owned()),
+            _ => Err("SOURCE_NOT_STARTED".to_owned()),
         }
+    }
+    /// The async Tauri entry executes this on a blocking worker. Do not hold
+    /// either mutex while doing filesystem I/O: state/stop remain responsive.
+    fn prepare_configuration(&self) -> Result<bool, String> {
+        let setup = {
+            let mut config = self.configuration.lock().map_err(|_| "SOURCE_HOST_LOCK")?;
+            match &mut *config {
+                Configuration::Deferred(slot) => {
+                    let value = slot.take().ok_or("SOURCE_HOST_SETUP")?;
+                    *config = Configuration::Initializing;
+                    value
+                }
+                Configuration::Initializing => return Ok(false),
+                _ => return Ok(true),
+            }
+        };
+        let result = setup();
+        let mut config = self.configuration.lock().map_err(|_| "SOURCE_HOST_LOCK")?;
+        *config = if self.bootstrap_cancelled.load(Ordering::Acquire) {
+            Configuration::Unavailable(UnavailableReason::BootstrapCancelled)
+        } else {
+            match result {
+                Ok((pin, admission)) if pin.command().is_ok() => {
+                    Configuration::Available { pin, admission }
+                }
+                Ok(_) => Configuration::Unavailable(UnavailableReason::InvalidTrustedRelease),
+                Err(reason) => Configuration::Unavailable(reason),
+            }
+        };
+        Ok(true)
     }
     pub(super) fn client(&self) -> Result<Client, String> {
         self.configured()?;
@@ -84,19 +128,27 @@ impl SourceServiceHost {
     pub fn start(&self) -> Result<Snapshot, String> {
         self.start_with(Client::launch)
     }
-    // Private injection point tests the real gate without permitting production
-    // callers to substitute workers, pins, budgets or source adapters.
     fn start_with(
         &self,
         launch: impl FnOnce(LaunchPin, AdmissionWindow) -> Result<Client, Failure>,
     ) -> Result<Snapshot, String> {
+        if !self.prepare_configuration()? {
+            return Ok(Snapshot {
+                phase: Phase::Admitting,
+                failure: None,
+                retired: false,
+            });
+        }
         let (pin, admission) = self.configured()?;
         let mut client = self
             .client
             .lock()
             .map_err(|_| "SOURCE_HOST_LOCK".to_owned())?;
         if client.is_none() {
-            *client = Some(launch(pin.clone(), admission).map_err(service_error)?);
+            if self.bootstrap_cancelled.load(Ordering::Acquire) {
+                return Err(UnavailableReason::BootstrapCancelled.message().into());
+            }
+            *client = Some(launch(pin, admission).map_err(service_error)?);
         }
         client
             .as_ref()
@@ -104,6 +156,16 @@ impl SourceServiceHost {
             .ok_or_else(|| "SOURCE_NOT_STARTED".into())
     }
     pub fn state(&self) -> Result<Snapshot, String> {
+        if matches!(
+            &*self.configuration.lock().map_err(|_| "SOURCE_HOST_LOCK")?,
+            Configuration::Initializing
+        ) {
+            return Ok(Snapshot {
+                phase: Phase::Admitting,
+                failure: None,
+                retired: false,
+            });
+        }
         Ok(self.client()?.snapshot())
     }
     pub fn events(&self) -> Result<Vec<Observation>, String> {
@@ -119,6 +181,22 @@ impl SourceServiceHost {
             .map_err(service_error)
     }
     pub fn stop(&self) -> Result<Snapshot, String> {
+        {
+            let mut config = self.configuration.lock().map_err(|_| "SOURCE_HOST_LOCK")?;
+            match &*config {
+                Configuration::Deferred(_) | Configuration::Initializing => {
+                    self.bootstrap_cancelled.store(true, Ordering::Release);
+                    *config = Configuration::Unavailable(UnavailableReason::BootstrapCancelled);
+                    return Ok(Snapshot {
+                        phase: Phase::Stopped,
+                        failure: Some(Failure::Cancelled),
+                        retired: true,
+                    });
+                }
+                Configuration::Unavailable(reason) => return Err(reason.message().into()),
+                _ => self.bootstrap_cancelled.store(true, Ordering::Release),
+            }
+        }
         let client = self.client()?;
         client.stop();
         Ok(client.snapshot())
@@ -154,6 +232,69 @@ mod tests {
     }
     fn window() -> AdmissionWindow {
         AdmissionWindow::new(Duration::from_millis(1500)).unwrap()
+    }
+    #[test]
+    fn deferred_failure_or_malformed_pin_is_lazy_and_never_retried_or_launched() {
+        for malformed in [false, true] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let seen = calls.clone();
+            let host = SourceServiceHost::deferred(move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+                if malformed {
+                    let mut value = pin();
+                    value.manifest_sha256 = "invalid".into();
+                    Ok((value, window()))
+                } else {
+                    Err(UnavailableReason::MissingTrustedRelease)
+                }
+            });
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(host.state().unwrap_err(), "SOURCE_NOT_STARTED");
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            for _ in 0..3 {
+                assert!(host
+                    .start_with(|_, _| panic!("invalid setup launched"))
+                    .is_err());
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(host.client.lock().unwrap().is_none());
+        }
+    }
+    #[test]
+    fn blocked_setup_does_not_hold_state_or_stop_and_cancel_prevents_late_launch() {
+        let (entered_send, entered_recv) = std::sync::mpsc::channel();
+        let (release_send, release_recv) = std::sync::mpsc::channel();
+        let host = SourceServiceHost::deferred(move || {
+            entered_send.send(()).unwrap();
+            release_recv.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok((pin(), window()))
+        });
+        let background = host.clone();
+        let setup = std::thread::spawn(move || {
+            background.start_with(|_, _| panic!("cancelled setup launched"))
+        });
+        entered_recv.recv_timeout(Duration::from_secs(2)).unwrap();
+        let start = Instant::now();
+        assert_eq!(host.state().unwrap().phase, Phase::Admitting);
+        assert_eq!(
+            host.start_with(|_, _| panic!("duplicate setup launched"))
+                .unwrap()
+                .phase,
+            Phase::Admitting
+        );
+        let stopped = host.stop().unwrap();
+        assert_eq!(stopped.phase, Phase::Stopped);
+        assert!(stopped.retired);
+        assert!(start.elapsed() < Duration::from_secs(1));
+        release_send.send(()).unwrap();
+        assert_eq!(
+            setup.join().unwrap().unwrap_err(),
+            UnavailableReason::BootstrapCancelled.message()
+        );
+        assert!(host.client.lock().unwrap().is_none());
+        assert!(host
+            .start_with(|_, _| panic!("cancelled bootstrap retried"))
+            .is_err());
     }
     fn request() -> NativeRequest {
         NativeRequest::Status {
@@ -278,12 +419,18 @@ mod tests {
         }
     }
     #[test]
-    fn configured_route_keeps_pins_one_live_client_and_existing_event_send_stop_behavior() {
+    fn deferred_route_keeps_pins_one_live_client_and_existing_event_send_stop_behavior() {
         let value = pin();
         let root = value.root.clone();
         let data = value.data_root.clone();
         let hash = value.manifest_sha256.clone();
-        let host = SourceServiceHost::new(value, window());
+        let bootstrap_calls = Arc::new(AtomicUsize::new(0));
+        let observed = bootstrap_calls.clone();
+        let host = SourceServiceHost::deferred(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok((value, window()))
+        });
+        assert_eq!(bootstrap_calls.load(Ordering::SeqCst), 0);
         assert_eq!(host.state().unwrap_err(), "SOURCE_NOT_STARTED");
         let binary = fixture();
         let pid = binary.with_file_name("pids");
@@ -302,6 +449,7 @@ mod tests {
         host.start_with(|_, _| panic!("managed client must be reused"))
             .unwrap();
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(bootstrap_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             host.send(request(), Arc::new(AtomicBool::new(false)))
                 .unwrap()
