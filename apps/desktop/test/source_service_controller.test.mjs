@@ -39,9 +39,10 @@ function fixture(queue = new QueueController(new MemorySnapshotStorage())) {
 async function enumerate(h, scan = "scan-1", identity = "generic:scene,1") {
   h.push({ event: "source_preparing", scan_id: scan });
   h.push({ event: "source_status", scan_id: scan, status: "running", dispatch_revision: 1 });
-  h.push({ event: "source_status", scan_id: scan, status: "completed", dispatch_revision: 2 });
+  h.push({ event: "source_status", scan_id: scan, status: "completed", dispatch_revision: 2, enumeration_retired: false });
   await h.controller.poll();
   h.push({ event: "source_items", scan_id: scan, offset: 0, total: 1, items: [{ identity_key: identity, status: "discovered" }] });
+  h.push({ event: "source_status", scan_id: scan, status: "completed", dispatch_revision: 2, enumeration_retired: true });
   await h.controller.poll();
 }
 
@@ -264,7 +265,7 @@ test("late submitted delivery and stale statuses cannot regress native progress;
   assert.equal(h.controller.getState().rows[0].phase, "preparing");
   gate.resolve({ delivery: "submitted" }); await pending;
   assert.equal(h.controller.getState().rows[0].phase, "preparing");
-  h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 2 }); await h.controller.poll();
+  h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 2, enumeration_retired: true }); await h.controller.poll();
   h.push({ event: "source_status", scan_id: "scan-1", status: "running", dispatch_revision: 1 }); await h.controller.poll();
   assert.equal(h.controller.getState().rows[0].phase, "enumerated");
   let count = 0;
@@ -378,4 +379,71 @@ test("bootstrap polling: cancelling a staged scan during pending setup never lau
   assert.equal(h.controller.getState().rows[0].phase, "cancelled");
   assert.equal(h.controller.getState().failure, null);
   assert.equal(h.count("source_service_stop_v1"), 0);
+});
+
+test("retirement gate: completed plus items while child is live cannot offer or send download", async () => {
+  const h = fixture();
+  await h.controller.submit("https://example.test/one");
+  h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 2, enumeration_retired: false });
+  await h.controller.poll();
+  h.push({ event: "source_items", scan_id: "scan-1", offset: 0, total: 1, items: [{ identity_key: "generic:one", status: "discovered" }] });
+  h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 2, enumeration_retired: false });
+  await h.controller.poll();
+  assert.notEqual(h.controller.getState().rows[0].phase, "enumerated"); // Existing main's button gate.
+  assert.equal(h.controller.getState().rows[0].enumeration_complete, true);
+  assert.equal(h.controller.getState().rows[0].enumeration_retired, false);
+  assert.equal(await h.controller.download("scan-1", "generic:one"), false);
+  assert.equal(h.sent("download").length, 0);
+  assert.equal((await h.controller.submit(path)).local_added, 1);
+  h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 2, enumeration_retired: true });
+  await h.controller.poll();
+  assert.equal(h.controller.getState().rows[0].phase, "enumerated");
+  assert.equal(await h.controller.download("scan-1", "generic:one"), true);
+  assert.equal(await h.controller.download("scan-1", "generic:one"), false);
+  assert.equal(h.sent("download").length, 1);
+});
+
+test("retirement gate: absent/malformed/stale acknowledgements fail closed; explicit status recovers lost ack", async () => {
+  const h = fixture();
+  await h.controller.submit("https://example.test/one");
+  for (const marker of [undefined, "true", false]) {
+    h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 4, enumeration_retired: marker });
+  }
+  await h.controller.poll();
+  h.push({ event: "source_items", scan_id: "scan-1", offset: 0, total: 1, items: [{ identity_key: "generic:one", status: "discovered" }] });
+  h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 2, enumeration_retired: true });
+  await h.controller.poll();
+  assert.equal(await h.controller.download("scan-1", "generic:one"), false);
+  assert.equal(h.sent("download").length, 0);
+  assert.equal(await h.controller.refresh("scan-1"), true);
+  assert.deepEqual(h.sent("status"), [{ command: "status", scan_id: "scan-1" }]);
+  assert.notEqual(h.controller.getState().rows[0].phase, "enumerated"); // Submitted readback is not the ack.
+  h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 4, enumeration_retired: true });
+  h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 4, enumeration_retired: true });
+  await h.controller.poll();
+  assert.equal(h.controller.getState().rows[0].phase, "enumerated");
+  assert.equal(await h.controller.download("scan-1", "generic:one"), true);
+  assert.equal(h.sent("download").length, 1);
+  assert.equal(h.queue.getSnapshot().jobs.length, 0);
+});
+
+test("retirement gate: cancelled/failed rows ignore a late positive ack and preserve local results", async () => {
+  for (const outcome of ["cancelled", "failed"]) {
+    const h = fixture();
+    h.queue.addPaths([path]);
+    await h.controller.submit("https://example.test/one");
+    h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 2, enumeration_retired: false });
+    await h.controller.poll();
+    if (outcome === "cancelled") {
+      await h.controller.cancel("scan-1");
+      h.push({ event: "source_enumeration_stopped", scan_id: "scan-1", cancelled: true, retained_completed_scan: true });
+    } else h.push({ event: "source_error", scan_id: "scan-1", code: "SOURCE_SCAN_STOPPED", retryable: false });
+    h.push({ event: "source_status", scan_id: "scan-1", status: "completed", dispatch_revision: 2, enumeration_retired: true });
+    await h.controller.poll();
+    assert.equal(h.controller.getState().rows[0].phase, outcome);
+    assert.equal(await h.controller.download("scan-1", "generic:one"), false);
+    assert.equal(h.sent("download").length, 0);
+    assert.equal(h.queue.getSnapshot().jobs.length, 1);
+    assert.equal(h.queue.getSnapshot().jobs[0].sourcePath, path);
+  }
 });

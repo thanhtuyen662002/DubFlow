@@ -98,3 +98,24 @@ PR208, Douyin/Bilibili, the desktop host or complete168/175 acceptance. Native
 producer preparation/inspection completion is the concrete remaining dependency
 for live materialization evidence; shared entrypoints/native qualification stay
 with the integrator.
+
+## C2-06 enumeration-to-download gate (candidate on b8)
+
+Before showing/sending Download, the current controller requires the private
+native source_status.enumeration_retired === true at the observed dispatch
+revision, in addition to completed enumeration and an explicit discovered item
+identity. Native emits that positive observation only after successful terminal
+validation and child exit/reap. Page completion and source_items never authorize
+the transition. Cancellation/failure/stale or malformed observations cannot
+resurrect a retired row or enqueue media. A lost positive observation can be read
+back explicitly with refresh(scanId) using the existing status command.
+
+This gate does not alter the materialization receipt/pump, deduplication or
+local QueueController boundary: only a validated selected source_downloaded
+event enters the local processing queue. Prior media and admission records are
+preserved on enumerator cancellation/failure. A restarted service does not infer
+old worker-exit success from completed SQLite rows; the broader old-result and
+destructive-drain reconciliation gap remains open. Matching native/controller
+release compatibility and exact execution evidence are in CURRENT_SERVICE.md and
+the C2-06 handoff. This candidate has not qualified a packaged GUI/native source
+flow or repeated the old f68 probe.

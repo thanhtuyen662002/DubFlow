@@ -137,3 +137,72 @@ passed, but producer preparation did not finish within the bounded observation,
 and materialization was not reached. Full Tauri/MSVC host compilation, managed
 desktop bootstrap/UI orchestration and completed #168 qualification remain
 unproven. Final exact-head/base CI URLs and SHA are recorded in the PR body.
+
+## C2-06: positive enumeration retirement acknowledgement
+
+Candidate based on exact published b8cc19bd9c602da27815068eb566a36d0651e74c;
+C1 owns integration/publication and the installed qualification. The b8 UI can
+offer download after a completed page while the enumerator still owns the native
+slot. Its resulting uncorrelated busy error is not an acceptable readiness probe.
+
+The private native source_status observation now carries
+enumeration_retired: boolean. A committed checkpoint emits false, even when
+its SQLite status is completed. Only accepted terminal-completed plus observed
+successful child exit/reap can emit true. The existing three-second retirement
+allowance is unchanged. Bad exit, I/O error or a still-live terminal worker is
+killed/reaped without another cooperative-stop allowance, then reports scoped
+source_error/SOURCE_ENUMERATION_RETIREMENT_FAILED; no positive ack is emitted.
+Other staged sources may proceed after this real scoped failure.
+
+Cancel at this boundary also needs truthful control: completed SQLite scans
+cannot transition to Cancelled. Native stops/reaps the matching enumerator,
+invalidates its session-local acknowledgement and returns the private
+source_enumeration_stopped event with cancelled and retained_completed_scan=true.
+The controller closes this intake row; the completed durable scan, items and
+admissions remain intact. Repeating the control is idempotent and cannot stop an
+unrelated active scan. Cancellation after successful retirement uses the same
+event and does not pretend to rewrite durable enumeration history.
+
+The supervisor retains one session-local acknowledgement for its latest
+successfully retired enumeration, bound to scan ID and exact dispatch revision.
+The existing read-only status request can return it again while the native
+slot is idle. Queries do not mutate SQLite or launch workers. Missing process,
+completed rows, source_items, two identical completed statuses, elapsed time and
+reopen never manufacture the observation. Reopen/older unremembered scans retain
+their original rows, admissions and results but have no reconstructed positive
+ack; complete old-scan/crash reconciliation remains #168 work.
+
+The controller separately exposes enumeration_complete and enumeration_retired.
+Its existing phase === "enumerated" UI gate is reached only after a true
+acknowledgement at the current observed revision. Download also checks it, so a
+stale view cannot bypass the gate. Items may be inspected after durable
+enumeration without claiming retirement. Explicit controller.refresh(scanId)
+submits the EXISTING native status request to recover a lost readiness ack;
+submitted readback grants no readiness itself. There is no timer retry, command
+retry, implicit download, request ID or new request decoder.
+
+Compatibility: this is an additive private native-to-desktop status field, not
+public source1/worker1, a producer recipe, durable schema or SQLite migration.
+The source_enumeration_stopped control event is likewise private and must be
+understood by the matching controller; unchanged request commands stay closed.
+Deploy the matching controller and native binary in one newly admitted immutable
+release. New controller + old native fails closed (no true field, no download
+offer); old controller ignores the field and does not gain the fix. Never repin
+old jobs/scans to manufacture compatibility. Rollback keeps original admissions,
+SQLite records and standard exports; use their retained compatible release.
+
+C1 glue: its current phase-based Download button needs no new condition.
+Optionally render enumeration_complete && !enumeration_retired as waiting for
+the enumerator to exit, and offer an explicit "Check source status" action calling
+refresh for a lost observation. Do not add a second destructive event drain.
+No shared main/HTML/Tauri/Cargo/workflow file is edited by this candidate.
+
+Evidence is recorded in the handoff with exact commit: controlled-invoke tests
+reproduce the b8 false-ready behavior and cover positive/missing/malformed/stale/
+duplicate/lost/cancelled/failed acknowledgements. Focused native tests hold an
+actual recorded child before shutdown and after its terminal packet, check OS
+PID retirement, exercise successful download/readback/cancel/bad exit/reopen and
+preserve prior output/admission bytes. Test presence is not a native PASS:
+Windows lacks the C compiler for bundled SQLite, so no unchanged failing local
+native build is retried; exact hosted execution remains required. No old f68
+probe, live provider, original DATA or producer/model job is replayed.

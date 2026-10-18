@@ -13,6 +13,7 @@ export type SourceRequest =
   | { command: "start_video"; scan_id: string; provider_id: string; source_ref: string }
   | { command: "items"; scan_id: string; offset: number; limit: number }
   | { command: "download"; scan_id: string; identity_key: string; resume: false }
+  | { command: "status"; scan_id: string }
   | { command: "cancel"; scan_id: string };
 export type SourcePhase = "queued" | "sending" | "submitted" | "preparing" | "enumerating" | "enumerated"
   | "download_sending" | "download_submitted" | "download_preparing" | "downloading" | "downloaded" | "queue_error"
@@ -20,7 +21,8 @@ export type SourcePhase = "queued" | "sending" | "submitted" | "preparing" | "en
 export type SourceRow = {
   scan_id: string; display_ref: string; provider: string; phase: SourcePhase;
   delivery: "pending" | "submitted" | "unknown" | null;
-  enumeration_complete: boolean; items: Array<{ identity_key: string; status: string }>;
+  enumeration_complete: boolean; enumeration_retired: boolean;
+  items: Array<{ identity_key: string; status: string }>;
   selected_identity: string | null; local_queue: "added" | "present" | "error" | null; error: string | null;
 };
 export type SourceServiceState = {
@@ -183,9 +185,13 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
       if (row.phase === "cancelling") return false;
       if (value.status === "completed") {
         row.enumeration_complete = true;
-        if (!row.selected_identity) row.phase = "enumerated";
+        // Explicit native observation of successful child exit, not a second
+        // completed status, items snapshot, pipe write or elapsed-time guess.
+        row.enumeration_retired = value.enumeration_retired === true;
+        if (!row.selected_identity) row.phase = row.enumeration_retired ? "enumerated" : "enumerating";
       } else if (value.status === "running" && !row.enumeration_complete) row.phase = "enumerating";
-    } else if (value.event === "source_preparation_stopped" && typeof value.cancelled === "boolean") {
+    } else if ((value.event === "source_preparation_stopped" || value.event === "source_enumeration_stopped")
+        && typeof value.cancelled === "boolean") {
       row.phase = value.cancelled ? "cancelled" : "paused"; release(row);
     } else if (value.event === "source_error" || value.event === "source_download_failed" || value.event === "source_retry_refused") {
       row.phase = "failed"; row.error = "SOURCE_NATIVE_FAILED"; release(row);
@@ -264,7 +270,8 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
         // Read-only items requests follow observed durable enumeration, once.
         // No automatic materialization or request retry is hidden here.
         for (const row of state.rows) {
-          if (row.phase === "enumerated" && !itemsRequested.has(row.scan_id) && !blocked && !stopping) {
+          if (row.enumeration_complete && !terminal.has(row.phase) && row.phase !== "cancelling"
+              && !row.selected_identity && !itemsRequested.has(row.scan_id) && !blocked && !stopping) {
             itemsRequested.add(row.scan_id);
             await send({ command: "items", scan_id: row.scan_id, offset: 0, limit: 100 }, row);
           }
@@ -312,7 +319,8 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
         } catch { result.rejected.push(rejection(item.display_ref, "SOURCE_ID_INVALID")); continue; }
         identities.add(item.identity_key); references.set(scan, item.transport_url!);
         state.rows.push({ scan_id: scan, display_ref: item.display_ref, provider: item.provider, phase: "queued",
-          delivery: null, enumeration_complete: false, items: [], selected_identity: null, local_queue: null, error: null });
+          delivery: null, enumeration_complete: false, enumeration_retired: false,
+          items: [], selected_identity: null, local_queue: null, error: null });
         result.online_staged.push(scan);
       }
       state.rejected = result.rejected.slice(); publish();
@@ -320,9 +328,17 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
       return result;
     },
     poll,
+    async refresh(scanId: string): Promise<boolean> {
+      const row = rowFor(scanId);
+      if (!row || !row.enumeration_complete || terminal.has(row.phase) || row.phase === "cancelling"
+          || row.selected_identity || state.service !== "ready" || stopping || state.disposed) return false;
+      // Explicit read-only recovery for a lost retirement observation. A
+      // submitted query grants nothing; only its observed native status can.
+      return send({ command: "status", scan_id: scanId }, row);
+    },
     async download(scanId: string, identityKey: string): Promise<boolean> {
       const row = rowFor(scanId);
-      if (!row || row.phase !== "enumerated" || !row.enumeration_complete || row.selected_identity
+      if (!row || row.phase !== "enumerated" || !row.enumeration_complete || !row.enumeration_retired || row.selected_identity
           || !row.items.some((item) => item.identity_key === identityKey && item.status === "discovered")
           || active !== scanId || state.service !== "ready" || blocked || stopping || state.disposed) return false;
       row.selected_identity = identityKey; row.phase = "download_sending"; row.delivery = "pending"; publish();
