@@ -7,6 +7,7 @@ import { mountDesktopReview } from "./features/review/host.ts";
 import { nativeReviewTransport } from "./features/review/transport.ts";
 import { importPackMessage, parseImportPackStatus, type ImportPackStatus } from "./features/import_pack/model.ts";
 import { createSourceServiceController, type SourcePhase, type SourceServiceState } from "./features/source_intake/service_controller.ts";
+import { cancellationMessage, inputProblemMessage } from "./features/source_intake/ui_messages.ts";
 
 type ReleaseInfo = { version: string; channel: string; backend: string };
 
@@ -395,6 +396,8 @@ const sourcePhases: Record<SourcePhase, string> = {
   cancelled: "Đã hủy nguồn này", paused: "Nguồn đã tạm dừng", failed: "Không tiếp nhận được nguồn", interrupted: "Nguồn bị gián đoạn",
 };
 function sourceProblem(code: string): string {
+  const inputMessage = inputProblemMessage(code);
+  if (inputMessage) return inputMessage;
   const messages: Record<string, string> = {
     SOURCE_PROVIDER_UNSUPPORTED: "Nhà cung cấp này chưa được hỗ trợ. Hãy thêm video đã lưu trên máy.",
     SOURCE_PUBLIC_REFERENCE_REQUIRED: "Cần URL công khai, không có thông tin đăng nhập.",
@@ -428,7 +431,8 @@ function renderSource(state: SourceServiceState): void {
     const item = document.createElement("li");
     const title = document.createElement("p"); title.textContent = row.display_ref;
     const status = document.createElement("p"); status.className = "hint";
-    status.textContent = sourcePhases[row.phase] + (row.error ? `. ${sourceProblem(row.error)}` : "");
+    const phase = row.phase === "cancelling" ? cancellationMessage(row.delivery) : sourcePhases[row.phase];
+    status.textContent = phase + (row.error ? `. ${sourceProblem(row.error)}` : "");
     item.append(title, status);
     if (row.phase === "enumerated" && !row.selected_identity) {
       for (const media of row.items.filter((value) => value.status === "discovered")) {
