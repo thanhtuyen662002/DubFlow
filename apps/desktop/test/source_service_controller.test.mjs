@@ -447,3 +447,119 @@ test("retirement gate: cancelled/failed rows ignore a late positive ack and pres
     assert.equal(h.queue.getSnapshot().jobs[0].sourcePath, path);
   }
 });
+
+async function readyForExplicitRefresh(h) {
+  await h.controller.submit("https://example.test/one");
+  h.push({ event: "source_status", scan_id: "scan-1", status: "completed",
+    dispatch_revision: 2, enumeration_retired: false });
+  await h.controller.poll();
+  h.push({ event: "source_items", scan_id: "scan-1", offset: 0, total: 1,
+    items: [{ identity_key: "generic:one", status: "discovered" }] });
+  await h.controller.poll();
+}
+
+test("query delivery: refresh stays pending across poll and refuses duplicate or subscriber reentry", async () => {
+  const h = fixture(), gate = deferred();
+  await readyForExplicitRefresh(h);
+  h.gates.set("source_service_send_v1", gate);
+  let reentered;
+  const unsubscribe = h.controller.subscribe((state) => {
+    if (state.rows[0].refresh_pending && !reentered) reentered = h.controller.refresh("scan-1");
+  });
+  const pending = h.controller.refresh("scan-1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.controller.getState().rows[0].refresh_pending, true);
+  assert.equal(await reentered, false);
+  assert.equal(await h.controller.refresh("scan-1"), false);
+  await h.controller.poll(); // C1 can recreate the button using refresh_pending.
+  assert.equal(h.controller.getState().rows[0].refresh_pending, true);
+  assert.equal(h.controller.getState().rows[0].delivery, "submitted"); // Original modifying write only.
+  assert.equal(h.sent("status").length, 1);
+  assert.equal((await h.controller.submit(path)).local_added, 1);
+  gate.resolve({ delivery: "submitted" }); assert.equal(await pending, true);
+  assert.equal(h.controller.getState().rows[0].refresh_pending, false);
+  assert.notEqual(h.controller.getState().rows[0].phase, "enumerated");
+  unsubscribe();
+});
+
+for (const query of ["status", "items"]) for (const outcome of ["submitted", "rejected"]) {
+  test("query delivery: late " + query + " " + outcome + " cannot replace pending or settled cancel delivery", async () => {
+    const h = fixture(), queryGate = deferred(), cancelGate = deferred();
+    let pendingQuery;
+    if (query === "status") {
+      await readyForExplicitRefresh(h);
+      h.gates.set("source_service_send_v1", queryGate);
+      pendingQuery = h.controller.refresh("scan-1");
+    } else {
+      await h.controller.submit("https://example.test/one");
+      h.push({ event: "source_status", scan_id: "scan-1", status: "completed",
+        dispatch_revision: 2, enumeration_retired: false });
+      h.gates.set("source_service_send_v1", queryGate);
+      pendingQuery = h.controller.poll(); // Automatic one-time Items query, not a retry.
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    h.gates.set("source_service_send_v1", cancelGate);
+    const observed = [];
+    const unsubscribe = h.controller.subscribe((state) => {
+      const row = state.rows[0];
+      if (row.phase === "cancelling") observed.push({ delivery: row.delivery, cancels: h.sent("cancel").length });
+    });
+    const cancelling = h.controller.cancel("scan-1");
+    assert.equal(h.controller.getState().rows[0].delivery, "pending");
+    assert.equal((await h.controller.submit(path)).local_added, 1);
+    if (outcome === "submitted") queryGate.resolve({ delivery: "submitted" });
+    else queryGate.reject(new Error("private query diagnostic"));
+    await pendingQuery;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.sent(query).length, 1);
+    assert.equal(h.sent("cancel").length, 1);
+    assert.equal(h.controller.getState().rows[0].delivery, "pending");
+    assert.equal(h.controller.getState().rows[0].error, null); // Query is not the cancel error.
+    assert.ok(observed.every((state) => state.delivery === "pending")); // Includes before cancel invoke.
+    if (outcome === "submitted") cancelGate.resolve({ delivery: "submitted" });
+    else cancelGate.reject(new Error("private cancel diagnostic"));
+    assert.equal(await cancelling, outcome === "submitted");
+    const delivery = outcome === "submitted" ? "submitted" : "unknown";
+    assert.equal(h.controller.getState().rows[0].delivery, delivery);
+    h.push({ event: "source_status", scan_id: "scan-1", status: "completed",
+      dispatch_revision: 2, enumeration_retired: true });
+    h.push({ event: "source_items", scan_id: "scan-1", offset: 0, total: 1,
+      items: [{ identity_key: "generic:one", status: "discovered" }] });
+    await h.controller.poll();
+    assert.equal(h.controller.getState().rows[0].phase, "cancelling");
+    assert.equal(h.controller.getState().rows[0].delivery, delivery);
+    assert.equal(h.controller.getState().rows[0].refresh_pending, false);
+    assert.equal(h.sent("download").length, 0);
+    assert.ok(!JSON.stringify(h.controller.getState()).includes("private"));
+    unsubscribe();
+  });
+}
+
+test("query delivery: failed readback clears its own pending flag and reports a real error without changing modify delivery", async () => {
+  const h = fixture(), gate = deferred();
+  await readyForExplicitRefresh(h);
+  h.gates.set("source_service_send_v1", gate);
+  const pending = h.controller.refresh("scan-1");
+  gate.reject("SOURCE_NOT_STARTED");
+  assert.equal(await pending, false);
+  const row = h.controller.getState().rows[0];
+  assert.equal(row.refresh_pending, false);
+  assert.equal(row.delivery, "submitted");
+  assert.equal(h.controller.getState().failure, "SOURCE_NOT_STARTED");
+  assert.equal((await h.controller.submit(path)).local_added, 1);
+});
+
+test("query delivery: prior modifying write also cannot acknowledge a newer cancellation", async () => {
+  const h = fixture(), start = deferred(), cancel = deferred();
+  h.gates.set("source_service_send_v1", start);
+  const online = h.controller.submit("https://example.test/one");
+  await new Promise((resolve) => setImmediate(resolve));
+  h.gates.set("source_service_send_v1", cancel);
+  const cancelling = h.controller.cancel("scan-1");
+  start.resolve({ delivery: "submitted" }); await online;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.controller.getState().rows[0].phase, "cancelling");
+  assert.equal(h.controller.getState().rows[0].delivery, "pending");
+  cancel.resolve({ delivery: "submitted" }); assert.equal(await cancelling, true);
+  assert.equal(h.controller.getState().rows[0].delivery, "submitted");
+});
