@@ -388,6 +388,119 @@ mod tests {
             );
         }
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn graceful_writer_release_with_retained_descriptor_preserves_prior_journal_and_successor() {
+        use std::os::unix::fs::MetadataExt;
+        let f = Fixture::new();
+        let p = plan();
+        let one = "{\"prior\":1}";
+        let store = RetainedMixStore::new(&f.0, "journal-old", budget(10000)).unwrap();
+        store
+            .publish_chunk_checkpoint(&p, 1, one, |_| Ok(u64::MAX), end())
+            .unwrap();
+        let marker = store
+            .objects
+            .root
+            .join(ordinal_name(&prefix(&p).unwrap(), 1).unwrap());
+        let marker_before = fs::metadata(&marker).unwrap();
+        let orphan = store.objects.root.join(".copy-media-orphan");
+        fs::write(&orphan, b"prior orphan media").unwrap();
+        let used = store.used_bytes(end()).unwrap();
+        let writer = store.namespace.join(".writer.lock");
+        let writer_before = fs::metadata(&writer).unwrap();
+        // A real dup shares the same open-file description as an inherited
+        // pre-exec fork descriptor. No production handle is cloned.
+        let retained = store._lease.file.try_clone().unwrap();
+        assert!(RetainedMixStore::new(&f.0, "contender", budget(10000)).is_err());
+        drop(store);
+        let successor = RetainedMixStore::new(&f.0, "journal-new", budget(10000))
+            .expect("graceful owner must unlock even while its duplicated descriptor remains open");
+        assert_eq!(successor.used_bytes(end()).unwrap(), used);
+        assert!(RetainedMixStore::new(&f.0, "contender", budget(10000)).is_err());
+        drop(retained);
+        assert!(
+            RetainedMixStore::new(&f.0, "contender", budget(10000)).is_err(),
+            "late close of the old descriptor must not unlock the successor"
+        );
+        let writer_after = fs::metadata(&writer).unwrap();
+        assert_eq!(
+            (writer_after.dev(), writer_after.ino()),
+            (writer_before.dev(), writer_before.ino())
+        );
+        assert_eq!(writer_after.len(), 0);
+        assert_eq!(fs::read(&marker).unwrap(), one.as_bytes());
+        assert_eq!(
+            fs::metadata(&marker).unwrap().modified().unwrap(),
+            marker_before.modified().unwrap()
+        );
+        assert_eq!(fs::read(&orphan).unwrap(), b"prior orphan media");
+        drop(successor);
+        let reopened = RetainedMixStore::open_existing(&f.0, "journal-old", budget(10000)).unwrap();
+        assert_eq!(
+            reopened
+                .read_chunk_checkpoints(&p, end(), &mut || false)
+                .unwrap(),
+            vec![(1, one.into())]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_store_open_releases_writer_with_retained_descriptor_before_successor_claims() {
+        let f = Fixture::new();
+        let p = plan();
+        let one = "{\"prior\":1}";
+        let store = RetainedMixStore::new(&f.0, "journal-old", budget(10000)).unwrap();
+        store
+            .publish_chunk_checkpoint(&p, 1, one, |_| Ok(u64::MAX), end())
+            .unwrap();
+        let namespace = store.namespace.clone();
+        drop(store);
+        // Fail AFTER acquiring the output writer: the selected job namespace
+        // is an ordinary file. The previous job's accepted marker stays valid.
+        let blocked = namespace.join(format!("{:x}", Sha256::digest(b"blocked-job")));
+        fs::write(&blocked, b"not a directory").unwrap();
+        let mut retained = None;
+        let failed = RetainedMixStore::open_with_writer(
+            &f.0,
+            "blocked-job",
+            budget(10000),
+            true,
+            |namespace, create| {
+                let lease = mix_writer_lock(namespace, create)?;
+                retained = Some(lease.file.try_clone()?);
+                Ok(lease)
+            },
+        );
+        assert!(failed.is_err());
+        assert!(
+            retained.is_some(),
+            "fixture must fail after acquiring and duplicating the actual lease"
+        );
+        let successor = RetainedMixStore::open_existing(&f.0, "journal-old", budget(10000)).expect(
+            "error return after lock acquisition must release its lease before raw duplicate close",
+        );
+        assert_eq!(
+            successor
+                .read_chunk_checkpoints(&p, end(), &mut || false)
+                .unwrap(),
+            vec![(1, one.into())]
+        );
+        drop(retained);
+        assert!(RetainedMixStore::new(&f.0, "contender", budget(10000)).is_err());
+        drop(successor);
+        let reopened = RetainedMixStore::open_existing(&f.0, "journal-old", budget(10000)).unwrap();
+        assert_eq!(
+            reopened
+                .read_chunk_checkpoints(&p, end(), &mut || false)
+                .unwrap(),
+            vec![(1, one.into())]
+        );
+        assert_eq!(fs::read(blocked).unwrap(), b"not a directory");
+    }
+
     #[test]
     fn journal_refuses_gap_link_unsealed_bad_names_cancel_and_record_bounds_without_repair() {
         let f = Fixture::new();

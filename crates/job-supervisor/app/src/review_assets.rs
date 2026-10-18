@@ -825,7 +825,23 @@ pub(super) struct RetainedMixStore {
     inventory_limit: usize,
     // One OS lock covers quota scan through copy/publication, across jobs and
     // supervisor processes. Never clone the handle or unlink its empty file.
-    _lease: File,
+    _lease: MixWriterLease,
+}
+
+/// Own only a successfully acquired lock, including before store construction.
+/// Explicit unlock retires this operation's claim even if a concurrent Unix
+/// fork retains a descriptor sharing its open-file description until exec.
+struct MixWriterLease {
+    file: File,
+}
+
+impl Drop for MixWriterLease {
+    fn drop(&mut self) {
+        // Keep the handle locked for the complete operation. Never unlink or
+        // reopen its path: a later close of an old raw duplicate cannot unlock
+        // a successor's independently opened claim on this same writer file.
+        let _ = self.file.unlock();
+    }
 }
 
 fn mix_writer_file(namespace: &Path, create: bool) -> SupervisorResult<File> {
@@ -870,10 +886,10 @@ fn mix_writer_file(namespace: &Path, create: bool) -> SupervisorResult<File> {
     Ok(file)
 }
 
-fn mix_writer_lock(namespace: &Path, create: bool) -> SupervisorResult<File> {
+fn mix_writer_lock(namespace: &Path, create: bool) -> SupervisorResult<MixWriterLease> {
     let file = mix_writer_file(namespace, create)?;
     match file.try_lock() {
-        Ok(()) => Ok(file),
+        Ok(()) => Ok(MixWriterLease { file }),
         Err(TryLockError::WouldBlock) => Err(invalid(
             "another supervisor owns mix storage; wait for its checkpoint",
         )),
@@ -886,7 +902,7 @@ fn mix_writer_lock_until(
     create: bool,
     deadline: Instant,
     cancelled: &mut impl FnMut() -> bool,
-) -> SupervisorResult<File> {
+) -> SupervisorResult<MixWriterLease> {
     let until = deadline.min(Instant::now() + std::time::Duration::from_secs(5));
     let observe = |cancelled: &mut dyn FnMut() -> bool| {
         if cancelled() || Instant::now() >= until {
@@ -906,16 +922,19 @@ fn mix_writer_lock_until(
         observe(cancelled)?;
         match file.try_lock() {
             Ok(()) => {
+                // Own the lock before any fallible identity/cancellation fence
+                // so an error after acquisition also explicitly retires it.
+                let lease = MixWriterLease { file };
                 let fresh = regular(&namespace.join(".writer.lock"))?;
-                if single_cue_file(&file)? != identity
+                if single_cue_file(&lease.file)? != identity
                     || single_cue_file(&fresh)? != identity
-                    || file.metadata()?.len() != 0
+                    || lease.file.metadata()?.len() != 0
                     || fresh.metadata()?.len() != 0
                 {
                     return Err(invalid("output writer identity changed during its wait"));
                 }
                 observe(cancelled)?;
-                return Ok(file);
+                return Ok(lease);
             }
             Err(TryLockError::WouldBlock) => {
                 std::thread::sleep(
@@ -1129,7 +1148,7 @@ impl RetainedMixStore {
         job_id: &str,
         budget: MixStorageBudget,
         create: bool,
-        writer: impl FnOnce(&Path, bool) -> SupervisorResult<File>,
+        writer: impl FnOnce(&Path, bool) -> SupervisorResult<MixWriterLease>,
     ) -> SupervisorResult<Self> {
         super::validate_job_id(job_id)?;
         if budget.maximum_bytes == 0
