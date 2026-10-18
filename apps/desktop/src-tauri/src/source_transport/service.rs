@@ -132,13 +132,19 @@ impl NativeRequest {
                 provider_id,
                 headers,
                 ..
-            } => headers
-                .iter()
-                .fold(provider_id.len(), |size, (key, value)| {
-                    size.saturating_add(key.len())
+            } => {
+                let mut size = provider_id.len();
+                for (key, value) in headers {
+                    if size >= 64 * 1024 {
+                        break;
+                    }
+                    size = size
+                        .saturating_add(key.len())
                         .saturating_add(value.len())
-                        .saturating_add(4)
-                }),
+                        .saturating_add(4);
+                }
+                size
+            }
             Self::SessionStatus { provider_id } | Self::SessionClear { provider_id } => {
                 provider_id.len()
             }
