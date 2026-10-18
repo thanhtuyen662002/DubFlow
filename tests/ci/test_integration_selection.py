@@ -17,7 +17,7 @@ import run_integration as selector
 
 
 class ComponentSelectionTests(unittest.TestCase):
-    def test_desktop_source_changes_execute_four_focused_node_suites(self) -> None:
+    def test_desktop_source_and_queue_changes_execute_five_focused_node_suites(self) -> None:
         registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
         component = next((item for item in registry["components"]
                           if item["id"] == "desktop-source-intake"), None)
@@ -27,6 +27,7 @@ class ComponentSelectionTests(unittest.TestCase):
             "apps/desktop/test/source_materialized.test.mjs",
             "apps/desktop/test/source_service_controller.test.mjs",
             "apps/desktop/test/source_ui_messages.test.mjs",
+            "apps/desktop/test/queue.test.mjs",
         )
         commands = [["node", "--experimental-strip-types", suite] for suite in suites]
         self.assertEqual(component["commands"], commands)
@@ -43,10 +44,12 @@ class ComponentSelectionTests(unittest.TestCase):
             with self.subTest(unrelated=path):
                 self.assertFalse(selector.component_affected(component, {path}))
         # Exercise the real registry/dispatcher, not just the root predicate.
-        # Stub subprocess execution here; the four registered argv arrays are
+        # Stub subprocess execution here; the five registered argv arrays are
         # also executed directly during local qualification and Integration.
         for path in ("apps/desktop/src/main.ts",
-                     "apps/desktop/src/features/source_intake/service_controller.ts"):
+                     "apps/desktop/src/features/source_intake/service_controller.ts",
+                     "apps/desktop/src/features/queue/model.ts",
+                     "apps/desktop/test/queue.test.mjs"):
             with self.subTest(dispatch=path), \
                  patch.object(selector, "changed_paths", return_value={path}), \
                  patch.object(selector, "run") as run, \

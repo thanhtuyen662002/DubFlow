@@ -788,7 +788,8 @@
         "apps/desktop/src/main.ts",
         "apps/desktop/index.html",
         "apps/desktop/package.json",
-        "apps/desktop/src/features/queue/model.ts"
+        "apps/desktop/src/features/queue/model.ts",
+        "apps/desktop/test/queue.test.mjs"
       ],
       "commands": [
         [
@@ -810,6 +811,11 @@
           "node",
           "--experimental-strip-types",
           "apps/desktop/test/source_ui_messages.test.mjs"
+        ],
+        [
+          "node",
+          "--experimental-strip-types",
+          "apps/desktop/test/queue.test.mjs"
         ]
       ]
     },
