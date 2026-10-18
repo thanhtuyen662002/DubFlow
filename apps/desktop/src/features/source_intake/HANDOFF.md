@@ -105,7 +105,7 @@ PASS locally:
   blocked stdin, full stderr, byte overflow, error exit, parse error, cancellation,
   live parent/descendant OS observations and unrelated-neighbor survival. The
   descendant-held-pipe deadline case checks cleanup after parent exit as well.
-- The follow-up adds 7 persistent-service Windows tests, including startup,
+- The follow-up adds 8 persistent-service Windows tests, including startup,
   blocked delivery, event ordering, current closed schema, native-scan cancel
   versus service retirement, caps, and last-handle parent/descendant cleanup.
 - `python scripts/validate_governance.py`; `git diff --check`.

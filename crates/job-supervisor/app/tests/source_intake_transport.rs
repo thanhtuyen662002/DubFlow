@@ -599,4 +599,16 @@ mod persistent {
         owner.stopped();
         worker.stopped();
     }
+
+    #[test]
+    fn shutdown_event_without_exit_is_not_success_and_uses_one_retirement_budget() {
+        let (client, path) = launch("service_shutdown_stall", 1500);
+        ready(&client);
+        let live = observation::Live::open(pids(&path, 1)[0]);
+        let start = Instant::now();
+        send(&client, NativeRequest::Shutdown);
+        stopped(&client, Some(Failure::Retire));
+        live.stopped();
+        assert!(start.elapsed() < limits().retire_timeout + Duration::from_millis(300));
+    }
 }

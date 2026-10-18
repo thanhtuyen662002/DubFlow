@@ -503,7 +503,7 @@ fn actor(
     let mut sequence = 0u64;
     let mut ready = false;
     let mut shutdown_seen = false;
-    let mut exited_at = None;
+    let mut retiring_at = None;
     let mut eof = false;
     let result = loop {
         if shared.stop.load(Ordering::Acquire) {
@@ -523,8 +523,14 @@ fn actor(
         {
             break Some(Failure::ResponseTimeout);
         }
-        if exited_at.is_some_and(|when: Instant| when.elapsed() >= limits.retire_timeout) {
-            break Some(Failure::Exit);
+        // Reserve half the same retirement budget for forced kill/reap if a
+        // claimed shutdown or exited parent leaves inherited pipes alive.
+        if retiring_at.is_some_and(|when: Instant| when.elapsed() >= limits.retire_timeout / 2) {
+            break Some(if shutdown_seen {
+                Failure::Retire
+            } else {
+                Failure::Exit
+            });
         }
         if let Some(request) = &pending {
             if request.cancelled.load(Ordering::Acquire) {
@@ -535,7 +541,9 @@ fn actor(
             }
         }
         if let Ok(request) = requests.try_recv() {
-            let failure = if !ready {
+            let failure = if shutdown_seen {
+                Some(Failure::Closed)
+            } else if !ready {
                 Some(Failure::NotReady)
             } else if pending.is_some() {
                 Some(Failure::Busy)
@@ -583,7 +591,11 @@ fn actor(
                 } else if !event.starts_with("source_") || event == "source_ready" {
                     break Some(Failure::Protocol);
                 }
-                shutdown_seen |= event == "source_shutdown";
+                if event == "source_shutdown" {
+                    shutdown_seen = true;
+                    retiring_at.get_or_insert(Instant::now());
+                    shared.state.lock().unwrap().snapshot.phase = Phase::Stopping;
+                }
                 let mut state = shared.state.lock().unwrap();
                 if state.events.len() >= 64 {
                     break Some(Failure::EventOverflow);
@@ -607,7 +619,7 @@ fn actor(
                 }
             }
             Ok(Some(_)) => {
-                exited_at.get_or_insert(Instant::now());
+                retiring_at.get_or_insert(Instant::now());
             }
             Err(_) => break Some(Failure::Io),
             _ => (),
@@ -616,7 +628,7 @@ fn actor(
     shared.state.lock().unwrap().snapshot.phase = Phase::Stopping;
     drop(writer);
     child.terminate();
-    let deadline = Instant::now() + limits.retire_timeout;
+    let deadline = retiring_at.unwrap_or_else(Instant::now) + limits.retire_timeout;
     let retired = loop {
         if child.child.try_wait().ok().flatten().is_some()
             && handles.iter().all(JoinHandle::is_finished)

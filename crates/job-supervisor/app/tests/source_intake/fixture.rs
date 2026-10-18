@@ -169,6 +169,9 @@ fn service(mode: &str, pid_file: &str) {
             "shutdown" => {
                 println!("{{\"event\":\"source_shutdown\"}}");
                 std::io::stdout().flush().unwrap();
+                if mode == "service_shutdown_stall" {
+                    stall();
+                }
                 return;
             }
             "status" => {

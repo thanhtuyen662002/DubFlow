@@ -108,7 +108,7 @@ does the former and changes no public source1/worker1/schema2 contract.
 
 ## Evidence and remaining integration
 
-Seven new controlled-child tests PASS on Windows GNU/LLD, using the checked-in
+Eight new controlled-child tests PASS on Windows GNU/LLD, using the checked-in
 `source_intake_transport.rs` persistent tests and the same owned-tree guard:
 
 - CLI/pin arguments and closed current schema; legacy/request_id refusal;
@@ -120,12 +120,14 @@ Seven new controlled-child tests PASS on Windows GNU/LLD, using the checked-in
 - pipe backpressure with finite write timeout/cancellation and service retirement;
 - local oversized-request rejection retains a healthy service; dropping its last
   handle retires the actual active parent/descendant tree.
+- A source_shutdown event without actual exit is refused and forced retirement
+  shares one budget: the grace period does not add a second3s cleanup allowance.
 
 Production15s/3s/caps are unchanged; short test write/partial bounds are80ms.
 The admission-timeout fixture uses1.5s to observe the actual live process on the
 Windows loader, separately from the80ms write bound. No assertion is skipped.
 The old nine tests were not rerun locally just to repeat unchanged evidence;
-required Integration executes the full workspace and all16 tests on final HEAD.
+required Integration executes the full workspace and all17 tests on final HEAD.
 
 The new patch applies cleanly in a new task-owned detached f68 worktree. No
 existing PR185 checkout, native QA run, shared main, source_server/owner/decoder,
