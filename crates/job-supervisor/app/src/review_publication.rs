@@ -936,18 +936,28 @@ mod prepared_tests {
                     1 => fs::write(root.join("runtime/Lib/unlisted.py"), b"extra").unwrap(),
                     2 => fs::remove_file(&import).unwrap(),
                     3 => {
-                        let dir = root.join("runtime/Lib");
+                        // cmd treats an unquoted forward slash as an option.
+                        let dir = root.join("runtime").join("Lib");
                         let held = data.join("held-test-lib");
                         fs::rename(&dir, &held).unwrap();
                         #[cfg(windows)]
-                        assert!(std::process::Command::new("cmd")
-                            .args(["/c", "mklink", "/J"])
-                            .arg(&dir)
-                            .arg(&held)
-                            .output()
-                            .unwrap()
-                            .status
-                            .success());
+                        {
+                            use std::os::windows::process::CommandExt;
+                            let output = std::process::Command::new("cmd.exe")
+                                .args(["/d", "/c", "mklink", "/J"])
+                                .arg(&dir)
+                                .arg(&held)
+                                .creation_flags(0x08000000)
+                                .output()
+                                .unwrap();
+                            assert!(
+                                output.status.success(),
+                                "fixture junction creation failed: status={:?}, stdout={}, stderr={}",
+                                output.status.code(),
+                                String::from_utf8_lossy(&output.stdout),
+                                String::from_utf8_lossy(&output.stderr)
+                            );
+                        }
                         #[cfg(unix)]
                         std::os::unix::fs::symlink(&held, &dir).unwrap();
                         held_directory = Some((dir, held));
