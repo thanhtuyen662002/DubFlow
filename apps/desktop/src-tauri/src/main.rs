@@ -1,3 +1,7 @@
+mod source_transport;
+#[path = "source_transport/service_host.rs"]
+mod source_host;
+mod source_bootstrap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
@@ -352,13 +356,31 @@ fn cancel_job(job_id: String) -> Result<(), String> {
     Ok(())
 }
 
+fn installed_source_host() -> source_host::SourceServiceHost {
+    let pin = version_root().and_then(|root| {
+        control_root().and_then(|data| {
+            source_bootstrap::launch_pin(root, data).map_err(str::to_owned)
+        })
+    });
+    match pin {
+        Ok(pin) => source_host::SourceServiceHost::from_trusted_parts(
+            Some(pin),
+            source_transport::service::AdmissionWindow::new(std::time::Duration::from_secs(180)).ok(),
+        ),
+        Err(_) => source_host::SourceServiceHost::unavailable(
+            source_host::UnavailableReason::MissingTrustedRelease,
+        ),
+    }
+}
+
 fn main() {
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
     tauri::Builder::default()
+        .manage(installed_source_host())
         .manage(review::ReviewHost::default())
         .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, import_pack_status, cancel_job,
-            review::review_snapshot_v1, review::review_snapshot_v2, review::review_audio_v1, review::review_audio_v2, review::review_plan_v1, review::review_apply_v1, review::review_undo_v1, review::review_export_v1, review::review_initialize_v1, review::review_request_stage_v1, review::review_request_status_v1, review::review_cancel_v1])
+            review::review_snapshot_v1, review::review_snapshot_v2, review::review_audio_v1, review::review_audio_v2, review::review_plan_v1, review::review_apply_v1, review::review_undo_v1, review::review_export_v1, review::review_initialize_v1, review::review_request_stage_v1, review::review_request_status_v1, review::review_cancel_v1, source_host::source_service_start_v1, source_host::source_service_state_v1, source_host::source_service_events_v1, source_host::source_service_send_v1, source_host::source_service_stop_v1])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
 }
