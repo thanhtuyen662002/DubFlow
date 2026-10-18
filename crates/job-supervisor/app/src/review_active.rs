@@ -642,6 +642,25 @@ pub(super) fn commit(
         .map_err(Into::into)
 }
 
+/// Current-only publication consumes prepare's private admission once. Legacy
+/// commit above retains both of its original admissions and its JSON API.
+pub(super) fn commit_prepared_effective(
+    store: &DurableStore,
+    data: &Path,
+    before: &ReviewGraphState,
+    prepared: super::review_publication::PreparedEffectivePublication,
+) -> SupervisorResult<ReviewGraphState> {
+    let final_fence = prepared.revalidate(store, data, before)?;
+    store
+        .commit_review_graph(
+            &before.token,
+            final_fence.snapshot.json(),
+            &final_fence.graph,
+            super::now_ms(),
+        )
+        .map_err(Into::into)
+}
+
 pub(super) fn committed_packet(state: &ReviewGraphState) -> SupervisorResult<Value> {
     Ok(
         json!({"schema_version":1,"kind":"review_native_committed_render",
