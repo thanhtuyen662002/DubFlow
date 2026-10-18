@@ -17,6 +17,45 @@ import run_integration as selector
 
 
 class ComponentSelectionTests(unittest.TestCase):
+    def test_desktop_source_changes_execute_four_focused_node_suites(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next((item for item in registry["components"]
+                          if item["id"] == "desktop-source-intake"), None)
+        self.assertIsNotNone(component, "Required Integration has no desktop source test gate")
+        suites = (
+            "apps/desktop/test/source_intake.test.mjs",
+            "apps/desktop/test/source_materialized.test.mjs",
+            "apps/desktop/test/source_service_controller.test.mjs",
+            "apps/desktop/test/source_ui_messages.test.mjs",
+        )
+        commands = [["node", "--experimental-strip-types", suite] for suite in suites]
+        self.assertEqual(component["commands"], commands)
+        for path in (*suites, "apps/desktop/src/main.ts", "apps/desktop/index.html",
+                     "apps/desktop/package.json", "apps/desktop/src/features/queue/model.ts",
+                     "apps/desktop/src/features/source_intake/model.ts",
+                     "apps/desktop/src/features/source_intake/service_controller.ts",
+                     "apps/desktop/src/features/source_intake/ui_messages.ts"):
+            with self.subTest(path=path):
+                self.assertTrue(selector.component_affected(component, {path}))
+        for path in ("docs/production/README.md", "apps/desktop/src/features/review/transport.ts",
+                     "apps/desktop/src/features/source_intake_extra/model.ts",
+                     "apps/desktop/src/main.ts.bak", "apps/desktop/src/features/queue/model.ts.bak"):
+            with self.subTest(unrelated=path):
+                self.assertFalse(selector.component_affected(component, {path}))
+        # Exercise the real registry/dispatcher, not just the root predicate.
+        # Stub subprocess execution here; the four registered argv arrays are
+        # also executed directly during local qualification and Integration.
+        for path in ("apps/desktop/src/main.ts",
+                     "apps/desktop/src/features/source_intake/service_controller.ts"):
+            with self.subTest(dispatch=path), \
+                 patch.object(selector, "changed_paths", return_value={path}), \
+                 patch.object(selector, "run") as run, \
+                 patch.object(sys, "argv", ["run_integration.py"]), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(selector.main(), 0)
+            self.assertEqual([call.args[0] for call in run.call_args_list],
+                             [[sys.executable, "scripts/validate_governance.py"], *commands])
+
     def test_native_source_changes_select_executable_rust_evidence(self) -> None:
         registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
         component = next(item for item in registry["components"] if item["id"] == "native-source-controller")
