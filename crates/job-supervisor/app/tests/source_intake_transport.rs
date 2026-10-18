@@ -123,8 +123,20 @@ mod observation {
             Self(pid)
         }
         pub fn stopped(&self) {
-            let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.0));
-            assert!(stat.is_err() || stat.unwrap().split_once(") ").unwrap().1.starts_with('Z'));
+            // Same bounded kernel observation as WaitForSingleObject(2000)
+            // on Windows. SIGKILL delivery and /proc retirement are async.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.0));
+                if stat.is_err() || stat.unwrap().split_once(") ").unwrap().1.starts_with('Z') {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "owned process did not retire"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
         }
     }
 }
@@ -222,12 +234,13 @@ fn cancellation_retires_live_child_and_descendant_preserves_neighbor() {
     let neighbor_pid = pids(&neighbor_path, 1)[0];
     let cancelled = Arc::new(AtomicBool::new(false));
     let flag = cancelled.clone();
+    let (done, finished) = std::sync::mpsc::channel();
     let watcher = std::thread::spawn(move || {
         let ids = pids(&path, 2);
         let parent = observation::Live::open(ids[0]);
         let child = observation::Live::open(ids[1]);
         flag.store(true, Ordering::Release);
-        std::thread::sleep(Duration::from_millis(100));
+        finished.recv_timeout(Duration::from_secs(5)).unwrap();
         parent.stopped();
         child.stopped();
     });
@@ -239,6 +252,7 @@ fn cancellation_retires_live_child_and_descendant_preserves_neighbor() {
         Err(Error::Cancelled)
     );
     assert!(start.elapsed() < Duration::from_secs(3));
+    done.send(()).unwrap();
     watcher.join().unwrap();
     assert_eq!(neighbor.0.id(), neighbor_pid);
     assert!(
