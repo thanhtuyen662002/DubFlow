@@ -131,7 +131,9 @@ required Integration executes the full workspace and all17 tests on final HEAD.
 
 The new patch applies cleanly in a new task-owned detached f68 worktree. No
 existing PR185 checkout, native QA run, shared main, source_server/owner/decoder,
-worker, model or pinned artifact was changed. Full Tauri/MSVC host compilation,
-actual installed f68 full-manifest startup, managed bootstrap/UI orchestration,
-native materialization and completed #168 qualification remain NOT_RUN here.
-Final exact-head/base CI URLs and SHA are recorded in the PR body.
+worker, model or pinned artifact was changed. The later [MATERIALIZED.md](MATERIALIZED.md)
+follow-up records an actual readonly f68 source_ready/start_video probe: startup
+passed, but producer preparation did not finish within the bounded observation,
+and materialization was not reached. Full Tauri/MSVC host compilation, managed
+desktop bootstrap/UI orchestration and completed #168 qualification remain
+unproven. Final exact-head/base CI URLs and SHA are recorded in the PR body.

@@ -72,7 +72,7 @@ launch, the supplied hashes matched:
 Optional `tests/source_intake/native_probe.rs` was compiled outside the repository
 with the existing GNU/LLD harness. It used the unchanged persistent adapter and
 exact native CLI,180s startup admission budget, original15s request delivery and
-3s retirement. Native workers use -I/-S/-B, retaining bytecode/bundle contents.
+3s retirement. Native workers use -I/-S/-B; the probe requests no bundle writes.
 The new DATA is `D:/DubFlowQA/codex2 nguồn, source-f68-20261018-0546`.
 
 Target: the exact f68 raw GitHub landscape.mp4 fixture supplied by the coordinator

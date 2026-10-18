@@ -5,6 +5,9 @@ Current-service follow-up: read [CURRENT_SERVICE.md](CURRENT_SERVICE.md). The
 integration185 alternative now mounts the persistent source-serve host, replacing
 the earlier legacy UI/one-shot alternative. Do not apply that historical patch
 from commit3103822 to f68. Candidate184's isolated alternative remains separate.
+The later [MATERIALIZED.md](MATERIALIZED.md) documents the queue hook, snapshot0c1
+patch and actual f68 probe failure before materialization; no downloaded receipt
+or app qualification is claimed.
 Main base: `2bd7f51129d19dc63ea1dc82f20f77e193da6fcb`. It does not change the
 integrator's worktree, shared entrypoints, manifests, lockfiles or workflows.
 The PR body records the final source HEAD and exact-head CI URLs.
@@ -119,8 +122,8 @@ the Rust boundary test actually invokes the TypeScript test rather than silently
 skipping it. The source app path selects `supervisor-workspace` in the existing
 registry; no required lane/workflow was edited.
 
-NOT_RUN: installed/native Tauri host build, managed current-service bootstrap,
-actual f68 installed supervisor/manifest startup, fully compiled native candidate
-wiring, live providers, complete materialization or desktop E2E, GPU/release.
-These remain integration/qualification work. Read final exact-head hosted CI
-results in the PR before treating the component tests as remotely passed.
+NOT_RUN: installed/native Tauri host build, managed desktop source bootstrap,
+fully compiled native candidate wiring, complete desktop E2E, GPU/release.
+The later actual f68 manifest startup passed, but its new-data preparation probe
+timed out before materialization; live download remains unproven. Read the exact
+boundary in MATERIALIZED.md and final exact-head hosted CI in the PR.
