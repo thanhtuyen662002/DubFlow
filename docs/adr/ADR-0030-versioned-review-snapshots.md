@@ -3788,3 +3788,42 @@ Source-matched Windows supervisor/junction/native execution and actual timing on
 the final integrated source remain required. The previous caller failure is not
 relabelled. Full installed B1B2/cumulative/exports/GUI/liveness and172/174/175 gates
 remain; public chunked_longform stays false, AUD-0 and TrucLy25voices unchanged.
+
+
+#### Source enumeration completion is distinct from native retirement
+
+A completed source page commits its discovered rows before the enumerator has
+necessarily exited. The desktop keeps Download unavailable until the matching
+private source_status carries enumeration_retired=true for the same current
+scan/revision. Only a checked completed terminal packet followed by successful
+observed child exit/reap creates this session-local observation. Items, completed
+SQLite rows, a missing child after reopen and elapsed time cannot create it.
+An explicit status read can recover a lost observation; delivery of that read
+is not acknowledgement. One event pump consumes the result. Local video intake
+continues independently while online intake is pending or unavailable.
+
+Cancelling after the committed final page stops only its matching enumerator.
+The private source_enumeration_stopped event closes the intake operation while
+retaining completed scan rows/items/admissions and prior media. It does not
+rewrite Completed as Cancelled. Native/controller must ship together in a new
+admitted immutable release: the new controller fails closed with an old native
+that omits the additive field; an old controller does not gain this gate. No
+public source/worker schema, SQLite migration or old producer/job repin occurs.
+
+#### Graceful output-writer retirement owns an explicit unlock scope
+
+A successful output-writer lock acquisition immediately constructs a private
+non-clone scope guard, before subsequent fallible identity or store-construction
+checks. The guard remains held throughout the operation and explicitly unlocks
+on graceful success/error. This releases the operation even if a transient
+inherited descriptor still shares its Unix open-file description. Closing an
+old duplicate later cannot unlock a successor opened independently. No lockfile
+unlink/reopen, production handle clone, new wait, quota or deadline is added.
+The path/empty-file format and abrupt-death kernel behavior are unchanged;
+rollback uses the same persisted records and needs no migration.
+
+Actual candidate Ubuntu source-retirement cases and retained-descriptor writer
+regressions pass; final integrated source still needs its own required CI and
+Windows/native/GUI evidence. The separate execution-guard graceful-release
+finding remains open until its own changed-source proof. Full172/174/175 gates,
+old caller failures, public chunked_longform=false, AUD-0 and TrucLy25voices stay.

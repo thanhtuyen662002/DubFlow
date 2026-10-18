@@ -431,9 +431,22 @@ function renderSource(state: SourceServiceState): void {
     const item = document.createElement("li");
     const title = document.createElement("p"); title.textContent = row.display_ref;
     const status = document.createElement("p"); status.className = "hint";
-    const phase = row.phase === "cancelling" ? cancellationMessage(row.delivery) : sourcePhases[row.phase];
+    const phase = row.phase === "cancelling" ? cancellationMessage(row.delivery)
+      : row.phase === "enumerating" && row.enumeration_complete && !row.enumeration_retired
+        ? "Đã tìm xong video, đang chờ nguồn kết thúc." : sourcePhases[row.phase];
     status.textContent = phase + (row.error ? `. ${sourceProblem(row.error)}` : "");
     item.append(title, status);
+    if (row.phase === "enumerating" && row.enumeration_complete && !row.enumeration_retired) {
+      const refresh = document.createElement("button"); refresh.type = "button"; refresh.textContent = "Kiểm tra trạng thái";
+      refresh.disabled = state.service !== "ready" || state.disposed || row.delivery === "pending";
+      refresh.addEventListener("click", () => {
+        refresh.disabled = true;
+        void sourceController.refresh(row.scan_id).then((sent) => {
+          if (!sent) sourceFeedback.textContent = "Chưa kiểm tra được trạng thái nguồn. Bạn vẫn có thể thêm video trên máy.";
+        });
+      });
+      item.append(refresh);
+    }
     if (row.phase === "enumerated" && !row.selected_identity) {
       for (const media of row.items.filter((value) => value.status === "discovered")) {
         const download = document.createElement("button"); download.type = "button"; download.textContent = "Tải video";
