@@ -1351,6 +1351,10 @@ struct Server {
     queue: SourceQueue,
     active: Option<Active>,
     session: Option<SessionActive>,
+    // Session-local positive observation, never inferred from completed SQLite
+    // rows or a missing process after reopen. Only the current enumeration may
+    // supply this acknowledgement; native download still revalidates all pins.
+    enumeration_retired: Option<(String, u64)>,
     _owner: SourceOwner,
 }
 impl Server {
@@ -1376,8 +1380,20 @@ impl Server {
             queue,
             active: None,
             session: None,
+            enumeration_retired: None,
             _owner: owner,
         })
+    }
+    fn status_value(&self, record: &ScanRecord) -> Value {
+        let mut value = scan_value(record);
+        value["enumeration_retired"] = json!(
+            record.status == ScanStatus::Completed
+                && self.active.is_none()
+                && self.session.is_none()
+                && self.enumeration_retired.as_ref()
+                    == Some(&(record.scan_id.clone(), record.dispatch_revision))
+        );
+        value
     }
     fn start_download(&mut self, id: String, identity: String, resume: bool) -> Result<Value> {
         self.prepare_download(id, identity, resume, false)
@@ -1532,6 +1548,32 @@ impl Server {
             return self.halt_download(id, cancel);
         }
         if self
+            .queue
+            .scan(id)
+            .is_ok_and(|record| record.status == ScanStatus::Completed)
+        {
+            // Stop intake at the committed-page/worker-exit boundary (or after
+            // retirement while awaiting item selection). Completed SQLite rows
+            // cannot transition to Cancelled; retain them and their results.
+            if self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.spec.id == id)
+            {
+                let mut active = self.active.take().ok_or_else(invalid)?;
+                active.stop()?;
+            }
+            if self
+                .enumeration_retired
+                .as_ref()
+                .is_some_and(|(scan, _)| scan == id)
+            {
+                self.enumeration_retired = None;
+            }
+            return Ok(json!({"event":"source_enumeration_stopped", "scan_id":id,
+                "cancelled":cancel, "retained_completed_scan":true}));
+        }
+        if self
             .active
             .as_ref()
             .is_some_and(|a| a.spec.id == id && a.original.is_none())
@@ -1660,7 +1702,7 @@ impl Server {
             }
             Request::Pause { scan_id } => self.halt(&scan_id, false)?,
             Request::Cancel { scan_id } => self.halt(&scan_id, true)?,
-            Request::Status { scan_id } => scan_value(&self.queue.scan(&scan_id)?),
+            Request::Status { scan_id } => self.status_value(&self.queue.scan(&scan_id)?),
             Request::Items {
                 scan_id,
                 offset,
@@ -2236,7 +2278,11 @@ impl Server {
                 } else if record.status == ScanStatus::Running {
                     active.dispatch(record.clone())?;
                 }
-                Ok(Some(scan_value(&record)))
+                // A committed final page is enumeration data, not child exit.
+                // The later successful shutdown/exit supplies the positive ack.
+                let mut value = scan_value(&record);
+                value["enumeration_retired"] = json!(false);
+                Ok(Some(value))
             }
             Payload::Shutdown {
                 status: ShutdownStatus::Completed,
@@ -2270,19 +2316,27 @@ impl Server {
                 }
                 let mut active = self.active.take().ok_or_else(invalid)?;
                 let deadline = Instant::now() + Duration::from_secs(3);
-                loop {
-                    if let Some(status) = active.child.try_wait()? {
-                        if !status.success() {
-                            return Err(invalid());
-                        }
-                        break;
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(invalid());
+                let successful_exit = loop {
+                    match active.child.try_wait() {
+                        Ok(Some(status)) => break status.success(),
+                        Ok(None) if Instant::now() < deadline => (),
+                        _ => break false,
                     }
                     thread::sleep(Duration::from_millis(20));
+                };
+                // Drop also closes native stdin and reaps the already observed
+                // child, or kills/reaps it on failure without adding another
+                // cooperative-stop allowance to the existing three seconds.
+                drop(active);
+                if !successful_exit {
+                    return Ok(Some(
+                        json!({"event":"source_error", "scan_id":record.scan_id,
+                        "code":"SOURCE_ENUMERATION_RETIREMENT_FAILED", "retryable":false,
+                        "automatic_retry":false}),
+                    ));
                 }
-                Ok(Some(scan_value(&record)))
+                self.enumeration_retired = Some((record.scan_id.clone(), record.dispatch_revision));
+                Ok(Some(self.status_value(&record)))
             }
             Payload::Failure {
                 code,
@@ -2585,9 +2639,20 @@ while True:
  done=single_video or cursor is not None
  packet({'schema_version':1,'kind':'source-page','producer_fingerprint':fingerprint,'dispatch_revision':args['dispatch_revision'],'request_cursor':cursor,'page':{'schema_version':1,'items':[item],'failures':[],'next_cursor':None if done else 'page-2','completed':done}})
  if done:
+  retirement_mode_path=pathlib.Path(__file__).with_name('enumeration-retirement-mode')
+  retirement_mode=retirement_mode_path.read_text() if retirement_mode_path.exists() else 'complete'
+  if retirement_mode=='hold-before-shutdown':
+   (work/'page-completed-live').write_text(str(__import__('os').getpid()))
+   until=time.monotonic()+30
+   while not (work/'allow-enumeration-shutdown').exists():
+    if time.monotonic()>until:sys.exit(2)
+    time.sleep(0.01)
   emit('shutdown',{'status':'completed'})
+  if retirement_mode=='hold-after-shutdown':
+   assert sys.stdin.buffer.read()==b''
+   time.sleep(30)
   if require_eof:assert sys.stdin.buffer.read()==b''
-  sys.exit(0)
+  sys.exit(2 if retirement_mode=='bad-exit' else 0)
 "#).unwrap();
             runtime
         }
@@ -2870,6 +2935,262 @@ while True:
         pump(server); // Actual final packet -> native streaming verification.
         pump(server); // Actual successful child exit.
         finish_verification(server).unwrap()
+    }
+
+    fn retirement_event(server: &mut Server) -> Result<Option<Value>> {
+        let wire = server
+            .active
+            .as_ref()
+            .unwrap()
+            .events
+            .recv_timeout(Duration::from_secs(10))?;
+        server.event(wire)
+    }
+    fn retirement_scan(temp: &Temporary, mode: &str) -> Server {
+        let runtime = temp.recorded_runtime();
+        fs::write(
+            runtime.worker.with_file_name("enumeration-retirement-mode"),
+            mode,
+        )
+        .unwrap();
+        let mut server = Server::open(runtime).unwrap();
+        server
+            .request(Request::StartVideo {
+                scan_id: "retirement".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/one".into(),
+            })
+            .unwrap();
+        pump(&mut server); // Verified producer, bound SQLite scan, actual page dispatch.
+        server
+    }
+    fn retirement_status(server: &mut Server) -> Value {
+        server
+            .request(Request::Status {
+                scan_id: "retirement".into(),
+            })
+            .unwrap()
+            .0
+    }
+    fn assert_retirement_pid_dead(pid: u32) {
+        let checked = Command::new("python")
+            .args([
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                r#"
+import os,sys
+pid=int(sys.argv[1])
+if os.name=='nt':
+ import ctypes
+ from ctypes import wintypes
+ k=ctypes.WinDLL('kernel32',use_last_error=True)
+ k.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]
+ k.OpenProcess.restype=wintypes.HANDLE
+ k.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
+ k.CloseHandle.argtypes=[wintypes.HANDLE]
+ handle=k.OpenProcess(0x100000,False,pid)
+ if handle:
+  try:assert k.WaitForSingleObject(handle,0)==0,'owned child still live'
+  finally:k.CloseHandle(handle)
+ else:assert ctypes.get_last_error()==87,'cannot establish child retirement'
+else:
+ try:os.kill(pid,0)
+ except ProcessLookupError:pass
+ else:raise AssertionError('owned child still live or unreaped')
+"#,
+            ])
+            .arg(pid.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            checked.status.success(),
+            "{}",
+            String::from_utf8_lossy(&checked.stderr)
+        );
+    }
+    #[test]
+    fn native_retirement_completed_live_page_is_not_ack_and_download_starts_only_after_exit() {
+        let temp = Temporary::new();
+        let mut server = retirement_scan(&temp, "hold-before-shutdown");
+        let prior = server.runtime.data.join("previous-standard-export.mp4");
+        fs::write(&prior, b"keep previous output").unwrap();
+        let completed = retirement_event(&mut server).unwrap().unwrap();
+        assert_eq!(completed["status"], "completed");
+        assert_eq!(completed["enumeration_retired"], false);
+        let active = server.active.as_mut().unwrap();
+        let pid = active.child.id();
+        assert!(
+            active.child.try_wait().unwrap().is_none(),
+            "controlled child must still be live"
+        );
+        let work = active.work.clone();
+        let record = server.queue.scan("retirement").unwrap();
+        let items = server
+            .request(Request::Items {
+                scan_id: "retirement".into(),
+                offset: 0,
+                limit: 100,
+            })
+            .unwrap()
+            .0;
+        assert_eq!(items["items"][0]["identity_key"], "generic:one");
+        assert_eq!(retirement_status(&mut server)["enumeration_retired"], false);
+        assert!(server
+            .request(Request::Download {
+                scan_id: "retirement".into(),
+                identity_key: "generic:one".into(),
+                resume: false
+            })
+            .is_err());
+        assert_eq!(server.queue.scan("retirement").unwrap(), record);
+        fs::write(work.join("allow-enumeration-shutdown"), b"release").unwrap();
+        let ack = retirement_event(&mut server).unwrap().unwrap();
+        assert_eq!(ack["enumeration_retired"], true);
+        assert!(server.active.is_none());
+        assert_retirement_pid_dead(pid);
+        // A lost terminal observation is recoverable by explicit existing status,
+        // not by completed-row inference, polling delay or a second status count.
+        assert_eq!(retirement_status(&mut server), ack);
+        assert_eq!(retirement_status(&mut server), ack); // Readback is idempotent.
+        assert_eq!(server.queue.scan("retirement").unwrap(), record);
+        server
+            .request(Request::Download {
+                scan_id: "retirement".into(),
+                identity_key: "generic:one".into(),
+                resume: false,
+            })
+            .unwrap();
+        pump(&mut server);
+        let downloaded = finish_download(&mut server);
+        assert_eq!(downloaded["event"], "source_downloaded");
+        assert_eq!(
+            fs::read(downloaded["media_path"].as_str().unwrap()).unwrap(),
+            b"abcdefgh"
+        );
+        assert_eq!(fs::read(prior).unwrap(), b"keep previous output");
+    }
+    #[test]
+    fn native_retirement_cancel_after_committed_page_reaps_without_ack_or_result_loss() {
+        let temp = Temporary::new();
+        let mut server = retirement_scan(&temp, "hold-before-shutdown");
+        retirement_event(&mut server).unwrap();
+        let pid = server.active.as_ref().unwrap().child.id();
+        let prior = server.runtime.data.join("previous-standard-export.mp4");
+        fs::write(&prior, b"keep").unwrap();
+        let start = Instant::now();
+        let stopped = server
+            .request(Request::Cancel {
+                scan_id: "retirement".into(),
+            })
+            .unwrap()
+            .0;
+        assert_eq!(stopped["event"], "source_enumeration_stopped");
+        assert_eq!(stopped["retained_completed_scan"], true);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(server.active.is_none());
+        assert_retirement_pid_dead(pid);
+        assert_eq!(retirement_status(&mut server)["enumeration_retired"], false);
+        assert_eq!(server.queue.items("retirement").unwrap().len(), 1);
+        assert_eq!(
+            server.queue.scan("retirement").unwrap().status,
+            ScanStatus::Completed
+        );
+        assert_eq!(
+            server
+                .request(Request::Cancel {
+                    scan_id: "retirement".into()
+                })
+                .unwrap()
+                .0,
+            stopped
+        );
+        assert_eq!(fs::read(prior).unwrap(), b"keep");
+    }
+    #[test]
+    fn native_retirement_bad_exit_or_live_after_shutdown_never_ack_and_reaps_child() {
+        for mode in ["bad-exit", "hold-after-shutdown"] {
+            let temp = Temporary::new();
+            let mut server = retirement_scan(&temp, mode);
+            let prior = server.runtime.data.join("previous-standard-export.mp4");
+            fs::write(&prior, b"keep").unwrap();
+            let completed = retirement_event(&mut server).unwrap().unwrap();
+            assert_eq!(completed["enumeration_retired"], false);
+            let pid = server.active.as_ref().unwrap().child.id();
+            let record = server.queue.scan("retirement").unwrap();
+            let start = Instant::now();
+            let failed = retirement_event(&mut server).unwrap().unwrap();
+            assert_eq!(failed["event"], "source_error", "{mode}");
+            assert_eq!(failed["scan_id"], "retirement", "{mode}");
+            assert_eq!(
+                failed["code"], "SOURCE_ENUMERATION_RETIREMENT_FAILED",
+                "{mode}"
+            );
+            assert!(start.elapsed() < Duration::from_secs(5), "{mode}");
+            assert!(server.active.is_none());
+            assert_retirement_pid_dead(pid);
+            assert_eq!(retirement_status(&mut server)["enumeration_retired"], false);
+            assert_eq!(server.queue.scan("retirement").unwrap(), record);
+            assert_eq!(fs::read(prior).unwrap(), b"keep");
+        }
+    }
+    #[test]
+    fn native_retirement_reopen_completed_rows_never_fabricates_a_retirement_ack() {
+        let temp = Temporary::new();
+        let mut server = retirement_scan(&temp, "complete");
+        retirement_event(&mut server).unwrap();
+        assert_eq!(
+            retirement_event(&mut server).unwrap().unwrap()["enumeration_retired"],
+            true
+        );
+        let record = server.queue.scan("retirement").unwrap();
+        let admission = server
+            .runtime
+            .data
+            .join("control/source-admissions/retirement.json");
+        let pin = fs::read(&admission).unwrap();
+        drop(server);
+        let mut reopened = Server::open(temp.recorded_runtime()).unwrap();
+        assert_eq!(
+            retirement_status(&mut reopened)["enumeration_retired"],
+            false
+        );
+        assert_eq!(reopened.queue.scan("retirement").unwrap(), record);
+        assert_eq!(fs::read(admission).unwrap(), pin);
+        assert_eq!(reopened.queue.items("retirement").unwrap().len(), 1);
+    }
+    #[test]
+    fn native_retirement_cancel_after_ack_retains_complete_rows_and_cannot_stop_another_scan() {
+        let temp = Temporary::new();
+        let mut server = retirement_scan(&temp, "complete");
+        retirement_event(&mut server).unwrap();
+        assert_eq!(
+            retirement_event(&mut server).unwrap().unwrap()["enumeration_retired"],
+            true
+        );
+        let original = server.queue.scan("retirement").unwrap();
+        server
+            .request(Request::StartVideo {
+                scan_id: "other".into(),
+                provider_id: "generic".into(),
+                source_ref: "https://example.test/two".into(),
+            })
+            .unwrap();
+        let other_pid = server.active.as_ref().unwrap().child.id();
+        let cancelled = server
+            .request(Request::Cancel {
+                scan_id: "retirement".into(),
+            })
+            .unwrap()
+            .0;
+        assert_eq!(cancelled["event"], "source_enumeration_stopped");
+        assert_eq!(cancelled["cancelled"], true);
+        assert_eq!(server.active.as_ref().unwrap().child.id(), other_pid);
+        assert_eq!(server.queue.scan("retirement").unwrap(), original);
+        assert_eq!(retirement_status(&mut server)["enumeration_retired"], false);
+        server.shutdown().unwrap();
+        assert_retirement_pid_dead(other_pid);
     }
 
     fn failed_download(server: &mut Server) -> PathBuf {
