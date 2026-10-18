@@ -54,6 +54,16 @@ impl JobExecutionGuard {
     }
 }
 
+impl Drop for JobExecutionGuard {
+    fn drop(&mut self) {
+        // A pre-exec fork can retain the open-file description after this
+        // owner's handle closes. Explicitly retire only this acquired claim;
+        // late close of an old raw duplicate cannot unlock a successor's
+        // independently opened lease. Hold it until the job scope exits.
+        let _ = self._file.unlock();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +106,37 @@ mod tests {
         assert!(!db.parent().unwrap().join("same-job.lock").exists());
         let _separate_database =
             JobExecutionGuard::acquire(&db.with_file_name("other.sqlite3"), "../same-job").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn graceful_execution_release_with_retained_descriptor_keeps_successor_exclusive() {
+        use std::os::unix::fs::MetadataExt;
+        let db = database();
+        let guard = JobExecutionGuard::acquire(&db, "job-one").unwrap();
+        let before = guard._file.metadata().unwrap();
+        // A real dup retains the same open-file description as an inherited
+        // pre-exec fork descriptor. This cloning is confined to the fixture.
+        let retained = guard._file.try_clone().unwrap();
+        assert!(JobExecutionGuard::acquire(&db, "job-one").is_err());
+        let other_job = JobExecutionGuard::acquire(&db, "job-two").unwrap();
+        drop(guard);
+        let successor = JobExecutionGuard::acquire(&db, "job-one")
+            .expect("graceful execution owner must unlock despite a retained descriptor");
+        let after = successor._file.metadata().unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!(after.len(), 0);
+        assert!(JobExecutionGuard::acquire(&db, "job-one").is_err());
+        drop(retained);
+        assert!(JobExecutionGuard::acquire(&db, "job-one").is_err(),
+            "late close of an old raw descriptor must not unlock the successor");
+        assert!(JobExecutionGuard::acquire(&db, "job-two").is_err(),
+            "another job's guard must keep its independent execution exclusion");
+        drop(successor);
+        let next = JobExecutionGuard::acquire(&db, "job-one").unwrap();
+        assert!(JobExecutionGuard::acquire(&db, "job-one").is_err());
+        drop(next);
+        drop(other_job);
     }
 
     #[test]
