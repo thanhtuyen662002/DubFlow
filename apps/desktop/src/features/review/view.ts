@@ -1,4 +1,4 @@
-import { reviewFailureDetails } from "./request-failure.ts";
+import { reviewFailureDetails, reviewFailureHint } from "./request-failure.ts";
 import { reviewActivityText, type ReviewActivityObserver, type ReviewActivityUpdate } from "./request-activity.ts";
 import type { ReviewReason } from "./model.ts";
 import { previewProductionCorrection, readReviewPayload, reviewRangeLabel,
@@ -349,7 +349,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
               payload = checked; publications = {}; exportArmed = undefined; message = "Đã kiểm tra và áp dụng bản thay thế. Lời thoại đang hiển thị là bản hiện hành.";
             } catch { stale = true; message = "Kết quả đã đổi phiên bản. Hãy tải lại để kiểm tra trước khi sửa tiếp."; }
           }, error => { if (at === epoch && !destroyed) { failureDetails = reviewFailureDetails(error, before.job_id, "apply"); stale = true;
-            message = "Chưa xác định tác vụ đã áp dụng hay chưa. Hãy tải lại lời thoại để kiểm tra; không tự gửi lại yêu cầu.";
+            message = reviewFailureHint(error, before.job_id, "apply") ?? "Chưa xác định tác vụ đã áp dụng hay chưa. Hãy tải lại lời thoại để kiểm tra; không tự gửi lại yêu cầu.";
           } }).finally(() => { if (applyAbort === abort) applyAbort = null;
             if (at === epoch && !destroyed) { busy = false; render(); } });
           return;
