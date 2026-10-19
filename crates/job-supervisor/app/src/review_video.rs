@@ -3,9 +3,9 @@
 //! Selection is read-only; the only external side effect is the final fixed
 //! Windows association request. Parent cancellation/timeout owns this reader;
 //! once activation starts an external player cannot be revoked or auto-retried.
-//! An association may create a descendant inside the parent's existing kill-on-
-//! close Job Object. A launch acknowledgement does not prove player survival
-//! after reader retirement; never request breakaway to bypass that containment.
+//! Tauri directly spawns/kills this reader; it does not assign a per-reader Job.
+//! Any enclosing app/QA Job must be identified separately. An acknowledgement
+//! does not prove player survival after retirement; never request breakaway.
 use super::review_assets::{MixStorageBudget, native_identity, regular};
 use super::review_document::{closed, decode, text, tick};
 use super::review_pin::{CommittedExport, committed_export};

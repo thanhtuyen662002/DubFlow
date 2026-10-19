@@ -41,6 +41,7 @@ mod review_export_publication;
 mod review_editable;
 mod review_desktop;
 mod review_preview;
+mod review_video;
 mod review_plan;
 mod review_progress;
 mod review_apply;
@@ -643,6 +644,9 @@ fn run() -> SupervisorResult<()> {
     }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-current-audio")) {
         return review_preview::run(std::env::args_os().skip(2));
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-open-result")) {
+        return review_video::run(std::env::args_os().skip(2));
     }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("review-desktop-state")) {
         return review_desktop::run(std::env::args_os().skip(2));

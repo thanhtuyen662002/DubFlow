@@ -191,7 +191,7 @@ fn single_cue_file(file: &File) -> SupervisorResult<(u64, u64)> {
     native_identity(file, false)
 }
 
-fn native_identity(file: &File, directory: bool) -> SupervisorResult<(u64, u64)> {
+pub(super) fn native_identity(file: &File, directory: bool) -> SupervisorResult<(u64, u64)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
