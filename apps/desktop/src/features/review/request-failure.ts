@@ -42,3 +42,13 @@ export function reviewFailureDetails(error: unknown, job: string, operation: Rev
   const phase = { checking: "Kiểm tra dữ liệu trước khi chạy", processing: "Xử lý yêu cầu", verifying: "Kiểm tra kết quả vừa tạo" }[f.phase];
   return [`Bước xử lý: ${phase}`, f.message, f.diagnostic].filter(value => value !== null).join("\n\n");
 }
+
+/** Presentation only: a diagnostic never proves mutation state or grants retry. */
+export function reviewFailureHint(error: unknown, job: string, operation: ReviewOperation): string | null {
+  if (operation !== "apply" || !(error instanceof ReviewFailureError)) return null;
+  let f: ReviewRequestFailure;
+  try { f = readReviewFailure(error.failure, error.failure.request_id, job, operation); } catch { return null; }
+  const refusal = "Review temporary path is too long for Windows process startup; create a new processing version in a shorter output folder; prior export remains unchanged";
+  if (!f.diagnostic?.includes(refusal)) return null;
+  return "Đường dẫn thư mục tạm vượt giới hạn Windows. Chưa xác nhận được kết quả sửa. Bấm “Tải lại lời thoại” để kiểm tra phiên hiện hành; không tự gửi lại yêu cầu. Cần khắc phục vị trí lưu tạm trước khi sửa tiếp.";
+}

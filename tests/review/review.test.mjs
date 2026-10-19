@@ -924,6 +924,102 @@ lateDiagnosticConnection.clear(); lateFailureReject(); await assert.rejects(late
 assert.equal(lateDiagnosticCalls.filter(c => c.command === "review_initialize_v1").length, 1); lateDiagnosticConnection.dispose();
 console.log("bound request failures: exact invocation, UTF8/control caps, inert details, unconfirmed outcome, stale/lost/late guards and no retry passed");
 
+// The actual apply refusal can reload the same native head with a NEW session.
+// Diagnostic wording is presentation only: it cannot authorize resend or commit.
+const failurePresentation = await import("../../apps/desktop/src/features/review/request-failure.ts");
+const scratchDiagnostic = "Review temporary path is too long for Windows process startup; create a new processing version in a shorter output folder; prior export remains unchanged";
+const scratchHead = structuredClone(beforePlan);
+scratchHead.current_token.revision = "0"; scratchHead.last_plan = null;
+function scratchHarness(deferred = false) {
+  const calls = []; let sequence = 0, finish;
+  const transport = nativeReviewTransport(async (command, args) => {
+    calls.push({ command, args: structuredClone(args) });
+    if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session",
+      session_id: args.requestId, snapshot: structuredClone(scratchHead) };
+    if (command === "review_plan_v1") return planResponse(scratchHead, args.request);
+    if (command === "review_apply_v1") {
+      const failure = failurePacket(args.requestId, scratchHead.job_id, "apply", { native_stage: null,
+        message: "Không xác thực được lời thoại hoặc âm thanh; hãy tải lại và kiểm tra đầu ra của video", diagnostic: scratchDiagnostic });
+      if (deferred) return new Promise((_resolve, reject) => { finish = () => reject(failure); });
+      throw failure;
+    }
+    if (command === "review_cancel_v1") return;
+    throw new Error("unexpected scratch-refusal route");
+  }, async () => {}, () => `request-scratch-${deferred ? "late" : "reload"}-${++sequence}`);
+  return { connection: new ReviewConnection(transport), calls, finish: () => finish() };
+}
+const scratch = scratchHarness(), scratchConnection = scratch.connection;
+await scratchConnection.load(scratchHead.job_id);
+const oldScratchActions = scratchConnection.actions();
+const scratchRequest = currentPlanRequest(scratchConnection.snapshot(), {
+  finding_id: scratchHead.findings[0].finding_id, translation: "Bản dịch cần dựng lại" });
+const scratchPlan = await oldScratchActions.planCurrent(scratchRequest, new AbortController().signal);
+const scratchConfirmation = currentConfirmation(scratchConnection.snapshot(), scratchPlan);
+let scratchError;
+await assert.rejects(oldScratchActions.applyCurrent(scratchConfirmation, new AbortController().signal), error => {
+  scratchError = error;
+  assert(error instanceof ReviewFailureError);
+  assert.equal(error.failure.outcome, "unconfirmed");
+  assert.equal(error.failure.request_id, scratch.calls.find(c => c.command === "review_apply_v1").args.requestId);
+  assert.equal(error.failure.diagnostic, scratchDiagnostic);
+  return true;
+});
+assert.equal(scratchConnection.snapshot(), null);
+assert.throws(() => scratchConnection.actions(), /has not loaded/);
+const scratchMessage = failurePresentation.reviewFailureHint?.(scratchError, scratchHead.job_id, "apply") ?? null;
+const reloadedScratch = await scratchConnection.load(scratchHead.job_id);
+assert.deepEqual(reloadedScratch.current_token, scratchHead.current_token); // A fresh read may still be head0.
+const scratchLoads = scratch.calls.filter(c => c.command === "review_snapshot_v2");
+assert.equal(scratchLoads.length, 2);
+assert.notEqual(scratchLoads[0].args.requestId, scratchLoads[1].args.requestId);
+assert.equal(scratch.calls.filter(c => c.command === "review_apply_v1").length, 1); // Reload never resends.
+await assert.rejects(oldScratchActions.planCurrent(scratchRequest, new AbortController().signal), { name: "AbortError" });
+assert.deepEqual(scratchConnection.snapshot(), scratchHead);
+// On the unfixed source, the full bound-error/reload flow above reaches this
+// assertion with no top-level actionable guidance (not an import/API failure).
+assert.match(scratchMessage ?? "", /Đường dẫn thư mục tạm vượt giới hạn Windows/);
+assert.match(scratchMessage, /Tải lại lời thoại/);
+assert.match(scratchMessage, /không tự gửi lại/);
+assert.match(scratchMessage, /khắc phục vị trí lưu tạm/);
+assert.doesNotMatch(scratchMessage, /Tạo bản xử lý mới|chọn thư mục|đã áp dụng|chưa áp dụng/);
+assert.equal(scratchError.failure.outcome, "unconfirmed");
+assert.deepEqual(Object.keys(scratchError.failure).sort(), Object.keys(failurePacket("request-scratch-shape-0001")).sort());
+assert.match(reviewFailureDetails(scratchError, scratchHead.job_id, "apply"), /Review temporary path is too long/);
+for (const wrong of [{ request_id: "request-foreign-scratch-0001" }, { job_id: "other-job" },
+  { operation: "undo" }, { outcome: "not_committed" }, { retryable: true }, { diagnostic: "bad\u0000text" }]) {
+  const call = scratch.calls.find(c => c.command === "review_apply_v1");
+  const raw = { ...scratchError.failure, ...wrong };
+  const rejectedBinding = boundReviewFailure(raw, call.args.requestId, scratchHead.job_id, "apply");
+  assert.equal(failurePresentation.reviewFailureHint(rejectedBinding, scratchHead.job_id, "apply"), null);
+}
+assert.equal(failurePresentation.reviewFailureHint(scratchError, "other-job", "apply"), null);
+assert.equal(failurePresentation.reviewFailureHint(scratchError, scratchHead.job_id, "undo"), null);
+assert.equal(failurePresentation.reviewFailureHint(scratchDiagnostic, scratchHead.job_id, "apply"), null);
+for (const diagnostic of [null, "Some other path is too long", "QC failed", "Review temporary path is too long"]) {
+  const raw = { ...scratchError.failure, diagnostic };
+  const otherError = boundReviewFailure(raw, raw.request_id, scratchHead.job_id, "apply");
+  assert.equal(failurePresentation.reviewFailureHint(otherError, scratchHead.job_id, "apply"), null);
+}
+scratchConnection.dispose();
+
+const lateScratch = scratchHarness(true), lateScratchConnection = lateScratch.connection;
+await lateScratchConnection.load(scratchHead.job_id);
+const lateScratchRequest = currentPlanRequest(lateScratchConnection.snapshot(), {
+  finding_id: scratchHead.findings[0].finding_id, translation: "Một thay đổi chờ phản hồi" });
+const lateScratchPlan = await lateScratchConnection.actions().planCurrent(lateScratchRequest, new AbortController().signal);
+const obsoleteScratch = lateScratchConnection.actions().applyCurrent(
+  currentConfirmation(lateScratchConnection.snapshot(), lateScratchPlan), new AbortController().signal);
+const obsoleteScratchRejected = assert.rejects(obsoleteScratch);
+await new Promise(resolve => setImmediate(resolve));
+const latestScratch = await lateScratchConnection.load(scratchHead.job_id);
+lateScratch.finish(); await obsoleteScratchRejected;
+assert.deepEqual(lateScratchConnection.snapshot(), latestScratch);
+assert.equal(latestScratch.current_token.revision, "0");
+assert.equal(lateScratch.calls.filter(c => c.command === "review_apply_v1").length, 1);
+assert.equal(lateScratch.calls.filter(c => c.command === "review_snapshot_v2").length, 2);
+lateScratchConnection.dispose();
+console.log("scratch-path apply refusal: visible guidance, unconfirmed binding, head0/new-session reload, no resend and late/wrong-binding fences passed");
+
 // A held audio reply must never begin playback across a changed native session,
 // even when the caller did not separately abort its preview view signal.
 for (const scenario of ["undo-completed", "undo-in-flight", "export-new-session"]) {
