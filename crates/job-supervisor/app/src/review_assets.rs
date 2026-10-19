@@ -5,7 +5,7 @@
 //! Audio requires hash, size and PCM verification. JSON preserves exact bytes
 //! and requires unambiguous syntax; document semantics need prior admission. A
 //! later graph transaction must retain these objects and all pending undo assets.
-use super::{review_pin::plain, SupervisorError, SupervisorResult, ID_COUNTER};
+use super::{ID_COUNTER, SupervisorError, SupervisorResult, review_pin::plain};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -32,11 +32,11 @@ pub(super) use chunk_capacity::ChunkCapacity;
 
 #[path = "review_export_copy.rs"]
 mod export_copy;
-pub(super) use export_copy::{verify_export_files, ExportCopyInput, ExportFileSpec};
+pub(super) use export_copy::{ExportCopyInput, ExportFileSpec, verify_export_files};
 
 #[path = "review_editable_storage.rs"]
 mod editable_storage;
-pub(super) use editable_storage::{verify_editable_files, EditableFileSpec};
+pub(super) use editable_storage::{EditableFileSpec, verify_editable_files};
 
 fn invalid(message: &str) -> SupervisorError {
     SupervisorError::Invalid(message.into())
@@ -467,23 +467,21 @@ mod current_audio_read_tests {
             raw
         );
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
-        assert!(read_current_cue_audio(
-            &root.0,
-            &path,
-            &pin,
-            CueAudioKind::Retained,
-            Instant::now()
-        )
-        .is_err());
+        assert!(
+            read_current_cue_audio(&root.0, &path, &pin, CueAudioKind::Retained, Instant::now())
+                .is_err()
+        );
         writable(&path);
-        assert!(read_current_cue_audio(
-            &root.0,
-            &path,
-            &pin,
-            CueAudioKind::Retained,
-            Instant::now() + Duration::from_secs(3)
-        )
-        .is_err());
+        assert!(
+            read_current_cue_audio(
+                &root.0,
+                &path,
+                &pin,
+                CueAudioKind::Retained,
+                Instant::now() + Duration::from_secs(3)
+            )
+            .is_err()
+        );
         assert_eq!(
             read_current_cue_audio(
                 &root.0,
@@ -500,19 +498,21 @@ mod current_audio_read_tests {
     }
     #[cfg(any(unix, windows))]
     #[test]
-    fn current_cue_capture_refuses_hardlink_equal_size_corruption_and_header_changes_without_repair(
-    ) {
+    fn current_cue_capture_refuses_hardlink_equal_size_corruption_and_header_changes_without_repair()
+     {
         let (root, path, raw, pin) = fixture();
         let alias = root.0.join("alias.wav");
         fs::hard_link(&path, &alias).unwrap();
-        assert!(read_current_cue_audio(
-            &root.0,
-            &path,
-            &pin,
-            CueAudioKind::Retained,
-            Instant::now() + Duration::from_secs(3)
-        )
-        .is_err());
+        assert!(
+            read_current_cue_audio(
+                &root.0,
+                &path,
+                &pin,
+                CueAudioKind::Retained,
+                Instant::now() + Duration::from_secs(3)
+            )
+            .is_err()
+        );
         writable(&alias);
         fs::remove_file(&alias).unwrap();
         let mut corrupt = raw.clone();
@@ -521,14 +521,16 @@ mod current_audio_read_tests {
         let mut p = fs::metadata(&path).unwrap().permissions();
         p.set_readonly(true);
         fs::set_permissions(&path, p).unwrap();
-        assert!(read_current_cue_audio(
-            &root.0,
-            &path,
-            &pin,
-            CueAudioKind::Retained,
-            Instant::now() + Duration::from_secs(3)
-        )
-        .is_err());
+        assert!(
+            read_current_cue_audio(
+                &root.0,
+                &path,
+                &pin,
+                CueAudioKind::Retained,
+                Instant::now() + Duration::from_secs(3)
+            )
+            .is_err()
+        );
         assert_eq!(fs::read(&path).unwrap(), corrupt);
         writable(&path);
         let mut header = raw.clone();
@@ -539,14 +541,16 @@ mod current_audio_read_tests {
         fs::set_permissions(&path, p).unwrap();
         let mut changed = pin;
         changed.sha256 = format!("sha256:{:x}", Sha256::digest(&header));
-        assert!(read_current_cue_audio(
-            &root.0,
-            &path,
-            &changed,
-            CueAudioKind::Retained,
-            Instant::now() + Duration::from_secs(3)
-        )
-        .is_err());
+        assert!(
+            read_current_cue_audio(
+                &root.0,
+                &path,
+                &changed,
+                CueAudioKind::Retained,
+                Instant::now() + Duration::from_secs(3)
+            )
+            .is_err()
+        );
         assert_eq!(fs::read(&path).unwrap(), header);
     }
 }
@@ -912,8 +916,9 @@ fn scratch_actual(
     count: &mut usize,
     limit: usize,
 ) -> SupervisorResult<u64> {
-    // Chunk workspace is covered by its existing .chunk-capacity-v1 extent.
-    // Do not rescan/double-charge the job candidate tree or change its recovery.
+    // This is the TEMP-only credit bound, not the complete private inventory.
+    // used_bytes separately charges every candidate, deducting only validated
+    // actual chunk bytes covered by an extent counted in that same scan.
     scratch_inventory(
         &output.join(".dubflow-review-candidates/temp"),
         deadline,
@@ -1198,7 +1203,7 @@ fn scratch_usage(
                     _ => {
                         return Err(invalid(
                             "unknown scratch credit entry; explicit recovery required",
-                        ))
+                        ));
                     }
                 }
             }
@@ -1594,6 +1599,7 @@ impl RetainedMixStore {
         plain(&self.namespace)?;
         let mut count = 0usize;
         let mut total = 0u64;
+        let mut chunk_extents = std::collections::BTreeMap::new();
         let mut account = |path: &Path| -> SupervisorResult<()> {
             time_left(Some(deadline))?;
             count += 1;
@@ -1674,10 +1680,22 @@ impl RetainedMixStore {
                     continue;
                 }
                 let file = regular(&object.path())?;
+                // Every retained extent is charged first. Quota-only metadata
+                // may later cover actual bytes in its exact native workspace;
+                // it cannot recover a worker or authorize current publication.
+                let filename = object.file_name();
+                let bytes = if let Some(scope) = chunk_capacity::quota_scope(&filename) {
+                    let counted = chunk_capacity::QuotaExtent::counted(&file)?;
+                    let bytes = counted.bytes();
+                    chunk_extents.insert((name.to_owned(), scope.to_owned()), counted);
+                    bytes
+                } else {
+                    file.metadata()?.len()
+                };
                 // Include .copy crash orphans, foreign regular files and all
                 // old/undo objects. Never evict a potentially referenced file.
                 total = total
-                    .checked_add(file.metadata()?.len())
+                    .checked_add(bytes)
                     .ok_or_else(|| invalid("mix storage byte count overflow"))?;
             }
         }
@@ -1685,6 +1703,7 @@ impl RetainedMixStore {
             .namespace
             .parent()
             .ok_or_else(|| invalid("missing output namespace"))?;
+        let private = self.private_candidate_bytes(&chunk_extents, deadline, &mut count)?;
         let usage = scratch_usage(
             output,
             &self.scratch_credit_root(),
@@ -1697,7 +1716,117 @@ impl RetainedMixStore {
         total
             .checked_sub(usage.covered_extents)
             .and_then(|n| n.checked_add(usage.charge))
+            .and_then(|n| n.checked_add(private))
             .ok_or_else(|| invalid("shared scratch/media quota overflow"))
+    }
+
+    /// Charge all ordinary, old, partial and orphan candidate files. A chunk
+    /// spelling alone gives no discount: only a fresh matching extent from the
+    /// already-counted retained scan can cover its actual workspace bytes.
+    fn private_candidate_bytes(
+        &self,
+        extents: &std::collections::BTreeMap<(String, String), chunk_capacity::QuotaExtent>,
+        deadline: Instant,
+        count: &mut usize,
+    ) -> SupervisorResult<u64> {
+        fn visit(
+            store: &RetainedMixStore,
+            path: &Path,
+            depth: usize,
+            device: u64,
+            extents: &std::collections::BTreeMap<(String, String), chunk_capacity::QuotaExtent>,
+            deadline: Instant,
+            count: &mut usize,
+        ) -> SupervisorResult<u64> {
+            time_left(Some(deadline))?;
+            *count = count
+                .checked_add(1)
+                .ok_or_else(|| invalid("private candidate entry overflow"))?;
+            if *count > store.inventory_limit || depth > 32 {
+                return Err(invalid("private candidate inventory exceeds shared bound"));
+            }
+            plain(path)?;
+            if !fs::symlink_metadata(path)?.is_dir() {
+                let file = regular(path)?;
+                if single_cue_file(&file)?.0 != device {
+                    return Err(invalid("candidate file changed output device"));
+                }
+                return Ok(file.metadata()?.len());
+            }
+            let (_held_directory, identity) = scratch_directory(path)?;
+            if identity.0 != device {
+                return Err(invalid("candidate directory changed output device"));
+            }
+            if depth == 2 {
+                let job = path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if let Some(scope) = name.strip_prefix("chunk-capacity-v1-") {
+                    if let Some(counted) = extents.get(&(job.to_owned(), scope.to_owned())) {
+                        // This call inventories/checks actual bytes and identities
+                        // without acquiring/releasing/adopting a worker lease.
+                        chunk_capacity::quota_covered_bytes(
+                            &store.namespace,
+                            job,
+                            scope,
+                            path,
+                            counted,
+                            deadline,
+                            count,
+                            store.inventory_limit,
+                        )?;
+                        return Ok(0);
+                    }
+                }
+            }
+            let mut total = 0u64;
+            let mut entries = fs::read_dir(path)?;
+            loop {
+                time_left(Some(deadline))?;
+                let Some(entry) = entries.next() else {
+                    break;
+                };
+                let entry = entry?;
+                // The exact legacy TEMP subtree is counted by scratch_usage,
+                // including unreserved TEMP/orphans; no other name is exempt.
+                if depth == 0 && entry.file_name() == "temp" {
+                    continue;
+                }
+                if *count >= store.inventory_limit {
+                    return Err(invalid(
+                        "private candidate enumeration exceeds shared bound",
+                    ));
+                }
+                total = total
+                    .checked_add(visit(
+                        store,
+                        &entry.path(),
+                        depth + 1,
+                        device,
+                        extents,
+                        deadline,
+                        count,
+                    )?)
+                    .ok_or_else(|| invalid("private candidate byte inventory overflow"))?;
+            }
+            Ok(total)
+        }
+        time_left(Some(deadline))?;
+        let output = self
+            .namespace
+            .parent()
+            .ok_or_else(|| invalid("missing candidate output"))?;
+        let root = output.join(".dubflow-review-candidates");
+        match fs::symlink_metadata(&root) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+            Ok(_) => (),
+        }
+        let (_output_handle, identity) = scratch_directory(output)?;
+        visit(self, &root, 0, identity.0, extents, deadline, count)
     }
 
     fn scratch_credit_root(&self) -> PathBuf {
@@ -2513,7 +2642,7 @@ mod tests {
     }
 
     #[test]
-    fn scratch_credit_drop_charges_union_and_does_not_recount_chunk_workspace() {
+    fn scratch_credit_covers_temp_once_and_unreserved_candidate_bytes_remain_charged() {
         let (fixture, _, _) = fixture();
         let output = fixture.0.join("scratch-credit-output");
         fs::create_dir(&output).unwrap();
@@ -2552,12 +2681,13 @@ mod tests {
         let before = store.used_bytes(deadline()).unwrap();
         fs::write(scratch.join("old-orphan.pcm"), [9u8; 17]).unwrap();
         assert_eq!(store.used_bytes(deadline()).unwrap(), before); // Covered, not added twice.
-                                                                   // A73d writer only sums file lengths and still sees the full reservation.
+        // A73d writer only sums file lengths and still sees the full reservation.
         assert!(fs::metadata(&path).unwrap().len() >= SCRATCH_ALLOWANCE);
         drop(credit); // No stopped-tree proof: no refund or cleanup.
         assert!(path.exists());
         assert_eq!(store.used_bytes(deadline()).unwrap(), before);
-        assert!(before < SCRATCH_ALLOWANCE + 2 * SCRATCH_HEADER);
+        assert!(before >= 104525926 + SCRATCH_ALLOWANCE);
+        assert!(before < 104525926 + SCRATCH_ALLOWANCE + 2 * SCRATCH_HEADER);
         assert_eq!(fs::metadata(candidate).unwrap().len(), 104525926);
         assert!(scratch_preflight(100, 0, 512, 100, budget(100000)).is_err());
         assert!(scratch_preflight(100, 0, 512, u64::MAX, budget(500)).is_err());
@@ -2614,15 +2744,17 @@ mod tests {
                 .len(),
             9
         );
-        assert!(store
-            .reserve_scratch(
-                &scratch,
-                &owner,
-                SCRATCH_ALLOWANCE,
-                |_| Ok(u64::MAX),
-                Instant::now()
-            )
-            .is_err());
+        assert!(
+            store
+                .reserve_scratch(
+                    &scratch,
+                    &owner,
+                    SCRATCH_ALLOWANCE,
+                    |_| Ok(u64::MAX),
+                    Instant::now()
+                )
+                .is_err()
+        );
         for path in [path, second, output.join(".dfr/.owner-v1")] {
             let mut permissions = fs::metadata(&path).unwrap().permissions();
             permissions.set_readonly(false); // Exact test-created files only.
@@ -2814,20 +2946,24 @@ mod tests {
             fs::metadata(&same.path).unwrap().modified().unwrap(),
             modified
         );
-        assert!(store
-            .accept(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
-            .is_err()); // mono is not full mix.
+        assert!(
+            store
+                .accept(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
+                .is_err()
+        ); // mono is not full mix.
         let video = candidate.join("new.mp4");
         fs::write(&video, b"new render candidate").unwrap();
-        assert!(store
-            .accept_file(
-                &candidate,
-                &video,
-                &render_pin(b"new render candidate", RetainedFileFormat::Mp4),
-                |_| Ok(u64::MAX),
-                deadline()
-            )
-            .is_err()); // cue bytes reserve the same aggregate quota.
+        assert!(
+            store
+                .accept_file(
+                    &candidate,
+                    &video,
+                    &render_pin(b"new render candidate", RetainedFileFormat::Mp4),
+                    |_| Ok(u64::MAX),
+                    deadline()
+                )
+                .is_err()
+        ); // cue bytes reserve the same aggregate quota.
         let extra = retained.path.with_extension("link");
         fs::hard_link(&retained.path, &extra).unwrap();
         assert!(store.verify_cue(&retained, deadline()).is_err());
@@ -2868,24 +3004,28 @@ mod tests {
             )
             .unwrap();
         let mut calls = 0;
-        assert!(store
-            .accept_cue(
-                &candidate,
-                &path,
-                &pin,
-                |_| {
-                    calls += 1;
-                    Ok(if calls < 3 { u64::MAX } else { 0 })
-                },
-                deadline()
-            )
-            .is_err());
+        assert!(
+            store
+                .accept_cue(
+                    &candidate,
+                    &path,
+                    &pin,
+                    |_| {
+                        calls += 1;
+                        Ok(if calls < 3 { u64::MAX } else { 0 })
+                    },
+                    deadline()
+                )
+                .is_err()
+        );
         assert_eq!(calls, 3);
-        assert!(!store
-            .objects
-            .root
-            .join(format!("{}.wav", &pin.sha256[7..]))
-            .exists());
+        assert!(
+            !store
+                .objects
+                .root
+                .join(format!("{}.wav", &pin.sha256[7..]))
+                .exists()
+        );
         assert_eq!(fs::read(&prior.path).unwrap(), b"valid prior render");
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(store.used_bytes(deadline()).unwrap(), prior.pin.size_bytes);
@@ -2989,13 +3129,15 @@ mod tests {
             budget(pin.size_bytes + raw.len() as u64 + 1),
         )
         .unwrap();
-        assert!(another
-            .accept_json_record(
-                "{\"new\":true}",
-                |_| panic!("shared quota refuses before space probe"),
-                deadline()
-            )
-            .is_err());
+        assert!(
+            another
+                .accept_json_record(
+                    "{\"new\":true}",
+                    |_| panic!("shared quota refuses before space probe"),
+                    deadline()
+                )
+                .is_err()
+        );
         assert_eq!(fs::read(&kept.path).unwrap(), old);
         assert_eq!(fs::read(&video.path).unwrap(), bytes);
     }
@@ -3013,57 +3155,67 @@ mod tests {
         let raw = format!("{{\"payload\":\"{}\"}}", "x".repeat(40000));
         for fail_at in [1, 3, 4] {
             let mut calls = 0;
-            assert!(store
-                .accept_json_record(
-                    &raw,
-                    |_| {
-                        calls += 1;
-                        Ok(if calls == fail_at { 0 } else { u64::MAX })
-                    },
-                    deadline()
-                )
-                .is_err());
+            assert!(
+                store
+                    .accept_json_record(
+                        &raw,
+                        |_| {
+                            calls += 1;
+                            Ok(if calls == fail_at { 0 } else { u64::MAX })
+                        },
+                        deadline()
+                    )
+                    .is_err()
+            );
             assert_eq!(store.used_bytes(deadline()).unwrap(), prior.pin.size_bytes);
         }
-        assert!(store
-            .accept_json_record(
-                &raw,
-                |_| Err(invalid("unknown native caller space")),
-                deadline()
-            )
-            .is_err());
-        assert!(store
-            .accept_json_record(
-                &raw,
-                |_| panic!("expired operation must not probe space"),
-                Instant::now() - std::time::Duration::from_secs(1)
-            )
-            .is_err());
+        assert!(
+            store
+                .accept_json_record(
+                    &raw,
+                    |_| Err(invalid("unknown native caller space")),
+                    deadline()
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .accept_json_record(
+                    &raw,
+                    |_| panic!("expired operation must not probe space"),
+                    Instant::now() - std::time::Duration::from_secs(1)
+                )
+                .is_err()
+        );
         for invalid_raw in [
             "",
             "{",
             "{\"duplicate\":1,\"duplicate\":2}",
             "{\"bad\":NaN}",
         ] {
-            assert!(store
-                .accept_json_record(
-                    invalid_raw,
-                    |_| panic!("syntax refuses before allocation"),
-                    deadline()
-                )
-                .is_err());
+            assert!(
+                store
+                    .accept_json_record(
+                        invalid_raw,
+                        |_| panic!("syntax refuses before allocation"),
+                        deadline()
+                    )
+                    .is_err()
+            );
         }
         let large = format!(
             "{{\"payload\":\"{}\"}}",
             "x".repeat(MAX_RETAINED_METADATA_BYTES)
         );
-        assert!(store
-            .accept_json_record(
-                &large,
-                |_| panic!("record bound refuses before allocation"),
-                deadline()
-            )
-            .is_err());
+        assert!(
+            store
+                .accept_json_record(
+                    &large,
+                    |_| panic!("record bound refuses before allocation"),
+                    deadline()
+                )
+                .is_err()
+        );
         assert_eq!(fs::read(&prior.path).unwrap(), before);
         assert_eq!(
             fs::metadata(&prior.path).unwrap().modified().unwrap(),
@@ -3089,25 +3241,29 @@ mod tests {
         permissions.set_readonly(false);
         fs::set_permissions(&kept.path, permissions).unwrap();
         fs::remove_file(alias).unwrap();
-        assert!(store
-            .accept_json_record(
-                raw,
-                |_| panic!("unsealed collision never allocates"),
-                deadline()
-            )
-            .is_err());
+        assert!(
+            store
+                .accept_json_record(
+                    raw,
+                    |_| panic!("unsealed collision never allocates"),
+                    deadline()
+                )
+                .is_err()
+        );
         fs::write(&kept.path, b"{\"node\":2}").unwrap();
         let mut permissions = fs::metadata(&kept.path).unwrap().permissions();
         permissions.set_readonly(true);
         fs::set_permissions(&kept.path, permissions).unwrap();
         let corrupted = fs::read(&kept.path).unwrap();
-        assert!(store
-            .accept_json_record(
-                raw,
-                |_| panic!("corrupt collision never overwrites"),
-                deadline()
-            )
-            .is_err());
+        assert!(
+            store
+                .accept_json_record(
+                    raw,
+                    |_| panic!("corrupt collision never overwrites"),
+                    deadline()
+                )
+                .is_err()
+        );
         assert_eq!(fs::read(&kept.path).unwrap(), corrupted);
     }
 
@@ -3182,15 +3338,17 @@ mod tests {
             .unwrap();
         let orphan = store.objects.root.join(".copy-interrupted");
         fs::write(&orphan, b"orphan").unwrap();
-        assert!(store
-            .accept_file(
-                &candidate,
-                &video,
-                &pin,
-                |_| panic!("quota refuses before OS space"),
-                deadline()
-            )
-            .is_err());
+        assert!(
+            store
+                .accept_file(
+                    &candidate,
+                    &video,
+                    &pin,
+                    |_| panic!("quota refuses before OS space"),
+                    deadline()
+                )
+                .is_err()
+        );
         store.verify(&old, deadline()).unwrap();
         assert_eq!(fs::read(&orphan).unwrap(), b"orphan");
         assert!(RetainedMixStore::new(&fixture.0, "other-render", budget(u64::MAX)).is_err());
@@ -3216,18 +3374,20 @@ mod tests {
         let store =
             RetainedMixStore::new(&fixture.0, "render-space", budget(pin.size_bytes)).unwrap();
         let mut probes = 0;
-        assert!(store
-            .accept_file(
-                &candidate,
-                &path,
-                &pin,
-                |_| {
-                    probes += 1;
-                    Ok(if probes < 3 { u64::MAX } else { 0 })
-                },
-                deadline()
-            )
-            .is_err());
+        assert!(
+            store
+                .accept_file(
+                    &candidate,
+                    &path,
+                    &pin,
+                    |_| {
+                        probes += 1;
+                        Ok(if probes < 3 { u64::MAX } else { 0 })
+                    },
+                    deadline()
+                )
+                .is_err()
+        );
         assert_eq!(probes, 3);
         assert_eq!(store.used_bytes(deadline()).unwrap(), 0);
         assert_eq!(fs::metadata(&path).unwrap().len(), pin.size_bytes);
@@ -3239,18 +3399,22 @@ mod tests {
         fs::write(&path, b"{\"timeline\":1}").unwrap();
         let pin = render_pin(b"{\"timeline\":1}", RetainedFileFormat::Json);
         let store = RetainedMixStore::new(&fixture.0, "render-corrupt", budget(1000)).unwrap();
-        assert!(store
-            .accept_file(
-                &candidate,
-                &path,
-                &pin,
-                |_| Err(invalid("unknown space")),
-                deadline()
-            )
-            .is_err());
-        assert!(store
-            .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), Instant::now())
-            .is_err());
+        assert!(
+            store
+                .accept_file(
+                    &candidate,
+                    &path,
+                    &pin,
+                    |_| Err(invalid("unknown space")),
+                    deadline()
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), Instant::now())
+                .is_err()
+        );
         let object = store
             .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
             .unwrap();
@@ -3266,9 +3430,11 @@ mod tests {
         permissions.set_readonly(true);
         fs::set_permissions(&object.path, permissions).unwrap();
         assert!(store.verify_file(&object, deadline()).is_err());
-        assert!(store
-            .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
-            .is_err());
+        assert!(
+            store
+                .accept_file(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
+                .is_err()
+        );
         assert_eq!(fs::read(&object.path).unwrap(), b"{\"timeline\":2}");
     }
 
@@ -3310,15 +3476,19 @@ mod tests {
         let accepted = store
             .accept(&candidate, &path, &pin, |_| Ok(u64::MAX), deadline())
             .unwrap();
-        assert!(accepted
-            .path
-            .starts_with(fixture.0.join(".dubflow-review-media-v1")));
+        assert!(
+            accepted
+                .path
+                .starts_with(fixture.0.join(".dubflow-review-media-v1"))
+        );
         assert!(!accepted.path.starts_with(fixture.0.join("control")));
         assert_ne!(accepted.path, path);
-        assert!(fs::metadata(&accepted.path)
-            .unwrap()
-            .permissions()
-            .readonly());
+        assert!(
+            fs::metadata(&accepted.path)
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
         assert!(!fs::metadata(&path).unwrap().permissions().readonly());
         assert_eq!(store.used_bytes(deadline()).unwrap(), pin.size_bytes);
         fs::write(&path, b"worker replaced candidate").unwrap();
@@ -3373,15 +3543,16 @@ mod tests {
         drop(store);
         let next =
             RetainedMixStore::new(&fixture.0, "new-job", budget(pin.size_bytes + 10)).unwrap();
-        assert!(next
-            .accept(
+        assert!(
+            next.accept(
                 &root,
                 &path,
                 &pin,
                 |_| panic!("quota must refuse before space probe"),
                 deadline()
             )
-            .is_err());
+            .is_err()
+        );
         assert_eq!(fs::read(&old.path).unwrap(), bytes);
         assert_eq!(fs::read(&orphan).unwrap(), b"ten bytes!");
         assert_eq!(fs::read_dir(&next.objects.root).unwrap().count(), 0);
@@ -3394,21 +3565,27 @@ mod tests {
         let path = root.join("mix.wav");
         fs::write(&path, &bytes).unwrap();
         let store = RetainedMixStore::new(&fixture.0, "job-space", budget(pin.size_bytes)).unwrap();
-        assert!(store
-            .accept(&root, &path, &pin, |_| Ok(pin.size_bytes + 99), deadline())
-            .is_err());
-        assert!(store
-            .accept(
-                &root,
-                &path,
-                &pin,
-                |_| Err(invalid("space unavailable")),
-                deadline()
-            )
-            .is_err());
-        assert!(store
-            .accept(&root, &path, &pin, |_| panic!("expired"), Instant::now())
-            .is_err());
+        assert!(
+            store
+                .accept(&root, &path, &pin, |_| Ok(pin.size_bytes + 99), deadline())
+                .is_err()
+        );
+        assert!(
+            store
+                .accept(
+                    &root,
+                    &path,
+                    &pin,
+                    |_| Err(invalid("space unavailable")),
+                    deadline()
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .accept(&root, &path, &pin, |_| panic!("expired"), Instant::now())
+                .is_err()
+        );
         assert_eq!(fs::read_dir(&store.objects.root).unwrap().count(), 0);
         assert_eq!(fs::read_dir(&cue_store.root).unwrap().count(), 0);
         drop(store);
@@ -3421,9 +3598,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(store
-            .accept(&root, &path, &pin, |_| panic!("overflow"), deadline())
-            .is_err());
+        assert!(
+            store
+                .accept(&root, &path, &pin, |_| panic!("overflow"), deadline())
+                .is_err()
+        );
         assert_eq!(fs::read_dir(&store.objects.root).unwrap().count(), 0);
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
@@ -3483,49 +3662,57 @@ mod tests {
     fn bounded_output_writer_wait_refuses_cancel_expiry_and_preserves_current_owner() {
         let (fixture, _, _) = fixture();
         let namespace = fixture.0.join(".dubflow-review-media-v1");
-        assert!(RetainedMixStore::new_until(
-            &fixture.0,
-            "job-cancelled",
-            budget(10000),
-            deadline(),
-            &mut || true,
-        )
-        .is_err());
+        assert!(
+            RetainedMixStore::new_until(
+                &fixture.0,
+                "job-cancelled",
+                budget(10000),
+                deadline(),
+                &mut || true,
+            )
+            .is_err()
+        );
         assert!(!namespace.exists());
-        assert!(RetainedMixStore::new_until(
-            &fixture.0,
-            "job-expired",
-            budget(10000),
-            Instant::now(),
-            &mut || false,
-        )
-        .is_err());
+        assert!(
+            RetainedMixStore::new_until(
+                &fixture.0,
+                "job-expired",
+                budget(10000),
+                Instant::now(),
+                &mut || false,
+            )
+            .is_err()
+        );
         assert!(!namespace.exists());
         let owner = RetainedMixStore::new(&fixture.0, "job-owner", budget(10000)).unwrap();
         let lock = namespace.join(".writer.lock");
         let identity = single_cue_file(&regular(&lock).unwrap()).unwrap();
         let started = Instant::now();
-        assert!(RetainedMixStore::new_until(
-            &fixture.0,
-            "job-deadline",
-            budget(10000),
-            started + std::time::Duration::from_millis(40),
-            &mut || false,
-        )
-        .is_err());
+        assert!(
+            RetainedMixStore::new_until(
+                &fixture.0,
+                "job-deadline",
+                budget(10000),
+                started + std::time::Duration::from_millis(40),
+                &mut || false,
+            )
+            .is_err()
+        );
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let mut polls = 0;
-        assert!(RetainedMixStore::new_until(
-            &fixture.0,
-            "job-late-cancel",
-            budget(10000),
-            deadline(),
-            &mut || {
-                polls += 1;
-                polls >= 4
-            },
-        )
-        .is_err());
+        assert!(
+            RetainedMixStore::new_until(
+                &fixture.0,
+                "job-late-cancel",
+                budget(10000),
+                deadline(),
+                &mut || {
+                    polls += 1;
+                    polls >= 4
+                },
+            )
+            .is_err()
+        );
         assert!(RetainedMixStore::new(&fixture.0, "job-other", budget(10000)).is_err());
         assert_eq!(single_cue_file(&regular(&lock).unwrap()).unwrap(), identity);
         assert_eq!(fs::metadata(lock).unwrap().len(), 0);
@@ -3600,23 +3787,27 @@ mod tests {
         store.inventory_limit = inventory_limit;
         let nested = store.objects.root.join("interrupted-generation");
         fs::create_dir(&nested).unwrap();
-        assert!(store
-            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
-            .is_err());
+        assert!(
+            store
+                .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+                .is_err()
+        );
         assert!(nested.is_dir());
         fs::remove_dir(nested).unwrap();
         for index in 0..inventory_limit {
             File::create(store.objects.root.join(format!(".copy-{index}"))).unwrap();
         }
-        assert!(store
-            .accept(
-                &root,
-                &path,
-                &pin,
-                |_| panic!("bounded scan must refuse"),
-                deadline()
-            )
-            .is_err());
+        assert!(
+            store
+                .accept(
+                    &root,
+                    &path,
+                    &pin,
+                    |_| panic!("bounded scan must refuse"),
+                    deadline()
+                )
+                .is_err()
+        );
         assert_eq!(
             fs::read_dir(&store.objects.root).unwrap().count(),
             inventory_limit
@@ -3650,18 +3841,22 @@ mod tests {
         }
         fs::set_permissions(&accepted.path, permissions.clone()).unwrap();
         assert!(store.verify(&accepted, deadline()).is_err());
-        assert!(store
-            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
-            .is_err());
+        assert!(
+            store
+                .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+                .is_err()
+        );
         let mut corrupt = bytes.clone();
         *corrupt.last_mut().unwrap() ^= 1;
         fs::write(&accepted.path, &corrupt).unwrap();
         permissions.set_readonly(true);
         fs::set_permissions(&accepted.path, permissions).unwrap();
         assert!(store.verify(&accepted, deadline()).is_err());
-        assert!(store
-            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
-            .is_err());
+        assert!(
+            store
+                .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+                .is_err()
+        );
         assert_eq!(fs::read(&accepted.path).unwrap(), corrupt);
         assert_eq!(fs::read(&path).unwrap(), bytes);
         // A checksum-valid non-PCM candidate still cannot create an object.
@@ -3669,9 +3864,11 @@ mod tests {
         bad[20] = 3;
         let bad_pin = self::pin(&bad, 480, 2);
         fs::write(&path, &bad).unwrap();
-        assert!(store
-            .accept(&root, &path, &bad_pin, |_| Ok(u64::MAX), deadline())
-            .is_err());
+        assert!(
+            store
+                .accept(&root, &path, &bad_pin, |_| Ok(u64::MAX), deadline())
+                .is_err()
+        );
         assert_eq!(fs::read_dir(&store.objects.root).unwrap().count(), 1);
         assert_eq!(fs::read(&path).unwrap(), bad);
     }
@@ -3689,30 +3886,36 @@ mod tests {
         let path = root.join("mix.wav");
         fs::write(&path, bytes).unwrap();
         let store = RetainedMixStore::new(&fixture.0, "job-path", budget(10000)).unwrap();
-        assert!(store
-            .accept(
-                &root,
-                &root.join("../producer candidate/mix.wav"),
-                &pin,
-                |_| Ok(u64::MAX),
-                deadline()
-            )
-            .is_err());
-        assert!(store
-            .accept(
-                &root,
-                &fixture.0.join("outside.wav"),
-                &pin,
-                |_| Ok(u64::MAX),
-                deadline()
-            )
-            .is_err());
+        assert!(
+            store
+                .accept(
+                    &root,
+                    &root.join("../producer candidate/mix.wav"),
+                    &pin,
+                    |_| Ok(u64::MAX),
+                    deadline()
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .accept(
+                    &root,
+                    &fixture.0.join("outside.wav"),
+                    &pin,
+                    |_| Ok(u64::MAX),
+                    deadline()
+                )
+                .is_err()
+        );
         assert_eq!(fs::read_dir(&store.objects.root).unwrap().count(), 0);
         let unexpected = store.namespace.join("unknown");
         fs::write(&unexpected, b"preserve").unwrap();
-        assert!(store
-            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
-            .is_err());
+        assert!(
+            store
+                .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+                .is_err()
+        );
         assert_eq!(fs::read(&unexpected).unwrap(), b"preserve");
     }
 
@@ -3730,14 +3933,18 @@ mod tests {
         let store = RetainedMixStore::new(&fixture.0, "job-links", budget(10000)).unwrap();
         let linked = root.join("linked.wav");
         symlink(&path, &linked).unwrap();
-        assert!(store
-            .accept(&root, &linked, &pin, |_| Ok(u64::MAX), deadline())
-            .is_err());
+        assert!(
+            store
+                .accept(&root, &linked, &pin, |_| Ok(u64::MAX), deadline())
+                .is_err()
+        );
         let orphan = store.objects.root.join(".copy-linked");
         symlink(&path, &orphan).unwrap();
-        assert!(store
-            .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
-            .is_err());
+        assert!(
+            store
+                .accept(&root, &path, &pin, |_| Ok(u64::MAX), deadline())
+                .is_err()
+        );
         assert_eq!(fs::read(&path).unwrap(), bytes);
         fs::remove_file(orphan).unwrap();
     }
@@ -3849,10 +4056,12 @@ mod tests {
         assert_ne!(accepted.path, source);
         assert_eq!(fs::read(&source).unwrap(), bytes);
         assert_eq!(fs::read(&accepted.path).unwrap(), bytes);
-        assert!(fs::metadata(&accepted.path)
-            .unwrap()
-            .permissions()
-            .readonly());
+        assert!(
+            fs::metadata(&accepted.path)
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
         fs::write(&source, vec![0; bytes.len()]).unwrap();
         store.verify(&accepted).unwrap();
         assert_eq!(fs::read(&accepted.path).unwrap(), bytes);
@@ -3938,9 +4147,11 @@ mod tests {
             }
             assert!(store.accept(&root, &source, &pin).is_err());
         }
-        assert!(store
-            .accept(&root.join("other"), &source, &original)
-            .is_err());
+        assert!(
+            store
+                .accept(&root.join("other"), &source, &original)
+                .is_err()
+        );
         let traversal = root.join("../producer candidate/cue.wav");
         assert!(store.accept(&root, &traversal, &original).is_err());
         assert_eq!(fs::read_dir(&store.root).unwrap().count(), 0);
@@ -3989,16 +4200,18 @@ mod tests {
         };
         let deadline = Instant::now() + std::time::Duration::from_secs(20);
         let mut calls = 0;
-        assert!(store
-            .copy_export_file(
-                &input,
-                |_| {
-                    calls += 1;
-                    Ok(if calls < 3 { u64::MAX } else { 0 })
-                },
-                deadline
-            )
-            .is_err());
+        assert!(
+            store
+                .copy_export_file(
+                    &input,
+                    |_| {
+                        calls += 1;
+                        Ok(if calls < 3 { u64::MAX } else { 0 })
+                    },
+                    deadline
+                )
+                .is_err()
+        );
         let directory = store.export_pending_directory(&generation).unwrap();
         let partial = directory.join("final_vi.mp4.partial");
         assert_eq!(fs::metadata(&partial).unwrap().len(), 4 * 1024 * 1024);
@@ -4071,13 +4284,15 @@ mod tests {
             size_bytes: bytes.len() as u64,
             remaining_after: 0,
         };
-        assert!(store
-            .copy_export_file(
-                &input,
-                |_| Ok(u64::MAX),
-                Instant::now() + std::time::Duration::from_secs(5)
-            )
-            .is_err());
+        assert!(
+            store
+                .copy_export_file(
+                    &input,
+                    |_| Ok(u64::MAX),
+                    Instant::now() + std::time::Duration::from_secs(5)
+                )
+                .is_err()
+        );
         assert_eq!(fs::read(&partial).unwrap(), bad);
         assert_eq!(fs::metadata(&partial).unwrap().modified().unwrap(), mtime);
         assert_eq!(fs::read(&source).unwrap(), bytes);
@@ -4122,13 +4337,15 @@ mod tests {
             size_bytes: 200,
             remaining_after: 125,
         };
-        assert!(store
-            .copy_export_file(
-                &input,
-                |_| panic!("quota refuses before probing OS space"),
-                deadline
-            )
-            .is_err());
+        assert!(
+            store
+                .copy_export_file(
+                    &input,
+                    |_| panic!("quota refuses before probing OS space"),
+                    deadline
+                )
+                .is_err()
+        );
         assert_eq!(
             fs::metadata(pending.join("source.mp4.partial"))
                 .unwrap()
@@ -4307,30 +4524,36 @@ mod tests {
         );
         let orphan = pending.join("unexpected.partial");
         fs::write(&orphan, b"interrupted").unwrap();
-        assert!(store
-            .publish_export_directory(
-                &generation,
-                &specs,
-                |_| Ok(u64::MAX),
-                || panic!("closed inventory refuses first"),
-                deadline
-            )
-            .is_err());
+        assert!(
+            store
+                .publish_export_directory(
+                    &generation,
+                    &specs,
+                    |_| Ok(u64::MAX),
+                    || panic!("closed inventory refuses first"),
+                    deadline
+                )
+                .is_err()
+        );
         fs::remove_file(orphan).unwrap();
-        assert!(store
-            .publish_export_directory(
-                &generation,
-                &specs,
-                |_| Ok(u64::MAX),
-                || Err(invalid("changed full head")),
-                deadline
-            )
-            .is_err());
+        assert!(
+            store
+                .publish_export_directory(
+                    &generation,
+                    &specs,
+                    |_| Ok(u64::MAX),
+                    || Err(invalid("changed full head")),
+                    deadline
+                )
+                .is_err()
+        );
         assert!(pending.is_dir());
-        assert!(store
-            .export_published_directory(&generation)
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .export_published_directory(&generation)
+                .unwrap()
+                .is_none()
+        );
         let published = store
             .publish_export_directory(&generation, &specs, |_| Ok(u64::MAX), || Ok(()), deadline)
             .unwrap();
