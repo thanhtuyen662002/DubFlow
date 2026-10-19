@@ -577,13 +577,52 @@ impl Drop for AdapterProcess {
     }
 }
 
+fn retire_scratch_process(
+    mut process: AdapterProcess,
+    until: Instant,
+) -> SupervisorResult<super::worker_tree::RetiredTree> {
+    let mut tree = process
+        .tree
+        .take()
+        .ok_or_else(|| invalid("scratch process has no owned Job"))?;
+    tree.terminate_owned(until)?;
+    loop {
+        if Instant::now() >= until {
+            return Err(invalid(
+                "scratch parent retirement exhausted original deadline",
+            ));
+        }
+        if process.child.try_wait()?.is_some() {
+            break;
+        }
+        std::thread::sleep(
+            Duration::from_millis(5).min(until.saturating_duration_since(Instant::now())),
+        );
+    }
+    // Keep the Job alive, but release the collector's process reference before
+    // querying ActiveProcesses. Parent status alone is never retirement proof.
+    drop(process);
+    Ok(tree.retire_until(until)?)
+}
+
 // The original metadata adapter never spawns descendants. Windows containment
 // still precedes the byte gate; error/timeout/cap paths terminate and reap it.
 pub(super) fn collect(
-    mut command: Command,
+    command: impl Into<super::review_retention::OwnedReviewCommand>,
     timeout: Duration,
     limit: usize,
 ) -> SupervisorResult<String> {
+    let (mut command, scratch, prepared_at) = command.into().into_parts();
+    let deadline = prepared_at.unwrap_or_else(Instant::now) + timeout;
+    if Instant::now() >= deadline {
+        return Err(invalid(
+            "scratch admission exhausted the original worker deadline",
+        ));
+    }
+    let scratch = scratch.map(|intent| intent.admit(deadline)).transpose()?;
+    if Instant::now() >= deadline {
+        return Err(invalid("scratch admission exhausted worker deadline"));
+    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -593,67 +632,82 @@ pub(super) fn collect(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let mut process = AdapterProcess {
-        child: command.spawn()?,
-        tree: None,
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(scratch) = scratch {
+                let _ = scratch.retire_unstarted(deadline);
+            }
+            return Err(error.into());
+        }
     };
+    let mut process = AdapterProcess { child, tree: None };
     process.tree = Some(super::WorkerTree::attach(&process.child)?);
-    let stdout = process.child.stdout.take().unwrap();
-    let stderr = process.child.stderr.take().unwrap();
-    let (send, receive) = mpsc::channel();
-    for (error, cap, stream) in [
-        (false, limit, Box::new(stdout) as Box<dyn Read + Send>),
-        (true, 4096, Box::new(stderr) as Box<dyn Read + Send>),
-    ] {
-        let send = send.clone();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let result = stream
-                .take(cap as u64 + 1)
-                .read_to_end(&mut bytes)
-                .map(|_| bytes);
-            let _ = send.send((error, cap, result));
-        });
-    }
-    drop(send);
-    let mut stdin = process.child.stdin.take().unwrap();
-    stdin.write_all(&[1])?;
-    drop(stdin);
-    let deadline = Instant::now() + timeout;
-    let mut out = None;
-    let mut errors = None;
-    while Instant::now() < deadline {
-        match receive.recv_timeout(Duration::from_millis(20)) {
-            Ok((error, cap, result)) => {
-                let bytes = result?;
-                if bytes.len() > cap {
-                    return Err(invalid("original adapter output exceeded byte cap"));
+    let result = (|| {
+        let stdout = process.child.stdout.take().unwrap();
+        let stderr = process.child.stderr.take().unwrap();
+        let (send, receive) = mpsc::channel();
+        for (error, cap, stream) in [
+            (false, limit, Box::new(stdout) as Box<dyn Read + Send>),
+            (true, 4096, Box::new(stderr) as Box<dyn Read + Send>),
+        ] {
+            let send = send.clone();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let result = stream
+                    .take(cap as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .map(|_| bytes);
+                let _ = send.send((error, cap, result));
+            });
+        }
+        drop(send);
+        let mut stdin = process.child.stdin.take().unwrap();
+        stdin.write_all(&[1])?;
+        drop(stdin);
+        let mut out = None;
+        let mut errors = None;
+        while Instant::now() < deadline {
+            match receive.recv_timeout(Duration::from_millis(20)) {
+                Ok((error, cap, result)) => {
+                    let bytes = result?;
+                    if bytes.len() > cap {
+                        return Err(invalid("original adapter output exceeded byte cap"));
+                    }
+                    if error {
+                        errors = Some(bytes);
+                    } else {
+                        out = Some(bytes);
+                    }
                 }
-                if error {
-                    errors = Some(bytes);
-                } else {
-                    out = Some(bytes);
+                Err(mpsc::RecvTimeoutError::Timeout)
+                | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(Duration::from_millis(10))
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                std::thread::sleep(Duration::from_millis(10))
+            if let Some(status) = process.child.try_wait()? {
+                if let (Some(out), Some(errors)) = (&out, &errors) {
+                    if !status.success() || !errors.is_empty() {
+                        return Err(invalid(
+                            "original adapter refused metadata; completed export remains unchanged",
+                        ));
+                    }
+                    return String::from_utf8(out.clone())
+                        .map_err(|_| invalid("original adapter response is not UTF-8"));
+                }
             }
         }
-        if let Some(status) = process.child.try_wait()? {
-            if let (Some(out), Some(errors)) = (&out, &errors) {
-                if !status.success() || !errors.is_empty() {
-                    return Err(invalid(
-                        "original adapter refused metadata; completed export remains unchanged",
-                    ));
-                }
-                return String::from_utf8(out.clone())
-                    .map_err(|_| invalid("original adapter response is not UTF-8"));
-            }
-        }
+        Err(invalid(
+            "original adapter exceeded its bounded observation deadline",
+        ))
+    })();
+    if let Some(scratch) = scratch {
+        // Never close the Job and infer retirement from EOF/parent status.
+        let until = deadline.min(Instant::now() + Duration::from_secs(2));
+        let proof = retire_scratch_process(process, until)?;
+        scratch.retire_stopped(proof, deadline)?;
     }
-    Err(invalid(
-        "original adapter exceeded its bounded observation deadline",
-    ))
+    result
 }
 
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> SupervisorResult<()> {

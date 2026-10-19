@@ -1027,9 +1027,14 @@ pub(super) fn private_root(output: &Path, job: &str) -> SupervisorResult<PathBuf
     // metadata/cue objects. Missing output storage remains an explicit refusal.
     let root = output.join(".dubflow-review-candidates");
     let job_root = root.join(format!("{:x}", Sha256::digest(job.as_bytes())));
-    let scratch = root.join("temp");
-    validate_scratch_length(&scratch, cfg!(windows))?;
-    for path in [&root, &scratch, &job_root] {
+    // Selection is pure and precedes mkdir. All NEW scratch/credit IO is
+    // deferred to the collector, which owns the caller's actual deadline.
+    let scratch = select_scratch(output, cfg!(windows))?;
+    let mut paths = vec![root.clone(), job_root.clone()];
+    if scratch == root.join("temp") {
+        paths.push(scratch);
+    }
+    for path in &paths {
         super::review_pin::plain(path.parent().unwrap())?;
         match std::fs::create_dir(path) {
             Ok(()) => (),
@@ -1044,6 +1049,17 @@ pub(super) fn private_root(output: &Path, job: &str) -> SupervisorResult<PathBuf
     Ok(job_root)
 }
 
+// SCRATCH_LAYOUT_BEGIN: exact production placement used by the standalone probe.
+fn select_scratch(output: &Path, windows: bool) -> SupervisorResult<PathBuf> {
+    let legacy = output.join(".dubflow-review-candidates").join("temp");
+    if !windows || legacy.as_os_str().to_string_lossy().encode_utf16().count() <= 200 {
+        return Ok(legacy);
+    }
+    let compact = output.join(".dfr").join("temp");
+    validate_scratch_length(&compact, windows)?;
+    Ok(compact)
+}
+
 fn validate_scratch_length(scratch: &Path, windows: bool) -> SupervisorResult<()> {
     // Leave room for TemporaryDirectory's prefix/random suffix and PCM names.
     // A deep TEMP reproduced a hang inside Windows CreateProcess, before the
@@ -1055,19 +1071,23 @@ fn validate_scratch_length(scratch: &Path, windows: bool) -> SupervisorResult<()
     }
     Ok(())
 }
+// SCRATCH_LAYOUT_END
 
 pub(super) fn candidate_scratch(job_root: &Path) -> SupervisorResult<PathBuf> {
     // NativeProcess creates unique private TemporaryDirectories here. Sharing
     // the short parent across jobs does not share media/checkpoint identity.
-    let scratch = job_root
+    let parent = job_root
         .parent()
-        .ok_or_else(|| invalid("missing native candidate parent"))?
-        .join("temp");
-    super::review_pin::plain(&scratch)?;
-    if !scratch.is_dir() {
-        return Err(invalid("Review temporary storage is unavailable"));
+        .ok_or_else(|| invalid("missing native candidate parent"))?;
+    if parent.file_name().and_then(|s| s.to_str()) != Some(".dubflow-review-candidates") {
+        return Err(invalid(
+            "candidate root is not the legacy admitted namespace",
+        ));
     }
-    validate_scratch_length(&scratch, cfg!(windows))?;
+    let output = parent
+        .parent()
+        .ok_or_else(|| invalid("missing admitted output"))?;
+    let scratch = select_scratch(output, cfg!(windows))?;
     Ok(scratch)
 }
 
@@ -1075,7 +1095,7 @@ pub(super) fn cue_command(
     runtime: &AdmittedRuntime,
     entry: &Path,
     scratch: &Path,
-) -> SupervisorResult<Command> {
+) -> SupervisorResult<super::review_retention::OwnedReviewCommand> {
     validate_scratch_length(scratch, cfg!(windows))?;
     let mut command = Command::new(&runtime.python);
     command.args([
@@ -1088,7 +1108,14 @@ pub(super) fn cue_command(
         .env("TEMP", scratch)
         .env("TMP", scratch)
         .env("TMPDIR", scratch);
-    Ok(command)
+    #[cfg(windows)]
+    {
+        super::review_retention::own_scratch_command(command, scratch)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(command.into())
+    } // No process-group/credit retirement claim on this platform.
 }
 
 pub(super) fn synthesize_accepted(
@@ -1319,6 +1346,19 @@ mod tests {
         assert!(validate_scratch_length(Path::new(&"\u{1f3ac}".repeat(100)), true).is_ok());
         assert!(validate_scratch_length(Path::new(&"\u{1f3ac}".repeat(101)), true).is_err());
         assert!(validate_scratch_length(Path::new(&"a".repeat(300)), false).is_ok());
+    }
+
+    #[test]
+    fn windows_default_output_uses_only_compact_scratch_without_changing_candidates() {
+        let output = PathBuf::from(format!("C:/{}", "o".repeat(176)));
+        assert_eq!(output.as_os_str().to_string_lossy().encode_utf16().count(), 179);
+        assert_eq!(select_scratch(&output, true).unwrap(), output.join(".dfr/temp"));
+        let extended = PathBuf::from(format!("\\\\?\\{}", output.display()));
+        assert_eq!(select_scratch(&extended, true).unwrap().as_os_str().to_string_lossy().encode_utf16().count(), 193);
+        let short = PathBuf::from("C:/short-output");
+        assert_eq!(select_scratch(&short, true).unwrap(), short.join(".dubflow-review-candidates/temp"));
+        assert!(select_scratch(&PathBuf::from(format!("C:/{}", "o".repeat(190))), true).is_err());
+        assert!(select_scratch(&PathBuf::from(format!("C:/{}", "🎬".repeat(100))), true).is_err());
     }
 
     #[cfg(windows)]

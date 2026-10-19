@@ -1,5 +1,12 @@
 //! Own the Windows worker subtree before its initial command starts work.
 
+/// Constructed only by an authoritative observation of this owned Job being
+/// empty before its existing deadline. Parent exit/EOF/Drop cannot mint it.
+#[derive(Debug)]
+pub(crate) struct RetiredTree {
+    _private: (),
+}
+
 #[cfg(not(windows))]
 pub(super) struct WorkerTree;
 
@@ -7,6 +14,21 @@ pub(super) struct WorkerTree;
 impl WorkerTree {
     pub(super) fn attach(_child: &std::process::Child) -> std::io::Result<Self> {
         Ok(Self)
+    }
+    pub(super) fn retire_until(
+        &mut self,
+        _deadline: std::time::Instant,
+    ) -> std::io::Result<RetiredTree> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "owned process-group retirement is not qualified on this platform",
+        ))
+    }
+    pub(super) fn terminate_owned(&self, _deadline: std::time::Instant) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "owned process-group retirement is not qualified on this platform",
+        ))
     }
 }
 
@@ -69,6 +91,14 @@ mod windows {
             length: u32,
         ) -> i32;
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn TerminateJobObject(job: Handle, code: u32) -> i32;
+        fn QueryInformationJobObject(
+            job: Handle,
+            class: i32,
+            info: *mut c_void,
+            length: u32,
+            returned: *mut u32,
+        ) -> i32;
         fn CloseHandle(handle: Handle) -> i32;
     }
 
@@ -106,6 +136,82 @@ mod windows {
                 return Err(io::Error::last_os_error());
             }
             Ok(tree)
+        }
+
+        pub(crate) fn retire_until(
+            &mut self,
+            deadline: std::time::Instant,
+        ) -> io::Result<super::RetiredTree> {
+            self.terminate_owned(deadline)?;
+            self.observe_empty_until(deadline)
+        }
+
+        pub(crate) fn observe_empty_until(
+            &self,
+            deadline: std::time::Instant,
+        ) -> io::Result<super::RetiredTree> {
+            use std::time::{Duration, Instant};
+            #[repr(C)]
+            #[derive(Default)]
+            struct Accounting {
+                user: i64,
+                kernel: i64,
+                period_user: i64,
+                period_kernel: i64,
+                page_faults: u32,
+                total: u32,
+                active: u32,
+                terminated: u32,
+            }
+            loop {
+                let mut info = Accounting::default();
+                let mut returned = 0;
+                if unsafe {
+                    QueryInformationJobObject(
+                        self.handle,
+                        1,
+                        ptr::from_mut(&mut info).cast(),
+                        std::mem::size_of::<Accounting>() as u32,
+                        &mut returned,
+                    )
+                } == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "late owned Job observation cannot retire credit",
+                    ));
+                }
+                if returned != std::mem::size_of::<Accounting>() as u32 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "owned Job accounting layout changed",
+                    ));
+                }
+                if info.active == 0 {
+                    return Ok(super::RetiredTree { _private: () });
+                }
+                std::thread::sleep(
+                    Duration::from_millis(5)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+        }
+
+        pub(crate) fn terminate_owned(&self, deadline: std::time::Instant) -> io::Result<()> {
+            use std::time::Instant;
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "owned Job retirement deadline exhausted",
+                ));
+            }
+            if unsafe { TerminateJobObject(self.handle, 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
         }
     }
 
@@ -291,6 +397,28 @@ mod windows {
             assert_eq!(std::mem::size_of::<BasicLimits>(), 64);
             assert_eq!(std::mem::size_of::<IoCounters>(), 48);
             assert_eq!(std::mem::size_of::<ExtendedLimits>(), 144);
+        }
+
+        #[test]
+        fn windows_empty_observation_is_not_parent_exit_or_a_new_wait_budget() {
+            let mut neighbor = CleanupChild(fixture("grandchild").spawn().unwrap());
+            ready(&mut neighbor.0);
+            let (mut worker, tree, grandchild) = contained_worker();
+            let parent = ProcessObservation::open(worker.0.id());
+            let descendant = ProcessObservation::open(grandchild);
+            assert!(tree.observe_empty_until(std::time::Instant::now()).is_err());
+            parent.running();
+            descendant.running();
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            tree.terminate_owned(until).unwrap();
+            parent.stopped();
+            descendant.stopped();
+            worker.0.wait().unwrap();
+            drop(parent);
+            drop(descendant);
+            drop(worker);
+            tree.observe_empty_until(until).unwrap();
+            assert!(neighbor.0.try_wait().unwrap().is_none());
         }
     }
 }

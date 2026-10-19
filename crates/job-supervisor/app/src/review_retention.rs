@@ -472,6 +472,184 @@ impl NativeOutputPin {
     }
 }
 
+fn scratch_budget() -> MixStorageBudget {
+    MixStorageBudget {
+        maximum_bytes: 32 * 1024 * 1024 * 1024,
+        minimum_free_bytes: 2 * 1024 * 1024 * 1024,
+    }
+}
+
+fn scratch_owner(pin: &NativeOutputPin) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(
+            format!(
+                "review-scratch-owner-v1\n{}\n{}",
+                pin.volume_id,
+                pin.root.display()
+            )
+            .as_bytes()
+        )
+    )
+}
+
+// This is an output-wide storage namespace for credits, NOT a job/model pin.
+const SCRATCH_CREDITS: &str = super::review_assets::SCRATCH_CREDITS;
+
+/// Pure command intent. Filesystem admission belongs to the collector's one
+/// original deadline, after all command arguments have been built.
+pub(super) struct PendingScratch {
+    output: PathBuf,
+    scratch: PathBuf,
+}
+impl PendingScratch {
+    pub(super) fn admit(self, deadline: Instant) -> SupervisorResult<NativeScratchLease> {
+        if Instant::now() >= deadline {
+            return Err(invalid("scratch admission deadline expired"));
+        }
+        let pin = NativeOutputPin::read(&self.output)?;
+        let media = NativeMixStore::new_until(
+            &pin,
+            SCRATCH_CREDITS,
+            scratch_budget(),
+            deadline,
+            &mut || false,
+        )?;
+        let owner = scratch_owner(&pin);
+        let expected = pin.volume_id().to_owned();
+        // The worker receives the original DOS/extended spelling. Identity and
+        // quota admission use the pinned canonical root, never a shorter alias.
+        let relative = self
+            .scratch
+            .strip_prefix(&self.output)
+            .map_err(|_| invalid("scratch escaped output"))?;
+        let canonical_scratch = pin.root().join(relative);
+        let credit = media.objects.reserve_scratch(
+            &canonical_scratch,
+            &owner,
+            super::review_assets::SCRATCH_ALLOWANCE,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&expected, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            deadline,
+        )?;
+        same_volume(pin.volume_id(), &probe(&self.scratch)?)?;
+        if self.scratch.canonicalize()? != canonical_scratch || Instant::now() >= deadline {
+            return Err(invalid(
+                "scratch identity or original deadline changed during admission",
+            ));
+        }
+        Ok(NativeScratchLease { pin, credit })
+    }
+}
+
+pub(super) struct NativeScratchLease {
+    pin: NativeOutputPin,
+    credit: super::review_assets::ScratchCredit,
+}
+
+impl NativeScratchLease {
+    fn retire(self, deadline: Instant) -> SupervisorResult<()> {
+        if Instant::now() >= deadline {
+            return Err(invalid(
+                "scratch retirement deadline expired; credit retained",
+            ));
+        }
+        let media = NativeMixStore::open_existing(&self.pin, SCRATCH_CREDITS, scratch_budget())?;
+        let expected = self.pin.volume_id().to_owned();
+        media.objects.retire_scratch(
+            self.credit,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&expected, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            deadline,
+        )
+    }
+    pub(super) fn retire_unstarted(self, deadline: Instant) -> SupervisorResult<()> {
+        self.retire(deadline)
+    }
+    pub(super) fn retire_stopped(
+        self,
+        _proof: super::worker_tree::RetiredTree,
+        deadline: Instant,
+    ) -> SupervisorResult<()> {
+        self.retire(deadline)
+    }
+}
+
+/// Ordinary commands carry no new authority. A scratch command cannot be
+/// converted back into a bare Command and silently drop a live reservation.
+pub(super) struct OwnedReviewCommand {
+    command: std::process::Command,
+    scratch: Option<PendingScratch>,
+    prepared_at: Option<Instant>,
+}
+impl From<std::process::Command> for OwnedReviewCommand {
+    fn from(command: std::process::Command) -> Self {
+        Self {
+            command,
+            scratch: None,
+            prepared_at: None,
+        }
+    }
+}
+impl std::ops::Deref for OwnedReviewCommand {
+    type Target = std::process::Command;
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+impl std::ops::DerefMut for OwnedReviewCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
+impl OwnedReviewCommand {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        std::process::Command,
+        Option<PendingScratch>,
+        Option<Instant>,
+    ) {
+        (self.command, self.scratch, self.prepared_at)
+    }
+}
+
+pub(super) fn own_scratch_command(
+    command: std::process::Command,
+    scratch: &Path,
+) -> SupervisorResult<OwnedReviewCommand> {
+    let output = scratch
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| invalid("missing admitted scratch output"))?;
+    if !output.is_absolute()
+        || scratch
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        || (scratch != output.join(".dfr/temp")
+            && scratch != output.join(".dubflow-review-candidates/temp"))
+    {
+        return Err(invalid(
+            "scratch intent escaped its admitted output namespace",
+        ));
+    }
+    Ok(OwnedReviewCommand {
+        command,
+        scratch: Some(PendingScratch {
+            output: output.to_path_buf(),
+            scratch: scratch.to_path_buf(),
+        }),
+        prepared_at: Some(Instant::now()),
+    })
+}
+
 fn same_volume(expected: &str, observed: &Observation) -> SupervisorResult<()> {
     if observed.volume_id != expected {
         return Err(invalid(
@@ -1158,6 +1336,42 @@ impl NativeMixStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_command_conversion_has_no_scratch_credit_or_changed_arguments() {
+        let mut command: OwnedReviewCommand = std::process::Command::new("owned-fixture").into();
+        command.args(["first", "second"]);
+        let (command, lease, started) = command.into_parts();
+        assert!(lease.is_none() && started.is_none());
+        assert_eq!(
+            command
+                .get_args()
+                .map(|s| s.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn scratch_command_intent_never_creates_storage_before_collector_deadline() {
+        let root =
+            std::env::temp_dir().join(format!("absent-scratch-intent-{}", std::process::id()));
+        assert!(!root.exists());
+        let owned = own_scratch_command(
+            std::process::Command::new("never-spawn-fixture"),
+            &root.join(".dfr/temp"),
+        )
+        .unwrap();
+        let (_, intent, _) = owned.into_parts();
+        assert!(intent.unwrap().admit(Instant::now()).is_err());
+        assert!(!root.exists());
+        assert!(own_scratch_command(
+            std::process::Command::new("never-spawn-fixture"),
+            &root.join("ambient/temp")
+        )
+        .is_err());
+    }
+
     const GUID: &str = r"\\?\Volume{01234567-89AB-CDEF-0123-456789abcdef}\";
     const HARD_LINKS: u32 = 0x0040_0000;
 
