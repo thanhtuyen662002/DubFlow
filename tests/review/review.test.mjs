@@ -13,6 +13,9 @@ import { currentExportRequest, readCurrentExportRequest, readExportedCurrent } f
 import { currentInitializeRequest, readCurrentInitializeRequest, readInitializedCurrent } from "../../apps/desktop/src/features/review/current-initialize.ts";
 import { mountReviewCenter } from "../../apps/desktop/src/features/review/view.ts";
 import { mountDesktopReview } from "../../apps/desktop/src/features/review/host.ts";
+import { resultVideoRequest, readResultVideoRequest, readResultVideoLaunch } from "../../apps/desktop/src/features/review/result-video.ts";
+import { ReviewConnection as ResultVideoConnection } from "../../apps/desktop/src/features/review/connection.ts";
+import { nativeReviewTransport as resultVideoTransport } from "../../apps/desktop/src/features/review/transport.ts";
 
 const finding = {
   finding_id: "cue-1",
@@ -215,6 +218,102 @@ rejectOldAudio(new Error("Review đã hết hạn hoặc đổi video; hãy tả
 assert.equal(reviewNodes(lateAudioHost).find(node => node.className === "review-status").textContent, "");
 lateAudioView.destroy();
 console.log("mounted audio recovery: fixed guidance, no replay, draft-preserving explicit reload/cancel and late-error fence passed");
+const resultVideoHost = reviewContainer(), resultVideoCalls = [];
+const resultVideoView = mountReviewCenter(resultVideoHost, warningSnapshot, {
+  voices: [{ voice_id: "voice-a", label: "Giọng A" }],
+  async planCurrent() { throw new Error("not requested"); },
+  async openResult(request, signal) {
+    assert.equal(signal.aborted, false); resultVideoCalls.push(structuredClone(request));
+    return { schema_version: 1, kind: "review_result_video_launch_requested", job_id: request.job_id,
+      session_id: "video-session-0001", request_id: "video-request-0001", expected: structuredClone(request.expected),
+      role: "final_video", content_sha256: "sha256:" + "d".repeat(64), size_bytes: "9326167",
+      launch_requested: true, managed_playback: false, playback_verified: false };
+  },
+});
+assert(warningButton(resultVideoHost, "Xem video kết quả"), "actual Review view needs its result-video action");
+const videoDraft = reviewNodes(resultVideoHost).find(node => node.tagName === "TEXTAREA");
+videoDraft.value = "Bản nháp giữ nguyên khi mở video"; videoDraft.dispatchEvent(new Event("input"));
+warningButton(resultVideoHost, "Xem video kết quả").click(); await settleReview();
+assert.deepEqual(resultVideoCalls, [{ schema_version: 1, kind: "review_open_result_request", job_id: warningSnapshot.job_id,
+  expected: { kind: "current", current_token: warningSnapshot.current_token } }]);
+const resultVideoStatus = reviewNodes(resultVideoHost).find(node => node.className === "review-status").textContent;
+assert.match(resultVideoStatus, /yêu cầu mở video.*0/); assert.match(resultVideoStatus, /mở lại/);
+assert.doesNotMatch(resultVideoStatus, /Đã phát|phát thành công/);
+assert(videoDraft.isConnected); assert.equal(videoDraft.value, "Bản nháp giữ nguyên khi mở video");
+resultVideoView.destroy();
+const resultVideoAck = (request, session, id) => ({ schema_version: 1, kind: "review_result_video_launch_requested",
+  job_id: request.job_id, session_id: session, request_id: id, expected: structuredClone(request.expected), role: "final_video",
+  content_sha256: "sha256:" + "d".repeat(64), size_bytes: "9326167", launch_requested: true, managed_playback: false, playback_verified: false });
+const videoSnapshots = [originalWarnings, warningSnapshot, { ...warningSnapshot, mode: "b1" },
+  { ...warningSnapshot, current_token: { ...warningSnapshot.current_token, revision: "9223372036854775806" } }];
+for (const videoSnapshot of videoSnapshots) {
+  const request = resultVideoRequest(videoSnapshot), beforeVideo = structuredClone(videoSnapshot), calls = [];
+  assert.deepEqual(readResultVideoRequest(videoSnapshot, structuredClone(request)), request);
+  assert.throws(() => readResultVideoRequest(videoSnapshot, { ...request, path: "C:/untrusted.mp4" }));
+  assert.throws(() => readResultVideoRequest(videoSnapshot, { ...request, job_id: "foreign-job" }));
+  const fakeAck = resultVideoAck(request, "video-session-0001", "video-request-0001");
+  assert.deepEqual(readResultVideoLaunch(request, fakeAck.session_id, fakeAck.request_id, fakeAck), fakeAck);
+  for (const change of [{ session_id: "foreign-session-0001" }, { request_id: "foreign-request-0001" },
+    { playback_verified: true }, { managed_playback: true }, { path: "file:///untrusted.mp4" },
+    { size_bytes: "09326167" }, { size_bytes: "137438953473" }, { role: "source" }]) {
+    assert.throws(() => readResultVideoLaunch(request, fakeAck.session_id, fakeAck.request_id, { ...fakeAck, ...change }));
+  }
+  if (request.expected.kind === "current") {
+    for (const [key, value] of [["job_id", "foreign-job"], ["revision", "02"],
+      ["snapshot_sha256", "sha256:" + "f".repeat(64)], ["graph_sha256", "sha256:" + "f".repeat(64)],
+      ["original_manifest_sha256", "sha256:" + "f".repeat(64)], ["path", "untrusted"]]) {
+      const bad = structuredClone(request); bad.expected.current_token[key] = value;
+      assert.throws(() => readResultVideoRequest(videoSnapshot, bad));
+    }
+  } else assert.throws(() => readResultVideoRequest(videoSnapshot, { ...request,
+    expected: { ...request.expected, original_manifest_sha256: "sha256:" + "a".repeat(64) } }));
+  let sequence = 0;
+  const transport = resultVideoTransport(async (command, args) => {
+    calls.push({ command, args: structuredClone(args) });
+    if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session",
+      session_id: args.requestId, snapshot: structuredClone(videoSnapshot) };
+    if (command === "review_open_result_v1") return resultVideoAck(args.request, args.sessionId, args.requestId);
+    if (command === "review_cancel_v1") return null;
+    throw new Error("unexpected result video command " + command);
+  }, async () => { throw new Error("result video must not enter WAV playback"); }, () => "video-request-" + String(++sequence).padStart(4, "0"));
+  const connection = new ResultVideoConnection(transport); await connection.load(videoSnapshot.job_id);
+  const actions = connection.actions(); assert(actions.openResult);
+  if (videoSnapshot.mode === "b1") assert.equal(actions.preview, undefined);
+  await actions.openResult(request, new AbortController().signal);
+  assert.equal(calls.filter(v => v.command === "review_open_result_v1").length, 1);
+  const sent = calls.find(v => v.command === "review_open_result_v1"); assert.deepEqual(sent.args.request, request);
+  await assert.rejects(actions.openResult({ ...request, job_id: "foreign-job" }, new AbortController().signal));
+  const cancelledVideo = new AbortController(); cancelledVideo.abort();
+  await assert.rejects(actions.openResult(request, cancelledVideo.signal));
+  assert.equal(calls.filter(v => v.command === "review_open_result_v1").length, 1);
+  assert.deepEqual(videoSnapshot, beforeVideo); connection.dispose();
+}
+assert.throws(() => resultVideoRequest({ ...originalWarnings, revision: 1 }));
+let resolveLateVideo, lateVideoArgs, lateSequence = 0;
+const lateVideoCalls = [];
+const lateVideoTransport = resultVideoTransport(async (command, args) => {
+  lateVideoCalls.push({ command, args: structuredClone(args) });
+  if (command === "review_snapshot_v2") return { schema_version: 2, kind: "review_desktop_current_session", session_id: args.requestId,
+    snapshot: { ...warningSnapshot, job_id: args.jobId, current_token: { ...warningSnapshot.current_token, job_id: args.jobId } } };
+  if (command === "review_open_result_v1") { lateVideoArgs = args; return new Promise(resolve => { resolveLateVideo = resolve; }); }
+  if (command === "review_cancel_v1") return null;
+  throw new Error("unexpected late video command");
+}, undefined, () => "video-request-" + String(++lateSequence).padStart(4, "0"));
+const lateVideoConnection = new ResultVideoConnection(lateVideoTransport); await lateVideoConnection.load(warningSnapshot.job_id);
+const oldVideoPending = lateVideoConnection.actions().openResult(resultVideoRequest(warningSnapshot), new AbortController().signal);
+await settleReview(); await lateVideoConnection.load("new-video-job");
+resolveLateVideo(resultVideoAck(lateVideoArgs.request, lateVideoArgs.sessionId, lateVideoArgs.requestId));
+await assert.rejects(oldVideoPending); assert.equal(lateVideoConnection.snapshot().job_id, "new-video-job");
+assert(lateVideoCalls.some(v => v.command === "review_cancel_v1" && v.args.requestId === lateVideoArgs.requestId));
+assert.equal(lateVideoCalls.filter(v => v.command === "review_open_result_v1").length, 1); lateVideoConnection.dispose();
+let resolveOldVideo;
+const oldVideoHost = reviewContainer(), oldVideoView = mountReviewCenter(oldVideoHost, warningSnapshot, {
+  openResult: () => new Promise(resolve => { resolveOldVideo = resolve; }),
+});
+warningButton(oldVideoHost, "Xem video kết quả").click(); await settleReview(); oldVideoView.replace(warningSnapshot);
+resolveOldVideo(resultVideoAck(resultVideoRequest(warningSnapshot), "video-session-0001", "video-request-0001")); await settleReview();
+assert.equal(reviewNodes(oldVideoHost).find(node => node.className === "review-status").textContent, ""); oldVideoView.destroy();
+console.log("result video: mounted action, original/current B1/B2, closed request/launch bindings, no WAV/retry/draft loss, cancel and stale reply fences passed");
 // Execute the actual Python producer/store serializer. Hosted CI provides
 // Python; local qualification supplies the product's owned bundled runtime.
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));

@@ -7,11 +7,13 @@ import { readCurrentConfirmation, readAppliedCurrent, type CurrentConfirmation }
 import { readCurrentUndoRequest, readUndoneCurrent, type CurrentUndoRequest } from "./current-undo.ts";
 import { readCurrentExportRequest, readExportedCurrent, type CurrentExportRequest, type CurrentExportReceipt } from "./current-export.ts";
 import { readCurrentInitializeRequest, readInitializedCurrent, type CurrentInitializeRequest } from "./current-initialize.ts";
+import { readResultVideoRequest, type ResultVideoRequest, type ResultVideoLaunch } from "./result-video.ts";
 
 /** The native host resolves committed pins and owns playback/durable writes. */
 export type ReviewTransport = {
   snapshot(jobId: string, signal: AbortSignal): Promise<unknown>;
   preview(request: ReviewPreviewRequest, signal: AbortSignal): Promise<void>;
+  openResult?: (request: ResultVideoRequest, signal: AbortSignal) => Promise<ResultVideoLaunch>;
   correct?: (request: ReviewCorrectionRequest, signal: AbortSignal) => Promise<unknown>;
   planCurrent?: (request: CurrentPlanRequest, signal: AbortSignal) => Promise<unknown>;
   applyCurrent?: (confirmation: CurrentConfirmation, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<unknown>;
@@ -72,6 +74,20 @@ export class ReviewConnection {
       if (generation === this.generation && !jobSignal.aborted && this.current && !this.disposed && this.correcting === generation) notify(update);
     } : undefined;
     const result: ReviewActions = { voices: voices.map(voice => ({ ...voice })), refreshed: () => this.actions(voices) };
+    if (this.transport.openResult) result.openResult = async (request, viewSignal) => {
+      const assertBound = () => {
+        if (generation !== this.generation || jobSignal.aborted || viewSignal.aborted || !this.current || this.disposed || this.correcting === generation) throw cancelled();
+        return readResultVideoRequest(this.current, request);
+      };
+      const accepted = assertBound(), child = new AbortController(), cancel = () => child.abort();
+      jobSignal.addEventListener("abort", cancel, { once: true }); viewSignal.addEventListener("abort", cancel, { once: true });
+      try {
+        if (jobSignal.aborted || viewSignal.aborted) throw cancelled();
+        const launched = await this.transport.openResult!(accepted, child.signal);
+        if (child.signal.aborted) throw cancelled();
+        assertBound(); return launched;
+      } finally { jobSignal.removeEventListener("abort", cancel); viewSignal.removeEventListener("abort", cancel); }
+    };
     if (this.transport.initializeCurrent && this.current.schema_version === 2 && this.current.revision === 0) result.initializeCurrent = async (request, viewSignal, observe) => {
       if (generation !== this.generation || jobSignal.aborted || !this.current || this.disposed || this.current.schema_version !== 2) throw cancelled();
       if (this.correcting === generation) throw new Error("review mutation is already in progress");

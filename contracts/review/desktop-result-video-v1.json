@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bound result-version video launch request and acknowledgement",
+  "oneOf": [{"$ref": "#/$defs/request"}, {"$ref": "#/$defs/launch"}],
+  "$defs": {
+    "expected": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["kind", "revision"],
+         "properties": {"kind": {"const": "original"}, "revision": {"const": 0}}},
+        {"type": "object", "additionalProperties": false, "required": ["kind", "current_token"],
+         "properties": {"kind": {"const": "current"}, "current_token": {"$ref": "effective-cue-context-v1.json#/$defs/token"}}}
+      ]
+    },
+    "job": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9-]{16,64}$"},
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "job_id", "expected"],
+      "properties": {"schema_version": {"const": 1}, "kind": {"const": "review_open_result_request"},
+        "job_id": {"$ref": "#/$defs/job"}, "expected": {"$ref": "#/$defs/expected"}}
+    },
+    "launch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "job_id", "session_id", "request_id", "expected", "role", "content_sha256", "size_bytes", "launch_requested", "managed_playback", "playback_verified"],
+      "properties": {"schema_version": {"const": 1}, "kind": {"const": "review_result_video_launch_requested"},
+        "job_id": {"$ref": "#/$defs/job"}, "session_id": {"$ref": "#/$defs/id"}, "request_id": {"$ref": "#/$defs/id"},
+        "expected": {"$ref": "#/$defs/expected"}, "role": {"const": "final_video"},
+        "content_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "size_bytes": {"type": "string", "pattern": "^[1-9][0-9]{0,11}$", "description": "Canonical decimal bytes; native and client additionally enforce the existing 128 GiB media ceiling."},
+        "launch_requested": {"const": true}, "managed_playback": {"const": false}, "playback_verified": {"const": false}}
+    }
+  }
+}

@@ -635,6 +635,45 @@ impl ReviewHost {
         }
     }
 
+    fn result_video_session(
+        &self,
+        id: &str,
+        input: &ResultVideoRequest,
+    ) -> Result<ExportPin, String> {
+        request_id(id)?;
+        validate_result_video_request(input)?;
+        let mut registry = self.registry.lock().map_err(|_| "Review không sẵn sàng")?;
+        registry.prune();
+        if registry.applying_jobs.contains(&input.job_id) {
+            return Err(
+                "Video đang có tác vụ thay đổi; hãy tải lại sau khi tác vụ kết thúc".into(),
+            );
+        }
+        let saved = registry
+            .sessions
+            .get(id)
+            .ok_or("Phiên xem video đã hết hạn; hãy tải lại")?;
+        if saved.pin.job_id != input.job_id {
+            return Err("Video không khớp phiên đang xem".into());
+        }
+        let bound = match (&input.expected, &saved.binding) {
+            (ResultVideoExpected::Original { revision: 0 }, SessionBinding::Uninitialized) => {
+                saved.original_view.as_ref().is_some_and(|v| {
+                    v["schema_version"] == 2 && v["job_id"] == input.job_id && v["revision"] == 0
+                })
+            }
+            (ResultVideoExpected::Current { current_token }, SessionBinding::Current(actual)) => {
+                current_token == actual
+                    && current_token.original_manifest_sha256 == saved.pin.manifest_sha256
+            }
+            _ => false,
+        };
+        if !bound {
+            return Err("Phiên xem video đã đổi; hãy tải lại lời thoại".into());
+        }
+        Ok(saved.pin.clone())
+    }
+
     fn save_plan(
         &self,
         session: &str,
@@ -2099,6 +2138,205 @@ fn current_plan(
     Ok(result)
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ResultVideoExpected {
+    Original { revision: u64 },
+    Current { current_token: CurrentToken },
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResultVideoRequest {
+    schema_version: u32,
+    kind: String,
+    job_id: String,
+    expected: ResultVideoExpected,
+}
+
+fn validate_result_video_request(input: &ResultVideoRequest) -> Result<(), String> {
+    job_id(&input.job_id)?;
+    if input.schema_version != 1 || input.kind != "review_open_result_request" {
+        return Err("Yêu cầu xem video không được hỗ trợ".into());
+    }
+    match &input.expected {
+        ResultVideoExpected::Original { revision: 0 } => Ok(()),
+        ResultVideoExpected::Current {
+            current_token: token,
+        } => {
+            let revision = token
+                .revision
+                .parse::<u64>()
+                .map_err(|_| "Token video không hợp lệ")?;
+            if token.job_id != input.job_id
+                || revision > i64::MAX as u64
+                || revision.to_string() != token.revision
+                || !is_sha(&token.snapshot_sha256)
+                || !is_sha(&token.graph_sha256)
+                || !is_sha(&token.original_manifest_sha256)
+            {
+                return Err("Token video không hợp lệ".into());
+            }
+            Ok(())
+        }
+        _ => Err("Video gốc chỉ được mở từ phiên bản 0 chưa khởi tạo".into()),
+    }
+}
+
+fn result_video_expected_json(expected: &ResultVideoExpected) -> Value {
+    match expected {
+        ResultVideoExpected::Original { revision } => {
+            serde_json::json!({"kind":"original","revision":revision})
+        }
+        ResultVideoExpected::Current {
+            current_token: token,
+        } => serde_json::json!({"kind":"current","current_token":{
+            "job_id":token.job_id,"revision":token.revision,"snapshot_sha256":token.snapshot_sha256,
+            "graph_sha256":token.graph_sha256,"original_manifest_sha256":token.original_manifest_sha256}}),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum NativeResultVideoExpected {
+    Original {
+        revision: u64,
+        original_manifest_sha256: String,
+    },
+    Current {
+        current_token: CurrentToken,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeResultVideoLaunch {
+    schema_version: u32,
+    kind: String,
+    job_id: String,
+    expected: NativeResultVideoExpected,
+    role: String,
+    content_sha256: String,
+    size_bytes: String,
+    launch_requested: bool,
+    managed_playback: bool,
+    playback_verified: bool,
+}
+
+fn validate_result_video_launch(
+    bytes: &[u8],
+    input: &ResultVideoRequest,
+    pin: &ExportPin,
+) -> Result<NativeResultVideoLaunch, String> {
+    let error = || {
+        "Chưa xác nhận được yêu cầu mở video; hãy kiểm tra trình phát, không tự gửi lại".to_owned()
+    };
+    validate_result_video_request(input)?;
+    if input.job_id != pin.job_id {
+        return Err(error());
+    }
+    if bytes.len() > 4096 {
+        return Err(error());
+    }
+    let ack: NativeResultVideoLaunch = serde_json::from_slice(bytes).map_err(|_| error())?;
+    let bound = match (&input.expected, &ack.expected) {
+        (
+            ResultVideoExpected::Original { revision: 0 },
+            NativeResultVideoExpected::Original {
+                revision: 0,
+                original_manifest_sha256,
+            },
+        ) => original_manifest_sha256 == &pin.manifest_sha256,
+        (
+            ResultVideoExpected::Current { current_token },
+            NativeResultVideoExpected::Current {
+                current_token: actual,
+            },
+        ) => {
+            current_token == actual && current_token.original_manifest_sha256 == pin.manifest_sha256
+        }
+        _ => false,
+    };
+    let size = ack.size_bytes.parse::<u64>().map_err(|_| error())?;
+    if ack.schema_version != 1
+        || ack.kind != "review_native_result_video_launch_requested"
+        || ack.job_id != input.job_id
+        || !bound
+        || ack.role != "final_video"
+        || !is_sha(&ack.content_sha256)
+        || size == 0
+        || size > 128 * 1024 * 1024 * 1024
+        || size.to_string() != ack.size_bytes
+        || !ack.launch_requested
+        || ack.managed_playback
+        || ack.playback_verified
+    {
+        return Err(error());
+    }
+    Ok(ack)
+}
+
+fn open_result_video(
+    host: ReviewHost,
+    session: String,
+    id: String,
+    input: ResultVideoRequest,
+) -> Result<Value, String> {
+    validate_result_video_request(&input)?;
+    let request = host.begin(&id)?;
+    let pin = host.result_video_session(&session, &input)?;
+    let root = super::version_root()?;
+    let data = data_root()?;
+    if trusted_pin(&root, &data, &input.job_id, &request.cancelled)? != pin {
+        return Err("Bản xuất đã thay đổi; hãy tải lại lời thoại".into());
+    }
+    let expected = result_video_expected_json(&input.expected);
+    let mut native_expected = expected.clone();
+    if matches!(&input.expected, ResultVideoExpected::Original { .. }) {
+        native_expected
+            .as_object_mut()
+            .ok_or("Yêu cầu video không hợp lệ")?
+            .insert(
+                "original_manifest_sha256".into(),
+                Value::String(pin.manifest_sha256.clone()),
+            );
+    }
+    let native_request = serde_json::to_string(&serde_json::json!({"schema_version":1,
+        "kind":"review_native_result_video_request","job_id":input.job_id,"expected":native_expected}))
+        .map_err(|_| "Không đóng gói được yêu cầu video")?;
+    if native_request.len() > 4096
+        || request.cancelled.load(Ordering::SeqCst)
+        || host.result_video_session(&session, &input)? != pin
+    {
+        return Err("Phiên xem video đã đổi hoặc bị hủy".into());
+    }
+    let mut command = Command::new(owned_file(&root, "app/bin/dubflow-supervisor.exe")?);
+    command
+        .arg("review-open-result")
+        .arg("--data-root")
+        .arg(&data)
+        .arg("--request-json")
+        .arg(native_request);
+    let bytes = run_bounded(command, 4096, Duration::from_secs(740), &request.cancelled)?;
+    let ack = validate_result_video_launch(&bytes, &input, &pin)?;
+    // OS activation may already have happened. Refusal/cancellation here is an
+    // uncertain launch, never permission to retry or proof no player opened.
+    if request.cancelled.load(Ordering::SeqCst)
+        || host.result_video_session(&session, &input)? != pin
+        || trusted_pin(&root, &data, &input.job_id, &request.cancelled)? != pin
+    {
+        return Err(
+            "Phiên xem video đã đổi; chưa xác nhận được yêu cầu mở, không tự gửi lại".into(),
+        );
+    }
+    Ok(
+        serde_json::json!({"schema_version":1,"kind":"review_result_video_launch_requested","job_id":input.job_id,
+        "session_id":session,"request_id":id,"expected":expected,"role":"final_video",
+        "content_sha256":ack.content_sha256,"size_bytes":ack.size_bytes,"launch_requested":true,
+        "managed_playback":false,"playback_verified":false}),
+    )
+}
+
 fn current_audio(
     host: ReviewHost,
     session: String,
@@ -2263,6 +2501,23 @@ pub async fn review_audio_v2(
     .await
     .map_err(|_| "Bộ đọc âm thanh hiện hành bị gián đoạn".to_owned())??;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+pub async fn review_open_result_v1(
+    host: tauri::State<'_, ReviewHost>,
+    session_id: String,
+    request_id: String,
+    request: ResultVideoRequest,
+) -> Result<Value, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        open_result_video(host, session_id, request_id, request)
+    })
+    .await
+    .map_err(|_| {
+        "Yêu cầu mở video bị gián đoạn; hãy kiểm tra trình phát trước khi tiếp tục".to_owned()
+    })?
 }
 
 #[tauri::command]
@@ -3254,6 +3509,189 @@ mod tests {
                 .revision,
             token.revision
         );
+    }
+
+    #[test]
+    fn result_video_sessions_require_uninitialized_original_or_exact_current_identity() {
+        let job = "job-result-video";
+        let session = "result-video-session-0001";
+        let pin = ExportPin {
+            schema_version: 1,
+            kind: "review_export_pin".into(),
+            job_id: job.into(),
+            manifest_path: PathBuf::from("unused-original-manifest"),
+            manifest_sha256: format!("sha256:{}", "a".repeat(64)),
+            manifest_size_bytes: 123,
+            attempt: 1,
+        };
+        let original: ResultVideoRequest = serde_json::from_value(serde_json::json!({"schema_version":1,
+            "kind":"review_open_result_request","job_id":job,"expected":{"kind":"original","revision":0}})).unwrap();
+        let host = ReviewHost::default();
+        host.registry.lock().unwrap().sessions.insert(
+            session.into(),
+            Session {
+                pin: pin.clone(),
+                created: Instant::now(),
+                binding: SessionBinding::Uninitialized,
+                pending_plan: None,
+                original_view: Some(
+                    serde_json::json!({"schema_version":2,"job_id":job,"revision":0}),
+                ),
+            },
+        );
+        assert_eq!(host.result_video_session(session, &original).unwrap(), pin);
+        let token: CurrentToken = serde_json::from_value(serde_json::json!({"job_id":job,"revision":"9223372036854775806",
+            "snapshot_sha256":format!("sha256:{}", "b".repeat(64)),"graph_sha256":format!("sha256:{}", "c".repeat(64)),
+            "original_manifest_sha256":pin.manifest_sha256})).unwrap();
+        let current = ResultVideoRequest {
+            schema_version: 1,
+            kind: "review_open_result_request".into(),
+            job_id: job.into(),
+            expected: ResultVideoExpected::Current {
+                current_token: token.clone(),
+            },
+        };
+        host.registry
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(session)
+            .unwrap()
+            .binding = SessionBinding::Current(token.clone());
+        assert_eq!(host.result_video_session(session, &current).unwrap(), pin);
+        assert!(host.result_video_session(session, &original).is_err());
+        for key in [
+            "job_id",
+            "revision",
+            "snapshot_sha256",
+            "graph_sha256",
+            "original_manifest_sha256",
+        ] {
+            let mut value = result_video_expected_json(&current.expected);
+            value["current_token"][key] = Value::String(if key == "revision" {
+                "02".into()
+            } else if key == "job_id" {
+                "foreign-job".into()
+            } else {
+                format!("sha256:{}", "f".repeat(64))
+            });
+            let forged: ResultVideoRequest =
+                serde_json::from_value(serde_json::json!({"schema_version":1,
+                "kind":"review_open_result_request","job_id":job,"expected":value}))
+                .unwrap();
+            assert!(host.result_video_session(session, &forged).is_err());
+        }
+        host.registry
+            .lock()
+            .unwrap()
+            .applying_jobs
+            .insert(job.into());
+        assert!(host.result_video_session(session, &current).is_err());
+        host.registry.lock().unwrap().applying_jobs.clear();
+        // Initialized original/restored-original is still a current-token route.
+        let zero = CurrentToken {
+            revision: "0".into(),
+            ..token
+        };
+        host.registry
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(session)
+            .unwrap()
+            .binding = SessionBinding::Current(zero.clone());
+        let current_zero = ResultVideoRequest {
+            expected: ResultVideoExpected::Current {
+                current_token: zero,
+            },
+            ..current.clone()
+        };
+        assert_eq!(
+            host.result_video_session(session, &current_zero).unwrap(),
+            pin
+        );
+        assert!(host.result_video_session(session, &original).is_err());
+        host.registry
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(session)
+            .unwrap()
+            .binding = SessionBinding::LegacyOriginal;
+        assert!(host.result_video_session(session, &original).is_err());
+        host.registry
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(session)
+            .unwrap()
+            .created = Instant::now() - SESSION_TTL - Duration::from_secs(1);
+        assert!(host.result_video_session(session, &current_zero).is_err());
+    }
+
+    #[test]
+    fn result_video_launch_ack_is_closed_bound_and_never_claims_playback() {
+        let pin = ExportPin {
+            schema_version: 1,
+            kind: "review_export_pin".into(),
+            job_id: "job-result-video".into(),
+            manifest_path: PathBuf::from("unused-original-manifest"),
+            manifest_sha256: format!("sha256:{}", "a".repeat(64)),
+            manifest_size_bytes: 123,
+            attempt: 1,
+        };
+        let input: ResultVideoRequest = serde_json::from_value(serde_json::json!({"schema_version":1,
+            "kind":"review_open_result_request","job_id":pin.job_id,"expected":{"kind":"original","revision":0}})).unwrap();
+        let ack = serde_json::json!({"schema_version":1,"kind":"review_native_result_video_launch_requested","job_id":pin.job_id,
+            "expected":{"kind":"original","revision":0,"original_manifest_sha256":pin.manifest_sha256},
+            "role":"final_video","content_sha256":format!("sha256:{}", "d".repeat(64)),"size_bytes":"9326167",
+            "launch_requested":true,"managed_playback":false,"playback_verified":false});
+        assert!(
+            validate_result_video_launch(&serde_json::to_vec(&ack).unwrap(), &input, &pin).is_ok()
+        );
+        for (key, value) in [
+            ("job_id", Value::String("foreign-job".into())),
+            ("role", Value::String("source".into())),
+            ("content_sha256", Value::String("unverified".into())),
+            ("size_bytes", Value::String("09326167".into())),
+            ("launch_requested", Value::Bool(false)),
+            ("managed_playback", Value::Bool(true)),
+            ("playback_verified", Value::Bool(true)),
+            ("path", Value::String("C:/untrusted/video.mp4".into())),
+        ] {
+            let mut bad = ack.clone();
+            bad[key] = value;
+            assert!(
+                validate_result_video_launch(&serde_json::to_vec(&bad).unwrap(), &input, &pin)
+                    .is_err()
+            );
+        }
+        let mut bad = ack.clone();
+        bad["expected"]["original_manifest_sha256"] =
+            Value::String(format!("sha256:{}", "f".repeat(64)));
+        assert!(
+            validate_result_video_launch(&serde_json::to_vec(&bad).unwrap(), &input, &pin).is_err()
+        );
+        let duplicated = serde_json::to_string(&ack).unwrap().replacen(
+            "\"schema_version\":1",
+            "\"schema_version\":1,\"schema_version\":1",
+            1,
+        );
+        assert!(validate_result_video_launch(duplicated.as_bytes(), &input, &pin).is_err());
+        let mut request = serde_json::json!({"schema_version":1,"kind":"review_open_result_request","job_id":pin.job_id,
+            "expected":{"kind":"original","revision":0}});
+        request["path"] = Value::String("C:/untrusted/video.mp4".into());
+        assert!(serde_json::from_value::<ResultVideoRequest>(request).is_err());
+        let mut original_after = input.clone();
+        original_after.expected = ResultVideoExpected::Original { revision: 1 };
+        assert!(validate_result_video_request(&original_after).is_err());
+        assert!(open_result_video(
+            ReviewHost::default(),
+            "missing-session-0001".into(),
+            "result-request-0001".into(),
+            input
+        )
+        .is_err());
     }
 
     #[test]

@@ -10,12 +10,14 @@ import { currentUndoRequest, type CurrentUndoRequest } from "./current-undo.ts";
 import { currentExportRequest, type CurrentExportRequest, type CurrentExportReceipt, type CurrentExportFormat } from "./current-export.ts";
 import { currentInitializeRequest, type CurrentInitializeRequest } from "./current-initialize.ts";
 import type { CurrentReviewSnapshot } from "./wire.ts";
+import { resultVideoRequest, type ResultVideoRequest, type ResultVideoLaunch } from "./result-video.ts";
 
 export type ReviewVoice = { voice_id: string; label: string };
 export type ReviewActions = {
   /** Supply voices compatible with the pinned producer/model. */
   voices?: readonly ReviewVoice[];
   preview?: (request: ReviewPreviewRequest, signal: AbortSignal) => Promise<void>;
+  openResult?: (request: ResultVideoRequest, signal: AbortSignal) => Promise<ResultVideoLaunch>;
   correct?: (request: ReviewCorrectionRequest) => Promise<unknown>;
   planCurrent?: (request: CurrentPlanRequest, signal: AbortSignal) => Promise<CurrentCorrectionPlan>;
   applyCurrent?: (confirmation: CurrentConfirmation, signal: AbortSignal, observe?: ReviewActivityObserver) => Promise<CurrentReviewSnapshot>;
@@ -92,9 +94,10 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
   let activity: ReviewActivityUpdate | null = null;
   let failureDetails: string | null = null;
   let previewAbort: AbortController | null = null;
+  let videoAbort: AbortController | null = null;
   let planAbort: AbortController | null = null;
   let applyAbort: AbortController | null = null;
-  const invalidate = () => { failureDetails = null; activity = null; epoch++; previewAbort?.abort(); previewAbort = null; planAbort?.abort(); planAbort = null; applyAbort?.abort(); applyAbort = null; return epoch; };
+  const invalidate = () => { failureDetails = null; activity = null; epoch++; previewAbort?.abort(); previewAbort = null; videoAbort?.abort(); videoAbort = null; planAbort?.abort(); planAbort = null; applyAbort?.abort(); applyAbort = null; return epoch; };
   const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
     const node = doc.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -129,6 +132,27 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
     root.append(el("p", payload.schema_version === 3 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.current_token.revision}` : payload.schema_version === 2 ? `${payload.findings.length} cảnh báo · Phiên bản ${payload.revision}` :
       "Bản review cũ: chỉ xem nội dung, chưa có mốc thời gian xác thực."));
     const status = el("p", message, "review-status"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); root.append(status);
+    if (actions.openResult && (payload.schema_version === 3 || payload.schema_version === 2 && payload.revision === 0)) {
+      const open = button("Xem video kết quả", () => {
+        const request = resultVideoRequest(payload), at = epoch;
+        const revision = request.expected.kind === "current" ? request.expected.current_token.revision : "0";
+        videoAbort?.abort(); const controller = new AbortController(); videoAbort = controller;
+        open.disabled = true; status.textContent = "Đang kiểm tra video kết quả trước khi mở…";
+        void Promise.resolve().then(() => {
+          if (controller.signal.aborted) throw new Error("result video cancelled");
+          return actions.openResult!(request, controller.signal);
+        }).then(() => {
+          if (at === epoch && !destroyed && !controller.signal.aborted && videoAbort === controller) {
+            status.textContent = `Đã gửi yêu cầu mở video phiên bản ${revision} trong trình phát riêng. Sau khi sửa hoặc hoàn tác, hãy mở lại để xem bản mới.`;
+          }
+        }, () => {
+          if (at === epoch && !destroyed && !controller.signal.aborted && videoAbort === controller) {
+            status.textContent = "Chưa xác nhận được yêu cầu mở video. Hãy kiểm tra trình phát và tải lại lời thoại để kiểm tra phiên hiện hành; không tự gửi lại yêu cầu.";
+          }
+        }).finally(() => { if (videoAbort === controller) videoAbort = null;
+          if (at === epoch && !destroyed) open.disabled = busy || stale; });
+      }, false, false); root.append(open);
+    }
     if (failureDetails) {
       const details = el("details"); details.append(el("summary", "Chi tiết lỗi"));
       const text = el("pre", failureDetails); text.style.whiteSpace = "pre-wrap"; text.style.overflowWrap = "anywhere";

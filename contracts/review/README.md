@@ -639,3 +639,27 @@ never a claim about whether a possible CAS committed. No retry is authorized.
 Only actual nonzero-exit ordinary stderr is attached; missing diagnostics stay
 null. Existing success envelopes, host activity v1 and native-stage observation
 contracts remain unchanged. Inert display details do not enter artifact authority.
+
+### Explicit result-version video launch
+
+`desktop-result-video-v1.json` adds a separate optional, memory-only desktop
+request. It carries original revision0 or the exact complete current token,
+never a path, URL, processing root or launcher argument. Original requests
+require a native uninitialized session and absent graph; initialized and
+restored-original results remain current-token requests. Tauri supplies the
+saved native original-manifest pin to its fixed installed supervisor command.
+
+The native selector must independently admit the actual final_video, keep its
+physical identity pinned through the OS activation boundary and retain the
+existing absolute clocks, job exclusion and final head/original-pin fences.
+The bounded acknowledgement binds session/request/job/expected identity and
+reports launch_requested only. managed_playback and playback_verified are
+false: it proves neither player startup, audibility, motion nor sync. A player
+already opened is a separate pinned result version; editing or undo does not
+silently retarget or revoke it. Cancellation or a lost acknowledgement after OS
+activation is uncertain and never authorizes automatic retry.
+
+No graph/SQLite/media/export format changes. Old clients without this optional
+action retain existing audio and export routes. Source/component checks cannot
+replace packaged Windows player-lifetime, media, regenerated/undo/reopened and
+full user-flow acceptance. See ADR-0030 for the separate playback limits.

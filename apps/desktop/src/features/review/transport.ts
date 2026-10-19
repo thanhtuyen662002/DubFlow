@@ -9,6 +9,7 @@ import { readCurrentConfirmation, readAppliedCurrent, type CurrentConfirmation }
 import { readCurrentUndoRequest, readUndoneCurrent, type CurrentUndoRequest } from "./current-undo.ts";
 import { readCurrentExportRequest, readExportedCurrent, type CurrentExportRequest, type CurrentExportReceipt } from "./current-export.ts";
 import { readCurrentInitializeRequest, readInitializedCurrent, type CurrentInitializeRequest } from "./current-initialize.ts";
+import { readResultVideoRequest, readResultVideoLaunch, type ResultVideoRequest } from "./result-video.ts";
 
 export type ReviewInvoke = <T>(command: string, args: Record<string, unknown>) => Promise<T>;
 export type ReviewPlay = (bytes: ArrayBuffer, signal: AbortSignal) => Promise<void>;
@@ -77,6 +78,24 @@ export function nativeReviewTransport(invoke: ReviewInvoke, play: ReviewPlay = p
         release(); signal.removeEventListener("abort", release); throw error;
       }
       // Keep the listener while this job is selected, including after loading.
+    },
+    openResult: async (request: ResultVideoRequest, signal) => {
+      const binding = current, sessionId = binding?.id, nativeCurrent = binding?.nativeCurrent;
+      const assertBound = () => {
+        if (!binding || current !== binding || binding.id !== sessionId || binding.nativeCurrent !== nativeCurrent ||
+          binding.applying || signal.aborted || binding.signal.aborted || !binding.view) throw aborted();
+        const accepted = readResultVideoRequest(binding.view, request);
+        if (accepted.job_id !== binding.jobId || (binding.nativeCurrent ? accepted.expected.kind !== "current" || !binding.token ||
+          !sameCurrentToken(binding.token, accepted.expected.current_token) : accepted.expected.kind !== "original")) throw aborted();
+        return accepted;
+      };
+      const accepted = assertBound(), id = nextId(), cancelRead = () => cancel(id);
+      signal.addEventListener("abort", cancelRead, { once: true }); binding!.signal.addEventListener("abort", cancelRead, { once: true });
+      try {
+        if (signal.aborted || binding!.signal.aborted) { cancelRead(); throw aborted(); }
+        const response = await invoke<unknown>("review_open_result_v1", { sessionId, requestId: id, request: accepted });
+        assertBound(); return readResultVideoLaunch(accepted, sessionId!, id, response);
+      } finally { signal.removeEventListener("abort", cancelRead); binding!.signal.removeEventListener("abort", cancelRead); }
     },
     preview: async (request: ReviewPreviewRequest, signal) => {
       const binding = current;

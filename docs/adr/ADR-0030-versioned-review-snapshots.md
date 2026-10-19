@@ -3904,3 +3904,28 @@ On nonWindows platforms the prior per-call plain/existence/directory scratch
 checks remain in place; the new command wrapper grants no process-group
 retirement guarantee there. Full hosted Rust regressions and shipped Windows
 flow qualification are still required after final source composition.
+
+### Explicit result-version video launch (pending installed qualification)
+
+Add optional desktop result-video v1 beside cue WAV playback. The browser sends
+only original0 or the complete actual current token. The native host supplies
+its saved original-manifest pin; the fixed supervisor independently selects and
+admits final_video under existing job, physical identity, full-hash, deadline
+and head fences. Original requires no initialized graph; undo/restored-original
+uses its current token. No client file path, URL or export receipt becomes IO
+authority, and no whole video buffer is sent to the webview.
+
+An OS-open acknowledgement describes an irreversible launch request for one
+pinned result version. It cannot prove player startup, playback completion,
+audibility or sync and cannot revoke an external player when Review changes.
+After edit/undo users must explicitly open the new result. Cancellation or lost
+reply after activation remains uncertain; never retry automatically. The owned
+request Job may also affect association-launched descendants: actual packaged
+Windows tests must establish player startup and lifetime after request teardown
+without waiving process containment or enabling breakaway as a shortcut.
+
+This additive, memory-only IPC has no SQLite, graph or stored-media migration.
+Older clients omit the optional action and keep their explicit audio/export
+routes. Full managed embedded playback/seek/revocation is not introduced here.
+Installed original/current B1/B2, regenerate/undo/reopen, motion, audible mix,
+full AV/subtitle sync and the complete user-flow acceptance remain mandatory.
