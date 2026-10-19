@@ -52,3 +52,14 @@ export function reviewFailureHint(error: unknown, job: string, operation: Review
   if (!f.diagnostic?.includes(refusal)) return null;
   return "Đường dẫn thư mục tạm vượt giới hạn Windows. Chưa xác nhận được kết quả sửa. Bấm “Tải lại lời thoại” để kiểm tra phiên hiện hành; không tự gửi lại yêu cầu. Cần khắc phục vị trí lưu tạm trước khi sửa tiếp.";
 }
+
+/** Fixed presentation copy only: an arbitrary native diagnostic is never shown
+ * here and cannot authorize a session refresh or another audio request. */
+export function reviewAudioFailureHint(error: unknown): string {
+  const reason = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  const expired = ["Review đã hết hạn hoặc đổi video; hãy tải lại", "Review đã hết hạn hoặc đổi video; hãy tải lại lời thoại",
+    "Review đã hết hạn; hãy tải lại lời thoại"].includes(reason);
+  const explanation = expired ? "Phiên nghe đã hết hạn hoặc kết quả đã thay đổi." :
+    reason === "Không phát được âm thanh của câu này." ? "Trình phát chưa mở được âm thanh của câu này." : "Không thể phát câu thoại.";
+  return explanation + " Bấm “Tải lại lời thoại” để mở lại phiên nghe. Nếu có bản nháp, bạn sẽ được hỏi trước khi bỏ nội dung đang sửa.";
+}

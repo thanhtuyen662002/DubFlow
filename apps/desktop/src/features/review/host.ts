@@ -5,18 +5,35 @@ import { mountReviewCenter, type ReviewVoice } from "./view.ts";
 export function mountDesktopReview(container: HTMLElement, transport: ReviewTransport) {
   const connection = new ReviewConnection(transport), doc = container.ownerDocument;
   let selected: { id: string; completed: boolean } | null = null;
-  let generation = 0, disposed = false;
+  let generation = 0, disposed = false, reloadArmed = false;
   let view: ReturnType<typeof mountReviewCenter> | null = null;
   let voices: readonly ReviewVoice[] = [];
   const controls = doc.createElement("div"), load = doc.createElement("button"), status = doc.createElement("p"), body = doc.createElement("div");
   container.setAttribute("aria-label", "Kiểm tra lời thoại của video");
   load.type = "button"; load.textContent = "Kiểm tra lời thoại";
   status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
-  controls.append(load, status); container.append(controls, body);
+  const keepDraft = doc.createElement("button"); keepDraft.type = "button";
+  keepDraft.textContent = "Giữ bản nháp"; keepDraft.hidden = true;
+  controls.append(load, keepDraft, status); container.append(controls, body);
+
+  function resetReloadConfirmation() {
+    reloadArmed = false; keepDraft.hidden = true;
+    load.textContent = view ? "Tải lại lời thoại" : "Kiểm tra lời thoại";
+  }
+  keepDraft.addEventListener("click", () => {
+    if (disposed || !reloadArmed) return;
+    resetReloadConfirmation(); status.textContent = "Bản nháp vẫn ở trong khung chỉnh sửa. Chưa tải lại lời thoại.";
+  });
 
   load.addEventListener("click", () => { void reload(); });
   async function reload() {
     if (!selected?.completed || disposed) return;
+    if (view?.hasUnsavedChanges() && !reloadArmed) {
+      reloadArmed = true; keepDraft.hidden = false; load.textContent = "Bỏ bản nháp và tải lại";
+      status.textContent = "Có bản nháp chưa áp dụng. Tải lại sẽ bỏ nội dung đang sửa; chọn giữ bản nháp hoặc xác nhận bỏ và tải lại.";
+      return;
+    }
+    resetReloadConfirmation();
     const at = ++generation, jobId = selected.id;
     view?.destroy(); view = null; connection.clear(); body.replaceChildren();
     load.disabled = true; status.textContent = "Đang đọc lời thoại đã xuất…";
@@ -41,6 +58,7 @@ export function mountDesktopReview(container: HTMLElement, transport: ReviewTran
     select(job: { id: string; completed: boolean } | null) {
       if (disposed || (selected?.id === job?.id && selected?.completed === job?.completed)) return;
       generation++; connection.clear(); view?.destroy(); view = null; body.replaceChildren(); selected = job;
+      resetReloadConfirmation();
       container.hidden = !job?.completed; load.disabled = !job?.completed; load.textContent = "Kiểm tra lời thoại";
       status.textContent = "Xem các câu cần kiểm tra và nghe lại giọng đọc.";
     },

@@ -12,6 +12,7 @@ import { currentUndoRequest, readCurrentUndoRequest, readUndoneCurrent } from ".
 import { currentExportRequest, readCurrentExportRequest, readExportedCurrent } from "../../apps/desktop/src/features/review/current-export.ts";
 import { currentInitializeRequest, readCurrentInitializeRequest, readInitializedCurrent } from "../../apps/desktop/src/features/review/current-initialize.ts";
 import { mountReviewCenter } from "../../apps/desktop/src/features/review/view.ts";
+import { mountDesktopReview } from "../../apps/desktop/src/features/review/host.ts";
 
 const finding = {
   finding_id: "cue-1",
@@ -155,6 +156,65 @@ for (const realDialogue of [
   assert.deepEqual(rawDialogue, beforeDialogue); dialogueView.destroy();
 }
 console.log("mounted Review warning guidance: actual gap diagnostic, global/unknown placeholders, counts, exact payload, preview and plan bindings passed");
+// Audio errors must offer a concrete recovery without replaying the request or
+// replacing an unsaved draft. Untrusted diagnostics never enter normal copy.
+const settleReview = () => new Promise(resolve => setImmediate(resolve));
+for (const failure of [
+  "Review đã hết hạn hoặc đổi video; hãy tải lại",
+  new Error("Review đã hết hạn; hãy tải lại lời thoại"),
+  new Error("Không phát được âm thanh của câu này."),
+  "untrusted native path C:\\private\\media <script> secret",
+]) {
+  const audioHost = reviewContainer(), audioCalls = [], beforeAudio = structuredClone(warningSnapshot);
+  const audioView = mountReviewCenter(audioHost, warningSnapshot, {
+    voices: [{ voice_id: "voice-a", label: "Giọng A" }],
+    async planCurrent() { throw new Error("not requested"); },
+    async preview(request) { audioCalls.push(structuredClone(request)); throw failure; },
+  });
+  const draft = reviewNodes(audioHost).find(node => node.tagName === "TEXTAREA");
+  draft.value = "Bản nháp cần được giữ lại"; draft.dispatchEvent(new Event("input"));
+  warningButton(audioHost, "Nghe câu này").click(); await settleReview();
+  const audioStatus = reviewNodes(audioHost).find(node => node.className === "review-status");
+  assert.match(audioStatus.textContent, /Tải lại lời thoại/);
+  assert.match(audioStatus.textContent, /bản nháp/);
+  assert.doesNotMatch(audioStatus.textContent, /private|script|secret/);
+  assert.equal(audioCalls.length, 1); await settleReview(); assert.equal(audioCalls.length, 1);
+  assert.equal(draft.value, "Bản nháp cần được giữ lại"); assert(draft.isConnected);
+  assert.deepEqual(warningSnapshot, beforeAudio); audioView.destroy();
+}
+const reloadHost = reviewContainer(), reloadCalls = [], reloadSignals = [];
+const desktopReview = mountDesktopReview(reloadHost, {
+  async snapshot(job, signal) { reloadCalls.push(job); reloadSignals.push(signal); return structuredClone(warningSnapshot); },
+  async preview() {}, async planCurrent() { throw new Error("not requested"); },
+});
+desktopReview.setVoices([{ voice_id: "voice-a", label: "Giọng A" }]);
+desktopReview.select({ id: warningSnapshot.job_id, completed: true });
+warningButton(reloadHost, "Kiểm tra lời thoại").click(); await settleReview();
+const reloadDraft = reviewNodes(reloadHost).find(node => node.tagName === "TEXTAREA");
+reloadDraft.value = "Không được âm thầm bỏ bản nháp"; reloadDraft.dispatchEvent(new Event("input"));
+warningButton(reloadHost, "Tải lại lời thoại").click(); await settleReview();
+assert.equal(reloadCalls.length, 1); assert.equal(reloadSignals[0].aborted, false);
+assert(reloadDraft.isConnected); assert.equal(reloadDraft.value, "Không được âm thầm bỏ bản nháp");
+assert(warningButton(reloadHost, "Bỏ bản nháp và tải lại"));
+warningButton(reloadHost, "Giữ bản nháp").click(); await settleReview();
+assert.equal(reloadCalls.length, 1); assert(reloadDraft.isConnected);
+warningButton(reloadHost, "Tải lại lời thoại").click(); await settleReview();
+warningButton(reloadHost, "Bỏ bản nháp và tải lại").click(); await settleReview();
+assert.equal(reloadCalls.length, 2); assert.equal(reloadSignals[0].aborted, true);
+assert.equal(reloadDraft.isConnected, false);
+assert.equal(reviewNodes(reloadHost).find(node => node.tagName === "TEXTAREA").value, warningSnapshot.findings[0].translated_text);
+desktopReview.destroy();
+let rejectOldAudio;
+const lateAudioHost = reviewContainer();
+const lateAudioView = mountReviewCenter(lateAudioHost, warningSnapshot, {
+  preview: () => new Promise((resolve, reject) => { rejectOldAudio = reject; }),
+});
+warningButton(lateAudioHost, "Nghe câu này").click(); await settleReview();
+lateAudioView.replace(warningSnapshot);
+rejectOldAudio(new Error("Review đã hết hạn hoặc đổi video; hãy tải lại")); await settleReview();
+assert.equal(reviewNodes(lateAudioHost).find(node => node.className === "review-status").textContent, "");
+lateAudioView.destroy();
+console.log("mounted audio recovery: fixed guidance, no replay, draft-preserving explicit reload/cancel and late-error fence passed");
 // Execute the actual Python producer/store serializer. Hosted CI provides
 // Python; local qualification supplies the product's owned bundled runtime.
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));

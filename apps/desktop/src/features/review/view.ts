@@ -1,4 +1,4 @@
-import { reviewFailureDetails, reviewFailureHint } from "./request-failure.ts";
+import { reviewAudioFailureHint, reviewFailureDetails, reviewFailureHint } from "./request-failure.ts";
 import { reviewActivityText, type ReviewActivityObserver, type ReviewActivityUpdate } from "./request-activity.ts";
 import type { ReviewReason } from "./model.ts";
 import { previewProductionCorrection, readReviewPayload, reviewRangeLabel,
@@ -298,8 +298,8 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
         listen.disabled = true; status.textContent = "Đang kiểm tra và phát câu thoại…";
         void Promise.resolve().then(() => { if (playback.signal.aborted) throw new Error("preview cancelled");
           return actions.preview!(request, playback.signal); }).then(() => {
-          if (at === epoch && !destroyed) status.textContent = "Đã phát câu thoại.";
-        }, () => { if (at === epoch && !destroyed) status.textContent = "Không thể phát câu thoại. Hãy kiểm tra lại kết quả.";
+          if (at === epoch && !destroyed && !playback.signal.aborted && previewAbort === playback) status.textContent = "Đã phát câu thoại.";
+        }, error => { if (at === epoch && !destroyed && !playback.signal.aborted && previewAbort === playback) status.textContent = reviewAudioFailureHint(error);
         }).finally(() => { if (previewAbort === playback) previewAbort = null;
           if (at === epoch && !destroyed) listen.disabled = busy || stale; });
       }, !canPreview, false); detail.append(listen);
@@ -421,6 +421,7 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
   }
   render();
   return {
+    hasUnsavedChanges() { return !destroyed && dirty; },
     replace(value: unknown) { const next = readReviewPayload(value); if (destroyed) throw new Error("review view was destroyed");
       invalidate(); payload = next; publications = {}; exportArmed = undefined; busy = stale = undoArmed = initializeArmed = false; message = ""; page = 0;
       group = payload.findings[0]?.reason ?? "TRANSLATION_ANOMALY"; selected = payload.findings[0]?.finding_id ?? null; render(); },
