@@ -11,6 +11,7 @@ import { currentConfirmation, readCurrentConfirmation, readAppliedCurrent } from
 import { currentUndoRequest, readCurrentUndoRequest, readUndoneCurrent } from "../../apps/desktop/src/features/review/current-undo.ts";
 import { currentExportRequest, readCurrentExportRequest, readExportedCurrent } from "../../apps/desktop/src/features/review/current-export.ts";
 import { currentInitializeRequest, readCurrentInitializeRequest, readInitializedCurrent } from "../../apps/desktop/src/features/review/current-initialize.ts";
+import { mountReviewCenter } from "../../apps/desktop/src/features/review/view.ts";
 
 const finding = {
   finding_id: "cue-1",
@@ -40,6 +41,120 @@ controller.undoLastCorrection();
 assert.equal(controller.getSnapshot().findings[0].translated_text, "Xin chao");
 assert.throws(() => createReviewSnapshot([{ ...finding, range: { start_ticks: "01", end_ticks: "2" } }]));
 assert.throws(() => controller.previewCorrection({ finding_id: "cue-1" }));
+
+// Mount the production view with a small DOM implementation. Unsupported
+// selectors refuse, so these assertions exercise real render/event handlers.
+class ReviewElement extends EventTarget {
+  constructor(tag, ownerDocument) {
+    super(); this.tagName = tag.toUpperCase(); this.ownerDocument = ownerDocument;
+    this.children = []; this.parentElement = null; this.attributes = new Map();
+    this.dataset = {}; this.style = {}; this.className = ""; this.disabled = false; this.value = ""; this.ownText = "";
+  }
+  set textContent(value) { this.replaceChildren(); this.ownText = String(value); }
+  get textContent() { return this.ownText + this.children.map(node => node.textContent).join(""); }
+  append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
+  replaceChildren(...nodes) { for (const node of this.children) node.parentElement = null; this.children = []; this.ownText = ""; this.append(...nodes); }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  get isConnected() { return this === this.ownerDocument.host || !!this.parentElement?.isConnected; }
+  focus() { this.ownerDocument.activeElement = this; }
+  click() { if (!this.disabled) this.dispatchEvent(new Event("click")); }
+  querySelectorAll(selector) {
+    const nodes = reviewNodes(this).slice(1);
+    if (selector === "button") return nodes.filter(node => node.tagName === "BUTTON");
+    if (selector === "button[data-review-navigation]") return nodes.filter(node => node.tagName === "BUTTON" && "reviewNavigation" in node.dataset);
+    if (selector === "[data-review-activity]") return nodes.filter(node => "reviewActivity" in node.dataset);
+    throw new Error("unsupported test DOM selector: " + selector);
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
+}
+function reviewNodes(node) { return [node, ...node.children.flatMap(reviewNodes)]; }
+function reviewContainer() {
+  const document = { createElement(tag) { return new ReviewElement(tag, this); } };
+  document.host = document.createElement("div"); return document.host;
+}
+const warningButton = (host, text) => reviewNodes(host).find(node => node.tagName === "BUTTON" && node.textContent === text);
+const shownWarning = host => reviewNodes(host).find(node => node.className === "review-warning").textContent;
+// This exact diagnostic was observed in GUI73d (scope6260682022). Remaining
+// rows are controlled fixtures for unchanged five-voice/two-quality grouping.
+const observedGapWarning = "TTS_INTERCUE_GAP_USED: asr-780480-800640-40bee557fc91; source slot preserved, dubbing extends into an unverified inter-cue gap";
+const mixLevelWarning = "final mix is below the configured target RMS; source and dialogue were preserved";
+const unknownWarning = "FUTURE_QC_CODE: internal-cue /private/debug <img src=x>";
+const warningFindings = Array.from({ length: 5 }, (_, index) => ({
+  finding_id: "warning-cue-" + index, reason: "TTS_FAILURE", cue_id: index === 0 ? "asr-780480-800640-40bee557fc91" : "fixture-cue-" + index,
+  range: { start_ticks: String(48780 + index * 2000), end_ticks: String(50040 + index * 2000) },
+  source_text: "Lời nguồn của câu " + index, translated_text: "Bản dịch của câu " + index,
+  speaker: "speaker-1", voice: "voice-a", output_preview: "owned-preview-" + index,
+  confidence: index === 0 ? "0.40000000000000002" : null, confidence_source: index === 0 ? "cue.confidence" : null,
+  warning: index === 0 ? observedGapWarning : "TTS_INTERCUE_GAP_USED: fixture-cue-" + index + "; source slot preserved, dubbing extends into an unverified inter-cue gap",
+  affected_stages: ["tts", "mix", "render"],
+}));
+for (const [index, text] of [mixLevelWarning, unknownWarning].entries()) warningFindings.push({
+  finding_id: "warning-global-" + index, reason: "SYNC_QC_WARNING", cue_id: null, range: null,
+  source_text: text, translated_text: text, warning: text, speaker: null, voice: null, output_preview: null,
+  confidence: null, confidence_source: null, affected_stages: ["render", "qc"],
+});
+const warningSnapshot = { schema_version: 3, kind: "review_current_snapshot", job_id: "job-warning-ui", mode: "b2",
+  current_token: { job_id: "job-warning-ui", revision: "0", snapshot_sha256: "sha256:" + "a".repeat(64),
+    graph_sha256: "sha256:" + "b".repeat(64), original_manifest_sha256: "sha256:" + "c".repeat(64) },
+  time_base: { numerator: "1", denominator: "1000" }, findings: warningFindings, last_plan: null, correction_ready: false };
+const warningsBefore = structuredClone(warningSnapshot), warningHost = reviewContainer();
+const mountedPreview = [], mountedPlans = [];
+const warningView = mountReviewCenter(warningHost, warningSnapshot, {
+  voices: [{ voice_id: "voice-a", label: "Giọng A" }, { voice_id: "voice-b", label: "Giọng B" }],
+  async preview(request, signal) { assert.equal(signal.aborted, false); mountedPreview.push(structuredClone(request)); },
+  async planCurrent(request, signal) { assert.equal(signal.aborted, false); mountedPlans.push(structuredClone(request)); throw new Error("controlled plan refusal"); },
+});
+assert.match(warningHost.textContent, /7 cảnh báo/);
+assert(warningButton(warningHost, "Giọng đọc (5)")); assert(warningButton(warningHost, "Đồng bộ và chất lượng (2)"));
+assert.doesNotMatch(warningHost.textContent, /TTS_INTERCUE_GAP_USED|asr-780480|unverified inter-cue gap/);
+assert.match(shownWarning(warningHost), /khoảng trống.*chưa.*kiểm chứng/);
+assert.match(shownWarning(warningHost), /[Nn]ghe.*câu.*kế tiếp/);
+assert.match(shownWarning(warningHost), /rút gọn.*bản dịch|đổi giọng|chọn giọng/);
+assert.doesNotMatch(shownWarning(warningHost), /không.*chồng|không.*im lặng|đã.*đồng bộ|chắc chắn.*rõ/);
+assert.match(warningHost.textContent, /0\.40000000000000002/);
+warningButton(warningHost, "Nghe câu này").click(); await new Promise(resolve => setImmediate(resolve));
+assert.deepEqual(mountedPreview, [previewRequest(readReviewPayload(warningSnapshot), "warning-cue-0")]);
+const warningTranslation = reviewNodes(warningHost).find(node => node.tagName === "TEXTAREA");
+warningTranslation.value = "Bản dịch ngắn hơn"; warningTranslation.dispatchEvent(new Event("input"));
+warningButton(warningHost, "Xem phạm vi chạy lại").click(); await new Promise(resolve => setImmediate(resolve));
+assert.deepEqual(mountedPlans, [currentPlanRequest(readReviewPayload(warningSnapshot), { finding_id: "warning-cue-0", translation: "Bản dịch ngắn hơn" })]);
+warningButton(warningHost, "Bỏ thay đổi chưa lưu").click();
+warningButton(warningHost, "Đồng bộ và chất lượng (2)").click();
+assert.match(shownWarning(warningHost), /âm lượng.*mục tiêu/i);
+assert.match(shownWarning(warningHost), /[Nn]ghe/);
+assert.doesNotMatch(warningHost.textContent, /target RMS|source and dialogue|FUTURE_QC_CODE|internal-cue/);
+assert(reviewNodes(warningHost).find(node => node.tagName === "TEXTAREA").disabled);
+assert.doesNotMatch(reviewNodes(warningHost).find(node => node.tagName === "TEXTAREA").value, /target RMS|FUTURE_QC_CODE/);
+const qualityRows = reviewNodes(warningHost).filter(node => node.tagName === "BUTTON" && node.parentElement?.tagName === "LI");
+qualityRows[1].click();
+assert.match(shownWarning(warningHost), /[Cc]ảnh báo/); assert.match(shownWarning(warningHost), /[Nn]ghe|[Xx]em/);
+assert.doesNotMatch(warningHost.textContent, /FUTURE_QC_CODE|internal-cue|private\/debug|<img/);
+assert.doesNotMatch(reviewNodes(warningHost).find(node => node.tagName === "TEXTAREA").value, /FUTURE_QC_CODE|internal-cue/);
+assert(warningButton(warningHost, "Nghe câu này").disabled);
+assert.deepEqual(warningSnapshot, warningsBefore); // all raw diagnostics, counts, token and exact confidence retained
+warningView.replace(warningSnapshot); assert.match(warningHost.textContent, /7 cảnh báo/);
+assert.deepEqual(warningSnapshot, warningsBefore); warningView.destroy(); assert.equal(warningHost.children.length, 0);
+const { current_token: unusedWarningToken, mode: unusedWarningMode, kind: unusedWarningKind, correction_ready: unusedWarningReady, ...warningOriginal } = warningSnapshot;
+const originalWarnings = { ...warningOriginal, schema_version: 2, revision: 0 }, originalWarningsBefore = structuredClone(originalWarnings);
+const originalWarningHost = reviewContainer(), originalWarningView = mountReviewCenter(originalWarningHost, originalWarnings);
+assert.doesNotMatch(originalWarningHost.textContent, /TTS_INTERCUE_GAP_USED|asr-780480/);
+originalWarningView.replace({ ...originalWarnings, findings: [{ ...originalWarnings.findings[0], warning: "LOW_CONFIDENCE_CUE" }] });
+assert.match(shownWarning(originalWarningHost), /tin cậy.*thấp/); assert.match(shownWarning(originalWarningHost), /đối chiếu|kiểm tra/);
+assert.deepEqual(originalWarnings, originalWarningsBefore); originalWarningView.destroy();
+// Code-like genuine dialogue must remain verbatim. Only the producer's exact
+// unbound global diagnostic placeholders can receive presentation substitutes.
+for (const realDialogue of [
+  { ...warningFindings[0], source_text: observedGapWarning, translated_text: unknownWarning },
+  { ...warningFindings[5], source_text: "TTS_INTERCUE_GAP_USED: Người đang đọc mã", translated_text: "FUTURE_QC_CODE: Đây là lời thoại thật" },
+]) {
+  const rawDialogue = { ...originalWarnings, findings: [realDialogue] }, beforeDialogue = structuredClone(rawDialogue);
+  const dialogueHost = reviewContainer(), dialogueView = mountReviewCenter(dialogueHost, rawDialogue);
+  assert(dialogueHost.textContent.includes(realDialogue.source_text));
+  assert.equal(reviewNodes(dialogueHost).find(node => node.tagName === "TEXTAREA").value, realDialogue.translated_text);
+  assert.deepEqual(rawDialogue, beforeDialogue); dialogueView.destroy();
+}
+console.log("mounted Review warning guidance: actual gap diagnostic, global/unknown placeholders, counts, exact payload, preview and plan bindings passed");
 // Execute the actual Python producer/store serializer. Hosted CI provides
 // Python; local qualification supplies the product's owned bundled runtime.
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));

@@ -34,6 +34,44 @@ const STAGES: Record<string, string> = { translation: "Bản dịch", subtitles:
 const PAGE_SIZE = 30;
 let nextInstance = 0;
 
+type WarningCopy = { summary: string; action: string };
+const MIX_WARNINGS: Record<string, string> = {
+  "mix peak was reduced to the configured headroom": "Mức âm thanh đỉnh đã được hạ theo giới hạn cấu hình.",
+  "mix RMS was reduced to the configured loudness ceiling": "Âm lượng bản trộn đã được hạ theo mức trần cấu hình.",
+  "original source contains clipped samples; it was preserved as supplied": "Báo cáo cho biết âm thanh nguồn có điểm vượt ngưỡng; nguồn được giữ nguyên.",
+  "final mix is silent because no usable source or TTS energy was available": "Báo cáo cho biết bản trộn không có âm thanh sử dụng được.",
+  "final mix is below the configured target RMS; source and dialogue were preserved": "Báo cáo cho biết âm lượng bản trộn thấp hơn mức mục tiêu.",
+  "one or more TTS segments were unavailable; the original source remains in the final mix": "Báo cáo cho biết một số câu thiếu giọng lồng tiếng; âm thanh nguồn vẫn được giữ lại.",
+};
+/** Presentation only: the raw diagnostic stays in its payload/report. Unknown
+ * diagnostics never gain a measured quality claim from their category/code. */
+function warningCopy(warning: string): WarningCopy {
+  const code = warning.split(":", 1)[0].trim();
+  if (code === "TTS_INTERCUE_GAP_USED") return {
+    summary: "Phần lồng tiếng dùng thêm khoảng trống sau khung thời gian gốc của câu; khoảng trống này chưa được kiểm chứng.",
+    action: "Hãy nghe lại câu này và câu kế tiếp trong video đã xuất. Nếu lời đọc quá dài, cân nhắc rút gọn bản dịch hoặc chọn giọng khác rồi kiểm tra lại.",
+  };
+  if (code === "LOW_CONFIDENCE_CUE") return {
+    summary: "Độ tin cậy được báo cáo cho câu này còn thấp.",
+    action: "Hãy đối chiếu lời gốc với âm thanh hoặc chữ trên hình và kiểm tra bản dịch trước khi chỉnh sửa.",
+  };
+  const message = code === "QC_WARNING" ? warning.slice(warning.indexOf(":") + 1).trim() : warning;
+  if (Object.hasOwn(MIX_WARNINGS, message)) return {
+    summary: MIX_WARNINGS[message],
+    action: "Hãy nghe lại video đã xuất ở âm lượng thường dùng và kiểm tra các câu liên quan trước khi sử dụng kết quả.",
+  };
+  return {
+    summary: "Có cảnh báo chưa có lời giải thích chi tiết.",
+    action: "Hãy xem và nghe lại đoạn liên quan trong video đã xuất, đối chiếu lời gốc và bản dịch trước khi chỉnh sửa.",
+  };
+}
+function globalWarningCopy(item: ProductionFinding): WarningCopy | null {
+  // The producer uses the diagnostic itself for BOTH text placeholders only
+  // when there is no mapped dialogue. Code-like real dialogue is never parsed.
+  return item.cue_id === null && item.range === null && item.warning !== null &&
+    item.source_text === item.warning && item.translated_text === item.warning ? warningCopy(item.warning) : null;
+}
+
 /** Paginated DOM view. Paths inside artifacts never become browser media URLs. */
 export function mountReviewCenter(container: HTMLElement, raw: unknown, actions: ReviewActions = {}) {
   let payload = readReviewPayload(raw);
@@ -221,7 +259,8 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
     const layout = el("div", undefined, "review-layout"), list = el("ul", undefined, "review-findings");
     list.setAttribute("aria-label", "Cảnh báo trong nhóm");
     for (const item of shown) {
-      const entry = el("li"), choose = button(`${reviewRangeLabel(payload, item)} · ${item.translated_text.slice(0, 100)}`, () => {
+      const globalCopy = payload.schema_version === 1 ? null : globalWarningCopy(item as ProductionFinding);
+      const entry = el("li"), choose = button(`${reviewRangeLabel(payload, item)} · ${(globalCopy?.summary ?? item.translated_text).slice(0, 100)}`, () => {
         selected = item.finding_id; message = ""; invalidate(); render(); });
       choose.setAttribute("aria-pressed", String(item.finding_id === selected)); entry.append(choose); list.append(entry);
     }
@@ -234,16 +273,20 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
     const item = items.find(item => item.finding_id === selected);
     if (!item) detail.append(el("p", "Không có cảnh báo trong nhóm này."));
     else {
+      const bound = payload.schema_version !== 1 ? item as ProductionFinding : null;
+      const globalCopy = bound ? globalWarningCopy(bound) : null;
       detail.append(el("h3", reviewRangeLabel(payload, item)));
       const metadata = el("dl");
-      for (const [label, value] of [["Lời gốc", item.source_text], ["Người nói", item.speaker ?? "Chưa xác định"],
+      for (const [label, value] of [["Lời gốc", globalCopy ? "Cảnh báo toàn video, chưa gắn với lời thoại gốc." : item.source_text], ["Người nói", item.speaker ?? "Chưa xác định"],
         ["Giọng hiện tại", voices.find(voice => voice.voice_id === item.voice)?.label ?? item.voice ?? "Chưa có giọng"],
         ["Độ tin cậy", item.confidence === null ? "Chưa có phép đo" : item.confidence]]) {
         metadata.append(el("dt", label), el("dd", value));
       }
       detail.append(metadata);
-      const bound = payload.schema_version !== 1 ? item as ProductionFinding : null;
-      if (bound?.warning) detail.append(el("p", bound.warning, "review-warning"));
+      if (bound?.warning) {
+        const copy = warningCopy(bound.warning);
+        detail.append(el("p", copy.summary + " " + copy.action, "review-warning"));
+      }
       const canEdit = payload.schema_version === 2 && !!bound?.cue_id && !!bound.range && !!actions.correct;
       const canPlan = payload.schema_version === 3 && !!bound?.cue_id && !!bound.range && !!actions.planCurrent;
       const canDraft = (canEdit || canPlan) && !undoArmed && !exportArmed && !initializeArmed;
@@ -261,7 +304,8 @@ export function mountReviewCenter(container: HTMLElement, raw: unknown, actions:
           if (at === epoch && !destroyed) listen.disabled = busy || stale; });
       }, !canPreview, false); detail.append(listen);
       const form = el("form"), translation = el("textarea"), voice = el("select");
-      translation.id = prefix + "-translation"; translation.value = item.translated_text; translation.maxLength = 8192;
+      translation.id = prefix + "-translation";
+      translation.value = globalCopy ? "Cảnh báo toàn video, chưa có bản dịch gắn với câu thoại." : item.translated_text; translation.maxLength = 8192;
       translation.rows = 4; translation.disabled = !canDraft || busy || stale;
       const translationLabel = el("label", "Bản dịch"); translationLabel.htmlFor = translation.id;
       voice.id = prefix + "-voice"; voice.disabled = !canDraft || busy || stale || !voices.length || payload.schema_version === 3 && payload.mode === "b1";
