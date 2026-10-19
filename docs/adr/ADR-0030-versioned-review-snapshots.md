@@ -3834,3 +3834,73 @@ canonical naming and prior alias/competing-handle/hard-kill behavior are unchang
 Its real-duplicate regression was RED before repair and candidate Ubuntu CI is
 GREEN, including actual spawned-child hard-kill/reacquisition. These candidate
 results do not replace the final integrated-source or Windows product gates.
+
+#### Pending compact scratch for supported Windows output paths
+
+The supported desktop output can fit its original export while the derived
+legacy Review scratch exceeds the existing200 UTF-16 startup guard. Review
+needs a compact scratch-only placement within the same admitted output. The
+limit still applies to the actual TEMP/TMP/TMPDIR path, including any extended
+prefix. If neither placement fits, refuse before mkdir or child startup.
+
+Keep the legacy candidate job digest, retained media, publication locators and
+chunk journal/capacity workspace names unchanged. Prefer legacy scratch when
+it fits; a compact internal scratch namespace may be selected only after fresh
+native output identity, volume and no-follow admission. Its creation/ownership
+must be exclusive and bound to the admitted output and operation. An existing
+plain directory without valid native ownership is not reusable scratch.
+
+Reserve before writing and account for both scratch placements, partial/crash
+orphans, private staging and retained/history/export bytes under the existing
+aggregate budget, writer exclusion and fresh2GiB reserve. A second namespace
+does not grant another quota. Missing, linked, foreign or changed observations
+refuse; never rename, move, delete, adopt or relabel prior data to make it fit.
+
+This is a pending processing-release compatibility change, not a graph/SQLite
+or worker-wire migration. Existing recorded candidate/media paths remain
+readable unchanged. Older releases must leave compact scratch untouched and
+cannot infer completed work from it. No parent/control/system-temp fallback,
+short-path alias, producer/model/job repin or startup-timeout increase is added.
+
+The fix requires default-path and Unicode200/201 regressions, real Windows
+startup evidence, ownership/link/foreign-volume refusals, full old+new quota
+and crash-orphan accounting, legacy reopen and exact original preservation.
+Its own required CI/new release admission and the real edit/regenerate/undo/
+reopen/export flow remain mandatory; this section grants no product PASS.
+
+Scratch admission and every inventory consume the original caller deadline,
+including enumeration before child startup; a fresh local clock cannot extend
+the phase. Check entry/depth/byte limits while enumerating a directory, before
+queuing its children. Account each validated chunk workspace against its owned
+capacity extent once, while retaining all uncovered private and orphan bytes.
+A selected-cue byte limit does not establish whole-mix or render scratch bounds.
+
+An owned command carries its scratch credit through spawn, containment, byte
+gate, collection and every error path. A per-job execution guard does not
+reserve shared output capacity across jobs. Retire the credit only after an
+authoritative observation that its owned subtree stopped, and charge actual
+remaining orphan bytes. Parent exit, pipe EOF or closing a handle alone cannot
+grant retirement. Uncertain or late observations retain the credit and refuse
+completion. Existing caller and cleanup deadlines stay unchanged.
+
+The compact ownership record binds the admitted output, device and directory
+identities. Native output-wide credit records remain regular single-link files
+in the retained-media quota namespace. Their logical extent includes the
+baseline, maximum and bounded header so older writers still see reserved bytes.
+The new reader counts the union of actual TEMP and validated credits, preserving
+header overhead; concurrent baselines may conservatively overreserve. After
+authoritative owned-Job retirement, the exact owned record may become a sealed
+zero-maximum ledger covering remaining TEMP/orphans. Incomplete or changed
+records require explicit recovery and cannot authorize a refund or publication.
+Held header handles permit old readers while excluding competing data writes.
+
+Private ordinary candidates and unreserved orphans remain part of aggregate
+accounting. Only actual bytes proved covered by an existing valid chunk extent
+may be excluded from a second charge; a workspace name alone proves nothing.
+Accounting-only header reads never grant current-state, processing or CAS
+authority and do not relax existing chunk recovery/publication guards.
+
+On nonWindows platforms the prior per-call plain/existence/directory scratch
+checks remain in place; the new command wrapper grants no process-group
+retirement guarantee there. Full hosted Rust regressions and shipped Windows
+flow qualification are still required after final source composition.

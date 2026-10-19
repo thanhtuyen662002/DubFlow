@@ -1,13 +1,13 @@
 //! Native original-cue preparation and private synthesis. No graph publication.
 //! The command only accepts a native stale-client token and cue edit values.
 use super::review_assets::{AcceptedAudioStore, AcceptedJsonDocument, PcmPin};
-use super::review_document::{closed, decode, tick, AdmittedSnapshot, ReviewMode};
+use super::review_document::{AdmittedSnapshot, ReviewMode, closed, decode, tick};
 use super::review_request::{BoundCueRequest, CueRequestPins};
 use super::review_runtime::AdmittedRuntime;
 use super::review_seed::{collect, read_original};
 use super::{SupervisorError, SupervisorResult};
-use dubflow_job_state::{review_graph::ReviewGraphState, DurableStore};
-use serde_json::{json, Value};
+use dubflow_job_state::{DurableStore, review_graph::ReviewGraphState};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -1027,9 +1027,14 @@ pub(super) fn private_root(output: &Path, job: &str) -> SupervisorResult<PathBuf
     // metadata/cue objects. Missing output storage remains an explicit refusal.
     let root = output.join(".dubflow-review-candidates");
     let job_root = root.join(format!("{:x}", Sha256::digest(job.as_bytes())));
-    let scratch = root.join("temp");
-    validate_scratch_length(&scratch, cfg!(windows))?;
-    for path in [&root, &scratch, &job_root] {
+    // Selection is pure and precedes mkdir. All NEW scratch/credit IO is
+    // deferred to the collector, which owns the caller's actual deadline.
+    let scratch = select_scratch(output, cfg!(windows))?;
+    let mut paths = vec![root.clone(), job_root.clone()];
+    if scratch == root.join("temp") {
+        paths.push(scratch);
+    }
+    for path in &paths {
         super::review_pin::plain(path.parent().unwrap())?;
         match std::fs::create_dir(path) {
             Ok(()) => (),
@@ -1044,6 +1049,17 @@ pub(super) fn private_root(output: &Path, job: &str) -> SupervisorResult<PathBuf
     Ok(job_root)
 }
 
+// SCRATCH_LAYOUT_BEGIN: exact production placement used by the standalone probe.
+fn select_scratch(output: &Path, windows: bool) -> SupervisorResult<PathBuf> {
+    let legacy = output.join(".dubflow-review-candidates").join("temp");
+    if !windows || legacy.as_os_str().to_string_lossy().encode_utf16().count() <= 200 {
+        return Ok(legacy);
+    }
+    let compact = output.join(".dfr").join("temp");
+    validate_scratch_length(&compact, windows)?;
+    Ok(compact)
+}
+
 fn validate_scratch_length(scratch: &Path, windows: bool) -> SupervisorResult<()> {
     // Leave room for TemporaryDirectory's prefix/random suffix and PCM names.
     // A deep TEMP reproduced a hang inside Windows CreateProcess, before the
@@ -1055,19 +1071,32 @@ fn validate_scratch_length(scratch: &Path, windows: bool) -> SupervisorResult<()
     }
     Ok(())
 }
+// SCRATCH_LAYOUT_END
 
 pub(super) fn candidate_scratch(job_root: &Path) -> SupervisorResult<PathBuf> {
     // NativeProcess creates unique private TemporaryDirectories here. Sharing
     // the short parent across jobs does not share media/checkpoint identity.
-    let scratch = job_root
+    let parent = job_root
         .parent()
-        .ok_or_else(|| invalid("missing native candidate parent"))?
-        .join("temp");
-    super::review_pin::plain(&scratch)?;
-    if !scratch.is_dir() {
-        return Err(invalid("Review temporary storage is unavailable"));
+        .ok_or_else(|| invalid("missing native candidate parent"))?;
+    if parent.file_name().and_then(|s| s.to_str()) != Some(".dubflow-review-candidates") {
+        return Err(invalid(
+            "candidate root is not the legacy admitted namespace",
+        ));
     }
-    validate_scratch_length(&scratch, cfg!(windows))?;
+    let output = parent
+        .parent()
+        .ok_or_else(|| invalid("missing admitted output"))?;
+    let scratch = select_scratch(output, cfg!(windows))?;
+    #[cfg(not(windows))]
+    {
+        // Windows defers a fresh native scratch admission to its collector.
+        // Other platforms keep the original per-call plain/existence fence.
+        super::review_pin::plain(&scratch)?;
+        if !scratch.is_dir() {
+            return Err(invalid("Review temporary storage is unavailable"));
+        }
+    }
     Ok(scratch)
 }
 
@@ -1075,7 +1104,7 @@ pub(super) fn cue_command(
     runtime: &AdmittedRuntime,
     entry: &Path,
     scratch: &Path,
-) -> SupervisorResult<Command> {
+) -> SupervisorResult<super::review_retention::OwnedReviewCommand> {
     validate_scratch_length(scratch, cfg!(windows))?;
     let mut command = Command::new(&runtime.python);
     command.args([
@@ -1088,7 +1117,14 @@ pub(super) fn cue_command(
         .env("TEMP", scratch)
         .env("TMP", scratch)
         .env("TMPDIR", scratch);
-    Ok(command)
+    #[cfg(windows)]
+    {
+        super::review_retention::own_scratch_command(command, scratch)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(command.into())
+    } // No process-group/credit retirement claim on this platform.
 }
 
 pub(super) fn synthesize_accepted(
@@ -1293,22 +1329,27 @@ mod tests {
         let missing = base.join("unavailable output");
         assert!(private_root(&missing, "job-placement").is_err());
         assert!(!missing.exists());
-        assert!(original_audio_root(
-            &json!({"documents":{"tts_document":{"path":missing.join("tts_document.json")}}})
-        )
-        .is_err());
-        assert!(original_audio_root(
-            &json!({"documents":{"tts_document":{"path":"relative/tts_document.json"}}})
-        )
-        .is_err());
+        assert!(
+            original_audio_root(
+                &json!({"documents":{"tts_document":{"path":missing.join("tts_document.json")}}})
+            )
+            .is_err()
+        );
+        assert!(
+            original_audio_root(
+                &json!({"documents":{"tts_document":{"path":"relative/tts_document.json"}}})
+            )
+            .is_err()
+        );
         let traversal = output.join("..").join("local control");
         assert!(private_root(&traversal, "job-placement").is_err());
         assert!(private_root(&original, "job-placement").is_err());
         assert_eq!(std::fs::read_dir(&control).unwrap().count(), 0);
-        assert!(base
-            .canonicalize()
-            .unwrap()
-            .starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        assert!(
+            base.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
         std::fs::remove_dir_all(base).unwrap();
     }
 
@@ -1319,6 +1360,73 @@ mod tests {
         assert!(validate_scratch_length(Path::new(&"\u{1f3ac}".repeat(100)), true).is_ok());
         assert!(validate_scratch_length(Path::new(&"\u{1f3ac}".repeat(101)), true).is_err());
         assert!(validate_scratch_length(Path::new(&"a".repeat(300)), false).is_ok());
+    }
+
+    #[test]
+    fn windows_default_output_uses_only_compact_scratch_without_changing_candidates() {
+        let output = PathBuf::from(format!("C:/{}", "o".repeat(176)));
+        assert_eq!(
+            output.as_os_str().to_string_lossy().encode_utf16().count(),
+            179
+        );
+        assert_eq!(
+            select_scratch(&output, true).unwrap(),
+            output.join(".dfr/temp")
+        );
+        let extended = PathBuf::from(format!("\\\\?\\{}", output.display()));
+        assert_eq!(
+            select_scratch(&extended, true)
+                .unwrap()
+                .as_os_str()
+                .to_string_lossy()
+                .encode_utf16()
+                .count(),
+            193
+        );
+        let short = PathBuf::from("C:/short-output");
+        assert_eq!(
+            select_scratch(&short, true).unwrap(),
+            short.join(".dubflow-review-candidates/temp")
+        );
+        assert!(select_scratch(&PathBuf::from(format!("C:/{}", "o".repeat(190))), true).is_err());
+        assert!(select_scratch(&PathBuf::from(format!("C:/{}", "🎬".repeat(100))), true).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_scratch_revalidates_late_missing_file_and_symlink() {
+        let base = std::env::temp_dir().join(format!(
+            "dubflow-late-scratch-{}-{}",
+            std::process::id(),
+            super::super::ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let output = base.join("output");
+        std::fs::create_dir_all(&output).unwrap();
+        let candidate = private_root(&output, "late-scratch").unwrap();
+        let scratch = candidate.parent().unwrap().join("temp");
+        assert_eq!(candidate_scratch(&candidate).unwrap(), scratch);
+        std::fs::remove_dir(&scratch).unwrap();
+        assert!(candidate_scratch(&candidate).is_err());
+        std::fs::write(&scratch, b"not a directory").unwrap();
+        assert!(candidate_scratch(&candidate).is_err());
+        assert_eq!(std::fs::read(&scratch).unwrap(), b"not a directory");
+        std::fs::remove_file(&scratch).unwrap();
+        let foreign = base.join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        std::fs::write(foreign.join("preserve.bin"), b"foreign unchanged").unwrap();
+        std::os::unix::fs::symlink(&foreign, &scratch).unwrap();
+        assert!(candidate_scratch(&candidate).is_err());
+        assert_eq!(
+            std::fs::read(foreign.join("preserve.bin")).unwrap(),
+            b"foreign unchanged"
+        );
+        std::fs::remove_file(&scratch).unwrap();
+        assert!(
+            base.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[cfg(windows)]
@@ -1334,10 +1442,11 @@ mod tests {
         let error = private_root(&output, "long-output-job").unwrap_err();
         assert!(error.to_string().contains("shorter output folder"));
         assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
-        assert!(base
-            .canonicalize()
-            .unwrap()
-            .starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        assert!(
+            base.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
         std::fs::remove_dir_all(base).unwrap();
     }
 
@@ -1354,15 +1463,18 @@ mod tests {
         let link = base.join("linked output");
         std::os::unix::fs::symlink(&output, &link).unwrap();
         assert!(private_root(&link, "job-placement").is_err());
-        assert!(original_audio_root(
-            &json!({"documents":{"tts_document":{"path":link.join("tts_document.json")}}})
-        )
-        .is_err());
+        assert!(
+            original_audio_root(
+                &json!({"documents":{"tts_document":{"path":link.join("tts_document.json")}}})
+            )
+            .is_err()
+        );
         assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
-        assert!(base
-            .canonicalize()
-            .unwrap()
-            .starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        assert!(
+            base.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
         std::fs::remove_dir_all(base).unwrap();
     }
 

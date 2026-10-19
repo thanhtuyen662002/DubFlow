@@ -9,7 +9,7 @@ use super::review_assets::{
 use super::{SupervisorError, SupervisorResult};
 use dubflow_artifact_storage::ArtifactLocator;
 use dubflow_job_storage::RootKind;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -470,6 +470,184 @@ impl NativeOutputPin {
             volume_id: observed.volume_id,
         })
     }
+}
+
+fn scratch_budget() -> MixStorageBudget {
+    MixStorageBudget {
+        maximum_bytes: 32 * 1024 * 1024 * 1024,
+        minimum_free_bytes: 2 * 1024 * 1024 * 1024,
+    }
+}
+
+fn scratch_owner(pin: &NativeOutputPin) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(
+            format!(
+                "review-scratch-owner-v1\n{}\n{}",
+                pin.volume_id,
+                pin.root.display()
+            )
+            .as_bytes()
+        )
+    )
+}
+
+// This is an output-wide storage namespace for credits, NOT a job/model pin.
+const SCRATCH_CREDITS: &str = super::review_assets::SCRATCH_CREDITS;
+
+/// Pure command intent. Filesystem admission belongs to the collector's one
+/// original deadline, after all command arguments have been built.
+pub(super) struct PendingScratch {
+    output: PathBuf,
+    scratch: PathBuf,
+}
+impl PendingScratch {
+    pub(super) fn admit(self, deadline: Instant) -> SupervisorResult<NativeScratchLease> {
+        if Instant::now() >= deadline {
+            return Err(invalid("scratch admission deadline expired"));
+        }
+        let pin = NativeOutputPin::read(&self.output)?;
+        let media = NativeMixStore::new_until(
+            &pin,
+            SCRATCH_CREDITS,
+            scratch_budget(),
+            deadline,
+            &mut || false,
+        )?;
+        let owner = scratch_owner(&pin);
+        let expected = pin.volume_id().to_owned();
+        // The worker receives the original DOS/extended spelling. Identity and
+        // quota admission use the pinned canonical root, never a shorter alias.
+        let relative = self
+            .scratch
+            .strip_prefix(&self.output)
+            .map_err(|_| invalid("scratch escaped output"))?;
+        let canonical_scratch = pin.root().join(relative);
+        let credit = media.objects.reserve_scratch(
+            &canonical_scratch,
+            &owner,
+            super::review_assets::SCRATCH_ALLOWANCE,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&expected, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            deadline,
+        )?;
+        same_volume(pin.volume_id(), &probe(&self.scratch)?)?;
+        if self.scratch.canonicalize()? != canonical_scratch || Instant::now() >= deadline {
+            return Err(invalid(
+                "scratch identity or original deadline changed during admission",
+            ));
+        }
+        Ok(NativeScratchLease { pin, credit })
+    }
+}
+
+pub(super) struct NativeScratchLease {
+    pin: NativeOutputPin,
+    credit: super::review_assets::ScratchCredit,
+}
+
+impl NativeScratchLease {
+    fn retire(self, deadline: Instant) -> SupervisorResult<()> {
+        if Instant::now() >= deadline {
+            return Err(invalid(
+                "scratch retirement deadline expired; credit retained",
+            ));
+        }
+        let media = NativeMixStore::open_existing(&self.pin, SCRATCH_CREDITS, scratch_budget())?;
+        let expected = self.pin.volume_id().to_owned();
+        media.objects.retire_scratch(
+            self.credit,
+            |path| {
+                let observed = probe(path)?;
+                same_volume(&expected, &observed)?;
+                Ok(observed.available_bytes)
+            },
+            deadline,
+        )
+    }
+    pub(super) fn retire_unstarted(self, deadline: Instant) -> SupervisorResult<()> {
+        self.retire(deadline)
+    }
+    pub(super) fn retire_stopped(
+        self,
+        _proof: super::worker_tree::RetiredTree,
+        deadline: Instant,
+    ) -> SupervisorResult<()> {
+        self.retire(deadline)
+    }
+}
+
+/// Ordinary commands carry no new authority. A scratch command cannot be
+/// converted back into a bare Command and silently drop a live reservation.
+pub(super) struct OwnedReviewCommand {
+    command: std::process::Command,
+    scratch: Option<PendingScratch>,
+    prepared_at: Option<Instant>,
+}
+impl From<std::process::Command> for OwnedReviewCommand {
+    fn from(command: std::process::Command) -> Self {
+        Self {
+            command,
+            scratch: None,
+            prepared_at: None,
+        }
+    }
+}
+impl std::ops::Deref for OwnedReviewCommand {
+    type Target = std::process::Command;
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+impl std::ops::DerefMut for OwnedReviewCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
+impl OwnedReviewCommand {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        std::process::Command,
+        Option<PendingScratch>,
+        Option<Instant>,
+    ) {
+        (self.command, self.scratch, self.prepared_at)
+    }
+}
+
+pub(super) fn own_scratch_command(
+    command: std::process::Command,
+    scratch: &Path,
+) -> SupervisorResult<OwnedReviewCommand> {
+    let output = scratch
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| invalid("missing admitted scratch output"))?;
+    if !output.is_absolute()
+        || scratch
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        || (scratch != output.join(".dfr/temp")
+            && scratch != output.join(".dubflow-review-candidates/temp"))
+    {
+        return Err(invalid(
+            "scratch intent escaped its admitted output namespace",
+        ));
+    }
+    Ok(OwnedReviewCommand {
+        command,
+        scratch: Some(PendingScratch {
+            output: output.to_path_buf(),
+            scratch: scratch.to_path_buf(),
+        }),
+        prepared_at: Some(Instant::now()),
+    })
 }
 
 fn same_volume(expected: &str, observed: &Observation) -> SupervisorResult<()> {
@@ -1158,6 +1336,44 @@ impl NativeMixStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_command_conversion_has_no_scratch_credit_or_changed_arguments() {
+        let mut command: OwnedReviewCommand = std::process::Command::new("owned-fixture").into();
+        command.args(["first", "second"]);
+        let (command, lease, started) = command.into_parts();
+        assert!(lease.is_none() && started.is_none());
+        assert_eq!(
+            command
+                .get_args()
+                .map(|s| s.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn scratch_command_intent_never_creates_storage_before_collector_deadline() {
+        let root =
+            std::env::temp_dir().join(format!("absent-scratch-intent-{}", std::process::id()));
+        assert!(!root.exists());
+        let owned = own_scratch_command(
+            std::process::Command::new("never-spawn-fixture"),
+            &root.join(".dfr/temp"),
+        )
+        .unwrap();
+        let (_, intent, _) = owned.into_parts();
+        assert!(intent.unwrap().admit(Instant::now()).is_err());
+        assert!(!root.exists());
+        assert!(
+            own_scratch_command(
+                std::process::Command::new("never-spawn-fixture"),
+                &root.join("ambient/temp")
+            )
+            .is_err()
+        );
+    }
+
     const GUID: &str = r"\\?\Volume{01234567-89AB-CDEF-0123-456789abcdef}\";
     const HARD_LINKS: u32 = 0x0040_0000;
 
@@ -1211,11 +1427,12 @@ mod tests {
             );
         }
         assert_eq!(root.parent(), Some(parent.as_path()));
-        assert!(root
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("dubflow-native-json-"));
+        assert!(
+            root.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("dubflow-native-json-")
+        );
         fn unseal(root: &Path) {
             for entry in fs::read_dir(root).unwrap() {
                 let path = entry.unwrap().path();
@@ -1382,10 +1599,11 @@ mod tests {
         let mut permissions = fs::metadata(object.path()).unwrap().permissions();
         permissions.set_readonly(false);
         fs::set_permissions(object.path(), permissions).unwrap();
-        assert!(root
-            .canonicalize()
-            .unwrap()
-            .starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        assert!(
+            root.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1690,11 +1908,13 @@ mod tests {
             "windows-volume-guid:01234567-89ab-cdef-0123-456789abcdef"
         );
         assert_eq!(observed.available_bytes, 7);
-        assert!(same_volume(
-            "windows-volume-guid:ffffffff-89ab-cdef-0123-456789abcdef",
-            &observed
-        )
-        .is_err());
+        assert!(
+            same_volume(
+                "windows-volume-guid:ffffffff-89ab-cdef-0123-456789abcdef",
+                &observed
+            )
+            .is_err()
+        );
         for guid in [
             r"D:\",
             "",
@@ -1808,10 +2028,12 @@ mod tests {
             .unwrap()
             .modified()
             .unwrap();
-        assert!(fs::metadata(&object.audio.path)
-            .unwrap()
-            .permissions()
-            .readonly());
+        assert!(
+            fs::metadata(&object.audio.path)
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
         assert_eq!(object.descriptor()["locator"]["size_bytes"], "60");
         assert_eq!(object.descriptor()["frame_count"], "4");
         assert_eq!(object.locator.root_kind, RootKind::Output);
@@ -1859,14 +2081,18 @@ mod tests {
         // Actual Windows canonical retained paths use the extended spelling,
         // while the original output pin was obtained from a DOS-spelled root.
         // Reproduce the old render prefix refusal without stripping prefixes.
-        assert!(!object
-            .audio
-            .path
-            .starts_with(output.join(".dubflow-review-media-v1")));
-        let entries = json!(retained_roles
-            .iter()
-            .map(|(role, audio)| json!({"role":role,"audio":audio.descriptor()}))
-            .collect::<Vec<_>>());
+        assert!(
+            !object
+                .audio
+                .path
+                .starts_with(output.join(".dubflow-review-media-v1"))
+        );
+        let entries = json!(
+            retained_roles
+                .iter()
+                .map(|(role, audio)| json!({"role":role,"audio":audio.descriptor()}))
+                .collect::<Vec<_>>()
+        );
         reopened
             .revalidate_admitted_document(&source_raw, composition, &entries, &retargeted, deadline)
             .unwrap();
@@ -1899,24 +2125,28 @@ mod tests {
         let mut changed_metadata =
             super::super::review_document::decode(&retargeted, 64 * 1024 * 1024).unwrap();
         changed_metadata["segments"][0]["confidence"] = json!(0.5);
-        assert!(reopened
-            .revalidate_admitted_document(
-                &source_raw,
-                composition,
-                &entries,
-                &changed_metadata.to_string(),
-                deadline,
-            )
-            .is_err());
-        assert!(reopened
-            .revalidate_admitted_document(
-                &source_raw,
-                composition,
-                &entries,
-                &retargeted,
-                Instant::now(),
-            )
-            .is_err());
+        assert!(
+            reopened
+                .revalidate_admitted_document(
+                    &source_raw,
+                    composition,
+                    &entries,
+                    &changed_metadata.to_string(),
+                    deadline,
+                )
+                .is_err()
+        );
+        assert!(
+            reopened
+                .revalidate_admitted_document(
+                    &source_raw,
+                    composition,
+                    &entries,
+                    &retargeted,
+                    Instant::now(),
+                )
+                .is_err()
+        );
         for role in roles {
             source[role]["path"] = json!(object.audio.path);
         }
@@ -1940,9 +2170,11 @@ mod tests {
             assert!(reopened.verify(&foreign, deadline).is_err());
             let mut foreign_roles = retained_roles.clone();
             foreign_roles[0].1 = foreign;
-            assert!(reopened
-                .retarget_admitted_document(&source_raw, composition, &foreign_roles, deadline,)
-                .is_err());
+            assert!(
+                reopened
+                    .retarget_admitted_document(&source_raw, composition, &foreign_roles, deadline,)
+                    .is_err()
+            );
         }
         assert!(reopened.verify(&object, Instant::now()).is_err());
         let mut hint_only = object.descriptor();
@@ -1989,9 +2221,11 @@ mod tests {
                 )
                 .is_err()
         );
-        assert!(reopened
-            .retarget_admitted_document(&source_raw, composition, &retained_roles, deadline,)
-            .is_err());
+        assert!(
+            reopened
+                .retarget_admitted_document(&source_raw, composition, &retained_roles, deadline,)
+                .is_err()
+        );
         drop(reopened);
         let mut cleanup = fs::metadata(&object.audio.path).unwrap().permissions();
         cleanup.set_readonly(false);
@@ -2007,11 +2241,13 @@ mod tests {
         .unwrap();
         wav[59] = 0;
         fs::write(&path, &wav).unwrap();
-        assert!(impossible_reserve
-            .accept(&candidate, &path, &pcm, deadline)
-            .unwrap_err()
-            .to_string()
-            .contains("reservation overflow"));
+        assert!(
+            impossible_reserve
+                .accept(&candidate, &path, &pcm, deadline)
+                .unwrap_err()
+                .to_string()
+                .contains("reservation overflow")
+        );
         drop(impossible_reserve);
         let moved = root.0.join("moved-output");
         fs::rename(&output, &moved).unwrap();

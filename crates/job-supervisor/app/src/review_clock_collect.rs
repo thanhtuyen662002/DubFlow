@@ -5,13 +5,24 @@ use std::thread::JoinHandle;
 struct ClockProcess {
     process: Option<AdapterProcess>,
     readers: Vec<JoinHandle<()>>,
+    deadline: Instant,
+    retirement_deadline: Option<Instant>,
+    needs_retirement: bool,
+    retired: Option<super::super::worker_tree::RetiredTree>,
 }
 impl ClockProcess {
     fn finish(&mut self) -> SupervisorResult<()> {
         // Close the native tree before pipe joins, including inherited FFprobe
         // handles after cancellation or a refused parent observation.
+        let until = *self
+            .retirement_deadline
+            .get_or_insert_with(|| self.deadline.min(Instant::now() + Duration::from_secs(2)));
+        let retirement = if self.needs_retirement && self.process.is_some() {
+            retire_scratch_process(self.process.take().unwrap(), until).map(Some)
+        } else {
+            Ok(None)
+        };
         drop(self.process.take());
-        let until = Instant::now() + Duration::from_secs(2);
         while self.readers.iter().any(|t| !t.is_finished()) && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -27,6 +38,9 @@ impl ClockProcess {
         if !joined {
             return Err(invalid("clock pipe readers did not join completely"));
         }
+        if let Some(proof) = retirement? {
+            self.retired = Some(proof);
+        }
         Ok(())
     }
 }
@@ -36,11 +50,12 @@ impl Drop for ClockProcess {
     }
 }
 pub(crate) fn collect_clock_worker(
-    mut command: Command,
+    command: impl Into<super::super::review_retention::OwnedReviewCommand>,
     deadline: Instant,
     limit: usize,
     observe: &mut impl FnMut(Instant) -> SupervisorResult<()>,
 ) -> SupervisorResult<String> {
+    let (mut command, scratch, prepared_at) = command.into().into_parts();
     if limit == 0
         || limit > 8 * 1024 * 1024 + 16384
         || deadline
@@ -55,6 +70,18 @@ pub(crate) fn collect_clock_worker(
     if Instant::now() >= deadline {
         return Err(invalid("clock pre-spawn observation exhausted deadline"));
     }
+    // Absolute caller deadline remains authoritative; command preparation never
+    // opens another timeout window for scratch IO.
+    if prepared_at.is_some_and(|at| at >= deadline) {
+        return Err(invalid(
+            "scratch command was prepared after caller deadline",
+        ));
+    }
+    let scratch = scratch.map(|intent| intent.admit(deadline)).transpose()?;
+    observe(deadline)?;
+    if Instant::now() >= deadline {
+        return Err(invalid("scratch admission exhausted clock deadline"));
+    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -64,10 +91,16 @@ pub(crate) fn collect_clock_worker(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let mut child = AdapterProcess {
-        child: command.spawn()?,
-        tree: None,
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(scratch) = scratch {
+                let _ = scratch.retire_unstarted(deadline);
+            }
+            return Err(error.into());
+        }
     };
+    let mut child = AdapterProcess { child, tree: None };
     child.tree = Some(super::super::WorkerTree::attach(&child.child)?);
     let stdout = child.child.stdout.take().unwrap();
     let stderr = child.child.stderr.take().unwrap();
@@ -75,6 +108,10 @@ pub(crate) fn collect_clock_worker(
     let mut scope = ClockProcess {
         process: Some(child),
         readers: Vec::new(),
+        deadline,
+        retirement_deadline: None,
+        needs_retirement: scratch.is_some(),
+        retired: None,
     };
     let (send, receive) = mpsc::sync_channel(4);
     for (error, cap, stream) in [
@@ -104,7 +141,7 @@ pub(crate) fn collect_clock_worker(
     stdin.write_all(&[1])?;
     drop(stdin);
     let (mut out, mut diagnostic) = (None, None);
-    let result = loop {
+    let result = (|| loop {
         observe(deadline)?;
         if Instant::now() >= deadline {
             break Err(invalid("clock process exceeded absolute native deadline"));
@@ -135,11 +172,18 @@ pub(crate) fn collect_clock_worker(
                     .map_err(|_| invalid("clock worker response is not UTF8"));
             }
         }
-    };
+    })();
     scope.finish()?;
     observe(deadline)?;
     if Instant::now() >= deadline {
         return Err(invalid("clock completion exceeded native deadline"));
+    }
+    if let Some(scratch) = scratch {
+        let proof = scope
+            .retired
+            .take()
+            .ok_or_else(|| invalid("clock writer retirement unconfirmed; credit retained"))?;
+        scratch.retire_stopped(proof, deadline)?;
     }
     result
 }
@@ -193,46 +237,54 @@ mod tests {
         let until = Instant::now() + Duration::from_secs(10);
         let raw = collect_clock_worker(child("ok"), until, 8192, &mut |_| Ok(())).unwrap();
         assert!(raw.contains("clock-byte-gate-observed"));
-        assert!(collect_clock_worker(
-            child("flood"),
-            Instant::now() + Duration::from_secs(10),
-            256,
-            &mut |_| Ok(())
-        )
-        .is_err());
-        assert!(collect_clock_worker(
-            child("ok"),
-            Instant::now() + Duration::from_secs(181),
-            8192,
-            &mut |_| Ok(())
-        )
-        .is_err());
+        assert!(
+            collect_clock_worker(
+                child("flood"),
+                Instant::now() + Duration::from_secs(10),
+                256,
+                &mut |_| Ok(())
+            )
+            .is_err()
+        );
+        assert!(
+            collect_clock_worker(
+                child("ok"),
+                Instant::now() + Duration::from_secs(181),
+                8192,
+                &mut |_| Ok(())
+            )
+            .is_err()
+        );
     }
     #[test]
     fn native_clock_collector_cancellation_and_absolute_deadline_never_return_partial_output() {
         let start = Instant::now();
-        assert!(collect_clock_worker(
-            child("sleep"),
-            start + Duration::from_secs(10),
-            8192,
-            &mut |_| {
-                if start.elapsed() > Duration::from_millis(40) {
-                    Err(invalid("owned cancel fixture"))
-                } else {
-                    Ok(())
+        assert!(
+            collect_clock_worker(
+                child("sleep"),
+                start + Duration::from_secs(10),
+                8192,
+                &mut |_| {
+                    if start.elapsed() > Duration::from_millis(40) {
+                        Err(invalid("owned cancel fixture"))
+                    } else {
+                        Ok(())
+                    }
                 }
-            }
-        )
-        .is_err());
+            )
+            .is_err()
+        );
         assert!(start.elapsed() < Duration::from_secs(5));
         let start = Instant::now();
-        assert!(collect_clock_worker(
-            child("sleep"),
-            start + Duration::from_millis(150),
-            8192,
-            &mut |_| Ok(())
-        )
-        .is_err());
+        assert!(
+            collect_clock_worker(
+                child("sleep"),
+                start + Duration::from_millis(150),
+                8192,
+                &mut |_| Ok(())
+            )
+            .is_err()
+        );
         assert!(start.elapsed() < Duration::from_secs(5));
     }
 }

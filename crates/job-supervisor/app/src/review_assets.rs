@@ -188,11 +188,15 @@ pub(super) fn regular(path: &Path) -> SupervisorResult<File> {
 /// Fresh open-handle identity and exactly one link for retained cue media.
 /// Model/runtime inventories have separate explicit deduplication rules.
 fn single_cue_file(file: &File) -> SupervisorResult<(u64, u64)> {
+    native_identity(file, false)
+}
+
+fn native_identity(file: &File, directory: bool) -> SupervisorResult<(u64, u64)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         let metadata = file.metadata()?;
-        if metadata.nlink() != 1 {
+        if !directory && metadata.nlink() != 1 {
             return Err(invalid("cue media cannot have multiple hard links"));
         }
         Ok((metadata.dev(), metadata.ino()))
@@ -226,7 +230,10 @@ fn single_cue_file(file: &File) -> SupervisorResult<(u64, u64)> {
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
             return Err(std::io::Error::last_os_error().into());
         }
-        if information.links != 1 || information.attributes & (0x400 | 0x10) != 0 {
+        if information.attributes & 0x400 != 0
+            || (information.attributes & 0x10 != 0) != directory
+            || (!directory && information.links != 1)
+        {
             return Err(invalid(
                 "cue media must be a single-link regular no-reparse file",
             ));
@@ -818,6 +825,400 @@ pub(super) struct MixStorageBudget {
     pub(super) minimum_free_bytes: u64,
 }
 
+// SCRATCH_CORE_BEGIN: std-only filesystem boundary, also exercised by the owned Windows probe.
+const SCRATCH_HEADER: u64 = 4096;
+// TEMP contains one sequential native waveform (Mimic3: 8Mi frames *4;
+// VieNeu: at most three 48k*32*4 buffers). Full B2/mix/render PCM remains in
+// candidate/chunk storage and is NEVER compared with this TEMP-only allowance.
+pub(super) const SCRATCH_ALLOWANCE: u64 = 64 * 1024 * 1024;
+pub(super) const SCRATCH_CREDITS: &str = "native-scratch-credits-v1";
+
+fn scratch_directory(path: &Path) -> SupervisorResult<(File, (u64, u64))> {
+    plain(path)?;
+    if !fs::symlink_metadata(path)?.is_dir() {
+        return Err(invalid("scratch directory is not plain"));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Hold the directory without delete sharing for the whole invocation.
+        options.custom_flags(0x02200000).share_mode(3);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_dir() {
+        return Err(invalid("scratch directory handle changed type"));
+    }
+    let identity = native_identity(&file, true)?;
+    plain(path)?;
+    Ok((file, identity))
+}
+
+fn scratch_inventory(
+    root: &Path,
+    deadline: Instant,
+    count: &mut usize,
+    limit: usize,
+) -> SupervisorResult<u64> {
+    match fs::symlink_metadata(root) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+        Ok(_) => (),
+    }
+    fn visit(
+        path: &Path,
+        depth: usize,
+        deadline: Instant,
+        count: &mut usize,
+        limit: usize,
+    ) -> SupervisorResult<u64> {
+        time_left(Some(deadline))?;
+        *count = count
+            .checked_add(1)
+            .ok_or_else(|| invalid("scratch entry overflow"))?;
+        if *count > limit || depth > 32 {
+            return Err(invalid("scratch inventory exceeds shared bound"));
+        }
+        plain(path)?;
+        if !fs::symlink_metadata(path)?.is_dir() {
+            let file = regular(path)?;
+            single_cue_file(&file)?;
+            return Ok(file.metadata()?.len());
+        }
+        // One directory iterator per depth, never a pending Vec of all children.
+        let mut total = 0u64;
+        let mut entries = fs::read_dir(path)?;
+        loop {
+            time_left(Some(deadline))?;
+            let Some(entry) = entries.next() else {
+                break;
+            };
+            if *count >= limit {
+                return Err(invalid("scratch enumeration exceeds shared bound"));
+            }
+            total = total
+                .checked_add(visit(&entry?.path(), depth + 1, deadline, count, limit)?)
+                .ok_or_else(|| invalid("scratch byte inventory overflow"))?;
+        }
+        Ok(total)
+    }
+    visit(root, 0, deadline, count, limit)
+}
+
+fn scratch_actual(
+    output: &Path,
+    deadline: Instant,
+    count: &mut usize,
+    limit: usize,
+) -> SupervisorResult<u64> {
+    // Chunk workspace is covered by its existing .chunk-capacity-v1 extent.
+    // Do not rescan/double-charge the job candidate tree or change its recovery.
+    scratch_inventory(
+        &output.join(".dubflow-review-candidates/temp"),
+        deadline,
+        count,
+        limit,
+    )?
+    .checked_add(scratch_inventory(
+        &output.join(".dfr"),
+        deadline,
+        count,
+        limit,
+    )?)
+    .ok_or_else(|| invalid("scratch inventory overflow"))
+}
+
+fn scratch_preflight(
+    used: u64,
+    outstanding: u64,
+    maximum: u64,
+    available: u64,
+    budget: MixStorageBudget,
+) -> SupervisorResult<()> {
+    let planned = maximum
+        .checked_add(2 * SCRATCH_HEADER)
+        .ok_or_else(|| invalid("scratch reservation overflow"))?;
+    if used
+        .checked_add(planned)
+        .is_none_or(|n| n > budget.maximum_bytes)
+        || planned
+            .checked_add(outstanding)
+            .and_then(|n| n.checked_add(budget.minimum_free_bytes))
+            .is_none_or(|n| available < n)
+    {
+        return Err(invalid(
+            "scratch lacks shared quota or fresh caller reserve",
+        ));
+    }
+    Ok(())
+}
+
+fn claim_scratch(
+    output: &Path,
+    scratch: &Path,
+    owner: &str,
+    create: bool,
+) -> SupervisorResult<Vec<File>> {
+    if owner.len() != 64 || !owner.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid("scratch owner must be native-derived"));
+    }
+    let (output_file, output_id) = scratch_directory(output)?;
+    let legacy = output.join(".dubflow-review-candidates");
+    let compact = output.join(".dfr");
+    let compact_selected = scratch == compact.join("temp");
+    if !compact_selected && scratch != legacy.join("temp") {
+        return Err(invalid("scratch escaped its exact output namespace"));
+    }
+    let root = if compact_selected { compact } else { legacy };
+    let created = if !create {
+        false
+    } else {
+        match fs::create_dir(&root) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(e) => return Err(e.into()),
+        }
+    };
+    let (root_file, root_id) = scratch_directory(&root)?;
+    // Never turn an ambient compact directory (even empty) into owned storage.
+    if compact_selected && !created {
+        drop(regular(&root.join(".owner-v1"))?);
+    }
+    if created || (create && !compact_selected) {
+        directory(scratch)?;
+    }
+    let (scratch_file, scratch_id) = scratch_directory(scratch)?;
+    if output_id.0 != root_id.0 || output_id.0 != scratch_id.0 {
+        return Err(invalid("scratch directory escaped output device"));
+    }
+    if compact_selected {
+        let expected = format!(
+            "dubflow-owned-scratch-v1\n{owner}\n{output_id:?}\n{root_id:?}\n{scratch_id:?}\n"
+        )
+        .into_bytes();
+        let marker = root.join(".owner-v1");
+        if created {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&marker)?;
+            file.write_all(&expected)?;
+            file.sync_all()?;
+            let mut mode = file.metadata()?.permissions();
+            mode.set_readonly(true);
+            file.set_permissions(mode)?;
+        }
+        let mut file = regular(&marker)?;
+        single_cue_file(&file)?;
+        if file.metadata()?.len() != expected.len() as u64
+            || !file.metadata()?.permissions().readonly()
+        {
+            return Err(invalid("scratch ownership record changed"));
+        }
+        let mut actual = Vec::new();
+        Read::by_ref(&mut file)
+            .take(SCRATCH_HEADER + 1)
+            .read_to_end(&mut actual)?;
+        if actual != expected {
+            return Err(invalid("foreign scratch output/directory ownership"));
+        }
+    }
+    Ok(vec![output_file, root_file, scratch_file])
+}
+
+/// A sealed bounded header plus a logical extent is visible to legacy quota
+/// readers. A separate zero-byte locked file owns it while headers stay readable.
+/// Drop closes handles but NEVER refunds uncertain or interrupted writers.
+pub(super) struct ScratchCredit {
+    file: File,
+    path: PathBuf,
+    lock: File,
+    lock_path: PathBuf,
+    identity: (u64, u64),
+    lock_identity: (u64, u64),
+    header: Vec<u8>,
+    maximum: u64,
+    private_before: u64,
+    directories: Vec<File>,
+    directory_paths: Vec<PathBuf>,
+}
+
+fn scratch_credit_header(
+    owner: &str,
+    maximum: u64,
+    before: u64,
+    compact: bool,
+    ids: &[(u64, u64); 5],
+) -> Vec<u8> {
+    format!("dubflow-scratch-credit-v1\n{owner}\n{maximum}\n{before}\n{}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n", u8::from(compact), ids[0], ids[1], ids[2], ids[3], ids[4]).into_bytes()
+}
+
+fn read_scratch_credit(path: &Path, output: &Path) -> SupervisorResult<(u64, u64)> {
+    let mut file = regular(path)?;
+    let identity = single_cue_file(&file)?;
+    if file.metadata()?.len() < SCRATCH_HEADER || !file.metadata()?.permissions().readonly() {
+        return Err(invalid(
+            "scratch credit is unsealed or oversized; explicit recovery required",
+        ));
+    }
+    let mut block = vec![0; SCRATCH_HEADER as usize];
+    file.read_exact(&mut block)?;
+    let end = block
+        .iter()
+        .position(|b| *b == 0)
+        .ok_or_else(|| invalid("scratch credit lacks bounded header terminator"))?;
+    if block[end..].iter().any(|b| *b != 0) {
+        return Err(invalid("scratch credit header padding changed"));
+    }
+    let bytes = block[..end].to_vec();
+    let text = std::str::from_utf8(&bytes).map_err(|_| invalid("scratch credit is not UTF8"))?;
+    let lines: Vec<_> = text.lines().collect();
+    if lines.len() != 10 || lines[0] != "dubflow-scratch-credit-v1" {
+        return Err(invalid("scratch credit schema changed"));
+    }
+    let maximum: u64 = lines[2]
+        .parse()
+        .map_err(|_| invalid("invalid scratch maximum"))?;
+    let before: u64 = lines[3]
+        .parse()
+        .map_err(|_| invalid("invalid scratch baseline"))?;
+    if file.metadata()?.len()
+        != before
+            .checked_add(maximum)
+            .and_then(|n| n.checked_add(SCRATCH_HEADER))
+            .ok_or_else(|| invalid("scratch extent overflow"))?
+    {
+        return Err(invalid(
+            "scratch reservation extent changed; explicit recovery required",
+        ));
+    }
+    let compact = match lines[4] {
+        "0" => false,
+        "1" => true,
+        _ => return Err(invalid("invalid scratch layout")),
+    };
+    if maximum > SCRATCH_ALLOWANCE {
+        return Err(invalid("unknown scratch producer bound"));
+    }
+    let scratch = output.join(if compact {
+        ".dfr/temp"
+    } else {
+        ".dubflow-review-candidates/temp"
+    });
+    let directories = claim_scratch(output, &scratch, lines[1], false)?;
+    let lock_path = path.with_extension("lock");
+    let lock = regular(&lock_path)?;
+    if lock.metadata()?.len() != 0 {
+        return Err(invalid("scratch credit lock changed"));
+    }
+    let ids = [
+        native_identity(&directories[0], true)?,
+        native_identity(&directories[1], true)?,
+        native_identity(&directories[2], true)?,
+        identity,
+        single_cue_file(&lock)?,
+    ];
+    if scratch_credit_header(lines[1], maximum, before, compact, &ids) != bytes {
+        return Err(invalid(
+            "scratch credit copied or output/directory/file identity changed",
+        ));
+    }
+    Ok((maximum, before))
+}
+
+struct ScratchUsage {
+    actual: u64,
+    charge: u64,
+    outstanding: u64,
+    floor: u64,
+    covered_extents: u64,
+}
+
+fn scratch_usage(
+    output: &Path,
+    credits: &Path,
+    deadline: Instant,
+    count: &mut usize,
+    limit: usize,
+) -> SupervisorResult<ScratchUsage> {
+    let actual = scratch_actual(output, deadline, count, limit)?;
+    let mut reserved = 0u64;
+    let mut baseline = 0u64;
+    let mut covered_extents = 0u64;
+    match fs::symlink_metadata(credits) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e.into()),
+        Ok(_) => {
+            let _held = scratch_directory(credits)?;
+            let mut entries = fs::read_dir(credits)?;
+            loop {
+                time_left(Some(deadline))?;
+                let Some(entry) = entries.next() else {
+                    break;
+                };
+                *count = count
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("scratch entry overflow"))?;
+                if *count > limit {
+                    return Err(invalid("scratch credit inventory exceeds shared bound"));
+                }
+                let path = entry?.path();
+                let name = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .ok_or_else(|| invalid("nonUTF8 scratch credit name"))?;
+                if !name.starts_with(".scratch-credit-v1-") {
+                    return Err(invalid(
+                        "foreign scratch credit namespace; explicit recovery required",
+                    ));
+                }
+                match path.extension().and_then(|s| s.to_str()) {
+                    Some("bin") => {
+                        let (maximum, before) = read_scratch_credit(&path, output)?;
+                        reserved = reserved
+                            .checked_add(maximum)
+                            .ok_or_else(|| invalid("scratch reservation overflow"))?;
+                        baseline = baseline.max(before);
+                        covered_extents = covered_extents
+                            .checked_add(maximum)
+                            .and_then(|n| n.checked_add(before))
+                            .ok_or_else(|| invalid("scratch extent inventory overflow"))?;
+                    }
+                    Some("lock") => {
+                        let lock = regular(&path)?;
+                        single_cue_file(&lock)?;
+                        if lock.metadata()?.len() != 0 {
+                            return Err(invalid("scratch lock is not empty"));
+                        }
+                        // A crash between lock and header is an unknown credit,
+                        // not permission to refund or reuse this namespace.
+                        drop(regular(&path.with_extension("bin"))?);
+                    }
+                    _ => {
+                        return Err(invalid(
+                            "unknown scratch credit entry; explicit recovery required",
+                        ))
+                    }
+                }
+            }
+        }
+    }
+    let floor = baseline
+        .checked_add(reserved)
+        .ok_or_else(|| invalid("scratch credit floor overflow"))?;
+    let charge = actual.max(floor);
+    Ok(ScratchUsage {
+        actual,
+        charge,
+        outstanding: charge.saturating_sub(actual),
+        floor,
+        covered_extents,
+    })
+}
+
+// SCRATCH_CORE_END
+
 pub(super) struct RetainedMixStore {
     namespace: PathBuf,
     objects: AcceptedAudioStore,
@@ -1280,7 +1681,286 @@ impl RetainedMixStore {
                     .ok_or_else(|| invalid("mix storage byte count overflow"))?;
             }
         }
-        Ok(total)
+        let output = self
+            .namespace
+            .parent()
+            .ok_or_else(|| invalid("missing output namespace"))?;
+        let usage = scratch_usage(
+            output,
+            &self.scratch_credit_root(),
+            deadline,
+            &mut count,
+            self.inventory_limit,
+        )?;
+        // Materialized TEMP and logical credits cover the SAME bytes. Keep the
+        // larger amount, rather than adding full reservations a second time.
+        total
+            .checked_sub(usage.covered_extents)
+            .and_then(|n| n.checked_add(usage.charge))
+            .ok_or_else(|| invalid("shared scratch/media quota overflow"))
+    }
+
+    fn scratch_credit_root(&self) -> PathBuf {
+        self.namespace
+            .join(format!("{:x}", Sha256::digest(SCRATCH_CREDITS.as_bytes())))
+    }
+
+    pub(super) fn reserve_scratch(
+        &self,
+        scratch: &Path,
+        owner: &str,
+        maximum: u64,
+        mut available: impl FnMut(&Path) -> SupervisorResult<u64>,
+        deadline: Instant,
+    ) -> SupervisorResult<ScratchCredit> {
+        time_left(Some(deadline))?;
+        let output = self
+            .namespace
+            .parent()
+            .ok_or_else(|| invalid("missing scratch output"))?;
+        if self.objects.root != self.scratch_credit_root()
+            || maximum == 0
+            || maximum > SCRATCH_ALLOWANCE
+        {
+            return Err(invalid(
+                "scratch credit requires its exact output-wide producer namespace",
+            ));
+        }
+        let mut count = 0;
+        let usage = scratch_usage(
+            output,
+            &self.objects.root,
+            deadline,
+            &mut count,
+            self.inventory_limit,
+        )?;
+        scratch_preflight(
+            self.used_bytes(deadline)?,
+            usage.outstanding,
+            maximum,
+            available(output)?,
+            self.budget,
+        )?;
+        time_left(Some(deadline))?;
+        let mut directories = claim_scratch(output, scratch, owner, true)?;
+        let mut directory_paths = vec![
+            output.to_path_buf(),
+            scratch.parent().unwrap().to_path_buf(),
+            scratch.to_path_buf(),
+        ];
+        for path in [&self.namespace, &self.objects.root] {
+            directories.push(scratch_directory(path)?.0);
+            directory_paths.push(path.to_path_buf());
+        }
+        let private_before = scratch_actual(output, deadline, &mut 0, self.inventory_limit)?;
+        let path = self.objects.root.join(format!(
+            ".scratch-credit-v1-{}-{}.bin",
+            std::process::id(),
+            ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let lock_path = path.with_extension("lock");
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Exact owned handles may delete on proven retirement. Other
+            // writers cannot replace or rename their live paths.
+            options
+                .access_mode(0xC0010000)
+                .custom_flags(0x00200000)
+                .share_mode(3);
+        }
+        time_left(Some(deadline))?;
+        let lock = options.open(&lock_path)?;
+        lock.try_lock()
+            .map_err(|_| invalid("scratch credit ownership refused"))?;
+        let lock_identity = single_cue_file(&lock)?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Legacy quota readers may read metadata/header. No competing data
+            // writer may change the active extent or record while we own it.
+            options.share_mode(1);
+        }
+        let mut file = options.open(&path)?;
+        let identity = single_cue_file(&file)?;
+        let ids = [
+            native_identity(&directories[0], true)?,
+            native_identity(&directories[1], true)?,
+            native_identity(&directories[2], true)?,
+            identity,
+            lock_identity,
+        ];
+        let header = scratch_credit_header(
+            owner,
+            maximum,
+            private_before,
+            scratch == output.join(".dfr/temp"),
+            &ids,
+        );
+        if header.len() as u64 > SCRATCH_HEADER {
+            return Err(invalid("scratch credit header bound"));
+        }
+        let extent = private_before
+            .checked_add(maximum)
+            .and_then(|n| n.checked_add(SCRATCH_HEADER))
+            .ok_or_else(|| invalid("scratch extent overflow"))?;
+        if available(output)?
+            < extent
+                .checked_add(self.budget.minimum_free_bytes)
+                .and_then(|n| n.checked_add(usage.outstanding))
+                .ok_or_else(|| invalid("scratch allocation overflow"))?
+        {
+            return Err(invalid("scratch backing extent lacks fresh reserve"));
+        }
+        time_left(Some(deadline))?;
+        file.set_len(extent)?;
+        let mut block = vec![0; SCRATCH_HEADER as usize];
+        block[..header.len()].copy_from_slice(&header);
+        file.write_all(&block)?;
+        file.sync_all()?;
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        file.set_permissions(permissions)?;
+        let credit = ScratchCredit {
+            file,
+            path,
+            lock,
+            lock_path,
+            identity,
+            lock_identity,
+            header,
+            maximum,
+            private_before,
+            directories,
+            directory_paths,
+        };
+        let usage = scratch_usage(
+            output,
+            &self.objects.root,
+            deadline,
+            &mut 0,
+            self.inventory_limit,
+        )?;
+        if self.used_bytes(deadline)? > self.budget.maximum_bytes
+            || available(output)?
+                < self
+                    .budget
+                    .minimum_free_bytes
+                    .checked_add(usage.outstanding)
+                    .ok_or_else(|| invalid("scratch reserve overflow"))?
+        {
+            return Err(invalid("scratch admission changed; credit remains charged"));
+        }
+        time_left(Some(deadline))?;
+        Ok(credit)
+    }
+
+    pub(super) fn retire_scratch(
+        &self,
+        mut credit: ScratchCredit,
+        mut available: impl FnMut(&Path) -> SupervisorResult<u64>,
+        deadline: Instant,
+    ) -> SupervisorResult<()> {
+        time_left(Some(deadline))?;
+        let output = self
+            .namespace
+            .parent()
+            .ok_or_else(|| invalid("missing scratch output"))?;
+        if single_cue_file(&regular(&credit.path)?)? != credit.identity
+            || single_cue_file(&credit.file)? != credit.identity
+            || single_cue_file(&regular(&credit.lock_path)?)? != credit.lock_identity
+            || single_cue_file(&credit.lock)? != credit.lock_identity
+            || credit.lock.metadata()?.len() != 0
+            || credit.file.metadata()?.len()
+                != credit
+                    .private_before
+                    .checked_add(credit.maximum)
+                    .and_then(|n| n.checked_add(SCRATCH_HEADER))
+                    .ok_or_else(|| invalid("scratch extent overflow"))?
+        {
+            return Err(invalid("scratch credit identity/extent changed"));
+        }
+        credit.file.seek(SeekFrom::Start(0))?;
+        let mut header = vec![0; credit.header.len()];
+        credit.file.read_exact(&mut header)?;
+        if header != credit.header
+            || read_scratch_credit(&credit.path, output)? != (credit.maximum, credit.private_before)
+        {
+            return Err(invalid("scratch credit bytes changed"));
+        }
+        for (path, directory) in credit.directory_paths.iter().zip(&credit.directories) {
+            time_left(Some(deadline))?;
+            if scratch_directory(path)?.1 != native_identity(directory, true)? {
+                return Err(invalid(
+                    "scratch directory pathname changed its held identity",
+                ));
+            }
+        }
+        let usage = scratch_usage(
+            output,
+            &self.objects.root,
+            deadline,
+            &mut 0,
+            self.inventory_limit,
+        )?;
+        if usage.actual > usage.floor
+            || self.used_bytes(deadline)? > self.budget.maximum_bytes
+            || available(output)?
+                < self
+                    .budget
+                    .minimum_free_bytes
+                    .checked_add(usage.outstanding)
+                    .ok_or_else(|| invalid("scratch reserve overflow"))?
+        {
+            return Err(invalid(
+                "scratch retirement lacks quota/reserve; preserve charged orphan",
+            ));
+        }
+        time_left(Some(deadline))?;
+        // The stopped writer no longer needs its maximum. Preserve a sealed
+        // retired ledger extent covering all remaining TEMP/orphans. Older
+        // writers still see those bytes through metadata.len(); no old object
+        // or unknown credit is deleted/refunded. A crash while rewriting leaves
+        // an invalid record requiring explicit recovery, never implicit success.
+        let ids = [
+            native_identity(&credit.directories[0], true)?,
+            native_identity(&credit.directories[1], true)?,
+            native_identity(&credit.directories[2], true)?,
+            credit.identity,
+            credit.lock_identity,
+        ];
+        let text = std::str::from_utf8(&credit.header)
+            .map_err(|_| invalid("scratch credit UTF8 changed"))?;
+        let owner = text
+            .lines()
+            .nth(1)
+            .ok_or_else(|| invalid("scratch owner missing"))?;
+        let compact = credit.directory_paths[2] == output.join(".dfr/temp");
+        let retired = scratch_credit_header(owner, 0, usage.actual, compact, &ids);
+        let mut block = vec![0; SCRATCH_HEADER as usize];
+        block[..retired.len()].copy_from_slice(&retired);
+        let mut permissions = credit.file.metadata()?.permissions();
+        permissions.set_readonly(false); // Exact owned credit only, after stopped-tree proof.
+        credit.file.set_permissions(permissions)?;
+        credit.file.seek(SeekFrom::Start(0))?;
+        credit.file.write_all(&block)?;
+        credit.file.sync_all()?;
+        time_left(Some(deadline))?;
+        credit.file.set_len(
+            usage
+                .actual
+                .checked_add(SCRATCH_HEADER)
+                .ok_or_else(|| invalid("retired extent overflow"))?,
+        )?;
+        credit.file.sync_all()?;
+        let mut permissions = credit.file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        credit.file.set_permissions(permissions)?;
+        time_left(Some(deadline))?;
+        drop(credit);
+        Ok(())
     }
 
     /// Native small checkpoint records share the exact output writer/aggregate
@@ -1816,6 +2496,153 @@ impl AcceptedAudioStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scratch_claim_refuses_ambient_compact_and_preserves_original_bytes() {
+        let (fixture, _, _) = fixture();
+        let output = fixture.0.join("scratch-output");
+        fs::create_dir(&output).unwrap();
+        fs::write(output.join("original"), b"immutable old export").unwrap();
+        fs::create_dir(output.join(".dfr")).unwrap();
+        assert!(claim_scratch(&output, &output.join(".dfr/temp"), &"a".repeat(64), true).is_err());
+        assert!(!output.join(".dfr/temp").exists());
+        assert_eq!(
+            fs::read(output.join("original")).unwrap(),
+            b"immutable old export"
+        );
+    }
+
+    #[test]
+    fn scratch_credit_drop_charges_union_and_does_not_recount_chunk_workspace() {
+        let (fixture, _, _) = fixture();
+        let output = fixture.0.join("scratch-credit-output");
+        fs::create_dir(&output).unwrap();
+        let legacy = output.join(".dubflow-review-candidates/other-job/chunk-capacity-v1-owned");
+        fs::create_dir_all(&legacy).unwrap();
+        let candidate = legacy.join("completed-B2.pcm");
+        File::create(&candidate)
+            .unwrap()
+            .set_len(104525926)
+            .unwrap();
+        let store =
+            RetainedMixStore::new(&output, SCRATCH_CREDITS, budget(1024 * 1024 * 1024)).unwrap();
+        let scratch = output.join(".dfr/temp");
+        let credit = store
+            .reserve_scratch(
+                &scratch,
+                &"a".repeat(64),
+                SCRATCH_ALLOWANCE,
+                |_| Ok(u64::MAX),
+                deadline(),
+            )
+            .unwrap();
+        let path = credit.path.clone();
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(false); // Defeat attributes to test the held sharing mode itself.
+            fs::set_permissions(&path, permissions).unwrap();
+            let error = OpenOptions::new().write(true).open(&path).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(32)); // ERROR_SHARING_VIOLATION.
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&path, permissions).unwrap();
+            assert!(regular(&path).is_ok()); // Existing Rust quota-reader access remains allowed.
+        }
+        let before = store.used_bytes(deadline()).unwrap();
+        fs::write(scratch.join("old-orphan.pcm"), [9u8; 17]).unwrap();
+        assert_eq!(store.used_bytes(deadline()).unwrap(), before); // Covered, not added twice.
+                                                                   // A73d writer only sums file lengths and still sees the full reservation.
+        assert!(fs::metadata(&path).unwrap().len() >= SCRATCH_ALLOWANCE);
+        drop(credit); // No stopped-tree proof: no refund or cleanup.
+        assert!(path.exists());
+        assert_eq!(store.used_bytes(deadline()).unwrap(), before);
+        assert!(before < SCRATCH_ALLOWANCE + 2 * SCRATCH_HEADER);
+        assert_eq!(fs::metadata(candidate).unwrap().len(), 104525926);
+        assert!(scratch_preflight(100, 0, 512, 100, budget(100000)).is_err());
+        assert!(scratch_preflight(100, 0, 512, u64::MAX, budget(500)).is_err());
+        assert!(scratch_preflight(100, 1024, 512, 1024, budget(100000)).is_err());
+        for path in [path, output.join(".dfr/.owner-v1")] {
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(false); // Exact test-created files only.
+            fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+
+    #[test]
+    fn scratch_reopen_checks_ownership_directory_identity_and_retirement_reserve() {
+        let (fixture, _, _) = fixture();
+        let output = fixture.0.join("scratch-retire-output");
+        fs::create_dir(&output).unwrap();
+        let store =
+            RetainedMixStore::new(&output, SCRATCH_CREDITS, budget(1024 * 1024 * 1024)).unwrap();
+        let scratch = output.join(".dfr/temp");
+        let owner = "a".repeat(64);
+        let credit = store
+            .reserve_scratch(
+                &scratch,
+                &owner,
+                SCRATCH_ALLOWANCE,
+                |_| Ok(u64::MAX),
+                deadline(),
+            )
+            .unwrap();
+        assert!(claim_scratch(&output, &scratch, &"b".repeat(64), false).is_err());
+        let path = credit.path.clone();
+        assert!(store.retire_scratch(credit, |_| Ok(0), deadline()).is_err());
+        assert!(path.exists());
+        let credit = store
+            .reserve_scratch(
+                &scratch,
+                &owner,
+                SCRATCH_ALLOWANCE,
+                |_| Ok(u64::MAX),
+                deadline(),
+            )
+            .unwrap();
+        let second = credit.path.clone();
+        fs::write(scratch.join("retained-orphan.pcm"), [1u8; 9]).unwrap();
+        store
+            .retire_scratch(credit, |_| Ok(u64::MAX), deadline())
+            .unwrap();
+        assert!(second.exists());
+        assert_eq!(read_scratch_credit(&second, &output).unwrap().0, 0);
+        assert!(path.exists());
+        assert_eq!(
+            fs::metadata(scratch.join("retained-orphan.pcm"))
+                .unwrap()
+                .len(),
+            9
+        );
+        assert!(store
+            .reserve_scratch(
+                &scratch,
+                &owner,
+                SCRATCH_ALLOWANCE,
+                |_| Ok(u64::MAX),
+                Instant::now()
+            )
+            .is_err());
+        for path in [path, second, output.join(".dfr/.owner-v1")] {
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(false); // Exact test-created files only.
+            fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+
+    #[test]
+    fn scratch_inventory_refuses_entry_fanout_and_deadline_while_enumerating() {
+        let (fixture, _, _) = fixture();
+        let root = fixture.0.join("fanout");
+        fs::create_dir(&root).unwrap();
+        for n in 0..8 {
+            fs::write(root.join(n.to_string()), [0]).unwrap();
+        }
+        let mut count = 0;
+        assert!(scratch_inventory(&root, deadline(), &mut count, 4).is_err());
+        assert_eq!(count, 4);
+        assert!(scratch_inventory(&root, Instant::now(), &mut 0, 100).is_err());
+    }
 
     struct Fixture(PathBuf);
     impl Drop for Fixture {
