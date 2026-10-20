@@ -1,0 +1,38 @@
+{
+  "schema": "cd4-complete-selected-recovery-v1",
+  "status": "SELECTED_FULL_PHYSICAL_PASS_WITH_FIRST_FAILED_EXPIRED_URL_HISTORY_RETAINED",
+  "source": "cd4c63bb0f8e060333e5e484d4e2015871a536a4",
+  "base": "2bd7f51129d19dc63ea1dc82f20f77e193da6fcb",
+  "files": 57,
+  "json_bytes": 1311841,
+  "json_sha256": "d2b6d8a8f58973dec9f1c7b590cb8515ad1c76afebc54c1e8552217496373bc2",
+  "xz_bytes": 204372,
+  "xz_sha256": "38c931a8bce68596ea91e4c78412c07091060370e2e765131ec825bd071a3ff7",
+  "chunks": [
+    {
+      "name": "complete.xz.part-01",
+      "bytes": 196608,
+      "sha256": "4ab03a35a1ad6d09a809064044c6c522590268ffe8e3e3856ad7090a285aeb82",
+      "sha": "964f4a9a9a99fe614a7420d55e546a65620f0245"
+    },
+    {
+      "name": "complete.xz.part-02",
+      "bytes": 7764,
+      "sha256": "ead1f377bed65884b143511774a054e2c3f9d16a26b3edde23a6c34ab4e5f205",
+      "sha": "6579c14fa8394a8a446c91a7f52b5d8d59789e8e"
+    }
+  ],
+  "all151valid_ranges_hash_only": true,
+  "all151actual_full_physical_SHA_ns_verified": true,
+  "retained_error544B_full": true,
+  "selected635805847B_sha256": "f06ac883905e8f7d5d9335a8e3ee4b92974302335690edd909b2abe8d6754ab3",
+  "selected_crc32": 1594539452,
+  "actual_file_count35988": true,
+  "actual_expanded_bytes1953227249": true,
+  "original_owner25088_still_holds_private_RAM": true,
+  "original_call_still_FAILED": true,
+  "whole_outer_digest_verified": false,
+  "whole_producer_native_models_GUI_admitted": false,
+  "transfer_charge": 2941779809,
+  "evidence_charge": 220962413
+}
