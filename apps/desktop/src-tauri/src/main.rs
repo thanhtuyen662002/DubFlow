@@ -2,6 +2,7 @@ mod source_transport;
 #[path = "source_transport/service_host.rs"]
 mod source_host;
 mod source_bootstrap;
+mod output_location;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
@@ -97,10 +98,7 @@ fn fail(message: impl Into<String>) -> String {
 }
 
 fn validate_id(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > 128 || value == "." || value == ".." || value.chars().any(|character| character.is_control()) || value.bytes().any(|byte| byte == b'/' || byte == b'\\') {
-        return Err(fail("job_id is invalid"));
-    }
-    Ok(())
+    output_location::validate_job_id(value)
 }
 
 fn absolute_file(value: &str, label: &str) -> Result<PathBuf, String> {
@@ -190,16 +188,7 @@ fn status_path(root: &Path, job_id: &str) -> Result<PathBuf, String> {
 }
 
 fn default_job_output(source: &Path, job_id: &str) -> Result<PathBuf, String> {
-    validate_id(job_id)?;
-    // Encode the complete ID: Windows folds path case and reserves some names.
-    // Chunk at 64 bytes so even a maximum-length ID fits each path component.
-    let mut output = source.parent().unwrap_or(Path::new(".")).join("DubFlow Output")
-        .join(format!("{} - vi", source.file_stem().and_then(|name| name.to_str()).unwrap_or("video")));
-    for (index, chunk) in job_id.as_bytes().chunks(64).enumerate() {
-        let encoded: String = chunk.iter().map(|byte| format!("{byte:02x}")).collect();
-        output = output.join(if index == 0 { format!("run-{encoded}") } else { encoded });
-    }
-    Ok(output)
+    output_location::default_job_output(source, job_id)
 }
 
 #[tauri::command]
@@ -225,9 +214,24 @@ fn pick_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>) -> Result<StartJobResponse, String> {
+fn pick_output_root() -> Option<String> {
+    rfd::FileDialog::new().set_title("Chọn nơi lưu kết quả mới").pick_folder()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn job_output_location(job_id: String, source_path: String, output_root: Option<String>) -> Result<String, String> {
+    let source = absolute_file(&source_path, "source_path")?;
+    output_location::resolve_job_output(&source, &job_id, None, output_root.as_deref())
+        .map(|output| output.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, output_root: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
+    // Validate the canonical destination before control/output mkdir or spawn.
+    let output = output_location::resolve_job_output(&source, &job_id, output_dir.as_deref(), output_root.as_deref())?;
     let root = version_root()?;
     let selected_voice = if enable_dubbing.unwrap_or(false) {
         let catalog = load_voice_catalog(&root)?;
@@ -241,13 +245,6 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     };
     let control = control_root()?;
     let status = status_path(&control, &job_id)?;
-    let output = match output_dir {
-        Some(value) => PathBuf::from(value),
-        None => default_job_output(&source, &job_id)?,
-    };
-    if !output.is_absolute() {
-        return Err(fail("output_dir must be an absolute path"));
-    }
     fs::create_dir_all(&output).map_err(|error| fail(format!("unable to create output directory: {error}")))?;
     let model_root = control.join("models");
     let supervisor = supervisor_binary(&root)?;
@@ -374,7 +371,7 @@ fn main() {
     tauri::Builder::default()
         .manage(installed_source_host())
         .manage(review::ReviewHost::default())
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, import_pack_status, cancel_job,
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, pick_output_root, job_output_location, start_job, job_status, import_pack_status, cancel_job,
             review::review_snapshot_v1, review::review_snapshot_v2, review::review_audio_v1, review::review_audio_v2, review::review_open_result_v1, review::review_plan_v1, review::review_apply_v1, review::review_undo_v1, review::review_export_v1, review::review_initialize_v1, review::review_request_stage_v1, review::review_request_status_v1, review::review_cancel_v1, source_host::source_service_start_v1, source_host::source_service_state_v1, source_host::source_service_events_v1, source_host::source_service_send_v1, source_host::source_service_stop_v1])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");

@@ -8,6 +8,7 @@ import { nativeReviewTransport } from "./features/review/transport.ts";
 import { importPackMessage, parseImportPackStatus, type ImportPackStatus } from "./features/import_pack/model.ts";
 import { createSourceServiceController, type SourcePhase, type SourceServiceState } from "./features/source_intake/service_controller.ts";
 import { cancellationMessage, inputProblemMessage } from "./features/source_intake/ui_messages.ts";
+import { createOutputLocationController, createProcessingStarter } from "./features/output_location/controller.ts";
 
 type ReleaseInfo = { version: string; channel: string; backend: string };
 
@@ -74,14 +75,65 @@ const styleFilter = $<HTMLSelectElement>("#voice-style");
 let voiceCatalog: VoiceCatalog | null = null;
 let voiceCatalogError = "";
 let voiceJobId: string | null = null;
+let outputChoiceBusy = false;
 
 function selectedJob(): QueueJob | undefined {
   const snapshot = queue.getSnapshot();
   return snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
 }
 
+const outputLocation = createOutputLocationController({
+  selected: () => processingStarter.busy ? undefined : selectedJob(),
+  pick: () => invoke<string | null>("pick_output_root"),
+  save: (jobId, root) => queue.setOutputRoot(jobId, root),
+  changed: () => {
+    outputChoiceBusy = outputLocation.busy;
+    renderOutputLocation();
+    $<HTMLButtonElement>("#start-processing").disabled = !canStart(selectedJob());
+  },
+  error: (message) => { queueState.textContent = message; },
+});
+
+const processingStarter = createProcessingStarter<QueueJob>({
+  selected: selectedJob,
+  ready: canStart,
+  admit: (job) => invoke("job_output_location", { jobId: job.id, sourcePath: job.sourcePath, outputRoot: job.outputRoot }),
+  execute: async (job) => {
+    queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
+    await invoke("start_job", {
+      jobId: job.id, sourcePath: job.sourcePath, outputDir: null, outputRoot: job.outputRoot,
+      enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId,
+    });
+    beginPolling(job.id);
+    await refreshJob(job.id);
+  },
+  rejected: (jobId, error, dispatched) => {
+    if (!dispatched) { queueState.textContent = String(error).slice(0, 1000); return; }
+    const job = queue.getSnapshot().jobs.find((row) => row.id === jobId);
+    if (job) queue.updateStatus(jobId, {
+      ...job.status, state: "FAILED", reason: "supervisor_start_failed",
+      message: String(error).slice(0, 400), resource: { ...job.status.resource, held: false },
+    });
+  },
+  changed: () => {
+    renderOutputLocation(); renderVoiceControls(selectedJob());
+    $<HTMLButtonElement>("#start-processing").disabled = !canStart(selectedJob());
+  },
+});
+
+function renderOutputLocation(): void {
+  const job = selectedJob();
+  const editable = !!job && job.status.state === "QUEUED" && job.outputPath === null && !outputChoiceBusy && !processingStarter.busy;
+  $("#output-root").textContent = job?.outputRoot ?? "Cạnh video nguồn · mỗi bản xử lý có thư mục riêng.";
+  $<HTMLButtonElement>("#choose-output-root").disabled = !editable;
+  $<HTMLButtonElement>("#reset-output-root").disabled = !editable || job?.outputRoot == null;
+}
+
+$("#choose-output-root").addEventListener("click", () => void outputLocation.choose());
+$("#reset-output-root").addEventListener("click", () => outputLocation.reset());
+
 function canStart(job: QueueJob | undefined): boolean {
-  return !!job && ["QUEUED", "RECOVERED"].includes(job.status.state) &&
+  return !outputChoiceBusy && !processingStarter.busy && !!job && ["QUEUED", "RECOVERED"].includes(job.status.state) &&
     (!job.dubbing.enabled || !!voiceCatalog?.voices.some((voice) => voice.voice_id === job.dubbing.voiceId));
 }
 
@@ -95,7 +147,7 @@ function renderVoiceControls(job: QueueJob | undefined): void {
     styleFilter.value = voiceCatalog?.voices.some((voice) => voice.style === "tự nhiên") ? "tự nhiên" : "";
     voiceJobId = job?.id ?? null;
   }
-  voiceControls.disabled = !job || job.status.state !== "QUEUED" || !voiceCatalog;
+  voiceControls.disabled = !job || job.status.state !== "QUEUED" || !voiceCatalog || processingStarter.busy;
   dubbingToggle.checked = job?.dubbing.enabled ?? false;
   $("#voice-picker").hidden = !dubbingToggle.checked;
   voiceSelect.replaceChildren();
@@ -266,33 +318,7 @@ $("#add-files").addEventListener("click", async () => {
   }
 });
 
-$("#start-processing").addEventListener("click", async () => {
-  const selected = queue.getSnapshot().jobs.find((job) => job.id === queue.getSnapshot().selected_job_id);
-  if (!selected) return;
-  const button = $("#start-processing") as HTMLButtonElement;
-  if (!canStart(selected)) return;
-  button.disabled = true;
-  queue.updateStatus(selected.id, { ...selected.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
-  try {
-    await invoke("start_job", {
-      jobId: selected.id, sourcePath: selected.sourcePath, outputDir: null,
-      enableDubbing: selected.dubbing.enabled, ttsVoiceId: selected.dubbing.voiceId,
-    });
-    beginPolling(selected.id);
-    await refreshJob(selected.id);
-  } catch (error) {
-    queue.updateStatus(selected.id, {
-      ...selected.status,
-      state: "FAILED",
-      reason: "supervisor_start_failed",
-      message: String(error).slice(0, 400),
-      resource: { ...selected.status.resource, held: false },
-    });
-  } finally {
-    const current = queue.getSnapshot().jobs.find((job) => job.id === selected.id);
-    button.disabled = !canStart(current);
-  }
-});
+$("#start-processing").addEventListener("click", () => void processingStarter.start());
 
 const cancelButton = $("#cancel-processing") as HTMLButtonElement;
 cancelButton.addEventListener("click", async () => {
@@ -333,6 +359,7 @@ $("#clear-queue").addEventListener("click", () => {
 
 const startButton = $("#start-processing") as HTMLButtonElement;
 queue.subscribe((snapshot) => {
+  renderOutputLocation();
   const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
   startButton.disabled = !canStart(selected);
   newVersionButton.disabled = !canCreateNewVersion(selected);

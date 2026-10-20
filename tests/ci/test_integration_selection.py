@@ -17,6 +17,26 @@ import run_integration as selector
 
 
 class ComponentSelectionTests(unittest.TestCase):
+    def test_output_location_frontend_paths_reach_queue_regressions(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next(item for item in registry["components"] if item["id"] == "desktop-source-intake")
+        for path in ("apps/desktop/src/features/output_location/controller.ts",
+                     "apps/desktop/test/output_location.test.mjs"):
+            with self.subTest(path=path):
+                self.assertTrue(selector.component_affected(component, {path}))
+        self.assertIn(["node", "--experimental-strip-types", "apps/desktop/test/queue.test.mjs"], component["commands"])
+        self.assertIn('await import("./output_location.test.mjs")', (ROOT / "apps/desktop/test/queue.test.mjs").read_text(encoding="utf-8"))
+
+    def test_native_output_location_has_an_executable_unit_gate(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next((item for item in registry["components"] if item["id"] == "desktop-output-location"), None)
+        self.assertIsNotNone(component)
+        self.assertEqual(component["commands"], [["python", "scripts/ci/run_output_location_tests.py"]])
+        for path in ("apps/desktop/src-tauri/src/output_location.rs",
+                     "apps/desktop/src-tauri/src/main.rs", "scripts/ci/run_output_location_tests.py"):
+            with self.subTest(path=path):
+                self.assertTrue(selector.component_affected(component, {path}))
+
     def test_desktop_source_and_queue_changes_execute_five_focused_node_suites(self) -> None:
         registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
         component = next((item for item in registry["components"]

@@ -170,3 +170,102 @@ for (const distinct of [
 }
 console.log("DOS-drive separator comparison regressions passed (calls/reload/batch; preserved completed/selected/voice/output; retry; narrow negative boundaries)");
 console.log("desktop queue and import pack tests passed");
+
+// Persisted output-root choices are independent of committed outputPath.
+const legacyOutput = structuredClone(beforeDosDuplicate);
+delete legacyOutput.jobs[0].outputRoot;
+const legacyOutputStorage = new MemorySnapshotStorage(JSON.stringify(legacyOutput));
+const restoredOutput = new QueueController(legacyOutputStorage, clock, 100, dosIds);
+assert.equal(restoredOutput.getSnapshot().schema_version, 1);
+assert.deepEqual(restoredOutput.getSnapshot(), beforeDosDuplicate);
+assert.equal(JSON.parse(legacyOutputStorage.read()).jobs[0].outputRoot, undefined);
+
+const rootStorage = new MemorySnapshotStorage();
+const roots = new QueueController(rootStorage, clock, 100, dosIds);
+const [rootId] = roots.addPaths(["C:/media/output-choice.mp4"]);
+assert.equal(roots.getSnapshot().jobs[0].outputRoot, null);
+for (const root of [
+  "C:\\Đầu ra, bản 1\\", "d:/Mixed/Out ", "/tmp/output",
+  "\\\\server\\share\\Đầu ra", "//server/share/out", "\\\\?\\C:\\Out",
+]) {
+  roots.setOutputRoot(rootId, root);
+  assert.equal(roots.getSnapshot().jobs[0].outputRoot, root);
+  assert.equal(new QueueController(rootStorage, clock).getSnapshot().jobs[0].outputRoot, root);
+  assert.equal(roots.getSnapshot().jobs[0].outputPath, null);
+}
+roots.setOutputRoot(rootId, null);
+assert.equal(new QueueController(rootStorage, clock).getSnapshot().jobs[0].outputRoot, null);
+for (const bad of [
+  "", " ", "relative/out", "C:relative", "\\rooted-only", "https://example.test/out",
+  " C:/out", "C:/bad\u0000path", "C:/bad\npath", "C:/bad\u007fpath", "C:/bad\u0085path",
+  "C:/" + "x".repeat(32766), 4, false, {}, [],
+]) {
+  const before = roots.getSnapshot(), stored = rootStorage.read();
+  assert.throws(() => roots.setOutputRoot(rootId, bad), /Invalid output root/);
+  assert.deepEqual(roots.getSnapshot(), before);
+  assert.equal(rootStorage.read(), stored);
+  const malformed = structuredClone(before);
+  malformed.jobs[0].outputRoot = bad;
+  assert.equal(parseQueueSnapshot(JSON.stringify(malformed)), null);
+}
+for (const state of [
+  "RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST", "WAITING_RESOURCE",
+  "WAITING_EXTERNAL", "BLOCKED_NEEDS_ACTION", "COMPLETED", "FAILED",
+]) {
+  const blockedStorage = new MemorySnapshotStorage();
+  const blocked = new QueueController(blockedStorage, clock, 100, dosIds);
+  const [id] = blocked.addPaths(["C:/media/blocked-" + state + ".mp4"]);
+  blocked.setOutputRoot(id, "D:/old-root");
+  blocked.updateStatus(id, { ...blocked.getSnapshot().jobs[0].status, state });
+  const before = blocked.getSnapshot(), stored = blockedStorage.read();
+  assert.throws(() => blocked.setOutputRoot(id, "D:/new-root"), /untouched queued/);
+  assert.deepEqual(blocked.getSnapshot(), before);
+  assert.equal(blockedStorage.read(), stored);
+}
+for (const taint of [
+  (s) => { s.checkpoint_id = "prior-checkpoint"; },
+  (s) => { s.progress.completed_units = "1"; },
+  (s) => { s.progress.total_units = "10"; },
+  (s) => { s.progress.heartbeat_sequence = "1"; },
+  (s) => { s.retry.attempt = "1"; },
+  (s) => { s.retry.condition_fingerprint = "prior-condition"; },
+  (s) => { s.resource.kind = "CPU"; },
+  (s) => { s.resource.held = true; },
+  (s) => { s.resource.release_requested = true; },
+  (s) => { s.reason = "starting"; },
+]) {
+  const blocked = new QueueController(new MemorySnapshotStorage(), clock, 100, dosIds);
+  const [id] = blocked.addPaths(["C:/media/queued-prior-work.mp4"]);
+  const status = blocked.getSnapshot().jobs[0].status;
+  taint(status);
+  blocked.updateStatus(id, status);
+  const before = blocked.getSnapshot();
+  assert.throws(() => blocked.setOutputRoot(id, "D:/new-root"), /untouched queued/);
+  assert.deepEqual(blocked.getSnapshot(), before);
+}
+const [committedId] = roots.addPaths(["C:/media/prior-result.mp4"]);
+roots.updateStatus(committedId, roots.getSnapshot().jobs[1].status, "D:/committed/final.mp4");
+const committedBefore = roots.getSnapshot();
+assert.throws(() => roots.setOutputRoot(committedId, "D:/new-root"), /untouched queued/);
+assert.deepEqual(roots.getSnapshot(), committedBefore);
+
+roots.setOutputRoot(rootId, "D:\\Short Output");
+roots.setDubbing(rootId, { enabled: true, voiceId: "vi-truc-ly-vieneu3-v1" });
+roots.updateStatus(rootId, { ...roots.getSnapshot().jobs[0].status, state: "COMPLETED" }, "D:/original/final.mp4");
+const oldRootRow = structuredClone(roots.getSnapshot().jobs[0]);
+const rootRetry = roots.retryJob(rootId);
+assert.notEqual(rootRetry, rootId);
+assert.equal(roots.getSnapshot().selected_job_id, rootRetry);
+assert.deepEqual(roots.getSnapshot().jobs[0], oldRootRow);
+const retryRootRow = roots.getSnapshot().jobs.find((job) => job.id === rootRetry);
+assert.equal(retryRootRow.outputRoot, "D:\\Short Output");
+assert.equal(retryRootRow.outputPath, null);
+assert.equal(retryRootRow.sourcePath, oldRootRow.sourcePath);
+assert.deepEqual(retryRootRow.dubbing, oldRootRow.dubbing);
+roots.setOutputRoot(rootRetry, "E:/another root");
+assert.deepEqual(roots.getSnapshot().jobs[0], oldRootRow);
+assert.deepEqual(new QueueController(rootStorage, clock).getSnapshot().jobs[0], oldRootRow);
+assert.throws(() => roots.setOutputRoot("missing-job", null), /Unknown job/);
+console.log("output-root queue regressions passed (legacy/persistence/validation/untouched guard/retry isolation)");
+
+await import("./output_location.test.mjs");

@@ -3930,3 +3930,30 @@ Older clients omit the optional action and keep their explicit audio/export
 routes. Full managed embedded playback/seek/revocation is not introduced here.
 Installed original/current B1/B2, regenerate/undo/reopen, motion, audible mix,
 full AV/subtitle sync and the complete user-flow acceptance remain mandatory.
+
+
+#### Output selection and early Windows Review path admission
+
+The desktop now offers a per-job output base before starting a queued job. A new
+processing version inherits that base and receives its own complete encoded job
+ID namespace. Existing default paths and explicit output_dir destinations keep
+their layout; committed outputPath values and old producer/job/model pins do not
+move. A selection cannot alter an active or terminal job.
+
+The optional queue field outputRoot is additive in schema1: missing legacy
+values restore to null; malformed values refuse the snapshot. It records a base
+choice, never proof that a path or export is admitted. Older clients ignore it;
+continuing with such a client uses the legacy default for an unstarted job.
+
+Before any output/control mkdir or worker spawn, the host resolves existing
+ancestors to the actual canonical destination and checks the compact Review
+scratch against the unchanged200 UTF-16 policy, including the Windows verbatim
+prefix. An overlong path asks the user to choose a shorter folder before doing
+expensive work. Native Review still performs independent ownership, volume,
+no-follow, quota and current-state admission. This preflight grants none of that
+authority and introduces no parent/system-TEMP fallback or old job relocation.
+
+A delayed or cancelled folder dialog cannot change a different selected row, a
+started job or a later root choice. New choices persist with the queue; original
+exports/history remain usable after refusal. Actual installed Windows
+regenerate/undo/reopen and standard/editable acceptance remain required.

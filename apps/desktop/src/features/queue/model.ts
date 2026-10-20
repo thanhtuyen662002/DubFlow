@@ -11,6 +11,7 @@ export type QueueJob = {
   createdAt: string;
   status: JobStatus;
   outputPath: string | null;
+  outputRoot: string | null;
   dubbing: DubbingOptions;
 };
 
@@ -147,6 +148,15 @@ function isJobStatus(value: unknown): value is JobStatus {
   return typeof resource.held === "boolean" && typeof resource.release_requested === "boolean";
 }
 
+// A persisted choice is a path hint; native admission remains authoritative.
+function isOutputRoot(value: unknown): value is string | null {
+  if (value === null) return true;
+  if (typeof value !== "string" || value.length === 0 || value.length > 32768 ||
+      /[\u0000-\u001f\u007f-\u009f]/u.test(value)) return false;
+  return /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith("/") ||
+    /^\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/u.test(value);
+}
+
 function isQueueJob(value: unknown): value is QueueJob {
   if (!value || typeof value !== "object") return false;
   const job = value as Partial<QueueJob>;
@@ -157,6 +167,7 @@ function isQueueJob(value: unknown): value is QueueJob {
     typeof job.createdAt === "string" && !Number.isNaN(Date.parse(job.createdAt)) &&
     isJobStatus(job.status) &&
     (job.outputPath === null || typeof job.outputPath === "string") &&
+    (job.outputRoot === undefined || isOutputRoot(job.outputRoot)) &&
     (job.dubbing === undefined || isDubbingOptions(job.dubbing))
   );
 }
@@ -180,7 +191,10 @@ export function parseQueueSnapshot(serialized: string | null): QueueSnapshot | n
     if (snapshot.selected_job_id !== null && !ids.has(snapshot.selected_job_id)) return null;
     if (ids.size !== snapshot.jobs.length) return null;
     const restored = cloneSnapshot(snapshot as QueueSnapshot);
-    for (const job of restored.jobs) job.dubbing ??= { enabled: false, voiceId: null };
+    for (const job of restored.jobs) {
+      job.dubbing ??= { enabled: false, voiceId: null };
+      job.outputRoot ??= null;
+    }
     return restored;
   } catch {
     return null;
@@ -230,6 +244,7 @@ export function createQueueJob(
     createdAt,
     status: emptyStatus(),
     outputPath: null,
+    outputRoot: null,
     dubbing: { enabled: false, voiceId: null },
   };
 }
@@ -337,6 +352,7 @@ export class QueueController {
     // An explicit rerun is a distinct executable job, including its voice.
     const retry = createQueueJob(this.allocateId(), job.sourcePath, this.clock());
     retry.dubbing = { ...job.dubbing };
+    retry.outputRoot = job.outputRoot;
     retry.status = {
       ...emptyStatus(),
       reason: "manual_retry",
@@ -346,6 +362,22 @@ export class QueueController {
     this.snapshot.selected_job_id = retry.id;
     this.commit();
     return retry.id;
+  }
+
+  setOutputRoot(jobId: string, root: string | null): void {
+    const job = this.requireJob(jobId);
+    const status = job.status;
+    if (status.state !== "QUEUED" || job.outputPath !== null ||
+        status.checkpoint_id !== null || status.progress.completed_units !== "0" ||
+        status.progress.total_units !== null || status.progress.heartbeat_sequence !== "0" ||
+        status.retry.attempt !== "0" || status.retry.condition_fingerprint !== null ||
+        status.resource.kind !== null || status.resource.held || status.resource.release_requested ||
+        !["queued", "manual_retry"].includes(status.reason)) {
+      throw new Error("Only an untouched queued job can change its output root");
+    }
+    if (!isOutputRoot(root)) throw new Error("Invalid output root");
+    job.outputRoot = root;
+    this.commit();
   }
 
   setDubbing(jobId: string, options: DubbingOptions): void {

@@ -789,7 +789,9 @@
         "apps/desktop/index.html",
         "apps/desktop/package.json",
         "apps/desktop/src/features/queue/model.ts",
-        "apps/desktop/test/queue.test.mjs"
+        "apps/desktop/test/queue.test.mjs",
+        "apps/desktop/src/features/output_location",
+        "apps/desktop/test/output_location.test.mjs"
       ],
       "commands": [
         [
@@ -818,6 +820,15 @@
           "apps/desktop/test/queue.test.mjs"
         ]
       ]
+    },
+    {
+      "id": "desktop-output-location",
+      "roots": [
+        "apps/desktop/src-tauri/src/output_location.rs",
+        "apps/desktop/src-tauri/src/main.rs",
+        "scripts/ci/run_output_location_tests.py"
+      ],
+      "commands": [["python", "scripts/ci/run_output_location_tests.py"]]
     },
     {
       "id": "native-source-controller",
