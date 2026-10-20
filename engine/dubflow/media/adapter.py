@@ -519,6 +519,23 @@ def _validate_input_file(value: str | Path, name: str) -> Path:
     return path
 
 
+def _validate_subtitle_staging_directory(value: str | Path) -> Path:
+    """Keep an explicit caller-owned directory spelling; never resolve an alias."""
+    try:
+        path = Path(value)
+        if (not path.is_absolute() or ".." in path.parts or
+                any(":" in part for part in path.parts[1:])):
+            raise ValueError("staging directory must be an absolute plain path")
+        for part in (path, *path.parents):
+            if part.is_symlink() or (part.exists() and getattr(part.lstat(), "st_file_attributes", 0) & 0x400):
+                raise ValueError("linked subtitle staging directories are not accepted")
+        if not path.is_dir():
+            raise ValueError("subtitle staging directory must already exist")
+    except (OSError, TypeError, ValueError) as error:
+        raise MediaAdapterError("MEDIA_SUBTITLE_STAGING_INVALID", str(error)) from error
+    return path
+
+
 def _same_path(left: Path, right: Path) -> bool:
     try:
         return os.path.normcase(os.fspath(left.resolve())) == os.path.normcase(os.fspath(right.resolve()))
@@ -727,6 +744,7 @@ class FfmpegMediaAdapter:
         source_probe: MediaProbeResult | None = None,
         preserve_original_audio: bool = True,
         burn_in_subtitles: bool = False,
+        subtitle_staging_dir: str | Path | None = None,
         overwrite: bool = False,
     ) -> Path:
         source = _validate_input_file(source_path, "source_path")
@@ -734,6 +752,8 @@ class FfmpegMediaAdapter:
         audio = _validate_input_file(audio_path, "audio_path") if audio_path is not None else None
         if video_duration is not None and (not isinstance(video_duration, MediaTimeline) or video_duration.duration_ticks <= 0):
             raise MediaAdapterError("MEDIA_DURATION_INVALID", "render duration requires a positive integer source timeline")
+        staging_dir = (_validate_subtitle_staging_directory(subtitle_staging_dir)
+                       if subtitle_staging_dir is not None else None)
         output = self._prepare_output(output_path, source, overwrite=overwrite)
         if audio is not None and preserve_original_audio:
             raise MediaAdapterError("AUDIO_MODE_INVALID", "dubbed audio cannot preserve the original audio")
@@ -769,7 +789,8 @@ class FfmpegMediaAdapter:
                     raise MediaAdapterError("MEDIA_SUBTITLE_INVALID", "burn-in subtitles require .srt, .ass or .vtt")
                 try:
                     descriptor, staging_name = tempfile.mkstemp(
-                        prefix=".dubflow-subtitle-", suffix=suffix, dir=os.fspath(output.parent)
+                        prefix=".dubflow-subtitle-", suffix=suffix,
+                        dir=os.fspath(staging_dir if staging_dir is not None else output.parent)
                     )
                 except OSError as error:
                     raise MediaAdapterError(
@@ -822,7 +843,7 @@ class FfmpegMediaAdapter:
             elif audio is not None and (subtitle is None or burn_in_subtitles):
                 args.append("-shortest")
             args.extend(("-movflags", "+faststart"))
-            return self._write_atomic(output, tuple(args), output_format="mp4", cwd=output.parent if subtitle_staging else None)
+            return self._write_atomic(output, tuple(args), output_format="mp4", cwd=subtitle_staging.parent if subtitle_staging else None)
         finally:
             if subtitle_staging is not None:
                 subtitle_staging.unlink(missing_ok=True)

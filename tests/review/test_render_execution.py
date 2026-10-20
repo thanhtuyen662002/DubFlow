@@ -271,4 +271,116 @@ class RenderExecutionTests(unittest.TestCase):
             self.assertEqual(list(args["output_root"].iterdir()), [])
 
 
+# New pure authority/wiring regressions; no native/media/model child or fixture.
+import contextlib
+from types import SimpleNamespace, ModuleType
+import engine.dubflow.review.render_execution as compact_render
+from engine.dubflow.review.production import ReviewError
+from engine.dubflow.mix.adapter import MixError
+
+
+class CompactRenderScratchTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path("C:/owned") if os.name == "nt" else Path("/owned")
+        self.scratch = self.root / ".dfr" / "temp"
+        self.context = {"original_output_root": str(self.root)}
+
+    def plain_filesystem(self):
+        stack = contextlib.ExitStack()
+        for name, value in (("is_dir", True), ("is_file", False), ("is_symlink", False), ("exists", True)):
+            stack.enter_context(patch.object(Path, name, return_value=value))
+        stack.enter_context(patch.object(Path, "lstat", return_value=SimpleNamespace(st_file_attributes=0)))
+        return stack
+
+    def binding(self, value=None):
+        return {key: str(value if value is not None else self.scratch) for key in ("TEMP", "TMP", "TMPDIR")}
+
+    def test_only_exact_existing_native_layouts_and_triple_binding(self):
+        with self.plain_filesystem():
+            for directory in (self.scratch, self.root / ".dubflow-review-candidates" / "temp"):
+                with patch.dict(os.environ, self.binding(directory), clear=True):
+                    self.assertEqual(compact_render._render_subtitle_scratch(self.context), directory)
+            for env in ({}, {"TEMP": str(self.scratch)}, {**self.binding(), "TMPDIR": str(self.root)},
+                        self.binding(self.root / "foreign" / "temp"), self.binding(Path("relative"))):
+                with patch.dict(os.environ, env, clear=True), self.assertRaises((ReviewError, MixError)):
+                    compact_render._render_subtitle_scratch(self.context)
+
+    def test_missing_linked_and_reparse_scratch_are_refused_without_fallback(self):
+        with self.plain_filesystem(), patch.dict(os.environ, self.binding(), clear=True):
+            with patch.object(Path, "is_dir", return_value=False), self.assertRaises((ReviewError, MixError)):
+                compact_render._render_subtitle_scratch(self.context)
+            with patch.object(Path, "is_symlink", return_value=True), self.assertRaises((ReviewError, MixError)):
+                compact_render._render_subtitle_scratch(self.context)
+            with patch.object(Path, "lstat", return_value=SimpleNamespace(st_file_attributes=0x400)), self.assertRaises((ReviewError, MixError)):
+                compact_render._render_subtitle_scratch(self.context)
+
+    @unittest.skipUnless(os.name == "nt", "Windows UTF16 bound")
+    def test_existing_windows_200_utf16_bound_counts_surrogate_pairs(self):
+        for size, accepted in ((200, True), (201, False)):
+            base = Path("C:/\U0001f3ac") / ".dfr" / "temp"
+            padding = size - len(str(base).encode("utf-16-le")) // 2
+            root = Path("C:/\U0001f3ac" + "o" * padding)
+            directory = root / ".dfr" / "temp"
+            self.assertEqual(len(str(directory).encode("utf-16-le")) // 2, size)
+            with self.plain_filesystem(), patch.dict(os.environ, self.binding(directory), clear=True):
+                if accepted:
+                    self.assertEqual(compact_render._render_subtitle_scratch({"original_output_root": str(root)}), directory)
+                else:
+                    with self.assertRaises(ReviewError):
+                        compact_render._render_subtitle_scratch({"original_output_root": str(root)})
+
+    @unittest.skipUnless(os.name == "nt", "Windows path spelling")
+    def test_verbatim_alias_is_not_a_membership_waiver(self):
+        value = chr(92) * 2 + "?" + chr(92) + str(self.scratch)
+        with self.plain_filesystem(), patch.dict(os.environ, self.binding(value), clear=True), self.assertRaises(ReviewError):
+            compact_render._render_subtitle_scratch(self.context)
+
+    def test_shared_native_kernel_passes_scratch_for_b1_b2_and_voice_only(self):
+        import hashlib
+        import engine.dubflow.media as media_package
+        class ReachedRender(BaseException):
+            pass
+        for audio, text_changed in ((None, True), (self.root / "mix", True), (self.root / "mix", False)):
+            with self.subTest(audio=audio, text_changed=text_changed), self.plain_filesystem(), contextlib.ExitStack() as stack:
+                context = {**self.context, "burn_in_subtitles": True, "source": {"path": str(self.root / "source")},
+                    "corrected_timeline_json": '{"cues":[{"confidence":0.8724939823150635}]}'}
+                probe = SimpleNamespace(to_dict=lambda: {"source_path": str(self.root / "source")})
+                manifest = {"source": {"probe": probe.to_dict()}}
+                worker = ModuleType("engine.dubflow.worker.production_job")
+                worker.TextCue = lambda **kw: kw
+                worker._write_subtitles = unittest.mock.Mock(side_effect=lambda g, _: (g / "srt", g / "ass"))
+                worker._source_render_duration = lambda _: None
+                worker._validate_rendered_audio = lambda *_: None
+                synthesis = ModuleType("engine.dubflow.review.synthesis_input")
+                synthesis._digest = lambda raw: "sha256:" + hashlib.sha256(raw).hexdigest()
+                synthesis._encode = lambda value, _: json.dumps(value, sort_keys=True).encode()
+                writer = ModuleType("engine.dubflow.review.synthesis_worker")
+                writer._writer = lambda _: contextlib.nullcontext()
+                writer._atomic = unittest.mock.Mock()
+                stack.enter_context(patch.dict(sys.modules, {worker.__name__: worker, synthesis.__name__: synthesis, writer.__name__: writer}))
+                stack.enter_context(patch.dict(os.environ, self.binding(), clear=True))
+                media = stack.enter_context(patch.object(media_package, "FfmpegMediaAdapter")).return_value
+                prober = stack.enter_context(patch.object(media_package, "MediaProbe")).return_value
+                media.ffmpeg_path = self.root / "ffmpeg"; prober.ffprobe_path = self.root / "ffprobe"
+                media.render.side_effect = ReachedRender
+                prober.probe.return_value = probe
+                stack.enter_context(patch.object(Path, "exists", return_value=False))
+                mkdir = stack.enter_context(patch.object(Path, "mkdir"))
+                stack.enter_context(patch.object(compact_render, "_file_hash", return_value=("sha256:" + "a" * 64, 1)))
+                stack.enter_context(patch.object(compact_render, "_inputs", return_value=audio))
+                with self.assertRaises(ReachedRender):
+                    compact_render._render_admitted(b"new mock context", output_root=self.root / "private",
+                        ffmpeg_path=self.root / "ffmpeg", ffprobe_path=self.root / "ffprobe", media_root=self.root,
+                        timeout_seconds=900, admission=lambda _: (context, manifest, None, None, text_changed),
+                        recipe="new-mock-only", caption_reader=lambda *_: {"captions_srt": b"exact SRT\r\n", "captions_ass": b"exact ASS\r\n"})
+                self.assertEqual(media.render.call_args.kwargs["subtitle_staging_dir"], self.scratch)
+                self.assertEqual(media.render.call_args.kwargs["audio_path"], audio)
+                self.assertEqual(media.render.call_args.args[0], self.root / "source")
+                final = media.render.call_args.args[1]
+                self.assertEqual(final.parent.parent, self.root / "private")
+                writer._atomic.assert_any_call(final.parent / "timeline.json", context["corrected_timeline_json"].encode())
+                self.assertTrue(mkdir.called)
+                self.assertEqual(worker._write_subtitles.called, text_changed)
+
+
 if __name__ == "__main__": unittest.main()

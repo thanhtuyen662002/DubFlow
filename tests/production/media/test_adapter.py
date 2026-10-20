@@ -355,5 +355,98 @@ class MediaCommandTests(unittest.TestCase):
         self.assertEqual(output.read_bytes(), b"keep")
 
 
+# New compact-cwd regressions; all filesystem/process effects are mocked.
+import contextlib
+import os
+from types import SimpleNamespace
+import engine.dubflow.media.adapter as compact_media
+
+
+class CompactSubtitleDirectoryTests(unittest.TestCase):
+    def invoke_compact(self, *, explicit=True, failure=None):
+        root = Path("C:/owned") if os.name == "nt" else Path("/owned")
+        generation = root / ("g" * 180) / "render"
+        scratch = root / ".dfr" / "temp"
+        output = generation / "final_vi.mp4"
+        target = scratch if explicit else generation
+        stage = target / ".dubflow-subtitle-qa.ass"
+        temporary = generation / ".final_vi.qa.mp4.partial"
+        adapter = object.__new__(compact_media.FfmpegMediaAdapter)
+        adapter.ffmpeg_path = root / "ffmpeg"
+        adapter.timeout_seconds = 30
+        with contextlib.ExitStack() as stack:
+            def patcher(name, **kw):
+                return stack.enter_context(patch(name, **kw))
+            patcher("engine.dubflow.media.adapter._validate_input_file", side_effect=lambda p, _: Path(p))
+            patcher("engine.dubflow.media.adapter._same_path", return_value=False)
+            patcher("pathlib.Path.is_dir", return_value=True)
+            patcher("pathlib.Path.is_symlink", return_value=False)
+            patcher("pathlib.Path.exists", return_value=True)
+            patcher("pathlib.Path.lstat", return_value=SimpleNamespace(st_file_attributes=0))
+            patcher("pathlib.Path.is_file", return_value=True)
+            patcher("pathlib.Path.stat", return_value=SimpleNamespace(st_size=1))
+            unlink = patcher("pathlib.Path.unlink", autospec=True)
+            patcher("engine.dubflow.media.adapter.os.close")
+            copying = patcher("engine.dubflow.media.adapter.shutil.copyfile",
+                              side_effect=OSError("copy failed") if failure == "copy" else None)
+            creating = patcher("engine.dubflow.media.adapter.tempfile.mkstemp",
+                               side_effect=[(100, str(stage)), (101, str(temporary))])
+            replacing = patcher("engine.dubflow.media.adapter.os.replace")
+            patcher("engine.dubflow.media.adapter.build_subprocess_plan",
+                    side_effect=lambda exe, args: SimpleNamespace(argv=(exe, *args)))
+            stack.enter_context(patch.object(adapter, "_prepare_output", return_value=output))
+            running = stack.enter_context(patch.object(adapter, "_run", return_value=
+                subprocess.CompletedProcess([], 1 if failure == "command" else 0, "", "mock failure" if failure else "")))
+            kwargs = {"subtitle_staging_dir": scratch} if explicit else {}
+            def invoke():
+                return adapter.render(root / "source", output, subtitle_path=root / "captions.ass",
+                    burn_in_subtitles=True, preserve_original_audio=False, **kwargs)
+            if failure:
+                with self.assertRaises(compact_media.MediaAdapterError):
+                    invoke()
+                replacing.assert_not_called()
+            else:
+                self.assertEqual(invoke(), output)
+                replacing.assert_called_once_with(temporary, output)
+            self.assertEqual(creating.call_args_list[0].kwargs["dir"], str(target))
+            self.assertTrue(unlink.called)
+            unlink.assert_any_call(stage, missing_ok=True)
+            if failure != "copy":
+                self.assertEqual(creating.call_args_list[1].kwargs["dir"], str(generation))
+                self.assertEqual(running.call_args.kwargs["cwd"], target)
+                argv = running.call_args.args[0]
+                self.assertEqual(argv[argv.index("-vf") + 1], "subtitles=" + stage.name)
+                self.assertEqual(argv[argv.index("-c:v") + 1], "h264_mf")
+                self.assertNotIn(str(stage), argv)
+            else:
+                running.assert_not_called()
+            copying.assert_called_once_with(root / "captions.ass", stage)
+
+    def test_explicit_compact_cwd_keeps_output_temporary_and_commit_in_generation(self):
+        self.invoke_compact()
+
+    def test_legacy_default_still_stages_and_runs_in_output_parent(self):
+        self.invoke_compact(explicit=False)
+
+    def test_copy_and_command_failure_clean_owned_stage_without_output_commit(self):
+        for failure in ("copy", "command"):
+            with self.subTest(failure=failure):
+                self.invoke_compact(failure=failure)
+
+    def test_explicit_directory_refuses_relative_missing_and_reparse(self):
+        root = Path("C:/owned") if os.name == "nt" else Path("/owned")
+        for value in (Path("relative"), root / ".." / "foreign"):
+            with self.assertRaises(compact_media.MediaAdapterError):
+                compact_media._validate_subtitle_staging_directory(value)
+        with patch.object(Path, "is_symlink", return_value=False), patch.object(Path, "exists", return_value=False), \
+                patch.object(Path, "is_dir", return_value=False):
+            with self.assertRaises(compact_media.MediaAdapterError):
+                compact_media._validate_subtitle_staging_directory(root)
+        with patch.object(Path, "is_symlink", return_value=False), patch.object(Path, "exists", return_value=True), \
+                patch.object(Path, "lstat", return_value=SimpleNamespace(st_file_attributes=0x400)):
+            with self.assertRaises(compact_media.MediaAdapterError):
+                compact_media._validate_subtitle_staging_directory(root)
+
+
 if __name__ == "__main__":
     unittest.main()

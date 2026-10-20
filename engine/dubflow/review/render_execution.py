@@ -228,6 +228,26 @@ def _admit_media_context(context,manifest,before,after):
             _path(mix[role]["path"], _path(retained["artifact_root"]))
 
 
+def _render_subtitle_scratch(context):
+    """Use only the existing output-bound scratch supplied by the native owner."""
+    from .production import ReviewError
+    bindings = tuple(os.environ.get(name) for name in ("TEMP", "TMP", "TMPDIR"))
+    if not bindings[0] or any(value != bindings[0] for value in bindings[1:]):
+        raise ReviewError("render requires identical native TEMP/TMP/TMPDIR bindings")
+    root = _path(context["original_output_root"])
+    scratch = _path(bindings[0])
+    # These are the only layouts accepted by native own_scratch_command. Exact
+    # lexical membership also refuses DOS/verbatim/short aliases as a waiver.
+    if scratch not in (root / ".dfr" / "temp", root / ".dubflow-review-candidates" / "temp"):
+        raise ReviewError("render scratch differs from the native output-bound namespace")
+    scratch = _path(bindings[0], root)
+    if not scratch.is_dir():
+        raise ReviewError("render native subtitle scratch is unavailable")
+    if os.name == "nt" and len(str(scratch).encode("utf-16-le")) // 2 > 200:
+        raise ReviewError("render native subtitle scratch exceeds the existing Windows path bound")
+    return scratch
+
+
 def _inputs(context, deadline):
     from .production import ReviewError
     source = {k: context["source"][k] for k in ("path", "sha256", "size_bytes")}
@@ -282,6 +302,7 @@ def _render_admitted(raw, *, output_root, ffmpeg_path, ffprobe_path, media_root,
     deadline = time.monotonic() + timeout_seconds
     context, manifest, before, after, text_changed = admission(raw)
     current_captions=caption_reader(context,deadline) if caption_reader is not None else None
+    subtitle_scratch = _render_subtitle_scratch(context) if context["burn_in_subtitles"] else None
     output = _path(str(output_root))
     if not output.is_dir():
         raise ReviewError("native private render root is unavailable")
@@ -342,7 +363,8 @@ def _render_admitted(raw, *, output_root, ffmpeg_path, ffprobe_path, media_root,
             media.timeout_seconds = max(0.001, deadline - time.monotonic())
             media.render(source, final, subtitle_path=ass, audio_path=audio, source_probe=actual_source,
                 video_duration=_source_render_duration(actual_source), preserve_original_audio=audio is None,
-                burn_in_subtitles=context["burn_in_subtitles"], overwrite=True)
+                burn_in_subtitles=context["burn_in_subtitles"],
+                subtitle_staging_dir=subtitle_scratch, overwrite=True)
         probe.timeout_seconds = max(0.001, deadline - time.monotonic())
         output_probe = probe.probe(final)
         if output_probe.video.codec_name != "h264":

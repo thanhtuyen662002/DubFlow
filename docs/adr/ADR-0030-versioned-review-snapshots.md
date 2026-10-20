@@ -3957,3 +3957,57 @@ A delayed or cancelled folder dialog cannot change a different selected row, a
 started job or a later root choice. New choices persist with the queue; original
 exports/history remain usable after refusal. Actual installed Windows
 regenerate/undo/reopen and standard/editable acceptance remain required.
+
+
+#### Review render working directory under the owned compact scratch
+
+The actual cd4 Windows short flow completed its original B1/B2 exports. The
+first B2 cue correction retained its new cue TTS, mix and corrected timeline,
+but did not commit a private video or advance revision0. All original exports
+remained unchanged. Its generic native error discarded the child diagnostic;
+that error text does not establish a metadata rejection or an encoder failure.
+
+A separate bounded, owned-Job diagnostic launched only an empty QA Python
+child, without invoking the renderer or touching the job. The exact existing
+render directory succeeds as a258 UTF-16 DOS cwd and fails with WinError267
+as the262-unit verbatim spelling. Native canonical paths and Python output
+resolution must remain exact; stripping a prefix or using a short-path alias
+would not be a valid containment repair.
+
+The corrected render therefore stages its safe-basename subtitle and runs
+FFmpeg from the already native-owned compact scratch. Native cue_command binds
+TEMP, TMP and TMPDIR to that admitted directory before the byte gate. The
+Python entry must require the same nonempty bindings, validate the plain
+existing directory beneath the original admitted output and keep the unchanged
+Windows200 UTF-16 ceiling. It must not fall back to system temp, a parent root,
+a cached tempfile choice or an arbitrary caller-supplied environment root.
+Native ownership, output-wide capacity credit, physical volume/no-follow fences
+and authoritative Job retirement remain the authority for scratch use.
+
+Source/audio paths and final/private output locators retain their original
+canonical identities. The private MP4 temporary file, atomic output replace,
+full hashes, current-token fences, physical retained-publication verification
+and SQLite CAS stay unchanged. A leftover staging subtitle is scratch/orphan
+data under the existing ledger; its existence cannot authorize publication.
+The general media adapter keeps its prior staging default for existing callers;
+only the explicitly admitted Review route selects this compact working root.
+
+Adapter failure reporting must identify the actual child status and retain its
+bounded stderr safely rather than calling every failure an original metadata
+refusal. Nonzero status or any stderr still refuses; byte limits, collection,
+original/cleanup deadlines and scratch retirement are not relaxed. No durable
+schema, closed context field or CLI migration is introduced. Changed source
+hashes select a new processing recipe/release; never overlay old installed
+producers or repin an existing job to call it qualified.
+
+New focused path/authority regressions, exact-head Required CI, source-matched
+release admission and the actual Windows edit/regenerate/undo/reopen/export
+flow remain mandatory. The empty-child diagnostic is not a corrected video,
+audio-quality, AV-sync or product-acceptance pass.
+
+The separate short-scratch primitive check also succeeded at its exact130-unit
+verbatim cwd; neither check invoked FFmpeg or retried the failed job. Native
+error formatting preserves the admitted child bytes at the supervisor boundary.
+The existing4096-byte desktop error transport can reject expanded diagnostics;
+whole-GUI lossless diagnostics at the maximum child stderr remain unqualified.
+No transport cap or error-envelope schema is widened by this repair.

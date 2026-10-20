@@ -605,8 +605,19 @@ fn retire_scratch_process(
     Ok(tree.retire_until(until)?)
 }
 
-// The original metadata adapter never spawns descendants. Windows containment
-// still precedes the byte gate; error/timeout/cap paths terminate and reap it.
+// Preserve the complete already-capped stderr as inert, reversible ASCII bytes.
+// ExitStatus Display keeps platform status (including signal termination), not an inferred cause.
+// Escaping can expand to four bytes per input byte; enclosing transports retain their own bounds.
+fn adapter_refusal_diagnostic(status: &std::process::ExitStatus, stderr: &[u8]) -> String {
+    format!(
+        "REVIEW_ADAPTER_REFUSED: status={status}; stderr_bytes={}; stderr_ascii=\"{}\"",
+        stderr.len(),
+        stderr.escape_ascii(),
+    )
+}
+
+// This collector also runs current render adapters with owned descendants.
+// Windows containment precedes the byte gate; existing retirement rules apply.
 pub(super) fn collect(
     command: impl Into<super::review_retention::OwnedReviewCommand>,
     timeout: Duration,
@@ -688,9 +699,9 @@ pub(super) fn collect(
             if let Some(status) = process.child.try_wait()? {
                 if let (Some(out), Some(errors)) = (&out, &errors) {
                     if !status.success() || !errors.is_empty() {
-                        return Err(invalid(
-                            "original adapter refused metadata; completed export remains unchanged",
-                        ));
+                        return Err(SupervisorError::Invalid(adapter_refusal_diagnostic(
+                            &status, errors,
+                        )));
                     }
                     return String::from_utf8(out.clone())
                         .map_err(|_| invalid("original adapter response is not UTF-8"));
@@ -1169,6 +1180,155 @@ pub(super) mod tests {
             vec!["--initialize-original", "--initialize-original"],
         ] {
             assert!(run(args.into_iter().map(OsString::from)).is_err());
+        }
+    }
+
+    // Pure formatting tests only: no child process, media, SDK or durable state.
+    #[cfg(any(windows, unix))]
+    mod adapter_diagnostic_tests {
+        use super::*;
+
+        fn status(code: u32) -> std::process::ExitStatus {
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::ExitStatusExt;
+                std::process::ExitStatus::from_raw(code)
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                std::process::ExitStatus::from_raw((code as i32) << 8)
+            }
+        }
+
+        // Independent decoder for the diagnostic's byte escaping. No lossy UTF-8 conversion.
+        fn decode_stderr(diagnostic: &str) -> Vec<u8> {
+            let (_, payload) = diagnostic.split_once("; stderr_ascii=\"").unwrap();
+            let bytes = payload.strip_suffix('"').unwrap().as_bytes();
+            let mut result = Vec::new();
+            let mut at = 0;
+            while at < bytes.len() {
+                if bytes[at] != b'\\' {
+                    result.push(bytes[at]);
+                    at += 1;
+                    continue;
+                }
+                at += 1;
+                match bytes[at] {
+                    b'n' => result.push(b'\n'),
+                    b'r' => result.push(b'\r'),
+                    b't' => result.push(b'\t'),
+                    b'\\' => result.push(b'\\'),
+                    b'\'' => result.push(b'\''),
+                    b'"' => result.push(b'"'),
+                    b'x' => {
+                        let high = (bytes[at + 1] as char).to_digit(16).unwrap();
+                        let low = (bytes[at + 2] as char).to_digit(16).unwrap();
+                        result.push(((high << 4) | low) as u8);
+                        at += 2;
+                    }
+                    other => panic!("unexpected diagnostic escape: {other}"),
+                }
+                at += 1;
+            }
+            result
+        }
+
+        #[test]
+        fn keeps_actual_nonzero_status_and_empty_stderr_without_a_metadata_cause() {
+            let status = status(7);
+            let detail = adapter_refusal_diagnostic(&status, b"");
+            assert!(detail.starts_with("REVIEW_ADAPTER_REFUSED: status="));
+            assert!(detail.contains(&format!("status={status};")));
+            assert!(detail.ends_with("; stderr_bytes=0; stderr_ascii=\"\""));
+            assert!(decode_stderr(&detail).is_empty());
+            assert!(!detail.contains("metadata"));
+            assert!(!detail.contains("unchanged"));
+        }
+
+        #[test]
+        fn exit_zero_stderr_still_has_a_truthful_refusal_diagnostic() {
+            let status = status(0);
+            assert!(status.success());
+            let detail = adapter_refusal_diagnostic(&status, b"render\n");
+            assert!(detail.contains(&format!("status={status};")));
+            assert!(detail.ends_with(r#"; stderr_bytes=7; stderr_ascii="render\n""#));
+            assert_eq!(decode_stderr(&detail), b"render\n");
+        }
+
+        #[test]
+        fn controls_ansi_quotes_backslashes_and_invalid_utf8_remain_exact_inert_bytes() {
+            let raw = b"\0\r\n\t\x1b[31m\x7f\x80\xff\"'\\\xc3(\xe2\x82";
+            assert!(std::str::from_utf8(raw).is_err());
+            let detail = adapter_refusal_diagnostic(&status(3), raw);
+            assert_eq!(decode_stderr(&detail), raw);
+            assert!(detail.bytes().all(|byte| (b' '..=b'~').contains(&byte)));
+            assert!(detail.contains(r"\x00\r\n\t\x1b[31m\x7f\x80\xff"));
+            assert!(!detail.contains('\u{fffd}'));
+        }
+
+        #[test]
+        fn vietnamese_utf8_is_recoverable_without_lossy_replacement() {
+            let raw = "Giọng Việt, đường dẫn có dấu".as_bytes();
+            let detail = adapter_refusal_diagnostic(&status(3), raw);
+            assert_eq!(decode_stderr(&detail), raw);
+            assert!(detail.is_ascii());
+            assert!(!detail.contains('\u{fffd}'));
+        }
+
+        #[test]
+        fn complete_4096_byte_inventory_roundtrips_all_byte_values() {
+            let raw: Vec<u8> = (0..4096).map(|index| (index % 256) as u8).collect();
+            let detail = adapter_refusal_diagnostic(&status(3), &raw);
+            assert_eq!(decode_stderr(&detail), raw);
+            assert!(detail.contains("; stderr_bytes=4096;"));
+            assert!(detail.bytes().all(|byte| (b' '..=b'~').contains(&byte)));
+        }
+
+        #[test]
+        fn complete_worst_case_is_retained_instead_of_hidden_transport_truncation() {
+            let raw = vec![0xff; 4096];
+            let observed_status = status(3);
+            let status_text = observed_status.to_string();
+            let detail = adapter_refusal_diagnostic(&observed_status, &raw);
+            assert_eq!(decode_stderr(&detail), raw);
+            assert_eq!(detail.matches(r"\xff").count(), 4096);
+            // Exact fixed framing63 + status bytes + four decimal count digits + escaped bytes.
+            assert_eq!(detail.len(), 63 + status_text.len() + 4 + 4 * 4096);
+            // JSON is only a pure serialization test, not a new production wire protocol.
+            let serialized = serde_json::to_string(&detail).unwrap();
+            let serialized_status = serde_json::to_string(&status_text).unwrap();
+            assert_eq!(
+                serialized.len(),
+                serialized_status.len() + 65 + 4 + 5 * 4096
+            );
+            let restored: String = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(decode_stderr(&restored), raw);
+            // Existing Tauri ERROR_LIMIT cannot carry this expanded diagnostic.
+            // Do not turn its 4096-byte cap into a lossy formatter limit or fake GUI PASS.
+            assert!(detail.len() > 4096);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn unix_signal_status_is_not_replaced_by_a_made_up_exit_code() {
+            use std::os::unix::process::ExitStatusExt;
+            let status = std::process::ExitStatus::from_raw(15);
+            assert_eq!(status.code(), None);
+            let detail = adapter_refusal_diagnostic(&status, b"signal diagnostic");
+            assert!(detail.contains(&format!("status={status};")));
+            assert_eq!(decode_stderr(&detail), b"signal diagnostic");
+        }
+
+        #[cfg(windows)]
+        #[test]
+        fn windows_full_exit_status_is_preserved() {
+            use std::os::windows::process::ExitStatusExt;
+            let status = std::process::ExitStatus::from_raw(0xc000_0005);
+            assert_eq!(status.code(), Some(0xc000_0005u32 as i32));
+            let detail = adapter_refusal_diagnostic(&status, b"native diagnostic");
+            assert!(detail.contains(&format!("status={status};")));
+            assert_eq!(decode_stderr(&detail), b"native diagnostic");
         }
     }
 
