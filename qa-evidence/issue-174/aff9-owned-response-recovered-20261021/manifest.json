@@ -1,0 +1,152 @@
+{
+  "schema": "C1_SAFE_RESPONSE_ASCII_RECOVERY_MANIFEST_V1",
+  "prefix": "qa-evidence/issue-174/aff9-owned-response-recovered-20261021/",
+  "response_raw": {
+    "bytes": 3912813,
+    "sha256": "eb3da55df2ceab3b1a35953887172fb0af961115a500ce4bd16c1aee0b328197"
+  },
+  "response_gzip": {
+    "bytes": 3913131,
+    "sha256": "2e9a3a5ec7ef4e9032230d726856b556007a5560a41006b662983ca87a28ab31"
+  },
+  "response_parts": [
+    {
+      "name": "response-01.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "4209f87de042867fb49702082c3c55821a0f19ee"
+    },
+    {
+      "name": "response-02.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "3eac8e63cbcaf7082f7a075a3313c0c9ccfd3133"
+    },
+    {
+      "name": "response-03.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "d070115ff3ba57460143fd6f1222d0817aa446eb"
+    },
+    {
+      "name": "response-04.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "c75fcb3f6917e3a482afb81c354477887c86b2d5"
+    },
+    {
+      "name": "response-05.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "ce1895cc02c8a33073f6dd890a28c6fca6d50c83"
+    },
+    {
+      "name": "response-06.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "f29c551741825878b11985c269315ee3e560c421"
+    },
+    {
+      "name": "response-07.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "0b65712701c2b824e5d74af6336a0f144f88226f"
+    },
+    {
+      "name": "response-08.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "5bf9729b5f212d4a0ed30d81227a2f329e5a9a24"
+    },
+    {
+      "name": "response-09.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "8fe9291eab73b04e5839538dc93ebd11b5474bc6"
+    },
+    {
+      "name": "response-10.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "f083c9b888f2db723e279836ae68360bae7ff14a"
+    },
+    {
+      "name": "response-11.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "7778dbe649aab35216211925de9177340342be0c"
+    },
+    {
+      "name": "response-12.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "073918c210ddeb556ad53c043b096d545bbe10ac"
+    },
+    {
+      "name": "response-13.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "4aa22ec08650f8e2df7971c2b4eac62471e90e6e"
+    },
+    {
+      "name": "response-14.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "1a5caccb3c0df2c265a89602799700527291a9cd"
+    },
+    {
+      "name": "response-15.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "9dc37dfb1bf4a06df3fe6b5a8b6cd31417697f87"
+    },
+    {
+      "name": "response-16.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "b09b3976dbf618d134124c246e087053640beef9"
+    },
+    {
+      "name": "response-17.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "ceb9d3d9b67462567f2d74eddcc0571c31e6940b"
+    },
+    {
+      "name": "response-18.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "d7eed0f56bc5f091c44cb8ea741ca05d083e5337"
+    },
+    {
+      "name": "response-19.gzpart.b64",
+      "ascii_bytes": 262144,
+      "git_blob_sha1": "3ce6a9216bd2c73faf1153a0aaf09393502d92db"
+    },
+    {
+      "name": "response-20.gzpart.b64",
+      "ascii_bytes": 236772,
+      "git_blob_sha1": "80fd798c4b7c35d108280c00ae49281bd92e19d5"
+    }
+  ],
+  "metadata": {
+    "gzip_bytes": 210046,
+    "gzip_sha256": "6fb9c01f29fa3aec79356375a7feaf7e44512062b0c7e4ce583e7d3ed06e9cdb",
+    "raw_bytes": 771116,
+    "raw_sha256": "82e921572708f9e9c6fa5bd959ff9c497ea3bef0bec5c10d539f038a01656ce9",
+    "full_files": 112,
+    "recipe_files": 2,
+    "parts": [
+      {
+        "name": "metadata-01.gzpart.b64",
+        "ascii_bytes": 262144,
+        "git_blob_sha1": "4a5829bc9427e777592a148c53a776972298da0d"
+      },
+      {
+        "name": "metadata-02.gzpart.b64",
+        "ascii_bytes": 17920,
+        "git_blob_sha1": "0294fb96f2f1e6e992836e3a54d3a64a17c984fc"
+      }
+    ]
+  },
+  "limitations": {
+    "full_HTTP_body": false,
+    "EOF_Job": false,
+    "Python_object_membership": false,
+    "old9412_closed": false
+  },
+  "auxiliary": [
+    {
+      "name": "automation-before.toml",
+      "local_pin": {
+        "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-safe-response-capture-55\\automation-before-response-capture-checkpoint.toml",
+        "bytes": 8697,
+        "sha256": "0a0a5acb5f15c2cb46aff38df1f9dca9662354779b064dc1a320df5662569c9a",
+        "mtime_ns": "1792562972882511800"
+      },
+      "git_blob_sha1": "2e44398f5cd3a388ac074c8bda6e57452dc72bdf"
+    }
+  ]
+}
