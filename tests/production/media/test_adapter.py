@@ -20,6 +20,10 @@ from engine.dubflow.media import (
 )
 from engine.dubflow.media.adapter import audio_origin_samples
 
+# The test interpreter may be an alias on Linux; mocked tools use its regular file.
+# Production executable validation still rejects symlink inputs.
+_FIXTURE_EXECUTABLE = str(Path(sys.executable).resolve(strict=True))
+
 
 def _probe_document() -> dict[str, object]:
     return {
@@ -157,8 +161,14 @@ class MediaCommandTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_fixture_uses_regular_interpreter_while_original_symlink_is_refused(self) -> None:
+        if not Path(sys.executable).is_symlink():
+            self.skipTest("Interpreter path is a regular file on this platform")
+        with self.assertRaisesRegex(MediaAdapterError, "EXECUTABLE_UNAVAILABLE"):
+            MediaProbe(sys.executable, trusted_root=Path(_FIXTURE_EXECUTABLE).parent)
+
     def test_silent_pcm_uses_integer_source_duration_and_bounded_actual_writes(self):
-        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent)
+        adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=Path(_FIXTURE_EXECUTABLE).parent)
         duration = MediaTimeline(Rational(1001, 30000), -12, 241, 229)
         output = self.root / "silent source.wav"
         writes = []
@@ -183,7 +193,7 @@ class MediaCommandTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".*.partial")), [])
 
     def test_silent_pcm_interruption_preserves_prior_output_and_removes_partial(self):
-        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent)
+        adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=Path(_FIXTURE_EXECUTABLE).parent)
         output = self.root / "silent.wav"
         duration = MediaTimeline(Rational(1, 1000), 0, 1000, 1000)
         adapter.create_silent_audio(self.source, output, video_duration=duration)
@@ -208,7 +218,7 @@ class MediaCommandTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".*.partial")), [])
 
     def test_silent_pcm_refuses_unknown_duration_invalid_config_and_riff_overflow(self):
-        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent)
+        adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=Path(_FIXTURE_EXECUTABLE).parent)
         output = self.root / "refused.wav"
         duration = MediaTimeline(Rational(1, 1), 0, 21600, 21600)
         cases = (({"video_duration": None}, "MEDIA_DURATION_INVALID"),
@@ -224,16 +234,16 @@ class MediaCommandTests(unittest.TestCase):
 
     def test_probe_and_operations_use_absolute_argv_without_shell(self) -> None:
         probe_runner = RecordingRunner()
-        trusted_root = Path(sys.executable).resolve().parent
-        probe = MediaProbe(sys.executable, trusted_root=trusted_root, runner=probe_runner)
+        trusted_root = Path(_FIXTURE_EXECUTABLE).parent
+        probe = MediaProbe(_FIXTURE_EXECUTABLE, trusted_root=trusted_root, runner=probe_runner)
         result = probe.probe(self.source)
         self.assertEqual(result.video.width, 640)
-        self.assertEqual(probe_runner.calls[0][0], sys.executable)
+        self.assertEqual(probe_runner.calls[0][0], _FIXTURE_EXECUTABLE)
         self.assertIn(str(self.source.resolve()), probe_runner.calls[0])
         self.assertNotIn(" ".join(("-i", str(self.source))), probe_runner.calls[0])
 
         ffmpeg_runner = RecordingRunner()
-        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=trusted_root, runner=ffmpeg_runner)
+        adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=trusted_root, runner=ffmpeg_runner)
         extracted = adapter.extract_audio(self.source, self.root / "audio out.wav")
         muxed = adapter.mux_audio(self.source, extracted, self.root / "muxed output.mp4")
         rendered = adapter.render(
@@ -247,7 +257,7 @@ class MediaCommandTests(unittest.TestCase):
         self.assertTrue(extracted.is_file())
         self.assertTrue(muxed.is_file())
         self.assertTrue(rendered.is_file())
-        self.assertTrue(all(call[0] == sys.executable for call in ffmpeg_runner.calls))
+        self.assertTrue(all(call[0] == _FIXTURE_EXECUTABLE for call in ffmpeg_runner.calls))
         render_call = ffmpeg_runner.calls[-1]
         self.assertIn(str(self.subtitle.resolve()), render_call)
         self.assertIn(str(extracted.resolve()), render_call)
@@ -261,7 +271,7 @@ class MediaCommandTests(unittest.TestCase):
         for burn_in in (False, True):
             with self.subTest(burn_in=burn_in):
                 runner = RecordingRunner()
-                adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+                adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=Path(_FIXTURE_EXECUTABLE).parent, runner=runner)
                 adapter.render(self.source, self.root / "bounded.mp4", subtitle_path=self.subtitle,
                     audio_path=self.audio, preserve_original_audio=False, burn_in_subtitles=burn_in,
                     video_duration=MediaTimeline(Rational(1001, 30000), 0, 241, 241), overwrite=True)
@@ -269,7 +279,7 @@ class MediaCommandTests(unittest.TestCase):
                 self.assertNotIn("-shortest", call)
                 self.assertEqual(call[call.index("-t") + 1], "8.041367")
         runner = RecordingRunner()
-        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=Path(_FIXTURE_EXECUTABLE).parent, runner=runner)
         adapter.render(self.source, self.root / "unknown-duration.mp4", subtitle_path=self.subtitle,
                        audio_path=self.audio, preserve_original_audio=False)
         self.assertNotIn("-shortest", runner.calls[-1])
@@ -294,7 +304,7 @@ class MediaCommandTests(unittest.TestCase):
         document["streams"][1]["start_pts"] = 72944
         probe = parse_ffprobe_json(json.dumps(document), source_path=self.source)
         runner = RecordingRunner()
-        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=Path(_FIXTURE_EXECUTABLE).parent, runner=runner)
         adapter.extract_audio(self.source, self.root / "aligned.wav", video_stream=probe.video, sample_rate=48000, channels=2)
         call = runner.calls[-1]
         self.assertIn("-copyts", call)
@@ -312,7 +322,7 @@ class MediaCommandTests(unittest.TestCase):
 
     def test_burn_in_escapes_filter_path_without_shelling(self) -> None:
         runner = RecordingRunner()
-        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=Path(_FIXTURE_EXECUTABLE).parent, runner=runner)
         output = adapter.render(
             self.source,
             self.root / "burned.mp4",
@@ -330,7 +340,7 @@ class MediaCommandTests(unittest.TestCase):
 
     def test_failed_command_removes_partial_and_redacts_diagnostic(self) -> None:
         runner = RecordingRunner(fail=True)
-        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=Path(_FIXTURE_EXECUTABLE).parent, runner=runner)
         output = self.root / "failed.mp4"
         with self.assertRaises(MediaAdapterError) as context:
             adapter.render(self.source, output, preserve_original_audio=False)
@@ -343,11 +353,11 @@ class MediaCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(MediaAdapterError, "EXECUTABLE_NOT_APP_OWNED"):
             MediaProbe("ffprobe")
         with self.assertRaisesRegex(MediaAdapterError, "EXECUTABLE_ROOT_REQUIRED"):
-            MediaProbe(sys.executable)
+            MediaProbe(_FIXTURE_EXECUTABLE)
         with self.assertRaisesRegex(MediaAdapterError, "EXECUTABLE_OUTSIDE_ROOT"):
-            MediaProbe(sys.executable, trusted_root=self.root)
+            MediaProbe(_FIXTURE_EXECUTABLE, trusted_root=self.root)
         runner = RecordingRunner()
-        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        adapter = FfmpegMediaAdapter(_FIXTURE_EXECUTABLE, trusted_root=Path(_FIXTURE_EXECUTABLE).parent, runner=runner)
         output = self.root / "existing.mp4"
         output.write_bytes(b"keep")
         with self.assertRaisesRegex(MediaAdapterError, "OUTPUT_EXISTS"):
