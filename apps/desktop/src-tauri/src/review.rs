@@ -119,15 +119,21 @@ struct NativeObservation {
 struct StageSink {
     host: ReviewHost,
     id: String,
+    registered: Arc<AtomicBool>,
 }
 impl StageSink {
     fn invalid(&self) {
         if let Ok(mut r) = self.host.registry.lock() {
-            if let Some(a) = r
-                .requests
-                .get_mut(&self.id)
-                .and_then(|s| s.activity.as_mut())
+            let Some(slot) = r.requests.get_mut(&self.id) else {
+                return;
+            };
+            if !Arc::ptr_eq(&self.registered, &slot.cancelled)
+                || !slot.active
+                || slot.cancelled.load(Ordering::SeqCst)
             {
+                return;
+            }
+            if let Some(a) = slot.activity.as_mut() {
                 a.native = None;
                 a.native_invalid = true;
             }
@@ -138,7 +144,10 @@ impl StageSink {
             let Some(slot) = r.requests.get_mut(&self.id) else {
                 return;
             };
-            if !slot.active || slot.cancelled.load(Ordering::SeqCst) {
+            if !Arc::ptr_eq(&self.registered, &slot.cancelled)
+                || !slot.active
+                || slot.cancelled.load(Ordering::SeqCst)
+            {
                 return;
             }
             let Some(a) = slot.activity.as_mut() else {
@@ -1676,6 +1685,7 @@ fn run_bounded_inner(
     let stage_sink = observer.map(|r| StageSink {
         host: r.host.clone(),
         id: r.id.clone(),
+        registered: r.cancelled.clone(),
     });
     std::thread::spawn(move || {
         let bytes = match stage_sink {
@@ -2727,6 +2737,7 @@ mod tests {
             StageSink {
                 host: host.clone(),
                 id: request.id.clone(),
+                registered: request.cancelled.clone(),
             },
         )
         .unwrap();
@@ -2777,6 +2788,7 @@ mod tests {
             StageSink {
                 host: host.clone(),
                 id: request.id.clone(),
+                registered: request.cancelled.clone(),
             },
         )
         .unwrap();
@@ -2813,6 +2825,7 @@ mod tests {
         let sink = StageSink {
             host: host.clone(),
             id: request.id.clone(),
+            registered: request.cancelled.clone(),
         };
         assert_eq!(
             capture_stage_stderr(
@@ -2849,6 +2862,7 @@ mod tests {
                 StageSink {
                     host: host.clone(),
                     id: request.id.clone(),
+                    registered: request.cancelled.clone(),
                 },
             )
             .unwrap();
@@ -2997,6 +3011,7 @@ mod tests {
         let sink = StageSink {
             host: host.clone(),
             id: request.id.clone(),
+            registered: request.cancelled.clone(),
         };
         let packet = stage_packet(1, 3);
         let mut raw = b"warning before\n".to_vec();
@@ -3043,6 +3058,141 @@ mod tests {
     }
 
     #[test]
+    fn stale_stage_sink_cannot_mutate_a_reused_request_id() {
+        let host = ReviewHost::default();
+        let id = "request-stage-instance-reuse-0001";
+        let old = host.begin(id).unwrap();
+        old.observe("job-stage-instance-old", "apply").unwrap();
+        old.phase("processing");
+        let stale = StageSink {
+            host: host.clone(),
+            id: old.id.clone(),
+            registered: old.cancelled.clone(),
+        };
+        stale.observe(NativeStage::read(&stage_packet(1, 1)).unwrap());
+        assert_eq!(
+            host.request_stage(id).unwrap()["native_stage"]["event"]["units_completed"],
+            1
+        );
+        let old_registered = old.cancelled.clone();
+        drop(old);
+        {
+            let mut registry = host.registry.lock().unwrap();
+            let slot = registry.requests.get_mut(id).unwrap();
+            assert!(!slot.active);
+            slot.changed = Instant::now() - TOMBSTONE_TTL;
+            registry.prune();
+            assert!(!registry.requests.contains_key(id));
+        }
+        let current = host.begin(id).unwrap();
+        assert!(!Arc::ptr_eq(&old_registered, &current.cancelled));
+        current.observe("job-stage-instance-new", "undo").unwrap();
+        current.phase("processing");
+        let current_sink = StageSink {
+            host: host.clone(),
+            id: current.id.clone(),
+            registered: current.cancelled.clone(),
+        };
+        current_sink.observe(NativeStage::read(&stage_packet(1, 7)).unwrap());
+        let expected = host.request_stage(id).unwrap()["native_stage"]["event"].clone();
+        assert_eq!(expected["units_completed"], 7);
+        stale.observe(NativeStage::read(&stage_packet(2, 99)).unwrap());
+        let after_observe = host.request_stage(id).unwrap();
+        assert_eq!(
+            after_observe["activity"]["job_id"],
+            "job-stage-instance-new"
+        );
+        assert_eq!(after_observe["native_stage"]["event"], expected);
+        stale.invalid();
+        let after_invalid = host.request_stage(id).unwrap();
+        assert_eq!(
+            after_invalid["activity"]["job_id"],
+            "job-stage-instance-new"
+        );
+        assert_eq!(after_invalid["native_observation"], "observed");
+        assert_eq!(after_invalid["native_stage"]["event"], expected);
+        current_sink.observe(NativeStage::read(&stage_packet(2, 8)).unwrap());
+        assert_eq!(
+            host.request_stage(id).unwrap()["native_stage"]["event"]["units_completed"],
+            8
+        );
+        current_sink.invalid();
+        assert_eq!(
+            host.request_stage(id).unwrap()["native_observation"],
+            "unavailable"
+        );
+        assert!(!current.cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn ended_stage_sink_cannot_change_the_retained_observation() {
+        let host = ReviewHost::default();
+        let request = host.begin("request-stage-instance-ended-0001").unwrap();
+        request
+            .observe("job-stage-instance-ended", "apply")
+            .unwrap();
+        request.phase("processing");
+        let sink = StageSink {
+            host: host.clone(),
+            id: request.id.clone(),
+            registered: request.cancelled.clone(),
+        };
+        sink.observe(NativeStage::read(&stage_packet(1, 3)).unwrap());
+        let id = request.id.clone();
+        let expected = host.request_stage(&id).unwrap()["native_stage"]["event"].clone();
+        drop(request);
+        assert!(
+            !host
+                .registry
+                .lock()
+                .unwrap()
+                .requests
+                .get(&id)
+                .unwrap()
+                .active
+        );
+        sink.observe(NativeStage::read(&stage_packet(2, 99)).unwrap());
+        assert_eq!(
+            host.request_stage(&id).unwrap()["native_stage"]["event"],
+            expected
+        );
+        sink.invalid();
+        let ended = host.request_stage(&id).unwrap();
+        assert_eq!(ended["activity"]["state"], "ended");
+        assert_eq!(ended["native_observation"], "observed");
+        assert_eq!(ended["native_stage"]["event"], expected);
+    }
+
+    #[test]
+    fn cancelled_stage_sink_cannot_change_the_retained_observation() {
+        let host = ReviewHost::default();
+        let request = host.begin("request-stage-instance-cancel-0001").unwrap();
+        request
+            .observe("job-stage-instance-cancel", "undo")
+            .unwrap();
+        request.phase("processing");
+        let sink = StageSink {
+            host: host.clone(),
+            id: request.id.clone(),
+            registered: request.cancelled.clone(),
+        };
+        sink.observe(NativeStage::read(&stage_packet(1, 3)).unwrap());
+        let expected = host.request_stage(&request.id).unwrap()["native_stage"]["event"].clone();
+        host.cancel(&request.id).unwrap();
+        assert!(request.cancelled.load(Ordering::SeqCst));
+        sink.observe(NativeStage::read(&stage_packet(2, 99)).unwrap());
+        assert_eq!(
+            host.request_stage(&request.id).unwrap()["native_stage"]["event"],
+            expected
+        );
+        sink.invalid();
+        let cancelling = host.request_stage(&request.id).unwrap();
+        assert_eq!(cancelling["activity"]["state"], "cancelling");
+        assert_eq!(cancelling["native_observation"], "observed");
+        assert_eq!(cancelling["native_stage"]["event"], expected);
+    }
+
+    #[test]
     fn repeated_counts_do_not_reset_advancement_and_reordered_events_are_unknown() {
         let host = ReviewHost::default();
         let request = host.begin("request-stage-order-0001").unwrap();
@@ -3051,6 +3201,7 @@ mod tests {
         let sink = StageSink {
             host: host.clone(),
             id: request.id.clone(),
+            registered: request.cancelled.clone(),
         };
         sink.observe(NativeStage::read(&stage_packet(1, 2)).unwrap());
         let advanced = Instant::now() - Duration::from_secs(3);

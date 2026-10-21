@@ -16,6 +16,8 @@ The Tauri observed Review request capture needs a dedicated bounded limit for th
 
 No schema/database/worker/timeline mutation or data migration is needed. The version is an ephemeral error envelope only. Diagnostics remain inert textContent; they grant no path access, command execution, automatic retry, commit or rollback authority. A failed/lost/stale invocation still requires the existing fresh state read.
 
+Native stage sinks also carry the actual request registration Arc. Both observation and invalidation require pointer identity with the current registry slot, an active slot and no cancellation. A late detached reader therefore cannot label or invalidate a replacement job after a textual request ID is reused. This is an attribution fence; it does not join readers or establish their retirement after a timeout. The separate reader lifetime and real crash/liveness gates remain open.
+
 ## Compatibility
 
 | Producer | Consumer | Behavior |
