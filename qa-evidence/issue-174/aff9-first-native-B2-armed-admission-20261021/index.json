@@ -1,0 +1,176 @@
+{
+  "files": [
+    {
+      "bytes": 4038,
+      "mtime_ns": "1792588774333295500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\accepted-C2-shipped-CLI-handoff.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840896",
+      "sha256": "663e0a595a13deb81ca1b526d795e6b8df2cc49a88fc65baa68ee0d33169ee06"
+    },
+    {
+      "bytes": 509,
+      "mtime_ns": "1792589895519754300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\actual-review-dispositions-before-native.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840916",
+      "sha256": "e9af4aa2784dd5dadcc30a2be2cb5d1930dd61b8afc61715a7116e22586436ac"
+    },
+    {
+      "bytes": 7060,
+      "mtime_ns": "1792589895512131700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\ARMED-once-current-aff9-original-B2-plan.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551571",
+      "sha256": "68d2183331d46a3ef675828d49ac7fea9b712b74a06fed81d0e34a6056710d1e"
+    },
+    {
+      "bytes": 20194,
+      "mtime_ns": "1792588774340157000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\current-aff9-nonGUI-shared-lifetime-guard.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840897",
+      "sha256": "b68e66dd2efa35c8d563938faf404e17f6c97b88274aa3fe88422e9f646837d7"
+    },
+    {
+      "bytes": 8453,
+      "mtime_ns": "1792589895443822400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\fresh-all-path-capacity-immediately-before-arm.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683528",
+      "sha256": "97cf452d450075741bee1b8b27e03eed6a86031e368ed3434c5cfd9ab236430e"
+    },
+    {
+      "bytes": 8453,
+      "mtime_ns": "1792588774325855200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\fresh-complete-capacity-before-CLI-source.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840895",
+      "sha256": "7301a7333a9099e7d188041af13467fd38647efc2fd0a9fbb2121e36a2d84a1d"
+    },
+    {
+      "bytes": 353,
+      "mtime_ns": "1792589895494990200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\frozen-whole-cohort-original-clock-once.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683537",
+      "sha256": "981578d63b16462e67a76e7402631610155ed78d00e49763b745df2c0d735ca7"
+    },
+    {
+      "bytes": 7127,
+      "mtime_ns": "1792589891434861300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\full-automation-before-first-native-B2.toml",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683507",
+      "sha256": "f573092d9537ce5f596ede6b239c683b613024a70f4e88a3feb52445cdca2181"
+    },
+    {
+      "bytes": 3408,
+      "mtime_ns": "1792589891412268300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\full-board-before-first-native-B2.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1970324838394162",
+      "sha256": "082d43e5e88e151b9c9c0cfb48fda1eb9f34af7ccf399f23bb3e872324b40439"
+    },
+    {
+      "bytes": 45461,
+      "mtime_ns": "1792589891388560700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\full-PR185-before-first-native-B2.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1970324838394161",
+      "sha256": "4839ee66295fe08921d0cf09668b2751ca6321365f3c46dfedf90d6d26e0dab6"
+    },
+    {
+      "bytes": 6843,
+      "mtime_ns": "1792589472174477600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\NOT_ARMED-exact-original-B2-plan-template-v3.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840909",
+      "sha256": "8d566681542a94e47cee8180410ef03e158d3b0e822510541c5867ecfa59fb54"
+    },
+    {
+      "bytes": 6755,
+      "mtime_ns": "1792589334590224600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\NOT_ARMED-exact-original-B2-plan-template.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840901",
+      "sha256": "aa44897d2e11d7e9dbd732d864a3db7b20e3e17bf6c547c0379eac1180130c3a"
+    },
+    {
+      "bytes": 18752,
+      "mtime_ns": "1792589895503568800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\p9-system-alias-CLI-final-frozen-clock.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972882",
+      "sha256": "257a8749417e41a04b842c76a6945b0aba66470d540ea4436774b9e00f2eb0a8"
+    },
+    {
+      "bytes": 18746,
+      "mtime_ns": "1792589334567081000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\p9-system-alias-CLI-not-yet-armed-template.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840900",
+      "sha256": "2dbdd2c63f5f0f4847934e4c031f21b9d427b6e665f3a58efa5e92f29e61a82c"
+    },
+    {
+      "bytes": 1856,
+      "mtime_ns": "1792588774314643500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\resource-admission-before-any-new-CLI-IO.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840894",
+      "sha256": "b168cb7a71addd561879bda1c34da1be39a9784e77751f4913501adefa3126d0"
+    },
+    {
+      "bytes": 16394,
+      "mtime_ns": "1792589334546112500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v2.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840899",
+      "sha256": "5b0300d92380b2376695629e738425fca98aa6b5ab91b00bea9a61bedb257902"
+    },
+    {
+      "bytes": 16515,
+      "mtime_ns": "1792589472142600300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v3.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840908",
+      "sha256": "bcd082fb1d0bb65de72c41f538ba756e717ce2fac0aaebfa5423fa4963c85edf"
+    },
+    {
+      "bytes": 16450,
+      "mtime_ns": "1792589491591685700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v4.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840910",
+      "sha256": "c42d02640f1bcbc735a3167d1bec775e4b7632ac04ebffbbc1fa9eb0b8775791"
+    },
+    {
+      "bytes": 17097,
+      "mtime_ns": "1792589637999920400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v5.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1970324838394115",
+      "sha256": "9ad4c028980fb86a05e21b5a565f79246193b46ab586d1d5382561b7fdd0a335"
+    },
+    {
+      "bytes": 18354,
+      "mtime_ns": "1792589819810137400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v6.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262214",
+      "sha256": "7ec854ba00e5709a1910adeb1224ef5af89f59daab4093e8240310748cf210fe"
+    },
+    {
+      "bytes": 15866,
+      "mtime_ns": "1792589180859718600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840898",
+      "sha256": "05b426217de5c02528948f0eb9f3ba2090505be2938fcbd5875f970b09582fa7"
+    }
+  ],
+  "gzip_bytes": 91070,
+  "gzip_sha256": "d077f0c4f5ca51e46e3ef15c6286cb16c5e1baad3c8314c3407f2481e854ddb5",
+  "raw_bytes": 352664,
+  "raw_sha256": "ea832e7cef2a3d88ec23e1055f987cd93918131edd6746341b3c89c7826ed32b"
+}
