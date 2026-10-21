@@ -74,9 +74,9 @@ def prepare_composition(raw: bytes):
         fields = {"path", "sha256", "size_bytes", "artifact_root", "metadata_root"}
         if not isinstance(pin, dict) or set(pin) != fields:
             raise ReviewError("native mix metadata descriptor is malformed")
-        metadata = path(pin["path"], pin["metadata_root"])
+        path(pin["path"], pin["metadata_root"])
         path(pin["artifact_root"], pin["artifact_root"])
-        return PinnedDocument(metadata, pin["sha256"], pin["size_bytes"], Path(pin["artifact_root"]), Path(pin["metadata_root"]))
+        return PinnedDocument.from_admitted_descriptor(pin)
 
     speech, template, accepted = (document(name) for name in ("original_tts_document", "mix_template", "accepted_tts_document"))
     mix = parse_mix_json(template.read())

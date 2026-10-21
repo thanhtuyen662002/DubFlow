@@ -6,7 +6,7 @@ This module does not execute ASR/OCR/TTS or mutate the active output graph.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -34,6 +34,7 @@ class PinnedDocument:
     size_bytes: int
     artifact_root: Path
     metadata_root: Path | None = None
+    _admitted_path_spellings: tuple[tuple[str, str], ...] = field(default=(), init=False, repr=False, compare=False)
 
     def __post_init__(self):
         path, root = Path(self.path).absolute(), Path(self.artifact_root).absolute()
@@ -48,6 +49,34 @@ class PinnedDocument:
         if self.metadata_root is not None:
             object.__setattr__(self, "metadata_root", metadata)
 
+    @classmethod
+    def from_admitted_descriptor(cls, value: dict) -> PinnedDocument:
+        """Retain exact wire spelling from a separate native-admitted pin.
+
+        Path objects remain the only I/O authority. Serialized composition is
+        never a source for these spellings, and exact reconstruction stays on.
+        """
+        # Snapshot before constructor I/O can yield to a caller changing its mapping.
+        value = dict(value) if isinstance(value, dict) else value
+        fields = {"path", "sha256", "size_bytes", "artifact_root"}
+        if isinstance(value, dict) and "metadata_root" in value:
+            fields.add("metadata_root")
+        if not isinstance(value, dict) or set(value) != fields:
+            raise ReviewError("native admitted document binding is malformed")
+        names = tuple(key for key in ("path", "artifact_root", "metadata_root") if key in value)
+        for key in names:
+            raw = value[key]
+            if (not isinstance(raw, str) or not raw or "\x00" in raw or
+                not Path(raw).is_absolute() or ".." in Path(raw).parts):
+                raise ReviewError("native admitted document paths require absolute strings")
+        pin = cls(Path(value["path"]), value["sha256"], value["size_bytes"],
+                  Path(value["artifact_root"]),
+                  Path(value["metadata_root"]) if "metadata_root" in value else None)
+        # Copy immutable strings; later edits to the caller's mapping or a
+        # returned dictionary cannot change this admitted serialization pin.
+        object.__setattr__(pin, "_admitted_path_spellings", tuple((key, value[key]) for key in names))
+        return pin
+
     def read(self) -> bytes:
         streaming._plain(self.path)
         return _json_bytes(self.path, self.sha256, self.size_bytes)
@@ -57,6 +86,7 @@ class PinnedDocument:
                  "artifact_root": str(self.artifact_root)}
         if self.metadata_root is not None:
             value["metadata_root"] = str(self.metadata_root)
+        value.update(self._admitted_path_spellings)
         return value
 
 
@@ -158,7 +188,7 @@ def compose_audio(snapshot: ReviewSnapshot, *, manifest_sha256: str, source: Fil
         if segment.start.time_base != source.start.time_base or segment.start.ticks < source.start.ticks or segment.end.ticks > source.end.ticks:
             raise ReviewError("canonical cue lies outside the source interval/time base")
         descriptor = assignments[segment.segment_id]
-        if descriptor.sha256 in descriptors and descriptors[descriptor.sha256] != descriptor:
+        if descriptor.sha256 in descriptors and descriptors[descriptor.sha256].to_dict() != descriptor.to_dict():
             raise ReviewError("one document hash cannot authorize conflicting paths/roots")
         descriptors[descriptor.sha256] = descriptor
         if descriptor.sha256 not in parsed:

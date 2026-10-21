@@ -69,8 +69,7 @@ def prepare_composition(raw: bytes, *, app_root: Path, profile_path: Path):
     pin=value['accepted_tts_document']
     if not isinstance(pin,dict) or set(pin)!={'path','sha256','size_bytes','artifact_root','metadata_root'}:
         raise ReviewError('current accepted TTS descriptor is malformed')
-    document=PinnedDocument(Path(pin['path']),pin['sha256'],pin['size_bytes'],
-        Path(pin['artifact_root']),Path(pin['metadata_root']))
+    document=PinnedDocument.from_admitted_descriptor(pin)
     if (document.read()!=checked['tts_document_json'].encode() or
         metadata('accepted_spoken_text')!=checked['spoken_text_json'].encode()):
         raise ReviewError('current accepted TTS/spoken metadata differs from native retarget')

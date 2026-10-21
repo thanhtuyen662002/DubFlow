@@ -4011,3 +4011,24 @@ error formatting preserves the admitted child bytes at the supervisor boundary.
 The existing4096-byte desktop error transport can reject expanded diagnostics;
 whole-GUI lossless diagnostics at the maximum child stderr remain unqualified.
 No transport cap or error-envelope schema is widened by this repair.
+
+
+### 2026-10-21: exact separately admitted document spelling
+
+A Windows native data-root prefix may retain forward slashes when Rust joins
+backslash components. Python Path normalizes this spelling for I/O; rebuilding
+the descriptor from Path must not replace the exact string already admitted by
+the supervisor. PinnedDocument now keeps an immutable copy of the separate
+native descriptor's path/root strings for serialization, while its existing
+validated Path objects, no-link/root guards, complete byte hashes and size pins
+remain the I/O authority. Cue preparation, accepted effective mix and original
+mix dispatch use the same closed descriptor factory.
+
+No schema/wire field or durable migration is added. Existing v1/v2 composition
+bytes and hashes are unchanged. Exact document-inventory comparison and exact
+whole-composition reconstruction remain mandatory: a path spelling supplied
+only by serialized composition, even one opening the same file, cannot replace
+the separately admitted pin. Numeric confidence/timing/token representation is
+unchanged. POSIX backslashes remain literal filename characters. New engine
+source requires normal producer admission; existing installed producers and
+jobs are not patched, repinned or silently rewritten.

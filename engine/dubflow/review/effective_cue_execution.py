@@ -58,13 +58,7 @@ def read_bound_audio_pins(bindings_raw: bytes) -> dict:
                         source_id=source["source_id"], layout=source["layout"])
 
     def document(item):
-        fields = {"path", "sha256", "size_bytes", "artifact_root"}
-        if isinstance(item, dict) and "metadata_root" in item:
-            fields.add("metadata_root")
-        if not isinstance(item, dict) or set(item) != fields:
-            raise ReviewError("native admitted document binding is malformed")
-        return PinnedDocument(Path(item["path"]), item["sha256"], item["size_bytes"],
-            Path(item["artifact_root"]), Path(item["metadata_root"]) if "metadata_root" in item else None)
+        return PinnedDocument.from_admitted_descriptor(item)
     documents = value["documents"]
     originals = value["canonical_inputs"]
     if (not isinstance(documents, list) or not 1 <= len(documents) <= 10000 or
