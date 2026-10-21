@@ -1,13 +1,22 @@
 import type { ReviewOperation } from "./request-activity.ts";
 
 export type ReviewRequestFailure = {
-  schema_version: 1; kind: "review_desktop_request_failure"; request_id: string; job_id: string;
+  schema_version: 1 | 2; kind: "review_desktop_request_failure"; request_id: string; job_id: string;
   operation: ReviewOperation; outcome: "unconfirmed"; phase: "checking" | "processing" | "verifying";
   native_stage: string | null; message: string; diagnostic: string | null;
 };
 const stages = ["admitting_current", "admitting_processing", "verifying_runtime_files", "preparing_cue", "synthesizing_cue", "validating_cue",
   "mixing_audio", "validating_mix", "deriving_timeline", "rendering_video", "validating_render", "retaining_publication", "committing_revision",
   "reopening_current", "publishing_standard", "publishing_editable"];
+const stageLabels: Record<string, string> = {
+  admitting_current: "Kiểm tra phiên hiện hành", admitting_processing: "Kiểm tra phiên xử lý",
+  verifying_runtime_files: "Kiểm tra thành phần xử lý", preparing_cue: "Chuẩn bị câu thoại",
+  synthesizing_cue: "Tạo giọng cho câu thoại", validating_cue: "Kiểm tra âm thanh câu thoại",
+  mixing_audio: "Trộn âm thanh", validating_mix: "Kiểm tra âm thanh đã trộn", deriving_timeline: "Tạo dòng thời gian",
+  rendering_video: "Dựng video", validating_render: "Kiểm tra video vừa dựng", retaining_publication: "Lưu bộ kết quả",
+  committing_revision: "Ghi nhận phiên chỉnh sửa", reopening_current: "Mở lại phiên hiện hành",
+  publishing_standard: "Xuất video và phụ đề", publishing_editable: "Xuất gói chỉnh sửa",
+};
 const text = (v: unknown, limit: number): v is string => typeof v === "string" && v.length > 0 &&
   new TextEncoder().encode(v).byteLength <= limit && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(v) &&
   ![...v].some(c => { const n = c.codePointAt(0)!; return n >= 0xd800 && n <= 0xdfff; });
@@ -16,11 +25,11 @@ export function readReviewFailure(raw: unknown, id: string, job: string, operati
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid review failure");
   const v = raw as Record<string, unknown>;
   if (Object.keys(v).sort().join(",") !== "diagnostic,job_id,kind,message,native_stage,operation,outcome,phase,request_id,schema_version" ||
-    v.schema_version !== 1 || v.kind !== "review_desktop_request_failure" || v.request_id !== id || v.job_id !== job || v.operation !== operation ||
+    (v.schema_version !== 1 && v.schema_version !== 2) || v.kind !== "review_desktop_request_failure" || v.request_id !== id || v.job_id !== job || v.operation !== operation ||
     !/^[A-Za-z0-9-]{16,64}$/.test(id) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(job) ||
     v.outcome !== "unconfirmed" || !["checking", "processing", "verifying"].includes(v.phase as string) ||
     (v.native_stage !== null && !stages.includes(v.native_stage as string)) || !text(v.message, 1024) ||
-    (v.diagnostic !== null && !text(v.diagnostic, 4096))) throw new Error("unbound review failure");
+    (v.diagnostic !== null && !text(v.diagnostic, v.schema_version === 2 ? 32768 : 4096))) throw new Error("unbound review failure");
   return structuredClone(v) as ReviewRequestFailure;
 }
 
@@ -40,7 +49,8 @@ export function reviewFailureDetails(error: unknown, job: string, operation: Rev
   let f: ReviewRequestFailure;
   try { f = readReviewFailure(error.failure, error.failure.request_id, job, operation); } catch { return null; }
   const phase = { checking: "Kiểm tra dữ liệu trước khi chạy", processing: "Xử lý yêu cầu", verifying: "Kiểm tra kết quả vừa tạo" }[f.phase];
-  return [`Bước xử lý: ${phase}`, f.message, f.diagnostic].filter(value => value !== null).join("\n\n");
+  const stage = f.native_stage === null ? null : `Công đoạn: ${stageLabels[f.native_stage]}`;
+  return [`Bước xử lý: ${phase}`, stage, f.message, f.diagnostic].filter(value => value !== null).join("\n\n");
 }
 
 /** Presentation only: a diagnostic never proves mutation state or grants retry. */

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bound desktop Review failure v2 with complete escaped adapter diagnostics",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "request_id", "job_id", "operation", "outcome", "phase", "native_stage", "message", "diagnostic"],
+  "properties": {
+    "schema_version": {"const": 2}, "kind": {"const": "review_desktop_request_failure"},
+    "request_id": {"type": "string", "pattern": "^[A-Za-z0-9-]{16,64}$"}, "job_id": {"$ref": "schema-v2.json#/$defs/id"},
+    "operation": {"enum": ["initialize", "apply", "undo", "standard_export", "editable_export"]},
+    "outcome": {"const": "unconfirmed"}, "phase": {"enum": ["checking", "processing", "verifying"]},
+    "native_stage": {"oneOf": [{"type": "null"}, {"$ref": "native-stage-observation-v1.json#/$defs/event/properties/stage"}]},
+    "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "diagnostic": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 32768}]}
+  },
+  "$comment": "Host/client additionally enforce UTF8 message<=1024B and diagnostic <=32768 B, reject controls except newline/tab and carriage return, and require exact invocation request/job/operation. V1 remains closed with its 4096 B diagnostic limit. V2 accommodates the complete ASCII-escaped representation of an adapter's already bounded 4096 B raw stderr; it does not enlarge native adapter raw capture or generic host stderr limits. Only the observed Review request path uses the new bounded host capture. Native stage is the last observation, display context only; a translated stage label is not success, commit, rollback or retry authority. All failure outcomes remain unconfirmed. Old clients reject v2 and retain reload/no-auto-retry behavior. No database/worker/timeline migration, paths-as-authority or replacement receipt. Details are inert textContent, never HTML/URL/commands. See ADR0032 for the producer/consumer matrix and verification limits."
+}
