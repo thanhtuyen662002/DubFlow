@@ -66,7 +66,37 @@ class ComponentSelectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(selector.component_affected(component, {path}))
 
-    def test_desktop_source_and_queue_changes_execute_five_focused_node_suites(self) -> None:
+    def test_source_retry_ui_suite_has_one_exact_root_and_command(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next(item for item in registry["components"]
+                         if item["id"] == "desktop-source-intake")
+        suite = "apps/desktop/test/source_retry_ui.test.mjs"
+        command = ["node", "--experimental-strip-types", suite]
+        for field, value in (("roots", suite), ("commands", command)):
+            with self.subTest(field=field):
+                self.assertEqual(component[field].count(value), 1)
+
+    def test_source_retry_ui_suite_dispatches_once_for_ui_controller_and_test_changes(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next(item for item in registry["components"]
+                         if item["id"] == "desktop-source-intake")
+        suite = "apps/desktop/test/source_retry_ui.test.mjs"
+        command = ["node", "--experimental-strip-types", suite]
+        for path in ("apps/desktop/src/main.ts",
+                     "apps/desktop/src/features/source_intake/ui_messages.ts",
+                     "apps/desktop/src/features/source_intake/service_controller.ts", suite):
+            with self.subTest(path=path), \
+                 patch.object(selector, "changed_paths", return_value={path}), \
+                 patch.object(selector, "run") as run, \
+                 patch.object(sys, "argv", ["run_integration.py"]), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(selector.main(), 0)
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertEqual(commands.count(command), 1)
+                self.assertEqual(commands, [[sys.executable, "scripts/validate_governance.py"],
+                                            *component["commands"]])
+
+    def test_desktop_source_and_queue_changes_execute_six_focused_node_suites(self) -> None:
         registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
         component = next((item for item in registry["components"]
                           if item["id"] == "desktop-source-intake"), None)
@@ -76,6 +106,7 @@ class ComponentSelectionTests(unittest.TestCase):
             "apps/desktop/test/source_materialized.test.mjs",
             "apps/desktop/test/source_service_controller.test.mjs",
             "apps/desktop/test/source_ui_messages.test.mjs",
+            "apps/desktop/test/source_retry_ui.test.mjs",
             "apps/desktop/test/queue.test.mjs",
         )
         commands = [["node", "--experimental-strip-types", suite] for suite in suites]
@@ -93,7 +124,7 @@ class ComponentSelectionTests(unittest.TestCase):
             with self.subTest(unrelated=path):
                 self.assertFalse(selector.component_affected(component, {path}))
         # Exercise the real registry/dispatcher, not just the root predicate.
-        # Stub subprocess execution here; the five registered argv arrays are
+        # Stub subprocess execution here; the six registered argv arrays are
         # also executed directly during local qualification and Integration.
         for path in ("apps/desktop/src/main.ts",
                      "apps/desktop/src/features/source_intake/service_controller.ts",

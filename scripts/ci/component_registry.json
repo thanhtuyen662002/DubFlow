@@ -785,6 +785,7 @@
         "apps/desktop/test/source_materialized.test.mjs",
         "apps/desktop/test/source_service_controller.test.mjs",
         "apps/desktop/test/source_ui_messages.test.mjs",
+        "apps/desktop/test/source_retry_ui.test.mjs",
         "apps/desktop/src/main.ts",
         "apps/desktop/index.html",
         "apps/desktop/package.json",
@@ -813,6 +814,11 @@
           "node",
           "--experimental-strip-types",
           "apps/desktop/test/source_ui_messages.test.mjs"
+        ],
+        [
+          "node",
+          "--experimental-strip-types",
+          "apps/desktop/test/source_retry_ui.test.mjs"
         ],
         [
           "node",
