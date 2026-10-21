@@ -1094,6 +1094,7 @@
       "roots": [
         "engine/dubflow/tts",
         "engine/dubflow/worker",
+        "engine/dubflow/media",
         "models/manifests",
         "models/voices",
         "tests/production",
@@ -1138,6 +1139,16 @@
           "discover",
           "-s",
           "tests/integration/production_local_file",
+          "-p",
+          "test_*.py"
+        ],
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/production/media",
           "-p",
           "test_*.py"
         ]

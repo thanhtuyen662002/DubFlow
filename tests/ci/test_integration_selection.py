@@ -17,6 +17,35 @@ import run_integration as selector
 
 
 class ComponentSelectionTests(unittest.TestCase):
+    def test_production_media_engine_changes_select_b2(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next(item for item in registry["components"]
+                         if item["id"] == "production-b2-dubbing")
+        selected = [item["id"] for item in registry["components"]
+                    if selector.component_affected(item, {"engine/dubflow/media/render.py"})]
+        self.assertIn("production-b2-dubbing", selected)
+        self.assertEqual(component["roots"].count("engine/dubflow/media"), 1)
+
+    def test_production_media_test_changes_dispatch_media_suite_once(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next(item for item in registry["components"]
+                         if item["id"] == "production-b2-dubbing")
+        media_command = ["python", "-m", "unittest", "discover", "-s",
+                         "tests/production/media", "-p", "test_*.py"]
+        # Exercise actual registry loading/selection/dispatch; execute no registered command.
+        with patch.object(selector, "changed_paths",
+                          return_value={"tests/production/media/test_render.py"}), \
+             patch.object(selector, "run") as run, \
+             patch.object(sys, "argv", ["run_integration.py"]), \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(selector.main(), 0)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands.count(media_command), 1)
+        self.assertEqual(component["commands"].count(media_command), 1)
+        self.assertEqual(commands,
+                         [[sys.executable, "scripts/validate_governance.py"],
+                          *component["commands"]])
+
     def test_output_location_frontend_paths_reach_queue_regressions(self) -> None:
         registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
         component = next(item for item in registry["components"] if item["id"] == "desktop-source-intake")
