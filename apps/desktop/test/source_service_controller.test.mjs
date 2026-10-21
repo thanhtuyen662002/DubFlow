@@ -563,3 +563,35 @@ test("query delivery: prior modifying write also cannot acknowledge a newer canc
   cancel.resolve({ delivery: "submitted" }); assert.equal(await cancelling, true);
   assert.equal(h.controller.getState().rows[0].delivery, "submitted");
 });
+
+test("local queue: failed persistence cannot become a false already-present admission on explicit retry", async () => {
+  let durable = null, fail = true, writes = 0, next = 0, nativeCalls = 0;
+  const storage = { read: () => durable, write(value) {
+    writes++;
+    if (fail) throw new Error("CONTROLLED_STORAGE_REJECTED");
+    durable = value;
+  } };
+  const queue = new QueueController(storage, () => "2026-10-21T00:00:00.000Z", 100, () => `persistence-${++next}`);
+  const controller = createSourceServiceController(queue, async () => { nativeCalls++; throw new Error("NATIVE_FORBIDDEN"); });
+  const input = "D:/nguồn, cảnh.mp4"; // Path string only; no file or provider access.
+  const first = await controller.submit(input);
+  assert.equal(first.local_added, 0);
+  assert.equal(first.local_present, 0);
+  assert.equal(first.rejected[0].code, "LOCAL_QUEUE_REJECTED");
+  assert.equal(queue.getSnapshot().jobs.length, 0);
+  assert.equal(durable, null);
+  fail = false; // Explicitly changed storage condition; submit never retries itself.
+  const retry = await controller.submit(input);
+  assert.equal(retry.local_added, 1);
+  assert.equal(retry.local_present, 0);
+  assert.deepEqual(retry.rejected, []);
+  assert.equal(writes, 2);
+  const reopened = new QueueController(storage);
+  assert.deepEqual(reopened.getSnapshot(), queue.getSnapshot());
+  assert.equal(reopened.getSnapshot().jobs[0].sourcePath, input);
+  const duplicate = await controller.submit(input);
+  assert.equal(duplicate.local_added, 0);
+  assert.equal(duplicate.local_present, 1);
+  assert.equal(writes, 2);
+  assert.equal(nativeCalls, 0);
+});

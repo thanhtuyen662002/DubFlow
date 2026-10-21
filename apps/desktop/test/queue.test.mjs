@@ -269,3 +269,122 @@ assert.throws(() => roots.setOutputRoot("missing-job", null), /Unknown job/);
 console.log("output-root queue regressions passed (legacy/persistence/validation/untouched guard/retry isolation)");
 
 await import("./output_location.test.mjs");
+
+// Appended to queue.test.mjs; public API/schema remain unchanged.
+import test from "node:test";
+
+function storageAtomicityFixture() {
+  let serialized = null, fail = false, writes = 0, successful = 0, next = 0;
+  const storage = {
+    read: () => serialized,
+    write(value) {
+      writes++;
+      if (fail) throw new Error("CONTROLLED_STORAGE_WRITE_FAILED");
+      serialized = value;
+      successful++;
+    },
+  };
+  const queue = new QueueController(storage, () => "2026-10-21T00:00:00.000Z", 100,
+    () => `storage-job-${++next}`);
+  return { storage, queue, fail: (value) => { fail = value; },
+    counts: () => ({ writes, successful }), reopen: () => new QueueController(storage) };
+}
+
+test("storage atomicity: failed add stays absent; changed-condition explicit retry persists exactly once", () => {
+  const f = storageAtomicityFixture(), before = f.queue.getSnapshot();
+  const path = "D:/nguồn, video.mp4";
+  let notifications = 0;
+  f.queue.subscribe(() => { notifications++; });
+  f.fail(true);
+  assert.throws(() => f.queue.addPaths([path]), /CONTROLLED_STORAGE_WRITE_FAILED/);
+  assert.deepEqual(f.queue.getSnapshot(), before);
+  assert.equal(f.storage.read(), null);
+  assert.equal(notifications, 1);
+  f.fail(false); // Explicit changed condition, never an automatic retry.
+  const ids = f.queue.addPaths([path]);
+  assert.equal(ids.length, 1);
+  assert.equal(f.queue.getSnapshot().jobs[0].sourcePath, path);
+  assert.deepEqual(f.reopen().getSnapshot(), f.queue.getSnapshot());
+  assert.deepEqual(f.counts(), { writes: 2, successful: 1 });
+  assert.deepEqual(f.queue.addPaths([path]), []);
+  assert.deepEqual(f.counts(), { writes: 2, successful: 1 });
+});
+
+for (const [name, mutate] of [
+  ["selection", (q, first, second) => q.selectJob(second)],
+  ["status/output", (q, first, second) => q.updateStatus(second,
+    { ...q.getSnapshot().jobs[1].status, state: "RUNNING" }, "D:/new-output.mp4")],
+  ["retry/history", (q, first) => q.retryJob(first)],
+  ["output root", (q, first, second) => q.setOutputRoot(second, "E:/new output")],
+  ["voice", (q, first, second) => q.setDubbing(second, { enabled: true, voiceId: "vi-truc-ly-vieneu3-v1" })],
+  ["remove/history", (q, first) => q.removeJob(first)],
+]) {
+  test("storage atomicity: failed " + name + " preserves committed rows, order, selection and history", () => {
+    const f = storageAtomicityFixture();
+    const [first, second] = f.queue.addPaths(["D:/old, A.mp4", "D:/pending B.mp4"]);
+    f.queue.setOutputRoot(first, "D:/original output");
+    f.queue.setDubbing(first, { enabled: true, voiceId: "vi-truc-ly-vieneu3-v1" });
+    f.queue.updateStatus(first, { ...f.queue.getSnapshot().jobs[0].status, state: "COMPLETED" }, "D:/completed/final.mp4");
+    const before = f.queue.getSnapshot(), persisted = f.storage.read(), counts = f.counts();
+    let notifications = 0;
+    f.queue.subscribe(() => { notifications++; });
+    f.fail(true);
+    assert.throws(() => mutate(f.queue, first, second), /CONTROLLED_STORAGE_WRITE_FAILED/);
+    assert.deepEqual(f.queue.getSnapshot(), before);
+    assert.equal(f.storage.read(), persisted);
+    assert.deepEqual(f.reopen().getSnapshot(), before);
+    assert.equal(notifications, 1);
+    assert.deepEqual(f.counts(), { writes: counts.writes + 1, successful: counts.successful });
+  });
+}
+
+test("storage atomicity: a capacity failure after the first batch item publishes no prefix", () => {
+  const storage = new MemorySnapshotStorage();
+  let next = 0;
+  const queue = new QueueController(storage, () => "2026-10-21T00:00:00.000Z", 1, () => `capacity-${++next}`);
+  const before = queue.getSnapshot();
+  assert.throws(() => queue.addPaths(["D:/first.mp4", "D:/second.mp4"]), /Queue limit/);
+  assert.deepEqual(queue.getSnapshot(), before);
+  assert.equal(storage.read(), null);
+  assert.deepEqual(new QueueController(storage).getSnapshot(), before);
+});
+
+test("storage atomicity: ID failure/collision after the first batch item publishes no prefix", () => {
+  for (const collision of [false, true]) {
+    const storage = new MemorySnapshotStorage();
+    let next = 0;
+    const queue = new QueueController(storage, () => "2026-10-21T00:00:00.000Z", 100,
+      () => collision || next++ === 0 ? "same-id" : "invalid id");
+    const before = queue.getSnapshot();
+    assert.throws(() => queue.addPaths(["D:/first.mp4", "D:/second.mp4"]), /Invalid generated|independent job ID/);
+    assert.deepEqual(queue.getSnapshot(), before);
+    assert.equal(storage.read(), null);
+  }
+});
+
+test("storage atomicity: observers cannot turn a durable success into a failed add or change another view", () => {
+  const f = storageAtomicityFixture(), seen = [];
+  f.queue.subscribe((view) => {
+    if (view.jobs.length) { view.jobs.length = 0; throw new Error("CONTROLLED_OBSERVER_FAILED"); }
+  });
+  f.queue.subscribe((view) => { seen.push(view.jobs.length); });
+  let ids;
+  assert.doesNotThrow(() => { ids = f.queue.addPaths(["D:/committed.mp4"]); });
+  assert.equal(ids.length, 1);
+  assert.deepEqual(seen, [0, 1]);
+  assert.deepEqual(f.reopen().getSnapshot(), f.queue.getSnapshot());
+  assert.deepEqual(f.counts(), { writes: 1, successful: 1 });
+});
+
+test("storage atomicity: published RAM remains old until synchronous persistence succeeds", () => {
+  let stored = null, queue, before;
+  const storage = { read: () => stored, write(value) {
+    assert.deepEqual(queue.getSnapshot(), before);
+    stored = value;
+  } };
+  queue = new QueueController(storage, () => "2026-10-21T00:00:00.000Z", 100, () => "publication-job");
+  before = queue.getSnapshot();
+  const [id] = queue.addPaths(["D:/publication.mp4"]);
+  assert.equal(queue.getSnapshot().jobs[0].id, id);
+  assert.deepEqual(new QueueController(storage).getSnapshot(), queue.getSnapshot());
+});

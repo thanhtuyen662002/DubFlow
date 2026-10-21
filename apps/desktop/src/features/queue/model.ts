@@ -301,37 +301,40 @@ export class QueueController {
   }
 
   addPaths(paths: readonly string[]): string[] {
-    const existing = new Set(this.snapshot.jobs.map((job) => localPathComparisonKey(job.sourcePath)));
+    const next = cloneSnapshot(this.snapshot);
+    const existing = new Set(next.jobs.map((job) => localPathComparisonKey(job.sourcePath)));
     const added: string[] = [];
     for (const path of paths) {
       const trimmed = path.trim();
       const comparisonKey = localPathComparisonKey(trimmed);
       if (!trimmed || existing.has(comparisonKey)) continue;
-      if (this.snapshot.jobs.length >= this.queueLimit) {
+      if (next.jobs.length >= this.queueLimit) {
         throw new Error(`Queue limit of ${this.queueLimit} jobs reached`);
       }
-      const job = createQueueJob(this.allocateId(), trimmed, this.clock());
-      this.snapshot.jobs.push(job);
+      const job = createQueueJob(this.allocateId(next), trimmed, this.clock());
+      next.jobs.push(job);
       existing.add(comparisonKey);
       added.push(job.id);
     }
     if (added.length > 0) {
-      this.snapshot.selected_job_id ??= added[0];
-      this.commit();
+      next.selected_job_id ??= added[0];
+      this.commit(next);
     }
     return added;
   }
 
   selectJob(jobId: string | null): void {
-    if (jobId !== null && !this.snapshot.jobs.some((job) => job.id === jobId)) {
+    const next = cloneSnapshot(this.snapshot);
+    if (jobId !== null && !next.jobs.some((job) => job.id === jobId)) {
       throw new Error(`Unknown job: ${jobId}`);
     }
-    this.snapshot.selected_job_id = jobId;
-    this.commit();
+    next.selected_job_id = jobId;
+    this.commit(next);
   }
 
   updateStatus(jobId: string, status: JobStatus, outputPath?: string | null): void {
-    const job = this.requireJob(jobId);
+    const next = cloneSnapshot(this.snapshot);
+    const job = this.requireJob(jobId, next);
     if (!isJobStatus(status)) throw new Error("Invalid job status");
     job.status = cloneSnapshot({
       schema_version: QUEUE_SCHEMA_VERSION,
@@ -339,18 +342,19 @@ export class QueueController {
       jobs: [{ ...job, status }],
     }).jobs[0].status;
     if (outputPath !== undefined) job.outputPath = outputPath;
-    this.commit();
+    this.commit(next);
   }
 
   retryJob(jobId: string): string {
-    const job = this.requireJob(jobId);
+    const next = cloneSnapshot(this.snapshot);
+    const job = this.requireJob(jobId, next);
     if (!TERMINAL_STATES.has(job.status.state) && job.status.state !== "BLOCKED_NEEDS_ACTION") {
       throw new Error("Only terminal or blocked jobs can be retried");
     }
-    if (this.snapshot.jobs.length >= this.queueLimit) throw new Error(`Queue limit of ${this.queueLimit} jobs reached`);
+    if (next.jobs.length >= this.queueLimit) throw new Error(`Queue limit of ${this.queueLimit} jobs reached`);
     // The durable original remains terminal with its original options/artifacts.
     // An explicit rerun is a distinct executable job, including its voice.
-    const retry = createQueueJob(this.allocateId(), job.sourcePath, this.clock());
+    const retry = createQueueJob(this.allocateId(next), job.sourcePath, this.clock());
     retry.dubbing = { ...job.dubbing };
     retry.outputRoot = job.outputRoot;
     retry.status = {
@@ -358,14 +362,15 @@ export class QueueController {
       reason: "manual_retry",
       message: "Đang chờ xử lý bản mới",
     };
-    this.snapshot.jobs.push(retry);
-    this.snapshot.selected_job_id = retry.id;
-    this.commit();
+    next.jobs.push(retry);
+    next.selected_job_id = retry.id;
+    this.commit(next);
     return retry.id;
   }
 
   setOutputRoot(jobId: string, root: string | null): void {
-    const job = this.requireJob(jobId);
+    const next = cloneSnapshot(this.snapshot);
+    const job = this.requireJob(jobId, next);
     const status = job.status;
     if (status.state !== "QUEUED" || job.outputPath !== null ||
         status.checkpoint_id !== null || status.progress.completed_units !== "0" ||
@@ -377,46 +382,53 @@ export class QueueController {
     }
     if (!isOutputRoot(root)) throw new Error("Invalid output root");
     job.outputRoot = root;
-    this.commit();
+    this.commit(next);
   }
 
   setDubbing(jobId: string, options: DubbingOptions): void {
-    const job = this.requireJob(jobId);
+    const next = cloneSnapshot(this.snapshot);
+    const job = this.requireJob(jobId, next);
     if (job.status.state !== "QUEUED") throw new Error("Requeue the job before changing its voice");
     if (!isDubbingOptions(options)) throw new Error("Invalid dubbing options");
     job.dubbing = { ...options };
-    this.commit();
+    this.commit(next);
   }
 
   removeJob(jobId: string): void {
-    this.requireJob(jobId);
-    this.snapshot.jobs = this.snapshot.jobs.filter((job) => job.id !== jobId);
-    if (this.snapshot.selected_job_id === jobId) {
-      this.snapshot.selected_job_id = this.snapshot.jobs[0]?.id ?? null;
+    const next = cloneSnapshot(this.snapshot);
+    this.requireJob(jobId, next);
+    next.jobs = next.jobs.filter((job) => job.id !== jobId);
+    if (next.selected_job_id === jobId) {
+      next.selected_job_id = next.jobs[0]?.id ?? null;
     }
-    this.commit();
+    this.commit(next);
   }
 
-  private requireJob(jobId: string): QueueJob {
-    const job = this.snapshot.jobs.find((candidate) => candidate.id === jobId);
+  private requireJob(jobId: string, snapshot: QueueSnapshot): QueueJob {
+    const job = snapshot.jobs.find((candidate) => candidate.id === jobId);
     if (!job) throw new Error(`Unknown job: ${jobId}`);
     return job;
   }
 
-  private allocateId(): string {
+  private allocateId(snapshot: QueueSnapshot): string {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const id = this.idFactory();
       if (typeof id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(id)) throw new Error("Invalid generated job ID");
-      if (!this.snapshot.jobs.some((job) => job.id === id)) return id;
+      if (!snapshot.jobs.some((job) => job.id === id)) return id;
     }
     throw new Error("Could not allocate an independent job ID");
   }
 
-  private commit(): void {
-    const serialized = serializeQueueSnapshot(this.snapshot);
+  private commit(next: QueueSnapshot): void {
+    // Build and validate the durable form before touching storage or published RAM.
+    const serialized = serializeQueueSnapshot(next);
+    const committed = JSON.parse(serialized) as QueueSnapshot;
     this.storage.write(serialized);
-    const published = cloneSnapshot(this.snapshot);
-    for (const listener of this.listeners) listener(published);
+    this.snapshot = committed;
+    // A view cannot roll back a completed write or make admission appear to fail.
+    for (const listener of this.listeners) {
+      try { listener(cloneSnapshot(this.snapshot)); } catch { /* Isolate view failures. */ }
+    }
   }
 }
 
