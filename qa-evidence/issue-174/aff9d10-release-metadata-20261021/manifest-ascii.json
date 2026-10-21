@@ -1,0 +1,76 @@
+{
+  "schema": "DUBFLOW_LOSSLESS_METADATA_PROOF_ASCII_V1",
+  "source": "aff9d10be8b6845a9852683a5e5e338f052f39d4",
+  "artifact": 12315012389,
+  "raw_bytes": 2234939,
+  "raw_sha256": "fdfcf63a823d2907f8fcf9367137a4b07f481ff28b6bc4f94f0f1865acde796d",
+  "gzip_bytes": 1633328,
+  "gzip_sha256": "b58d88586c25d3c66351a5929b89312784b504929c4d9f14ad3c4de44fe60a4c",
+  "parts": [
+    {
+      "file": "part-001.gzpart.b64",
+      "bytes": 196608,
+      "sha256": "6a93c3421db519fd715026cf7cf6062d7c350794576319b3004f60283218d021",
+      "ascii_bytes": 262144,
+      "git_blob": "0ecd85a17d6d88cbdb0a0fa1ccae4b0be485e590"
+    },
+    {
+      "file": "part-002.gzpart.b64",
+      "bytes": 196608,
+      "sha256": "a29227671002ead01998e8aa4f9d4703a626cfe6ed1b332f43bc1829b237b584",
+      "ascii_bytes": 262144,
+      "git_blob": "b116d49a5c531c38ef129eb058ab191348c8fb30"
+    },
+    {
+      "file": "part-003.gzpart.b64",
+      "bytes": 196608,
+      "sha256": "91b9e26af96a7f0fbf2aa0cd5a10aec7c9858a468d703037a9337e5a2d95cde8",
+      "ascii_bytes": 262144,
+      "git_blob": "a30e996b4fb0a3dc2ac44f66bed40b84a9755e22"
+    },
+    {
+      "file": "part-004.gzpart.b64",
+      "bytes": 196608,
+      "sha256": "8784d50fb5cdd74b2d1c7df3606c080d9a20da0d31f6bc95a2f4d2f44ac9d586",
+      "ascii_bytes": 262144,
+      "git_blob": "252e03edd0a52c3cec9f010b8686e15f930e491a"
+    },
+    {
+      "file": "part-005.gzpart.b64",
+      "bytes": 196608,
+      "sha256": "8e5a88489685bd24db4c3c6ddc092902b44cd51e02a4063daac4741039371f0b",
+      "ascii_bytes": 262144,
+      "git_blob": "2ea2c7f1a1aea6d42db5183f76c5c6d6abc4945f"
+    },
+    {
+      "file": "part-006.gzpart.b64",
+      "bytes": 196608,
+      "sha256": "eb84bde7e40e3298060102b1eea77d6f6c38a0fd1bc8a8d6aaa82ca403ddbb02",
+      "ascii_bytes": 262144,
+      "git_blob": "3406e3913cb3ac1db45f29093e75d36f95903c36"
+    },
+    {
+      "file": "part-007.gzpart.b64",
+      "bytes": 196608,
+      "sha256": "6418f24861a2c8576ff68f6aea30a7a2552e628151f8751f57036c44f97d5bf7",
+      "ascii_bytes": 262144,
+      "git_blob": "547c857af7dcf5631bb671cada74e0823f2fabff"
+    },
+    {
+      "file": "part-008.gzpart.b64",
+      "bytes": 196608,
+      "sha256": "0c6d406526be22d4d48d8c9ac98e237242306d1ddd32950f3fea1d68bd3bc3a2",
+      "ascii_bytes": 262144,
+      "git_blob": "64671ffb1bc097f68119fec1b4599a125316344e"
+    },
+    {
+      "file": "part-009.gzpart.b64",
+      "bytes": 60464,
+      "sha256": "7c235cd0e0defc913a559c6a8b6ca376a3982843bf598dcd012511167032a51b",
+      "ascii_bytes": 80620,
+      "git_blob": "b25717d8e2d34dff0caefde3dff33a1149fd22bf"
+    }
+  ],
+  "files": 22,
+  "recovery": "literal compressed inputs plus exact raw-DEFLATE recipes; original local files retained; not artifact payload admission"
+}
