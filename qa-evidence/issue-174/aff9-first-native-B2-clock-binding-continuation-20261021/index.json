@@ -1,0 +1,56 @@
+{
+  "files": [
+    {
+      "bytes": 746,
+      "mtime_ns": "1792590196612569600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\actual-pre-native-QA-failure-retained.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840934",
+      "sha256": "6bf08210f18a2e2d139ba5953f0cbd63faefc2d09fcde6a760bba1c6aab6f91e"
+    },
+    {
+      "bytes": 18421,
+      "mtime_ns": "1792590196630727600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\run-first-aff9-original-B2-canonical-clock-v7.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840935",
+      "sha256": "be4c17a0e4010b647a5251d2f6331abe9d8b925ebd13b58d65e846fc91d3f0d3"
+    },
+    {
+      "bytes": 7215,
+      "mtime_ns": "1792590196660343100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\ARMED-same-original-clock-plan.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840936",
+      "sha256": "66fba71c859b84144ea1c6c1830f99e3e13e45d46d75c402fbcfca808749b4ea"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792590107304736200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\outer-original.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840925",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 897,
+      "mtime_ns": "1792590107562683400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\outer-original.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840926",
+      "sha256": "b26ba635ca3ecf8f8e6a0a884261eed74c918ded92e9f78f582bd44c9b785421"
+    },
+    {
+      "bytes": 353,
+      "mtime_ns": "1792589895494990200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\frozen-whole-cohort-original-clock-once.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683537",
+      "sha256": "981578d63b16462e67a76e7402631610155ed78d00e49763b745df2c0d735ca7"
+    }
+  ],
+  "gzip_bytes": 16195,
+  "gzip_sha256": "c0ad935848c2dd6378d6172f9fb105e83ea40e89fa4947366b89e50d2bc34f32",
+  "raw_bytes": 39338,
+  "raw_sha256": "8fce9d0b9270290887b7eb50181c88c3d0cfcdf50f61765ed4fe4fc5ffdba2c1"
+}
