@@ -1,0 +1,1008 @@
+{
+  "files": [
+    {
+      "bytes": 4038,
+      "mtime_ns": "1792588029446841600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\actual-C2-CLI-route-handoff.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262084",
+      "sha256": "663e0a595a13deb81ca1b526d795e6b8df2cc49a88fc65baa68ee0d33169ee06"
+    },
+    {
+      "bytes": 2346,
+      "mtime_ns": "1792588183564172200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\actual-native-unit-summary.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840887",
+      "sha256": "790cad46dca1a50a60506a351f1b14d1ff085b2c14b919d644bfd0450d88486a"
+    },
+    {
+      "bytes": 8453,
+      "mtime_ns": "1792588077467421300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\actual-post-native-cumulative-capacity.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551542",
+      "sha256": "5b37a22c3aab2de89799f607c6c4b4adfc2ce87b7ff4b87da99a36901f4a766b"
+    },
+    {
+      "bytes": 571,
+      "mtime_ns": "1792588071693301500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\actual-post-native-git-bindings.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "2251799815104821",
+      "sha256": "8094e6cf52cd64a2ab0d7b8a8d9f19774347dcd0a6543f2c5ea3b5a84099ad86"
+    },
+    {
+      "bytes": 133,
+      "mtime_ns": "1792588029532662900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\additional-control-transfer-reservation-before-publication.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262191",
+      "sha256": "e07791e0e5f91d7be46a3ea9880ef4eba76f67a60f94d40945a07e615921ea26"
+    },
+    {
+      "bytes": 2152,
+      "mtime_ns": "1792586863724075600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\admission-before-native-IO.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262075",
+      "sha256": "400eb18c8108e1d84ff5744791c6391a5d3334aefe5bbe3061acb348c1032012"
+    },
+    {
+      "bytes": 486,
+      "mtime_ns": "1792587319658714000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\C3-final-scoped-review-before-execution.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1970324838394046",
+      "sha256": "54f32d93e624312cd448a0779130f1cd1e9d411c4b16edf3ad2925d8ad2283e7"
+    },
+    {
+      "bytes": 2189,
+      "mtime_ns": "1792587432379020600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\compile-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840800",
+      "sha256": "0703184d4dd4b411fd0886bbad3e147c2d304c9c14052f29426b029c3c47492f"
+    },
+    {
+      "bytes": 110,
+      "mtime_ns": "1792587432422870400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\compile-owned-start.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840803",
+      "sha256": "56dd297935aab3960ef6d1ef5541dbd62d62a53b28ed517f71fa16e5dc52f8cc"
+    },
+    {
+      "bytes": 943,
+      "mtime_ns": "1792587435320149200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\compile-result.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840804",
+      "sha256": "989b6da82498efb39608771a63625390963f84d4c0867441c0f353182d9a0d49"
+    },
+    {
+      "bytes": 5819,
+      "mtime_ns": "1792587433825373700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\compile.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840802",
+      "sha256": "61559d1fc45e4a2e0bfae0e268b58ea875bd0c09ed09a864ef21b42fdeb808ce"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587432400961200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\compile.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840801",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 6274,
+      "mtime_ns": "1792587405898184800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\exact-command-and-scope.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840789",
+      "sha256": "995fb3bab9c70ff5d9ed4a1d437c3411cc488c5ff369bed35b8769f2a7a570c8"
+    },
+    {
+      "bytes": 1002,
+      "mtime_ns": "1792587405879859000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\exact-production-parent-source-selection.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840788",
+      "sha256": "8767b57534dbf9445625cb9afa3e7dd03db57e9460ebc18f59af1277fc30f775"
+    },
+    {
+      "bytes": 8443,
+      "mtime_ns": "1792587432222483500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\fresh-census-before-changed-driver.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840794",
+      "sha256": "cd9cfa68f1693266b61a42703e4965de6f9d86859978fed42c6bb13aec25c196"
+    },
+    {
+      "bytes": 492,
+      "mtime_ns": "1792587432233126000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\outer-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840795",
+      "sha256": "857237f460cd9e92ca6d59c763761878242b4035caa5263f4ba5247500f0a2cc"
+    },
+    {
+      "bytes": 914,
+      "mtime_ns": "1792587435332217700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\outer.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840797",
+      "sha256": "1f63da027aef2768c7c60dfbad05fecb72413e253c3aefad03c35fcc9f4b901a"
+    },
+    {
+      "bytes": 994,
+      "mtime_ns": "1792587435330660700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\outer.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840796",
+      "sha256": "4ff33edb87e6ee1323bf4d2739b41ee84fd64b8d17fe8bf5f72b74bf5c0da19f"
+    },
+    {
+      "bytes": 886,
+      "mtime_ns": "1792587405857623900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\review-native-parent-complete.rs",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840787",
+      "sha256": "946c6cf1fb187d44fff18b06082d504e41a4d21623eb42c3eff14dbc1db64f32"
+    },
+    {
+      "bytes": 10048,
+      "mtime_ns": "1792587405913562800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-parent-module-attempt-02\\run-parent-complete-native-ten-once-v6.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840790",
+      "sha256": "15135511d7d282e14071bcaeec6e01fd402ed67d982d6201cdd014579bfdd35f"
+    },
+    {
+      "bytes": 433,
+      "mtime_ns": "1792587535030328700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\additional-tools-hold-before-IO.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262104",
+      "sha256": "c73cd82ebd2dad55a30c7f53a61fcb150614c6792e68d5b25fd475b1bd8bc609"
+    },
+    {
+      "bytes": 2187,
+      "mtime_ns": "1792587550497005800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\compile-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840812",
+      "sha256": "cef3bc72a51d0c6eedc8b1bc9251a69207e88e47dfd73620eb8de27aacc9965a"
+    },
+    {
+      "bytes": 108,
+      "mtime_ns": "1792587550526143800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\compile-owned-start.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840815",
+      "sha256": "6ea812fafa2d28b5d4975ff9bf6eb92e281697f2f7632ed395b3d2972743b8b8"
+    },
+    {
+      "bytes": 690,
+      "mtime_ns": "1792587552469814000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\compile-result.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840816",
+      "sha256": "87c959d8bcda0aa574a3e9054f1271084f4d87248d26f858963ce8e8b9509a9d"
+    },
+    {
+      "bytes": 5849,
+      "mtime_ns": "1792587552429217400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\compile.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840814",
+      "sha256": "e7c5aec06c10a513e50efd1219b0c85a5c0c7db4862dbe88cec9cbc364e7e9b4"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587550513919200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\compile.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840813",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 386,
+      "mtime_ns": "1792587554705672100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\compiled-binary-full-pin.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840817",
+      "sha256": "671c0b619e5c1bca9d1149ed425abc52aaa21b4a21c4f7fd1aec867aa56cdaf3"
+    },
+    {
+      "bytes": 6277,
+      "mtime_ns": "1792587535046423100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\exact-command-and-scope.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "2251799815104741",
+      "sha256": "1f984d60486ad8c679a5b7a84475ff9c976196abd560bb25c0602a7d590961fb"
+    },
+    {
+      "bytes": 8452,
+      "mtime_ns": "1792587535039308400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\fresh-capacity-before-changed-census.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262105",
+      "sha256": "bbbc4920fb5ccfa5b5320ab324a0ff5877d038a3207add7f41ee9f40b5194c7c"
+    },
+    {
+      "bytes": 530,
+      "mtime_ns": "1792587550376955600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\outer-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262119",
+      "sha256": "356a22f7b8be7db3742f6be6a4513db5a65ace15a4292e366b15320e47e9fe62"
+    },
+    {
+      "bytes": 929,
+      "mtime_ns": "1792587557460091400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\outer.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840809",
+      "sha256": "f7735c148c40868e6c99d6e1ce86699b1cddca53e3f416e155ee78f33638fa54"
+    },
+    {
+      "bytes": 1504,
+      "mtime_ns": "1792587557458097500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\outer.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840808",
+      "sha256": "dfddf3cfd640b851a1c895726f05386b7389d0132b45f94a9b5a30d9463313c7"
+    },
+    {
+      "bytes": 10505,
+      "mtime_ns": "1792587535053927500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\run-native-ten-changed-census-v7.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "2251799815104742",
+      "sha256": "f980fa9e9f8a5d626d024d138a1c8e5d6f248ec423bc3d59f51f796084291f09"
+    },
+    {
+      "bytes": 1300,
+      "mtime_ns": "1792587554721304000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\ten-new-native-tests-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840818",
+      "sha256": "bfeac84d13be77390bcd64ebf032f2274f28c3bdb0be3c3778bd734f7edb8061"
+    },
+    {
+      "bytes": 110,
+      "mtime_ns": "1792587557394742200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\ten-new-native-tests-owned-start.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840821",
+      "sha256": "2d3dc3031b9c73e56e671d9e26c8bab23ee8e8c345984b6c15e65338a8b9e2ce"
+    },
+    {
+      "bytes": 708,
+      "mtime_ns": "1792587557440086500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\ten-new-native-tests-result.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840822",
+      "sha256": "20cd98d9c94b2250ffeda1933b81fa6bcc6d587930f3c72412f359e183dcc560"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587554736659400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\ten-new-native-tests.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840820",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587554735496900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\changed-volatile-census-attempt-03\\ten-new-native-tests.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840819",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 2145,
+      "mtime_ns": "1792587323446206600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\compile-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840781",
+      "sha256": "5dedd64cf9eaa42434ed6be3cb61ee7af713d4f2b6304be80e3adb1179297c29"
+    },
+    {
+      "bytes": 109,
+      "mtime_ns": "1792587323482806400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\compile-owned-start.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840784",
+      "sha256": "5dbb33372a5e6f214f6813beecfece2615d3051636e6114f4934bcb7b19d0479"
+    },
+    {
+      "bytes": 638,
+      "mtime_ns": "1792587331736028300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\compile-result.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840785",
+      "sha256": "bada384578f531c563627a6f6065db44c7939cbc191f9546ae59f7d8c92c342b"
+    },
+    {
+      "bytes": 3560,
+      "mtime_ns": "1792587331702708100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\compile.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840783",
+      "sha256": "1040e51aeb320779eb4a60289fd25a53a63c8cb6300e7cea377fc20ac24ae1b6"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587323468073800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\compile.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840782",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 5730,
+      "mtime_ns": "1792586990471721800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\exact-command-and-scope.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972710",
+      "sha256": "87c2282e8406bc1f43d735ee8b8b32ae990bfe9f68f866deaab810f5eb713b8b"
+    },
+    {
+      "bytes": 8491,
+      "mtime_ns": "1792586863732971700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\fresh-all-paths-census-before-native.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551420",
+      "sha256": "677e75903483a208d8fdc2fa177f607369c5e35bd5ae2fe1ea73fa18fdadef0a"
+    },
+    {
+      "bytes": 8491,
+      "mtime_ns": "1792587323329923400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\fresh-census-immediately-before-once.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972735",
+      "sha256": "00cfc4630dda55e45d1816ec78ab90f104fc50bb795f0031ef2df45eeafd4cc9"
+    },
+    {
+      "bytes": 7893,
+      "mtime_ns": "1792588029512066600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\full-automation-before-native-update.toml",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262190",
+      "sha256": "f44f48042524ce48ce531e33c3ea8497b12254db75b2ef3acf8efce0d8290c55"
+    },
+    {
+      "bytes": 2954,
+      "mtime_ns": "1792588029485445700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\full-board-before-native-update.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262086",
+      "sha256": "eeb9ef98a4a6cf8ed4095d9caa5f2ac2544bac6680a3329ee981b52046cae6e0"
+    },
+    {
+      "bytes": 6894,
+      "mtime_ns": "1792588071388813400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\full-generated-native-tools-hash-only-inventory.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972852",
+      "sha256": "e8a58169c5ae045b34bc5d908426f22dbb4b61ba6f5e11508b8844b534891878"
+    },
+    {
+      "bytes": 45070,
+      "mtime_ns": "1792588029466267500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\full-PR185-before-native-update.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262085",
+      "sha256": "35eeb4130c144a4f367c8908c8ec565e5f16fdcee7ee78075083a7507f5a1d55"
+    },
+    {
+      "bytes": 719,
+      "mtime_ns": "1792588070410506600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\generated-native-QA-binary-inventory.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551536",
+      "sha256": "b36d19f118ba32773264c25451eafbff438860dfef156c5d85d2a1c95b7ad8a2"
+    },
+    {
+      "bytes": 498,
+      "mtime_ns": "1792587120279100300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\local-current-source-binding.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551427",
+      "sha256": "2e1c49da6dcc59a865e4597c1e394de6813450ae25a66ff346eb0b930d5bf4aa"
+    },
+    {
+      "bytes": 411,
+      "mtime_ns": "1792587990360305600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\old-cache-full-metadata-and-all327-pins-unchanged-PASS.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840877",
+      "sha256": "09774ebd7efef2541d53bef2e3e4f8a18cc4520f4748e72295aa31dd1f3a67f2"
+    },
+    {
+      "bytes": 421,
+      "mtime_ns": "1792587323343433100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\outer-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262080",
+      "sha256": "5449d66db984567b188177511e8d902631fe5fff4a821a83aa294949423b37b6"
+    },
+    {
+      "bytes": 828,
+      "mtime_ns": "1792587331752408400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\outer.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683402",
+      "sha256": "aa8ba66fa4d433d4a4851ae7b49817b6f474d254bba85d4fc89fe1811915e172"
+    },
+    {
+      "bytes": 689,
+      "mtime_ns": "1792587331751401800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\outer.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "2251799815104713",
+      "sha256": "1cc0863e6d15f5825fe48ba883cb885b2e49bf919949690383b74f5f0f0940ba"
+    },
+    {
+      "bytes": 709093,
+      "mtime_ns": "1792587990348117700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\readonly-cache-and-input-after.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840876",
+      "sha256": "629e577f7c21df1e92b6ee4825285302e844ca1f376828f4cd1b386aaec32e17"
+    },
+    {
+      "bytes": 1053,
+      "mtime_ns": "1792586900559089500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\readonly-cache-and-input-audit.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262052",
+      "sha256": "d16c88a2f2270761a77f1203aaed05895a5bf4111bb77d3bec80646976ad6e30"
+    },
+    {
+      "bytes": 709093,
+      "mtime_ns": "1792586902115756000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\readonly-cache-and-input-before.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262053",
+      "sha256": "629e577f7c21df1e92b6ee4825285302e844ca1f376828f4cd1b386aaec32e17"
+    },
+    {
+      "bytes": 8037,
+      "mtime_ns": "1792587038881708600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\run-exact-native-ten-once-v2.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840769",
+      "sha256": "504b8ac29ab1cf1bc7d55244963556e61c157fd39c57fffab122991a17eba8ba"
+    },
+    {
+      "bytes": 8626,
+      "mtime_ns": "1792587090939416300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\run-exact-native-ten-once-v3.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840770",
+      "sha256": "2bcd1808cfbd6f619c55a8a6147c2fed9b8a78c8d008b1491387dc78f26cca13"
+    },
+    {
+      "bytes": 9034,
+      "mtime_ns": "1792587229405114800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\run-exact-native-ten-once-v4.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840775",
+      "sha256": "60929c7888b4c57c9a1f1740ed6362bbef21ca06dc948cefb9d7bb8afeeab4ab"
+    },
+    {
+      "bytes": 9980,
+      "mtime_ns": "1792587270906371000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\run-exact-native-ten-once-v5.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262055",
+      "sha256": "879eac940f6d3a093b5c7201fbf4793672d4a4774f2bfa61250e55e205b83157"
+    },
+    {
+      "bytes": 7797,
+      "mtime_ns": "1792586990495581700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\run-exact-native-ten-once.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972733",
+      "sha256": "2b633930afee2a979e1bf80be29eafdd1aa90609800c4d2c259d36cb6bf97941"
+    },
+    {
+      "bytes": 983,
+      "mtime_ns": "1792587795807611800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\actual-production-resource.rc",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "2251799815104681",
+      "sha256": "3328c025ba2795130cbb306eb6f8ce9f156f56d7864033bfde595f24f35c7efb"
+    },
+    {
+      "bytes": 7152,
+      "mtime_ns": "1792587795853222300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\exact-command-and-scope.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972809",
+      "sha256": "15e5adf582c69c9317b72aca5998bcf9b054be07417c217c3e3875ee54d73a92"
+    },
+    {
+      "bytes": 8453,
+      "mtime_ns": "1792587799619042100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\fresh-census-before-activation-tests.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551499",
+      "sha256": "96a40427788fa2d280b57422d0cd4c879f6558702fbada8a7314048bb6ae8eff"
+    },
+    {
+      "bytes": 470,
+      "mtime_ns": "1792587799635075500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840844",
+      "sha256": "f1d9f0fd68f7949cf1f8b57651fd169630cfe9cdc4c8ca320190156bbf02a83f"
+    },
+    {
+      "bytes": 967,
+      "mtime_ns": "1792587799892982300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\outer.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840846",
+      "sha256": "c124736765234fe0e940842bfd1704973e8f0165470b31a360450fbebb1751d3"
+    },
+    {
+      "bytes": 763,
+      "mtime_ns": "1792587799891978100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\outer.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840845",
+      "sha256": "5fff607d9931ad4e7aefae0a30e27c4b6dd1c181affa8bcc0fc262a3894fb458"
+    },
+    {
+      "bytes": 10977,
+      "mtime_ns": "1792587795870465300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\run-only-native-ten-production-activation-v9.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972810",
+      "sha256": "963d4991a241d984825d4ba65748b00f26581d64dae410c7648a489192a156d7"
+    },
+    {
+      "bytes": 16466,
+      "mtime_ns": "1792587795827784900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\static-native-loader-diagnosis.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "2533274791815368",
+      "sha256": "a055231170842465c466f69a6ed299662ba55d874df0601af69e035f5779641c"
+    },
+    {
+      "bytes": 1300,
+      "mtime_ns": "1792587799814691600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\ten-new-native-tests-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840850",
+      "sha256": "5cd6d0ed523eb494b10ff7176255d9e17bb159f49c07a7b024ad96750398e602"
+    },
+    {
+      "bytes": 110,
+      "mtime_ns": "1792587799846572300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\ten-new-native-tests-owned-start.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840853",
+      "sha256": "011681678003c7f5ac984f9a6e20a1bdaf50d8dc8823b1896ac26114dfb733c3"
+    },
+    {
+      "bytes": 710,
+      "mtime_ns": "1792587799882129900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\ten-new-native-tests-result.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840854",
+      "sha256": "1313d01676e19fccd64d25fb92dacdfdf530b9bf27b87f22aa4129c031fd9064"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587799837968300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\ten-new-native-tests.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840852",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587799837968300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\ten-new-native-tests.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840851",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 736,
+      "mtime_ns": "1792587799810031200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-activation-manifest-attempt-05\\unchanged-binary-and-exact-loader-admission.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840849",
+      "sha256": "48a3a7496e3f9b611718773b841d04df6cf87794a7ac4192cb954fb3419a25ff"
+    },
+    {
+      "bytes": 2949,
+      "mtime_ns": "1792587900546541200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\all-original-PE-sections-unchanged.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840861",
+      "sha256": "9809b30383dfbae4bb678dfe77936f79e150348082bc0ec769cd413581b74f19"
+    },
+    {
+      "bytes": 1392,
+      "mtime_ns": "1792587898006932500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\embed-exact-app-manifest-into-new-QA-binary.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840858",
+      "sha256": "9baaecadea2c1482ebdf80a2bc9afa86a68cebebffb2bae480c72dfa667edae7"
+    },
+    {
+      "bytes": 7224,
+      "mtime_ns": "1792587955261189800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\exact-command-and-scope.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840862",
+      "sha256": "a2b086de20f4e85361fabd0ebbf4951dd90fe1b93ec73d058665b20c00b8ed6d"
+    },
+    {
+      "bytes": 8453,
+      "mtime_ns": "1792587895757696200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\fresh-capacity-before-resource-IO.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840857",
+      "sha256": "bce522af38aa95ea3753785b670e8bcbec442b9f87341cd315c44790073f0e6b"
+    },
+    {
+      "bytes": 499,
+      "mtime_ns": "1792587955353004800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840864",
+      "sha256": "a302467a09e91717039e83b78597daa4471c69527b202817cce796c3ee3b3f12"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587955362574900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\outer.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840866",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 756,
+      "mtime_ns": "1792587958026449300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\outer.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840865",
+      "sha256": "bf7ee5f85e094f04add0521342a88b3116c3935c1b3dfca2072250e8f6665ff2"
+    },
+    {
+      "bytes": 570,
+      "mtime_ns": "1792587895744169000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\resource-change-and-additional-tools-hold.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840856",
+      "sha256": "3e7222015cefd31aac6ddf46925e32727042357d2ac3e36ad7f69ccd3dd3b07c"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587900460004400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\resource-update.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840860",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 227,
+      "mtime_ns": "1792587900443512600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\resource-update.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840859",
+      "sha256": "eb913d570674f8e6d44eb0c0b6e16f10f437c06e8eb0bcb6911ed462e479e44b"
+    },
+    {
+      "bytes": 11032,
+      "mtime_ns": "1792587955283270900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\run-only-native-ten-embedded-production-context-v10.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840863",
+      "sha256": "5bef7c328ad3274655f29a60bf217b16c063ec9287a1a2d89cf47b13160d43a2"
+    },
+    {
+      "bytes": 1046,
+      "mtime_ns": "1792587958026449300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\ten-new-native-observed-PASS.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840875",
+      "sha256": "03f74799c610133b8b8255bf89c9fc1d974af503d251a55d858588eddb4d4efa"
+    },
+    {
+      "bytes": 1321,
+      "mtime_ns": "1792587955523309400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\ten-new-native-tests-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840870",
+      "sha256": "ee2a50b2fd7dd99defab9a9280842e2c781037dd27e6ee334564efa150be1605"
+    },
+    {
+      "bytes": 110,
+      "mtime_ns": "1792587957840240400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\ten-new-native-tests-owned-start.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840873",
+      "sha256": "c68032a691b80ea3b11fb2ec9c106b890a194ccd6d319f053841e382cfb3a1b4"
+    },
+    {
+      "bytes": 703,
+      "mtime_ns": "1792587958009871500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\ten-new-native-tests-result.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840874",
+      "sha256": "5193d621bfdf44283d142ffa608b101ec455f6753c528213b16a8f3324053953"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587955541800100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\ten-new-native-tests.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840872",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 1013,
+      "mtime_ns": "1792587957987819300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\ten-new-native-tests.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840871",
+      "sha256": "347519ca6295bc74209e196bf62678718556ce488771f63a44ede6a7bec606b8"
+    },
+    {
+      "bytes": 812,
+      "mtime_ns": "1792587955512392900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-embedded-production-resource-attempt-06\\unchanged-binary-and-exact-loader-admission.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840869",
+      "sha256": "c77a4baa925c175c92a24c9c9064d32f9de3be478b7a158f5d4fc6affcafd8f7"
+    },
+    {
+      "bytes": 6839,
+      "mtime_ns": "1792587653448823100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\exact-command-and-scope.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683303",
+      "sha256": "6c24d0e6b41d66069fdf7d664561f9da3e8bef36de418cf4296634887982057c"
+    },
+    {
+      "bytes": 8452,
+      "mtime_ns": "1792587656753404200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\fresh-census-before-tests-only.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972791",
+      "sha256": "61c72b64be75eaaae4f0c60f9583f9a21ab0dc7b374c0d13185e1ef9fe2f84e8"
+    },
+    {
+      "bytes": 441,
+      "mtime_ns": "1792587656768232800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972792",
+      "sha256": "578abebd72836342ea240025aaa3387ac98190638c123484a3a509de8abfaa75"
+    },
+    {
+      "bytes": 935,
+      "mtime_ns": "1792587657029600000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\outer.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840826",
+      "sha256": "59bf4f53860ee23f7e758c5f455120763ea406602a7beb8998c3150204a78143"
+    },
+    {
+      "bytes": 763,
+      "mtime_ns": "1792587657028613900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\outer.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551481",
+      "sha256": "1595b7c6a714cf4dd1dca1b5df77cae95649a31971c96895428b51e42d295378"
+    },
+    {
+      "bytes": 10835,
+      "mtime_ns": "1792587653465746500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\run-only-native-ten-exact-loader-v8.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1970324838393960",
+      "sha256": "697fc8578194329dae8dd676df6918a69e5c735435fd273ed81b9ef2ab0f9ab2"
+    },
+    {
+      "bytes": 1300,
+      "mtime_ns": "1792587656962214900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\ten-new-native-tests-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840830",
+      "sha256": "0912b5af366b51c9103a632d9b1e723fb07931149c43ab0ede95ad6f29b2d41d"
+    },
+    {
+      "bytes": 110,
+      "mtime_ns": "1792587656979181800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\ten-new-native-tests-owned-start.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840833",
+      "sha256": "413a6c3df444cbcaf17878b959d69f8124b31c55cd16cd2a4c0f116190d23ec9"
+    },
+    {
+      "bytes": 710,
+      "mtime_ns": "1792587657013048300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\ten-new-native-tests-result.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840834",
+      "sha256": "0f4ffac49f4f00da3f4c1728a24f0c8624b81b8755d922947ba7167a4c127254"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587656975174700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\ten-new-native-tests.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840832",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792587656974303500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\ten-new-native-tests.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840831",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 736,
+      "mtime_ns": "1792587656942189300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-run-02\\tests-only-exact-loader-attempt-04\\unchanged-binary-and-exact-loader-admission.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840829",
+      "sha256": "48a3a7496e3f9b611718773b841d04df6cf87794a7ac4192cb954fb3419a25ff"
+    },
+    {
+      "bytes": 700,
+      "mtime_ns": "1792585990131895500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\C1-accept-C3-RequestGuard-lifecycle-adjudication.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262015",
+      "sha256": "dba9db6e487e27fa644851d4a1e5f3d04fe0b937e1d31e06f624024d988c6dea"
+    },
+    {
+      "bytes": 271,
+      "mtime_ns": "1792585892244708100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\c2-readiness\\compiler-version-before.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262013",
+      "sha256": "20d9bbf24ea94c91a31ae9c0a11a249ffc9fe835fab82dfc41828c260c73d785"
+    },
+    {
+      "bytes": 339,
+      "mtime_ns": "1792585894221830800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\c2-readiness\\compiler-version-result.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262014",
+      "sha256": "0beb23158d4daa96b9a00a786814d2e0f8bd2ef572885d9c91ae8e1b10785c90"
+    },
+    {
+      "bytes": 5915,
+      "mtime_ns": "1792586650693421900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\c2-readiness\\HANDOFF.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840760",
+      "sha256": "55bcb51f81455aa24f87a4cf9c0b3b8d5754060d4fd26f96d0c9244c4efe2cfb"
+    },
+    {
+      "bytes": 9478,
+      "mtime_ns": "1792586430958840200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\c2-readiness\\once-command-and-ten-tests.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840758",
+      "sha256": "8c9e4601ff0cbabf6ff08b48b2ca2de0ee259246b415dff6701f66cde8a093b8"
+    },
+    {
+      "bytes": 70158,
+      "mtime_ns": "1792586430956402700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\c2-readiness\\readonly-input-pins.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551413",
+      "sha256": "9025b4e90e5b373ba218e732d9ce45aea778a493689ce3f02af961550ea4a28f"
+    },
+    {
+      "bytes": 2226,
+      "mtime_ns": "1792586650703620300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\c2-readiness\\receipt.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840761",
+      "sha256": "9df519c87752ac474ea8d9b4a7ffe1514e8d26aef651872dd3a9ecaa3e4f94ae"
+    },
+    {
+      "bytes": 931,
+      "mtime_ns": "1792585612965968700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\c2-readiness\\scope-before-files.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840747",
+      "sha256": "a4a3f0faad5d50d9a8402ce0f9f9271429f788a32b2b6e9546b21f1c0360c120"
+    },
+    {
+      "bytes": 25866,
+      "mtime_ns": "1792586550473583400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\c2-readiness\\static-readiness-evidence.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840759",
+      "sha256": "0aff730aaba893aff6c4132a156e8ce7fe644f82103944d469822331f3514c09"
+    },
+    {
+      "bytes": 8000,
+      "mtime_ns": "1792585578700516800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\capacity-before-independent-native-readiness.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840738",
+      "sha256": "eb08fceb4bed724c575f2e0408ab413db64102cd07df10a27515f96a3c012ad2"
+    },
+    {
+      "bytes": 1409,
+      "mtime_ns": "1792586210747792700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\exact-ten-new-native-test-selection.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972724",
+      "sha256": "04075b95586b6f922671fbe7b21359fb45040019e7e3d7177f90b02c95a2eb2f"
+    },
+    {
+      "bytes": 216,
+      "mtime_ns": "1792586210729744200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\native-review-v2-exact-module-tests.rs",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683379",
+      "sha256": "8579b72459657f3769b409cfcb42063ca40d5427b6c3f47c63de10e807b16616"
+    },
+    {
+      "bytes": 1034,
+      "mtime_ns": "1792585578709003400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-independent-v2-native-01\\scope-and-additional-evidence-hold-before-source.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840739",
+      "sha256": "e57d1cde17f60c39b52bd2eb5a4dfb1f6d57d67db3ca954c7133d991275a2dc6"
+    },
+    {
+      "bytes": 173895,
+      "mtime_ns": "1792552810655044700",
+      "path": "C:\\Users\\Vo Thanh Tuyen\\.codex\\worktrees\\review-failure-v2-aff9\\DubFlow\\apps\\desktop\\src-tauri\\src\\review.rs",
+      "python_dev": "1614106654959555849",
+      "python_file_id": "256142228806741652",
+      "sha256": "68e9b4f41e68fa072be901f333cce5b80ac01f8b4766570bfceb973062cd904e"
+    },
+    {
+      "bytes": 21623,
+      "mtime_ns": "1792548351542547200",
+      "path": "C:\\Users\\Vo Thanh Tuyen\\.codex\\worktrees\\review-failure-v2-aff9\\DubFlow\\apps\\desktop\\src-tauri\\src\\main.rs",
+      "python_dev": "1614106654959555849",
+      "python_file_id": "67835469387649058",
+      "sha256": "4b69f134eacb406b0b662db8b233e945a6d9b2e892255ebba0048e3bda7e3239"
+    },
+    {
+      "bytes": 4487,
+      "mtime_ns": "1792568255811381400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-whole-extractor-68\\owned_job_defs.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931458538",
+      "sha256": "c72d420f294d8e6fb3183c55a5a82b541a9fd6228ecd579f7459091b86eb453f"
+    },
+    {
+      "bytes": 335,
+      "mtime_ns": "1792587795777376000",
+      "path": "C:\\Users\\Vo Thanh Tuyen\\.codex\\worktrees\\review-shared-integration\\tauri-portable-build-tools\\independent-review-v2-20261021\\attempt-03\\review-native-tests.exe.manifest",
+      "python_dev": "1614106654959555849",
+      "python_file_id": "3377699720574514",
+      "sha256": "261fd7ab54903e3b257483cd3619b62c391c9d6f438c6197b3aee1212ce921da"
+    }
+  ],
+  "gzip_bytes": 617991,
+  "gzip_sha256": "ce750856a56b4d475b87538faeac37aea500b182e2d983856c6b5d318143219a",
+  "raw_bytes": 2846265,
+  "raw_sha256": "1f72f1f03d472c209759aa0a44488e2ee9b16b7ddca42c26c157ecc5fbd78536"
+}
