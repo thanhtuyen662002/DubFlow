@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import "./request_failure_v2.test.mjs";
+import "./request_failure_v2_view.test.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createReviewSnapshot, groupFindings, ReviewController } from "../../apps/desktop/src/features/review/model.ts";
