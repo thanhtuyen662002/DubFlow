@@ -1,0 +1,560 @@
+{
+  "files": [
+    {
+      "bytes": 4038,
+      "mtime_ns": "1792588774333295500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\accepted-C2-shipped-CLI-handoff.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840896",
+      "sha256": "663e0a595a13deb81ca1b526d795e6b8df2cc49a88fc65baa68ee0d33169ee06"
+    },
+    {
+      "bytes": 23844,
+      "mtime_ns": "1792590107513989400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\actual-current-CLI-scope.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840930",
+      "sha256": "12b2c9e7a17e50a5e3482092ebc43f7115231c6df129dc230b868fdd18a0989e"
+    },
+    {
+      "bytes": 528,
+      "mtime_ns": "1792590107534738800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\actual-current-explicit-alias-accounting.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840931",
+      "sha256": "492b92ec1cda23f8a4e5f77a2ed8947329d180c656e8bd05b395ce2247a8914b"
+    },
+    {
+      "bytes": 782,
+      "mtime_ns": "1792590107549016800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\actual-current-P9-system-alias-capability.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840932",
+      "sha256": "03df25b41e8f857782eeb14553b8fb37a239261a2e5c366887d1d4745355cbd3"
+    },
+    {
+      "bytes": 22046,
+      "mtime_ns": "1792590107493576600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\actual-current-player-baseline.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840928",
+      "sha256": "d5bd25d207ca2e2eef7b3fb620ebc2bb6220e253468dcab56c5ac8304682353d"
+    },
+    {
+      "bytes": 509,
+      "mtime_ns": "1792589895519754300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\actual-review-dispositions-before-native.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840916",
+      "sha256": "e9af4aa2784dd5dadcc30a2be2cb5d1930dd61b8afc61715a7116e22586436ac"
+    },
+    {
+      "bytes": 189,
+      "mtime_ns": "1792589956152624900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\additional-source-publication-control-transfer-hold.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840921",
+      "sha256": "feed4291eaeaa905f2ef00df8a25677a255f035da01783222b64e425207b2b2d"
+    },
+    {
+      "bytes": 7060,
+      "mtime_ns": "1792589895512131700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\ARMED-once-current-aff9-original-B2-plan.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551571",
+      "sha256": "68d2183331d46a3ef675828d49ac7fea9b712b74a06fed81d0e34a6056710d1e"
+    },
+    {
+      "bytes": 1281,
+      "mtime_ns": "1792589895527877500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\armed-source-admission-proof\\build-source-proof.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840918",
+      "sha256": "b0aa01d9c0efc97b6b233bf9e2d63ecafe4f17c65b6dfefd8ca748d86b3d468c"
+    },
+    {
+      "bytes": 91070,
+      "mtime_ns": "1792589895592846900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\armed-source-admission-proof\\full.json.gz",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840919",
+      "sha256": "d077f0c4f5ca51e46e3ef15c6286cb16c5e1baad3c8314c3407f2481e854ddb5"
+    },
+    {
+      "bytes": 152,
+      "mtime_ns": "1792590038109730500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\armed-source-admission-proof\\independent-all21-fullbytes-hash-exactns-PASS.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840922",
+      "sha256": "fe650c64c92fc2e3087abcd54169de143d639879d70a32452ab84738da0e4a81"
+    },
+    {
+      "bytes": 7643,
+      "mtime_ns": "1792589895602638800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\armed-source-admission-proof\\index.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840920",
+      "sha256": "979d241e716092659180ff6f3bda42e426f385570d8420134aa163a95c95c00e"
+    },
+    {
+      "bytes": 635,
+      "mtime_ns": "1792590107298223400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\C1-one-original-B2-request-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840924",
+      "sha256": "09ef83d405ed7f9477b2b1a23db19bb59c5f5b86ffb85731108da105f271a63c"
+    },
+    {
+      "bytes": 23845,
+      "mtime_ns": "1792590285438004100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\actual-current-CLI-scope.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "3940649675368841",
+      "sha256": "93c2367307e8e12adc5e4685072382cf7dc72d44e7cf8902b23fa0b4c6ae5ee7"
+    },
+    {
+      "bytes": 528,
+      "mtime_ns": "1792590285453941100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\actual-current-explicit-alias-accounting.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551626",
+      "sha256": "c4e38863bbac4dec4889866da7625239e63533afa4ee68c2ed5c691eb78c096e"
+    },
+    {
+      "bytes": 782,
+      "mtime_ns": "1792590285469028000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\actual-current-P9-system-alias-capability.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840971",
+      "sha256": "76d69f5d4ce5358110afc58414170a35255c353f37a80861b33aa08438e0e51e"
+    },
+    {
+      "bytes": 22047,
+      "mtime_ns": "1792590285419149800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\actual-current-player-baseline.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840951",
+      "sha256": "33c54923fda1633129210724ad5bb17a00d995a1b487efd6b4e683f82adea3ae"
+    },
+    {
+      "bytes": 1053,
+      "mtime_ns": "1792590287328428400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\actual-model27-input-processing-READY.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840973",
+      "sha256": "ded3813acbed92caab01e43c8648b685893363c747f54fdbb41741709b92c614"
+    },
+    {
+      "bytes": 571,
+      "mtime_ns": "1792590287325066800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\actual-native-lifetime-census.jsonl",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840972",
+      "sha256": "a501f28c426ebe0af5811ee6758ed2aa8ba6f07a0e6543c1f5d96963ebd95ac3"
+    },
+    {
+      "bytes": 746,
+      "mtime_ns": "1792590196612569600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\actual-pre-native-QA-failure-retained.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840934",
+      "sha256": "6bf08210f18a2e2d139ba5953f0cbd63faefc2d09fcde6a760bba1c6aab6f91e"
+    },
+    {
+      "bytes": 7215,
+      "mtime_ns": "1792590196660343100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\ARMED-same-original-clock-plan.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840936",
+      "sha256": "66fba71c859b84144ea1c6c1830f99e3e13e45d46d75c402fbcfca808749b4ea"
+    },
+    {
+      "bytes": 8453,
+      "mtime_ns": "1792590285245113800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\fresh-census-immediately-before-missing-native-call.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972909",
+      "sha256": "7874a5688facc377ea014fbf6f0f0401f28414363571e51e6cd93189af3c0916"
+    },
+    {
+      "bytes": 115,
+      "mtime_ns": "1792590287948100600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\model-input-raw-custody-OPAQUE-OWNER-HOLD.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842104",
+      "sha256": "f932e977a8ddf5bb22276054af27ec5c036ee212159b2ae865f26f4c42d99df5"
+    },
+    {
+      "bytes": 134,
+      "mtime_ns": "1792590285376605200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\observed-fresh-initial-state.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840946",
+      "sha256": "f9f597e521c890405af8dfffb353ca01a7bc23a21cfa84b3d45bdcc7a10fc7fd"
+    },
+    {
+      "bytes": 616,
+      "mtime_ns": "1792590285254761000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\once-missing-native-call-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "844424931551598",
+      "sha256": "87584afa7fdb5d61e264cb011cce57298391b58b340cb668880b571e09fb7c98"
+    },
+    {
+      "bytes": 729,
+      "mtime_ns": "1792590287348200900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\original-B2-once-intent.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840974",
+      "sha256": "8dfcc35726a610cd800c15a5d60ce3912ce8ffc1d3348da8663edd5d2a0228b3"
+    },
+    {
+      "bytes": 110,
+      "mtime_ns": "1792590287818245500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\original-B2-owned-start.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840977",
+      "sha256": "d37b474d8dda7b139d93d28f3603064db6a207163324b496f0edd10915af6fa5"
+    },
+    {
+      "bytes": 782,
+      "mtime_ns": "1792590287924434300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\original-B2-result.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842103",
+      "sha256": "1117e496c8e8f2e8aa102b28da1779064330ad8d7a4860cece7f4d964f77df4f"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792590287361159500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\original-B2.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840976",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792590287361159500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\original-B2.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840975",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792590285261896200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\outer-original.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840945",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 988,
+      "mtime_ns": "1792590287967296500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\outer-original.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840943",
+      "sha256": "51ce3c7c1111b8a1f444b3e5afa80ad6475d3df1b8141d31e13ef480a1ca0659"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792590810707569500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\actual-model27-and-owner-full-audit.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842125",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 9958,
+      "mtime_ns": "1792590810689719400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\actual-model27-and-owner-full-audit.stdout.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842124",
+      "sha256": "92514fe5869994e34d958e9e89557981e550b8f6e80da9b4b0096ac2ae675511"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792590657382670000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\actual-new-DB-SQL-snapshot.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842114",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 1111,
+      "mtime_ns": "1792590657373154400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\actual-new-DB-SQL-snapshot.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842113",
+      "sha256": "51d5ef62faa65b82b6b2dd8a7d195291b90118db1953f0abcf1447b9261377e6"
+    },
+    {
+      "bytes": 1725,
+      "mtime_ns": "1792590810709586700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\C1-explicit-incomplete-raw-disposition.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842126",
+      "sha256": "3e732ac3325b865698cfb6635ea72e26a311854bce10ff5db829a1302b8f9ce0"
+    },
+    {
+      "bytes": 1773,
+      "mtime_ns": "1792590657180346300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\capture-new-failed-job-sql-readonly.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842108",
+      "sha256": "4fb096293a1470435908ec5de29649c46a28b2bc1ba926d7b9654a3e815392b1"
+    },
+    {
+      "bytes": 2736,
+      "mtime_ns": "1792590657365483100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\full-logical-SQL.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842112",
+      "sha256": "95bbf5b29acbf3f738ed9ae8a36c6611b1b38ea27c684f9088b0a610547a362d"
+    },
+    {
+      "bytes": 2387,
+      "mtime_ns": "1792590809464885900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\independent-model27-and-helper-identity-before-disposition.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842123",
+      "sha256": "a1d9e10bfb3167dbfdbcd0687910204c9475c46d03f0864657b263f9523b893c"
+    },
+    {
+      "bytes": 4096,
+      "mtime_ns": "1792590657325587900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\jobs.sqlite3",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842109",
+      "sha256": "204f9b3c487346c1a41195dfb82bb3014d9725af5bc2ac3cc4fa41f63bc03565"
+    },
+    {
+      "bytes": 32768,
+      "mtime_ns": "1792590657353192500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\jobs.sqlite3-shm",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842111",
+      "sha256": "6ea2d27ad96c965db005739b90640ff7966679d7161443b4e515b2bcb4479dff"
+    },
+    {
+      "bytes": 78312,
+      "mtime_ns": "1792590657328590400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\post-native-failure-custody\\jobs.sqlite3-wal",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954842110",
+      "sha256": "f6cc5768d7e16e9614eb37bd0badc6b175f7223237c1b12ed38ab91c6b0e3bcd"
+    },
+    {
+      "bytes": 18421,
+      "mtime_ns": "1792590196630727600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\run-first-aff9-original-B2-canonical-clock-v7.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840935",
+      "sha256": "be4c17a0e4010b647a5251d2f6331abe9d8b925ebd13b58d65e846fc91d3f0d3"
+    },
+    {
+      "bytes": 16195,
+      "mtime_ns": "1792590231677265500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\source-delta-proof\\full.json.gz",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "2251799815104847",
+      "sha256": "c0ad935848c2dd6378d6172f9fb105e83ea40e89fa4947366b89e50d2bc34f32"
+    },
+    {
+      "bytes": 151,
+      "mtime_ns": "1792590239546695700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\source-delta-proof\\independent-all6-fullbytes-hash-exactns-PASS.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972908",
+      "sha256": "13347b6ac48a372b52f06a0acf930142aaec53883e82a83f48758a9fa9f9d9f0"
+    },
+    {
+      "bytes": 2398,
+      "mtime_ns": "1792590231683854100",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\continuation-02-canonical-clock-object\\source-delta-proof\\index.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1970324838394192",
+      "sha256": "ed2875c44e7dca95cb12d79e2e29ff350179198d966fac9eecc10bae07b63038"
+    },
+    {
+      "bytes": 20194,
+      "mtime_ns": "1792588774340157000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\current-aff9-nonGUI-shared-lifetime-guard.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840897",
+      "sha256": "b68e66dd2efa35c8d563938faf404e17f6c97b88274aa3fe88422e9f646837d7"
+    },
+    {
+      "bytes": 8453,
+      "mtime_ns": "1792589895443822400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\fresh-all-path-capacity-immediately-before-arm.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683528",
+      "sha256": "97cf452d450075741bee1b8b27e03eed6a86031e368ed3434c5cfd9ab236430e"
+    },
+    {
+      "bytes": 8453,
+      "mtime_ns": "1792590107288934700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\fresh-census-immediately-before-original-process.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840923",
+      "sha256": "a9de4e8a8a4b456dd144cf6f6dd3e9f5b7238ee706dce535dca7109cbe5a1893"
+    },
+    {
+      "bytes": 8453,
+      "mtime_ns": "1792588774325855200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\fresh-complete-capacity-before-CLI-source.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840895",
+      "sha256": "7301a7333a9099e7d188041af13467fd38647efc2fd0a9fbb2121e36a2d84a1d"
+    },
+    {
+      "bytes": 353,
+      "mtime_ns": "1792589895494990200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\frozen-whole-cohort-original-clock-once.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683537",
+      "sha256": "981578d63b16462e67a76e7402631610155ed78d00e49763b745df2c0d735ca7"
+    },
+    {
+      "bytes": 7127,
+      "mtime_ns": "1792589891434861300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\full-automation-before-first-native-B2.toml",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1688849861683507",
+      "sha256": "f573092d9537ce5f596ede6b239c683b613024a70f4e88a3feb52445cdca2181"
+    },
+    {
+      "bytes": 3408,
+      "mtime_ns": "1792589891412268300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\full-board-before-first-native-B2.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1970324838394162",
+      "sha256": "082d43e5e88e151b9c9c0cfb48fda1eb9f34af7ccf399f23bb3e872324b40439"
+    },
+    {
+      "bytes": 45461,
+      "mtime_ns": "1792589891388560700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\full-PR185-before-first-native-B2.txt",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1970324838394161",
+      "sha256": "4839ee66295fe08921d0cf09668b2751ca6321365f3c46dfedf90d6d26e0dab6"
+    },
+    {
+      "bytes": 6843,
+      "mtime_ns": "1792589472174477600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\NOT_ARMED-exact-original-B2-plan-template-v3.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840909",
+      "sha256": "8d566681542a94e47cee8180410ef03e158d3b0e822510541c5867ecfa59fb54"
+    },
+    {
+      "bytes": 6755,
+      "mtime_ns": "1792589334590224600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\NOT_ARMED-exact-original-B2-plan-template.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840901",
+      "sha256": "aa44897d2e11d7e9dbd732d864a3db7b20e3e17bf6c547c0379eac1180130c3a"
+    },
+    {
+      "bytes": 134,
+      "mtime_ns": "1792590107429273900",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\observed-fresh-initial-state.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840927",
+      "sha256": "f9f597e521c890405af8dfffb353ca01a7bc23a21cfa84b3d45bdcc7a10fc7fd"
+    },
+    {
+      "bytes": 897,
+      "mtime_ns": "1792590107562683400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\outer-original.stderr",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840926",
+      "sha256": "b26ba635ca3ecf8f8e6a0a884261eed74c918ded92e9f78f582bd44c9b785421"
+    },
+    {
+      "bytes": 0,
+      "mtime_ns": "1792590107304736200",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\outer-original.stdout",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840925",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 18752,
+      "mtime_ns": "1792589895503568800",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\p9-system-alias-CLI-final-frozen-clock.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1407374884972882",
+      "sha256": "257a8749417e41a04b842c76a6945b0aba66470d540ea4436774b9e00f2eb0a8"
+    },
+    {
+      "bytes": 18746,
+      "mtime_ns": "1792589334567081000",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\p9-system-alias-CLI-not-yet-armed-template.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840900",
+      "sha256": "2dbdd2c63f5f0f4847934e4c031f21b9d427b6e665f3a58efa5e92f29e61a82c"
+    },
+    {
+      "bytes": 1856,
+      "mtime_ns": "1792588774314643500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\resource-admission-before-any-new-CLI-IO.json",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840894",
+      "sha256": "b168cb7a71addd561879bda1c34da1be39a9784e77751f4913501adefa3126d0"
+    },
+    {
+      "bytes": 16394,
+      "mtime_ns": "1792589334546112500",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v2.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840899",
+      "sha256": "5b0300d92380b2376695629e738425fca98aa6b5ab91b00bea9a61bedb257902"
+    },
+    {
+      "bytes": 16515,
+      "mtime_ns": "1792589472142600300",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v3.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840908",
+      "sha256": "bcd082fb1d0bb65de72c41f538ba756e717ce2fac0aaebfa5423fa4963c85edf"
+    },
+    {
+      "bytes": 16450,
+      "mtime_ns": "1792589491591685700",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v4.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840910",
+      "sha256": "c42d02640f1bcbc735a3167d1bec775e4b7632ac04ebffbbc1fa9eb0b8775791"
+    },
+    {
+      "bytes": 17097,
+      "mtime_ns": "1792589637999920400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v5.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1970324838394115",
+      "sha256": "9ad4c028980fb86a05e21b5a565f79246193b46ab586d1d5382561b7fdd0a335"
+    },
+    {
+      "bytes": 18354,
+      "mtime_ns": "1792589819810137400",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once-v6.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "1125899908262214",
+      "sha256": "7ec854ba00e5709a1910adeb1224ef5af89f59daab4093e8240310748cf210fe"
+    },
+    {
+      "bytes": 15866,
+      "mtime_ns": "1792589180859718600",
+      "path": "D:\\DubFlowQA\\native-review-current-f68d2e7-20261018\\verification-aff9-cli-first-media-01\\run-first-aff9-original-B2-guarded-once.py",
+      "python_dev": "6228738084824691075",
+      "python_file_id": "562949954840898",
+      "sha256": "05b426217de5c02528948f0eb9f3ba2090505be2938fcbd5875f970b09582fa7"
+    }
+  ],
+  "gzip_bytes": 287298,
+  "gzip_sha256": "53b79b0d0ef72b4db3683dc41041abf6188e84ec5dfbb372666840061ee8e97c",
+  "raw_bytes": 902264,
+  "raw_sha256": "80ecabddb77a78e7e3f2edb25a62a09b73c1ef4c19a2d91b1a7ff1390f5d2aef"
+}
