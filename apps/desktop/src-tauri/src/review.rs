@@ -15,7 +15,10 @@ use std::time::{Duration, Instant};
 const JSON_LIMIT: usize = 64 * 1024 * 1024;
 const AUDIO_LIMIT: usize = 64 * 1024 * 1024;
 const PIN_LIMIT: usize = 64 * 1024;
+// Legacy/generic stderr and successful ordinary stderr keep the original bound.
 const ERROR_LIMIT: usize = 4096;
+// Only observed Review failures may carry expanded native diagnostics in failure v2.
+const OBSERVED_FAILURE_DIAGNOSTIC_LIMIT: usize = 32 * 1024;
 const REQUEST_LIMIT: usize = 64;
 const ACTIVE_LIMIT: usize = 4;
 const SESSION_LIMIT: usize = 8;
@@ -177,7 +180,8 @@ impl StageSink {
 }
 
 /// Only this explicit observed native command permits progress records. Ordinary
-/// stderr remains under its original cap; stdout/final acknowledgements do not change.
+/// stderr has a separate bounded failure-v2 budget; stdout/final acknowledgements do not change.
+/// A successful process still must satisfy the original ordinary-stderr bound.
 fn capture_stage_stderr(stream: impl Read, sink: StageSink) -> Result<Vec<u8>, String> {
     let mut reader = BufReader::new(stream);
     let mut diagnostics = Vec::new();
@@ -208,7 +212,7 @@ fn capture_stage_stderr(stream: impl Read, sink: StageSink) -> Result<Vec<u8>, S
             }
             sink.invalid();
         }
-        if diagnostics.len() + fragment.len() > ERROR_LIMIT {
+        if diagnostics.len() + fragment.len() > OBSERVED_FAILURE_DIAGNOSTIC_LIMIT {
             return Err("Nội dung review vượt giới hạn byte".into());
         }
         diagnostics.extend_from_slice(&fragment);
@@ -325,7 +329,10 @@ impl RequestGuard {
                 .get_mut(&self.id)
                 .and_then(|r| r.activity.as_mut())
             {
-                let text = bounded_diagnostic(&String::from_utf8_lossy(bytes), ERROR_LIMIT);
+                let text = bounded_diagnostic(
+                    &String::from_utf8_lossy(bytes),
+                    OBSERVED_FAILURE_DIAGNOSTIC_LIMIT,
+                );
                 a.diagnostic = if text.is_empty() { None } else { Some(text) };
             }
         }
@@ -428,7 +435,7 @@ impl ReviewHost {
         let Some(a) = slot.activity.as_ref() else {
             return Value::String(message);
         };
-        serde_json::json!({"schema_version":1,"kind":"review_desktop_request_failure",
+        serde_json::json!({"schema_version":2,"kind":"review_desktop_request_failure",
             "request_id":id,"job_id":a.job,"operation":a.operation,"outcome":"unconfirmed",
             "phase":a.ended_phase.unwrap_or(a.phase),"native_stage":a.native.as_ref().filter(|_| !a.native_invalid).map(|n| n.event.stage.as_str()),
             "message":message,"diagnostic":a.diagnostic})
@@ -1733,6 +1740,10 @@ fn run_bounded_inner(
                 }
                 break Err("Không xác thực được lời thoại hoặc âm thanh; hãy tải lại và kiểm tra đầu ra của video".into());
             }
+            // The larger capture budget is for actual observed failures, not noisier success.
+            if stderr.len() > ERROR_LIMIT {
+                break Err("Nội dung review vượt giới hạn byte".into());
+            }
             break Ok(output.take().unwrap_or_default());
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -2668,6 +2679,7 @@ mod tests {
         drop(request);
         let error = host.request_failure(&id, "Reload to inspect the current result");
         assert_eq!(error.as_object().unwrap().len(), 10);
+        assert_eq!(error["schema_version"], 2);
         assert_eq!(error["outcome"], "unconfirmed");
         assert_eq!(error["phase"], "processing");
         assert_eq!(error["request_id"], id);
@@ -2691,6 +2703,235 @@ mod tests {
             .unwrap()
             .changed = Instant::now() - TOMBSTONE_TTL;
         assert!(host.request_failure(&id, "expired observation").is_string());
+    }
+
+    fn expanded_adapter_failure_fixture() -> String {
+        let raw = vec![0xff; 4096];
+        format!(
+            "DubFlow supervisor: invalid supervisor request: REVIEW_ADAPTER_REFUSED: status=exit code: 3; stderr_bytes=4096; stderr_ascii=\"{}\"\n",
+            raw.escape_ascii(),
+        )
+    }
+
+    #[test]
+    fn observed_failure_v2_preserves_complete_expanded_native_diagnostic() {
+        let host = ReviewHost::default().capture_failures();
+        let request = host.begin("request-failure-v2-expanded-0001").unwrap();
+        request.observe("job-failure-expanded", "apply").unwrap();
+        request.phase("processing");
+        let expected = expanded_adapter_failure_fixture();
+        assert!(expected.len() > ERROR_LIMIT);
+        assert!(expected.len() <= OBSERVED_FAILURE_DIAGNOSTIC_LIMIT);
+        let captured = capture_stage_stderr(
+            std::io::Cursor::new(expected.as_bytes()),
+            StageSink {
+                host: host.clone(),
+                id: request.id.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(captured.as_slice(), expected.as_bytes());
+        request.failing_stderr(&captured);
+        let id = request.id.clone();
+        drop(request);
+        let error = host.request_failure(&id, "Reload to inspect the current result");
+        assert_eq!(error["schema_version"], 2);
+        assert_eq!(error.as_object().unwrap().len(), 10);
+        assert_eq!(error["request_id"], id);
+        assert_eq!(error["job_id"], "job-failure-expanded");
+        assert_eq!(error["outcome"], "unconfirmed");
+        assert_eq!(error["phase"], "processing");
+        assert_eq!(error["diagnostic"].as_str().unwrap(), expected);
+        assert_eq!(
+            error["diagnostic"]
+                .as_str()
+                .unwrap()
+                .matches(r"\xff")
+                .count(),
+            4096
+        );
+        let decoded: Value = serde_json::from_str(&serde_json::to_string(&error).unwrap()).unwrap();
+        assert_eq!(decoded["diagnostic"].as_str().unwrap(), expected);
+        for key in [
+            "retryable",
+            "committed",
+            "success",
+            "token",
+            "snapshot",
+            "root",
+        ] {
+            assert!(error.get(key).is_none());
+        }
+    }
+
+    #[test]
+    fn observed_failure_v2_uses_utf8_byte_bounds_and_keeps_message_at_1024() {
+        let host = ReviewHost::default().capture_failures();
+        let request = host.begin("request-failure-v2-unicode-0001").unwrap();
+        request.observe("job-failure-unicode", "undo").unwrap();
+        request.phase("processing");
+        let expected = "😀".repeat(OBSERVED_FAILURE_DIAGNOSTIC_LIMIT / 4);
+        assert_eq!(expected.len(), 32768);
+        let captured = capture_stage_stderr(
+            std::io::Cursor::new(expected.as_bytes()),
+            StageSink {
+                host: host.clone(),
+                id: request.id.clone(),
+            },
+        )
+        .unwrap();
+        request.failing_stderr(&captured);
+        let id = request.id.clone();
+        drop(request);
+        let error = host.request_failure(&id, &format!("{}\0\u{1b}", "😀".repeat(400)));
+        assert_eq!(error["schema_version"], 2);
+        assert_eq!(error["diagnostic"].as_str().unwrap(), expected);
+        let message = error["message"].as_str().unwrap();
+        assert_eq!(message.len(), 1024);
+        assert!(!message.chars().any(char::is_control));
+        assert_eq!(error["outcome"], "unconfirmed");
+    }
+
+    #[test]
+    fn observed_failure_budget_does_not_widen_generic_stderr_and_rejects_overflow() {
+        assert_eq!(ERROR_LIMIT, 4096);
+        assert_eq!(OBSERVED_FAILURE_DIAGNOSTIC_LIMIT, 32768);
+        assert_eq!(
+            capture(std::io::Cursor::new(vec![b'x'; ERROR_LIMIT]), ERROR_LIMIT)
+                .unwrap()
+                .len(),
+            4096
+        );
+        assert!(capture(
+            std::io::Cursor::new(vec![b'x'; ERROR_LIMIT + 1]),
+            ERROR_LIMIT
+        )
+        .is_err());
+        let host = ReviewHost::default();
+        let request = host.begin("request-failure-v2-budget-0001").unwrap();
+        request.observe("job-failure-budget", "apply").unwrap();
+        let sink = StageSink {
+            host: host.clone(),
+            id: request.id.clone(),
+        };
+        assert_eq!(
+            capture_stage_stderr(
+                std::io::Cursor::new(vec![b'x'; OBSERVED_FAILURE_DIAGNOSTIC_LIMIT]),
+                sink.clone(),
+            )
+            .unwrap()
+            .len(),
+            32768
+        );
+        assert!(capture_stage_stderr(
+            std::io::Cursor::new(vec![b'x'; OBSERVED_FAILURE_DIAGNOSTIC_LIMIT + 1]),
+            sink,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn observed_failure_budget_does_not_promote_a_513_byte_stage_packet() {
+        for length in [512, 513] {
+            let host = ReviewHost::default();
+            let request = host
+                .begin(&format!("request-stage-v2-budget-{length:04}"))
+                .unwrap();
+            request.observe("job-stage-v2-budget", "apply").unwrap();
+            request.phase("processing");
+            let mut packet = STAGE_PREFIX.to_vec();
+            packet.extend_from_slice(&stage_packet(1, 3));
+            assert!(packet.len() < length - 1);
+            packet.resize(length - 1, b' ');
+            packet.push(b'\n');
+            let captured = capture_stage_stderr(
+                std::io::Cursor::new(&packet),
+                StageSink {
+                    host: host.clone(),
+                    id: request.id.clone(),
+                },
+            )
+            .unwrap();
+            let observed = host.request_stage(&request.id).unwrap();
+            if length == 512 {
+                assert!(captured.is_empty());
+                assert_eq!(observed["native_observation"], "observed");
+            } else {
+                assert_eq!(captured, packet);
+                assert_eq!(observed["native_observation"], "unavailable");
+            }
+        }
+    }
+
+    #[test]
+    fn observed_failed_process_carries_expanded_diagnostic_through_reply_v2() {
+        let host = ReviewHost::default().capture_failures();
+        let errors = host.clone();
+        let id = "request-failure-v2-process-0001".to_string();
+        let result_id = id.clone();
+        let result =
+            tauri::async_runtime::block_on(review_task_reply(errors, id.clone(), move || {
+                let request = host.begin(&id)?;
+                request.observe("job-failure-v2-process", "apply")?;
+                request.phase("processing");
+                run_observed(
+                    fixture("failed-expanded-diagnostic"),
+                    4096,
+                    Duration::from_secs(5),
+                    &request,
+                )?;
+                Ok(serde_json::json!({"must_not_succeed":true}))
+            }));
+        let error = result.unwrap_err();
+        assert_eq!(error["schema_version"], 2);
+        assert_eq!(error["request_id"], result_id);
+        assert_eq!(
+            error["diagnostic"].as_str().unwrap(),
+            expanded_adapter_failure_fixture()
+        );
+        assert_eq!(error["outcome"], "unconfirmed");
+    }
+
+    #[test]
+    fn observed_success_cannot_use_the_larger_failure_budget() {
+        let host = ReviewHost::default().capture_failures();
+        let request = host.begin("request-success-v2-stderr-0001").unwrap();
+        request.observe("job-success-v2-stderr", "undo").unwrap();
+        request.phase("processing");
+        assert!(run_observed(
+            fixture("successful-large-stderr"),
+            4096,
+            Duration::from_secs(5),
+            &request
+        )
+        .is_err());
+        let id = request.id.clone();
+        drop(request);
+        let error = host.request_failure(&id, "Successful stderr exceeded its legacy bound");
+        assert_eq!(error["schema_version"], 2);
+        assert!(error["diagnostic"].is_null());
+        assert_eq!(error["outcome"], "unconfirmed");
+    }
+
+    #[test]
+    fn observed_failure_overflow_does_not_attach_a_partial_diagnostic() {
+        let host = ReviewHost::default().capture_failures();
+        let request = host.begin("request-failure-v2-overflow-0001").unwrap();
+        request.observe("job-failure-v2-overflow", "apply").unwrap();
+        request.phase("processing");
+        assert!(run_observed(
+            fixture("failed-over-observed-diagnostic"),
+            4096,
+            Duration::from_secs(5),
+            &request
+        )
+        .is_err());
+        let id = request.id.clone();
+        drop(request);
+        let error = host.request_failure(&id, "Observed diagnostic exceeded its bound");
+        assert_eq!(error["schema_version"], 2);
+        assert!(error["diagnostic"].is_null());
+        assert_eq!(error["outcome"], "unconfirmed");
     }
 
     #[test]
@@ -2794,9 +3035,11 @@ mod tests {
             capture_stage_stderr(std::io::Cursor::new(&ordinary), sink.clone()).unwrap(),
             ordinary
         );
-        assert!(
-            capture_stage_stderr(std::io::Cursor::new(vec![b'x'; ERROR_LIMIT + 1]), sink).is_err()
-        );
+        assert!(capture_stage_stderr(
+            std::io::Cursor::new(vec![b'x'; OBSERVED_FAILURE_DIAGNOSTIC_LIMIT + 1]),
+            sink,
+        )
+        .is_err());
     }
 
     #[test]
@@ -3935,6 +4178,18 @@ mod tests {
             }
             Ok("sleep") => std::thread::sleep(Duration::from_secs(30)),
             Ok("failed") => std::process::exit(2),
+            Ok("failed-expanded-diagnostic") => {
+                eprint!("{}", expanded_adapter_failure_fixture());
+                std::process::exit(2);
+            }
+            Ok("successful-large-stderr") => {
+                println!("REVIEW_FIXTURE_OK");
+                eprint!("{}", "x".repeat(ERROR_LIMIT + 1));
+            }
+            Ok("failed-over-observed-diagnostic") => {
+                eprint!("{}", "x".repeat(OBSERVED_FAILURE_DIAGNOSTIC_LIMIT + 1));
+                std::process::exit(2);
+            }
             Ok("failed-diagnostic") => {
                 eprintln!(
                     "REVIEW_QC_DIAGNOSTIC_FIXTURE: inspect input and reload; no retry authority"
