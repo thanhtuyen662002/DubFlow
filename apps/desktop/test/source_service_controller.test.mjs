@@ -595,3 +595,183 @@ test("local queue: failed persistence cannot become a false already-present admi
   assert.equal(writes, 2);
   assert.equal(nativeCalls, 0);
 });
+
+
+function queueRetryFixture(limit = 100) {
+  let durable = null, writable = false, writes = 0, next = 0;
+  const storage = { read: () => durable, write(value) {
+    writes++;
+    if (!writable) throw new Error("CONTROLLED_STORAGE_REJECTED: private diagnostic");
+    durable = value;
+  } };
+  const queue = new QueueController(storage, () => "2026-10-21T00:00:00.000Z", limit, () => "receipt-retry-" + ++next);
+  const h = fixture(queue);
+  return Object.assign(h, { storage, setWritable(value) { writable = value; },
+    getDurable: () => durable, getWrites: () => writes });
+}
+async function failedDownloadedAdmission(h, value = receipt()) {
+  await h.controller.submit("https://example.test/one");
+  await enumerate(h); await h.controller.download("scan-1", "generic:scene,1");
+  h.push(value); await h.controller.poll();
+  assert.equal(h.events.length, 0, "actual shared pump drained the receipt");
+  assert.equal(h.controller.getState().rows[0].phase, "queue_error");
+  assert.equal(h.controller.getState().rows[0].local_queue, "error");
+  assert.equal(h.queue.getSnapshot().jobs.length, 0);
+  assert.equal(h.getDurable(), null);
+}
+
+test("receipt queue retry: changed storage admits drained same-scan receipt locally without provider restart", async () => {
+  const h = queueRetryFixture();
+  await failedDownloadedAdmission(h);
+  await h.controller.poll(); await h.controller.poll();
+  assert.equal(h.getWrites(), 1, "poll must never retry storage automatically");
+  const duplicate = await h.controller.submit("https://example.test/one");
+  assert.equal(duplicate.rejected[0].code, "DUPLICATE_SOURCE");
+  assert.equal(h.controller.getState().rows[0].queue_retry_available, true,
+    "validated drained receipt needs an explicit same-session local admission route");
+  h.setWritable(true); // Explicit changed condition, not another download or stream restart.
+  const calls = h.calls.length;
+  const retried = h.controller.retryLocalQueue("scan-1");
+  assert.deepEqual(retried, { local_added: 1, local_present: 0, rejected: [] });
+  assert.equal(h.calls.length, calls, "local retry may not invoke any native RPC");
+  assert.equal(h.sent("start_video").length, 1); assert.equal(h.sent("download").length, 1);
+  assert.equal(h.getWrites(), 2);
+  assert.equal(h.controller.getState().rows[0].phase, "downloaded");
+  assert.equal(h.controller.getState().rows[0].queue_retry_available, false);
+  assert.equal(h.controller.getState().rows[0].local_queue, "added");
+  assert.equal(h.queue.getSnapshot().jobs[0].sourcePath, path);
+  assert.deepEqual(new QueueController(h.storage).getSnapshot(), h.queue.getSnapshot());
+  const again = h.controller.retryLocalQueue("scan-1");
+  assert.equal(again.local_added, 0); assert.equal(again.local_present, 0);
+  assert.equal(again.rejected[0].code, "LOCAL_QUEUE_RETRY_UNAVAILABLE");
+  assert.equal(h.getWrites(), 2); assert.equal(h.calls.length, calls);
+});
+
+test("receipt queue retry: immutable whitelisted receipt survives source IPC failure and queue-listener reentry", async () => {
+  const h = queueRetryFixture();
+  const raw = { ...receipt(), cookie: "cookie-private-extra", token: "token-private-extra", event_extra: { media_path: "D:/injected.mp4" } };
+  await failedDownloadedAdmission(h, raw);
+  raw.media_path = "D:/replaced-after-drain.mp4"; raw.identity_key = "generic:foreign"; raw.sha256 = "b".repeat(64);
+  h.gates.set("source_service_events_v1", { promise: Promise.reject(new Error("host unavailable")) });
+  await h.controller.poll();
+  assert.equal(h.controller.getState().failure, "SOURCE_IPC_FAILED");
+  assert.equal(h.controller.getState().rows[0].queue_retry_available, true);
+  const exposed = JSON.stringify(h.controller.getState());
+  assert.ok(!exposed.includes("private-extra") && !exposed.includes("event_extra") && !exposed.includes("injected.mp4"));
+  h.setWritable(true);
+  const calls = h.calls.length; let nested;
+  const unsubscribe = h.queue.subscribe(snapshot => { if (snapshot.jobs.length) nested = h.controller.retryLocalQueue("scan-1"); });
+  assert.deepEqual(h.controller.retryLocalQueue("scan-1"), { local_added: 1, local_present: 0, rejected: [] });
+  unsubscribe();
+  assert.equal(nested.rejected[0].code, "LOCAL_QUEUE_RETRY_UNAVAILABLE");
+  assert.equal(h.getWrites(), 2); assert.equal(h.calls.length, calls);
+  assert.equal(h.queue.getSnapshot().jobs[0].sourcePath, path);
+  assert.equal(h.controller.getState().failure, "SOURCE_IPC_FAILED", "local success does not claim host recovery");
+});
+
+test("receipt queue retry: each failed explicit call is bounded and present uses actual queue dedup", async () => {
+  const h = queueRetryFixture(); await failedDownloadedAdmission(h);
+  let nested, armed = false;
+  const unsubscribe = h.controller.subscribe(state => {
+    if (armed && state.rows[0].queue_retry_available) nested = h.controller.retryLocalQueue("scan-1");
+  });
+  armed = true;
+  const calls = h.calls.length;
+  const failed = h.controller.retryLocalQueue("scan-1");
+  unsubscribe();
+  assert.equal(failed.local_added, 0); assert.equal(failed.local_present, 0);
+  assert.equal(failed.rejected[0].code, "LOCAL_QUEUE_REJECTED");
+  assert.equal(nested.rejected[0].code, "LOCAL_QUEUE_RETRY_UNAVAILABLE");
+  assert.equal(h.getWrites(), 2); assert.equal(h.getDurable(), null);
+  assert.equal(h.controller.getState().rows[0].queue_retry_available, true);
+  assert.ok(!JSON.stringify(h.controller.getState()).includes("private diagnostic"));
+  h.setWritable(true); // Capacity/storage was fixed; user also admitted the same local path.
+  assert.equal((await h.controller.submit(path)).local_added, 1);
+  const writes = h.getWrites();
+  assert.deepEqual(h.controller.retryLocalQueue("scan-1"), { local_added: 0, local_present: 1, rejected: [] });
+  assert.equal(h.controller.getState().rows[0].local_queue, "present");
+  assert.equal(h.controller.getState().rows[0].queue_retry_available, false);
+  assert.equal(h.queue.getSnapshot().jobs.length, 1); assert.equal(h.getWrites(), writes);
+  assert.equal(h.calls.length, calls);
+});
+
+for (const close of ["cancel", "stop", "dispose"]) {
+  test("receipt queue retry: " + close + " forgets retained receipt and refuses local retry/late delivery", async () => {
+    const h = queueRetryFixture(); await failedDownloadedAdmission(h);
+    assert.equal(h.controller.getState().rows[0].queue_retry_available, true);
+    if (close === "cancel") {
+      assert.equal(await h.controller.cancel("scan-1"), true);
+      assert.equal(h.sent("cancel").length, 0, "forgetting unadmitted local receipt requires no provider action");
+    } else await h.controller[close]();
+    assert.equal(h.controller.getState().rows[0].queue_retry_available, false);
+    h.setWritable(true); const calls = h.calls.length;
+    const refused = h.controller.retryLocalQueue("scan-1");
+    assert.equal(refused.local_added, 0); assert.equal(refused.local_present, 0);
+    assert.equal(refused.rejected[0].code, "LOCAL_QUEUE_RETRY_UNAVAILABLE");
+    assert.equal(h.calls.length, calls); assert.equal(h.getWrites(), 1);
+    h.push(receipt()); await h.controller.poll();
+    assert.equal(h.queue.getSnapshot().jobs.length, 0);
+    assert.equal(h.controller.getState().rows[0].queue_retry_available, false);
+    assert.equal(h.getWrites(), 1);
+  });
+}
+
+for (const close of ["cancel", "stop", "dispose"]) {
+  test("receipt queue retry: pending drain after " + close + " cannot create admission or retry authority", async () => {
+    const h = queueRetryFixture();
+    await h.controller.submit("https://example.test/one"); await enumerate(h);
+    await h.controller.download("scan-1", "generic:scene,1");
+    const gate = deferred(); h.gates.set("source_service_events_v1", gate);
+    const pending = h.controller.poll();
+    if (close === "cancel") await h.controller.cancel("scan-1"); else await h.controller[close]();
+    gate.resolve([{ sequence: 100, value: receipt() }]); await pending;
+    assert.equal(h.getWrites(), 0); assert.equal(h.getDurable(), null);
+    assert.equal(h.controller.getState().rows[0].queue_retry_available, false);
+    h.setWritable(true);
+    assert.equal(h.controller.retryLocalQueue("scan-1").rejected[0].code, "LOCAL_QUEUE_RETRY_UNAVAILABLE");
+    assert.equal(h.getWrites(), 0);
+  });
+}
+
+for (const [label, value] of [
+  ["unknown scan", receipt("foreign-scan")],
+  ["wrong identity", receipt("scan-1", "generic:foreign")],
+  ["relative path", { ...receipt(), media_path: "relative.mp4" }],
+  ["bad hash", { ...receipt(), sha256: "invalid" }],
+  ["downloaded snapshot", { event: "source_items", scan_id: "scan-1", offset: 0, total: 1,
+    items: [{ identity_key: "generic:scene,1", status: "downloaded", media_path: path, sha256: "a".repeat(64), size_bytes: 1621 }] }],
+]) test("receipt queue retry: " + label + " never creates retry authority", async () => {
+  const h = queueRetryFixture();
+  await h.controller.submit("https://example.test/one"); await enumerate(h);
+  await h.controller.download("scan-1", "generic:scene,1");
+  h.push(value); await h.controller.poll();
+  assert.equal(h.controller.getState().rows[0].queue_retry_available, false);
+  h.setWritable(true); const calls = h.calls.length;
+  const denied = h.controller.retryLocalQueue("scan-1");
+  assert.equal(denied.local_added, 0); assert.equal(denied.local_present, 0);
+  assert.equal(denied.rejected[0].code, "LOCAL_QUEUE_RETRY_UNAVAILABLE");
+  assert.equal(h.controller.retryLocalQueue("foreign-scan").rejected[0].code, "LOCAL_QUEUE_RETRY_UNAVAILABLE");
+  assert.equal(h.getWrites(), 0); assert.equal(h.calls.length, calls);
+});
+
+test("receipt queue retry: stop during failed storage callback cannot restore forgotten receipt", async () => {
+  const h = queueRetryFixture(); await failedDownloadedAdmission(h);
+  let stopping;
+  h.storage.write = () => { stopping = h.controller.stop(); throw new Error("controlled stop/write rejection"); };
+  const failed = h.controller.retryLocalQueue("scan-1"); await stopping;
+  assert.equal(failed.local_added, 0); assert.equal(failed.rejected[0].code, "LOCAL_QUEUE_REJECTED");
+  assert.equal(h.controller.getState().rows[0].queue_retry_available, false);
+  assert.equal(h.controller.retryLocalQueue("scan-1").rejected[0].code, "LOCAL_QUEUE_RETRY_UNAVAILABLE");
+  assert.equal(h.queue.getSnapshot().jobs.length, 0); assert.equal(h.getDurable(), null);
+});
+
+test("receipt queue retry: storage cannot replace the path captured before failed admission", async () => {
+  const h = queueRetryFixture(), raw = receipt(), originalWrite = h.storage.write;
+  h.storage.write = () => { raw.media_path = "D:/changed-inside-storage-callback.mp4"; throw new Error("controlled write rejection"); };
+  await failedDownloadedAdmission(h, raw);
+  h.storage.write = originalWrite; h.setWritable(true);
+  const calls = h.calls.length;
+  assert.deepEqual(h.controller.retryLocalQueue("scan-1"), { local_added: 1, local_present: 0, rejected: [] });
+  assert.equal(h.queue.getSnapshot().jobs[0].sourcePath, path);
+  assert.equal(h.calls.length, calls);
+});

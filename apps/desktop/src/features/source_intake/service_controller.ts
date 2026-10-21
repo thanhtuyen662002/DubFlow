@@ -4,7 +4,7 @@
  * Enumeration is not media completion or proof that its worker has exited.
  */
 import { parseSourceInput, utf8Bytes, type SourceRejection } from "./model.ts";
-import { createSourceEventPump, type MaterializedQueue, type NativeObservation } from "./materialized.ts";
+import { createSourceEventPump, materializedSource, type MaterializedQueue, type MaterializedSource, type NativeObservation } from "./materialized.ts";
 
 export type ServiceCommand = "source_service_start_v1" | "source_service_state_v1"
   | "source_service_events_v1" | "source_service_send_v1" | "source_service_stop_v1";
@@ -21,7 +21,7 @@ export type SourcePhase = "queued" | "sending" | "submitted" | "preparing" | "en
 export type SourceRow = {
   scan_id: string; display_ref: string; provider: string; phase: SourcePhase;
   delivery: "pending" | "submitted" | "unknown" | null;
-  refresh_pending: boolean;
+  refresh_pending: boolean; queue_retry_available: boolean;
   enumeration_complete: boolean; enumeration_retired: boolean;
   items: Array<{ identity_key: string; status: string }>;
   selected_identity: string | null; local_queue: "added" | "present" | "error" | null; error: string | null;
@@ -32,6 +32,8 @@ export type SourceServiceState = {
   rows: SourceRow[]; rejected: SourceRejection[];
 };
 export type SubmitResult = { local_added: number; local_present: number; online_staged: string[]; rejected: SourceRejection[] };
+export type LocalQueueRetryResult = Pick<SubmitResult, "local_added" | "local_present" | "rejected">;
+type RetainedReceipt = Readonly<Omit<MaterializedSource, "receipt_key">>;
 const LIMIT = 10_000;
 const terminal = new Set<SourcePhase>(["cancelled", "paused", "failed", "interrupted", "downloaded", "queue_error"]);
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object"; }
@@ -81,6 +83,11 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
   const identities = new Set<string>();
   const itemsRequested = new Set<string>();
   const revisions = new Map<string, number>();
+  // At most one validated, immutable receipt per existing single-item row.
+  // Never retain raw events, credentials, source references or snapshot paths.
+  const retainedReceipts = new Map<string, RetainedReceipt>();
+  const drainedReceipts = new Map<number, RetainedReceipt>();
+  const retryingLocal = new Set<string>();
   // Local view ownership only, never a native request ID or RPC correlation.
   const deliveryOwners = new WeakMap<SourceRow, object>();
   let active: string | null = null, blocked = false, started = false, stopping = false;
@@ -96,6 +103,8 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
       try { listener(snapshot()); } catch { /* A view cannot stop source/local admission. */ }
     }
   }
+  function forgetReceipt(row: SourceRow) { retainedReceipts.delete(row.scan_id); row.queue_retry_available = false; }
+  function clearReceipts() { drainedReceipts.clear(); for (const row of state.rows) forgetReceipt(row); }
   function setFailure(value: string) { state.failure = value; publish(); }
   function readSnapshot(value: unknown) {
     if (!record(value) || !["admitting", "ready", "stopping", "stopped"].includes(String(value.phase))
@@ -174,7 +183,7 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
     lastSequence = observation.sequence;
     const value = observation.value;
     if (value.event === "source_ready") return false; // snapshot is the host's readiness authority
-    if (value.event === "source_shutdown") { state.service = "stopping"; stopping = true; return false; }
+    if (value.event === "source_shutdown") { state.service = "stopping"; stopping = true; clearReceipts(); return false; }
     if (value.event === "source_error" && !id(value.scan_id)) {
       // f68 errors have no universal request correlation. Do not assign this
       // error to the most recent command or silently retry that command.
@@ -227,6 +236,7 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
     } else if (value.event === "source_downloaded") {
       // A late receipt after confirmed cancellation, an unknown scan or an
       // identity the user never selected cannot enqueue via the shared pump.
+      if (row.phase === "cancelling") return false;
       if (!row.selected_identity || row.selected_identity !== value.identity_key) { row.error = "SOURCE_RECEIPT_UNEXPECTED"; return false; }
       return true;
     }
@@ -237,13 +247,25 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
   // receipts through the pump. Never fabricate replacement native events.
   const pump = createSourceEventPump(queue, async () => {
     const value = await invoke("source_service_events_v1");
-    if (state.disposed) return [];
+    if (state.disposed || stopping) return [];
     if (!Array.isArray(value)) throw new Error("SOURCE_PROTOCOL_INVALID");
+    drainedReceipts.clear();
     const allowed: NativeObservation[] = [];
     for (const observation of value) {
       if (!record(observation)) { state.failure = "SOURCE_EVENT_INVALID"; continue; }
       const acceptedReceipt = event(observation as NativeObservation);
-      if (acceptedReceipt) allowed.push(observation as NativeObservation);
+      if (acceptedReceipt) {
+        try {
+          const source = materializedSource(observation as NativeObservation);
+          if (source && drainedReceipts.size < LIMIT) {
+            // Capture before queue callbacks can mutate the original event.
+            // The native batch is bounded; this extra guard uses the row limit.
+            drainedReceipts.set(observation.sequence as number, Object.freeze({ scan_id: source.scan_id,
+              identity_key: source.identity_key, media_path: source.media_path, sha256: source.sha256, size_bytes: source.size_bytes }));
+          }
+        } catch { /* The materialization pump reports the invalid receipt. */ }
+        allowed.push(observation as NativeObservation);
+      }
     }
     return allowed;
   });
@@ -259,6 +281,7 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
         for (const receipt of [...result.materialized.queued.map((value) => value.source), ...result.materialized.already_present]) {
           const row = rowFor(receipt.scan_id);
           if (row) {
+            forgetReceipt(row);
             row.local_queue = result.materialized.queued.some((value) => value.source.receipt_key === receipt.receipt_key) ? "added" : "present";
             if (!terminal.has(row.phase)) { row.phase = "downloaded"; row.error = null; }
             release(row);
@@ -267,9 +290,18 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
         for (const failure of result.materialized.rejected) {
           const receipt = result.events.find((value) => value.sequence === failure.sequence);
           const row = record(receipt?.value) ? rowFor(receipt.value.scan_id) : undefined;
-          if (row) {
+          if (row && row.phase !== "downloaded") {
+            const eligible = !stopping && row.phase !== "cancelling" && !terminal.has(row.phase);
+            if (eligible && failure.code === "LOCAL_QUEUE_REJECTED" && receipt) {
+              // Only fields validated before queue callbacks are retained.
+              // No snapshot, mutable event or UI path grants retry authority.
+              const source = drainedReceipts.get(failure.sequence);
+              if (source && source.scan_id === row.scan_id && source.identity_key === row.selected_identity) {
+                retainedReceipts.set(row.scan_id, source); row.queue_retry_available = true;
+              }
+            }
             row.error = failure.code; row.local_queue = "error";
-            if (!terminal.has(row.phase)) row.phase = "queue_error";
+            if (!terminal.has(row.phase) && row.phase !== "cancelling") row.phase = "queue_error";
             release(row);
           }
           state.failure = failure.code;
@@ -288,6 +320,7 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
         }
         await dispatch();
       } catch (error) { if (!state.disposed) setFailure(code(error)); }
+      drainedReceipts.clear();
       if (!state.disposed) publish();
       return snapshot();
     })();
@@ -329,7 +362,7 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
         } catch { result.rejected.push(rejection(item.display_ref, "SOURCE_ID_INVALID")); continue; }
         identities.add(item.identity_key); references.set(scan, item.transport_url!);
         state.rows.push({ scan_id: scan, display_ref: item.display_ref, provider: item.provider, phase: "queued",
-          delivery: null, refresh_pending: false, enumeration_complete: false, enumeration_retired: false,
+          delivery: null, refresh_pending: false, queue_retry_available: false, enumeration_complete: false, enumeration_retired: false,
           items: [], selected_identity: null, local_queue: null, error: null });
         result.online_staged.push(scan);
       }
@@ -338,6 +371,35 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
       return result;
     },
     poll,
+    retryLocalQueue(scanId: string): LocalQueueRetryResult {
+      const result: LocalQueueRetryResult = { local_added: 0, local_present: 0, rejected: [] };
+      const row = rowFor(scanId), source = retainedReceipts.get(scanId);
+      if (!row || !source || row.phase !== "queue_error" || !row.queue_retry_available || retryingLocal.has(scanId)
+          || source.scan_id !== scanId || source.identity_key !== row.selected_identity || stopping || state.disposed) {
+        result.rejected.push(rejection("", "LOCAL_QUEUE_RETRY_UNAVAILABLE")); return result;
+      }
+      // One synchronous local write per explicit call after the caller checks
+      // storage/capacity. No native RPC, event replay, restart or download.
+      // Disable before addPaths: queue listeners/storage may reenter controls.
+      retryingLocal.add(scanId); row.queue_retry_available = false;
+      const stillOwned = () => !stopping && !state.disposed && row.phase === "queue_error"
+        && retainedReceipts.get(scanId) === source;
+      try {
+        const added = queue.addPaths([source.media_path]);
+        result.local_added = added.length; result.local_present = added.length === 0 ? 1 : 0;
+        if (stillOwned()) {
+          forgetReceipt(row); row.phase = "downloaded"; row.error = null;
+          row.local_queue = added.length ? "added" : "present";
+          if (state.failure === "LOCAL_QUEUE_REJECTED" && !state.rows.some(value => value.error === "LOCAL_QUEUE_REJECTED")) state.failure = null;
+        }
+      } catch {
+        result.rejected.push(rejection(row.display_ref, "LOCAL_QUEUE_REJECTED"));
+        if (stillOwned()) { row.queue_retry_available = true; row.error = "LOCAL_QUEUE_REJECTED"; row.local_queue = "error"; }
+      } finally {
+        try { if (!state.disposed) publish(); } finally { retryingLocal.delete(scanId); }
+      }
+      return result;
+    },
     async refresh(scanId: string): Promise<boolean> {
       const row = rowFor(scanId);
       if (!row || row.refresh_pending || !row.enumeration_complete || terminal.has(row.phase) || row.phase === "cancelling"
@@ -360,7 +422,13 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
     },
     async cancel(scanId: string): Promise<boolean> {
       const row = rowFor(scanId);
-      if (!row || terminal.has(row.phase) || row.phase === "cancelling" || state.disposed || stopping) return false;
+      if (!row || row.phase === "cancelling" || state.disposed || stopping) return false;
+      if (row.phase === "queue_error" && retainedReceipts.has(scanId)) {
+        // Forget only the unadmitted local receipt; no provider cancellation.
+        forgetReceipt(row); row.phase = "cancelled"; publish(); return true;
+      }
+      if (terminal.has(row.phase)) return false;
+      forgetReceipt(row);
       if (row.phase === "queued") {
         references.delete(scanId); row.phase = "cancelled"; publish(); return true;
       }
@@ -369,7 +437,7 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
       return send({ command: "cancel", scan_id: scanId }, row);
     },
     async stop(): Promise<SourceServiceState> {
-      stopping = true; references.clear();
+      stopping = true; references.clear(); clearReceipts();
       for (const row of state.rows) if (row.phase === "queued") { row.phase = "interrupted"; row.error = "SOURCE_SERVICE_STOPPED"; }
       if (started && !state.disposed && state.service !== "unavailable") {
         state.service = "stopping"; publish();
@@ -381,7 +449,7 @@ export function createSourceServiceController(queue: MaterializedQueue, invoke: 
     async dispose(): Promise<SourceServiceState> {
       // Suppress every late event before a pending destructive drain resolves.
       const shouldStop = started && !state.disposed && state.service !== "unavailable";
-      state.disposed = true; stopping = true; references.clear(); listeners.clear();
+      state.disposed = true; stopping = true; references.clear(); clearReceipts(); listeners.clear();
       for (const row of state.rows) if (row.phase === "queued") { row.phase = "interrupted"; row.error = "SOURCE_CONTROLLER_DISPOSED"; }
       if (shouldStop) {
         state.service = "stopping";

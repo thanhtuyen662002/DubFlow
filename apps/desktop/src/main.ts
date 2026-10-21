@@ -431,6 +431,7 @@ function sourceProblem(code: string): string {
     SOURCE_RECONCILIATION_REQUIRED: "Nguồn có kết quả cũ cần được kiểm tra trước khi tải tiếp.",
     SOURCE_NO_ITEMS: "Không tìm thấy video trong nguồn này.",
     SOURCE_RECEIPT_UNEXPECTED: "Kết quả nguồn chưa khớp video đã chọn.",
+    LOCAL_QUEUE_RETRY_UNAVAILABLE: "Kết quả này không còn sẵn để thêm lại. Hãy kiểm tra hàng xử lý.",
     LOCAL_QUEUE_REJECTED: "Chưa thêm được video vào hàng xử lý. Hãy kiểm tra danh sách và dung lượng trống.",
     SOURCE_MATERIALIZED_INVALID: "Kết quả tải chưa đủ thông tin để xử lý. Các video khác vẫn dùng được.",
     DUPLICATE_SOURCE: "Nguồn này đã có trong danh sách.",
@@ -487,8 +488,24 @@ function renderSource(state: SourceServiceState): void {
         item.append(download);
       }
     }
-    if (!["cancelled", "paused", "failed", "interrupted", "downloaded", "queue_error"].includes(row.phase)) {
+    if (row.phase === "queue_error" && row.queue_retry_available) {
+      const retry = document.createElement("button"); retry.type = "button";
+      retry.textContent = "Thử thêm vào hàng xử lý";
+      retry.title = "Thử lại sau khi kiểm tra danh sách và dung lượng trống.";
+      retry.disabled = state.disposed;
+      retry.addEventListener("click", () => {
+        if (retry.disabled) return;
+        retry.disabled = true;
+        const result = sourceController.retryLocalQueue(row.scan_id);
+        sourceFeedback.textContent = result.rejected.length
+          ? sourceProblem(result.rejected[0].code)
+          : `Đã thêm ${result.local_added} video; ${result.local_present} video đã có trong hàng xử lý.`;
+      });
+      item.append(retry);
+    }
+    if (row.queue_retry_available || !["cancelled", "paused", "failed", "interrupted", "downloaded", "queue_error"].includes(row.phase)) {
       const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Hủy nguồn này";
+      if (row.queue_retry_available) cancel.textContent = "Bỏ kết quả này";
       cancel.disabled = row.phase === "cancelling" || state.disposed;
       cancel.addEventListener("click", () => { void sourceController.cancel(row.scan_id); });
       item.append(cancel);

@@ -206,3 +206,49 @@ preserve prior output/admission bytes. Test presence is not a native PASS:
 Windows lacks the C compiler for bundled SQLite, so no unchanged failing local
 native build is retried; exact hosted execution remains required. No old f68
 probe, live provider, original DATA or producer/model job is replayed.
+
+
+## C2-42: explicit local queue admission after a drained receipt
+
+The source event drain is destructive. A downloaded receipt can be valid while
+QueueController.addPaths fails to persist it. Previously that row became
+queue_error with no retained receipt or same-session recovery route; resubmitting
+the URL was a duplicate. Atomic queue rollback alone did not recover this gap.
+
+The controller now keeps at most one immutable validated receipt per existing
+single-item row, bounded by the existing 10,000-row limit. It captures only
+scan_id, identity_key, media_path, sha256 and size_bytes before queue callbacks.
+Raw events, source references, cookies, tokens and event extras are not retained.
+Only the selected identity on the same observed scan can grant this capability;
+source_items, status snapshots and UI-supplied paths cannot reconstruct it.
+Invalid receipts remain errors without a retry capability.
+
+C1 integrated UI: when a row has queue_retry_available, main.ts offers an
+explicit local queue retry after the user checks or fixes storage/capacity. Call
+controller.retryLocalQueue(row.scan_id), with no path argument. Each call makes
+at most one synchronous queue.addPaths attempt and returns
+{local_added, local_present, rejected}, using the actual queue outcome. Display
+those counts/rejections; do not label it as a provider retry or a new download.
+Polling never retries storage. No native RPC, event replay, producer execution,
+service restart or provider re-download is performed. Source IPC failure does
+not block this local-only admission. A successful local retry does not claim
+that the source service recovered.
+
+On success or already-present, the receipt is forgotten and the row becomes
+downloaded with local_queue added/present. A write rejection leaves it available
+for a later explicit attempt after conditions change. Reentry from queue or
+controller listeners is refused during the current attempt. An explicit cancel
+of a retained queue_error row only forgets that unadmitted receipt and closes
+the row locally; it sends no provider command. Stop/dispose/native shutdown also
+clear the capability. Pending drains after cancel/stop/dispose cannot create it,
+and late callbacks cannot restore it. A cancellation cannot undo a queue write
+that has already completed; processing queue controls remain separate.
+
+This is ephemeral controller state, not a new durable model/schema or source
+protocol. It solves the live-controller gap only. Controller/app restart loses
+the retained receipt; full crash reconciliation still requires separately
+qualified recovery and must not promote snapshots into receipts. Native durable
+transaction outcomes, commit-then-throw storage, browser quota behavior and real
+restart recovery were NOT_RUN here. The focused tests use actual controller,
+pump, validator and QueueController with bounded RAM callbacks/storage and path
+strings only. No provider, native executable, media fixture or GUI is involved.
