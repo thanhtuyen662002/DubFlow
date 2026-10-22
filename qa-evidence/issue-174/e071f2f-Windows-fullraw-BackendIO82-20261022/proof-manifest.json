@@ -1,0 +1,13 @@
+{
+  "full_readback_required": true,
+  "gzip_bytes": 7577080,
+  "gzip_sha256": "279671e6b877431bbc404c2c2ef268f4fed765e895e4ca6bfa7185db9bc1be60",
+  "identity_domain": "Python.lstat exact; no native/legacy conversion or dedup",
+  "main": "2bd7f51129d19dc63ea1dc82f20f77e193da6fcb",
+  "payload_bytes": 23890375,
+  "payload_files": 125,
+  "raw_json_bytes": 31903304,
+  "raw_json_sha256": "7c8014d7c7ac912943f36896338659213a447b420bed8ee54dd794d0531cc9e2",
+  "schema": "SINGLE_GIT_BINARY_GZIP_FULL_JSON_BASE64_V1",
+  "source": "e071f2ffa5b3a6ca47163e9a99f584ff101e7215"
+}
