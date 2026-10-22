@@ -96,6 +96,65 @@ class ComponentSelectionTests(unittest.TestCase):
                 self.assertEqual(commands, [[sys.executable, "scripts/validate_governance.py"],
                                             *component["commands"]])
 
+    def test_desktop_source_lockfile_has_one_root_and_installs_locked_dependencies_first(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next(item for item in registry["components"]
+                         if item["id"] == "desktop-source-intake")
+        install = ["npm", "ci", "--prefix", "apps/desktop", "--ignore-scripts",
+                   "--no-audit", "--no-fund"]
+        with self.subTest(field="roots"):
+            self.assertEqual(component["roots"].count("apps/desktop/package-lock.json"), 1)
+        with self.subTest(field="commands"):
+            self.assertEqual(component["commands"].count(install), 1)
+            self.assertEqual(component["commands"][0], install)
+
+    def test_desktop_source_locked_install_dispatches_before_node_for_ui_and_lockfile_changes(self) -> None:
+        registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
+        component = next(item for item in registry["components"]
+                         if item["id"] == "desktop-source-intake")
+        install = ["npm", "ci", "--prefix", "apps/desktop", "--ignore-scripts",
+                   "--no-audit", "--no-fund"]
+        nodes = [command for command in component["commands"] if command[0] == "node"]
+        self.assertEqual(len(nodes), 6)
+        expected = [[sys.executable, "scripts/validate_governance.py"], install, *nodes]
+        # Keep selector.run real: only its subprocess boundary is mocked.
+        for path in ("apps/desktop/src/main.ts",
+                     "apps/desktop/src/features/source_intake/service_controller.ts",
+                     "apps/desktop/test/source_retry_ui.test.mjs",
+                     "apps/desktop/package-lock.json"):
+            with self.subTest(path=path), \
+                 patch.object(selector, "changed_paths", return_value={path}), \
+                 patch.object(selector.subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 0)) as run, \
+                 patch.object(sys, "argv", ["run_integration.py"]), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(selector.main(), 0)
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertEqual(commands, expected)
+                self.assertEqual(commands.count(install), 1)
+                for call in run.call_args_list:
+                    self.assertEqual(call.kwargs, {"cwd": selector.ROOT, "check": True})
+
+    def test_desktop_source_install_failure_stops_node_dispatch(self) -> None:
+        install = ["npm", "ci", "--prefix", "apps/desktop", "--ignore-scripts",
+                   "--no-audit", "--no-fund"]
+        def fail_install(argv, **kwargs):
+            if argv == install:
+                raise subprocess.CalledProcessError(73, argv)
+            return subprocess.CompletedProcess(argv, 0)
+        with patch.object(selector, "changed_paths",
+                          return_value={"apps/desktop/test/source_retry_ui.test.mjs"}), \
+             patch.object(selector.subprocess, "run", side_effect=fail_install) as run, \
+             patch.object(sys, "argv", ["run_integration.py"]), \
+             redirect_stdout(io.StringIO()):
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                selector.main()
+        self.assertEqual(failure.exception.returncode, 73)
+        self.assertEqual(failure.exception.cmd, install)
+        self.assertEqual([call.args[0] for call in run.call_args_list],
+                         [[sys.executable, "scripts/validate_governance.py"], install])
+        self.assertFalse(any(call.args[0][0] == "node" for call in run.call_args_list))
+
     def test_desktop_source_and_queue_changes_execute_six_focused_node_suites(self) -> None:
         registry = selector.load_registry(ROOT / "scripts/ci/component_registry.json")
         component = next((item for item in registry["components"]
@@ -109,7 +168,9 @@ class ComponentSelectionTests(unittest.TestCase):
             "apps/desktop/test/source_retry_ui.test.mjs",
             "apps/desktop/test/queue.test.mjs",
         )
-        commands = [["node", "--experimental-strip-types", suite] for suite in suites]
+        install = ["npm", "ci", "--prefix", "apps/desktop", "--ignore-scripts",
+                   "--no-audit", "--no-fund"]
+        commands = [install, *[["node", "--experimental-strip-types", suite] for suite in suites]]
         self.assertEqual(component["commands"], commands)
         for path in (*suites, "apps/desktop/src/main.ts", "apps/desktop/index.html",
                      "apps/desktop/package.json", "apps/desktop/src/features/queue/model.ts",
@@ -124,8 +185,7 @@ class ComponentSelectionTests(unittest.TestCase):
             with self.subTest(unrelated=path):
                 self.assertFalse(selector.component_affected(component, {path}))
         # Exercise the real registry/dispatcher, not just the root predicate.
-        # Stub subprocess execution here; the six registered argv arrays are
-        # also executed directly during local qualification and Integration.
+        # Stub dispatch here; the locked install must precede all six Node suites.
         for path in ("apps/desktop/src/main.ts",
                      "apps/desktop/src/features/source_intake/service_controller.ts",
                      "apps/desktop/src/features/queue/model.ts",

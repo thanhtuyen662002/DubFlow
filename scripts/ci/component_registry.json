@@ -789,12 +789,22 @@
         "apps/desktop/src/main.ts",
         "apps/desktop/index.html",
         "apps/desktop/package.json",
+        "apps/desktop/package-lock.json",
         "apps/desktop/src/features/queue/model.ts",
         "apps/desktop/test/queue.test.mjs",
         "apps/desktop/src/features/output_location",
         "apps/desktop/test/output_location.test.mjs"
       ],
       "commands": [
+        [
+          "npm",
+          "ci",
+          "--prefix",
+          "apps/desktop",
+          "--ignore-scripts",
+          "--no-audit",
+          "--no-fund"
+        ],
         [
           "node",
           "--experimental-strip-types",
