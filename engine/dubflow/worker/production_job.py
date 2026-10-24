@@ -145,6 +145,8 @@ class WorkerConfig:
     enable_dubbing: bool = False
     tts_voice_id: str | None = None
     burn_in_subtitles: bool = True
+    # Opaque dark box behind burned subtitles, to cover source hard-subs.
+    subtitle_box: bool = False
     translation_package: Path | None = None
     tts_model: Path | None = None
     tts_config: Path | None = None
@@ -189,6 +191,7 @@ class WorkerConfig:
             enable_dubbing=optional_bool("enable_dubbing", False),
             tts_voice_id=voice_id,
             burn_in_subtitles=optional_bool("burn_in_subtitles", True),
+            subtitle_box=optional_bool("subtitle_box", False),
             translation_package=optional_path("translation_package"),
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
@@ -525,15 +528,25 @@ def _format_timestamp(milliseconds: int, *, ass: bool = False) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
 
 
-def _write_subtitles(output_dir: Path, cues: Sequence[TextCue]) -> tuple[Path, Path]:
+ASS_STYLE_DEFAULT = "Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,0,2,40,40,48,1"
+# Cover band: a full-width dark rectangle (alpha 0x10, ~94% opaque) over the
+# subtitle area for the whole video, drawn under the text, so source
+# hard-subs stay hidden even between Vietnamese lines or past their width.
+ASS_STYLE_BAND = "Style: Band,Arial,48,&H10000000,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1"
+ASS_BAND_EVENT = r"Dialogue: 0,0:00:00.00,9:59:59.99,Band,,0,0,0,,{\an7\pos(0,0)\p1}m 0 820 l 1920 820 1920 1064 0 1064{\p0}"
+
+
+def _write_subtitles(output_dir: Path, cues: Sequence[TextCue], *, box: bool = False) -> tuple[Path, Path]:
     srt = output_dir / "captions_vi.srt"
     ass = output_dir / "captions_vi.ass"
     srt_text = "\n\n".join(
         f"{index}\n{_format_timestamp(cue.start_ms)} --> {_format_timestamp(cue.end_ms)}\n{cue.translated_text or cue.source_text}"
         for index, cue in enumerate(cues, start=1)
     ) + "\n\n"
-    ass_text = """[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,0,2,40,40,48,1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n""" + "\n".join(
-        f"Dialogue: 0,{_format_timestamp(cue.start_ms, ass=True)},{_format_timestamp(cue.end_ms, ass=True)},Default,,0,0,0,,{(cue.translated_text or cue.source_text).replace(chr(10), r'\\N')}"
+    # Without the band the file is byte-identical to earlier releases.
+    layer = 1 if box else 0
+    ass_text = """[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n""" + ASS_STYLE_DEFAULT + ("\n" + ASS_STYLE_BAND if box else "") + """\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n""" + (ASS_BAND_EVENT + "\n" if box else "") + "\n".join(
+        f"Dialogue: {layer},{_format_timestamp(cue.start_ms, ass=True)},{_format_timestamp(cue.end_ms, ass=True)},Default,,0,0,0,,{(cue.translated_text or cue.source_text).replace(chr(10), r'\\N')}"
         for cue in cues
     ) + "\n"
     try:
@@ -1024,7 +1037,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     emitter.progress(0.58, "Đã dịch lời thoại", units_done=len(translated), units_total=len(translated))
     emitter.checkpoint("translation", _sha256(work_dir / "translation.json"))
 
-    srt_path, ass_path = _write_subtitles(export_dir, translated)
+    srt_path, ass_path = _write_subtitles(export_dir, translated, box=getattr(config, "subtitle_box", False))
     _write_stage(checkpoint, checkpoint_path, "subtitles", {"srt": str(srt_path), "ass": str(ass_path), "srt_sha256": _sha256(srt_path), "ass_sha256": _sha256(ass_path)})
     emitter.progress(0.66, "Đã tạo subtitle SRT/ASS")
     emitter.checkpoint("subtitles", _sha256(srt_path))

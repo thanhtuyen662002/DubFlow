@@ -281,7 +281,7 @@ fn pick_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
@@ -326,6 +326,8 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     }
     if burn_in == Some(false) {
         args.push("--no-burn-in".into());
+    } else if subtitle_box == Some(true) {
+        args.push("--subtitle-box".into());
     }
     match source_language.as_deref() {
         None | Some("auto") => {}

@@ -289,3 +289,4 @@ h1, h2, h3, p { margin: 0; }
 .output-root-actions { display: flex; gap: 10px; }
 .output-root .link { font-size: 12px; }
 @media (max-width: 1080px) { .output-root { display: none; } }
+.box-row { margin-top: 10px; }

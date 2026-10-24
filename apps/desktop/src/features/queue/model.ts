@@ -20,6 +20,8 @@ export type QueueJob = {
   revisionOf?: string;
   /** Burn subtitles into the video (default true); false keeps them as files only. */
   burnIn?: boolean;
+  /** Dark box behind burned subtitles to cover source hard-subs (default false). */
+  subtitleBox?: boolean;
   /** Spoken language of the source; undefined lets ASR detect it. */
   sourceLanguage?: "zh" | "en";
   /** When processing first ran and when it reached a terminal state (ISO). */
@@ -176,6 +178,7 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.revisionOf === undefined || (typeof job.revisionOf === "string" && job.revisionOf.length > 0)) &&
     (job.burnIn === undefined || typeof job.burnIn === "boolean") &&
     (job.sourceLanguage === undefined || job.sourceLanguage === "zh" || job.sourceLanguage === "en") &&
+    (job.subtitleBox === undefined || typeof job.subtitleBox === "boolean") &&
     (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
     (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
   );
@@ -389,6 +392,7 @@ export class QueueController {
     revision.outputDir = outputDir;
     revision.revisionOf = job.id;
     if (job.burnIn !== undefined) revision.burnIn = job.burnIn;
+    if (job.subtitleBox !== undefined) revision.subtitleBox = job.subtitleBox;
     if (job.sourceLanguage !== undefined) revision.sourceLanguage = job.sourceLanguage;
     if (job.originUrl) revision.originUrl = job.originUrl;
     revision.displayName = job.displayName;
@@ -412,6 +416,13 @@ export class QueueController {
     const job = this.requireJob(jobId);
     if (job.outputDir !== undefined || !outputDir.trim()) return;
     job.outputDir = outputDir;
+    this.commit();
+  }
+
+  setSubtitleBox(jobId: string, subtitleBox: boolean): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    job.subtitleBox = subtitleBox;
     this.commit();
   }
 
