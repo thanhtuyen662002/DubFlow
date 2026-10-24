@@ -12,8 +12,12 @@ export type QueueJob = {
   status: JobStatus;
   outputPath: string | null;
   dubbing: DubbingOptions;
-  /** Re-run in an existing output directory (reviewed translations). */
+  /** Explicit output directory: a reviewed re-run, or a downloaded link. */
   outputDir?: string;
+  /** The video link this local file was downloaded from. */
+  originUrl?: string;
+  /** The completed job this one revises with reviewed translations. */
+  revisionOf?: string;
 };
 
 export type QueueSnapshot = {
@@ -160,7 +164,9 @@ function isQueueJob(value: unknown): value is QueueJob {
     isJobStatus(job.status) &&
     (job.outputPath === null || typeof job.outputPath === "string") &&
     (job.dubbing === undefined || isDubbingOptions(job.dubbing)) &&
-    (job.outputDir === undefined || (typeof job.outputDir === "string" && job.outputDir.length > 0))
+    (job.outputDir === undefined || (typeof job.outputDir === "string" && job.outputDir.length > 0)) &&
+    (job.originUrl === undefined || (typeof job.originUrl === "string" && /^https?:\/\//.test(job.originUrl))) &&
+    (job.revisionOf === undefined || (typeof job.revisionOf === "string" && job.revisionOf.length > 0))
   );
 }
 
@@ -298,6 +304,21 @@ export class QueueController {
     return added;
   }
 
+  /** Queue a file downloaded from a link, named after the link, output in outputDir. */
+  addLinkJob(path: string, url: string, displayName: string, outputDir: string): string | null {
+    if (this.snapshot.jobs.some((job) => job.sourcePath === path.trim())) return null;
+    if (this.snapshot.jobs.length >= this.queueLimit) throw new Error(`Queue limit of ${this.queueLimit} jobs reached`);
+    if (!/^https?:\/\//.test(url) || !outputDir.trim()) throw new Error("A link and an output directory are required");
+    const job = createQueueJob(this.allocateId(), path, this.clock());
+    job.displayName = displayName.trim() || job.displayName;
+    job.originUrl = url;
+    job.outputDir = outputDir;
+    this.snapshot.jobs.push(job);
+    this.snapshot.selected_job_id = job.id;
+    this.commit();
+    return job.id;
+  }
+
   selectJob(jobId: string | null): void {
     if (jobId !== null && !this.snapshot.jobs.some((job) => job.id === jobId)) {
       throw new Error(`Unknown job: ${jobId}`);
@@ -351,6 +372,9 @@ export class QueueController {
     const revision = createQueueJob(this.allocateId(), job.sourcePath, this.clock());
     revision.dubbing = { ...job.dubbing };
     revision.outputDir = outputDir;
+    revision.revisionOf = job.id;
+    if (job.originUrl) revision.originUrl = job.originUrl;
+    revision.displayName = job.displayName;
     revision.status = { ...emptyStatus(), reason: "review_revision", message: "Chờ xử lý lại với bản dịch đã sửa" };
     this.snapshot.jobs.push(revision);
     this.snapshot.selected_job_id = revision.id;

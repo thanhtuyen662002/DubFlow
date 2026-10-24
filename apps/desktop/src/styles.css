@@ -246,3 +246,14 @@ h1, h2, h3, p { margin: 0; }
 .review-foot { display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); background: var(--bg); }
 .review-foot .hint { flex: 1; margin: 0; }
 .review-empty { padding: 48px 0; color: var(--text-3); text-align: center; }
+
+/* Links */
+.link-form { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 4px 0 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg); color: var(--text-3); }
+.link-form:focus-within { border-color: var(--accent); }
+.link-form input { width: 300px; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text); }
+.link-form .btn { height: 26px; padding: 0 10px; font-size: 13px; }
+.fetch-list { margin-bottom: 8px; }
+.fetch-list .job { cursor: default; }
+.fetch-list .job.failed { border-color: color-mix(in srgb, var(--err) 40%, var(--border)); }
+.fetch-list .msg.err { color: var(--err); }
+@media (max-width: 1080px) { .link-form input { width: 180px; } }

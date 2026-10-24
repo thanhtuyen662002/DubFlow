@@ -39,6 +39,12 @@ function browserStorage(): SnapshotStorage {
 
 const queue = new QueueController(browserStorage());
 const pollers = new Map<string, number>();
+type FetchStatus = {
+  scan_id: string; url: string; provider: string; state: "preparing" | "downloading" | "done" | "failed";
+  downloaded_bytes: number; total_bytes: number | null; media_path: string | null; error: string | null;
+};
+type FetchEntry = { status: FetchStatus; outputDir: string; timer: number };
+const fetches = new Map<string, FetchEntry>();
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const element = document.querySelector<T>(selector);
@@ -177,7 +183,7 @@ function renderVoiceControls(job: QueueJob | undefined): void {
 
 function renderQueue(view: DesktopShellModel["view"]): void {
   const hasJobs = view.rows.length > 0;
-  dropZone.hidden = hasJobs;
+  dropZone.hidden = hasJobs || fetches.size > 0;
   queueList.hidden = !hasJobs;
   $("#clear-queue").hidden = !hasJobs;
   const { summary } = view;
@@ -200,14 +206,15 @@ function renderQueue(view: DesktopShellModel["view"]): void {
     const meta = element("div", "job-meta");
     meta.append(element("span", `mini-tag${row.dubbing ? "" : " muted"}`, row.dubbing ? "Lồng tiếng" : "Vietsub"));
     if (row.revision) meta.append(element("span", "mini-tag muted", "Bản sửa"));
-    meta.append(element("span", "msg", row.state === "QUEUED" ? row.sourcePath : row.status));
+    if (row.fromLink) meta.append(element("span", "mini-tag muted", "Từ link"));
+    meta.append(element("span", "msg", row.state === "QUEUED" ? row.origin : row.status));
     main.append(element("span", "job-title", row.title), meta);
     if (row.state !== "QUEUED") main.append(progressBar(row.fraction, row.state));
     const side = element("div", "job-side");
     side.append(element("span", `badge ${tone(row.state)}`, row.stateLabel));
     if (row.state !== "QUEUED") side.append(element("span", "percent", row.progress));
     item.append(thumb, main, side);
-    item.title = row.sourcePath;
+    item.title = row.origin;
     const select = () => queue.selectJob(row.id);
     item.addEventListener("click", select);
     item.addEventListener("keydown", (event) => {
@@ -222,7 +229,7 @@ function renderInspector(job: QueueJob | null): void {
   if (!job) return;
   const { status } = job;
   $("#detail-name").textContent = job.displayName;
-  $("#detail-path").textContent = job.sourcePath;
+  $("#detail-path").textContent = job.originUrl ?? job.sourcePath;
   const badge = $("#detail-state");
   badge.className = `badge ${tone(status.state)}`;
   badge.textContent = stateLabel(status.state);
@@ -410,6 +417,108 @@ $("#open-output").addEventListener("click", () => {
 $("#reveal-output").addEventListener("click", () => {
   const path = selectedJob()?.outputPath;
   if (path) invoke("reveal_path", { path }).catch((error) => showError(`Không mở được thư mục: ${String(error).slice(0, 160)}`));
+});
+
+// Links: the host downloads through the supervisor's source service; the
+// finished file joins the queue as a local job with its own output folder.
+const fetchList = $("#fetch-list");
+const PROVIDER_NAMES: Record<string, string> = { bilibili: "Bilibili", douyin: "Douyin", generic: "Link video" };
+
+function linkName(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const tail = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).at(-1) ?? "");
+    return tail || parsed.hostname;
+  } catch {
+    return url;
+  }
+}
+
+function megabytes(bytes: number): string {
+  return (bytes / 1_048_576).toFixed(bytes < 10_485_760 ? 1 : 0);
+}
+
+function renderFetches(): void {
+  fetchList.replaceChildren();
+  fetchList.hidden = fetches.size === 0;
+  dropZone.hidden = fetches.size > 0 || queue.getSnapshot().jobs.length > 0;
+  for (const { status } of fetches.values()) {
+    const item = element("li", `job${status.state === "failed" ? " failed" : ""}`);
+    const thumb = element("span", "job-thumb");
+    thumb.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>`;
+    const main = element("div", "job-main");
+    const meta = element("div", "job-meta");
+    meta.append(element("span", "mini-tag muted", PROVIDER_NAMES[status.provider] ?? status.provider));
+    const message = status.state === "failed" ? status.error ?? "Tải link thất bại"
+      : status.state === "preparing" ? "Đang phân tích link…"
+      : status.total_bytes ? `Đang tải ${megabytes(status.downloaded_bytes)}/${megabytes(status.total_bytes)} MB`
+      : `Đang tải ${megabytes(status.downloaded_bytes)} MB`;
+    meta.append(element("span", `msg${status.state === "failed" ? " err" : ""}`, message));
+    main.append(element("span", "job-title", linkName(status.url)), meta);
+    if (status.state !== "failed") {
+      const fraction = status.state === "downloading" && status.total_bytes ? status.downloaded_bytes / status.total_bytes : null;
+      main.append(progressBar(fraction, "RUNNING"));
+    }
+    const side = element("div", "job-side");
+    if (status.state === "failed") {
+      const dismiss = element("button", "icon-btn");
+      dismiss.type = "button";
+      dismiss.title = dismiss.ariaLabel = "Bỏ qua";
+      dismiss.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+      dismiss.addEventListener("click", () => {
+        fetches.delete(status.scan_id);
+        renderFetches();
+      });
+      side.append(element("span", "badge err", "Lỗi"), dismiss);
+    } else {
+      side.append(element("span", "badge run", status.state === "preparing" ? "Đang phân tích" : "Đang tải"));
+    }
+    item.append(thumb, main, side);
+    item.title = status.url;
+    fetchList.append(item);
+  }
+}
+
+async function pollFetch(scanId: string): Promise<void> {
+  const entry = fetches.get(scanId);
+  if (!entry) return;
+  try {
+    const status = await invoke<FetchStatus | null>("fetch_status", { scanId });
+    if (!status) return;
+    entry.status = status;
+    if (status.state === "done" && status.media_path) {
+      window.clearInterval(entry.timer);
+      fetches.delete(scanId);
+      queue.addLinkJob(status.media_path, status.url, linkName(status.url), entry.outputDir);
+    } else if (status.state === "failed") {
+      window.clearInterval(entry.timer);
+    }
+  } catch (error) {
+    window.clearInterval(entry.timer);
+    entry.status = { ...entry.status, state: "failed", error: String(error).slice(0, 200) };
+  }
+  renderFetches();
+}
+
+$("#link-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = $<HTMLInputElement>("#link-input");
+  const url = input.value.trim();
+  if (!url) return;
+  const submit = $<HTMLButtonElement>("#link-submit");
+  submit.disabled = true;
+  try {
+    const started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url });
+    const timer = window.setInterval(() => void pollFetch(started.status.scan_id), 1500);
+    fetches.set(started.status.scan_id, { status: started.status, outputDir: started.output_dir, timer });
+    input.value = "";
+    showError("");
+    renderFetches();
+  } catch (error) {
+    showError(String(error).slice(0, 300));
+  } finally {
+    submit.disabled = false;
+  }
 });
 
 // Review: edit Vietnamese text per cue, then re-run in the same output folder.
