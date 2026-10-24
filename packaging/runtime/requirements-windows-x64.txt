@@ -4,7 +4,12 @@
 faster-whisper==1.2.1
 # Faster-Whisper 1.2.1 requires av.open(metadata_errors=...). PyAV 19 removes it.
 av==16.1.0
-argostranslate==1.11.0
+# argostranslate installs from requirements-windows-x64-nodeps.txt: its
+# declared stanza/spacy dependencies (torch and ~780 MB more) are only used by
+# Argos' own sentencizers, which DubFlow never imports (#226, #236). Its
+# remaining runtime dependencies are pinned here.
+minisbd==0.9.5
+sacremoses==0.1.1
 # Native translation/tokenization affect cached output and route identity.
 ctranslate2==4.8.2
 sentencepiece==0.2.2

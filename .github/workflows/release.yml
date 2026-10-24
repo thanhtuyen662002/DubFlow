@@ -111,6 +111,8 @@ jobs:
             & (Join-Path $env:pythonLocation 'python.exe') -c "import faster_whisper, argostranslate, cryptography; import packaging.version as version; print('production Python adapters imported with packaging', version.__file__)"
             & (Join-Path $env:pythonLocation 'python.exe') -c "from vieneu._v3_turbo_engine.onnx_runtime_lite import OnnxV3LiteEngine; from vieneu_utils.phonemize_text import phonemize_text; from vieneu_utils.core_utils import max_expected_frames; print('VieNeu ONNX preset path imports without its demo extras')"
             if ($LASTEXITCODE -ne 0) { throw 'VieNeu ONNX preset path is incomplete without --no-deps extras' }
+            & (Join-Path $env:pythonLocation 'python.exe') -c "import sys; import argostranslate.package, argostranslate.settings, ctranslate2, sentencepiece; assert not {'torch','stanza','spacy'} & set(sys.modules), sorted({'torch','stanza','spacy'} & set(sys.modules)); print('Argos package runtime imports without torch/stanza/spacy')"
+            if ($LASTEXITCODE -ne 0) { throw 'Argos package runtime needs dependencies that --no-deps removed' }
           } finally {
             Pop-Location
           }
