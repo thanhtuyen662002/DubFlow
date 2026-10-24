@@ -1,0 +1,42 @@
+{
+  "candidate184": {
+    "preimage_commit": "90f580f8c18b97591f1d86cb1f2c754899d833ca",
+    "preimages": {
+      "apps/desktop/src/main.ts": {
+        "git_blob": "56f3a81c0631c7e67f3d7118cbfa0414ad53168c",
+        "sha256_lf": "f0ec7525f33ed47642eff3b5073811121083d29f6adcc99a868f826f59408603"
+      },
+      "apps/desktop/index.html": {
+        "git_blob": "fdbfac9d5fa1dd49efc3e1fdebd7dd4296da1a59",
+        "sha256_lf": "2031c632a39fa9ce0c79077450a2b38b5de5018ed94e1a1a20b407c1514756ee"
+      },
+      "apps/desktop/src-tauri/src/main.rs": {
+        "git_blob": "5efbe98312da1ec50a53a6562e2a81c6b3af5d27",
+        "sha256_lf": "5dfe40ae6e2639b7a9d95201a8a6f8f937c8fcfec23c90137955674306f62676"
+      },
+      "crates/job-supervisor/app/src/main.rs": {
+        "git_blob": "f83f6c3b72364a768167abc9cbfe4c95b5b37d35",
+        "sha256_lf": "2bb3189f56bc7d9740eb1d6166b5f8a6c4fb1ab37ccedca29d2641dd2cbea4a5"
+      }
+    },
+    "patch_sha256": "14eefe9cf1cdb9b8d1eac39f8163a165ca53755593c4d0aebb2baa556ddd4ecd"
+  },
+  "integration185": {
+    "preimage_commit": "f68d2e790df0b7577006f22357495317fc6cf3be",
+    "preimages": {
+      "apps/desktop/src/main.ts": {
+        "git_blob": "3f9e186be505c75b62fa70fbbb9a85c63456cb4f",
+        "sha256_lf": "c7c09bd1594d0d0600d13ed88586ff48bebc62c9431e16d785d04b81d2b8de1c"
+      },
+      "apps/desktop/index.html": {
+        "git_blob": "56110b24cdaf2b6027d94c4539961550d085c847",
+        "sha256_lf": "1e5d449eff97614ed9d17b71b1b1dafed5d2fba1b91db47316481e2102b12314"
+      },
+      "apps/desktop/src-tauri/src/main.rs": {
+        "git_blob": "ce055ac720b625a63ffa4b08b2c4b4e762f05818",
+        "sha256_lf": "406c89dd4f0a11d0fac34912179beb36362b82168a16e12f438e7b34bd937719"
+      }
+    },
+    "patch_sha256": "2ae8d2b817a9ae8ae86f98acb429f25be46dd2300d80ee42ee4723022c2a1cde"
+  }
+}

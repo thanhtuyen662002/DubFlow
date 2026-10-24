@@ -1,0 +1,274 @@
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -2,7 +2,7 @@
+ import { connectDesktopShell } from "./shell/desktop_shell.ts";
+ import { QueueController, type SnapshotStorage } from "./features/queue/model.ts";
+ import type { JobStatus } from "./features/job_status/status.ts";
+-import { parseSourceInput, supervisorSourceItems } from "./features/source_intake/model.ts";
++import { connectSourceIntake } from "./features/source_intake/host.ts";
+ 
+ type ReleaseInfo = { version: string; channel: string; backend: string };
+ 
+@@ -140,29 +140,7 @@
+   }
+ });
+ 
+-$("#add-sources").addEventListener("click", async () => {
+-  const input = $("#source-input") as HTMLTextAreaElement;
+-  const state = $("#source-intake-state");
+-  const batch = parseSourceInput(input.value);
+-  const localPaths = batch.items.filter((item) => item.kind === "local").map((item) => item.local_path as string);
+-  if (localPaths.length > 0) queue.addPaths(localPaths);
+-  const networkItems = batch.items.filter((item) => item.kind === "url");
+-  try {
+-    if (networkItems.length > 0) {
+-      const response = await invoke<{ event: string; scan?: unknown }>("enqueue_sources", { items: supervisorSourceItems({ ...batch, items: networkItems }) });
+-      const scan = response.scan as { scan?: { scan_id?: string; discovered_count?: number } } | undefined;
+-      state.textContent = `Đã đưa ${networkItems.length} URL vào hàng đợi nguồn (${scan?.scan?.scan_id ?? "đã ghi nhận"}).`;
+-    } else {
+-      state.textContent = localPaths.length > 0 ? `Đã thêm ${localPaths.length} đường dẫn cục bộ.` : "Chưa có nguồn hợp lệ.";
+-    }
+-  } catch (error) {
+-    state.textContent = `Không thể ghi hàng đợi nguồn: ${String(error).slice(0, 240)}`;
+-  }
+-  if (batch.rejected.length > 0) {
+-    state.textContent += ` Bỏ qua ${batch.rejected.length} mục không hợp lệ/trùng.`;
+-  }
+-  input.value = "";
+-});
++connectSourceIntake(document, (paths) => queue.addPaths(paths), invoke);
+ 
+ $("#start-processing").addEventListener("click", async () => {
+   const selected = queue.getSnapshot().jobs.find((job) => job.id === queue.getSnapshot().selected_job_id);
+--- a/apps/desktop/index.html
++++ b/apps/desktop/index.html
+@@ -38,8 +38,9 @@
+ 
+       <section class="source-intake" aria-label="Source acquisition">
+         <label for="source-input">Nguồn mạng hoặc đường dẫn cục bộ</label>
+-        <textarea id="source-input" rows="3" placeholder="Mỗi dòng một URL; tệp cục bộ vẫn dùng nút Thêm video"></textarea>
++        <textarea id="source-input" rows="3" placeholder="Mỗi dòng một URL hoặc đường dẫn; giữ nguyên dấu phẩy"></textarea>
+         <p id="source-intake-state" class="hint">URL được kiểm tra và che thông tin xác thực trước khi đưa vào hàng đợi.</p>
++      <ul id="source-intake-errors" aria-label="Nguồn cần kiểm tra"></ul>
+       </section>
+ 
+       <section class="workspace">
+--- a/apps/desktop/src-tauri/src/main.rs
++++ b/apps/desktop/src-tauri/src/main.rs
+@@ -1,7 +1,9 @@
++mod source_transport;
++#[path = "source_transport/host.rs"]
++mod source_host;
+ use serde::{Deserialize, Serialize};
+ use serde_json::{json, Value};
+ use std::fs;
+-use std::io::{BufRead, BufReader, Write};
+ use std::path::{Path, PathBuf};
+ use std::process::{Command, Stdio};
+ 
+@@ -172,96 +174,9 @@
+     Ok(())
+ }
+ 
+-fn supervisor_server_request(request: Value) -> Result<Value, String> {
+-    let root = version_root()?;
+-    let control = control_root()?;
+-    let supervisor = supervisor_binary(&root)?;
+-    let mut command = Command::new(supervisor);
+-    command
+-        .args([
+-            "server",
+-            "--root",
+-            root.to_string_lossy().as_ref(),
+-            "--data-root",
+-            control.to_string_lossy().as_ref(),
+-            "--model-root",
+-            control.join("models").to_string_lossy().as_ref(),
+-        ])
+-        .stdin(Stdio::piped())
+-        .stdout(Stdio::piped())
+-        .stderr(Stdio::piped());
+-    #[cfg(windows)]
+-    command.creation_flags(CREATE_NO_WINDOW);
+-    let mut child = command.spawn().map_err(|error| fail(format!("unable to start supervisor source service: {error}")))?;
+-    let mut stdin = child.stdin.take().ok_or_else(|| fail("supervisor source service stdin is unavailable"))?;
+-    let mut stdout = BufReader::new(child.stdout.take().ok_or_else(|| fail("supervisor source service stdout is unavailable"))?);
+-    let payload = serde_json::to_vec(&request).map_err(|error| fail(format!("source request is invalid: {error}")))?;
+-    stdin.write_all(&payload).map_err(|error| fail(format!("unable to send source request: {error}")))?;
+-    stdin.write_all(b"\n").map_err(|error| fail(format!("unable to send source request terminator: {error}")))?;
+-    stdin.flush().map_err(|error| fail(format!("unable to flush source request: {error}")))?;
+-    drop(stdin);
+-    let mut line = String::new();
+-    let mut response: Option<Value> = None;
+-    for _ in 0..32 {
+-        line.clear();
+-        let read = stdout.read_line(&mut line).map_err(|error| fail(format!("unable to read source response: {error}")))?;
+-        if read == 0 {
+-            break;
+-        }
+-        let value: Value = match serde_json::from_str(line.trim()) {
+-            Ok(value) => value,
+-            Err(_) => continue,
+-        };
+-        if value.get("event").and_then(Value::as_str) == Some("ready") {
+-            continue;
+-        }
+-        response = Some(value);
+-        break;
+-    }
+-    let _ = child.kill();
+-    let _ = child.wait();
+-    let response = response.ok_or_else(|| fail("supervisor did not return a source response"))?;
+-    if response.get("event").and_then(Value::as_str) == Some("error") {
+-        return Err(fail(response.get("condition").and_then(Value::as_str).unwrap_or("source request failed")));
+-    }
+-    Ok(response)
+-}
+-
+-#[tauri::command]
+-fn enqueue_sources(items: Value) -> Result<Value, String> {
+-    if !items.is_array() {
+-        return Err(fail("source items must be an array"));
+-    }
+-    supervisor_server_request(json!({"command":"enqueue_sources", "items":items}))
+-}
+-
+-#[tauri::command]
+-fn source_scan_status(scan_id: String) -> Result<Value, String> {
+-    validate_id(&scan_id)?;
+-    supervisor_server_request(json!({"command":"source_status", "scan_id":scan_id}))
+-}
+-
+-#[tauri::command]
+-fn pause_source_scan(scan_id: String) -> Result<Value, String> {
+-    validate_id(&scan_id)?;
+-    supervisor_server_request(json!({"command":"pause_source_scan", "scan_id":scan_id}))
+-}
+-
+-#[tauri::command]
+-fn resume_source_scan(scan_id: String) -> Result<Value, String> {
+-    validate_id(&scan_id)?;
+-    supervisor_server_request(json!({"command":"resume_source_scan", "scan_id":scan_id}))
+-}
+-
+-#[tauri::command]
+-fn cancel_source_scan(scan_id: String) -> Result<Value, String> {
+-    validate_id(&scan_id)?;
+-    supervisor_server_request(json!({"command":"cancel_source_scan", "scan_id":scan_id}))
+-}
+-
+ fn main() {
+     tauri::Builder::default()
+-        .invoke_handler(tauri::generate_handler![release_info, pick_files, start_job, job_status, cancel_job, enqueue_sources, source_scan_status, pause_source_scan, resume_source_scan, cancel_source_scan])
++        .invoke_handler(tauri::generate_handler![release_info, pick_files, start_job, job_status, cancel_job, source_host::enqueue_sources, source_host::source_scan_status, source_host::pause_source_scan, source_host::resume_source_scan, source_host::cancel_source_scan])
+         .run(tauri::generate_context!())
+         .expect("error while running DubFlow desktop host");
+ }
+--- a/crates/job-supervisor/app/src/main.rs
++++ b/crates/job-supervisor/app/src/main.rs
+@@ -1,3 +1,4 @@
++mod source_intake;
+ //! Durable DubFlow process supervisor.
+ //!
+ //! The supervisor is deliberately independent from the desktop UI.  The UI
+@@ -342,7 +343,7 @@
+         scan_id: Option<String>,
+         provider_id: Option<String>,
+         source_ref: Option<String>,
+-        items: Vec<SourceInput>,
++        items: Vec<Value>,
+     },
+     SourceStatus {
+         scan_id: String,
+@@ -358,15 +359,6 @@
+     },
+     Ping,
+     Shutdown,
+-}
+-
+-#[derive(Clone, Debug, Deserialize)]
+-struct SourceInput {
+-    identity_key: String,
+-    source_id: String,
+-    provider_id: String,
+-    source_url: String,
+-    source_ref: String,
+ }
+ 
+ #[derive(Clone, Debug)]
+@@ -1383,29 +1375,6 @@
+     Ok(())
+ }
+ 
+-fn validate_source_input(item: &SourceInput) -> SupervisorResult<()> {
+-    validate_source_text(&item.identity_key, "identity_key", 1_024)?;
+-    validate_source_text(&item.source_id, "source_id", 512)?;
+-    validate_source_text(&item.provider_id, "provider_id", 64)?;
+-    validate_source_text(&item.source_url, "source_url", 4_096)?;
+-    validate_source_text(&item.source_ref, "source_ref", 4_096)?;
+-    if !(item.source_url.starts_with("http://") || item.source_url.starts_with("https://")) {
+-        return Err(SupervisorError::Invalid(
+-            "source_url must use http or https".into(),
+-        ));
+-    }
+-    // A URL userinfo section is a credential leak.  The desktop sends a
+-    // redacted durable URL; a provider adapter may use a protected ephemeral
+-    // session value outside this queue database.
+-    let authority = item.source_url.split('/').nth(2).unwrap_or_default();
+-    if authority.contains('@') || item.source_url.contains('\u{0000}') {
+-        return Err(SupervisorError::Invalid(
+-            "source_url must not contain credentials".into(),
+-        ));
+-    }
+-    Ok(())
+-}
+-
+ fn source_status_name(status: dubflow_source_queue::ScanStatus) -> &'static str {
+     match status {
+         dubflow_source_queue::ScanStatus::Queued => "queued",
+@@ -1474,16 +1443,14 @@
+     scan_id: Option<String>,
+     provider_id: Option<String>,
+     source_ref: Option<String>,
+-    items: Vec<SourceInput>,
++    items: Vec<Value>,
+ ) -> SupervisorResult<Value> {
+-    if items.is_empty() || items.len() > dubflow_source_queue::MAX_ITEMS {
+-        return Err(SupervisorError::Invalid(format!(
+-            "items must contain 1..{} entries",
+-            dubflow_source_queue::MAX_ITEMS
+-        )));
+-    }
+-    for item in &items {
+-        validate_source_input(item)?;
++    let admission = source_intake::admit(items);
++    let rejected = serde_json::to_value(&admission.rejected)
++        .map_err(|_| SupervisorError::Invalid("source rejection encoding failed".into()))?;
++    let items = admission.items;
++    if items.is_empty() {
++        return Ok(json!({"event":"source_scan_rejected", "scan":null, "rejected":rejected}));
+     }
+     let scan_id = scan_id.unwrap_or_else(|| {
+         format!(
+@@ -1534,7 +1501,8 @@
+         .map_err(|error| {
+             SupervisorError::Invalid(format!("source queue checkpoint failed: {error}"))
+         })?;
+-    source_queue_snapshot(runtime, &scan_id)
++    let snapshot = source_queue_snapshot(runtime, &scan_id)?;
++    Ok(json!({"event":"source_scan_accepted", "scan":snapshot, "rejected":rejected}))
+ }
+ 
+ fn handle_request(
+@@ -1616,10 +1584,7 @@
+             source_ref,
+             items,
+         } => match enqueue_sources(runtime, scan_id, provider_id, source_ref, items) {
+-            Ok(snapshot) => emit_value(
+-                stdout,
+-                json!({"event":"source_scan_accepted", "scan": snapshot}),
+-            )?,
++            Ok(response) => emit_value(stdout, response)?,
+             Err(error) => emit_value(
+                 stdout,
+                 json!({"event":"error", "code":"SOURCE_QUEUE_INVALID", "condition": error.to_string()}),

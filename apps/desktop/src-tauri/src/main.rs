@@ -1,3 +1,6 @@
+mod source_transport;
+#[path = "source_transport/host.rs"]
+mod source_host;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
@@ -358,7 +361,7 @@ fn main() {
     tauri::Builder::default()
         .manage(review::ReviewHost::default())
         .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, import_pack_status, cancel_job,
-            review::review_snapshot_v1, review::review_snapshot_v2, review::review_audio_v1, review::review_audio_v2, review::review_plan_v1, review::review_apply_v1, review::review_undo_v1, review::review_export_v1, review::review_initialize_v1, review::review_request_stage_v1, review::review_request_status_v1, review::review_cancel_v1])
+            review::review_snapshot_v1, review::review_snapshot_v2, review::review_audio_v1, review::review_audio_v2, review::review_plan_v1, review::review_apply_v1, review::review_undo_v1, review::review_export_v1, review::review_initialize_v1, review::review_request_stage_v1, review::review_request_status_v1, review::review_cancel_v1, source_host::enqueue_sources, source_host::source_scan_status, source_host::pause_source_scan, source_host::resume_source_scan, source_host::cancel_source_scan])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
 }

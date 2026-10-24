@@ -1,3 +1,4 @@
+import { connectSourceIntake } from "./features/source_intake/host.ts";
 import { invoke } from "@tauri-apps/api/core";
 import { connectDesktopShell } from "./shell/desktop_shell.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
@@ -253,6 +254,8 @@ $("#add-files").addEventListener("click", async () => {
     $("#queue-state").textContent = `Không mở được hộp thoại file: ${String(error).slice(0, 160)}`;
   }
 });
+
+connectSourceIntake(document, (paths) => queue.addPaths(paths), invoke);
 
 $("#start-processing").addEventListener("click", async () => {
   const selected = queue.getSnapshot().jobs.find((job) => job.id === queue.getSnapshot().selected_job_id);
