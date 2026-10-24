@@ -219,6 +219,54 @@ def public_metadata(raw, *, generic=False):
     return result
 
 
+def failure_exit_code(error):
+    native_code = getattr(error, "native_exit_code", None)
+    if type(native_code) is int and native_code in {2, 3, 4, 5, 6, 7}:
+        return native_code
+    if isinstance(error, NotImplementedError):
+        return 7
+    # DownloadError keeps exc_info; ExtractorError uses cause in addition to
+    # Python's exception chaining. Prefer an actual HTTP status to diagnostics.
+    # Server errors are transient: retry as NETWORK, never NOT_FOUND.
+    codes = {401: 2, 403: 2, 404: 4, 410: 4, 429: 3, 500: 6, 502: 6, 503: 6, 504: 6}
+    pending, seen, messages = [error], set(), []
+    for _ in range(16):
+        if not pending:
+            break
+        current = pending.pop(0)
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        status = getattr(current, "status", None)
+        if isinstance(status, int) and status in codes:
+            return codes[status]
+        messages.append(str(current)[:4096].lower())
+        exc_info = getattr(current, "exc_info", None)
+        pending.extend(value for value in (getattr(current, "__cause__", None), getattr(current, "cause", None),
+            exc_info[1] if isinstance(exc_info, tuple) and len(exc_info) == 3 else None,
+            getattr(current, "__context__", None)) if isinstance(value, BaseException) and id(value) not in seen)
+    # Raw errors can contain cookie/token URLs. Inspect only bounded text and
+    # return a code; never include any of these messages in stdout.
+    text = "\n".join(messages)
+    match = re.search(r"\bhttp(?:\s*error)?\s*:?\s*(401|403|404|410|429|500|502|503|504)\b", text)
+    if match:
+        return codes[int(match[1])]
+    if any(value in text for value in ("login", "private", "cookie", "auth", "challenge", "forbidden")):
+        return 2
+    if "429" in text or "too many" in text:
+        return 3
+    if any(value in text for value in ("not found", "unavailable", "does not exist", "has been removed", "deleted")):
+        return 4
+    if "unsupported url" in text:
+        return 7
+    if any(value in text for value in ("timed out", "timeout", "connection reset", "connection refused",
+            "name resolution", "getaddrinfo failed", "name or service not known", "ssl", "certificate verify failed")):
+        return 6
+    # Extractor regressions ("unable to extract" / "please report this issue")
+    # and other unclassified failures require repair, not a network retry.
+    return 5
+
+
 def main():
     try:
         payload = sys.stdin.buffer.read(4097)
@@ -255,20 +303,7 @@ def main():
         sys.stdout.write(json.dumps(result, ensure_ascii=True))
         return 0
     except Exception as error:
-        native_code = getattr(error, "native_exit_code", None)
-        if type(native_code) is int and native_code in {2, 3, 4, 5, 6, 7}:
-            return native_code
-        # Classification is bounded; raw errors can contain cookie/token URLs.
-        text = str(error)[:4096].lower()
-        if isinstance(error, NotImplementedError):
-            return 7
-        if any(value in text for value in ("login", "private", "cookie", "auth", "challenge")):
-            return 2
-        if "429" in text or "too many" in text:
-            return 3
-        if "not found" in text or "unavailable" in text:
-            return 4
-        return 5 if isinstance(error, (ValueError, ImportError)) else 6
+        return failure_exit_code(error)
 
 
 if __name__ == "__main__":
