@@ -1,0 +1,32 @@
+{
+  "root": "D:\\DubFlowQA\\codex2 ngu\u1ed3n, source-f68-20261018-0546",
+  "files": 6,
+  "bytes": 86907,
+  "result": {
+    "error": "bounded observation deadline",
+    "kind": "probe_failure",
+    "retirement": {
+      "failure": null,
+      "phase": "stopped",
+      "retired": true
+    }
+  },
+  "event_kinds": [
+    "source_ready",
+    "source_preparing"
+  ],
+  "scan_rows": 0,
+  "item_rows": 0,
+  "readonly_rechecks": [
+    {
+      "path": "release-manifest.json",
+      "sha256": "c79cb3a173890cd3fd53e16295acd5166a8d5f4a69596dc187dc672ea5e98c63",
+      "bytes": 9613804
+    },
+    {
+      "path": "app/bin/dubflow-supervisor.exe",
+      "sha256": "b693435dcc23d231d154ebd23332591a231f3c4685409707d9c5903c6016194e",
+      "bytes": 6876160
+    }
+  ]
+}

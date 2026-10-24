@@ -1,0 +1,46 @@
+{
+  "candidate184": {
+    "preimage_commit": "90f580f8c18b97591f1d86cb1f2c754899d833ca",
+    "preimages": {
+      "apps/desktop/src/main.ts": {
+        "git_blob": "56f3a81c0631c7e67f3d7118cbfa0414ad53168c",
+        "sha256_lf": "f0ec7525f33ed47642eff3b5073811121083d29f6adcc99a868f826f59408603"
+      },
+      "apps/desktop/index.html": {
+        "git_blob": "fdbfac9d5fa1dd49efc3e1fdebd7dd4296da1a59",
+        "sha256_lf": "2031c632a39fa9ce0c79077450a2b38b5de5018ed94e1a1a20b407c1514756ee"
+      },
+      "apps/desktop/src-tauri/src/main.rs": {
+        "git_blob": "5efbe98312da1ec50a53a6562e2a81c6b3af5d27",
+        "sha256_lf": "5dfe40ae6e2639b7a9d95201a8a6f8f937c8fcfec23c90137955674306f62676"
+      },
+      "crates/job-supervisor/app/src/main.rs": {
+        "git_blob": "f83f6c3b72364a768167abc9cbfe4c95b5b37d35",
+        "sha256_lf": "2bb3189f56bc7d9740eb1d6166b5f8a6c4fb1ab37ccedca29d2641dd2cbea4a5"
+      }
+    },
+    "patch_sha256_lf": "3ec24bcc94bb403e879ac223b1fee985376ca2d99997d59a987b4126f1f3d81a"
+  },
+  "integration185": {
+    "preimage_commit": "f68d2e790df0b7577006f22357495317fc6cf3be",
+    "preimages": {
+      "apps/desktop/src-tauri/src/main.rs": {
+        "git_blob": "ce055ac720b625a63ffa4b08b2c4b4e762f05818",
+        "sha256_lf": "406c89dd4f0a11d0fac34912179beb36362b82168a16e12f438e7b34bd937719"
+      }
+    },
+    "patch_sha256_lf": "984b039c2f1dacb86384a8e87dd0fd3849412309607f6c15d373e1856a1647da",
+    "requires_host_configuration": "Manage SourceServiceHost::new(trusted LaunchPin, explicit finite AdmissionWindow) from installed-release bootstrap; patch intentionally cannot invent these trusted values."
+  },
+  "materialized0c1": {
+    "preimage_commit": "0c1e3662c21341a5d330039d82ff321d15c6a6ce",
+    "preimages": {
+      "apps/desktop/src/main.ts": {
+        "git_blob": "3f9e186be505c75b62fa70fbbb9a85c63456cb4f",
+        "sha256_lf": "c7c09bd1594d0d0600d13ed88586ff48bebc62c9431e16d785d04b81d2b8de1c"
+      }
+    },
+    "patch_sha256_lf": "5439c2c87520cd6cd869190c71e2dc39914a1f5c8895f5578bb5ffc5e740104c",
+    "requires_integration": "Call sourceEventPump.poll() from the one source observer after trusted native bootstrap; interval/rendering remains integrator-owned. Never use legacy enqueue or infer download from completed enumeration."
+  }
+}
