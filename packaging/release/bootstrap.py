@@ -8,6 +8,7 @@ only then exposed through the user launcher.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import argparse
 import base64
 from datetime import datetime, timezone
@@ -149,6 +150,9 @@ def _actual_files(root: Path) -> set[str]:
     return files
 
 
+_HASH_WORKERS = max(1, min(8, os.cpu_count() or 1))
+
+
 def verify_bundle(bundle_root: Path | str, manifest: ReleaseManifest) -> None:
     """Verify every manifest file before any destination mutation."""
 
@@ -165,6 +169,7 @@ def verify_bundle(bundle_root: Path | str, manifest: ReleaseManifest) -> None:
         raise BootstrapInstallError("UNMANIFESTED_ARTIFACT", f"bundle contains files absent from the manifest: {', '.join(extra[:8])}")
     if missing:
         raise BootstrapInstallError("ARTIFACT_MISSING", f"bundle is missing manifest files: {', '.join(missing[:8])}")
+    sources = []
     for artifact in manifest.artifacts:
         source = _safe_join(root, artifact.path)
         if _is_link(source) or not source.is_file():
@@ -175,7 +180,13 @@ def verify_bundle(bundle_root: Path | str, manifest: ReleaseManifest) -> None:
                 "SIZE_MISMATCH",
                 f"{artifact.path}: expected {artifact.size_bytes} bytes, received {actual_size}",
             )
-        actual_hash = hash_file(source)
+        sources.append(source)
+    # Every file is still hashed in full; hashlib releases the GIL on large
+    # buffers, so threads cut wall time on multi-gigabyte runtimes. Mismatches
+    # are reported in manifest order, independent of completion order.
+    with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
+        actual_hashes = list(pool.map(hash_file, sources))
+    for artifact, actual_hash in zip(manifest.artifacts, actual_hashes):
         if actual_hash != artifact.sha256:
             raise BootstrapInstallError(
                 "HASH_MISMATCH",
