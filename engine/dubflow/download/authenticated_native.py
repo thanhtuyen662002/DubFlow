@@ -12,7 +12,7 @@ import sys
 import time
 import types
 from itertools import islice
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 
 def scoped_cookies(provider, headers):
@@ -86,10 +86,109 @@ def inspect(request, youtube_dl):
     with youtube_dl(downloader_options()) as downloader:
         for cookie in cookies:
             downloader.cookiejar.set_cookie(cookie)
-        raw = downloader.extract_info(url, download=False)
+        try:
+            raw = downloader.extract_info(url, download=False)
+        except Exception as error:
+            # Bilibili renders video pages client-side behind risk control, so
+            # the SDK page extractor can fail while the public JSON API works.
+            if provider != "bilibili":
+                raise
+            raw = bilibili_api_metadata(downloader, url, error)
         if not isinstance(raw, dict) or raw.get("_type") in {"playlist", "multi_video"}:
             raise ValueError("unexpected provider metadata")
         return public_metadata(raw, generic=provider == "generic")
+
+
+class ProviderError(Exception):
+    def __init__(self, message, native_exit_code):
+        super().__init__(message)
+        self.native_exit_code = native_exit_code
+
+
+BILIBILI_API = "https://api.bilibili.com"
+_BVID = re.compile(r"/video/(BV[0-9A-Za-z]{10})")
+
+
+def bilibili_api_json(downloader, path, query):
+    from urllib.parse import urlencode
+    from yt_dlp.networking import Request
+    request = Request(f"{BILIBILI_API}{path}?{urlencode(query)}",
+                      headers={"Referer": "https://www.bilibili.com/", "Origin": "https://www.bilibili.com"})
+    from yt_dlp.networking.exceptions import HTTPError
+    try:
+        with downloader.urlopen(request) as response:
+            data = response.read(4 * 1024 * 1024 + 1)
+    except HTTPError as error:
+        if error.status in {412, 429}:
+            raise ProviderError("Bilibili API rate limited", 3) from None
+        if error.status == 404:
+            raise ProviderError("Bilibili video not found", 4) from None
+        raise
+    if len(data) > 4 * 1024 * 1024:
+        raise ValueError("Bilibili API response exceeded budget")
+    try:
+        document = json.loads(data)
+    except ValueError:
+        # Risk control answers bursts with an HTML page instead of JSON.
+        raise ProviderError("Bilibili API rate limited", 3) from None
+    code = document.get("code") if isinstance(document, dict) else None
+    if code == 0 and isinstance(document.get("data"), dict):
+        return document["data"]
+    if code in {-404, 62002, 62004, 62012}:
+        raise ProviderError("Bilibili video not found or unavailable", 4)
+    if code in {-101, -403, 87007, 87008}:
+        raise ProviderError("Bilibili video requires login", 2)
+    if code in {-412, -509, -799}:
+        raise ProviderError("Bilibili API rate limited", 3)
+    raise ValueError("unexpected Bilibili API response")
+
+
+def bilibili_api_metadata(downloader, url, original_error):
+    parts = urlsplit(url)
+    match = _BVID.search(parts.path)
+    if match is None:
+        raise original_error
+    bvid = match.group(1)
+    page = 1
+    for key, value in parse_qsl(parts.query):
+        if key == "p" and value.isdigit() and 1 <= int(value) <= 10000:
+            page = int(value)
+    view = bilibili_api_json(downloader, "/x/web-interface/view", {"bvid": bvid})
+    pages = view.get("pages") if isinstance(view.get("pages"), list) else []
+    selected = next((item for item in pages if isinstance(item, dict) and item.get("page") == page), None)
+    if selected is None:
+        if page != 1 or not isinstance(view.get("cid"), int):
+            raise ProviderError("Bilibili part not found", 4)
+        selected = {"cid": view["cid"], "duration": view.get("duration")}
+    cid = selected.get("cid")
+    if not isinstance(cid, int):
+        raise ValueError("Bilibili part has no cid")
+    formats = []
+    # DASH (fnval=16) gives split video/audio; html5 progressive MP4 is the
+    # complete audio/video fallback that works without a session.
+    dash = bilibili_api_json(downloader, "/x/player/playurl", {"bvid": bvid, "cid": cid, "qn": 80, "fnval": 16, "fourk": 0})
+    for value in ((dash.get("dash") or {}).get("video") or [])[:64]:
+        if isinstance(value, dict) and isinstance(value.get("baseUrl"), str):
+            formats.append({"format_id": f"dash-v{value.get('id')}-{value.get('codecid')}", "url": value["baseUrl"],
+                            "width": value.get("width"), "height": value.get("height"), "vcodec": value.get("codecs") or "avc1",
+                            "acodec": "none", "ext": "mp4", "protocol": "https", "tbr": (value.get("bandwidth") or 0) / 1000})
+    for value in ((dash.get("dash") or {}).get("audio") or [])[:32]:
+        if isinstance(value, dict) and isinstance(value.get("baseUrl"), str):
+            formats.append({"format_id": f"dash-a{value.get('id')}", "url": value["baseUrl"], "vcodec": "none",
+                            "acodec": value.get("codecs") or "mp4a", "ext": "m4a", "protocol": "https",
+                            "abr": (value.get("bandwidth") or 0) / 1000})
+    progressive = bilibili_api_json(downloader, "/x/player/playurl", {"bvid": bvid, "cid": cid, "qn": 16, "fnval": 1, "platform": "html5"})
+    for value in (progressive.get("durl") or [])[:4]:
+        if isinstance(value, dict) and isinstance(value.get("url"), str):
+            formats.append({"format_id": "html5-mp4", "url": value["url"], "vcodec": "avc1", "acodec": "mp4a",
+                            "ext": "mp4", "protocol": "https", "height": 360})
+    if not formats:
+        raise ProviderError("Bilibili returned no playable format", 4)
+    title = view.get("title")
+    if len(pages) > 1 and isinstance(selected.get("part"), str) and selected["part"]:
+        title = f"{title} - {selected['part']}"
+    return {"id": bvid if page == 1 else f"{bvid}_p{page}", "title": title, "description": view.get("desc"),
+            "duration": selected.get("duration") or view.get("duration"), "formats": formats, "subtitles": {}}
 
 
 def douyin_creator_page(request, youtube_dl):
