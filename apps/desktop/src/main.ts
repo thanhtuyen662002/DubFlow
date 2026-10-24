@@ -1,3 +1,4 @@
+import { createSourceEventPump } from "./features/source_intake/materialized.ts";
 import { invoke } from "@tauri-apps/api/core";
 import { connectDesktopShell } from "./shell/desktop_shell.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
@@ -33,6 +34,12 @@ function browserStorage(): SnapshotStorage {
 type StatusResponse = { status: JobStatus; output_path: string | null };
 
 const queue = new QueueController(browserStorage());
+// Single consumer after the trusted source-service bootstrap. poll() preserves
+// all native events for rendering and queues only source_downloaded receipts.
+const sourceEventPump = createSourceEventPump(queue, (command) => invoke(command));
+// The integrator's existing source observer should await sourceEventPump.poll();
+// do not add a second source_service_events_v1 drain or enqueue elsewhere.
+
 const pollers = new Map<string, number>();
 // Verification is session-local: persisted paths never imply valid file hashes.
 const importPacks = new Map<string, ImportPackStatus>();
