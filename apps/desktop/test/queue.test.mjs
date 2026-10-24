@@ -121,6 +121,12 @@ pinQueue.pinOutputDir(pinId, "E:/Other");
 assert.equal(pinQueue.getSnapshot().jobs[0].outputDir, "D:/Out/DubFlow Output/pin - vi/run-1");
 assert.equal(toQueueViewModel(pinQueue.getSnapshot()).rows[0].revision, false);
 
+// The subtitle box is a per-job option, editable only before processing.
+const boxQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [boxId] = boxQueue.addPaths(["C:/media/box.mp4"]);
+boxQueue.setSubtitleBox(boxId, true);
+assert.equal(boxQueue.getSnapshot().jobs[0].subtitleBox, true);
+
 // Source language is a per-job option; null returns to automatic detection.
 const langQueue = new QueueController(new MemorySnapshotStorage(), clock);
 const [langId] = langQueue.addPaths(["C:/media/zh.mp4"]);
