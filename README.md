@@ -16,6 +16,7 @@ DubFlow chuyển video tiếng Trung/Anh thành video tiếng Việt **ngay trê
 2. Chọn video trong danh sách và chọn tùy chọn ở bảng bên phải:
    - **Lồng tiếng Việt**: bật để có giọng đọc (chọn giọng bên dưới); tắt để chỉ tạo phụ đề và giữ audio gốc.
    - **Ngôn ngữ gốc**: để *Tự động*, hoặc chọn *Tiếng Trung* / *Tiếng Anh* nếu nhận diện sai (video nhiều nhạc).
+   - **Bộ dịch tiếng Trung**: mặc định *Argos*. *HachimiMT-60 (thử nghiệm)* dịch tiếng Trung thường tự nhiên hơn (tải thêm khoảng 58 MB ở lần dùng đầu), nhưng có thể dùng văn phong kiểu truyện (ta/ngươi). **Giấy phép chưa được xác minh cho mục đích thương mại** (model huấn luyện có dữ liệu chưng cất từ Gemini), nên chỉ dùng cá nhân/thử nghiệm; xem [docs/licenses/hachimi-mt-60.md](docs/licenses/hachimi-mt-60.md). Video tiếng Anh luôn dịch bằng Argos.
    - **Gắn phụ đề vào video**: tắt nếu chỉ muốn file phụ đề SRT/ASS rời.
    - **Dải che phụ đề gốc**: dải tối ngang vùng phụ đề, che chữ Trung đã in sẵn trong video.
 
