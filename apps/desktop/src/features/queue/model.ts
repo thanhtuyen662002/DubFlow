@@ -20,6 +20,9 @@ export type QueueJob = {
   revisionOf?: string;
   /** Burn subtitles into the video (default true); false keeps them as files only. */
   burnIn?: boolean;
+  /** When processing first ran and when it reached a terminal state (ISO). */
+  startedAt?: string;
+  finishedAt?: string;
 };
 
 export type QueueSnapshot = {
@@ -169,7 +172,9 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.outputDir === undefined || (typeof job.outputDir === "string" && job.outputDir.length > 0)) &&
     (job.originUrl === undefined || (typeof job.originUrl === "string" && /^https?:\/\//.test(job.originUrl))) &&
     (job.revisionOf === undefined || (typeof job.revisionOf === "string" && job.revisionOf.length > 0)) &&
-    (job.burnIn === undefined || typeof job.burnIn === "boolean")
+    (job.burnIn === undefined || typeof job.burnIn === "boolean") &&
+    (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
+    (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
   );
 }
 
@@ -339,6 +344,10 @@ export class QueueController {
       jobs: [{ ...job, status }],
     }).jobs[0].status;
     if (outputPath !== undefined) job.outputPath = outputPath;
+    if (ACTIVE_STATES.has(status.state) && job.startedAt === undefined) job.startedAt = this.clock();
+    if (TERMINAL_STATES.has(status.state) && job.startedAt !== undefined && job.finishedAt === undefined) {
+      job.finishedAt = this.clock();
+    }
     this.commit();
   }
 

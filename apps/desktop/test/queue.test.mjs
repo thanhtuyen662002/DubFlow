@@ -106,6 +106,19 @@ assert.equal(burnQueue.getSnapshot().jobs[0].burnIn, false);
 burnQueue.updateStatus(burnId, { ...burnQueue.getSnapshot().jobs[0].status, state: "RUNNING" });
 assert.throws(() => burnQueue.setBurnIn(burnId, true), /before processing/);
 
+// Processing time is recorded once: first active state, then first terminal state.
+let tick = 0;
+const timed = new QueueController(new MemorySnapshotStorage(), () => new Date(Date.UTC(2026, 9, 24, 12, 0, tick++)).toISOString());
+const [timedId] = timed.addPaths(["C:/media/timed.mp4"]);
+const timedStatus = timed.getSnapshot().jobs[0].status;
+assert.equal(timed.getSnapshot().jobs[0].startedAt, undefined);
+timed.updateStatus(timedId, { ...timedStatus, state: "RUNNING" });
+const startedAt = timed.getSnapshot().jobs[0].startedAt;
+timed.updateStatus(timedId, { ...timedStatus, state: "RUNNING", message: "still running" });
+assert.equal(timed.getSnapshot().jobs[0].startedAt, startedAt);
+timed.updateStatus(timedId, { ...timedStatus, state: "COMPLETED" });
+assert.ok(Date.parse(timed.getSnapshot().jobs[0].finishedAt) > Date.parse(startedAt));
+
 const colliding = new QueueController(new MemorySnapshotStorage(), clock, 100, () => "collision");
 colliding.addPaths(["one"]);
 assert.throws(() => colliding.addPaths(["two"]), /independent job ID/);

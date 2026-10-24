@@ -275,3 +275,5 @@ h1, h2, h3, p { margin: 0; }
 @media (max-width: 1080px) { .link-form input { width: auto; } }
 .review-listen { display: flex; gap: 6px; margin-top: 6px; }
 .review-listen .btn { height: 26px; padding: 0 10px; font-size: 12px; }
+.status-timing { margin-top: 8px; color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.status-timing:empty { display: none; }
