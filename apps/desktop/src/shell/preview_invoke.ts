@@ -54,6 +54,17 @@ function status(id: string): { status: JobStatus; output_path: string | null } |
   return { status: { ...base, message }, output_path: null };
 }
 
+const reviewCues = [
+  ["c1", 1010, 10630, "Twitter来自维基百科,自由的百科全书", "Twitter từ Wikipedia, bách khoa toàn thư mở", false],
+  ["c2", 11890, 19150, "Twitter是一个社交网络及微博客服务", "Twitter là một mạng xã hội và dịch vụ blog nhỏ.", false],
+  ["c3", 38970, 45610, "每则更新文字会显示在用户页面上,并会实时提供给每位用户", "Mỗi bản cập nhật văn bản sẽ được hiển thị trên trang người dùng và sẽ có sẵn cho mỗi người dùng một cách đúng lúc", true],
+  ["c4", 64570, 72810, "目前,只有美国、加拿大和英国提供免费的手机短信更新", "Hiện chỉ Mỹ, Canada và Anh miễn phí cập nhật qua tin nhắn điện thoại.", false],
+].map((row) => {
+  const [cue_id, start_ms, end_ms, source_text, machine_text, dub_failed] = row as [string, number, number, string, string, boolean];
+  return { cue_id, start_ms, end_ms, source_text, machine_text, dub_failed };
+});
+let savedOverrides: Record<string, string> = {};
+
 let picked = 0;
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
@@ -68,6 +79,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "cancel_job": { const job = running.get(String(args.jobId)); if (job) job.cancelled = true; return null as T; }
     case "job_status": return status(String(args.jobId)) as T;
     case "open_path": case "reveal_path": console.info(`[preview] ${command}`, args.path); return null as T;
+    case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
+    case "save_review": savedOverrides = { ...(args.overrides as Record<string, string>) }; return "D:\Videos\DubFlow Output\preview" as T;
     default: throw new Error(`preview host does not implement ${command}`);
   }
 }

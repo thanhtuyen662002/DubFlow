@@ -427,6 +427,11 @@ impl StartSpec {
             .map(|suffix| self.source_path.with_extension(suffix))
             .find(|path| path.is_file())
             .map(|path| input_fingerprint(&path)).transpose()?;
+        // Reviewed translations beside the outputs change every downstream
+        // stage, so a resumed job may not silently pick up an edited file.
+        let overrides = Some(self.output_dir.join("translation_overrides.json"))
+            .filter(|path| path.is_file())
+            .map(|path| input_fingerprint(&path)).transpose()?;
         let manifest_root = runtime.app_root.join("models").join("manifests");
         let mut manifests = Vec::new();
         if manifest_root.is_dir() {
@@ -442,7 +447,7 @@ impl StartSpec {
             manifests.sort_by(|left, right| left.0.cmp(&right.0));
         }
         let release_manifest = runtime.root.join("release-manifest.json");
-        Ok(serde_json::to_string(&json!({
+        let mut request = json!({
             "schema_version": 1, "source_path": self.source_path, "source": source,
             "sidecar": sidecar, "output_dir": self.output_dir,
             "source_language": self.source_language, "target_language": self.target_language,
@@ -455,7 +460,13 @@ impl StartSpec {
                 "ffprobe": input_fingerprint(&runtime.ffprobe)?,
                 "release_manifest": if release_manifest.is_file() { Some(input_fingerprint(&release_manifest)?) } else { None },
                 "model_manifests": manifests}
-        }))?)
+        });
+        // Only present when used, so requests saved before overrides existed
+        // still match on resume.
+        if let Some(overrides) = overrides {
+            request["translation_overrides"] = overrides;
+        }
+        Ok(serde_json::to_string(&request)?)
     }
 }
 

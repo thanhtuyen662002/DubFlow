@@ -199,6 +199,7 @@ function renderQueue(view: DesktopShellModel["view"]): void {
     const main = element("div", "job-main");
     const meta = element("div", "job-meta");
     meta.append(element("span", `mini-tag${row.dubbing ? "" : " muted"}`, row.dubbing ? "Lồng tiếng" : "Vietsub"));
+    if (row.revision) meta.append(element("span", "mini-tag muted", "Bản sửa"));
     meta.append(element("span", "msg", row.state === "QUEUED" ? row.sourcePath : row.status));
     main.append(element("span", "job-title", row.title), meta);
     if (row.state !== "QUEUED") main.append(progressBar(row.fraction, row.state));
@@ -330,26 +331,30 @@ async function pickFiles(): Promise<void> {
 $("#add-files").addEventListener("click", () => void pickFiles());
 $("#add-files-inline").addEventListener("click", () => void pickFiles());
 
-startButton.addEventListener("click", async () => {
-  const selected = selectedJob();
-  if (!selected || !canStart(selected)) return;
+async function startJob(job: QueueJob): Promise<void> {
+  if (!canStart(job)) return;
   startButton.disabled = true;
-  queue.updateStatus(selected.id, { ...selected.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
+  queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
     await invoke("start_job", {
-      jobId: selected.id, sourcePath: selected.sourcePath, outputDir: null,
-      enableDubbing: selected.dubbing.enabled, ttsVoiceId: selected.dubbing.voiceId,
+      jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null,
+      enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId,
     });
-    beginPolling(selected.id);
+    beginPolling(job.id);
   } catch (error) {
-    queue.updateStatus(selected.id, {
-      ...selected.status,
+    queue.updateStatus(job.id, {
+      ...job.status,
       state: "FAILED",
       reason: "supervisor_start_failed",
       message: String(error).slice(0, 400),
-      resource: { ...selected.status.resource, held: false },
+      resource: { ...job.status.resource, held: false },
     });
   }
+}
+
+startButton.addEventListener("click", () => {
+  const selected = selectedJob();
+  if (selected) void startJob(selected);
 });
 
 cancelButton.addEventListener("click", async () => {
@@ -405,6 +410,151 @@ $("#open-output").addEventListener("click", () => {
 $("#reveal-output").addEventListener("click", () => {
   const path = selectedJob()?.outputPath;
   if (path) invoke("reveal_path", { path }).catch((error) => showError(`Không mở được thư mục: ${String(error).slice(0, 160)}`));
+});
+
+// Review: edit Vietnamese text per cue, then re-run in the same output folder.
+type ReviewCue = {
+  cue_id: string; start_ms: number; end_ms: number; source_text: string;
+  machine_text: string; text: string; edited: boolean; dub_failed: boolean;
+};
+// Estimate only: the built-in voice failed a 3.9 syllable/s cue in real runs
+// while ~2.5 syllable/s cues fit, so warn above 3.5.
+const FAST_SYLLABLES_PER_SECOND = 3.5;
+const review = $("#review");
+const reviewList = $("#review-list");
+const reviewApply = $<HTMLButtonElement>("#review-apply");
+const reviewOnlyIssues = $<HTMLInputElement>("#review-only-issues");
+let reviewJobId: string | null = null;
+let reviewCues: ReviewCue[] = [];
+const reviewDrafts = new Map<string, string>();
+
+function clock(ms: number): string {
+  const total = Math.floor(ms / 100);
+  const minutes = Math.floor(total / 600);
+  const seconds = ((total % 600) / 10).toFixed(1).padStart(4, "0");
+  return `${String(minutes).padStart(2, "0")}:${seconds}`;
+}
+
+function pace(text: string, cue: ReviewCue): number {
+  const syllables = text.trim().split(/\s+/).filter(Boolean).length;
+  return syllables / Math.max(0.5, (cue.end_ms - cue.start_ms) / 1000);
+}
+
+function draftOf(cue: ReviewCue): string {
+  return reviewDrafts.get(cue.cue_id) ?? cue.text;
+}
+
+function needsAttention(cue: ReviewCue): boolean {
+  return cue.dub_failed || pace(draftOf(cue), cue) > FAST_SYLLABLES_PER_SECOND;
+}
+
+function reviewDirty(): boolean {
+  return reviewCues.some((cue) => draftOf(cue).trim() !== cue.text.trim());
+}
+
+function renderReviewMeta(cue: ReviewCue, meta: HTMLElement, item: HTMLElement): void {
+  const text = draftOf(cue);
+  const rate = pace(text, cue);
+  meta.replaceChildren();
+  if (cue.dub_failed) meta.append(element("span", "badge err", "Lồng tiếng lỗi"));
+  if (text.trim() !== cue.machine_text.trim()) meta.append(element("span", "badge run", "Đã sửa"));
+  const speed = element("span", `pace${rate > FAST_SYLLABLES_PER_SECOND ? " fast" : ""}`,
+    `${rate.toFixed(1)} tiếng/giây${rate > FAST_SYLLABLES_PER_SECOND ? " · có thể quá nhanh, nên rút gọn" : ""}`);
+  meta.append(speed);
+  if (text.trim() !== cue.machine_text.trim()) {
+    const revert = element("button", "revert", "Khôi phục bản máy dịch");
+    revert.type = "button";
+    revert.addEventListener("click", () => {
+      reviewDrafts.set(cue.cue_id, cue.machine_text);
+      renderReview();
+    });
+    meta.append(revert);
+  }
+  item.classList.toggle("changed", text.trim() !== cue.text.trim());
+}
+
+function renderReview(): void {
+  reviewList.replaceChildren();
+  const visible = reviewCues.filter((cue) => !reviewOnlyIssues.checked || needsAttention(cue));
+  const failed = reviewCues.filter((cue) => cue.dub_failed).length;
+  const fast = reviewCues.filter((cue) => pace(draftOf(cue), cue) > FAST_SYLLABLES_PER_SECOND).length;
+  $("#review-summary").textContent = [`${reviewCues.length} câu`, failed ? `${failed} câu lồng tiếng lỗi` : "",
+    fast ? `${fast} câu đọc quá nhanh` : ""].filter(Boolean).join(" · ");
+  if (!visible.length) reviewList.append(element("li", "review-empty", "Không có câu nào cần xem."));
+  for (const cue of visible) {
+    const item = element("li", "review-cue");
+    const time = element("div", "review-time");
+    time.append(element("b", "", clock(cue.start_ms)), document.createTextNode(`${((cue.end_ms - cue.start_ms) / 1000).toFixed(1)} giây`));
+    const body = element("div");
+    const editor = document.createElement("textarea");
+    editor.value = draftOf(cue);
+    editor.maxLength = 2000;
+    editor.rows = Math.min(4, Math.max(1, Math.ceil(editor.value.length / 90)));
+    editor.setAttribute("aria-label", `Câu lúc ${clock(cue.start_ms)}`);
+    const meta = element("div", "review-meta");
+    editor.addEventListener("input", () => {
+      reviewDrafts.set(cue.cue_id, editor.value);
+      renderReviewMeta(cue, meta, item);
+      reviewApply.disabled = !reviewDirty() || reviewCues.some((value) => !draftOf(value).trim());
+    });
+    body.append(element("p", "review-source", cue.source_text), editor, meta);
+    item.append(time, body);
+    renderReviewMeta(cue, meta, item);
+    reviewList.append(item);
+  }
+  reviewApply.disabled = !reviewDirty() || reviewCues.some((cue) => !draftOf(cue).trim());
+}
+
+async function openReview(): Promise<void> {
+  const job = selectedJob();
+  if (!job?.outputPath) return;
+  try {
+    reviewCues = await invoke<ReviewCue[]>("review_cues", { outputPath: job.outputPath });
+  } catch (error) {
+    showError(`Không mở được bản dịch: ${String(error).slice(0, 200)}`);
+    return;
+  }
+  reviewJobId = job.id;
+  reviewDrafts.clear();
+  reviewOnlyIssues.checked = reviewCues.some(needsAttention);
+  review.hidden = false;
+  renderReview();
+  reviewList.querySelector("textarea")?.focus();
+}
+
+function closeReview(): void {
+  if (reviewDirty() && !window.confirm("Bỏ các thay đổi chưa lưu?")) return;
+  review.hidden = true;
+  reviewJobId = null;
+}
+
+reviewApply.addEventListener("click", async () => {
+  const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === reviewJobId);
+  if (!job?.outputPath) return;
+  const overrides: Record<string, string> = {};
+  for (const cue of reviewCues) {
+    const text = draftOf(cue).trim();
+    if (text !== cue.machine_text.trim()) overrides[cue.cue_id] = text;
+  }
+  reviewApply.disabled = true;
+  try {
+    const outputDir = await invoke<string>("save_review", { outputPath: job.outputPath, overrides });
+    review.hidden = true;
+    reviewJobId = null;
+    const revisionId = queue.reviseJob(job.id, outputDir);
+    const revision = queue.getSnapshot().jobs.find((candidate) => candidate.id === revisionId);
+    if (revision) await startJob(revision);
+  } catch (error) {
+    reviewApply.disabled = false;
+    $("#review-hint").textContent = `Không lưu được: ${String(error).slice(0, 200)}`;
+  }
+});
+$("#open-review").addEventListener("click", () => void openReview());
+$("#review-close").addEventListener("click", closeReview);
+$("#review-cancel").addEventListener("click", closeReview);
+reviewOnlyIssues.addEventListener("change", renderReview);
+review.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeReview();
 });
 
 queue.subscribe((snapshot) => {

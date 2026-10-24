@@ -17,7 +17,7 @@ subtitle result instead of silently returning fixture text.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 import math
@@ -472,6 +472,47 @@ def _cues_from_json(path: Path) -> tuple[TextCue, ...]:
         except (KeyError, TypeError, ValueError) as error:
             raise ProductionJobError("CHECKPOINT_INVALID", f"checkpoint cue is invalid: {path}") from error
     return tuple(cues)
+
+
+TRANSLATION_OVERRIDES_FILE = "translation_overrides.json"
+_MAX_OVERRIDE_TEXT = 2000
+
+
+def _apply_translation_overrides(cues: Sequence[TextCue], output_dir: Path) -> tuple[tuple[TextCue, ...], str | None]:
+    """Replace machine translations with the user's reviewed text, per cue id.
+
+    The file lives beside the outputs so a re-run in the same directory reuses
+    ASR and translation checkpoints and regenerates only downstream stages.
+    Returns the effective cues and a hash of the applied overrides (None when
+    there is no file), which callers fold into downstream identities.
+    """
+    path = output_dir / TRANSLATION_OVERRIDES_FILE
+    if not path.is_file():
+        return tuple(cues), None
+    try:
+        if path.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError("file is too large")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("schema_version") != 1 or not isinstance(document.get("cues"), dict):
+            raise ValueError("schema_version 1 with a cues object is required")
+        overrides: dict[str, str] = {}
+        for cue_id, text in document["cues"].items():
+            if not isinstance(cue_id, str) or not isinstance(text, str):
+                raise ValueError("cue ids and texts must be strings")
+            text = " ".join(text.split())
+            if not text or len(text) > _MAX_OVERRIDE_TEXT:
+                raise ValueError(f"override for {cue_id} is empty or longer than {_MAX_OVERRIDE_TEXT} characters")
+            overrides[cue_id] = text
+    except (OSError, ValueError) as error:
+        raise ProductionJobError("TRANSLATION_OVERRIDES_INVALID", f"{path.name}: {error}") from error
+    known = {cue.cue_id for cue in cues}
+    unknown = sorted(set(overrides) - known)
+    if unknown:
+        raise ProductionJobError("TRANSLATION_OVERRIDES_INVALID",
+                                 f"{path.name} names cues that this transcript does not contain: {', '.join(unknown[:5])}")
+    effective = tuple(replace(cue, translated_text=overrides.get(cue.cue_id, cue.translated_text)) for cue in cues)
+    applied = {cue_id: overrides[cue_id] for cue_id in sorted(overrides)}
+    return effective, "sha256:" + sha256(json.dumps(applied, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _format_timestamp(milliseconds: int, *, ass: bool = False) -> str:
@@ -974,6 +1015,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         translated = _translate_with_argos(cues, config.model_root, transcript.source_language, runtime=translation_runtime, chunks_dir=work_dir / "translation-chunks")
         _atomic_json(translation_path, {"schema_version": 2, "source_language": transcript.source_language, "target_language": "vi", "provenance": translation_provenance, "input_hash": translation_input, "cues": [cue.to_dict() for cue in translated]})
         _write_stage(checkpoint, checkpoint_path, "translation", {"path": str(translation_path), "sha256": _sha256(translation_path)})
+    translated, overrides_identity = _apply_translation_overrides(translated, config.output_dir)
     emitter.progress(0.58, "Đã dịch lời thoại", units_done=len(translated), units_total=len(translated))
     emitter.checkpoint("translation", _sha256(work_dir / "translation.json"))
 
@@ -991,7 +1033,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         try:
             from engine.dubflow.worker.b2_audio import tts_recipe_identity, mix_recipe_identity
             selected_voice = getattr(config, "tts_voice_id", None)
-            generation_identity = sha256((translation_input + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice)).encode()).hexdigest()
+            generation_identity = sha256((translation_input + (overrides_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice)).encode()).hexdigest()
             b2_audio = run_b2_audio(
                 media=media,
                 source_path=config.source_path,
@@ -1199,7 +1241,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         if b2_audio.spoken_text_document_path is not None:
             artifacts["dubbing_spoken_text"] = b2_audio.spoken_text_document_path
             artifacts["editable_dubbing_spoken_text"] = editable_dir / "dubbing_spoken_text.json"
-    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=translation_provenance, asr=transcript.asr_evidence)
+    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=dict(translation_provenance, reviewed_overrides=overrides_identity), asr=transcript.asr_evidence)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.checkpoint("qc", _sha256(qc_path))
     return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "manifest": str(manifest_path)}

@@ -11,6 +11,7 @@ export type QueueRow = {
   progress: string;
   fraction: number | null;
   dubbing: boolean;
+  revision: boolean;
   selected: boolean;
 };
 
@@ -40,6 +41,7 @@ export function toQueueViewModel(snapshot: QueueSnapshot): QueueViewModel {
       progress: progressLabel(job.status),
       fraction: progressFraction(job.status),
       dubbing: job.dubbing.enabled,
+      revision: job.outputDir !== undefined,
       selected: job.id === snapshot.selected_job_id,
     })),
     selected,

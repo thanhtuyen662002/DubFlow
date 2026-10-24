@@ -102,6 +102,7 @@
                 <button id="open-output" class="btn primary" type="button">Mở video</button>
                 <button id="reveal-output" class="btn" type="button">Mở thư mục</button>
               </div>
+              <button id="open-review" class="btn block review-btn" type="button">Xem &amp; sửa bản dịch</button>
             </section>
 
             <fieldset id="voice-controls" class="settings" disabled>
@@ -134,6 +135,26 @@
           </aside>
         </section>
       </main>
+    </div>
+    <div id="review" class="review" role="dialog" aria-modal="true" aria-labelledby="review-title" hidden>
+      <div class="review-panel">
+        <header class="review-head">
+          <div>
+            <h2 id="review-title">Xem &amp; sửa bản dịch</h2>
+            <p id="review-summary" class="subtitle"></p>
+          </div>
+          <label class="review-filter"><input id="review-only-issues" type="checkbox" /> Chỉ câu cần xem</label>
+          <button id="review-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <ol id="review-list" class="review-list"></ol>
+        <footer class="review-foot">
+          <p id="review-hint" class="hint">Sửa câu tiếng Việt cho ngắn gọn, tự nhiên. Câu quá dài so với thời lượng sẽ không lồng tiếng được.</p>
+          <button id="review-cancel" class="btn ghost" type="button">Hủy</button>
+          <button id="review-apply" class="btn primary" type="button" disabled>Lưu &amp; xử lý lại</button>
+        </footer>
+      </div>
     </div>
     <div id="drag-overlay" class="drag-overlay" hidden><div>Thả để thêm video</div></div>
     <script type="module" src="./src/main.ts"></script>
