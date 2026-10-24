@@ -25,8 +25,15 @@ is an explicit route. Publication requires separate license/quality evidence.
 The selected archives contain legacy Stanza tokenizer checkpoints incompatible
 with the current SDK. Its default sentence initialization may download newer
 resources/models into the package tree. The adapter therefore injects the
-bounded `cue-punctuation-v1` sentence boundary implementation into each Argos
-PackageTranslation. It uses the unchanged pinned SentencePiece/model data, CPU
+bounded `cue-punctuation-v1` sentence boundary implementation into the pinned
+package inference recipe. The app-owned single-hypothesis facade preserves Argos
+1.11.0's paragraph splitting, CTranslate2 arguments, concatenated-token decoding,
+target-prefix removal and paragraph joining. It imports only Argos package/settings
+and its tokenizer, avoiding `translate`/`sbd` and their eager Stanza/Torch/spaCy
+imports. `STANZA` remains the settings compatibility sentinel; it does not select
+the actual cue sentencizer. Existing settings/store/component/package checks and
+route provenance remain in force, with decode/thread settings also checked before
+inference. It uses the unchanged pinned SentencePiece/model data, CPU
 int8 and beam 4. No auxiliary tokenizer model is loaded or downloaded. Reject
 sentences over 512 input tokens rather than silently truncating them. Record
 this recipe and exact CTranslate2/SentencePiece component versions in route

@@ -20,6 +20,11 @@ export type QueueJob = {
   revisionOf?: string;
   /** Burn subtitles into the video (default true); false keeps them as files only. */
   burnIn?: boolean;
+  /** Spoken language of the source; undefined lets ASR detect it. */
+  sourceLanguage?: "zh" | "en";
+  /** When processing first ran and when it reached a terminal state (ISO). */
+  startedAt?: string;
+  finishedAt?: string;
 };
 
 export type QueueSnapshot = {
@@ -169,7 +174,10 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.outputDir === undefined || (typeof job.outputDir === "string" && job.outputDir.length > 0)) &&
     (job.originUrl === undefined || (typeof job.originUrl === "string" && /^https?:\/\//.test(job.originUrl))) &&
     (job.revisionOf === undefined || (typeof job.revisionOf === "string" && job.revisionOf.length > 0)) &&
-    (job.burnIn === undefined || typeof job.burnIn === "boolean")
+    (job.burnIn === undefined || typeof job.burnIn === "boolean") &&
+    (job.sourceLanguage === undefined || job.sourceLanguage === "zh" || job.sourceLanguage === "en") &&
+    (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
+    (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
   );
 }
 
@@ -339,6 +347,10 @@ export class QueueController {
       jobs: [{ ...job, status }],
     }).jobs[0].status;
     if (outputPath !== undefined) job.outputPath = outputPath;
+    if (ACTIVE_STATES.has(status.state) && job.startedAt === undefined) job.startedAt = this.clock();
+    if (TERMINAL_STATES.has(status.state) && job.startedAt !== undefined && job.finishedAt === undefined) {
+      job.finishedAt = this.clock();
+    }
     this.commit();
   }
 
@@ -377,6 +389,7 @@ export class QueueController {
     revision.outputDir = outputDir;
     revision.revisionOf = job.id;
     if (job.burnIn !== undefined) revision.burnIn = job.burnIn;
+    if (job.sourceLanguage !== undefined) revision.sourceLanguage = job.sourceLanguage;
     if (job.originUrl) revision.originUrl = job.originUrl;
     revision.displayName = job.displayName;
     revision.status = { ...emptyStatus(), reason: "review_revision", message: "Chờ xử lý lại với bản dịch đã sửa" };
@@ -384,6 +397,14 @@ export class QueueController {
     this.snapshot.selected_job_id = revision.id;
     this.commit();
     return revision.id;
+  }
+
+  setSourceLanguage(jobId: string, language: "zh" | "en" | null): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    if (language === null) delete job.sourceLanguage;
+    else job.sourceLanguage = language;
+    this.commit();
   }
 
   setBurnIn(jobId: string, burnIn: boolean): void {
