@@ -16,7 +16,8 @@ also rejects a complete chunk because one genuine word has zero sample duration.
 Private word evidence must retain that word with its positive speech group;
 inventing a positive word interval would misrepresent the model observation.
 
-The production recipe becomes `faster-whisper-1.2.1-bounded-word-gap-v3`.
+The current production recipe is `faster-whisper-1.2.1-bounded-word-gap-v4`;
+ADR-0032 adds drift handling to this bounded decode policy.
 Consume the existing ChunkPlanner with a 1/16000 source-sample time base.
 Balance non-overlapping cores of at most 120 seconds, with up to ten seconds
 of context on each side. Balancing avoids a tiny final core that contains only

@@ -41,7 +41,7 @@ class ChunkedAsrTests(unittest.TestCase):
         self.assertEqual(cue.evidence["end_sample"], 1_234_567 + 19_201)
         self.assertEqual(cue.evidence["words"][0]["start_sample"], cue.evidence["start_sample"])
 
-    def run_model(self, root, *, language="auto", on_chunk=None, binding="model-v1", empty_first=False):
+    def run_model(self, root, *, language="auto", on_chunk=None, binding="model-v1", empty_first=False, source=None):
         (root / "asr/faster-whisper-small").mkdir(parents=True, exist_ok=True)
         path = root / "source.wav"
         if not path.exists():
@@ -62,7 +62,7 @@ class ChunkedAsrTests(unittest.TestCase):
                 observed = "zh" if empty_first else "en"
                 if empty_first and first_sample == 0:
                     return iter(()), SimpleNamespace(language="de", language_probability=.2)
-                return iter([speech()]), SimpleNamespace(language=observed, language_probability=.9)
+                return iter([source or speech()]), SimpleNamespace(language=observed, language_probability=.9)
         with patch.dict("sys.modules", {"faster_whisper": SimpleNamespace(WhisperModel=Model)}):
             result = worker._transcribe_with_faster_whisper(path, root, language, on_chunk=on_chunk, model_binding=binding)
         return result, calls, instances
@@ -105,14 +105,47 @@ class ChunkedAsrTests(unittest.TestCase):
     def test_recipe_model_binding_and_requested_language_do_not_relabel_old_chunks(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            _, _, _ = self.run_model(root)
+            with patch("engine.dubflow.worker.whisper_cues.ASR_RECIPE", "obsolete-recipe"), patch("engine.dubflow.worker.whisper_chunks.ASR_RECIPE", "obsolete-recipe"):
+                self.run_model(root)
             old = {path: path.read_bytes() for path in (root / "asr-chunks").rglob("*.json")}
+            _, calls, _ = self.run_model(root)
+            self.assertEqual(len(calls), 3)
             _, calls, _ = self.run_model(root, binding="model-v2")
             self.assertEqual(len(calls), 3)
             _, calls, _ = self.run_model(root, language="en")
             self.assertEqual(len(calls), 3)
             for path, content in old.items():
                 self.assertEqual(path.read_bytes(), content)
+
+    def test_drift_sentence_survives_reconciliation_checkpoint_and_chunk_resume(self):
+        source = SimpleNamespace(text="Are you hurt?", start=27.43, end=47.47,
+                                 words=[word("Are", 27.43, 27.97, .33), word(" you", 27.97, 33.19), word(" hurt?", 47.17, 47.47)])
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            result, calls, _ = self.run_model(root, source=source)
+            self.assertEqual(len(result.cues), 3)
+            for cue in result.cues:
+                self.assertEqual((cue.source_text, cue.confidence), ("Are you hurt?", 0))
+                self.assertIn(cue.end_ms - cue.start_ms, (5760, 5761))
+                item = result.asr_evidence["cue_quality"][cue.cue_id]
+                self.assertEqual(item["end_sample"] - item["start_sample"], 92160)
+                self.assertEqual(item["review_reason"], "word-alignment-drift")
+                self.assertEqual(len(item["alignment_drift"]["words"]), 3)
+                self.assertEqual(len(item["chunk_origins"]), 1)
+            document = {"schema_version": 4, "source": "faster-whisper", "requested_source_language": "auto",
+                        **result.language_metadata(), "asr_evidence": result.asr_evidence}
+            self.assertIsNotNone(worker._language_checkpoint(result.cues, json.loads(json.dumps(document)), "auto"))
+            cue = result.cues[0]
+            for field, value in (("segment_end_sample", 0), ("timing_basis", "invented"), ("words", [])):
+                broken = deepcopy(document)
+                broken["asr_evidence"]["cue_quality"][cue.cue_id]["alignment_drift"][field] = value
+                self.assertIsNone(worker._language_checkpoint(result.cues, broken, "auto"), field)
+            broken = deepcopy(document)
+            broken["asr_evidence"]["cue_quality"][cue.cue_id].pop("alignment_drift")
+            self.assertIsNone(worker._language_checkpoint(result.cues, broken, "auto"))
+            replay, calls, instances = self.run_model(root, source=source)
+            self.assertEqual((calls, instances), ([], []))
+            self.assertEqual(replay, result)
 
     def test_silent_first_chunk_is_committed_without_pinning_its_false_language(self):
         with TemporaryDirectory() as directory:

@@ -133,13 +133,13 @@ def reconcile(chunks: tuple[AudioChunk, ...], payloads: list[dict]) -> tuple[tup
                 continue
             origin = {"chunk_id": chunk.chunk_id, "cue_id": cue.cue_id, "raw_segment_scores": cue.evidence["raw_segment_scores"]}
             group = {"words": selected, "origins": [origin], "raw": cue.evidence["raw_segment_scores"],
-                     "reason": cue.evidence["review_reason"], "indices": {chunk.index}}
+                     "reason": cue.evidence["review_reason"], "drift": cue.evidence.get("alignment_drift"), "indices": {chunk.index}}
             match = None
             for previous in reversed(frontier):
                 if chunk.index - 1 not in previous["indices"] or chunk.index in previous["indices"]:
                     continue
                 duplicates = [word for word in selected if any(_word_text(word) == _word_text(old) and _overlap(word, old) for old in previous["words"])]
-                if duplicates and previous["reason"] == group["reason"]:
+                if duplicates and previous["reason"] == group["reason"] and previous["drift"] == group["drift"]:
                     match = previous
                     group["words"] = [word for word in selected if word not in duplicates]
                     break
@@ -161,12 +161,12 @@ def reconcile(chunks: tuple[AudioChunk, ...], payloads: list[dict]) -> tuple[tup
         end = -1
         for word in group["words"]:
             if split and word["start_sample"] - end > MAX_GAP_SAMPLES:
-                output.append(cue_from_words(split, group["raw"], review_reason=group["reason"], origins=group["origins"]))
+                output.append(cue_from_words(split, group["raw"], review_reason=group["reason"], origins=group["origins"], alignment_drift=group["drift"]))
                 split = []
             split.append(word)
             end = max(end, word["end_sample"])
         if split:
-            output.append(cue_from_words(split, group["raw"], review_reason=group["reason"], origins=group["origins"]))
+            output.append(cue_from_words(split, group["raw"], review_reason=group["reason"], origins=group["origins"], alignment_drift=group["drift"]))
     output.sort(key=lambda cue: (cue.evidence["start_sample"], cue.evidence["end_sample"], cue.cue_id))
     if len({cue.cue_id for cue in output}) != len(output):
         raise ChunkAsrError("ASR_CUE_ID_COLLISION", "ASR chunk reconciliation produced duplicate source identity")
