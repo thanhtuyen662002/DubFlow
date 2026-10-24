@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-hachimi-mt-60-zh-vi-v1",
+  "runtime_components": {"ctranslate2": "4.8.2", "sentencepiece": "0.2.2"},
+  "distribution": "download-on-opt-in",
+  "license": "CC-BY-4.0",
+  "license_policy": "experimental opt-in; upstream Gemini-distillation and dataset terms unverified, see docs/licenses/hachimi-mt-60.md",
+  "upstream": {"repository": "https://huggingface.co/ngocdang83/HachimiMT-60-zh-vi", "revision": "50cd988cefa7773c2663337e54829df8bb036659"},
+  "source_languages": ["zh", "zh-CN", "zh-TW"],
+  "model_dir": "translation/hachimi-mt-60-zh-vi-v1",
+  "artifacts": [
+    {"id": "hachimi-config", "path": "translation/hachimi-mt-60-zh-vi-v1/config.json", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-hachimi-mt-60-zh-vi-v1/config.json", "sha256": "93022870e65ce5864615f9bc688c8004a745d9cde30d2e991d2dd4513d6ade42", "size_bytes": 234},
+    {"id": "hachimi-model", "path": "translation/hachimi-mt-60-zh-vi-v1/model.bin", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-hachimi-mt-60-zh-vi-v1/model.bin", "sha256": "ed9e9ec52051916be15ebedd9aff71bcb7a30300ee8d2fc2ec818670d222a881", "size_bytes": 58057231},
+    {"id": "hachimi-vocabulary", "path": "translation/hachimi-mt-60-zh-vi-v1/shared_vocabulary.json", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-hachimi-mt-60-zh-vi-v1/shared_vocabulary.json", "sha256": "fa8a823495117cd811d830cb92153a0d69137668905104a9793cac9e4300cba0", "size_bytes": 456822},
+    {"id": "hachimi-source-spm", "path": "translation/hachimi-mt-60-zh-vi-v1/source.spm", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-hachimi-mt-60-zh-vi-v1/source.spm", "sha256": "d1557335c5892d2f33c6a4864f3ae598b235f705a713e32ca020b9fadb99a99e", "size_bytes": 606202},
+    {"id": "hachimi-target-spm", "path": "translation/hachimi-mt-60-zh-vi-v1/target.spm", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-hachimi-mt-60-zh-vi-v1/target.spm", "sha256": "d1557335c5892d2f33c6a4864f3ae598b235f705a713e32ca020b9fadb99a99e", "size_bytes": 606202},
+    {"id": "hachimi-notice", "path": "translation/hachimi-mt-60-zh-vi-v1/NOTICE-hachimi-mt-60.md", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-hachimi-mt-60-zh-vi-v1/NOTICE-hachimi-mt-60.md", "sha256": "26abf74288c07c5b228254e15a7bcb10e59ea4fc665f4139bfd8481e456dd1a5", "size_bytes": 2056}
+  ]
+}

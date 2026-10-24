@@ -361,6 +361,8 @@ struct StartSpec {
     burn_in_subtitles: bool,
     /// Opaque box behind burned subtitles (covers source hard-subs).
     subtitle_box: bool,
+    /// "argos" (default) or the opt-in "hachimi" Chinese translator.
+    translation_engine: String,
 }
 
 impl StartSpec {
@@ -408,6 +410,7 @@ impl StartSpec {
             tts_voice_id: None,
             burn_in_subtitles: burn_in_subtitles.unwrap_or(true),
             subtitle_box: false,
+            translation_engine: "argos".into(),
         })
     }
     fn with_voice_id(mut self, voice_id: Option<String>) -> SupervisorResult<Self> {
@@ -424,6 +427,16 @@ impl StartSpec {
     fn with_subtitle_box(mut self, subtitle_box: bool) -> Self {
         self.subtitle_box = subtitle_box;
         self
+    }
+    fn with_translation_engine(mut self, engine: Option<String>) -> SupervisorResult<Self> {
+        let engine = engine.unwrap_or_else(|| "argos".into());
+        if engine != "argos" && engine != "hachimi" {
+            return Err(SupervisorError::Invalid(
+                "translation_engine must be argos or hachimi".into(),
+            ));
+        }
+        self.translation_engine = engine;
+        Ok(self)
     }
 
     fn durable_request(&self, runtime: &RuntimePaths) -> SupervisorResult<String> {
@@ -476,6 +489,9 @@ impl StartSpec {
         // Only present when used, like translation_overrides.
         if self.subtitle_box {
             request["subtitle_box"] = json!(true);
+        }
+        if self.translation_engine != "argos" {
+            request["translation_engine"] = json!(self.translation_engine);
         }
         Ok(serde_json::to_string(&request)?)
     }
@@ -607,6 +623,7 @@ enum CliMode {
         tts_voice_id: Option<String>,
         burn_in_subtitles: bool,
         subtitle_box: bool,
+        translation_engine: Option<String>,
     },
     Cancel {
         root: Option<PathBuf>,
@@ -649,6 +666,7 @@ fn run() -> SupervisorResult<()> {
             tts_voice_id,
             burn_in_subtitles,
             subtitle_box,
+            translation_engine,
         } => {
             return run_one_shot(
                 root,
@@ -664,6 +682,7 @@ fn run() -> SupervisorResult<()> {
                 burn_in_subtitles,
                 tts_voice_id,
                 subtitle_box,
+                translation_engine,
             );
         }
         CliMode::Cancel {
@@ -752,6 +771,7 @@ where
             let mut enable_dubbing = false;
             let mut tts_voice_id = None;
             let mut subtitle_box = false;
+            let mut translation_engine = None;
             let mut burn_in_subtitles = true;
             while let Some(arg) = args.next() {
                 match arg.to_string_lossy().as_ref() {
@@ -780,6 +800,9 @@ where
                     "--tts-voice-id" => tts_voice_id = Some(next_arg(&mut args, "--tts-voice-id")?),
                     "--no-burn-in" => burn_in_subtitles = false,
                     "--subtitle-box" => subtitle_box = true,
+                    "--translation-engine" => {
+                        translation_engine = Some(next_arg(&mut args, "--translation-engine")?)
+                    }
                     "--help" | "-h" => {
                         println!("dubflow-supervisor run --source <absolute file> --output-dir <absolute dir> --data-root <absolute dir> [--root <version root>] [--status-path <file>]");
                         std::process::exit(0);
@@ -808,6 +831,7 @@ where
                 tts_voice_id,
                 burn_in_subtitles,
                 subtitle_box,
+                translation_engine,
             }
         }
         Some("cancel") => {
@@ -933,6 +957,7 @@ fn run_one_shot(
     burn_in_subtitles: bool,
     tts_voice_id: Option<String>,
     subtitle_box: bool,
+    translation_engine: Option<String>,
 ) -> SupervisorResult<()> {
     let root = match root {
         Some(root) => root,
@@ -952,7 +977,8 @@ fn run_one_shot(
         target_language,
         Some(enable_dubbing),
         Some(burn_in_subtitles),
-    )?.with_voice_id(tts_voice_id)?.with_subtitle_box(subtitle_box);
+    )?.with_voice_id(tts_voice_id)?.with_subtitle_box(subtitle_box)
+    .with_translation_engine(translation_engine)?;
     // Keep the kernel lease through the final status write. A duplicate must
     // not change SQL/status, reconcile artifacts or start another worker.
     let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
@@ -2083,6 +2109,9 @@ fn run_worker_attempt(
     if spec.subtitle_box {
         args["subtitle_box"] = json!(true);
     }
+    if spec.translation_engine != "argos" {
+        args["translation_engine"] = json!(spec.translation_engine);
+    }
     let args_json = serde_json::to_string(&args)?;
     let command = Envelope::new(
         MessageType::Command,
@@ -2572,7 +2601,7 @@ mod tests {
         let runtime = RuntimePaths { root:root.clone(), app_root:root.join("app"), python:root.join("python.exe"), worker_script:root.join("worker.py"),
             ffmpeg:root.join("ffmpeg.exe"), ffprobe:root.join("ffprobe.exe"), model_root:root.join("models"), db:root.join("state.sqlite") };
         let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
-            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false };
+            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into() };
         (root, runtime, spec)
     }
 
@@ -2688,6 +2717,20 @@ mod tests {
             assert_eq!(replay, first);
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn translation_engine_is_validated_and_only_fingerprinted_when_opted_in() {
+        let (root, runtime, spec) = identity_fixture();
+        let default_request = spec.durable_request(&runtime).unwrap();
+        assert!(!default_request.contains("translation_engine"));
+        let argos = spec.clone().with_translation_engine(Some("argos".into())).unwrap();
+        assert_eq!(argos.durable_request(&runtime).unwrap(), default_request);
+        let hachimi = spec.clone().with_translation_engine(Some("hachimi".into())).unwrap();
+        let request: Value = serde_json::from_str(&hachimi.durable_request(&runtime).unwrap()).unwrap();
+        assert_eq!(request["translation_engine"], "hachimi");
+        assert!(spec.clone().with_translation_engine(Some("gemini".into())).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2967,7 +3010,7 @@ mod tests {
         let spec = StartSpec {
             job_id:"test".into(), source_path:PathBuf::from("source"), output_dir:PathBuf::from("output"),
             source_language:"auto".into(), target_language:"vi".into(), enable_dubbing:true,
-            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false,
+            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(),
         };
         for invalid in ["", "../escape", "Unknown", "a\nb", &"a".repeat(97)] {
             assert!(spec.clone().with_voice_id(Some(invalid.into())).is_err());

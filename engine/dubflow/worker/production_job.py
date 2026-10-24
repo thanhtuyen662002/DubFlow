@@ -75,6 +75,7 @@ from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
 from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.translation.adapter import SourceSegment, TranslationError, resolve_source_language
 from engine.dubflow.translation.argos_runtime import ArgosRuntime
+from engine.dubflow.translation.hachimi_runtime import ENGINES as TRANSLATION_ENGINES, create_runtime as create_translation_runtime
 from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, run_b2_audio
 from engine.dubflow.worker import export_publication
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
@@ -147,6 +148,8 @@ class WorkerConfig:
     burn_in_subtitles: bool = True
     # Opaque dark box behind burned subtitles, to cover source hard-subs.
     subtitle_box: bool = False
+    # "hachimi" opts Chinese sources into HachimiMT-60; Argos stays the default.
+    translation_engine: str = "argos"
     translation_package: Path | None = None
     tts_model: Path | None = None
     tts_config: Path | None = None
@@ -176,6 +179,10 @@ class WorkerConfig:
         if voice_id is not None and (not isinstance(voice_id, str) or re.fullmatch(r"[a-z0-9-]{1,96}", voice_id) is None):
             raise ProductionJobError("COMMAND_INVALID", "tts_voice_id must be a bounded preset identifier")
 
+        translation_engine = args.get("translation_engine") or "argos"
+        if translation_engine not in TRANSLATION_ENGINES:
+            raise ProductionJobError("COMMAND_INVALID", "translation_engine must be argos or hachimi")
+
         config = cls(
             job_id=str(args["job_id"]),
             stage_id=str(args["stage_id"]),
@@ -192,6 +199,7 @@ class WorkerConfig:
             tts_voice_id=voice_id,
             burn_in_subtitles=optional_bool("burn_in_subtitles", True),
             subtitle_box=optional_bool("subtitle_box", False),
+            translation_engine=translation_engine,
             translation_package=optional_path("translation_package"),
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
@@ -786,7 +794,7 @@ def _translation_identity(cues: Sequence[TextCue], language: str, provenance: Ma
     return "sha256:" + sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
-def _translate_with_argos(cues: Sequence[TextCue], model_root: Path, source_language: str, *, runtime: ArgosRuntime, chunks_dir: Path | None = None) -> tuple[TextCue, ...]:
+def _translate_with_argos(cues: Sequence[TextCue], model_root: Path, source_language: str, *, runtime: Any, chunks_dir: Path | None = None) -> tuple[TextCue, ...]:
     resolved = _resolved_language(cues, source_language, source_language if source_language != "auto" else None)
     if resolved != runtime.source_language:
         raise ProductionJobError("SOURCE_LANGUAGE_MISMATCH", "translation route differs from resolved transcript language")
@@ -1017,7 +1025,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
 
     translation_path = work_dir / "translation.json"
     try:
-        translation_runtime = ArgosRuntime(config.app_root, config.model_root, transcript.source_language)
+        translation_runtime = create_translation_runtime(getattr(config, "translation_engine", "argos"), config.app_root, config.model_root, transcript.source_language)
         translation_provenance = translation_runtime.provenance()
     except TranslationError as error:
         raise ProductionJobError(error.code, error.condition) from error
@@ -1029,7 +1037,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             translated = _cues_from_json(translation_path)
             translation_changed = False
     if translation_changed:
-        emitter.progress(0.44, "Đang dịch cục bộ sang tiếng Việt")
+        emitter.progress(0.44, "Đang dịch bằng HachimiMT-60 (thử nghiệm)" if translation_provenance.get("backend", "").startswith("hachimi") else "Đang dịch cục bộ sang tiếng Việt")
         translated = _translate_with_argos(cues, config.model_root, transcript.source_language, runtime=translation_runtime, chunks_dir=work_dir / "translation-chunks")
         _atomic_json(translation_path, {"schema_version": 2, "source_language": transcript.source_language, "target_language": "vi", "provenance": translation_provenance, "input_hash": translation_input, "cues": [cue.to_dict() for cue in translated]})
         _write_stage(checkpoint, checkpoint_path, "translation", {"path": str(translation_path), "sha256": _sha256(translation_path)})

@@ -157,6 +157,11 @@ class ProductionWorkerTests(unittest.TestCase):
                     WorkerConfig.from_args({**args, "tts_voice_id": invalid})
             del args["tts_voice_id"]
             self.assertIsNone(WorkerConfig.from_args(args).tts_voice_id)
+            self.assertEqual(WorkerConfig.from_args(args).translation_engine, "argos")
+            self.assertEqual(WorkerConfig.from_args({**args, "translation_engine": "hachimi"}).translation_engine, "hachimi")
+            for invalid in ("gemini", 1, True):
+                with self.subTest(engine=invalid), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
+                    WorkerConfig.from_args({**args, "translation_engine": invalid})
 
     def test_worker_runtime_keeps_third_party_packaging_ahead_of_app_policy_package(self) -> None:
         """The bundled Argos dependency must not resolve the repo package."""
