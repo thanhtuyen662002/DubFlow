@@ -187,10 +187,16 @@ fn status_path(root: &Path, job_id: &str) -> Result<PathBuf, String> {
 }
 
 fn default_job_output(source: &Path, job_id: &str) -> Result<PathBuf, String> {
+    job_output_in(source.parent().unwrap_or(Path::new(".")), source, job_id)
+}
+
+/// `<base>/DubFlow Output/<stem> - vi/run-<id>`; base is the source folder
+/// or a user-chosen results folder.
+fn job_output_in(base: &Path, source: &Path, job_id: &str) -> Result<PathBuf, String> {
     validate_id(job_id)?;
     // Encode the complete ID: Windows folds path case and reserves some names.
     // Chunk at 64 bytes so even a maximum-length ID fits each path component.
-    let mut output = source.parent().unwrap_or(Path::new(".")).join("DubFlow Output")
+    let mut output = base.join("DubFlow Output")
         .join(format!("{} - vi", source.file_stem().and_then(|name| name.to_str()).unwrap_or("video")));
     for (index, chunk) in job_id.as_bytes().chunks(64).enumerate() {
         let encoded: String = chunk.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -213,6 +219,12 @@ fn release_info() -> ReleaseInfo {
 }
 
 #[tauri::command]
+fn pick_folder() -> Option<String> {
+    rfd::FileDialog::new().set_title("Chọn thư mục lưu kết quả").pick_folder()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 fn pick_files() -> Result<Vec<String>, String> {
     let files = rfd::FileDialog::new()
         .add_filter("Video", &["mp4", "mkv", "mov", "avi", "webm", "m4v"])
@@ -222,7 +234,7 @@ fn pick_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
@@ -238,9 +250,16 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     };
     let control = control_root()?;
     let status = status_path(&control, &job_id)?;
-    let output = match output_dir {
-        Some(value) => PathBuf::from(value),
-        None => default_job_output(&source, &job_id)?,
+    let output = match (output_dir, output_root) {
+        (Some(value), _) => PathBuf::from(value),
+        (None, Some(base)) => {
+            let base = PathBuf::from(base);
+            if !base.is_absolute() || !base.is_dir() {
+                return Err(fail("Thư mục lưu kết quả không tồn tại; hãy chọn lại"));
+            }
+            job_output_in(&base, &source, &job_id)?
+        }
+        (None, None) => default_job_output(&source, &job_id)?,
     };
     if !output.is_absolute() {
         return Err(fail("output_dir must be an absolute path"));
@@ -533,7 +552,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
@@ -562,6 +581,16 @@ mod tests {
         }
         assert!(webview_data_root(&local, &"x".repeat(65)).is_err());
         assert!(webview_data_root(&local, &"x".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn chosen_results_folder_keeps_the_dubflow_output_layout() {
+        let source = std::env::temp_dir().join("clips").join("talk.mp4");
+        let chosen = std::env::temp_dir().join("Kết quả");
+        let output = job_output_in(&chosen, &source, "job-1").unwrap();
+        assert!(output.starts_with(chosen.join("DubFlow Output").join("talk - vi")));
+        assert_eq!(default_job_output(&source, "job-1").unwrap(), job_output_in(source.parent().unwrap(), &source, "job-1").unwrap());
+        assert!(job_output_in(&chosen, &source, "../x").is_err());
     }
 
     #[test]

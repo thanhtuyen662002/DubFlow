@@ -447,16 +447,57 @@ runAllButton.addEventListener("click", () => {
   pumpBatch();
 });
 
+// Results folder: next to each source (default) or one chosen folder.
+const OUTPUT_ROOT_KEY = "dubflow.outputRoot.v1";
+function outputRoot(): string | null {
+  try {
+    return window.localStorage.getItem(OUTPUT_ROOT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function renderOutputRoot(): void {
+  const root = outputRoot();
+  const label = $("#output-root-label");
+  label.textContent = root ? root.split(/[\\/]/).filter(Boolean).slice(-2).join("\\") : "Cạnh video gốc";
+  label.title = root ?? "Mỗi video lưu kết quả trong thư mục “DubFlow Output” cạnh file gốc";
+  $("#reset-output-root").hidden = !root;
+}
+
+$("#choose-output-root").addEventListener("click", async () => {
+  const folder = await invoke<string | null>("pick_folder").catch(() => null);
+  if (!folder) return;
+  try {
+    window.localStorage.setItem(OUTPUT_ROOT_KEY, folder);
+  } catch {
+    showError("Không lưu được lựa chọn thư mục trên máy này.");
+  }
+  renderOutputRoot();
+});
+$("#reset-output-root").addEventListener("click", () => {
+  try {
+    window.localStorage.removeItem(OUTPUT_ROOT_KEY);
+  } catch {
+    // Nothing stored.
+  }
+  renderOutputRoot();
+});
+renderOutputRoot();
+
 async function startJob(job: QueueJob): Promise<void> {
   if (!canStart(job)) return;
   startButton.disabled = true;
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    await invoke("start_job", {
-      jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null,
+    const started = await invoke<{ output_dir: string } | null>("start_job", {
+      jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null, outputRoot: job.outputDir ? null : outputRoot(),
       enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId, burnIn: job.burnIn ?? true,
       sourceLanguage: job.sourceLanguage ?? "auto",
     });
+    // Resumes must reuse the folder the first start chose, even if the
+    // results-folder setting changes later.
+    if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);
     beginPolling(job.id);
   } catch (error) {
     queue.updateStatus(job.id, {
