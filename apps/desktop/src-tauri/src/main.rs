@@ -1,3 +1,5 @@
+mod source;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
@@ -324,13 +326,182 @@ fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+const OVERRIDES_FILE: &str = "translation_overrides.json";
+
+/// A finished job's output directory: the parent of its final video, below
+/// "DubFlow Output", holding the worker's translation checkpoint.
+fn review_dir(output_path: &str) -> Result<PathBuf, String> {
+    let video = output_file(output_path)?;
+    let dir = video.parent().ok_or_else(|| fail("output has no directory"))?.to_path_buf();
+    if !dir.join(".dubflow-work").join("translation.json").is_file() {
+        return Err(fail("Không tìm thấy dữ liệu bản dịch của video này"));
+    }
+    Ok(dir)
+}
+
+fn read_json(path: &Path, limit: u64) -> Result<Value, String> {
+    if fs::metadata(path).map_err(|error| fail(format!("{}: {error}", path.display())))?.len() > limit {
+        return Err(fail(format!("{} is too large", path.display())));
+    }
+    let text = fs::read_to_string(path).map_err(|error| fail(format!("{}: {error}", path.display())))?;
+    serde_json::from_str(&text).map_err(|error| fail(format!("{}: {error}", path.display())))
+}
+
+/// Cue ids whose dubbing failed in the current audio generation.
+fn failed_dub_cues(work: &Path) -> std::collections::HashSet<String> {
+    let document = read_json(&work.join("checkpoint.json"), 4 * 1024 * 1024).ok()
+        .and_then(|checkpoint| checkpoint["stages"]["b2-audio"]["tts_document"].as_str().map(PathBuf::from))
+        .filter(|path| path.starts_with(work))
+        .and_then(|path| read_json(&path, 64 * 1024 * 1024).ok());
+    document.as_ref().and_then(|value| value["failures"].as_array())
+        .map(|failures| failures.iter().filter_map(|failure| failure["segment_id"].as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewCue {
+    cue_id: String,
+    start_ms: u64,
+    end_ms: u64,
+    source_text: String,
+    machine_text: String,
+    text: String,
+    edited: bool,
+    dub_failed: bool,
+}
+
+#[tauri::command]
+fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
+    let dir = review_dir(&output_path)?;
+    let work = dir.join(".dubflow-work");
+    let translation = read_json(&work.join("translation.json"), 64 * 1024 * 1024)?;
+    let overrides = if dir.join(OVERRIDES_FILE).is_file() { read_json(&dir.join(OVERRIDES_FILE), 4 * 1024 * 1024)? } else { json!({}) };
+    let failed = failed_dub_cues(&work);
+    let cues = translation["cues"].as_array().ok_or_else(|| fail("translation.json has no cues"))?;
+    cues.iter().map(|cue| {
+        let text = |key: &str| cue[key].as_str().unwrap_or_default().to_owned();
+        let cue_id = text("cue_id");
+        let machine_text = text("translated_text");
+        let edited = overrides["cues"][&cue_id].as_str().map(str::to_owned);
+        Ok(ReviewCue {
+            start_ms: cue["start_ms"].as_u64().ok_or_else(|| fail("cue has no start"))?,
+            end_ms: cue["end_ms"].as_u64().ok_or_else(|| fail("cue has no end"))?,
+            source_text: text("source_text"),
+            dub_failed: failed.contains(&cue_id),
+            edited: edited.is_some(),
+            text: edited.unwrap_or_else(|| machine_text.clone()),
+            machine_text,
+            cue_id,
+        })
+    }).collect()
+}
+
+/// Persist reviewed texts beside the outputs; an empty map removes the file.
+/// Returns the output directory so the caller can re-run the job in place.
+#[tauri::command]
+fn save_review(output_path: String, overrides: std::collections::BTreeMap<String, String>) -> Result<String, String> {
+    let dir = review_dir(&output_path)?;
+    let path = dir.join(OVERRIDES_FILE);
+    if overrides.len() > 10_000 || overrides.iter().any(|(id, text)| id.is_empty() || id.len() > 128
+        || text.trim().is_empty() || text.chars().count() > 2000) {
+        return Err(fail("Câu sửa không hợp lệ: không được để trống hoặc dài quá 2000 ký tự"));
+    }
+    if overrides.is_empty() {
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|error| fail(format!("Không xóa được bản sửa: {error}")))?;
+        }
+    } else {
+        let temporary = dir.join(format!("{OVERRIDES_FILE}.partial"));
+        let body = serde_json::to_vec_pretty(&json!({"schema_version": 1, "cues": overrides})).map_err(|error| fail(error.to_string()))?;
+        fs::write(&temporary, body).and_then(|_| fs::rename(&temporary, &path))
+            .map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))?;
+    }
+    Ok(display_path(&dir))
+}
+
+#[derive(Debug, Serialize)]
+struct FetchStarted {
+    status: source::FetchStatus,
+    output_dir: String,
+}
+
+#[tauri::command]
+fn fetch_url(url: String, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
+    let url = url.trim().to_owned();
+    let root = version_root()?;
+    let supervisor = supervisor_binary(&root)?;
+    let status = sources.fetch(url.clone(), &supervisor, &root, &control_root()?)?;
+    let output_dir = source::link_output_dir(&url, &status.scan_id)?;
+    Ok(FetchStarted { output_dir: output_dir.to_string_lossy().into_owned(), status })
+}
+
+#[tauri::command]
+fn fetch_status(scan_id: String, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Option<source::FetchStatus> {
+    sources.status(&scan_id)
+}
+
+const DOUYIN_LOGIN: &str = "douyin-login";
+const DOUYIN_HOME: &str = "https://www.douyin.com/";
+
+/// Open douyin.com in its own window so it can set fresh cookies (and the
+/// user may log in). Async: WebView2 cookie access deadlocks in sync commands.
+#[tauri::command]
+async fn open_douyin_login(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window(DOUYIN_LOGIN) {
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let url = DOUYIN_HOME.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))?;
+    tauri::WebviewWindowBuilder::new(&app, DOUYIN_LOGIN, tauri::WebviewUrl::External(url))
+        .title("Douyin — mở trang, đăng nhập nếu muốn, rồi quay lại DubFlow bấm “Lưu phiên”")
+        .inner_size(1100.0, 800.0)
+        .build()
+        .map_err(|error| fail(format!("Không mở được cửa sổ Douyin: {error}")))?;
+    Ok(())
+}
+
+/// Read the Douyin window's cookies and store them as the protected Douyin
+/// session used by link downloads. Returns how many cookies were kept.
+#[tauri::command]
+async fn save_douyin_session(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<usize, String> {
+    use tauri::Manager;
+    let window = app.get_webview_window(DOUYIN_LOGIN).ok_or_else(|| fail("Hãy mở cửa sổ Douyin trước"))?;
+    let url = DOUYIN_HOME.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))?;
+    let cookies: Vec<(String, String)> = window.cookies_for_url(url)
+        .map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?
+        .into_iter().map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned())).collect();
+    if !cookies.iter().any(|(name, _)| name == "s_v_web_id" || name == "ttwid") {
+        return Err(fail("Trang Douyin chưa tải xong; hãy đợi trang hiện video rồi bấm lại"));
+    }
+    let header = source::cookie_header(&cookies, &source::DOUYIN_PRIORITY).ok_or_else(|| fail("Không có cookie Douyin hợp lệ"))?;
+    let count = header.split("; ").count();
+    let expires_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| fail(error.to_string()))?.as_secs() + source::SESSION_SECONDS;
+    let root = version_root()?;
+    let supervisor = supervisor_binary(&root)?;
+    let data = control_root()?;
+    let sources = std::sync::Arc::clone(&sources);
+    tauri::async_runtime::spawn_blocking(move || sources.save_session("douyin", header, expires_at, &supervisor, &root, &data))
+        .await.map_err(|error| fail(error.to_string()))??;
+    let _ = window.close();
+    Ok(count)
+}
+
 fn main() {
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
+    let sources = std::sync::Arc::new(source::Sources::default());
+    let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path])
-        .run(tauri::generate_context!())
-        .expect("error while running DubFlow desktop host");
+        .manage(sources)
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session])
+        .build(tauri::generate_context!())
+        .expect("error while building DubFlow desktop host")
+        .run(move |_, event| {
+            if let tauri::RunEvent::Exit = event {
+                on_exit.shutdown();
+            }
+        });
 }
 
 #[cfg(test)]

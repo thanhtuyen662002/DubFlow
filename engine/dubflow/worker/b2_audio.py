@@ -36,6 +36,7 @@ from engine.dubflow.tts import (
 from engine.dubflow.tts.neural_vits import ENGINE_ID, ONNX_RUNTIME_VERSION, RUNTIME_VERSION, NeuralVietnameseTtsEngine, load_neural_voice
 from engine.dubflow.tts.neural_vits import _child, _read_json, _digest
 from engine.dubflow.tts import vieneu
+from .tts_cache import CachedSynthesisEngine
 from .tts_checkpoints import TtsCheckpointStore
 from .tts_rewrites import BoundedDurationRewriteEngine, SpokenTextStore
 
@@ -62,7 +63,7 @@ def _tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
         return "legacy-profile-without-neural-recipe"
     metadata = _child(app_root, relative)
     source = Path(__file__).parents[1] / "tts"
-    paths = (metadata, source / "adapter.py", source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py", Path(__file__).with_name("tts_checkpoints.py"), Path(__file__).with_name("tts_rewrites.py"))
+    paths = (metadata, source / "adapter.py", source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py", Path(__file__).with_name("tts_checkpoints.py"), Path(__file__).with_name("tts_rewrites.py"), Path(__file__).with_name("tts_cache.py"))
     return sha256("".join(_digest(path) for path in paths).encode()).hexdigest()
 
 
@@ -218,6 +219,7 @@ def run_b2_audio(
     work_dir: str | Path,
     model_root: str | Path | None = None,
     tts_voice_id: str | None = None,
+    synthesis_cache_dir: str | Path | None = None,
 ) -> B2AudioResult:
     """Execute real TTS and AUD-0 mixing for translated production cues."""
 
@@ -334,6 +336,14 @@ def run_b2_audio(
             "recipe": tts_recipe_identity(Path(app_root), Path(profile_path))},
             sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         checkpoints = TtsCheckpointStore(tts_dir, identity=checkpoint_identity)
+        if synthesis_cache_dir is not None:
+            # Same recipe minus the document-wide input hash: one edited cue
+            # must not invalidate the speech of every other cue.
+            cache_identity = sha256(json.dumps({"provenance": {key: value for key, value in provenance.to_dict().items() if key != "input_hash"},
+                "recipe": tts_recipe_identity(Path(app_root), Path(profile_path))},
+                sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            # Inside the rewrite wrapper, so rewritten spoken text is cached too.
+            engine = CachedSynthesisEngine(engine, Path(synthesis_cache_dir), identity=cache_identity)
         spoken_store = None
         reusable = checkpoints.load(segments)
         on_checkpoint = checkpoints.commit

@@ -73,6 +73,31 @@ assert.equal(loadedVariants.selected_job_id, variantId);
 assert.equal(loadedVariants.jobs[2].sourcePath, completed.sourcePath);
 assert.equal(loadedVariants.jobs[2].outputPath, null);
 
+// A reviewed revision re-runs the completed job in its own output directory.
+assert.throws(() => fresh.reviseJob(variantId, "D:/out"), /Only completed jobs/);
+const revisionId = fresh.reviseJob(completed.id, "D:/media/DubFlow Output/run-1");
+const revision = fresh.getSnapshot().jobs.find((job) => job.id === revisionId);
+assert.equal(revision.outputDir, "D:/media/DubFlow Output/run-1");
+assert.equal(revision.revisionOf, completed.id);
+assert.equal(toQueueViewModel(fresh.getSnapshot()).rows.find((row) => row.id === revisionId).revision, true);
+assert.equal(revision.status.state, "QUEUED");
+assert.deepEqual(revision.dubbing, completed.dubbing);
+assert.equal(new QueueController(emptyStorage, clock).getSnapshot().jobs.find((job) => job.id === revisionId).outputDir, "D:/media/DubFlow Output/run-1");
+assert.throws(() => fresh.reviseJob(completed.id, " "), /output directory/);
+
+// A downloaded link becomes a named local job with its own output folder.
+const linkQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const linkId = linkQueue.addLinkJob("C:/data/source-media/abc.mp4", "https://archive.org/x/ed.mp4", "ed.mp4", "C:/Users/u/Videos/DubFlow Output/ed - vi/link-1");
+const linkJob = linkQueue.getSnapshot().jobs.find((job) => job.id === linkId);
+assert.equal(linkJob.displayName, "ed.mp4");
+assert.equal(linkJob.originUrl, "https://archive.org/x/ed.mp4");
+assert.equal(linkQueue.getSnapshot().selected_job_id, linkId);
+assert.equal(linkQueue.addLinkJob("C:/data/source-media/abc.mp4", "https://archive.org/x/ed.mp4", "dup", "C:/o"), null);
+assert.throws(() => linkQueue.addLinkJob("C:/b.mp4", "file:///x", "x", "C:/o"), /link and an output/);
+const linkView = toQueueViewModel(linkQueue.getSnapshot()).rows[0];
+assert.equal(linkView.fromLink, true);
+assert.equal(linkView.revision, false);
+
 const colliding = new QueueController(new MemorySnapshotStorage(), clock, 100, () => "collision");
 colliding.addPaths(["one"]);
 assert.throws(() => colliding.addPaths(["two"]), /independent job ID/);

@@ -5,12 +5,16 @@ export type QueueRow = {
   id: string;
   title: string;
   sourcePath: string;
+  /** What the user recognises: the link for downloaded videos, else the file path. */
+  origin: string;
   status: string;
   stateLabel: string;
   state: JobStatus["state"];
   progress: string;
   fraction: number | null;
   dubbing: boolean;
+  revision: boolean;
+  fromLink: boolean;
   selected: boolean;
 };
 
@@ -34,12 +38,15 @@ export function toQueueViewModel(snapshot: QueueSnapshot): QueueViewModel {
       id: job.id,
       title: job.displayName,
       sourcePath: job.sourcePath,
+      origin: job.originUrl ?? job.sourcePath,
       status: displayJobStatus(job.status),
       stateLabel: stateLabel(job.status.state),
       state: job.status.state,
       progress: progressLabel(job.status),
       fraction: progressFraction(job.status),
       dubbing: job.dubbing.enabled,
+      revision: job.revisionOf !== undefined,
+      fromLink: job.originUrl !== undefined,
       selected: job.id === snapshot.selected_job_id,
     })),
     selected,
