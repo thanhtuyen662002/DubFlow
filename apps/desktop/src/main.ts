@@ -286,6 +286,12 @@ function renderInspector(job: QueueJob | null): void {
 
   const output = status.state === "COMPLETED" ? job.outputPath : null;
   $("#result-card").hidden = !output;
+  // Partial dubbing keeps the original voice for some lines; say so and point
+  // to the review dialog, whose filter starts on those lines.
+  const warning = $("#result-warning");
+  warning.hidden = !(output && status.reason === "completed_partial_dubbing");
+  warning.textContent = warning.hidden ? "" : "Một số câu chưa lồng tiếng được (vẫn là tiếng gốc), thường vì câu dịch quá dài. Bấm “Xem & sửa bản dịch” để rút gọn rồi xử lý lại.";
+  $("#open-review").classList.toggle("primary", !warning.hidden);
   $("#result-path").textContent = output ?? "";
 
   renderVoiceControls(job);
