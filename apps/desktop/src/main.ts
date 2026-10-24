@@ -144,7 +144,10 @@ function voiceButton(voice: VoiceChoice, selected: boolean, note = ""): HTMLButt
   button.append(avatar, text);
   button.addEventListener("click", () => {
     const job = selectedJob();
-    if (job && voiceCatalog) queue.setDubbing(job.id, dubbingOptions(voiceCatalog, true, voice.voice_id));
+    if (job && voiceCatalog) {
+      queue.setDubbing(job.id, dubbingOptions(voiceCatalog, true, voice.voice_id));
+      rememberDefaults(selectedJob() ?? job);
+    }
   });
   return button;
 }
@@ -320,6 +323,45 @@ function beginPolling(jobId: string): void {
   pollers.set(jobId, window.setInterval(() => void refreshJob(jobId), 1000));
 }
 
+// The last options the user chose become the defaults for newly added videos,
+// so a batch needs its dubbing/voice/burn-in set once (per-viewer convenience).
+const DEFAULTS_KEY = "dubflow.defaults.v1";
+type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean };
+
+function readDefaults(): JobDefaults | null {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(DEFAULTS_KEY) ?? "null") as Partial<JobDefaults> | null;
+    if (!value || typeof value.dubbing !== "boolean" || typeof value.burnIn !== "boolean") return null;
+    return { dubbing: value.dubbing, burnIn: value.burnIn, voiceId: typeof value.voiceId === "string" ? value.voiceId : null };
+  } catch {
+    return null;
+  }
+}
+
+function rememberDefaults(job: QueueJob): void {
+  try {
+    window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId, burnIn: job.burnIn ?? true }));
+  } catch {
+    // Defaults are a convenience; the queue works without storage.
+  }
+}
+
+function applyDefaults(jobIds: readonly string[]): void {
+  const defaults = readDefaults();
+  if (!defaults) return;
+  for (const id of jobIds) {
+    try {
+      if (!defaults.burnIn) queue.setBurnIn(id, false);
+      if (defaults.dubbing && voiceCatalog) {
+        const known = voiceCatalog.voices.some((voice) => voice.voice_id === defaults.voiceId);
+        queue.setDubbing(id, dubbingOptions(voiceCatalog, true, known ? defaults.voiceId : null));
+      }
+    } catch {
+      // A job that already started keeps its own options.
+    }
+  }
+}
+
 function addPaths(paths: string[]): void {
   const videos = paths.filter((path) => VIDEO_EXTENSIONS.test(path));
   if (paths.length && !videos.length) {
@@ -328,6 +370,7 @@ function addPaths(paths: string[]): void {
   }
   showError("");
   const added = queue.addPaths(videos);
+  applyDefaults(added);
   if (added.length && !selectedJob()) queue.selectJob(added[0]);
   else if (added.length) queue.selectJob(added[added.length - 1]);
 }
@@ -560,7 +603,8 @@ async function pollFetch(scanId: string): Promise<void> {
     if (status.state === "done" && status.media_path) {
       window.clearInterval(entry.timer);
       fetches.delete(scanId);
-      queue.addLinkJob(status.media_path, status.url, linkName(status.url), entry.outputDir);
+      const linkJob = queue.addLinkJob(status.media_path, status.url, linkName(status.url), entry.outputDir);
+      if (linkJob) applyDefaults([linkJob]);
     } else if (status.state === "failed") {
       window.clearInterval(entry.timer);
     }
@@ -775,11 +819,17 @@ for (const job of queue.getSnapshot().jobs) {
 
 burnInToggle.addEventListener("change", () => {
   const job = selectedJob();
-  if (job) queue.setBurnIn(job.id, burnInToggle.checked);
+  if (job) {
+    queue.setBurnIn(job.id, burnInToggle.checked);
+    rememberDefaults(selectedJob() ?? job);
+  }
 });
 dubbingToggle.addEventListener("change", () => {
   const job = selectedJob();
-  if (job && voiceCatalog) queue.setDubbing(job.id, dubbingOptions(voiceCatalog, dubbingToggle.checked, job.dubbing.voiceId));
+  if (job && voiceCatalog) {
+    queue.setDubbing(job.id, dubbingOptions(voiceCatalog, dubbingToggle.checked, job.dubbing.voiceId));
+    rememberDefaults(selectedJob() ?? job);
+  }
 });
 for (const filter of [genderFilter, accentFilter, styleFilter]) {
   filter.addEventListener("change", () => renderVoiceControls(selectedJob()));
