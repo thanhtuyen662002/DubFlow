@@ -1,3 +1,4 @@
+mod source_intake;
 //! Durable DubFlow process supervisor.
 //!
 //! The supervisor is deliberately independent from the desktop UI.  The UI
@@ -342,7 +343,7 @@ enum UiRequest {
         scan_id: Option<String>,
         provider_id: Option<String>,
         source_ref: Option<String>,
-        items: Vec<SourceInput>,
+        items: Vec<Value>,
     },
     SourceStatus {
         scan_id: String,
@@ -358,15 +359,6 @@ enum UiRequest {
     },
     Ping,
     Shutdown,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct SourceInput {
-    identity_key: String,
-    source_id: String,
-    provider_id: String,
-    source_url: String,
-    source_ref: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1383,29 +1375,6 @@ fn validate_source_text(value: &str, name: &str, max: usize) -> SupervisorResult
     Ok(())
 }
 
-fn validate_source_input(item: &SourceInput) -> SupervisorResult<()> {
-    validate_source_text(&item.identity_key, "identity_key", 1_024)?;
-    validate_source_text(&item.source_id, "source_id", 512)?;
-    validate_source_text(&item.provider_id, "provider_id", 64)?;
-    validate_source_text(&item.source_url, "source_url", 4_096)?;
-    validate_source_text(&item.source_ref, "source_ref", 4_096)?;
-    if !(item.source_url.starts_with("http://") || item.source_url.starts_with("https://")) {
-        return Err(SupervisorError::Invalid(
-            "source_url must use http or https".into(),
-        ));
-    }
-    // A URL userinfo section is a credential leak.  The desktop sends a
-    // redacted durable URL; a provider adapter may use a protected ephemeral
-    // session value outside this queue database.
-    let authority = item.source_url.split('/').nth(2).unwrap_or_default();
-    if authority.contains('@') || item.source_url.contains('\u{0000}') {
-        return Err(SupervisorError::Invalid(
-            "source_url must not contain credentials".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn source_status_name(status: dubflow_source_queue::ScanStatus) -> &'static str {
     match status {
         dubflow_source_queue::ScanStatus::Queued => "queued",
@@ -1474,16 +1443,14 @@ fn enqueue_sources(
     scan_id: Option<String>,
     provider_id: Option<String>,
     source_ref: Option<String>,
-    items: Vec<SourceInput>,
+    items: Vec<Value>,
 ) -> SupervisorResult<Value> {
-    if items.is_empty() || items.len() > dubflow_source_queue::MAX_ITEMS {
-        return Err(SupervisorError::Invalid(format!(
-            "items must contain 1..{} entries",
-            dubflow_source_queue::MAX_ITEMS
-        )));
-    }
-    for item in &items {
-        validate_source_input(item)?;
+    let admission = source_intake::admit(items);
+    let rejected = serde_json::to_value(&admission.rejected)
+        .map_err(|_| SupervisorError::Invalid("source rejection encoding failed".into()))?;
+    let items = admission.items;
+    if items.is_empty() {
+        return Ok(json!({"event":"source_scan_rejected", "scan":null, "rejected":rejected}));
     }
     let scan_id = scan_id.unwrap_or_else(|| {
         format!(
@@ -1534,7 +1501,8 @@ fn enqueue_sources(
         .map_err(|error| {
             SupervisorError::Invalid(format!("source queue checkpoint failed: {error}"))
         })?;
-    source_queue_snapshot(runtime, &scan_id)
+    let snapshot = source_queue_snapshot(runtime, &scan_id)?;
+    Ok(json!({"event":"source_scan_accepted", "scan":snapshot, "rejected":rejected}))
 }
 
 fn handle_request(
@@ -1616,10 +1584,7 @@ fn handle_request(
             source_ref,
             items,
         } => match enqueue_sources(runtime, scan_id, provider_id, source_ref, items) {
-            Ok(snapshot) => emit_value(
-                stdout,
-                json!({"event":"source_scan_accepted", "scan": snapshot}),
-            )?,
+            Ok(response) => emit_value(stdout, response)?,
             Err(error) => emit_value(
                 stdout,
                 json!({"event":"error", "code":"SOURCE_QUEUE_INVALID", "condition": error.to_string()}),
