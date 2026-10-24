@@ -218,6 +218,53 @@ fn release_info() -> ReleaseInfo {
     }
 }
 
+const VIDEO_EXTENSIONS: [&str; 6] = ["mp4", "mkv", "mov", "avi", "webm", "m4v"];
+const MAX_EXPANDED_VIDEOS: usize = 500;
+
+/// Dropped paths -> video files: files pass through, folders are searched up
+/// to three levels deep (skipping DubFlow's own outputs), capped at 500.
+fn expand_videos(paths: &[PathBuf]) -> Vec<PathBuf> {
+    fn is_video(path: &Path) -> bool {
+        path.extension().and_then(|ext| ext.to_str())
+            .is_some_and(|ext| VIDEO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+    }
+    fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        let mut entries: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
+        entries.sort();
+        for path in entries {
+            if found.len() >= MAX_EXPANDED_VIDEOS {
+                return;
+            }
+            let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
+            if metadata.is_file() && is_video(&path) {
+                found.push(path);
+            } else if metadata.is_dir() && depth < 3
+                && path.file_name().is_some_and(|name| name != "DubFlow Output" && name != ".dubflow-work") {
+                walk(&path, depth + 1, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for path in paths {
+        if found.len() >= MAX_EXPANDED_VIDEOS {
+            break;
+        }
+        if path.is_dir() {
+            walk(path, 1, &mut found);
+        } else if is_video(path) {
+            found.push(path.clone());
+        }
+    }
+    found
+}
+
+#[tauri::command]
+fn expand_video_paths(paths: Vec<String>) -> Vec<String> {
+    let paths: Vec<PathBuf> = paths.into_iter().take(1000).map(PathBuf::from).filter(|path| path.is_absolute()).collect();
+    expand_videos(&paths).into_iter().map(|path| path.to_string_lossy().into_owned()).collect()
+}
+
 #[tauri::command]
 fn pick_folder() -> Option<String> {
     rfd::FileDialog::new().set_title("Chọn thư mục lưu kết quả").pick_folder()
@@ -552,7 +599,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
@@ -581,6 +628,23 @@ mod tests {
         }
         assert!(webview_data_root(&local, &"x".repeat(65)).is_err());
         assert!(webview_data_root(&local, &"x".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn dropped_folders_expand_to_videos_without_dubflow_outputs() {
+        let root = std::env::temp_dir().join(format!("dubflow-expand-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for path in ["a.mp4", "notes.txt", "season/ep1.MKV", "season/deep/ep2.mov", "season/deep/deeper/x/too-deep.mp4",
+                     "DubFlow Output/a - vi/final_vi.mp4", "season/.dubflow-work/cache.mp4"] {
+            let file = root.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, b"x").unwrap();
+        }
+        let names: Vec<String> = expand_videos(&[root.clone()]).iter()
+            .map(|path| path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(names, ["a.mp4", "season/deep/ep2.mov", "season/ep1.MKV"]);
+        assert_eq!(expand_videos(&[root.join("notes.txt"), root.join("a.mp4")]), [root.join("a.mp4")]);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

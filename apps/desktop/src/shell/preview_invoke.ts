@@ -92,6 +92,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       picked += 1;
       return [`D:\\Videos\\Douyin\\phim-ngan-tap-${picked}.mp4`, `D:\\Videos\\Bilibili\\review-dien-thoai-${picked}.mkv`] as T;
     }
+    case "expand_video_paths": return (args.paths as string[]).filter((path) => /\.(mp4|mkv|mov|avi|webm|m4v)$/i.test(path)) as T;
     case "pick_folder": return "D:/Videos/Kết quả DubFlow" as T;
     case "start_job": running.set(String(args.jobId), { startedAt: Date.now(), dubbing: !!args.enableDubbing, cancelled: false }); return null as T;
     case "cancel_job": { const job = running.get(String(args.jobId)); if (job) job.cancelled = true; return null as T; }

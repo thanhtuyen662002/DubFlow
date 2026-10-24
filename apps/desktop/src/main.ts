@@ -405,6 +405,21 @@ function addPaths(paths: string[]): void {
   else if (added.length) queue.selectJob(added[added.length - 1]);
 }
 
+/** Dropped files and folders: the host expands folders to the videos inside. */
+async function addDropped(paths: string[]): Promise<void> {
+  if (!paths.length) return;
+  try {
+    const videos = await invoke<string[]>("expand_video_paths", { paths });
+    if (!videos.length) {
+      showError("Không tìm thấy video MP4, MKV, MOV, AVI, WEBM, M4V trong mục đã thả.");
+      return;
+    }
+    addPaths(videos);
+  } catch (error) {
+    showError(`Không đọc được mục đã thả: ${String(error).slice(0, 160)}`);
+  }
+}
+
 async function pickFiles(): Promise<void> {
   try {
     addPaths(await invoke<string[]>("pick_files"));
@@ -962,7 +977,7 @@ if (isTauri) {
       } else {
         overlay.hidden = true;
         dropZone.classList.remove("hover");
-        if (event.payload.type === "drop") addPaths(event.payload.paths ?? []);
+        if (event.payload.type === "drop") void addDropped(event.payload.paths ?? []);
       }
   }).catch(() => undefined);
 }
