@@ -65,6 +65,7 @@ const reviewCues = [
 });
 let savedOverrides: Record<string, string> = {};
 const linkFetches = new Map<string, { url: string; startedAt: number }>();
+let douyinSession = false;
 
 function fetchStatus(scanId: string) {
   const fetch = linkFetches.get(scanId);
@@ -72,7 +73,7 @@ function fetchStatus(scanId: string) {
   const elapsed = Date.now() - fetch.startedAt;
   const provider = /bilibili|b23\.tv/.test(fetch.url) ? "bilibili" : /douyin/.test(fetch.url) ? "douyin" : "generic";
   const base = { scan_id: scanId, url: fetch.url, provider, downloaded_bytes: 0, total_bytes: null as number | null, media_path: null as string | null, error: null as string | null };
-  if (provider === "douyin") return { ...base, state: elapsed > 3000 ? "failed" : "preparing", error: elapsed > 3000 ? "Douyin yêu cầu đăng nhập/cookie; hiện chưa hỗ trợ. Hãy tải video về máy rồi thêm file." : null };
+  if (provider === "douyin" && !douyinSession) return { ...base, state: elapsed > 3000 ? "failed" : "preparing", error: elapsed > 3000 ? "Douyin cần phiên truy cập: bấm “Mở Douyin”, đợi trang hiện video, rồi bấm “Lưu phiên & thử lại”." : null };
   if (elapsed < 3000) return { ...base, state: "preparing" };
   const total = 47_065_346;
   const done = Math.min(total, Math.round(total * (elapsed - 3000) / 6000));
@@ -101,6 +102,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       return { status: fetchStatus(scanId), output_dir: `D:/Videos/DubFlow Output/${scanId}` } as T;
     }
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
+    case "open_douyin_login": return null as T;
+    case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
     case "save_review": savedOverrides = { ...(args.overrides as Record<string, string>) }; return "D:\Videos\DubFlow Output\preview" as T;
     default: throw new Error(`preview host does not implement ${command}`);

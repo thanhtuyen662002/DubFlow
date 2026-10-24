@@ -257,3 +257,5 @@ h1, h2, h3, p { margin: 0; }
 .fetch-list .job.failed { border-color: color-mix(in srgb, var(--err) 40%, var(--border)); }
 .fetch-list .msg.err { color: var(--err); }
 @media (max-width: 1080px) { .link-form input { width: 180px; } }
+.fetch-actions { display: flex; gap: 8px; margin-top: 4px; }
+.fetch-actions .btn { height: 28px; font-size: 12.5px; }
