@@ -44,6 +44,11 @@
             <p id="queue-summary" class="subtitle">Chưa có video</p>
           </div>
           <div class="topbar-actions">
+            <form id="link-form" class="link-form" autocomplete="off">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
+              <input id="link-input" type="url" inputmode="url" placeholder="Dán link Bilibili, Douyin hoặc link video…" aria-label="Link video" />
+              <button id="link-submit" class="btn" type="submit">Tải link</button>
+            </form>
             <button id="clear-queue" class="btn ghost" type="button" hidden>Xóa danh sách</button>
             <button id="add-files" class="btn primary" type="button">
               <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -62,11 +67,12 @@
               <p>hoặc <button id="add-files-inline" class="link" type="button">chọn file từ máy</button></p>
               <p class="formats">MP4 · MKV · MOV · AVI · WEBM · M4V</p>
               <ol class="how">
-                <li><b>1</b>Thêm video gốc (tiếng Trung, Anh…)</li>
+                <li><b>1</b>Thêm video gốc hoặc dán link</li>
                 <li><b>2</b>Chọn có lồng tiếng Việt hay chỉ phụ đề</li>
                 <li><b>3</b>Bấm “Bắt đầu” — nhận MP4 + SRT/ASS</li>
               </ol>
             </div>
+            <ul id="fetch-list" class="queue-list fetch-list" hidden></ul>
             <ul id="queue-list" class="queue-list" hidden></ul>
             <p id="queue-state" class="queue-state" role="status"></p>
           </div>

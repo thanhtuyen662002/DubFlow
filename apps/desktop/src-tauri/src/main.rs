@@ -1,3 +1,5 @@
+mod source;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
@@ -417,13 +419,42 @@ fn save_review(output_path: String, overrides: std::collections::BTreeMap<String
     Ok(display_path(&dir))
 }
 
+#[derive(Debug, Serialize)]
+struct FetchStarted {
+    status: source::FetchStatus,
+    output_dir: String,
+}
+
+#[tauri::command]
+fn fetch_url(url: String, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
+    let url = url.trim().to_owned();
+    let root = version_root()?;
+    let supervisor = supervisor_binary(&root)?;
+    let status = sources.fetch(url.clone(), &supervisor, &root, &control_root()?)?;
+    let output_dir = source::link_output_dir(&url, &status.scan_id)?;
+    Ok(FetchStarted { output_dir: output_dir.to_string_lossy().into_owned(), status })
+}
+
+#[tauri::command]
+fn fetch_status(scan_id: String, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Option<source::FetchStatus> {
+    sources.status(&scan_id)
+}
+
 fn main() {
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
+    let sources = std::sync::Arc::new(source::Sources::default());
+    let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review])
-        .run(tauri::generate_context!())
-        .expect("error while running DubFlow desktop host");
+        .manage(sources)
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status])
+        .build(tauri::generate_context!())
+        .expect("error while building DubFlow desktop host")
+        .run(move |_, event| {
+            if let tauri::RunEvent::Exit = event {
+                on_exit.shutdown();
+            }
+        });
 }
 
 #[cfg(test)]
