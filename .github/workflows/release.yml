@@ -104,9 +104,13 @@ jobs:
         run: |
           $sitePackages = Join-Path $env:pythonLocation 'Lib/site-packages'
           python -m pip install --disable-pip-version-check --no-cache-dir --upgrade --target $sitePackages -r packaging/runtime/requirements-windows-x64.txt
+          # Declared extras of these packages are never imported by DubFlow (#226).
+          python -m pip install --disable-pip-version-check --no-cache-dir --no-deps --target $sitePackages -r packaging/runtime/requirements-windows-x64-nodeps.txt
           Push-Location $env:RUNNER_TEMP
           try {
             & (Join-Path $env:pythonLocation 'python.exe') -c "import faster_whisper, argostranslate, cryptography; import packaging.version as version; print('production Python adapters imported with packaging', version.__file__)"
+            & (Join-Path $env:pythonLocation 'python.exe') -c "from vieneu._v3_turbo_engine.onnx_runtime_lite import OnnxV3LiteEngine; from vieneu_utils.phonemize_text import phonemize_text; from vieneu_utils.core_utils import max_expected_frames; print('VieNeu ONNX preset path imports without its demo extras')"
+            if ($LASTEXITCODE -ne 0) { throw 'VieNeu ONNX preset path is incomplete without --no-deps extras' }
           } finally {
             Pop-Location
           }

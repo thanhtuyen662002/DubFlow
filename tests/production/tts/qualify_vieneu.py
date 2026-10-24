@@ -53,7 +53,7 @@ def main():
         row["recognized"] = " ".join(x.text.strip() for x in segments)
         row["cer"] = cer(row["reference"], row["recognized"])
         print(json.dumps(row, ensure_ascii=False), flush=True)
-    sources = ("engine/dubflow/tts/vieneu.py", "engine/dubflow/tts/vieneu_native.py", "engine/dubflow/tts/native_process.py", "engine/dubflow/tts/windows_job.py", "engine/dubflow/tts/neural_vits.py", "models/manifests/production-vieneu-v1.json", "packaging/runtime/requirements-windows-x64.txt")
+    sources = ("engine/dubflow/tts/vieneu.py", "engine/dubflow/tts/vieneu_native.py", "engine/dubflow/tts/native_process.py", "engine/dubflow/tts/windows_job.py", "engine/dubflow/tts/neural_vits.py", "models/manifests/production-vieneu-v1.json", "packaging/runtime/requirements-windows-x64.txt", "packaging/runtime/requirements-windows-x64-nodeps.txt")
     report = {"schema_version": 1, "created_at": datetime.now(timezone.utc).isoformat(), "producer_version": PRODUCER_VERSION, "backend": ENGINE_ID, "runtime": RUNTIME_ID, "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(), "working_tree": subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True), "sources": {x: digest(ROOT / x) for x in sources}, "model_hash": pack.model_hash, "manifest_hash": pack.manifest_hash, "voice": voice.to_dict(), "cases": rows,
         "mean_common_cer": sum(x["cer"] for x in rows if x["group"] == "common") / 7,
         "release_qualified": False, "limits": ["Small back-ASR diagnostic is not human listening approval", "Development runtime is not a packaged clean-machine test"]}
