@@ -30,6 +30,15 @@ mod chunk_runtime;
 mod clock_runtime;
 pub(super) use chunk_recipe::ChunkRecipeSelection;
 
+#[path = "review_processing_v2.rs"]
+mod split_processing_v2;
+pub(super) use split_processing_v2::{
+    split_capability_declaration_v2, split_execution_recipe_v2, AdmittedSplitProcessingV2, OriginalMediaExecutableV2,
+    OriginalMediaRootV2, OriginalModelRootV2, OriginalPythonV2, OriginalRuntimeRootV2,
+    ProcessingAppRootV2, ProcessingEntryV2, ProcessingProfileV2, SplitAction,
+    SplitSelectionV2, SplitSourceRole,
+};
+
 /// One cooperative deadline covers enumeration, queued files and all workers.
 /// Counts describe fully verified files, not merely enumerated paths.
 struct ImportProgress<'a> {
@@ -175,6 +184,17 @@ fn walk_import_files_before(
     deadline: Instant,
     visit: impl Fn(&Path, &str, &ImportProgress<'_>) -> SupervisorResult<u64> + Sync,
 ) -> SupervisorResult<HashSet<String>> {
+    walk_release_roots_before(root, phase, started, deadline, &["app", "runtime"], visit)
+}
+
+fn walk_release_roots_before(
+    root: &Path,
+    phase: &str,
+    started: Instant,
+    deadline: Instant,
+    subtrees: &[&str],
+    visit: impl Fn(&Path, &str, &ImportProgress<'_>) -> SupervisorResult<u64> + Sync,
+) -> SupervisorResult<HashSet<String>> {
     super::review_progress::stage(super::review_progress::Stage::RuntimeFiles);
     let mut observed = HashSet::new();
     let mut files = Vec::new();
@@ -185,7 +205,7 @@ fn walk_import_files_before(
         files: AtomicUsize::new(0),
         bytes: AtomicU64::new(0),
     };
-    for subtree in ["app", "runtime"] {
+    for &subtree in subtrees {
         let mut directories = vec![root.join(subtree)];
         while let Some(directory) = directories.pop() {
             progress.check()?;
@@ -296,6 +316,45 @@ fn walk_import_files_before(
         true,
     );
     Ok(observed)
+}
+
+fn release_inventory(release: &Value) -> SupervisorResult<HashMap<String, Value>> {
+    let records = release["artifacts"]
+        .as_array()
+        .filter(|a| !a.is_empty() && a.len() <= MAX_FILES)
+        .ok_or_else(|| invalid("release inventory count exceeds its bound"))?;
+    let mut inventory = HashMap::new();
+    let mut folded = HashSet::new();
+    for item in records {
+        let path = item["path"]
+            .as_str()
+            .ok_or_else(|| invalid("missing release inventory path"))?;
+        relative(path)?;
+        let size_text = item["size_bytes"]
+            .as_str()
+            .ok_or_else(|| invalid("release size must be a decimal string"))?;
+        let size = size_text
+            .parse::<u64>()
+            .map_err(|_| invalid("invalid release byte count"))?;
+        let checksum = item["sha256"]
+            .as_str()
+            .ok_or_else(|| invalid("missing release checksum"))?;
+        if size.to_string() != size_text
+            || size > 8 * 1024 * 1024 * 1024
+            || checksum.len() != 64
+            || !valid_hash(&format!("sha256:{checksum}"))
+            || !folded.insert(path.to_lowercase())
+            || inventory
+                .insert(
+                    path.to_string(),
+                    json!({"sha256":format!("sha256:{checksum}"),"size_bytes":size}),
+                )
+                .is_some()
+        {
+            return Err(invalid("release inventory is ambiguous"));
+        }
+    }
+    Ok(inventory)
 }
 
 fn final_inventory(root: &Path, inventory: &HashMap<String, Value>) -> SupervisorResult<()> {
@@ -1110,41 +1169,7 @@ impl AdmittedRuntime {
         if release["schema_version"].as_u64() != Some(1) {
             return Err(invalid("unsupported pinned release inventory"));
         }
-        let records = release["artifacts"]
-            .as_array()
-            .filter(|a| !a.is_empty() && a.len() <= MAX_FILES)
-            .ok_or_else(|| invalid("release inventory count exceeds its bound"))?;
-        let mut inventory = HashMap::new();
-        let mut folded = HashSet::new();
-        for item in records {
-            let path = item["path"]
-                .as_str()
-                .ok_or_else(|| invalid("missing release inventory path"))?;
-            relative(path)?;
-            let size_text = item["size_bytes"]
-                .as_str()
-                .ok_or_else(|| invalid("release size must be a decimal string"))?;
-            let size = size_text
-                .parse::<u64>()
-                .map_err(|_| invalid("invalid release byte count"))?;
-            let checksum = item["sha256"]
-                .as_str()
-                .ok_or_else(|| invalid("missing release checksum"))?;
-            if size.to_string() != size_text
-                || size > 8 * 1024 * 1024 * 1024
-                || checksum.len() != 64
-                || !valid_hash(&format!("sha256:{checksum}"))
-                || !folded.insert(path.to_lowercase())
-                || inventory
-                    .insert(
-                        path.to_string(),
-                        json!({"sha256":format!("sha256:{checksum}"),"size_bytes":size}),
-                    )
-                    .is_some()
-            {
-                return Err(invalid("release inventory is ambiguous"));
-            }
-        }
+        let inventory = release_inventory(&release)?;
         // Imports are admitted as complete trees; an extra module/library can
         // execute before an otherwise trusted script can check itself.
         let observed = walk_import_files(

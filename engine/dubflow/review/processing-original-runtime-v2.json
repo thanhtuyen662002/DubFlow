@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "kind": "review_processing_original_runtime_code_capability",
+  "route": "original_python_processing_app_v2",
+  "capabilities": [
+    "prepare_effective_cue",
+    "prepare_effective_timeline"
+  ],
+  "dispatcher": "engine/dubflow/review/original_runtime_execution_v2.py",
+  "launch_binding_format": "review_native_split_launch_binding_v2",
+  "result_format": "review_split_processing_result_v2",
+  "protected_policy": "complete_resolved_seven_prefix_equality_v2",
+  "original_helper_policy": "exact_original_tts_recipe_helpers_v2",
+  "model_provisioning": false,
+  "original_job_binding_changed": false,
+  "active_graph_publication": false
+}

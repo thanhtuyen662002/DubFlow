@@ -663,3 +663,38 @@ No graph/SQLite/media/export format changes. Old clients without this optional
 action retain existing audio and export routes. Source/component checks cannot
 replace packaged Windows player-lifetime, media, regenerated/undo/reopened and
 full user-flow acceptance. See ADR-0030 for the separate playback limits.
+### Original runtime / processing app metadata v2
+
+`native-processing-release-v2.json` describes a separately admitted code release
+R using the original job's release O as its only Python/runtime/media authority.
+`original_runtime_root` means O itself; Python is O/runtime/python.exe and
+`original_media_root` is O/runtime. The sole engine package root is R/app. Both
+complete physical inventories, including unused R/runtime, remain required.
+The fixed resolved seven-prefix protected map and original TTS helper pins must
+equal O. Existing v1 equality and receipts are unchanged; there is no automatic
+fallback after a v1 refusal.
+
+The initial declaration advertises only `prepare_effective_cue` and
+`prepare_effective_timeline`. The closed launch/action-context/result schemas
+use version2, with separately validated unchanged inner metadata packets. Exact
+UTF8 bytes of the whole wrapper bind the outer context hash; exact inner JSON
+string bytes bind the kernel's inner hash. Actions, complete current tokens,
+original producer, role values, fixed ordered dependencies and authority bytes
+must agree in native and Python validation. Schema shape alone is not admission.
+
+The execution hash is SHA256 of the actual NUL-terminated domain
+`review-original-runtime-processing-app-v2` followed by native canonical JSON
+of the launch binding with only `execution_recipe_sha256` omitted. Roles and
+ordered dependency rows retain exact path spelling. Do not normalize strings
+before hashing. Input and stdout limits cover all UTF8 wrapper/envelope bytes,
+including escaping and the final newline.
+
+Synthesis, accepted speech, mix, render, editable, clock, chunk and longform v2
+actions are unavailable until their complete authority/recipe/cache/reader
+paths are ported. In particular, the producing synthesis execution identity
+must survive candidate, accept and mix; each consumer's different action hash
+cannot replace it. Metadata cannot claim model verification or graph publication.
+The dispatcher consumes one native containment gate before importing app code.
+Full native admission, owned lifetime, original deadlines, current-state and
+physical-output fences remain separate requirements. See ADR-0030 for rollback,
+minimum-reader/history retention and installed qualification gates.

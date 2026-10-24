@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native explicit original release / processing app authority v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "route",
+    "capability_document",
+    "source_sha",
+    "processing_root",
+    "release_manifest",
+    "original_producer_sha256",
+    "original_release_sha256",
+    "original_runtime_root",
+    "original_python_pin",
+    "processing_app_root",
+    "processing_app_inventory_sha256",
+    "original_model_root",
+    "original_profile_pin",
+    "original_catalog_sha256",
+    "roles",
+    "original_protected_inventory_sha256",
+    "resolved_protected_inventory_sha256",
+    "original_helper_inventory_sha256",
+    "launch_policy_sha256",
+    "original_job_binding_changed",
+    "model_weights_verified",
+    "active_graph_published"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "kind": {
+      "const": "review_admitted_processing_release_v2"
+    },
+    "route": {
+      "const": "original_python_processing_app_v2"
+    },
+    "capability_document": {
+      "$ref": "native-processing-roles-v2.json#/$defs/pin",
+      "allOf": [
+        {
+          "properties": {
+            "size_bytes": {
+              "minimum": 1,
+              "maximum": 65536
+            }
+          }
+        }
+      ]
+    },
+    "source_sha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "processing_root": {
+      "$ref": "native-processing-roles-v2.json#/$defs/path"
+    },
+    "release_manifest": {
+      "$ref": "native-processing-roles-v2.json#/$defs/pin",
+      "allOf": [
+        {
+          "properties": {
+            "size_bytes": {
+              "minimum": 1,
+              "maximum": 16777216
+            }
+          }
+        }
+      ]
+    },
+    "original_producer_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "original_release_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "original_runtime_root": {
+      "$ref": "native-processing-roles-v2.json#/$defs/path"
+    },
+    "original_python_pin": {
+      "$ref": "native-processing-roles-v2.json#/$defs/pin"
+    },
+    "processing_app_root": {
+      "$ref": "native-processing-roles-v2.json#/$defs/path"
+    },
+    "processing_app_inventory_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "original_model_root": {
+      "$ref": "native-processing-roles-v2.json#/$defs/path"
+    },
+    "original_profile_pin": {
+      "$ref": "native-processing-roles-v2.json#/$defs/pin"
+    },
+    "original_catalog_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "roles": {
+      "$ref": "native-processing-roles-v2.json"
+    },
+    "original_protected_inventory_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "resolved_protected_inventory_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "original_helper_inventory_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "launch_policy_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "original_job_binding_changed": {
+      "const": false
+    },
+    "model_weights_verified": {
+      "const": false
+    },
+    "active_graph_published": {
+      "const": false
+    }
+  },
+  "$comment": "original_runtime_root is the ORIGINAL RELEASE root O. Python and media are under O/runtime. processing_app_root is R/app. No saved receipt substitutes current native full O/R admission. All identity correlations and safe paths are independently verified."
+}

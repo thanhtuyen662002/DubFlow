@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit original runtime and processing app roles; private v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "original_runtime_root",
+    "original_python",
+    "processing_app_root",
+    "original_model_root",
+    "original_media_root",
+    "ffmpeg",
+    "ffprobe",
+    "profile"
+  ],
+  "properties": {
+    "original_runtime_root": {
+      "$ref": "native-processing-roles-v2.json#/$defs/path"
+    },
+    "original_python": {
+      "$ref": "native-processing-roles-v2.json#/$defs/descriptor"
+    },
+    "processing_app_root": {
+      "$ref": "native-processing-roles-v2.json#/$defs/path"
+    },
+    "original_model_root": {
+      "$ref": "native-processing-roles-v2.json#/$defs/path"
+    },
+    "original_media_root": {
+      "$ref": "native-processing-roles-v2.json#/$defs/path"
+    },
+    "ffmpeg": {
+      "$ref": "native-processing-roles-v2.json#/$defs/descriptor"
+    },
+    "ffprobe": {
+      "$ref": "native-processing-roles-v2.json#/$defs/descriptor"
+    },
+    "profile": {
+      "$ref": "native-processing-roles-v2.json#/$defs/descriptor"
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32767
+    },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8589934592
+        }
+      }
+    },
+    "descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "pin"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "native-processing-roles-v2.json#/$defs/path"
+        },
+        "pin": {
+          "$ref": "native-processing-roles-v2.json#/$defs/pin"
+        }
+      }
+    },
+    "action": {
+      "enum": [
+        "prepare_effective_cue",
+        "prepare_effective_timeline"
+      ]
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "relative_path",
+        "pin"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "original_runtime",
+            "processing_app"
+          ]
+        },
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!.*(?:[\\\\:\\u0000-\\u001f<>\"|?*]|//|(?:^|/)\\.{1,2}(?:/|$)|[. ](?:/|$)))[^/]+(?:/[^/]+)*$",
+          "$comment": "Fixed native action rows and physical no-follow admission remain required; a matching path string is not authority."
+        },
+        "pin": {
+          "$ref": "native-processing-roles-v2.json#/$defs/pin"
+        }
+      }
+    }
+  }
+}

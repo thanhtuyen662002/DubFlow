@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Split metadata result v2 around an independently validated inner packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "action",
+    "context_sha256",
+    "authority_receipt_sha256",
+    "execution_recipe_sha256",
+    "result"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "kind": {
+      "const": "review_split_processing_result_v2"
+    },
+    "action": {
+      "$ref": "native-processing-roles-v2.json#/$defs/action"
+    },
+    "context_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "authority_receipt_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "execution_recipe_sha256": {
+      "$ref": "cue-synthesis-v1.json#/$defs/hash"
+    },
+    "result": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "prepare_effective_cue"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "$ref": "prepared-effective-cue-request-v1.json"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "result": {
+            "$ref": "prepared-effective-timeline-v1.json"
+          }
+        }
+      }
+    }
+  ]
+}

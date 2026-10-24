@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Exact native inner metadata bytes and current token for split execution v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "action",
+    "current_token",
+    "context_json",
+    "bindings_json"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "kind": {
+      "const": "review_split_action_context_v2"
+    },
+    "action": {
+      "$ref": "native-processing-roles-v2.json#/$defs/action"
+    },
+    "current_token": {
+      "$ref": "effective-cue-context-v1.json#/$defs/token"
+    },
+    "context_json": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 67108864
+    },
+    "bindings_json": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 67108864
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "prepare_effective_cue"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "bindings_json": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "bindings_json": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

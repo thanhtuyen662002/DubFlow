@@ -4032,3 +4032,58 @@ the separately admitted pin. Numeric confidence/timing/token representation is
 unchanged. POSIX backslashes remain literal filename characters. New engine
 source requires normal producer admission; existing installed producers and
 jobs are not patched, repinned or silently rewritten.
+### 2026-10-23: explicit original-runtime / processing-app authority v2
+
+The monolithic v1 admission remains exact: every protected runtime, TTS, mix,
+model, media and minimal-pipeline inventory entry must equal the original
+producer. A failed v1 admission never selects another route automatically.
+
+Add the opt-in `original_python_processing_app_v2` route. The saved job's
+original release O supplies Python, its entire runtime, media executables and
+the original model root. A separately admitted immutable release R supplies
+one app/engine import tree and its Review code. Both complete physical release
+inventories remain mandatory, including the unused R/runtime tree. The fixed
+resolved protected map selects runtime/ from O and all six protected app
+prefixes from R; it must equal the complete original protected map. The
+original TTS recipe helpers and engine package initializers must also match.
+No job producer/model/contract binding is rewritten and no filesystem overlay,
+copied runtime, alternate engine namespace or arbitrary prefix selector is used.
+
+Use a private admitted v2 type with distinct original-runtime, processing-app,
+original-media and original-model roles. Its declaration, authority receipt,
+sealed launch binding, action result and recipe have explicit v2 discriminators.
+The v1 contracts and reader behavior remain unchanged. Unknown or unported
+actions refuse before spawn. In particular, v2 clock/chunk/longform capability
+is unavailable until its entire role and recipe closure is implemented and
+qualified; public chunked_longform remains false.
+
+Native and Python independently derive a domain-separated execution recipe
+from both complete release identities, the original producer/model/catalog
+pins, the resolved protected map, exact context, launch policy and ordered
+role-tagged dependencies. This identity participates in each v2 checkpoint,
+mix and render cache key. An unchanged inner TTS recipe cannot authorize reuse
+of a v1 checkpoint under a different runtime or Review wrapper.
+
+The isolated v2 dispatcher consumes the existing native byte gate once before
+app imports, then invokes below-gate kernels. It preserves owned Job retirement,
+bounded streams, current-token checks, scratch and output-wide credits, full
+physical output validation, original deadlines and final SQLite CAS fences.
+Child-reported import origins or recipe hashes do not replace native admission.
+
+Public snapshots/timelines, original requests, SQLite tables and worker-stage
+formats do not migrate. New private processing documents require explicit
+nested v1/v2 reader dispatch during recovery, undo and export. The opaque
+processing descriptor in publication-v3 may retain its outer schema only when
+the nested document is independently admitted. An older reader may safely
+refuse v2 state; it must not reinterpret, overwrite or silently regenerate it.
+Before any durable v2 publication, updater/retention must preserve O, R, their
+model/history references and a v2-capable reader, and refuse incompatible
+rollback. This is a required activation gate, not a promised implementation.
+
+Implementation, exact-source deterministic CI and a new immutable Windows
+release require separate evidence. Installed original-runtime/new-code
+imports, descendant containment, cumulative edits, undo/new-after-undo,
+reopen, standard/editable exports, audio and AV sync remain unqualified until
+their actual acceptance runs. The e071/aff9 monolithic comparison with 222
+runtime differences remains FAIL; this decision does not qualify that binary
+drift or change any retained failure.
