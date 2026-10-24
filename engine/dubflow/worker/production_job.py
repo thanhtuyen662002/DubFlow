@@ -699,7 +699,7 @@ def _asr_evidence_matches(cues: Sequence[TextCue], evidence: Any) -> bool:
 
 
 def _asr_word_evidence_matches(cues: Sequence[TextCue], evidence: Any) -> bool:
-    from engine.dubflow.worker.whisper_cues import ASR_RECIPE, SAMPLE_RATE, MAX_GAP_SAMPLES
+    from engine.dubflow.worker.whisper_cues import ASR_RECIPE, SAMPLE_RATE, MAX_GAP_SAMPLES, DRIFT_REVIEW_REASON, drift_fallback_matches
     from engine.dubflow.asr import map_sample_interval
     if not isinstance(evidence, Mapping) or type(evidence.get("schema_version")) is not int or evidence.get("schema_version") != 1 or evidence.get("recipe") != ASR_RECIPE or evidence.get("calibrated") is not False:
         return False
@@ -746,12 +746,17 @@ def _asr_word_evidence_matches(cues: Sequence[TextCue], evidence: Any) -> bool:
             basis = "minimum-word-probability-uncalibrated" if available else "unavailable"
             if item.get("confidence_basis") != basis or cue.confidence != (min(probabilities) if available else 0.0):
                 return False
-            if item.get("timing_basis") not in {"word-alignment", "segment-fallback"}:
+            if item.get("timing_basis") not in {"word-alignment", "segment-fallback", "drift-fallback"}:
                 return False
-            if item["timing_basis"] == "segment-fallback":
+            if item["timing_basis"] == "drift-fallback":
+                if available or len(words) != 1 or not drift_fallback_matches(item, evidence["total_samples"]):
+                    return False
+            elif item.get("alignment_drift") is not None:
+                return False
+            elif item["timing_basis"] == "segment-fallback":
                 if available or len(words) != 1 or item.get("review_reason") not in {"word-alignment-unavailable", "word-alignment-invalid"}:
                     return False
-            elif item.get("review_reason") is not None:
+            elif item.get("review_reason") not in {None, DRIFT_REVIEW_REASON}:
                 return False
             raw = item.get("raw_segment_scores")
             if not isinstance(raw, Mapping) or set(raw) != {"avg_logprob", "no_speech_prob", "compression_ratio", "temperature"}:
