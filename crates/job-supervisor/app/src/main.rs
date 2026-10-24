@@ -1469,6 +1469,244 @@ fn source_queue_snapshot(runtime: &RuntimePaths, scan_id: &str) -> SupervisorRes
     }))
 }
 
+fn source_item_destination(runtime: &RuntimePaths, scan_id: &str, identity_key: &str) -> PathBuf {
+    let safe_identity: String = identity_key
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(160)
+        .collect();
+    runtime
+        .source_root
+        .join(scan_id)
+        .join(format!("{safe_identity}.media"))
+}
+
+fn source_error_fields(value: &Value) -> (String, String, bool, Option<String>) {
+    let error = value.get("error").unwrap_or(value);
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("SOURCE_SERVICE_FAILED")
+        .chars()
+        .take(128)
+        .collect::<String>();
+    let condition = error
+        .get("condition")
+        .and_then(Value::as_str)
+        .unwrap_or("source acquisition failed")
+        .replace('\r', " ")
+        .replace('\n', " ")
+        .replace('\0', " ")
+        .chars()
+        .take(4_096)
+        .collect::<String>();
+    let retryable = error
+        .get("retryable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let action = error
+        .get("action")
+        .and_then(Value::as_str)
+        .map(|value| value.chars().take(256).collect::<String>());
+    (code, condition, retryable, action)
+}
+
+fn materialize_source_item(
+    runtime: &RuntimePaths,
+    scan_id: &str,
+    item: &dubflow_source_queue::SourceQueueItem,
+) -> SupervisorResult<()> {
+    let queue = SourceQueue::open(&runtime.source_queue_db)
+        .map_err(|error| SupervisorError::Invalid(format!("source queue unavailable: {error}")))?;
+    let destination = source_item_destination(runtime, scan_id, &item.identity_key);
+    let initial = ItemProgress {
+        status: ItemStatus::Downloading,
+        retry_count: item.retry_count,
+        downloaded_bytes: 0,
+        total_bytes: None,
+        error_code: None,
+        error_message: None,
+        media_path: None,
+        content_hash: None,
+    };
+    queue
+        .update_item_progress(scan_id, &item.identity_key, &initial, now_ms())
+        .map_err(|error| {
+            SupervisorError::Invalid(format!("source item state update failed: {error}"))
+        })?;
+
+    let mut child = Command::new(&runtime.python);
+    child
+        .arg("-m")
+        .arg("engine.dubflow.download.service")
+        .arg("--source-url")
+        .arg(&item.source_url)
+        .arg("--destination")
+        .arg(&destination)
+        .arg("--root")
+        .arg(&runtime.source_root)
+        .current_dir(&runtime.app_root)
+        .env("PYTHONPATH", &runtime.app_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = child.spawn().map_err(|error| {
+        SupervisorError::Invalid(format!("source service could not start: {error}"))
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| SupervisorError::Invalid("source service stdout is unavailable".into()))?;
+    let reader = BufReader::new(stdout);
+    let mut completed: Option<Value> = None;
+    let mut failure: Option<Value> = None;
+    for line in reader.lines() {
+        let line = line.map_err(|error| {
+            SupervisorError::Invalid(format!("source service output failed: {error}"))
+        })?;
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        match value.get("event").and_then(Value::as_str) {
+            Some("progress") => {
+                let progress = ItemProgress {
+                    status: ItemStatus::Downloading,
+                    retry_count: item.retry_count,
+                    downloaded_bytes: value
+                        .get("downloaded_bytes")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    total_bytes: value.get("total_bytes").and_then(Value::as_u64),
+                    error_code: None,
+                    error_message: None,
+                    media_path: None,
+                    content_hash: None,
+                };
+                queue
+                    .update_item_progress(scan_id, &item.identity_key, &progress, now_ms())
+                    .map_err(|error| {
+                        SupervisorError::Invalid(format!("source progress update failed: {error}"))
+                    })?;
+            }
+            Some("completed") => completed = Some(value),
+            Some("failed") => failure = Some(value),
+            _ => {}
+        }
+    }
+    let exit = child.wait().map_err(|error| {
+        SupervisorError::Invalid(format!("source service wait failed: {error}"))
+    })?;
+    if let Some(value) = completed.filter(|_| exit.success()) {
+        let path_text = value
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let published = PathBuf::from(path_text);
+        let resolved_root = runtime.source_root.canonicalize().map_err(|error| {
+            SupervisorError::Invalid(format!(
+                "source root is unavailable after download: {error}"
+            ))
+        })?;
+        let resolved_path = published.canonicalize().map_err(|error| {
+            SupervisorError::Invalid(format!("source service published no regular file: {error}"))
+        })?;
+        if !resolved_path.starts_with(&resolved_root) || !resolved_path.is_file() {
+            return Err(SupervisorError::Invalid(
+                "source service published outside the source root".into(),
+            ));
+        }
+        let size = value
+            .get("size_bytes")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| {
+                resolved_path
+                    .metadata()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0)
+            });
+        let hash = value
+            .get("sha256")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .filter(|value| value.starts_with("sha256:"));
+        let progress = ItemProgress {
+            status: ItemStatus::Downloaded,
+            retry_count: item.retry_count,
+            downloaded_bytes: size,
+            total_bytes: Some(size),
+            error_code: None,
+            error_message: None,
+            media_path: Some(resolved_path.to_string_lossy().into_owned()),
+            content_hash: hash,
+        };
+        queue
+            .update_item_progress(scan_id, &item.identity_key, &progress, now_ms())
+            .map_err(|error| {
+                SupervisorError::Invalid(format!("source completion update failed: {error}"))
+            })?;
+        return Ok(());
+    }
+    let (code, condition, retryable, action) = failure
+        .as_ref()
+        .map(source_error_fields)
+        .unwrap_or_else(|| {
+            (
+                "SOURCE_SERVICE_FAILED".into(),
+                "source service exited without a completion record".into(),
+                exit.code().is_none(),
+                None,
+            )
+        });
+    let mut message = condition;
+    if let Some(action) = action {
+        message.push_str(" action=");
+        message.push_str(&action);
+    }
+    let progress = ItemProgress {
+        status: if exit.code() == Some(130) {
+            ItemStatus::Cancelled
+        } else {
+            ItemStatus::Failed
+        },
+        retry_count: item.retry_count.saturating_add(u8::from(retryable)),
+        downloaded_bytes: 0,
+        total_bytes: None,
+        error_code: Some(code),
+        error_message: Some(message),
+        media_path: None,
+        content_hash: None,
+    };
+    queue
+        .update_item_progress(scan_id, &item.identity_key, &progress, now_ms())
+        .map_err(|error| {
+            SupervisorError::Invalid(format!("source failure update failed: {error}"))
+        })?;
+    Ok(())
+}
+
+fn materialize_source_items(runtime: &RuntimePaths, scan_id: &str) -> SupervisorResult<()> {
+    let queue = SourceQueue::open(&runtime.source_queue_db)
+        .map_err(|error| SupervisorError::Invalid(format!("source queue unavailable: {error}")))?;
+    let items = queue
+        .items(scan_id)
+        .map_err(|error| SupervisorError::Invalid(format!("source items unavailable: {error}")))?;
+    for item in items {
+        if item.status == ItemStatus::Downloaded {
+            continue;
+        }
+        // One poisoned URL must not prevent the following source from being
+        // inspected and materialized.
+        materialize_source_item(runtime, scan_id, &item)?;
+    }
+    Ok(())
+}
+
 fn enqueue_sources(
     runtime: &RuntimePaths,
     scan_id: Option<String>,
@@ -1534,6 +1772,7 @@ fn enqueue_sources(
         .map_err(|error| {
             SupervisorError::Invalid(format!("source queue checkpoint failed: {error}"))
         })?;
+    materialize_source_items(runtime, &scan_id)?;
     source_queue_snapshot(runtime, &scan_id)
 }
 

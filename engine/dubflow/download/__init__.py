@@ -14,7 +14,7 @@ from .source_adapter import (
     canonicalize_url,
 )
 from .materializer import DownloadError, DownloadErrorCode, DownloadResult, MediaMaterializer, UrllibHttpTransport
-from .generic import GenericUrlAdapter, YtDlpTransport
+from .generic import GenericUrlAdapter, PythonYtDlpTransport, YtDlpTransport
 
 __all__ = [
     "FixtureSourceAdapter",
@@ -32,6 +32,7 @@ __all__ = [
     "DownloadErrorCode",
     "DownloadResult",
     "GenericUrlAdapter",
+    "PythonYtDlpTransport",
     "MediaMaterializer",
     "UrllibHttpTransport",
     "YtDlpTransport",

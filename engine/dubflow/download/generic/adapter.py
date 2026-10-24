@@ -94,6 +94,53 @@ class YtDlpTransport:
         return payload
 
 
+class PythonYtDlpTransport:
+    """Use the app-owned ``yt-dlp`` Python package without a system binary.
+
+    The runtime is installed into DubFlow's private Python environment by the
+    release builder.  Keeping the extractor behind this small transport lets
+    the provider adapters retain their error/identity rules while avoiding a
+    PATH lookup or shell invocation on the user's machine.
+    """
+
+    def __init__(self, *, timeout_s: float = 180.0) -> None:
+        if not 0 < timeout_s <= 1800:
+            raise ValueError("timeout_s must be in (0, 1800]")
+        self.timeout_s = timeout_s
+
+    def inspect_url(self, source_url: str) -> Mapping[str, Any]:
+        url = validate_http_url(source_url)
+        try:
+            import yt_dlp  # type: ignore[import-not-found]
+        except ImportError as error:
+            raise SourceError(SourceErrorCode.UNSUPPORTED, "the app-owned source extractor is not installed", provider_id="generic", action="install_runtime") from error
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "socket_timeout": self.timeout_s,
+            "retries": 2,
+            "extract_flat": False,
+        }
+        try:
+            with yt_dlp.YoutubeDL(options) as downloader:
+                payload = downloader.extract_info(url, download=False)
+        except Exception as error:
+            raw = _safe_process_error(str(error))
+            lowered = raw.casefold()
+            if any(token in lowered for token in ("login", "private", "authentication", "sign in")):
+                raise SourceError(SourceErrorCode.AUTH_REQUIRED, "source extractor requires authentication", provider_id="generic", action="authenticate") from error
+            if any(token in lowered for token in ("429", "rate limit", "too many requests")):
+                raise SourceError(SourceErrorCode.RATE_LIMITED, "source extractor was rate limited", provider_id="generic", retryable=True, action="retry_later") from error
+            if any(token in lowered for token in ("not found", "does not exist", "unavailable")):
+                raise SourceError(SourceErrorCode.NOT_FOUND, "source is unavailable", provider_id="generic") from error
+            raise SourceError(SourceErrorCode.NETWORK, "source extractor failed", provider_id="generic", retryable=True, action="retry") from error
+        if not isinstance(payload, Mapping):
+            raise SourceError(SourceErrorCode.SOURCE_CHANGED, "source extractor returned malformed metadata", provider_id="generic")
+        return payload
+
+
 def _safe_process_error(value: object) -> str:
     text = value if isinstance(value, str) else ""
     # stderr can contain the original URL and query tokens.  Keep only a
@@ -330,4 +377,4 @@ class GenericUrlAdapter:
             raise SourceError(mapping.get(error.code, SourceErrorCode.NETWORK), "generic media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
 
 
-__all__ = ["DirectUrlTransport", "GenericUrlAdapter", "GenericTransport", "SubprocessYtDlpRunner", "YtDlpRunner", "YtDlpTransport"]
+__all__ = ["DirectUrlTransport", "GenericUrlAdapter", "GenericTransport", "PythonYtDlpTransport", "SubprocessYtDlpRunner", "YtDlpRunner", "YtDlpTransport"]
