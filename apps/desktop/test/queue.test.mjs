@@ -127,6 +127,14 @@ const [boxId] = boxQueue.addPaths(["C:/media/box.mp4"]);
 boxQueue.setSubtitleBox(boxId, true);
 assert.equal(boxQueue.getSnapshot().jobs[0].subtitleBox, true);
 
+// A user cancellation reads as a neutral "Đã hủy", not a failure.
+const cancelQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [cancelId] = cancelQueue.addPaths(["C:/media/cancel.mp4"]);
+cancelQueue.updateStatus(cancelId, { ...cancelQueue.getSnapshot().jobs[0].status, state: "FAILED", reason: "cancelled", message: "Đã hủy theo yêu cầu" });
+const cancelRow = toQueueViewModel(cancelQueue.getSnapshot()).rows[0];
+assert.equal(cancelRow.stateLabel, "Đã hủy");
+assert.equal(cancelRow.cancelled, true);
+
 // Source language is a per-job option; null returns to automatic detection.
 const langQueue = new QueueController(new MemorySnapshotStorage(), clock);
 const [langId] = langQueue.addPaths(["C:/media/zh.mp4"]);
