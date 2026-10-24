@@ -5,7 +5,7 @@ import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
-  activeStageIndex, displayJobStatus, PIPELINE_STAGES, progressFraction, stateLabel,
+  activeStageIndex, displayJobStatus, isCancelled, PIPELINE_STAGES, progressFraction, stateLabel,
   type JobStatus, type JobStatusState,
 } from "./features/job_status/status.ts";
 
@@ -92,7 +92,8 @@ function isActive(job: QueueJob | undefined): boolean {
   return !!job && ACTIVE.includes(job.status.state);
 }
 
-function tone(state: JobStatusState): string {
+function tone(state: JobStatusState, cancelled = false): string {
+  if (cancelled) return "";
   if (state === "COMPLETED") return "ok";
   if (state === "FAILED") return "err";
   if (["RUNNING", "RETRYING", "RECOVERED"].includes(state)) return "run";
@@ -224,7 +225,7 @@ function renderQueue(view: DesktopShellModel["view"]): void {
     main.append(element("span", "job-title", row.title), meta);
     if (row.state !== "QUEUED") main.append(progressBar(row.fraction, row.state));
     const side = element("div", "job-side");
-    side.append(element("span", `badge ${tone(row.state)}`, row.stateLabel));
+    side.append(element("span", `badge ${tone(row.state, row.cancelled)}`, row.stateLabel));
     if (row.state !== "QUEUED") side.append(element("span", "percent", row.progress));
     item.append(thumb, main, side);
     item.title = row.origin;
@@ -262,8 +263,8 @@ function renderInspector(job: QueueJob | null): void {
   $("#detail-name").textContent = job.displayName;
   $("#detail-path").textContent = job.originUrl ?? job.sourcePath;
   const badge = $("#detail-state");
-  badge.className = `badge ${tone(status.state)}`;
-  badge.textContent = stateLabel(status.state);
+  badge.className = `badge ${tone(status.state, isCancelled(status))}`;
+  badge.textContent = stateLabel(status.state, status.reason);
   const fraction = progressFraction(status);
   $("#detail-percent").textContent = status.state === "QUEUED" || fraction === null ? "" : `${Math.floor(fraction * 100)}%`;
   const bar = $("#detail-bar");

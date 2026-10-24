@@ -1,4 +1,4 @@
-import { displayJobStatus, progressFraction, stateLabel, type JobStatus } from "../job_status/status.ts";
+import { displayJobStatus, isCancelled, progressFraction, stateLabel, type JobStatus } from "../job_status/status.ts";
 import { summarizeQueue, type QueueJob, type QueueSnapshot, type QueueSummary } from "./model.ts";
 
 export type QueueRow = {
@@ -10,6 +10,7 @@ export type QueueRow = {
   status: string;
   stateLabel: string;
   state: JobStatus["state"];
+  cancelled: boolean;
   progress: string;
   fraction: number | null;
   dubbing: boolean;
@@ -40,8 +41,9 @@ export function toQueueViewModel(snapshot: QueueSnapshot): QueueViewModel {
       sourcePath: job.sourcePath,
       origin: job.originUrl ?? job.sourcePath,
       status: displayJobStatus(job.status),
-      stateLabel: stateLabel(job.status.state),
+      stateLabel: stateLabel(job.status.state, job.status.reason),
       state: job.status.state,
+      cancelled: isCancelled(job.status),
       progress: progressLabel(job.status),
       fraction: progressFraction(job.status),
       dubbing: job.dubbing.enabled,

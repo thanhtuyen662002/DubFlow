@@ -51,8 +51,13 @@ const STATE_LABELS: Record<JobStatusState, string> = {
   FAILED: "Thất bại",
 };
 
-export function stateLabel(state: JobStatusState): string {
-  return STATE_LABELS[state];
+/** A user cancellation is reported as FAILED/cancelled by the supervisor. */
+export function isCancelled(status: Pick<JobStatus, "state" | "reason">): boolean {
+  return status.state === "FAILED" && status.reason === "cancelled";
+}
+
+export function stateLabel(state: JobStatusState, reason?: string): string {
+  return state === "FAILED" && reason === "cancelled" ? "Đã hủy" : STATE_LABELS[state];
 }
 
 /** Pipeline stages in the order the production worker reports them. */
