@@ -64,7 +64,7 @@ function emptyStatus(): JobStatus {
     schema_version: 1,
     state: "QUEUED",
     reason: "queued",
-    message: "Queued",
+    message: "Chờ xử lý",
     checkpoint_id: null,
     progress: {
       completed_units: "0",
