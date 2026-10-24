@@ -324,11 +324,104 @@ fn reveal_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+const OVERRIDES_FILE: &str = "translation_overrides.json";
+
+/// A finished job's output directory: the parent of its final video, below
+/// "DubFlow Output", holding the worker's translation checkpoint.
+fn review_dir(output_path: &str) -> Result<PathBuf, String> {
+    let video = output_file(output_path)?;
+    let dir = video.parent().ok_or_else(|| fail("output has no directory"))?.to_path_buf();
+    if !dir.join(".dubflow-work").join("translation.json").is_file() {
+        return Err(fail("Không tìm thấy dữ liệu bản dịch của video này"));
+    }
+    Ok(dir)
+}
+
+fn read_json(path: &Path, limit: u64) -> Result<Value, String> {
+    if fs::metadata(path).map_err(|error| fail(format!("{}: {error}", path.display())))?.len() > limit {
+        return Err(fail(format!("{} is too large", path.display())));
+    }
+    let text = fs::read_to_string(path).map_err(|error| fail(format!("{}: {error}", path.display())))?;
+    serde_json::from_str(&text).map_err(|error| fail(format!("{}: {error}", path.display())))
+}
+
+/// Cue ids whose dubbing failed in the current audio generation.
+fn failed_dub_cues(work: &Path) -> std::collections::HashSet<String> {
+    let document = read_json(&work.join("checkpoint.json"), 4 * 1024 * 1024).ok()
+        .and_then(|checkpoint| checkpoint["stages"]["b2-audio"]["tts_document"].as_str().map(PathBuf::from))
+        .filter(|path| path.starts_with(work))
+        .and_then(|path| read_json(&path, 64 * 1024 * 1024).ok());
+    document.as_ref().and_then(|value| value["failures"].as_array())
+        .map(|failures| failures.iter().filter_map(|failure| failure["segment_id"].as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewCue {
+    cue_id: String,
+    start_ms: u64,
+    end_ms: u64,
+    source_text: String,
+    machine_text: String,
+    text: String,
+    edited: bool,
+    dub_failed: bool,
+}
+
+#[tauri::command]
+fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
+    let dir = review_dir(&output_path)?;
+    let work = dir.join(".dubflow-work");
+    let translation = read_json(&work.join("translation.json"), 64 * 1024 * 1024)?;
+    let overrides = if dir.join(OVERRIDES_FILE).is_file() { read_json(&dir.join(OVERRIDES_FILE), 4 * 1024 * 1024)? } else { json!({}) };
+    let failed = failed_dub_cues(&work);
+    let cues = translation["cues"].as_array().ok_or_else(|| fail("translation.json has no cues"))?;
+    cues.iter().map(|cue| {
+        let text = |key: &str| cue[key].as_str().unwrap_or_default().to_owned();
+        let cue_id = text("cue_id");
+        let machine_text = text("translated_text");
+        let edited = overrides["cues"][&cue_id].as_str().map(str::to_owned);
+        Ok(ReviewCue {
+            start_ms: cue["start_ms"].as_u64().ok_or_else(|| fail("cue has no start"))?,
+            end_ms: cue["end_ms"].as_u64().ok_or_else(|| fail("cue has no end"))?,
+            source_text: text("source_text"),
+            dub_failed: failed.contains(&cue_id),
+            edited: edited.is_some(),
+            text: edited.unwrap_or_else(|| machine_text.clone()),
+            machine_text,
+            cue_id,
+        })
+    }).collect()
+}
+
+/// Persist reviewed texts beside the outputs; an empty map removes the file.
+/// Returns the output directory so the caller can re-run the job in place.
+#[tauri::command]
+fn save_review(output_path: String, overrides: std::collections::BTreeMap<String, String>) -> Result<String, String> {
+    let dir = review_dir(&output_path)?;
+    let path = dir.join(OVERRIDES_FILE);
+    if overrides.len() > 10_000 || overrides.iter().any(|(id, text)| id.is_empty() || id.len() > 128
+        || text.trim().is_empty() || text.chars().count() > 2000) {
+        return Err(fail("Câu sửa không hợp lệ: không được để trống hoặc dài quá 2000 ký tự"));
+    }
+    if overrides.is_empty() {
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|error| fail(format!("Không xóa được bản sửa: {error}")))?;
+        }
+    } else {
+        let temporary = dir.join(format!("{OVERRIDES_FILE}.partial"));
+        let body = serde_json::to_vec_pretty(&json!({"schema_version": 1, "cues": overrides})).map_err(|error| fail(error.to_string()))?;
+        fs::write(&temporary, body).and_then(|_| fs::rename(&temporary, &path))
+            .map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))?;
+    }
+    Ok(display_path(&dir))
+}
+
 fn main() {
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
 }

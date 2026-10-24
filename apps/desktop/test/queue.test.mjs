@@ -73,6 +73,16 @@ assert.equal(loadedVariants.selected_job_id, variantId);
 assert.equal(loadedVariants.jobs[2].sourcePath, completed.sourcePath);
 assert.equal(loadedVariants.jobs[2].outputPath, null);
 
+// A reviewed revision re-runs the completed job in its own output directory.
+assert.throws(() => fresh.reviseJob(variantId, "D:/out"), /Only completed jobs/);
+const revisionId = fresh.reviseJob(completed.id, "D:/media/DubFlow Output/run-1");
+const revision = fresh.getSnapshot().jobs.find((job) => job.id === revisionId);
+assert.equal(revision.outputDir, "D:/media/DubFlow Output/run-1");
+assert.equal(revision.status.state, "QUEUED");
+assert.deepEqual(revision.dubbing, completed.dubbing);
+assert.equal(new QueueController(emptyStorage, clock).getSnapshot().jobs.find((job) => job.id === revisionId).outputDir, "D:/media/DubFlow Output/run-1");
+assert.throws(() => fresh.reviseJob(completed.id, " "), /output directory/);
+
 const colliding = new QueueController(new MemorySnapshotStorage(), clock, 100, () => "collision");
 colliding.addPaths(["one"]);
 assert.throws(() => colliding.addPaths(["two"]), /independent job ID/);
