@@ -1045,6 +1045,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 work_dir=_b2_generation(checkpoint, checkpoint_path, work_dir, config.output_dir.absolute(), generation_identity),
                 model_root=config.model_root,
                 tts_voice_id=selected_voice,
+                # Shared by every generation in this output folder, so a reviewed
+                # re-run synthesises only the cues whose request changed.
+                synthesis_cache_dir=work_dir / "tts-cache",
             )
             audio_path = b2_audio.final_mix_path
             audio_metadata = {
