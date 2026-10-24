@@ -443,6 +443,37 @@ fn fetch_status(scan_id: String, sources: tauri::State<'_, std::sync::Arc<source
     sources.status(&scan_id)
 }
 
+/// A short WAV clip of the source or the finished video for one review cue.
+/// Async: FFmpeg runs off the UI thread. Raw bytes avoid a JSON number array.
+#[tauri::command]
+async fn review_clip(output_path: String, start_ms: u64, end_ms: u64, source: bool) -> Result<tauri::ipc::Response, String> {
+    if end_ms <= start_ms || end_ms - start_ms > 30_000 {
+        return Err(fail("Đoạn nghe thử phải dài 0–30 giây"));
+    }
+    let dir = review_dir(&output_path)?;
+    let media = if source {
+        let manifest = read_json(&dir.join("job_manifest.json"), 16 * 1024 * 1024)?;
+        let path = manifest["source"]["path"].as_str().ok_or_else(|| fail("Không tìm thấy video gốc"))?;
+        absolute_file(path, "source")?
+    } else {
+        output_file(&output_path)?
+    };
+    let ffmpeg = version_root()?.join("runtime").join("media").join("ffmpeg.exe");
+    let mut command = Command::new(&ffmpeg);
+    command.args(["-nostdin", "-v", "error", "-ss", &format!("{:.3}", start_ms as f64 / 1000.0), "-t",
+            &format!("{:.3}", (end_ms - start_ms) as f64 / 1000.0 + 0.3), "-i"])
+        .arg(&media)
+        .args(["-vn", "-ac", "1", "-ar", "24000", "-f", "wav", "pipe:1"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().map_err(|error| fail(format!("Không chạy được FFmpeg: {error}")))?;
+    if !output.status.success() || output.stdout.len() < 64 {
+        return Err(fail("Không cắt được đoạn audio"));
+    }
+    Ok(tauri::ipc::Response::new(output.stdout))
+}
+
 const DOUYIN_LOGIN: &str = "douyin-login";
 const DOUYIN_HOME: &str = "https://www.douyin.com/";
 
@@ -497,7 +528,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
