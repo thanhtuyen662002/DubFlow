@@ -277,3 +277,8 @@ h1, h2, h3, p { margin: 0; }
 .review-listen .btn { height: 26px; padding: 0 10px; font-size: 12px; }
 .status-timing { margin-top: 8px; color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
 .status-timing:empty { display: none; }
+.select-row { clear: both; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.select-row strong { display: block; font-weight: 600; }
+.select-row small { display: block; margin-top: 2px; color: var(--text-3); font-size: 12px; }
+.select-row select { flex: none; height: 30px; padding: 0 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+.settings:disabled .select-row { opacity: .6; }
