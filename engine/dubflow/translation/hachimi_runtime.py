@@ -18,6 +18,35 @@ DECODE_OPTIONS = {"beam_size": 4, "length_penalty": 1, "max_decoding_length": 25
 SPECIAL_TOKENS = frozenset({"<s>", "</s>", "<pad>"})
 MAX_SOURCE_TOKENS = 500
 MAX_SENTENCES = 128
+# The web-novel model respells Latin names (Twitterrific -> TWitherrific). Runs
+# of Latin words are swapped for X1, X2, ... markers, which it copies reliably
+# (7/7 test sentences vs 0-4/7 for numeric, <n>, [n] and @n markers), then
+# restored. Pure numbers are left to the model.
+LATIN_SPAN = re.compile(r"[A-Za-z][A-Za-z0-9.+#&'_-]*(?: [A-Za-z][A-Za-z0-9.+#&'_-]*)*")
+MARKER = re.compile(r"X(\d+)")
+LATIN_PASSTHROUGH = "latin-marker-x-v1"
+
+
+def protect_latin(sentence: str) -> tuple[str, list[str]]:
+    """Replace Latin runs with X1, X2, ... markers; returns the masked text and the runs."""
+    spans: list[str] = []
+
+    def mark(match: re.Match) -> str:
+        value = match.group(0)
+        core = value.rstrip(".'_-&+#")
+        spans.append(core)
+        return f"X{len(spans)}" + value[len(core):]
+
+    return LATIN_SPAN.sub(mark, sentence), spans
+
+
+def restore_latin(output: str, spans: list[str]) -> str | None:
+    """Put the runs back, or None unless every marker appears exactly once."""
+    if sorted(int(value) for value in MARKER.findall(output)) != list(range(1, len(spans) + 1)):
+        return None
+    # The model sometimes glues a marker to the preceding comma ("SMS,X2").
+    output = re.sub(r"([,;:])(?=X\d)", r"\1 ", output)
+    return MARKER.sub(lambda match: spans[int(match.group(1)) - 1], output)
 
 
 def split_sentences(text: str) -> list[str]:
@@ -56,7 +85,7 @@ class HachimiRuntime:
             "requested_source_language": self.source_language,
             "backend_route": ["zh", "vi"],
             "profile_sha256": self.profile_hash,
-            "settings": {"device": "cpu", "compute_type": "int8", "sentence_boundary": "cue-punctuation-zh-v1", **DECODE_OPTIONS},
+            "settings": {"device": "cpu", "compute_type": "int8", "sentence_boundary": "cue-punctuation-zh-v1", "latin_passthrough": LATIN_PASSTHROUGH, **DECODE_OPTIONS},
             "license": self.profile.get("license"),
             "upstream": dict(self.profile.get("upstream") or {}),
             "packages": [{key: item[key] for key in ("id", "sha256")} for item in self.profile["artifacts"]],
@@ -79,22 +108,37 @@ class HachimiRuntime:
         self._source = sentencepiece.SentencePieceProcessor(model_file=str(self.model_dir / "source.spm"))
         self._target = sentencepiece.SentencePieceProcessor(model_file=str(self.model_dir / "target.spm"))
 
-    def translate_text(self, text: str) -> str:
-        if self._translator is None:
-            raise TranslationError("TRANSLATION_RUNTIME_MISSING", "route has not been initialized")
+    def _decode(self, sentences: list[str]) -> list[str]:
         batch = []
-        for sentence in split_sentences(text):
+        for sentence in sentences:
             tokens = self._source.encode(sentence, out_type=str)
             if len(tokens) > MAX_SOURCE_TOKENS:
                 raise TranslationError("TRANSLATION_INPUT_TOO_LONG", "sentence exceeds the safe inference token bound")
             batch.append(tokens + ["</s>"])
-        results = self._translator.translate_batch(batch, **DECODE_OPTIONS)
-        pieces = []
-        for result in results:
-            output = self._target.decode([token for token in result.hypotheses[0] if token not in SPECIAL_TOKENS]).strip()
-            if not output:
-                raise TranslationError("TRANSLATION_EMPTY", "HachimiMT-60 produced no translated text")
-            pieces.append(output)
+        results = self._translator.translate_batch(batch, **DECODE_OPTIONS) if batch else []
+        return [self._target.decode([token for token in result.hypotheses[0] if token not in SPECIAL_TOKENS]).strip() for result in results]
+
+    def translate_text(self, text: str) -> str:
+        if self._translator is None:
+            raise TranslationError("TRANSLATION_RUNTIME_MISSING", "route has not been initialized")
+        sentences = split_sentences(text)
+        protected = [protect_latin(sentence) for sentence in sentences]
+        pieces: list[str | None] = [None] * len(sentences)
+        pending = []
+        for index, (masked, spans) in enumerate(protected):
+            # Nothing but Latin text and punctuation: keep it as written.
+            if spans and not re.search(r"[^\W\d_]", MARKER.sub("", masked)):
+                pieces[index] = sentences[index]
+            else:
+                pending.append(index)
+        for index, output in zip(pending, self._decode([protected[index][0] for index in pending])):
+            pieces[index] = restore_latin(output, protected[index][1]) if protected[index][1] else output
+        # A dropped or duplicated marker falls back to translating the sentence as is.
+        fallback = [index for index in pending if pieces[index] is None]
+        for index, output in zip(fallback, self._decode([sentences[index] for index in fallback])):
+            pieces[index] = output
+        if not all(pieces):
+            raise TranslationError("TRANSLATION_EMPTY", "HachimiMT-60 produced no translated text")
         return " ".join(" ".join(pieces).split())
 
 
