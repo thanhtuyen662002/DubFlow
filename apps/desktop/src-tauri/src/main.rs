@@ -440,6 +440,53 @@ fn fetch_status(scan_id: String, sources: tauri::State<'_, std::sync::Arc<source
     sources.status(&scan_id)
 }
 
+const DOUYIN_LOGIN: &str = "douyin-login";
+const DOUYIN_HOME: &str = "https://www.douyin.com/";
+
+/// Open douyin.com in its own window so it can set fresh cookies (and the
+/// user may log in). Async: WebView2 cookie access deadlocks in sync commands.
+#[tauri::command]
+async fn open_douyin_login(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window(DOUYIN_LOGIN) {
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let url = DOUYIN_HOME.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))?;
+    tauri::WebviewWindowBuilder::new(&app, DOUYIN_LOGIN, tauri::WebviewUrl::External(url))
+        .title("Douyin — mở trang, đăng nhập nếu muốn, rồi quay lại DubFlow bấm “Lưu phiên”")
+        .inner_size(1100.0, 800.0)
+        .build()
+        .map_err(|error| fail(format!("Không mở được cửa sổ Douyin: {error}")))?;
+    Ok(())
+}
+
+/// Read the Douyin window's cookies and store them as the protected Douyin
+/// session used by link downloads. Returns how many cookies were kept.
+#[tauri::command]
+async fn save_douyin_session(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<usize, String> {
+    use tauri::Manager;
+    let window = app.get_webview_window(DOUYIN_LOGIN).ok_or_else(|| fail("Hãy mở cửa sổ Douyin trước"))?;
+    let url = DOUYIN_HOME.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))?;
+    let cookies: Vec<(String, String)> = window.cookies_for_url(url)
+        .map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?
+        .into_iter().map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned())).collect();
+    if !cookies.iter().any(|(name, _)| name == "s_v_web_id" || name == "ttwid") {
+        return Err(fail("Trang Douyin chưa tải xong; hãy đợi trang hiện video rồi bấm lại"));
+    }
+    let header = source::cookie_header(&cookies, &source::DOUYIN_PRIORITY).ok_or_else(|| fail("Không có cookie Douyin hợp lệ"))?;
+    let count = header.split("; ").count();
+    let expires_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| fail(error.to_string()))?.as_secs() + source::SESSION_SECONDS;
+    let root = version_root()?;
+    let supervisor = supervisor_binary(&root)?;
+    let data = control_root()?;
+    let sources = std::sync::Arc::clone(&sources);
+    tauri::async_runtime::spawn_blocking(move || sources.save_session("douyin", header, expires_at, &supervisor, &root, &data))
+        .await.map_err(|error| fail(error.to_string()))??;
+    let _ = window.close();
+    Ok(count)
+}
+
 fn main() {
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
@@ -447,7 +494,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
