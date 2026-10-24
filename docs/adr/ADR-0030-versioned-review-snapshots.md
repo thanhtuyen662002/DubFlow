@@ -3751,3 +3751,35 @@ Local Rust compilation remains NOT_RUN with the known missing MSVC linker; no
 SDK/cache mutation or unchanged compile retry. The Win32 component observation
 does not qualify the native Rust implementation, latency, installed B1B2,
 cumulative edits/exports/GUI, longform or full172/174/175 acceptance.
+
+
+#### Private probe command preparation before process creation
+
+The bounded private pipe kernel previously observed cancellation and its absolute
+deadline before constructing the subprocess plan. Command preparation can finish
+after cancellation or deadline expiry, leaving a path to Popen with an already
+invalid observation. The same check now runs again immediately before Popen.
+A late preparation refusal creates no child and starts no pipe reader.
+
+The absolute deadline, cancellation callback, approved executable/argument plan,
+no-shell process flags, output/diagnostic bounds, contained-worker assumption,
+existing full source/executable pin fences and complete kill/reap paths keep
+their existing values and meaning. This does not add a public chunk executor,
+change a packet, schema, model, original job or release pin, or admit decoded
+media, codec/font/provider/OS closure, semantic QC or graph/public longform use.
+Rollback requires no format migration. Existing pinned producers remain
+unchanged; the source successor requires its own processing release admission.
+
+Two deterministic new refusal regressions failed before the fix because Popen
+was reached after command preparation had exhausted the deadline or observed
+cancellation. Their mocked Popen stops the test before any child is created.
+A third new regression runs a tiny app-owned Python child while time remains
+and verifies complete streaming and reader reaping. After this scoped source
+change all three new component tests pass locally. These observations do not
+qualify native Windows execution, current installed B1/B2, cumulative/export/GUI,
+liveness, four-hour media or any complete172/174/175 acceptance.
+
+This independent local preparation uses the same Issue174 lease while the
+published f68 B1/B2 producer and all completed qualification evidence remain
+unchanged. The separate QA profile/output5GiB choice remains pending; actual3GiB,
+all other quotas/deadlines, publicchunked_longformfalse and TrucLy25voices remain.

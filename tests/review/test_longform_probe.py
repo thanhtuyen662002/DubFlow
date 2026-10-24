@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from engine.dubflow.review.longform_clock import plan_decoded_clock
@@ -19,6 +20,39 @@ def pin(raw):
 
 
 class LongformProbeTests(unittest.TestCase):
+    def _late_command_preparation_refuses_before_spawn(self, *, expired):
+        now = [100.0]
+        cancelled = [False]
+
+        def prepare(*arguments):
+            if expired:
+                now[0] = 110.0
+            else:
+                cancelled[0] = True
+            return SimpleNamespace(argv=(sys.executable, '-I', '-S', '-B', '-c', 'pass'))
+
+        with patch('engine.dubflow.review.longform_probe.time.monotonic', side_effect=lambda: now[0]), \
+                patch('engine.dubflow.security.build_subprocess_plan', side_effect=prepare) as planned, \
+                patch('engine.dubflow.review.longform_probe.subprocess.Popen',
+                      side_effect=AssertionError('expired or cancelled command must not create a child')) as spawned:
+            with self.assertRaisesRegex(ReviewError, 'deadline' if expired else 'cancelled'):
+                _consume_process((sys.executable, '-c', 'pass'), lambda blocks: b''.join(blocks),
+                    deadline=110.0, max_stdout_bytes=4096, cancelled=lambda: cancelled[0])
+            planned.assert_called_once()
+            spawned.assert_not_called()
+
+    def test_deadline_expiring_during_command_preparation_never_spawns_child(self):
+        self._late_command_preparation_refuses_before_spawn(expired=True)
+
+    def test_cancellation_during_command_preparation_never_spawns_child(self):
+        self._late_command_preparation_refuses_before_spawn(expired=False)
+
+    def test_owned_child_with_remaining_deadline_still_streams_and_reaps(self):
+        result = self.fixture("import sys;sys.stdout.buffer.write(b'bounded child after command preparation');sys.stdout.flush()",
+                              consume=lambda blocks: b''.join(blocks))
+        self.assertEqual(result, b'bounded child after command preparation')
+        self.assertFalse(any(t.name.startswith('review-clock-') for t in threading.enumerate()))
+
     def fixture(self, code, consume=None, *, timeout=3, max_bytes=16*1024*1024, cancelled=lambda: False):
         argv = (sys.executable, '-I', '-S', '-B', '-c', code)
         if consume is None:

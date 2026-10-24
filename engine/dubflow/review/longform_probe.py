@@ -35,6 +35,9 @@ def _consume_process(argv, consume, *, deadline, max_stdout_bytes, cancelled, cw
     check()
     command = build_subprocess_plan(argv[0], argv[1:])
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    # Command preparation may overlap cancellation or consume the remaining
+    # deadline. Refuse before creating a child under the same original bound.
+    check()
     try:
         child = subprocess.Popen(command.argv, shell=False, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags, cwd=cwd)
