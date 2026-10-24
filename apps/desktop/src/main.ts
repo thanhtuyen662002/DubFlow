@@ -674,7 +674,14 @@ function renderReview(): void {
       renderReviewMeta(cue, meta, item);
       reviewApply.disabled = !reviewDirty() || reviewCues.some((value) => !draftOf(value).trim());
     });
-    body.append(element("p", "review-source", cue.source_text), editor, meta);
+    const listen = element("div", "review-listen");
+    for (const [label, source] of [["▶ Gốc", true], ["▶ Lồng tiếng", false]] as const) {
+      const play = element("button", "btn", label);
+      play.type = "button";
+      play.addEventListener("click", () => void playClip(cue, source, play));
+      listen.append(play);
+    }
+    body.append(element("p", "review-source", cue.source_text), editor, meta, listen);
     item.append(time, body);
     renderReviewMeta(cue, meta, item);
     reviewList.append(item);
@@ -699,7 +706,30 @@ async function openReview(): Promise<void> {
   reviewList.querySelector("textarea")?.focus();
 }
 
+let clipPlayer: HTMLAudioElement | null = null;
+
+async function playClip(cue: ReviewCue, source: boolean, button: HTMLButtonElement): Promise<void> {
+  const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === reviewJobId);
+  if (!job?.outputPath) return;
+  clipPlayer?.pause();
+  button.disabled = true;
+  try {
+    const bytes = await invoke<ArrayBuffer>("review_clip", {
+      outputPath: job.outputPath, startMs: cue.start_ms, endMs: Math.min(cue.end_ms, cue.start_ms + 30_000), source,
+    });
+    const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+    clipPlayer = new Audio(url);
+    clipPlayer.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
+    await clipPlayer.play();
+  } catch (error) {
+    $("#review-hint").textContent = `Không phát được đoạn này: ${String(error).slice(0, 160)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function closeReview(): void {
+  clipPlayer?.pause();
   if (reviewDirty() && !window.confirm("Bỏ các thay đổi chưa lưu?")) return;
   review.hidden = true;
   reviewJobId = null;
