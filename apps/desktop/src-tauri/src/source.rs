@@ -38,6 +38,39 @@ struct Service {
 pub struct Sources {
     service: Mutex<Option<Service>>,
     fetches: Arc<Mutex<HashMap<String, FetchStatus>>>,
+    /// Latest `source_session` / `source_session_error` event.
+    session: Mutex<Option<Value>>,
+}
+
+/// Cookies yt-dlp's Douyin extractor needs first; the service accepts one
+/// Cookie header of at most 2048 bytes and 64 cookies.
+pub const DOUYIN_PRIORITY: [&str; 12] = ["s_v_web_id", "ttwid", "msToken", "__ac_nonce", "__ac_signature", "sessionid",
+    "sessionid_ss", "sid_tt", "sid_guard", "uid_tt", "odin_tt", "passport_csrf_token"];
+const MAX_COOKIE_HEADER: usize = 2000;
+/// The protected session store keeps a session for at most 24 hours.
+pub const SESSION_SECONDS: u64 = 23 * 60 * 60;
+
+fn cookie_safe(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 1024
+        && value.bytes().all(|b| b.is_ascii_graphic() && !matches!(b, b'"' | b',' | b';' | b'\\'))
+}
+
+/// Build a bounded `Cookie` header, essential cookies first.
+pub fn cookie_header(cookies: &[(String, String)], priority: &[&str]) -> Option<String> {
+    let mut ordered: Vec<&(String, String)> = cookies.iter().filter(|(name, value)| cookie_safe(name) && !name.contains('=') && cookie_safe(value)).collect();
+    ordered.sort_by_key(|(name, _)| priority.iter().position(|p| p == name).unwrap_or(priority.len()));
+    let mut seen = std::collections::HashSet::new();
+    let mut header = String::new();
+    for (name, value) in ordered {
+        if !seen.insert(name.as_str()) || seen.len() > 64 {
+            continue;
+        }
+        let pair = format!("{}{name}={value}", if header.is_empty() { "" } else { "; " });
+        if header.len() + pair.len() <= MAX_COOKIE_HEADER {
+            header.push_str(&pair);
+        }
+    }
+    (!header.is_empty()).then_some(header)
 }
 
 fn fail(message: impl Into<String>) -> String {
@@ -68,7 +101,7 @@ fn scan_id(url: &str) -> String {
 
 fn human_error(code: &str, provider: &str) -> String {
     match code {
-        "AUTH_REQUIRED" | "PRIVATE" if provider == "douyin" => "Douyin yêu cầu đăng nhập/cookie; hiện chưa hỗ trợ. Hãy tải video về máy rồi thêm file.".into(),
+        "AUTH_REQUIRED" | "PRIVATE" if provider == "douyin" => "Douyin cần phiên truy cập: bấm “Mở Douyin”, đợi trang hiện video, rồi bấm “Lưu phiên & thử lại”.".into(),
         "AUTH_REQUIRED" | "PRIVATE" => "Video yêu cầu đăng nhập hoặc là video riêng tư.".into(),
         "RATE_LIMITED" => "Trang nguồn đang giới hạn truy cập. Hãy thử lại sau ít phút.".into(),
         "NOT_FOUND" => "Không tìm thấy video (có thể đã bị xóa).".into(),
@@ -142,6 +175,12 @@ impl Sources {
     }
 
     fn on_event(&self, event: &Value) {
+        if matches!(event["event"].as_str(), Some("source_session" | "source_session_error")) {
+            if let Ok(mut slot) = self.session.lock() {
+                *slot = Some(event.clone());
+            }
+            return;
+        }
         let Some(scan) = event["scan_id"].as_str() else { return };
         match event["event"].as_str().unwrap_or_default() {
             "source_status" if event["status"] == "completed" && event["discovered_count"].as_u64().unwrap_or(0) > 0 => {
@@ -190,6 +229,27 @@ impl Sources {
         self.fetches.lock().map_err(|_| fail("fetch table lock poisoned"))?.insert(scan.clone(), status.clone());
         self.send(json!({"command":"start_video", "scan_id":scan, "provider_id":provider, "source_ref":url}))?;
         Ok(status)
+    }
+
+    /// Store a provider session in the service's protected (DPAPI) store and
+    /// wait for its receipt. Blocking: call from a worker thread.
+    pub fn save_session(self: &Arc<Self>, provider: &str, cookie: String, expires_at: u64,
+                        supervisor: &Path, root: &Path, data: &Path) -> Result<(), String> {
+        self.ensure_started(supervisor, root, data)?;
+        *self.session.lock().map_err(|_| fail("session lock poisoned"))? = None;
+        self.send(json!({"command":"session_save", "provider_id":provider, "headers":{"Cookie":cookie}, "expires_at":expires_at}))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+        while std::time::Instant::now() < deadline {
+            if let Some(event) = self.session.lock().map_err(|_| fail("session lock poisoned"))?.take() {
+                return if event["event"] == "source_session" && event["state"] == "ready" {
+                    Ok(())
+                } else {
+                    Err(fail(format!("Không lưu được phiên {provider} ({}).", event["code"].as_str().unwrap_or("SESSION_FAILED"))))
+                };
+            }
+            thread::sleep(std::time::Duration::from_millis(300));
+        }
+        Err(fail("Lưu phiên quá lâu; hãy thử lại."))
     }
 
     pub fn status(&self, scan: &str) -> Option<FetchStatus> {
@@ -255,6 +315,35 @@ mod tests {
         sources.shutdown();
         assert_eq!(status.state, "done", "{status:?}");
         assert!(Path::new(status.media_path.as_deref().unwrap()).is_file());
+    }
+
+    /// Real protected-store round trip; same env vars as the download test.
+    #[test]
+    #[ignore]
+    fn real_session_save_reaches_the_protected_store() {
+        let (Some(root), Some(data)) = (std::env::var_os("DUBFLOW_DEV_ROOT"), std::env::var_os("DUBFLOW_DEV_DATA")) else { return };
+        let root = PathBuf::from(root);
+        let sources = Arc::new(Sources::default());
+        let expires = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600;
+        let result = sources.save_session("douyin", "s_v_web_id=verify_fixture; ttwid=1%7Cfixture".into(), expires,
+            &root.join("app/bin/dubflow-supervisor.exe"), &root, Path::new(&data));
+        sources.shutdown();
+        result.unwrap();
+    }
+
+    #[test]
+    fn cookie_header_puts_essential_cookies_first_and_stays_bounded() {
+        let mut cookies: Vec<(String, String)> = (0..200).map(|i| (format!("junk{i}"), "x".repeat(40))).collect();
+        cookies.push(("s_v_web_id".into(), "verify_abc".into()));
+        cookies.push(("ttwid".into(), "1%7Cabc".into()));
+        cookies.push(("bad".into(), "has space".into()));
+        cookies.push(("quoted".into(), "\"x\"".into()));
+        let header = cookie_header(&cookies, &DOUYIN_PRIORITY).unwrap();
+        assert!(header.starts_with("s_v_web_id=verify_abc; ttwid=1%7Cabc; "));
+        assert!(header.len() <= MAX_COOKIE_HEADER);
+        assert!(header.split("; ").count() <= 64);
+        assert!(!header.contains("bad=") && !header.contains("quoted="));
+        assert_eq!(cookie_header(&[("a".into(), "".into())], &DOUYIN_PRIORITY), None);
     }
 
     #[test]

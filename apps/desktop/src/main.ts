@@ -459,6 +459,7 @@ function renderFetches(): void {
       const fraction = status.state === "downloading" && status.total_bytes ? status.downloaded_bytes / status.total_bytes : null;
       main.append(progressBar(fraction, "RUNNING"));
     }
+    if (status.state === "failed" && status.provider === "douyin") main.append(douyinActions(status));
     const side = element("div", "job-side");
     if (status.state === "failed") {
       const dismiss = element("button", "icon-btn");
@@ -477,6 +478,40 @@ function renderFetches(): void {
     item.title = status.url;
     fetchList.append(item);
   }
+}
+
+function douyinActions(status: FetchStatus): HTMLElement {
+  const actions = element("div", "fetch-actions");
+  const open = element("button", "btn", "Mở Douyin");
+  open.type = "button";
+  open.addEventListener("click", () => {
+    invoke("open_douyin_login").catch((error) => showError(String(error).slice(0, 200)));
+  });
+  const save = element("button", "btn primary", "Lưu phiên & thử lại");
+  save.type = "button";
+  save.addEventListener("click", async () => {
+    save.disabled = open.disabled = true;
+    save.textContent = "Đang lưu phiên…";
+    try {
+      await invoke<number>("save_douyin_session");
+      fetches.delete(status.scan_id);
+      renderFetches();
+      await startFetch(status.url);
+    } catch (error) {
+      save.disabled = open.disabled = false;
+      save.textContent = "Lưu phiên & thử lại";
+      showError(String(error).slice(0, 300));
+    }
+  });
+  actions.append(open, save);
+  return actions;
+}
+
+async function startFetch(url: string): Promise<void> {
+  const started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url });
+  const timer = window.setInterval(() => void pollFetch(started.status.scan_id), 1500);
+  fetches.set(started.status.scan_id, { status: started.status, outputDir: started.output_dir, timer });
+  renderFetches();
 }
 
 async function pollFetch(scanId: string): Promise<void> {
@@ -508,12 +543,9 @@ $("#link-form").addEventListener("submit", async (event) => {
   const submit = $<HTMLButtonElement>("#link-submit");
   submit.disabled = true;
   try {
-    const started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url });
-    const timer = window.setInterval(() => void pollFetch(started.status.scan_id), 1500);
-    fetches.set(started.status.scan_id, { status: started.status, outputDir: started.output_dir, timer });
+    await startFetch(url);
     input.value = "";
     showError("");
-    renderFetches();
   } catch (error) {
     showError(String(error).slice(0, 300));
   } finally {
