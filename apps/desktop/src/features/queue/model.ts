@@ -407,6 +407,14 @@ export class QueueController {
     this.commit();
   }
 
+  /** Pin the output directory the host chose at first start, so resumes reuse it. */
+  pinOutputDir(jobId: string, outputDir: string): void {
+    const job = this.requireJob(jobId);
+    if (job.outputDir !== undefined || !outputDir.trim()) return;
+    job.outputDir = outputDir;
+    this.commit();
+  }
+
   setBurnIn(jobId: string, burnIn: boolean): void {
     const job = this.requireJob(jobId);
     if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");

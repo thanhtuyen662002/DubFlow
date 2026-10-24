@@ -113,6 +113,14 @@ assert.match(failureHint("SOURCE_LANGUAGE_UNRESOLVED: x"), /Ngôn ngữ gốc/);
 assert.equal(failureHint("ASR_EMPTYISH: x"), null);
 assert.equal(failureHint("SOMETHING_ELSE: x"), null);
 
+// The host-chosen output folder is pinned once so resumes reuse it.
+const pinQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [pinId] = pinQueue.addPaths(["C:/media/pin.mp4"]);
+pinQueue.pinOutputDir(pinId, "D:/Out/DubFlow Output/pin - vi/run-1");
+pinQueue.pinOutputDir(pinId, "E:/Other");
+assert.equal(pinQueue.getSnapshot().jobs[0].outputDir, "D:/Out/DubFlow Output/pin - vi/run-1");
+assert.equal(toQueueViewModel(pinQueue.getSnapshot()).rows[0].revision, false);
+
 // Source language is a per-job option; null returns to automatic detection.
 const langQueue = new QueueController(new MemorySnapshotStorage(), clock);
 const [langId] = langQueue.addPaths(["C:/media/zh.mp4"]);
