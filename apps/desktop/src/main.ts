@@ -232,6 +232,24 @@ function renderQueue(view: DesktopShellModel["view"]): void {
   }
 }
 
+function duration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(total / 3600), minutes = Math.floor((total % 3600) / 60), seconds = total % 60;
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}` : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** Elapsed time, and a rough remaining estimate from the pipeline fraction. */
+function timingLabel(job: QueueJob, fraction: number | null): string {
+  if (!job.startedAt) return "";
+  const start = Date.parse(job.startedAt);
+  if (job.finishedAt) return `${job.status.state === "COMPLETED" ? "Hoàn tất" : "Dừng"} sau ${duration(Date.parse(job.finishedAt) - start)}`;
+  if (!isActive(job)) return "";
+  const elapsed = Date.now() - start;
+  // Early stages (model download, ASR warm-up) say little about the rest.
+  const remaining = fraction !== null && fraction >= 0.15 && fraction < 1 ? elapsed * (1 - fraction) / fraction : null;
+  return `Đã chạy ${duration(elapsed)}` + (remaining === null ? "" : ` · còn khoảng ${remaining < 60_000 ? "dưới 1 phút" : `${Math.round(remaining / 60_000)} phút`}`);
+}
+
 function renderInspector(job: QueueJob | null): void {
   inspector.hidden = !job;
   if (!job) return;
@@ -247,6 +265,7 @@ function renderInspector(job: QueueJob | null): void {
   bar.style.width = `${Math.round((fraction ?? 0) * 100)}%`;
   bar.parentElement!.className = `bar ${status.state === "COMPLETED" ? "ok" : status.state === "FAILED" ? "err" : ""}`;
   bar.parentElement!.hidden = status.state === "QUEUED";
+  $("#detail-timing").textContent = timingLabel(job, fraction);
   $("#detail-message").textContent = status.state === "QUEUED"
     ? "Chọn tùy chọn bên dưới rồi bấm “Bắt đầu xử lý”."
     : displayJobStatus(status);
@@ -808,7 +827,19 @@ review.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeReview();
 });
 
+// Tell the user in the taskbar title when a video finishes while they are away.
+const lastStates = new Map<string, JobStatusState>();
+const baseTitle = document.title;
+window.addEventListener("focus", () => { document.title = baseTitle; });
+
 queue.subscribe((snapshot) => {
+  for (const job of snapshot.jobs) {
+    const previous = lastStates.get(job.id);
+    if (previous && ACTIVE.includes(previous) && (job.status.state === "COMPLETED" || job.status.state === "FAILED") && !document.hasFocus()) {
+      document.title = `${job.status.state === "COMPLETED" ? "✓ Xong" : "✕ Lỗi"}: ${job.displayName} — ${baseTitle}`;
+    }
+    lastStates.set(job.id, job.status.state);
+  }
   if (batchRunning && !snapshot.jobs.some((job) => ACTIVE.includes(job.status.state))) window.setTimeout(pumpBatch, 0);
   const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
   if (selected && ["RUNNING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) beginPolling(selected.id);
