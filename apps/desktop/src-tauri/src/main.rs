@@ -289,11 +289,46 @@ fn cancel_job(job_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Only finished outputs are opened: an existing file below a "DubFlow Output"
+/// directory, so the webview cannot ask the host to launch arbitrary files.
+fn output_file(path: &str) -> Result<PathBuf, String> {
+    let file = absolute_file(path, "output_path")?;
+    let inside_output = file.ancestors().any(|dir| dir.file_name().is_some_and(|name| name == "DubFlow Output"));
+    let media = file.extension().and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ["mp4", "mkv", "mov", "srt", "ass"].contains(&ext.to_ascii_lowercase().as_str()));
+    if !inside_output || !media {
+        return Err(fail("Chỉ mở được file kết quả của DubFlow"));
+    }
+    Ok(file)
+}
+
+fn display_path(path: &Path) -> String {
+    // Explorer does not understand the `\\?\` prefix returned by canonicalize.
+    let text = path.to_string_lossy();
+    text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    let file = output_file(&path)?;
+    Command::new("explorer.exe").arg(display_path(&file)).spawn()
+        .map_err(|error| fail(format!("Không mở được file: {error}")))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_path(path: String) -> Result<(), String> {
+    let file = output_file(&path)?;
+    Command::new("explorer.exe").arg(format!("/select,{}", display_path(&file))).spawn()
+        .map_err(|error| fail(format!("Không mở được thư mục: {error}")))?;
+    Ok(())
+}
+
 fn main() {
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path])
         .run(tauri::generate_context!())
         .expect("error while running DubFlow desktop host");
 }
