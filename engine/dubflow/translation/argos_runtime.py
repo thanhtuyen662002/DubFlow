@@ -16,6 +16,7 @@ import zipfile
 
 from engine.dubflow.models import ensure_model_profile
 from .adapter import TranslationError
+from .argos_inference import PinnedPackageTranslation
 
 PROFILE_PATH = "models/manifests/production-translation-v1.json"
 RUNTIME_VERSION = "1.11.0"
@@ -273,13 +274,19 @@ class ArgosRuntime:
             os.environ["XDG_" + name.upper() + "_HOME"] = str(location)
         for key, value in {"ARGOS_MODEL_PROVIDER": "OPENNMT", "ARGOS_DEVICE_TYPE": "cpu", "ARGOS_COMPUTE_TYPE": "int8", "ARGOS_CHUNK_TYPE": "STANZA", "ARGOS_BEAM_SIZE": "4", "ARGOS_BATCH_SIZE": "32", "ARGOS_INTER_THREADS": "1", "ARGOS_INTRA_THREADS": "4", "ARGOS_DEBUG": "0", "ARGOS_DEV_MODE": "0"}.items():
             os.environ[key] = value
-        from argostranslate import settings, package, translate
+        # Import only metadata/tokenizers. translate imports sbd, which eagerly
+        # imports unused Stanza/Torch and spaCy even when MINISBD is selected.
+        # STANZA remains a compatibility sentinel for the existing settings fence;
+        # the actual sentence recipe is still cue-punctuation-v1.
+        from argostranslate import settings, package
         if Path(settings.package_data_dir).resolve() != self.root.resolve():
             raise TranslationError("TRANSLATION_CACHE_UNSAFE", "Argos resolves a different account/model store")
         if any(Path(getattr(settings, key)).resolve() != (private / name / "argos-translate").resolve() for key, name in (("data_dir", "data"), ("config_dir", "config"), ("cache_dir", "cache"))):
             raise TranslationError("TRANSLATION_CACHE_UNSAFE", "Argos resolves an external auxiliary store")
         if settings.device != "cpu" or settings.compute_type != "int8" or settings.chunk_type != settings.ChunkType.STANZA or settings.model_provider != settings.ModelProvider.OPENNMT:
             raise TranslationError("TRANSLATION_RUNTIME_MISMATCH", "Argos settings were initialized outside the pinned recipe")
+        if (settings.beam_size, settings.batch_size, settings.inter_threads, settings.intra_threads, settings.debug, settings.dev_mode) != (4, 32, 1, 4, False, False):
+            raise TranslationError("TRANSLATION_RUNTIME_MISMATCH", "Argos decode settings were initialized outside the pinned recipe")
         installed = package.get_installed_packages()
         expected = {(item["from_code"], item["to_code"], item["package_version"]) for item in self.packages}
         actual = {(item.from_code, item.to_code, str(item.package_version)) for item in installed}
@@ -288,8 +295,7 @@ class ArgosRuntime:
         self._translators = []
         for item in self.packages:
             pkg = next(value for value in installed if (value.from_code, value.to_code) == (item["from_code"], item["to_code"]))
-            backend = translate.PackageTranslation(translate.Language(pkg.from_code, pkg.from_code), translate.Language(pkg.to_code, pkg.to_code), pkg)
-            backend.sentencizer = CueSentencizer(pkg.tokenizer)
+            backend = PinnedPackageTranslation(pkg, CueSentencizer(pkg.tokenizer), settings)
             self._translators.append(backend)
 
     def _bootstrap_packages(self, model_root: Path) -> None:
