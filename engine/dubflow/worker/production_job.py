@@ -149,6 +149,7 @@ class WorkerConfig:
     tts_model: Path | None = None
     tts_config: Path | None = None
     checkpoint_path: Path | None = None
+    speaker_voices: tuple[str, ...] | None = None
 
     @classmethod
     def from_args(cls, args: Mapping[str, Any]) -> "WorkerConfig":
@@ -173,6 +174,15 @@ class WorkerConfig:
         voice_id = args.get("tts_voice_id")
         if voice_id is not None and (not isinstance(voice_id, str) or re.fullmatch(r"[a-z0-9-]{1,96}", voice_id) is None):
             raise ProductionJobError("COMMAND_INVALID", "tts_voice_id must be a bounded preset identifier")
+        speaker_voices = args.get("speaker_voices")
+        if speaker_voices is not None:
+            from engine.dubflow.worker.speaker_casting import validate_speaker_voices
+            try:
+                if type(speaker_voices) is not list:
+                    raise B2AudioError("SPEAKER_VOICES_INVALID", "speaker_voices must be a list")
+                speaker_voices = validate_speaker_voices(speaker_voices, absolute("app_root"))
+            except Exception as error:
+                raise ProductionJobError("COMMAND_INVALID", "speaker_voices must contain 2 or more distinct approved VieNeu voice ids") from error
 
         config = cls(
             job_id=str(args["job_id"]),
@@ -193,6 +203,7 @@ class WorkerConfig:
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
             checkpoint_path=optional_path("checkpoint_path"),
+            speaker_voices=speaker_voices,
         )
         if config.target_language != "vi":
             raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the production baseline currently supports Vietnamese output only")
@@ -834,6 +845,8 @@ def _write_manifest(
     }
     if audio is not None:
         manifest["audio"] = dict(audio)
+    if getattr(config, "speaker_voices", None) is not None:
+        manifest["dubbing"]["speaker_voices"] = list(config.speaker_voices)
     if language is not None:
         manifest["language"] = dict(language)
     if translation is not None:
@@ -959,7 +972,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     audio_identity = _audio_decode_identity(source_hash, probe)
     media = FfmpegMediaAdapter(config.ffmpeg_path, trusted_root=config.media_runtime_root)
     sidecar = _load_sidecar(config.source_path)
-    if sidecar is None or config.source_language == "auto":
+    if sidecar is None or config.source_language == "auto" or (config.enable_dubbing and getattr(config, "speaker_voices", None) is not None and probe.has_audio):
         if not probe.has_audio:
             if sidecar is not None:
                 raise ProductionJobError("SOURCE_LANGUAGE_UNRESOLVED", "sidecar without audio requires an explicit source language")
@@ -1028,13 +1041,45 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     b2_audio: B2AudioResult | None = None
     audio_path: Path | None = None
     audio_metadata: dict[str, Any] = {"mode": "original", "backend": "source-audio"}
+    speaker_evidence = None
     if config.enable_dubbing:
         emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
         try:
             from engine.dubflow.worker.b2_audio import tts_recipe_identity, mix_recipe_identity
             selected_voice = getattr(config, "tts_voice_id", None)
             generation_identity = sha256((translation_input + (overrides_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice)).encode()).hexdigest()
-            b2_audio = run_b2_audio(
+            audio_runner = run_b2_audio
+            speaker_options = {}
+            if getattr(config, "speaker_voices", None) is not None:
+                from engine.dubflow.tts import vieneu
+                from engine.dubflow.worker.speaker_casting import validate_speaker_voices, speaker_plan, speaker_recipe_identity, plan_identity
+                from engine.dubflow.worker.speaker_audio import run_speaker_audio
+                try:
+                    voices = validate_speaker_voices(config.speaker_voices, config.app_root)
+                    catalog = vieneu._read_json(config.app_root / vieneu.PROFILE_PATH)
+                    primary_voice = selected_voice or catalog["voice_id"]
+                    producer_identity = speaker_recipe_identity(config.app_root, voices)
+                    speaker_input = sha256(json.dumps({"job": config.job_id, "producer": producer_identity,
+                        "audio": _sha256(work_dir / "analysis.wav") if probe.has_audio else None,
+                        "primary": primary_voice, "cues": [cue.to_dict() for cue in translated]},
+                        ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                    speaker_path = work_dir / "speaker_plan.json"
+                    if checkpoint["stages"].get("speakers", {}).get("input_hash") == speaker_input and _stage_ready(checkpoint, "speakers", (speaker_path,)):
+                        speaker_evidence = json.loads(speaker_path.read_text(encoding="utf-8"))
+                    else:
+                        speaker_evidence = speaker_plan(work_dir / "analysis.wav" if probe.has_audio else None,
+                            config.job_id, translated, voices, primary_voice)
+                        speaker_evidence["producer_identity"] = producer_identity
+                        _atomic_json(speaker_path, speaker_evidence)
+                        _write_stage(checkpoint, checkpoint_path, "speakers", {"input_hash": speaker_input,
+                            "path": str(speaker_path), "sha256": _sha256(speaker_path)})
+                    generation_identity = sha256((generation_identity + plan_identity(speaker_evidence)).encode()).hexdigest()
+                except Exception as error:
+                    raise B2AudioError(getattr(error, "code", "SPEAKER_SETUP_FAILED"), str(error)) from error
+                warnings.extend(speaker_evidence["warnings"])
+                audio_runner = run_speaker_audio
+                speaker_options = {"speaker_plan": speaker_evidence}
+            b2_audio = audio_runner(
                 media=media,
                 source_path=config.source_path,
                 source_probe=probe,
@@ -1048,6 +1093,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 # Shared by every generation in this output folder, so a reviewed
                 # re-run synthesises only the cues whose request changed.
                 synthesis_cache_dir=work_dir / "tts-cache",
+                **speaker_options,
             )
             audio_path = b2_audio.final_mix_path
             audio_metadata = {
@@ -1190,6 +1236,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         validate_output(output_probe)
         _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original", "input_hash": render_identity()})
     output_duration = output_probe.duration_ticks
+    if speaker_evidence is not None:
+        audio_metadata["speaker_dubbing"] = speaker_evidence
     qc_path = export_dir / "qc_report.json"
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _atomic_json(qc_path, qc)

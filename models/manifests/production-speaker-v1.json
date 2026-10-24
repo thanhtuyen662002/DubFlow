@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-cpu-speaker-v1",
+  "capability": "SPK-1",
+  "model_id": "dubflow-cpu-energy-diarizer",
+  "model_version": "1.0.0",
+  "algorithm": "pcm-energy-zcr-online-cosine-v1",
+  "runtime": "python-stdlib",
+  "network_required": false,
+  "credential_required": false,
+  "weights": [],
+  "license_id": "dubflow-cpu-signal-processing-1.0",
+  "license_policy": "app-owned-code-no-external-model-weights",
+  "fallback": "speaker-cluster-or-narrator-unresolved",
+  "limitations": [
+    "single-channel CPU fallback cannot infer overlapping speakers without a separation model",
+    "visual character identity is never inferred by this backend"
+  ]
+}
