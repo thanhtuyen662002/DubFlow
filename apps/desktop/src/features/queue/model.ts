@@ -18,6 +18,8 @@ export type QueueJob = {
   originUrl?: string;
   /** The completed job this one revises with reviewed translations. */
   revisionOf?: string;
+  /** Burn subtitles into the video (default true); false keeps them as files only. */
+  burnIn?: boolean;
 };
 
 export type QueueSnapshot = {
@@ -166,7 +168,8 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.dubbing === undefined || isDubbingOptions(job.dubbing)) &&
     (job.outputDir === undefined || (typeof job.outputDir === "string" && job.outputDir.length > 0)) &&
     (job.originUrl === undefined || (typeof job.originUrl === "string" && /^https?:\/\//.test(job.originUrl))) &&
-    (job.revisionOf === undefined || (typeof job.revisionOf === "string" && job.revisionOf.length > 0))
+    (job.revisionOf === undefined || (typeof job.revisionOf === "string" && job.revisionOf.length > 0)) &&
+    (job.burnIn === undefined || typeof job.burnIn === "boolean")
   );
 }
 
@@ -373,6 +376,7 @@ export class QueueController {
     revision.dubbing = { ...job.dubbing };
     revision.outputDir = outputDir;
     revision.revisionOf = job.id;
+    if (job.burnIn !== undefined) revision.burnIn = job.burnIn;
     if (job.originUrl) revision.originUrl = job.originUrl;
     revision.displayName = job.displayName;
     revision.status = { ...emptyStatus(), reason: "review_revision", message: "Chờ xử lý lại với bản dịch đã sửa" };
@@ -380,6 +384,13 @@ export class QueueController {
     this.snapshot.selected_job_id = revision.id;
     this.commit();
     return revision.id;
+  }
+
+  setBurnIn(jobId: string, burnIn: boolean): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    job.burnIn = burnIn;
+    this.commit();
   }
 
   setDubbing(jobId: string, options: DubbingOptions): void {

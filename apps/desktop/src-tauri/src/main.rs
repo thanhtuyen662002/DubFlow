@@ -222,7 +222,7 @@ fn pick_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
@@ -257,6 +257,9 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     ];
     if let Some(voice_id) = selected_voice {
         args.extend(["--enable-dubbing".into(), "--tts-voice-id".into(), voice_id]);
+    }
+    if burn_in == Some(false) {
+        args.push("--no-burn-in".into());
     }
     command.args(args);
     command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;

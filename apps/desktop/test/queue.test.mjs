@@ -98,6 +98,14 @@ const linkView = toQueueViewModel(linkQueue.getSnapshot()).rows[0];
 assert.equal(linkView.fromLink, true);
 assert.equal(linkView.revision, false);
 
+// Subtitle burn-in is a per-job option, editable only before processing.
+const burnQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [burnId] = burnQueue.addPaths(["C:/media/burn.mp4"]);
+burnQueue.setBurnIn(burnId, false);
+assert.equal(burnQueue.getSnapshot().jobs[0].burnIn, false);
+burnQueue.updateStatus(burnId, { ...burnQueue.getSnapshot().jobs[0].status, state: "RUNNING" });
+assert.throws(() => burnQueue.setBurnIn(burnId, true), /before processing/);
+
 const colliding = new QueueController(new MemorySnapshotStorage(), clock, 100, () => "collision");
 colliding.addPaths(["one"]);
 assert.throws(() => colliding.addPaths(["two"]), /independent job ID/);

@@ -58,6 +58,9 @@ const queueState = $("#queue-state");
 const inspector = $("#inspector");
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
+const burnInToggle = $<HTMLInputElement>("#burn-in");
+const runAllButton = $<HTMLButtonElement>("#run-all");
+let batchRunning = false;
 const voiceList = $("#voice-list");
 const genderFilter = $<HTMLSelectElement>("#voice-gender");
 const accentFilter = $<HTMLSelectElement>("#voice-accent");
@@ -154,6 +157,7 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   const editable = !!job && job.status.state === "QUEUED" && !!voiceCatalog;
   voiceControls.disabled = !editable;
   dubbingToggle.checked = job?.dubbing.enabled ?? false;
+  burnInToggle.checked = job?.burnIn ?? true;
   $("#voice-picker").hidden = !dubbingToggle.checked || (!!job && job.status.state !== "QUEUED");
   voiceList.replaceChildren();
   const status = $("#voice-catalog-status");
@@ -186,6 +190,7 @@ function renderQueue(view: DesktopShellModel["view"]): void {
   dropZone.hidden = hasJobs || fetches.size > 0;
   queueList.hidden = !hasJobs;
   $("#clear-queue").hidden = !hasJobs;
+  renderRunAll();
   const { summary } = view;
   $("#nav-count").textContent = String(summary.total);
   $("#stat-running").textContent = String(summary.active);
@@ -338,6 +343,37 @@ async function pickFiles(): Promise<void> {
 $("#add-files").addEventListener("click", () => void pickFiles());
 $("#add-files-inline").addEventListener("click", () => void pickFiles());
 
+// Batch: start queued videos one at a time (each job keeps its own options),
+// so a long queue never runs several CPU-heavy pipelines at once.
+function runnableJobs(): QueueJob[] {
+  return queue.getSnapshot().jobs.filter((job) => job.status.state === "QUEUED" && canStart(job));
+}
+
+function renderRunAll(): void {
+  const waiting = runnableJobs().length;
+  runAllButton.hidden = waiting < 2 && !batchRunning;
+  runAllButton.textContent = batchRunning ? `Dừng hàng đợi (${waiting} chờ)` : `Xử lý tất cả (${waiting})`;
+  runAllButton.title = batchRunning ? "Video đang chạy sẽ chạy xong; các video còn lại không tự bắt đầu" : "Xử lý lần lượt từng video đang chờ";
+}
+
+function pumpBatch(): void {
+  if (!batchRunning) return;
+  if (queue.getSnapshot().jobs.some((job) => isActive(job))) return;
+  const next = runnableJobs()[0];
+  if (!next) {
+    batchRunning = false;
+    renderRunAll();
+    return;
+  }
+  void startJob(next);
+}
+
+runAllButton.addEventListener("click", () => {
+  batchRunning = !batchRunning;
+  renderRunAll();
+  pumpBatch();
+});
+
 async function startJob(job: QueueJob): Promise<void> {
   if (!canStart(job)) return;
   startButton.disabled = true;
@@ -345,7 +381,7 @@ async function startJob(job: QueueJob): Promise<void> {
   try {
     await invoke("start_job", {
       jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null,
-      enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId,
+      enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId, burnIn: job.burnIn ?? true,
     });
     beginPolling(job.id);
   } catch (error) {
@@ -699,6 +735,7 @@ review.addEventListener("keydown", (event) => {
 });
 
 queue.subscribe((snapshot) => {
+  if (batchRunning && !snapshot.jobs.some((job) => ACTIVE.includes(job.status.state))) window.setTimeout(pumpBatch, 0);
   const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
   if (selected && ["RUNNING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) beginPolling(selected.id);
 });
@@ -706,6 +743,10 @@ for (const job of queue.getSnapshot().jobs) {
   if (!["QUEUED", "COMPLETED", "FAILED"].includes(job.status.state)) beginPolling(job.id);
 }
 
+burnInToggle.addEventListener("change", () => {
+  const job = selectedJob();
+  if (job) queue.setBurnIn(job.id, burnInToggle.checked);
+});
 dubbingToggle.addEventListener("change", () => {
   const job = selectedJob();
   if (job && voiceCatalog) queue.setDubbing(job.id, dubbingOptions(voiceCatalog, dubbingToggle.checked, job.dubbing.voiceId));
