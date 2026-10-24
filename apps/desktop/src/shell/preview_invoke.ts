@@ -45,7 +45,7 @@ function status(id: string): { status: JobStatus; output_path: string | null } |
   }
   if (fraction >= 1) {
     return {
-      status: { ...base, state: "COMPLETED", reason: "completed", message: job.dubbing ? "Hoàn tất video lồng tiếng Việt" : "Hoàn tất video Vietsub", progress: { ...base.progress, completed_units: "1000" }, resource: { ...base.resource, held: false } },
+      status: { ...base, state: "COMPLETED", reason: job.dubbing ? "completed_partial_dubbing" : "completed", message: job.dubbing ? "Đã xuất video; 1 câu chưa lồng tiếng được. Audio gốc được giữ ở các đoạn lỗi." : "Hoàn tất video Vietsub", progress: { ...base.progress, completed_units: "1000" }, resource: { ...base.resource, held: false } },
       output_path: `D:\\Videos\\DubFlow Output\\${id}\\final_vi.mp4`,
     };
   }
@@ -92,6 +92,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       picked += 1;
       return [`D:\\Videos\\Douyin\\phim-ngan-tap-${picked}.mp4`, `D:\\Videos\\Bilibili\\review-dien-thoai-${picked}.mkv`] as T;
     }
+    case "expand_video_paths": return (args.paths as string[]).filter((path) => /\.(mp4|mkv|mov|avi|webm|m4v)$/i.test(path)) as T;
+    case "pick_folder": return "D:/Videos/Kết quả DubFlow" as T;
     case "start_job": running.set(String(args.jobId), { startedAt: Date.now(), dubbing: !!args.enableDubbing, cancelled: false }); return null as T;
     case "cancel_job": { const job = running.get(String(args.jobId)); if (job) job.cancelled = true; return null as T; }
     case "job_status": return status(String(args.jobId)) as T;
@@ -103,9 +105,22 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     }
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
     case "open_douyin_login": return null as T;
+    case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
     case "save_review": savedOverrides = { ...(args.overrides as Record<string, string>) }; return "D:\Videos\DubFlow Output\preview" as T;
     default: throw new Error(`preview host does not implement ${command}`);
   }
+}
+
+/** A short sine tone WAV so the review "listen" buttons work in the browser preview. */
+function previewTone(durationMs: number, source: boolean): ArrayBuffer {
+  const rate = 24000, samples = Math.min(rate * 2, Math.max(1, Math.round(rate * durationMs / 1000)));
+  const buffer = new ArrayBuffer(44 + samples * 2), view = new DataView(buffer);
+  const text = (offset: number, value: string) => [...value].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+  text(0, "RIFF"); view.setUint32(4, 36 + samples * 2, true); text(8, "WAVEfmt "); view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); text(36, "data"); view.setUint32(40, samples * 2, true);
+  for (let i = 0; i < samples; i++) view.setInt16(44 + i * 2, Math.sin(i * 2 * Math.PI * (source ? 330 : 440) / rate) * 8000, true);
+  return buffer;
 }

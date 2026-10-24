@@ -59,6 +59,8 @@ const inspector = $("#inspector");
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const burnInToggle = $<HTMLInputElement>("#burn-in");
+const sourceLanguageSelect = $<HTMLSelectElement>("#source-language");
+const subtitleBoxToggle = $<HTMLInputElement>("#subtitle-box");
 const runAllButton = $<HTMLButtonElement>("#run-all");
 let batchRunning = false;
 const voiceList = $("#voice-list");
@@ -144,7 +146,10 @@ function voiceButton(voice: VoiceChoice, selected: boolean, note = ""): HTMLButt
   button.append(avatar, text);
   button.addEventListener("click", () => {
     const job = selectedJob();
-    if (job && voiceCatalog) queue.setDubbing(job.id, dubbingOptions(voiceCatalog, true, voice.voice_id));
+    if (job && voiceCatalog) {
+      queue.setDubbing(job.id, dubbingOptions(voiceCatalog, true, voice.voice_id));
+      rememberDefaults(selectedJob() ?? job);
+    }
   });
   return button;
 }
@@ -158,6 +163,9 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   voiceControls.disabled = !editable;
   dubbingToggle.checked = job?.dubbing.enabled ?? false;
   burnInToggle.checked = job?.burnIn ?? true;
+  subtitleBoxToggle.checked = job?.subtitleBox ?? false;
+  $("#box-row").hidden = !burnInToggle.checked;
+  sourceLanguageSelect.value = job?.sourceLanguage ?? "";
   $("#voice-picker").hidden = !dubbingToggle.checked || (!!job && job.status.state !== "QUEUED");
   voiceList.replaceChildren();
   const status = $("#voice-catalog-status");
@@ -229,6 +237,24 @@ function renderQueue(view: DesktopShellModel["view"]): void {
   }
 }
 
+function duration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(total / 3600), minutes = Math.floor((total % 3600) / 60), seconds = total % 60;
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}` : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** Elapsed time, and a rough remaining estimate from the pipeline fraction. */
+function timingLabel(job: QueueJob, fraction: number | null): string {
+  if (!job.startedAt) return "";
+  const start = Date.parse(job.startedAt);
+  if (job.finishedAt) return `${job.status.state === "COMPLETED" ? "Hoàn tất" : "Dừng"} sau ${duration(Date.parse(job.finishedAt) - start)}`;
+  if (!isActive(job)) return "";
+  const elapsed = Date.now() - start;
+  // Early stages (model download, ASR warm-up) say little about the rest.
+  const remaining = fraction !== null && fraction >= 0.15 && fraction < 1 ? elapsed * (1 - fraction) / fraction : null;
+  return `Đã chạy ${duration(elapsed)}` + (remaining === null ? "" : ` · còn khoảng ${remaining < 60_000 ? "dưới 1 phút" : `${Math.round(remaining / 60_000)} phút`}`);
+}
+
 function renderInspector(job: QueueJob | null): void {
   inspector.hidden = !job;
   if (!job) return;
@@ -244,6 +270,7 @@ function renderInspector(job: QueueJob | null): void {
   bar.style.width = `${Math.round((fraction ?? 0) * 100)}%`;
   bar.parentElement!.className = `bar ${status.state === "COMPLETED" ? "ok" : status.state === "FAILED" ? "err" : ""}`;
   bar.parentElement!.hidden = status.state === "QUEUED";
+  $("#detail-timing").textContent = timingLabel(job, fraction);
   $("#detail-message").textContent = status.state === "QUEUED"
     ? "Chọn tùy chọn bên dưới rồi bấm “Bắt đầu xử lý”."
     : displayJobStatus(status);
@@ -262,6 +289,12 @@ function renderInspector(job: QueueJob | null): void {
 
   const output = status.state === "COMPLETED" ? job.outputPath : null;
   $("#result-card").hidden = !output;
+  // Partial dubbing keeps the original voice for some lines; say so and point
+  // to the review dialog, whose filter starts on those lines.
+  const warning = $("#result-warning");
+  warning.hidden = !(output && status.reason === "completed_partial_dubbing");
+  warning.textContent = warning.hidden ? "" : "Một số câu chưa lồng tiếng được (vẫn là tiếng gốc), thường vì câu dịch quá dài. Bấm “Xem & sửa bản dịch” để rút gọn rồi xử lý lại.";
+  $("#open-review").classList.toggle("primary", !warning.hidden);
   $("#result-path").textContent = output ?? "";
 
   renderVoiceControls(job);
@@ -320,6 +353,50 @@ function beginPolling(jobId: string): void {
   pollers.set(jobId, window.setInterval(() => void refreshJob(jobId), 1000));
 }
 
+// The last options the user chose become the defaults for newly added videos,
+// so a batch needs its dubbing/voice/burn-in set once (per-viewer convenience).
+const DEFAULTS_KEY = "dubflow.defaults.v1";
+type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; subtitleBox?: boolean };
+
+function readDefaults(): JobDefaults | null {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(DEFAULTS_KEY) ?? "null") as Partial<JobDefaults> | null;
+    if (!value || typeof value.dubbing !== "boolean" || typeof value.burnIn !== "boolean") return null;
+    return { dubbing: value.dubbing, burnIn: value.burnIn, voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
+      sourceLanguage: value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? value.sourceLanguage : undefined,
+      subtitleBox: value.subtitleBox === true };
+  } catch {
+    return null;
+  }
+}
+
+function rememberDefaults(job: QueueJob): void {
+  try {
+    window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
+      burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, subtitleBox: job.subtitleBox ?? false }));
+  } catch {
+    // Defaults are a convenience; the queue works without storage.
+  }
+}
+
+function applyDefaults(jobIds: readonly string[]): void {
+  const defaults = readDefaults();
+  if (!defaults) return;
+  for (const id of jobIds) {
+    try {
+      if (!defaults.burnIn) queue.setBurnIn(id, false);
+      if (defaults.sourceLanguage) queue.setSourceLanguage(id, defaults.sourceLanguage);
+      if (defaults.subtitleBox) queue.setSubtitleBox(id, true);
+      if (defaults.dubbing && voiceCatalog) {
+        const known = voiceCatalog.voices.some((voice) => voice.voice_id === defaults.voiceId);
+        queue.setDubbing(id, dubbingOptions(voiceCatalog, true, known ? defaults.voiceId : null));
+      }
+    } catch {
+      // A job that already started keeps its own options.
+    }
+  }
+}
+
 function addPaths(paths: string[]): void {
   const videos = paths.filter((path) => VIDEO_EXTENSIONS.test(path));
   if (paths.length && !videos.length) {
@@ -328,8 +405,24 @@ function addPaths(paths: string[]): void {
   }
   showError("");
   const added = queue.addPaths(videos);
+  applyDefaults(added);
   if (added.length && !selectedJob()) queue.selectJob(added[0]);
   else if (added.length) queue.selectJob(added[added.length - 1]);
+}
+
+/** Dropped files and folders: the host expands folders to the videos inside. */
+async function addDropped(paths: string[]): Promise<void> {
+  if (!paths.length) return;
+  try {
+    const videos = await invoke<string[]>("expand_video_paths", { paths });
+    if (!videos.length) {
+      showError("Không tìm thấy video MP4, MKV, MOV, AVI, WEBM, M4V trong mục đã thả.");
+      return;
+    }
+    addPaths(videos);
+  } catch (error) {
+    showError(`Không đọc được mục đã thả: ${String(error).slice(0, 160)}`);
+  }
 }
 
 async function pickFiles(): Promise<void> {
@@ -374,15 +467,57 @@ runAllButton.addEventListener("click", () => {
   pumpBatch();
 });
 
+// Results folder: next to each source (default) or one chosen folder.
+const OUTPUT_ROOT_KEY = "dubflow.outputRoot.v1";
+function outputRoot(): string | null {
+  try {
+    return window.localStorage.getItem(OUTPUT_ROOT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function renderOutputRoot(): void {
+  const root = outputRoot();
+  const label = $("#output-root-label");
+  label.textContent = root ? root.split(/[\\/]/).filter(Boolean).slice(-2).join("\\") : "Cạnh video gốc";
+  label.title = root ?? "Mỗi video lưu kết quả trong thư mục “DubFlow Output” cạnh file gốc";
+  $("#reset-output-root").hidden = !root;
+}
+
+$("#choose-output-root").addEventListener("click", async () => {
+  const folder = await invoke<string | null>("pick_folder").catch(() => null);
+  if (!folder) return;
+  try {
+    window.localStorage.setItem(OUTPUT_ROOT_KEY, folder);
+  } catch {
+    showError("Không lưu được lựa chọn thư mục trên máy này.");
+  }
+  renderOutputRoot();
+});
+$("#reset-output-root").addEventListener("click", () => {
+  try {
+    window.localStorage.removeItem(OUTPUT_ROOT_KEY);
+  } catch {
+    // Nothing stored.
+  }
+  renderOutputRoot();
+});
+renderOutputRoot();
+
 async function startJob(job: QueueJob): Promise<void> {
   if (!canStart(job)) return;
   startButton.disabled = true;
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    await invoke("start_job", {
-      jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null,
+    const started = await invoke<{ output_dir: string } | null>("start_job", {
+      jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null, outputRoot: job.outputDir ? null : outputRoot(),
       enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId, burnIn: job.burnIn ?? true,
+      sourceLanguage: job.sourceLanguage ?? "auto", subtitleBox: job.subtitleBox ?? false,
     });
+    // Resumes must reuse the folder the first start chose, even if the
+    // results-folder setting changes later.
+    if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);
     beginPolling(job.id);
   } catch (error) {
     queue.updateStatus(job.id, {
@@ -560,7 +695,8 @@ async function pollFetch(scanId: string): Promise<void> {
     if (status.state === "done" && status.media_path) {
       window.clearInterval(entry.timer);
       fetches.delete(scanId);
-      queue.addLinkJob(status.media_path, status.url, linkName(status.url), entry.outputDir);
+      const linkJob = queue.addLinkJob(status.media_path, status.url, linkName(status.url), entry.outputDir);
+      if (linkJob) applyDefaults([linkJob]);
     } else if (status.state === "failed") {
       window.clearInterval(entry.timer);
     }
@@ -674,7 +810,14 @@ function renderReview(): void {
       renderReviewMeta(cue, meta, item);
       reviewApply.disabled = !reviewDirty() || reviewCues.some((value) => !draftOf(value).trim());
     });
-    body.append(element("p", "review-source", cue.source_text), editor, meta);
+    const listen = element("div", "review-listen");
+    for (const [label, source] of [["▶ Gốc", true], ["▶ Lồng tiếng", false]] as const) {
+      const play = element("button", "btn", label);
+      play.type = "button";
+      play.addEventListener("click", () => void playClip(cue, source, play));
+      listen.append(play);
+    }
+    body.append(element("p", "review-source", cue.source_text), editor, meta, listen);
     item.append(time, body);
     renderReviewMeta(cue, meta, item);
     reviewList.append(item);
@@ -699,7 +842,30 @@ async function openReview(): Promise<void> {
   reviewList.querySelector("textarea")?.focus();
 }
 
+let clipPlayer: HTMLAudioElement | null = null;
+
+async function playClip(cue: ReviewCue, source: boolean, button: HTMLButtonElement): Promise<void> {
+  const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === reviewJobId);
+  if (!job?.outputPath) return;
+  clipPlayer?.pause();
+  button.disabled = true;
+  try {
+    const bytes = await invoke<ArrayBuffer>("review_clip", {
+      outputPath: job.outputPath, startMs: cue.start_ms, endMs: Math.min(cue.end_ms, cue.start_ms + 30_000), source,
+    });
+    const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+    clipPlayer = new Audio(url);
+    clipPlayer.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
+    await clipPlayer.play();
+  } catch (error) {
+    $("#review-hint").textContent = `Không phát được đoạn này: ${String(error).slice(0, 160)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function closeReview(): void {
+  clipPlayer?.pause();
   if (reviewDirty() && !window.confirm("Bỏ các thay đổi chưa lưu?")) return;
   review.hidden = true;
   reviewJobId = null;
@@ -734,7 +900,19 @@ review.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeReview();
 });
 
+// Tell the user in the taskbar title when a video finishes while they are away.
+const lastStates = new Map<string, JobStatusState>();
+const baseTitle = document.title;
+window.addEventListener("focus", () => { document.title = baseTitle; });
+
 queue.subscribe((snapshot) => {
+  for (const job of snapshot.jobs) {
+    const previous = lastStates.get(job.id);
+    if (previous && ACTIVE.includes(previous) && (job.status.state === "COMPLETED" || job.status.state === "FAILED") && !document.hasFocus()) {
+      document.title = `${job.status.state === "COMPLETED" ? "✓ Xong" : "✕ Lỗi"}: ${job.displayName} — ${baseTitle}`;
+    }
+    lastStates.set(job.id, job.status.state);
+  }
   if (batchRunning && !snapshot.jobs.some((job) => ACTIVE.includes(job.status.state))) window.setTimeout(pumpBatch, 0);
   const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
   if (selected && ["RUNNING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) beginPolling(selected.id);
@@ -743,13 +921,32 @@ for (const job of queue.getSnapshot().jobs) {
   if (!["QUEUED", "COMPLETED", "FAILED"].includes(job.status.state)) beginPolling(job.id);
 }
 
+sourceLanguageSelect.addEventListener("change", () => {
+  const job = selectedJob();
+  if (!job) return;
+  const value = sourceLanguageSelect.value;
+  queue.setSourceLanguage(job.id, value === "zh" || value === "en" ? value : null);
+  rememberDefaults(selectedJob() ?? job);
+});
+subtitleBoxToggle.addEventListener("change", () => {
+  const job = selectedJob();
+  if (!job) return;
+  queue.setSubtitleBox(job.id, subtitleBoxToggle.checked);
+  rememberDefaults(selectedJob() ?? job);
+});
 burnInToggle.addEventListener("change", () => {
   const job = selectedJob();
-  if (job) queue.setBurnIn(job.id, burnInToggle.checked);
+  if (job) {
+    queue.setBurnIn(job.id, burnInToggle.checked);
+    rememberDefaults(selectedJob() ?? job);
+  }
 });
 dubbingToggle.addEventListener("change", () => {
   const job = selectedJob();
-  if (job && voiceCatalog) queue.setDubbing(job.id, dubbingOptions(voiceCatalog, dubbingToggle.checked, job.dubbing.voiceId));
+  if (job && voiceCatalog) {
+    queue.setDubbing(job.id, dubbingOptions(voiceCatalog, dubbingToggle.checked, job.dubbing.voiceId));
+    rememberDefaults(selectedJob() ?? job);
+  }
 });
 for (const filter of [genderFilter, accentFilter, styleFilter]) {
   filter.addEventListener("change", () => renderVoiceControls(selectedJob()));
@@ -791,7 +988,7 @@ if (isTauri) {
       } else {
         overlay.hidden = true;
         dropZone.classList.remove("hover");
-        if (event.payload.type === "drop") addPaths(event.payload.paths ?? []);
+        if (event.payload.type === "drop") void addDropped(event.payload.paths ?? []);
       }
   }).catch(() => undefined);
 }

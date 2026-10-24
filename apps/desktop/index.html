@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; media-src 'self' blob:"
     />
     <title>DubFlow</title>
     <link rel="stylesheet" href="./src/styles.css" />
@@ -30,6 +30,14 @@
           <div class="stat"><span id="stat-running">0</span><small>Đang chạy</small></div>
           <div class="stat"><span id="stat-done">0</span><small>Hoàn tất</small></div>
           <div class="stat"><span id="stat-failed">0</span><small>Lỗi</small></div>
+        </div>
+        <div class="output-root">
+          <small>Lưu kết quả vào</small>
+          <span id="output-root-label" title="">Cạnh video gốc</span>
+          <div class="output-root-actions">
+            <button id="choose-output-root" class="link" type="button">Chọn thư mục…</button>
+            <button id="reset-output-root" class="link" type="button" hidden>Cạnh video gốc</button>
+          </div>
         </div>
         <div class="sidebar-foot">
           <div class="engine"><span class="dot"></span><span>Xử lý cục bộ · CPU</span></div>
@@ -64,7 +72,7 @@
               <div class="drop-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="28" height="28"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
               </div>
-              <h2>Kéo thả video vào đây</h2>
+              <h2>Kéo thả video hoặc thư mục vào đây</h2>
               <p>hoặc <button id="add-files-inline" class="link" type="button">chọn file từ máy</button></p>
               <p class="formats">MP4 · MKV · MOV · AVI · WEBM · M4V</p>
               <ol class="how">
@@ -98,12 +106,14 @@
                 <span id="detail-percent" class="percent"></span>
               </div>
               <div class="bar"><span id="detail-bar"></span></div>
+              <p id="detail-timing" class="status-timing"></p>
               <p id="detail-message" class="status-message"></p>
               <ol id="stage-list" class="stages"></ol>
             </div>
 
             <section id="result-card" class="result-card" hidden>
               <h3>Kết quả</h3>
+              <p id="result-warning" class="result-warning" hidden></p>
               <p id="result-path" class="path"></p>
               <div class="result-actions">
                 <button id="open-output" class="btn primary" type="button">Mở video</button>
@@ -121,12 +131,30 @@
                 </span>
                 <input id="enable-dubbing" class="switch" type="checkbox" role="switch" />
               </label>
+              <label class="select-row">
+                <span>
+                  <strong>Ngôn ngữ gốc</strong>
+                  <small>Chọn cụ thể nếu nhận diện tự động sai (ví dụ video nhiều nhạc)</small>
+                </span>
+                <select id="source-language">
+                  <option value="">Tự động</option>
+                  <option value="zh">Tiếng Trung</option>
+                  <option value="en">Tiếng Anh</option>
+                </select>
+              </label>
               <label class="switch-row burn-row">
                 <span>
                   <strong>Gắn phụ đề vào video</strong>
                   <small>Tắt = video không có chữ; phụ đề vẫn có trong file SRT/ASS</small>
                 </span>
                 <input id="burn-in" class="switch" type="checkbox" role="switch" checked />
+              </label>
+              <label id="box-row" class="switch-row box-row">
+                <span>
+                  <strong>Dải che phụ đề gốc</strong>
+                  <small>Dải tối ngang vùng phụ đề, che chữ Trung in sẵn trong video</small>
+                </span>
+                <input id="subtitle-box" class="switch" type="checkbox" role="switch" />
               </label>
               <div id="voice-picker" class="voice-picker" hidden>
                 <div class="filters">
