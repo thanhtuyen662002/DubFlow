@@ -24,7 +24,9 @@ import math
 import os
 from pathlib import Path
 import re
+import struct
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -70,6 +72,8 @@ _prepare_worker_import_path()
 
 from engine.dubflow.media import FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
+from engine.dubflow.models.hardware import HardwareResolver
+from engine.dubflow.separation.production import CpuAttenuationBackend, SeparationError
 from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, run_b2_audio
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
 
@@ -141,6 +145,8 @@ class WorkerConfig:
     translation_package: Path | None = None
     tts_model: Path | None = None
     tts_config: Path | None = None
+    execution_profile: str = "auto"
+    enable_audio_cleanup: bool = False
     checkpoint_path: Path | None = None
 
     @classmethod
@@ -180,10 +186,14 @@ class WorkerConfig:
             translation_package=optional_path("translation_package"),
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
+            execution_profile=str(args.get("execution_profile") or "auto"),
+            enable_audio_cleanup=optional_bool("enable_audio_cleanup", False),
             checkpoint_path=optional_path("checkpoint_path"),
         )
         if config.target_language != "vi":
             raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the production baseline currently supports Vietnamese output only")
+        if config.execution_profile not in {"auto", "cpu", "gpu"}:
+            raise ProductionJobError("COMMAND_INVALID", "execution_profile must be auto, cpu or gpu")
         if not config.source_path.is_file():
             raise ProductionJobError("MEDIA_INPUT_UNAVAILABLE", f"source file is unavailable: {config.source_path}")
         if not config.app_root.is_dir() or not config.media_runtime_root.is_dir():
@@ -455,6 +465,62 @@ def _validate_rendered_audio(source_probe: MediaProbeResult, output_probe: Media
         raise ProductionJobError("QC_AUDIO_CODEC", "output audio codec is not a supported playable profile")
 
 
+def _mix_wav_stems(dialogue_path: Path, background_path: Path, output_path: Path) -> Path:
+    """Sum two validated PCM stems without loading a long recording in RAM."""
+
+    temporary: Path | None = None
+    try:
+        with wave.open(str(dialogue_path), "rb") as dialogue, wave.open(str(background_path), "rb") as background:
+            if dialogue.getsampwidth() != 2 or background.getsampwidth() != 2:
+                raise ProductionJobError("AUDIO_CLEANUP_FORMAT", "selected cleanup stems must be signed-16 PCM")
+            if dialogue.getnchannels() != background.getnchannels() or dialogue.getframerate() != background.getframerate():
+                raise ProductionJobError("AUDIO_CLEANUP_FORMAT", "selected cleanup stems must have matching channels and sample rate")
+            channels = dialogue.getnchannels()
+            rate = dialogue.getframerate()
+            if channels < 1 or channels > 2 or rate < 8_000 or rate > 96_000:
+                raise ProductionJobError("AUDIO_CLEANUP_FORMAT", "selected cleanup stem format is outside the production bound")
+            frame_width = channels * 2
+            descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output_path.name}.", suffix=".partial", dir=str(output_path.parent))
+            os.close(descriptor)
+            temporary = Path(temporary_name)
+            with wave.open(str(temporary), "wb") as writer:
+                writer.setnchannels(channels)
+                writer.setsampwidth(2)
+                writer.setframerate(rate)
+                while True:
+                    dialogue_raw = dialogue.readframes(4096)
+                    background_raw = background.readframes(4096)
+                    if not dialogue_raw and not background_raw:
+                        break
+                    if len(dialogue_raw) % frame_width or len(background_raw) % frame_width:
+                        raise ProductionJobError("AUDIO_CLEANUP_TRUNCATED", "cleanup stem data is not aligned to complete frames")
+                    dialogue_frames = list(struct.iter_unpack("<" + ("h" * channels), dialogue_raw))
+                    background_frames = list(struct.iter_unpack("<" + ("h" * channels), background_raw))
+                    frame_count = max(len(dialogue_frames), len(background_frames))
+                    mixed = bytearray()
+                    for index in range(frame_count):
+                        left = dialogue_frames[index] if index < len(dialogue_frames) else (0,) * channels
+                        right = background_frames[index] if index < len(background_frames) else (0,) * channels
+                        for dialogue_sample, background_sample in zip(left, right):
+                            mixed.extend(struct.pack("<h", max(-32768, min(32767, int(dialogue_sample) + int(background_sample)))))
+                    writer.writeframesraw(bytes(mixed))
+                writer.close()
+            with temporary.open("r+b") as handle:
+                handle.flush()
+                os.fsync(handle.fileno())
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(temporary, output_path)
+            temporary = None
+            return output_path
+    except ProductionJobError:
+        raise
+    except (OSError, EOFError, wave.Error, struct.error) as error:
+        raise ProductionJobError("AUDIO_CLEANUP_FAILED", str(error), retryable=True) from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def _load_sidecar(source: Path) -> tuple[TextCue, ...] | None:
     for suffix in (".srt", ".SRT"):
         candidate = source.with_suffix(suffix)
@@ -699,6 +765,70 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: {error.code}: {error.condition}")
             emitter.progress(0.70, "B2 audio không khả dụng; giữ Vietsub và audio gốc")
 
+    audio_cleanup_report_path: Path | None = None
+    audio_cleanup_source_path: Path | None = None
+    audio_cleanup_dialogue_path: Path | None = None
+    audio_cleanup_background_path: Path | None = None
+    audio_cleanup_selected_mix: Path | None = None
+    audio_cleanup_metadata: dict[str, Any] | None = None
+    if config.enable_audio_cleanup:
+        hardware_profile = HardwareResolver().resolve(config.execution_profile)
+        cleanup_source = (
+            b2_audio.original_audio_path
+            if b2_audio is not None
+            else (work_dir / "analysis.wav" if (work_dir / "analysis.wav").is_file() else None)
+        )
+        if cleanup_source is None:
+            warnings.append("AUDIO_CLEANUP_INPUT_UNAVAILABLE: no decoded source WAV was available; retained the validated mix")
+        else:
+            emitter.progress(0.71, "Đang kiểm tra audio cleanup CPU và profile phần cứng")
+            try:
+                cleanup_result = CpuAttenuationBackend().process(cleanup_source, work_dir / "audio-cleanup")
+                audio_cleanup_source_path = cleanup_result.source_path
+                audio_cleanup_dialogue_path = cleanup_result.dialogue_path
+                audio_cleanup_background_path = cleanup_result.background_path
+                audio_cleanup_report_path = work_dir / "audio-cleanup" / "separation_report.json"
+                audio_cleanup_metadata = {
+                    **cleanup_result.to_dict(),
+                    "hardware": hardware_profile.to_dict(),
+                    "selected_mix": None,
+                }
+                _atomic_json(audio_cleanup_report_path, audio_cleanup_metadata)
+                _write_stage(
+                    checkpoint,
+                    checkpoint_path,
+                    "audio-cleanup",
+                    {
+                        "report": str(audio_cleanup_report_path),
+                        "source": str(audio_cleanup_source_path),
+                        "dialogue": str(audio_cleanup_dialogue_path),
+                        "background": str(audio_cleanup_background_path),
+                        "decision": cleanup_result.metrics.decision,
+                        "sha256": _sha256(audio_cleanup_report_path),
+                    },
+                )
+                emitter.checkpoint("audio-cleanup", _sha256(audio_cleanup_report_path))
+                if b2_audio is not None and cleanup_result.metrics.decision == "AUD-2":
+                    audio_cleanup_selected_mix = work_dir / "audio-cleanup" / "selected_final_mix.wav"
+                    _mix_wav_stems(b2_audio.dialogue_stem_path, cleanup_result.background_path, audio_cleanup_selected_mix)
+                    audio_path = audio_cleanup_selected_mix
+                    audio_metadata = dict(audio_metadata)
+                    audio_metadata["cleanup_selected_mix"] = str(audio_cleanup_selected_mix)
+                    audio_cleanup_metadata["selected_mix"] = str(audio_cleanup_selected_mix)
+                    _atomic_json(audio_cleanup_report_path, audio_cleanup_metadata)
+                else:
+                    warnings.extend(cleanup_result.warnings)
+            except (SeparationError, ProductionJobError, OSError, ValueError) as error:
+                code = getattr(error, "code", "AUDIO_CLEANUP_FAILED")
+                condition = getattr(error, "condition", str(error))
+                warnings.append(f"AUDIO_CLEANUP_FALLBACK_TO_B2: {code}: {condition}")
+                audio_cleanup_metadata = {
+                    "schema_version": 1,
+                    "status": "fallback",
+                    "hardware": hardware_profile.to_dict(),
+                    "warning": f"{code}: {condition}",
+                }
+
     final_path = config.output_dir / "final_vi.mp4"
     render_stage = "render-dubbed" if audio_path is not None else "render"
     # A successful B2 run always re-renders against the newly verified mix.
@@ -772,7 +902,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
         validate_output(output_probe)
     output_duration = output_probe.duration_ticks
     qc_path = config.output_dir / "qc_report.json"
-    qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "audio_cleanup": audio_cleanup_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _atomic_json(qc_path, qc)
     editable_dir = config.output_dir / "editable"
     editable_dir.mkdir(parents=True, exist_ok=True)
@@ -803,6 +933,24 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
             "editable_dialogue_stem": editable_dir / "dialogue_stem.wav",
             "editable_final_mix": editable_dir / "final_mix.wav",
         })
+    if audio_cleanup_report_path is not None and audio_cleanup_source_path is not None and audio_cleanup_dialogue_path is not None and audio_cleanup_background_path is not None:
+        for source, name in (
+            (audio_cleanup_source_path, "cleanup_source_audio.wav"),
+            (audio_cleanup_dialogue_path, "cleanup_dialogue_stem.wav"),
+            (audio_cleanup_background_path, "cleanup_background_stem.wav"),
+        ):
+            target = editable_dir / name
+            target.write_bytes(source.read_bytes())
+            artifacts[f"editable_{name.removesuffix('.wav')}"] = target
+        artifacts["audio_cleanup_report"] = audio_cleanup_report_path
+        artifacts["cleanup_source_audio"] = audio_cleanup_source_path
+        artifacts["cleanup_dialogue_stem"] = audio_cleanup_dialogue_path
+        artifacts["cleanup_background_stem"] = audio_cleanup_background_path
+    if audio_cleanup_selected_mix is not None:
+        target = editable_dir / "cleaned_final_mix.wav"
+        target.write_bytes(audio_cleanup_selected_mix.read_bytes())
+        artifacts["cleaned_final_mix"] = audio_cleanup_selected_mix
+        artifacts["editable_cleaned_final_mix"] = target
     manifest_path = _write_manifest(config.output_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata)
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.progress(1.0, "Hoàn tất video Việt hóa")
