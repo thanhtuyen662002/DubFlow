@@ -187,10 +187,16 @@ fn status_path(root: &Path, job_id: &str) -> Result<PathBuf, String> {
 }
 
 fn default_job_output(source: &Path, job_id: &str) -> Result<PathBuf, String> {
+    job_output_in(source.parent().unwrap_or(Path::new(".")), source, job_id)
+}
+
+/// `<base>/DubFlow Output/<stem> - vi/run-<id>`; base is the source folder
+/// or a user-chosen results folder.
+fn job_output_in(base: &Path, source: &Path, job_id: &str) -> Result<PathBuf, String> {
     validate_id(job_id)?;
     // Encode the complete ID: Windows folds path case and reserves some names.
     // Chunk at 64 bytes so even a maximum-length ID fits each path component.
-    let mut output = source.parent().unwrap_or(Path::new(".")).join("DubFlow Output")
+    let mut output = base.join("DubFlow Output")
         .join(format!("{} - vi", source.file_stem().and_then(|name| name.to_str()).unwrap_or("video")));
     for (index, chunk) in job_id.as_bytes().chunks(64).enumerate() {
         let encoded: String = chunk.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -212,6 +218,59 @@ fn release_info() -> ReleaseInfo {
     }
 }
 
+const VIDEO_EXTENSIONS: [&str; 6] = ["mp4", "mkv", "mov", "avi", "webm", "m4v"];
+const MAX_EXPANDED_VIDEOS: usize = 500;
+
+/// Dropped paths -> video files: files pass through, folders are searched up
+/// to three levels deep (skipping DubFlow's own outputs), capped at 500.
+fn expand_videos(paths: &[PathBuf]) -> Vec<PathBuf> {
+    fn is_video(path: &Path) -> bool {
+        path.extension().and_then(|ext| ext.to_str())
+            .is_some_and(|ext| VIDEO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+    }
+    fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        let mut entries: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
+        entries.sort();
+        for path in entries {
+            if found.len() >= MAX_EXPANDED_VIDEOS {
+                return;
+            }
+            let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
+            if metadata.is_file() && is_video(&path) {
+                found.push(path);
+            } else if metadata.is_dir() && depth < 3
+                && path.file_name().is_some_and(|name| name != "DubFlow Output" && name != ".dubflow-work") {
+                walk(&path, depth + 1, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for path in paths {
+        if found.len() >= MAX_EXPANDED_VIDEOS {
+            break;
+        }
+        if path.is_dir() {
+            walk(path, 1, &mut found);
+        } else if is_video(path) {
+            found.push(path.clone());
+        }
+    }
+    found
+}
+
+#[tauri::command]
+fn expand_video_paths(paths: Vec<String>) -> Vec<String> {
+    let paths: Vec<PathBuf> = paths.into_iter().take(1000).map(PathBuf::from).filter(|path| path.is_absolute()).collect();
+    expand_videos(&paths).into_iter().map(|path| path.to_string_lossy().into_owned()).collect()
+}
+
+#[tauri::command]
+fn pick_folder() -> Option<String> {
+    rfd::FileDialog::new().set_title("Chọn thư mục lưu kết quả").pick_folder()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 fn pick_files() -> Result<Vec<String>, String> {
     let files = rfd::FileDialog::new()
@@ -222,7 +281,7 @@ fn pick_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
@@ -238,9 +297,16 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     };
     let control = control_root()?;
     let status = status_path(&control, &job_id)?;
-    let output = match output_dir {
-        Some(value) => PathBuf::from(value),
-        None => default_job_output(&source, &job_id)?,
+    let output = match (output_dir, output_root) {
+        (Some(value), _) => PathBuf::from(value),
+        (None, Some(base)) => {
+            let base = PathBuf::from(base);
+            if !base.is_absolute() || !base.is_dir() {
+                return Err(fail("Thư mục lưu kết quả không tồn tại; hãy chọn lại"));
+            }
+            job_output_in(&base, &source, &job_id)?
+        }
+        (None, None) => default_job_output(&source, &job_id)?,
     };
     if !output.is_absolute() {
         return Err(fail("output_dir must be an absolute path"));
@@ -260,6 +326,8 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     }
     if burn_in == Some(false) {
         args.push("--no-burn-in".into());
+    } else if subtitle_box == Some(true) {
+        args.push("--subtitle-box".into());
     }
     match source_language.as_deref() {
         None | Some("auto") => {}
@@ -533,7 +601,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
@@ -562,6 +630,33 @@ mod tests {
         }
         assert!(webview_data_root(&local, &"x".repeat(65)).is_err());
         assert!(webview_data_root(&local, &"x".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn dropped_folders_expand_to_videos_without_dubflow_outputs() {
+        let root = std::env::temp_dir().join(format!("dubflow-expand-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for path in ["a.mp4", "notes.txt", "season/ep1.MKV", "season/deep/ep2.mov", "season/deep/deeper/x/too-deep.mp4",
+                     "DubFlow Output/a - vi/final_vi.mp4", "season/.dubflow-work/cache.mp4"] {
+            let file = root.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, b"x").unwrap();
+        }
+        let names: Vec<String> = expand_videos(&[root.clone()]).iter()
+            .map(|path| path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(names, ["a.mp4", "season/deep/ep2.mov", "season/ep1.MKV"]);
+        assert_eq!(expand_videos(&[root.join("notes.txt"), root.join("a.mp4")]), [root.join("a.mp4")]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn chosen_results_folder_keeps_the_dubflow_output_layout() {
+        let source = std::env::temp_dir().join("clips").join("talk.mp4");
+        let chosen = std::env::temp_dir().join("Kết quả");
+        let output = job_output_in(&chosen, &source, "job-1").unwrap();
+        assert!(output.starts_with(chosen.join("DubFlow Output").join("talk - vi")));
+        assert_eq!(default_job_output(&source, "job-1").unwrap(), job_output_in(source.parent().unwrap(), &source, "job-1").unwrap());
+        assert!(job_output_in(&chosen, &source, "../x").is_err());
     }
 
     #[test]

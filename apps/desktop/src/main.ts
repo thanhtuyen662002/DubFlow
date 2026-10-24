@@ -5,7 +5,7 @@ import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
-  activeStageIndex, displayJobStatus, PIPELINE_STAGES, progressFraction, stateLabel,
+  activeStageIndex, displayJobStatus, isCancelled, PIPELINE_STAGES, progressFraction, stateLabel,
   type JobStatus, type JobStatusState,
 } from "./features/job_status/status.ts";
 
@@ -60,6 +60,7 @@ const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const burnInToggle = $<HTMLInputElement>("#burn-in");
 const sourceLanguageSelect = $<HTMLSelectElement>("#source-language");
+const subtitleBoxToggle = $<HTMLInputElement>("#subtitle-box");
 const runAllButton = $<HTMLButtonElement>("#run-all");
 let batchRunning = false;
 const voiceList = $("#voice-list");
@@ -91,7 +92,8 @@ function isActive(job: QueueJob | undefined): boolean {
   return !!job && ACTIVE.includes(job.status.state);
 }
 
-function tone(state: JobStatusState): string {
+function tone(state: JobStatusState, cancelled = false): string {
+  if (cancelled) return "";
   if (state === "COMPLETED") return "ok";
   if (state === "FAILED") return "err";
   if (["RUNNING", "RETRYING", "RECOVERED"].includes(state)) return "run";
@@ -162,6 +164,8 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   voiceControls.disabled = !editable;
   dubbingToggle.checked = job?.dubbing.enabled ?? false;
   burnInToggle.checked = job?.burnIn ?? true;
+  subtitleBoxToggle.checked = job?.subtitleBox ?? false;
+  $("#box-row").hidden = !burnInToggle.checked;
   sourceLanguageSelect.value = job?.sourceLanguage ?? "";
   $("#voice-picker").hidden = !dubbingToggle.checked || (!!job && job.status.state !== "QUEUED");
   voiceList.replaceChildren();
@@ -221,7 +225,7 @@ function renderQueue(view: DesktopShellModel["view"]): void {
     main.append(element("span", "job-title", row.title), meta);
     if (row.state !== "QUEUED") main.append(progressBar(row.fraction, row.state));
     const side = element("div", "job-side");
-    side.append(element("span", `badge ${tone(row.state)}`, row.stateLabel));
+    side.append(element("span", `badge ${tone(row.state, row.cancelled)}`, row.stateLabel));
     if (row.state !== "QUEUED") side.append(element("span", "percent", row.progress));
     item.append(thumb, main, side);
     item.title = row.origin;
@@ -259,8 +263,8 @@ function renderInspector(job: QueueJob | null): void {
   $("#detail-name").textContent = job.displayName;
   $("#detail-path").textContent = job.originUrl ?? job.sourcePath;
   const badge = $("#detail-state");
-  badge.className = `badge ${tone(status.state)}`;
-  badge.textContent = stateLabel(status.state);
+  badge.className = `badge ${tone(status.state, isCancelled(status))}`;
+  badge.textContent = stateLabel(status.state, status.reason);
   const fraction = progressFraction(status);
   $("#detail-percent").textContent = status.state === "QUEUED" || fraction === null ? "" : `${Math.floor(fraction * 100)}%`;
   const bar = $("#detail-bar");
@@ -353,14 +357,15 @@ function beginPolling(jobId: string): void {
 // The last options the user chose become the defaults for newly added videos,
 // so a batch needs its dubbing/voice/burn-in set once (per-viewer convenience).
 const DEFAULTS_KEY = "dubflow.defaults.v1";
-type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en" };
+type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; subtitleBox?: boolean };
 
 function readDefaults(): JobDefaults | null {
   try {
     const value = JSON.parse(window.localStorage.getItem(DEFAULTS_KEY) ?? "null") as Partial<JobDefaults> | null;
     if (!value || typeof value.dubbing !== "boolean" || typeof value.burnIn !== "boolean") return null;
     return { dubbing: value.dubbing, burnIn: value.burnIn, voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
-      sourceLanguage: value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? value.sourceLanguage : undefined };
+      sourceLanguage: value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? value.sourceLanguage : undefined,
+      subtitleBox: value.subtitleBox === true };
   } catch {
     return null;
   }
@@ -369,7 +374,7 @@ function readDefaults(): JobDefaults | null {
 function rememberDefaults(job: QueueJob): void {
   try {
     window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
-      burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage }));
+      burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, subtitleBox: job.subtitleBox ?? false }));
   } catch {
     // Defaults are a convenience; the queue works without storage.
   }
@@ -382,6 +387,7 @@ function applyDefaults(jobIds: readonly string[]): void {
     try {
       if (!defaults.burnIn) queue.setBurnIn(id, false);
       if (defaults.sourceLanguage) queue.setSourceLanguage(id, defaults.sourceLanguage);
+      if (defaults.subtitleBox) queue.setSubtitleBox(id, true);
       if (defaults.dubbing && voiceCatalog) {
         const known = voiceCatalog.voices.some((voice) => voice.voice_id === defaults.voiceId);
         queue.setDubbing(id, dubbingOptions(voiceCatalog, true, known ? defaults.voiceId : null));
@@ -403,6 +409,21 @@ function addPaths(paths: string[]): void {
   applyDefaults(added);
   if (added.length && !selectedJob()) queue.selectJob(added[0]);
   else if (added.length) queue.selectJob(added[added.length - 1]);
+}
+
+/** Dropped files and folders: the host expands folders to the videos inside. */
+async function addDropped(paths: string[]): Promise<void> {
+  if (!paths.length) return;
+  try {
+    const videos = await invoke<string[]>("expand_video_paths", { paths });
+    if (!videos.length) {
+      showError("Không tìm thấy video MP4, MKV, MOV, AVI, WEBM, M4V trong mục đã thả.");
+      return;
+    }
+    addPaths(videos);
+  } catch (error) {
+    showError(`Không đọc được mục đã thả: ${String(error).slice(0, 160)}`);
+  }
 }
 
 async function pickFiles(): Promise<void> {
@@ -447,16 +468,57 @@ runAllButton.addEventListener("click", () => {
   pumpBatch();
 });
 
+// Results folder: next to each source (default) or one chosen folder.
+const OUTPUT_ROOT_KEY = "dubflow.outputRoot.v1";
+function outputRoot(): string | null {
+  try {
+    return window.localStorage.getItem(OUTPUT_ROOT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function renderOutputRoot(): void {
+  const root = outputRoot();
+  const label = $("#output-root-label");
+  label.textContent = root ? root.split(/[\\/]/).filter(Boolean).slice(-2).join("\\") : "Cạnh video gốc";
+  label.title = root ?? "Mỗi video lưu kết quả trong thư mục “DubFlow Output” cạnh file gốc";
+  $("#reset-output-root").hidden = !root;
+}
+
+$("#choose-output-root").addEventListener("click", async () => {
+  const folder = await invoke<string | null>("pick_folder").catch(() => null);
+  if (!folder) return;
+  try {
+    window.localStorage.setItem(OUTPUT_ROOT_KEY, folder);
+  } catch {
+    showError("Không lưu được lựa chọn thư mục trên máy này.");
+  }
+  renderOutputRoot();
+});
+$("#reset-output-root").addEventListener("click", () => {
+  try {
+    window.localStorage.removeItem(OUTPUT_ROOT_KEY);
+  } catch {
+    // Nothing stored.
+  }
+  renderOutputRoot();
+});
+renderOutputRoot();
+
 async function startJob(job: QueueJob): Promise<void> {
   if (!canStart(job)) return;
   startButton.disabled = true;
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    await invoke("start_job", {
-      jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null,
+    const started = await invoke<{ output_dir: string } | null>("start_job", {
+      jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null, outputRoot: job.outputDir ? null : outputRoot(),
       enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId, burnIn: job.burnIn ?? true,
-      sourceLanguage: job.sourceLanguage ?? "auto",
+      sourceLanguage: job.sourceLanguage ?? "auto", subtitleBox: job.subtitleBox ?? false,
     });
+    // Resumes must reuse the folder the first start chose, even if the
+    // results-folder setting changes later.
+    if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);
     beginPolling(job.id);
   } catch (error) {
     queue.updateStatus(job.id, {
@@ -867,6 +929,12 @@ sourceLanguageSelect.addEventListener("change", () => {
   queue.setSourceLanguage(job.id, value === "zh" || value === "en" ? value : null);
   rememberDefaults(selectedJob() ?? job);
 });
+subtitleBoxToggle.addEventListener("change", () => {
+  const job = selectedJob();
+  if (!job) return;
+  queue.setSubtitleBox(job.id, subtitleBoxToggle.checked);
+  rememberDefaults(selectedJob() ?? job);
+});
 burnInToggle.addEventListener("change", () => {
   const job = selectedJob();
   if (job) {
@@ -921,7 +989,7 @@ if (isTauri) {
       } else {
         overlay.hidden = true;
         dropZone.classList.remove("hover");
-        if (event.payload.type === "drop") addPaths(event.payload.paths ?? []);
+        if (event.payload.type === "drop") void addDropped(event.payload.paths ?? []);
       }
   }).catch(() => undefined);
 }

@@ -113,6 +113,28 @@ assert.match(failureHint("SOURCE_LANGUAGE_UNRESOLVED: x"), /Ngôn ngữ gốc/);
 assert.equal(failureHint("ASR_EMPTYISH: x"), null);
 assert.equal(failureHint("SOMETHING_ELSE: x"), null);
 
+// The host-chosen output folder is pinned once so resumes reuse it.
+const pinQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [pinId] = pinQueue.addPaths(["C:/media/pin.mp4"]);
+pinQueue.pinOutputDir(pinId, "D:/Out/DubFlow Output/pin - vi/run-1");
+pinQueue.pinOutputDir(pinId, "E:/Other");
+assert.equal(pinQueue.getSnapshot().jobs[0].outputDir, "D:/Out/DubFlow Output/pin - vi/run-1");
+assert.equal(toQueueViewModel(pinQueue.getSnapshot()).rows[0].revision, false);
+
+// The subtitle box is a per-job option, editable only before processing.
+const boxQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [boxId] = boxQueue.addPaths(["C:/media/box.mp4"]);
+boxQueue.setSubtitleBox(boxId, true);
+assert.equal(boxQueue.getSnapshot().jobs[0].subtitleBox, true);
+
+// A user cancellation reads as a neutral "Đã hủy", not a failure.
+const cancelQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [cancelId] = cancelQueue.addPaths(["C:/media/cancel.mp4"]);
+cancelQueue.updateStatus(cancelId, { ...cancelQueue.getSnapshot().jobs[0].status, state: "FAILED", reason: "cancelled", message: "Đã hủy theo yêu cầu" });
+const cancelRow = toQueueViewModel(cancelQueue.getSnapshot()).rows[0];
+assert.equal(cancelRow.stateLabel, "Đã hủy");
+assert.equal(cancelRow.cancelled, true);
+
 // Source language is a per-job option; null returns to automatic detection.
 const langQueue = new QueueController(new MemorySnapshotStorage(), clock);
 const [langId] = langQueue.addPaths(["C:/media/zh.mp4"]);

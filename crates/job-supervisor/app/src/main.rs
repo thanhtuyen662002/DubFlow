@@ -359,6 +359,8 @@ struct StartSpec {
     enable_dubbing: bool,
     tts_voice_id: Option<String>,
     burn_in_subtitles: bool,
+    /// Opaque box behind burned subtitles (covers source hard-subs).
+    subtitle_box: bool,
 }
 
 impl StartSpec {
@@ -405,6 +407,7 @@ impl StartSpec {
             enable_dubbing: enable_dubbing.unwrap_or(false),
             tts_voice_id: None,
             burn_in_subtitles: burn_in_subtitles.unwrap_or(true),
+            subtitle_box: false,
         })
     }
     fn with_voice_id(mut self, voice_id: Option<String>) -> SupervisorResult<Self> {
@@ -417,6 +420,10 @@ impl StartSpec {
         }
         self.tts_voice_id = voice_id;
         Ok(self)
+    }
+    fn with_subtitle_box(mut self, subtitle_box: bool) -> Self {
+        self.subtitle_box = subtitle_box;
+        self
     }
 
     fn durable_request(&self, runtime: &RuntimePaths) -> SupervisorResult<String> {
@@ -465,6 +472,10 @@ impl StartSpec {
         // still match on resume.
         if let Some(overrides) = overrides {
             request["translation_overrides"] = overrides;
+        }
+        // Only present when used, like translation_overrides.
+        if self.subtitle_box {
+            request["subtitle_box"] = json!(true);
         }
         Ok(serde_json::to_string(&request)?)
     }
@@ -595,6 +606,7 @@ enum CliMode {
         enable_dubbing: bool,
         tts_voice_id: Option<String>,
         burn_in_subtitles: bool,
+        subtitle_box: bool,
     },
     Cancel {
         root: Option<PathBuf>,
@@ -636,6 +648,7 @@ fn run() -> SupervisorResult<()> {
             enable_dubbing,
             tts_voice_id,
             burn_in_subtitles,
+            subtitle_box,
         } => {
             return run_one_shot(
                 root,
@@ -650,6 +663,7 @@ fn run() -> SupervisorResult<()> {
                 enable_dubbing,
                 burn_in_subtitles,
                 tts_voice_id,
+                subtitle_box,
             );
         }
         CliMode::Cancel {
@@ -737,6 +751,7 @@ where
             let mut target_language = None;
             let mut enable_dubbing = false;
             let mut tts_voice_id = None;
+            let mut subtitle_box = false;
             let mut burn_in_subtitles = true;
             while let Some(arg) = args.next() {
                 match arg.to_string_lossy().as_ref() {
@@ -764,6 +779,7 @@ where
                     "--enable-dubbing" => enable_dubbing = true,
                     "--tts-voice-id" => tts_voice_id = Some(next_arg(&mut args, "--tts-voice-id")?),
                     "--no-burn-in" => burn_in_subtitles = false,
+                    "--subtitle-box" => subtitle_box = true,
                     "--help" | "-h" => {
                         println!("dubflow-supervisor run --source <absolute file> --output-dir <absolute dir> --data-root <absolute dir> [--root <version root>] [--status-path <file>]");
                         std::process::exit(0);
@@ -791,6 +807,7 @@ where
                 enable_dubbing,
                 tts_voice_id,
                 burn_in_subtitles,
+                subtitle_box,
             }
         }
         Some("cancel") => {
@@ -915,6 +932,7 @@ fn run_one_shot(
     enable_dubbing: bool,
     burn_in_subtitles: bool,
     tts_voice_id: Option<String>,
+    subtitle_box: bool,
 ) -> SupervisorResult<()> {
     let root = match root {
         Some(root) => root,
@@ -934,7 +952,7 @@ fn run_one_shot(
         target_language,
         Some(enable_dubbing),
         Some(burn_in_subtitles),
-    )?.with_voice_id(tts_voice_id)?;
+    )?.with_voice_id(tts_voice_id)?.with_subtitle_box(subtitle_box);
     // Keep the kernel lease through the final status write. A duplicate must
     // not change SQL/status, reconcile artifacts or start another worker.
     let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
@@ -2045,7 +2063,7 @@ fn run_worker_attempt(
         .output_dir
         .join(".dubflow-work")
         .join("checkpoint.json");
-    let args = json!({
+    let mut args = json!({
         "job_id": spec.job_id,
         "stage_id": STAGE_ID,
         "source_path": spec.source_path,
@@ -2062,6 +2080,9 @@ fn run_worker_attempt(
         "burn_in_subtitles": spec.burn_in_subtitles,
         "checkpoint_path": checkpoint_path,
     });
+    if spec.subtitle_box {
+        args["subtitle_box"] = json!(true);
+    }
     let args_json = serde_json::to_string(&args)?;
     let command = Envelope::new(
         MessageType::Command,
@@ -2551,7 +2572,7 @@ mod tests {
         let runtime = RuntimePaths { root:root.clone(), app_root:root.join("app"), python:root.join("python.exe"), worker_script:root.join("worker.py"),
             ffmpeg:root.join("ffmpeg.exe"), ffprobe:root.join("ffprobe.exe"), model_root:root.join("models"), db:root.join("state.sqlite") };
         let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
-            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true };
+            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false };
         (root, runtime, spec)
     }
 
@@ -2946,7 +2967,7 @@ mod tests {
         let spec = StartSpec {
             job_id:"test".into(), source_path:PathBuf::from("source"), output_dir:PathBuf::from("output"),
             source_language:"auto".into(), target_language:"vi".into(), enable_dubbing:true,
-            burn_in_subtitles:true, tts_voice_id:None,
+            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false,
         };
         for invalid in ["", "../escape", "Unknown", "a\nb", &"a".repeat(97)] {
             assert!(spec.clone().with_voice_id(Some(invalid.into())).is_err());
