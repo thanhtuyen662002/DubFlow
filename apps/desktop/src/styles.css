@@ -259,3 +259,17 @@ h1, h2, h3, p { margin: 0; }
 @media (max-width: 1080px) { .link-form input { width: 180px; } }
 .fetch-actions { display: flex; gap: 8px; margin-top: 4px; }
 .fetch-actions .btn { height: 28px; font-size: 12.5px; }
+.burn-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+
+/* Keep the top bar on one line at narrow widths. */
+.btn { white-space: nowrap; }
+.topbar > div:first-child { min-width: 0; }
+.topbar h1, .subtitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar-actions { flex-wrap: nowrap; align-items: center; min-width: 0; }
+@media (max-width: 1280px) { .link-form input { width: 200px; } }
+@media (max-width: 1080px) { .link-form input { width: 140px; } #clear-queue { display: none; } }
+.topbar-actions { flex: 1 1 auto; justify-content: flex-end; }
+.link-form { flex: 0 1 380px; min-width: 120px; }
+.link-form input { flex: 1 1 auto; width: auto; }
+@media (max-width: 1280px) { .link-form input { width: auto; } }
+@media (max-width: 1080px) { .link-form input { width: auto; } }

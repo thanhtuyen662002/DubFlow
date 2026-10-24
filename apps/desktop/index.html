@@ -50,6 +50,7 @@
               <button id="link-submit" class="btn" type="submit">Tải link</button>
             </form>
             <button id="clear-queue" class="btn ghost" type="button" hidden>Xóa danh sách</button>
+            <button id="run-all" class="btn" type="button" hidden>Xử lý tất cả</button>
             <button id="add-files" class="btn primary" type="button">
               <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
               Thêm video
@@ -119,6 +120,13 @@
                   <small>Tắt = chỉ tạo phụ đề tiếng Việt, giữ audio gốc</small>
                 </span>
                 <input id="enable-dubbing" class="switch" type="checkbox" role="switch" />
+              </label>
+              <label class="switch-row burn-row">
+                <span>
+                  <strong>Gắn phụ đề vào video</strong>
+                  <small>Tắt = video không có chữ; phụ đề vẫn có trong file SRT/ASS</small>
+                </span>
+                <input id="burn-in" class="switch" type="checkbox" role="switch" checked />
               </label>
               <div id="voice-picker" class="voice-picker" hidden>
                 <div class="filters">
