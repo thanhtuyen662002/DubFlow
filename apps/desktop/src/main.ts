@@ -61,6 +61,7 @@ const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const burnInToggle = $<HTMLInputElement>("#burn-in");
 const sourceLanguageSelect = $<HTMLSelectElement>("#source-language");
 const subtitleBoxToggle = $<HTMLInputElement>("#subtitle-box");
+const translationEngineSelect = $<HTMLSelectElement>("#translation-engine");
 const runAllButton = $<HTMLButtonElement>("#run-all");
 let batchRunning = false;
 const voiceList = $("#voice-list");
@@ -167,6 +168,10 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   subtitleBoxToggle.checked = job?.subtitleBox ?? false;
   $("#box-row").hidden = !burnInToggle.checked;
   sourceLanguageSelect.value = job?.sourceLanguage ?? "";
+  translationEngineSelect.value = job?.translationEngine ?? "argos";
+  // Hachimi only translates Chinese, so the choice is moot for English sources.
+  $("#translator-row").hidden = job?.sourceLanguage === "en";
+  $("#hachimi-warning").hidden = job?.translationEngine !== "hachimi" || job?.sourceLanguage === "en";
   $("#voice-picker").hidden = !dubbingToggle.checked || (!!job && job.status.state !== "QUEUED");
   voiceList.replaceChildren();
   const status = $("#voice-catalog-status");
@@ -357,7 +362,7 @@ function beginPolling(jobId: string): void {
 // The last options the user chose become the defaults for newly added videos,
 // so a batch needs its dubbing/voice/burn-in set once (per-viewer convenience).
 const DEFAULTS_KEY = "dubflow.defaults.v1";
-type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; subtitleBox?: boolean };
+type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; subtitleBox?: boolean; translationEngine?: "hachimi" };
 
 function readDefaults(): JobDefaults | null {
   try {
@@ -365,7 +370,7 @@ function readDefaults(): JobDefaults | null {
     if (!value || typeof value.dubbing !== "boolean" || typeof value.burnIn !== "boolean") return null;
     return { dubbing: value.dubbing, burnIn: value.burnIn, voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
       sourceLanguage: value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? value.sourceLanguage : undefined,
-      subtitleBox: value.subtitleBox === true };
+      subtitleBox: value.subtitleBox === true, translationEngine: value.translationEngine === "hachimi" ? "hachimi" : undefined };
   } catch {
     return null;
   }
@@ -374,7 +379,8 @@ function readDefaults(): JobDefaults | null {
 function rememberDefaults(job: QueueJob): void {
   try {
     window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
-      burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, subtitleBox: job.subtitleBox ?? false }));
+      burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, subtitleBox: job.subtitleBox ?? false,
+      translationEngine: job.translationEngine }));
   } catch {
     // Defaults are a convenience; the queue works without storage.
   }
@@ -388,6 +394,7 @@ function applyDefaults(jobIds: readonly string[]): void {
       if (!defaults.burnIn) queue.setBurnIn(id, false);
       if (defaults.sourceLanguage) queue.setSourceLanguage(id, defaults.sourceLanguage);
       if (defaults.subtitleBox) queue.setSubtitleBox(id, true);
+      if (defaults.translationEngine) queue.setTranslationEngine(id, defaults.translationEngine);
       if (defaults.dubbing && voiceCatalog) {
         const known = voiceCatalog.voices.some((voice) => voice.voice_id === defaults.voiceId);
         queue.setDubbing(id, dubbingOptions(voiceCatalog, true, known ? defaults.voiceId : null));
@@ -515,6 +522,7 @@ async function startJob(job: QueueJob): Promise<void> {
       jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null, outputRoot: job.outputDir ? null : outputRoot(),
       enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId, burnIn: job.burnIn ?? true,
       sourceLanguage: job.sourceLanguage ?? "auto", subtitleBox: job.subtitleBox ?? false,
+      translationEngine: job.translationEngine ?? "argos",
     });
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
@@ -927,6 +935,37 @@ sourceLanguageSelect.addEventListener("change", () => {
   if (!job) return;
   const value = sourceLanguageSelect.value;
   queue.setSourceLanguage(job.id, value === "zh" || value === "en" ? value : null);
+  rememberDefaults(selectedJob() ?? job);
+});
+// Ask once per viewer before the first opt-in: the model's licence terms are unverified.
+const HACHIMI_ACK_KEY = "dubflow.hachimiAck.v1";
+function hachimiAcknowledged(): boolean {
+  try {
+    if (window.localStorage.getItem(HACHIMI_ACK_KEY) === "1") return true;
+  } catch {
+    // Without storage, ask every time.
+  }
+  const accepted = window.confirm("HachimiMT-60 là bộ dịch thử nghiệm. Giấy phép chưa được xác minh cho mục đích thương mại "
+    + "(model được huấn luyện có dữ liệu chưng cất từ Gemini). Chỉ dùng cá nhân/thử nghiệm và tự kiểm tra điều khoản trước khi dùng thương mại.\n\n"
+    + "Lần đầu dùng sẽ tải model khoảng 58 MB. Tiếp tục?");
+  if (accepted) {
+    try {
+      window.localStorage.setItem(HACHIMI_ACK_KEY, "1");
+    } catch {
+      // Acknowledgement is a convenience; asking again is safe.
+    }
+  }
+  return accepted;
+}
+translationEngineSelect.addEventListener("change", () => {
+  const job = selectedJob();
+  if (!job) return;
+  const engine = translationEngineSelect.value === "hachimi" ? "hachimi" : "argos";
+  if (engine === "hachimi" && !hachimiAcknowledged()) {
+    translationEngineSelect.value = job.translationEngine ?? "argos";
+    return;
+  }
+  queue.setTranslationEngine(job.id, engine);
   rememberDefaults(selectedJob() ?? job);
 });
 subtitleBoxToggle.addEventListener("change", () => {

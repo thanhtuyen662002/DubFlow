@@ -142,6 +142,20 @@
                   <option value="en">Tiếng Anh</option>
                 </select>
               </label>
+              <label id="translator-row" class="select-row stacked">
+                <span>
+                  <strong>Bộ dịch tiếng Trung</strong>
+                  <small>Argos là mặc định; HachimiMT-60 thường tự nhiên hơn nhưng đang thử nghiệm</small>
+                </span>
+                <select id="translation-engine">
+                  <option value="argos">Argos (mặc định)</option>
+                  <option value="hachimi">HachimiMT-60 (thử nghiệm)</option>
+                </select>
+              </label>
+              <p id="hachimi-warning" class="result-warning" hidden>
+                <strong>Giấy phép chưa xác minh.</strong> HachimiMT-60 (CC-BY-4.0, tác giả ngocdang83) được huấn luyện có dùng dữ liệu chưng cất từ Gemini; chưa rõ có được dùng cho mục đích thương mại. Chỉ nên dùng cá nhân/thử nghiệm.
+                Model khoảng 58 MB, tải về ở lần dùng đầu. Văn phong có thể giống truyện (ta/ngươi), hãy xem lại bản dịch. Video tiếng Anh vẫn dịch bằng Argos.
+              </p>
               <label class="switch-row burn-row">
                 <span>
                   <strong>Gắn phụ đề vào video</strong>

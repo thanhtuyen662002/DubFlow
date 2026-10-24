@@ -143,6 +143,21 @@ assert.equal(langQueue.getSnapshot().jobs[0].sourceLanguage, "zh");
 langQueue.setSourceLanguage(langId, null);
 assert.equal(langQueue.getSnapshot().jobs[0].sourceLanguage, undefined);
 
+// The Hachimi translator is opt-in per job; "argos" clears it back to the default.
+const engineQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [engineId] = engineQueue.addPaths(["C:/media/engine.mp4"]);
+assert.equal(engineQueue.getSnapshot().jobs[0].translationEngine, undefined);
+engineQueue.setTranslationEngine(engineId, "hachimi");
+assert.equal(engineQueue.getSnapshot().jobs[0].translationEngine, "hachimi");
+assert.equal(parseQueueSnapshot(JSON.stringify(engineQueue.getSnapshot())).jobs[0].translationEngine, "hachimi");
+assert.equal(parseQueueSnapshot(JSON.stringify({ ...engineQueue.getSnapshot(), jobs: [{ ...engineQueue.getSnapshot().jobs[0], translationEngine: "gemini" }] })), null);
+engineQueue.updateStatus(engineId, { ...engineQueue.getSnapshot().jobs[0].status, state: "COMPLETED" });
+const engineRevision = engineQueue.reviseJob(engineId, "D:/Out/rev");
+assert.equal(engineQueue.getSnapshot().jobs.find((job) => job.id === engineRevision).translationEngine, "hachimi");
+engineQueue.setTranslationEngine(engineRevision, "argos");
+assert.equal(engineQueue.getSnapshot().jobs.find((job) => job.id === engineRevision).translationEngine, undefined);
+assert.throws(() => engineQueue.setTranslationEngine(engineId, "argos"), /before processing/);
+
 // Processing time is recorded once: first active state, then first terminal state.
 let tick = 0;
 const timed = new QueueController(new MemorySnapshotStorage(), () => new Date(Date.UTC(2026, 9, 24, 12, 0, tick++)).toISOString());

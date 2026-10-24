@@ -24,6 +24,8 @@ export type QueueJob = {
   subtitleBox?: boolean;
   /** Spoken language of the source; undefined lets ASR detect it. */
   sourceLanguage?: "zh" | "en";
+  /** Opt-in Chinese translator; undefined means the default Argos route. */
+  translationEngine?: "hachimi";
   /** When processing first ran and when it reached a terminal state (ISO). */
   startedAt?: string;
   finishedAt?: string;
@@ -179,6 +181,7 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.burnIn === undefined || typeof job.burnIn === "boolean") &&
     (job.sourceLanguage === undefined || job.sourceLanguage === "zh" || job.sourceLanguage === "en") &&
     (job.subtitleBox === undefined || typeof job.subtitleBox === "boolean") &&
+    (job.translationEngine === undefined || job.translationEngine === "hachimi") &&
     (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
     (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
   );
@@ -394,6 +397,7 @@ export class QueueController {
     if (job.burnIn !== undefined) revision.burnIn = job.burnIn;
     if (job.subtitleBox !== undefined) revision.subtitleBox = job.subtitleBox;
     if (job.sourceLanguage !== undefined) revision.sourceLanguage = job.sourceLanguage;
+    if (job.translationEngine !== undefined) revision.translationEngine = job.translationEngine;
     if (job.originUrl) revision.originUrl = job.originUrl;
     revision.displayName = job.displayName;
     revision.status = { ...emptyStatus(), reason: "review_revision", message: "Chờ xử lý lại với bản dịch đã sửa" };
@@ -416,6 +420,14 @@ export class QueueController {
     const job = this.requireJob(jobId);
     if (job.outputDir !== undefined || !outputDir.trim()) return;
     job.outputDir = outputDir;
+    this.commit();
+  }
+
+  setTranslationEngine(jobId: string, engine: "argos" | "hachimi"): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    if (engine === "hachimi") job.translationEngine = engine;
+    else delete job.translationEngine;
     this.commit();
   }
 

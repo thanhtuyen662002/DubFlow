@@ -281,7 +281,7 @@ fn pick_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
@@ -333,6 +333,12 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
         None | Some("auto") => {}
         Some(language @ ("zh" | "en")) => args.extend(["--source-language".into(), language.to_owned()]),
         Some(_) => return Err(fail("Ngôn ngữ gốc không được hỗ trợ")),
+    }
+    match translation_engine.as_deref() {
+        None | Some("argos") => {}
+        // Opt-in HachimiMT-60 (Chinese only; see docs/licenses/hachimi-mt-60.md).
+        Some("hachimi") => args.extend(["--translation-engine".into(), "hachimi".into()]),
+        Some(_) => return Err(fail("Bộ dịch không được hỗ trợ")),
     }
     command.args(args);
     command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;
