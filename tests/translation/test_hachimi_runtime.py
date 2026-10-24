@@ -98,6 +98,48 @@ class HachimiRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(TranslationError, "TRANSLATION_EMPTY"):
             value.translate_text("你好")
 
+    def test_latin_runs_become_ordered_markers(self):
+        self.assertEqual(runtime.protect_latin("我在iPhone上用了ChatGPT和YouTube"), ("我在X1上用了X2和X3", ["iPhone", "ChatGPT", "YouTube"]))
+        self.assertEqual(runtime.protect_latin("由Jack Dorsey用Ruby on Rails编写"), ("由X1用X2编写", ["Jack Dorsey", "Ruby on Rails"]))
+        # Trailing sentence punctuation stays outside the protected run; numbers are not protected.
+        self.assertEqual(runtime.protect_latin("网址zh.wikipedia.org. 2006年"), ("网址X1. 2006年", ["zh.wikipedia.org"]))
+        self.assertEqual(runtime.protect_latin("没有拉丁文字"), ("没有拉丁文字", []))
+
+    def test_restore_requires_each_marker_exactly_once(self):
+        spans = ["SMS", "Twitter"]
+        self.assertEqual(runtime.restore_latin("qua X1 và trang web X2", spans), "qua SMS và trang web Twitter")
+        self.assertEqual(runtime.restore_latin("X2 trước, X1 sau", spans), "Twitter trước, SMS sau")
+        self.assertEqual(runtime.restore_latin("qua X1,X2 và 1,5", spans), "qua SMS, Twitter và 1,5")
+        for broken in ("chỉ có X1", "X1 X1 X2", "X1 X2 X3", "không có gì"):
+            self.assertIsNone(runtime.restore_latin(broken, spans), broken)
+
+    def test_translate_passes_latin_names_through_unchanged(self):
+        value = runtime.HachimiRuntime(ROOT, Path("models"), "zh")
+        translator = ready(value)
+        self.assertEqual(value.translate_text("我用Twitterrific和Jack Dorsey聊天。"), "vi:我用Twitterrific和Jack Dorsey聊天。")
+        self.assertEqual("".join(translator.calls[0][0][0][:-1]), "我用X1和X2聊天。")
+        self.assertEqual(value.provenance()["settings"]["latin_passthrough"], runtime.LATIN_PASSTHROUGH)
+
+    def test_lost_marker_falls_back_to_unprotected_sentence(self):
+        value = runtime.HachimiRuntime(ROOT, Path("models"), "zh")
+        ready(value)
+        seen = []
+
+        def translate_batch(batch, **options):
+            seen.append(["".join(tokens[:-1]) for tokens in batch])
+            # Drops markers, like a model that paraphrases the name away.
+            return [SimpleNamespace(hypotheses=[list("vi:" + "".join(tokens[:-1]).replace("X1", ""))]) for tokens in batch]
+
+        value._translator = SimpleNamespace(translate_batch=translate_batch)
+        self.assertEqual(value.translate_text("用SMS发送"), "vi:用SMS发送")
+        self.assertEqual(seen, [["用X1发送"], ["用SMS发送"]])
+
+    def test_latin_only_sentence_skips_the_model(self):
+        value = runtime.HachimiRuntime(ROOT, Path("models"), "zh")
+        translator = ready(value)
+        self.assertEqual(value.translate_text("Hello world! 你好。"), "Hello world! vi:你好。")
+        self.assertEqual(["".join(tokens[:-1]) for tokens in translator.calls[0][0]], ["你好。"])
+
     def test_prepare_checks_pins_before_downloading(self):
         value = runtime.HachimiRuntime(ROOT, Path("models"), "zh")
         with patch.object(runtime.importlib.metadata, "version", return_value="0.0.0"), patch.object(runtime, "ensure_model_profile", side_effect=AssertionError("unexpected download")):
