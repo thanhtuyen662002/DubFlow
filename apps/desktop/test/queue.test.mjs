@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { MemorySnapshotStorage, QueueController, parseQueueSnapshot } from "../src/features/queue/model.ts";
 import { toQueueViewModel } from "../src/features/queue/view_model.ts";
+import { failureHint } from "../src/features/job_status/status.ts";
 
 const clock = () => "2026-09-29T02:30:00.000Z";
 const storage = new MemorySnapshotStorage();
@@ -105,6 +106,20 @@ burnQueue.setBurnIn(burnId, false);
 assert.equal(burnQueue.getSnapshot().jobs[0].burnIn, false);
 burnQueue.updateStatus(burnId, { ...burnQueue.getSnapshot().jobs[0].status, state: "RUNNING" });
 assert.throws(() => burnQueue.setBurnIn(burnId, true), /before processing/);
+
+// Common worker failures get actionable Vietnamese hints; unknown ones keep their message.
+assert.match(failureHint("ASR_EMPTY: ASR produced no speech segments"), /Không tìm thấy lời thoại/);
+assert.match(failureHint("SOURCE_LANGUAGE_UNRESOLVED: x"), /Ngôn ngữ gốc/);
+assert.equal(failureHint("ASR_EMPTYISH: x"), null);
+assert.equal(failureHint("SOMETHING_ELSE: x"), null);
+
+// Source language is a per-job option; null returns to automatic detection.
+const langQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [langId] = langQueue.addPaths(["C:/media/zh.mp4"]);
+langQueue.setSourceLanguage(langId, "zh");
+assert.equal(langQueue.getSnapshot().jobs[0].sourceLanguage, "zh");
+langQueue.setSourceLanguage(langId, null);
+assert.equal(langQueue.getSnapshot().jobs[0].sourceLanguage, undefined);
 
 // Processing time is recorded once: first active state, then first terminal state.
 let tick = 0;
