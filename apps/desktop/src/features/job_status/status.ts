@@ -90,7 +90,27 @@ export function activeStageIndex(status: JobStatus): number {
   return index;
 }
 
+/** Plain-language explanations for failures users can act on. */
+const FAILURE_HINTS: Array<[RegExp, string]> = [
+  [/^ASR_EMPTY(?![A-Z_])/, "Không tìm thấy lời thoại trong video (có thể chỉ có nhạc nền hoặc tiếng quá nhỏ)."],
+  [/^AUDIO_STREAM_MISSING(?![A-Z_])/, "Video không có âm thanh nên không thể nhận dạng lời thoại."],
+  [/^SOURCE_LANGUAGE_(UNRESOLVED|MISMATCH)(?![A-Z_])/, "Không xác định được ngôn ngữ gốc. Hãy chọn “Ngôn ngữ gốc” rồi xử lý lại."],
+  [/^LANGUAGE_UNSUPPORTED(?![A-Z_])/, "Ngôn ngữ của video chưa được hỗ trợ (hiện hỗ trợ tiếng Trung và tiếng Anh)."],
+  [/^EDITABLE_STORAGE_INSUFFICIENT(?![A-Z_])/, "Ổ đĩa không đủ dung lượng trống. Hãy giải phóng dung lượng rồi xử lý lại."],
+  [/^QC_DURATION_SHORT(?![A-Z_])/, "Video xuất ra ngắn hơn bản gốc; có thể file gốc bị lỗi. Hãy thử xử lý lại."],
+  [/^TRANSLATION_OVERRIDES_INVALID(?![A-Z_])/, "Bản sửa dịch không hợp lệ. Hãy mở “Xem & sửa bản dịch” và lưu lại."],
+];
+
+export function failureHint(message: string): string | null {
+  for (const [pattern, hint] of FAILURE_HINTS) if (pattern.test(message)) return hint;
+  return null;
+}
+
 export function displayJobStatus(status: JobStatus): string {
+  if (status.state === "FAILED") {
+    const hint = failureHint(status.message);
+    if (hint) return hint;
+  }
   if (status.state === "WAITING_RESOURCE" && status.resource.kind === "GPU") {
     return "Đang chờ GPU";
   }

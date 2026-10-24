@@ -98,12 +98,14 @@
                 <span id="detail-percent" class="percent"></span>
               </div>
               <div class="bar"><span id="detail-bar"></span></div>
+              <p id="detail-timing" class="status-timing"></p>
               <p id="detail-message" class="status-message"></p>
               <ol id="stage-list" class="stages"></ol>
             </div>
 
             <section id="result-card" class="result-card" hidden>
               <h3>Kết quả</h3>
+              <p id="result-warning" class="result-warning" hidden></p>
               <p id="result-path" class="path"></p>
               <div class="result-actions">
                 <button id="open-output" class="btn primary" type="button">Mở video</button>
@@ -120,6 +122,17 @@
                   <small>Tắt = chỉ tạo phụ đề tiếng Việt, giữ audio gốc</small>
                 </span>
                 <input id="enable-dubbing" class="switch" type="checkbox" role="switch" />
+              </label>
+              <label class="select-row">
+                <span>
+                  <strong>Ngôn ngữ gốc</strong>
+                  <small>Chọn cụ thể nếu nhận diện tự động sai (ví dụ video nhiều nhạc)</small>
+                </span>
+                <select id="source-language">
+                  <option value="">Tự động</option>
+                  <option value="zh">Tiếng Trung</option>
+                  <option value="en">Tiếng Anh</option>
+                </select>
               </label>
               <label class="switch-row burn-row">
                 <span>

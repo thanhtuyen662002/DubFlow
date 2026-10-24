@@ -45,7 +45,7 @@ function status(id: string): { status: JobStatus; output_path: string | null } |
   }
   if (fraction >= 1) {
     return {
-      status: { ...base, state: "COMPLETED", reason: "completed", message: job.dubbing ? "Hoàn tất video lồng tiếng Việt" : "Hoàn tất video Vietsub", progress: { ...base.progress, completed_units: "1000" }, resource: { ...base.resource, held: false } },
+      status: { ...base, state: "COMPLETED", reason: job.dubbing ? "completed_partial_dubbing" : "completed", message: job.dubbing ? "Đã xuất video; 1 câu chưa lồng tiếng được. Audio gốc được giữ ở các đoạn lỗi." : "Hoàn tất video Vietsub", progress: { ...base.progress, completed_units: "1000" }, resource: { ...base.resource, held: false } },
       output_path: `D:\\Videos\\DubFlow Output\\${id}\\final_vi.mp4`,
     };
   }
