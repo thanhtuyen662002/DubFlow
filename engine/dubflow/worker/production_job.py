@@ -257,6 +257,7 @@ class _Emitter:
         self._message_counter = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._shut_down = False
         self._thread = threading.Thread(target=self._heartbeat_loop, name="dubflow-worker-heartbeat", daemon=True)
 
     def start(self) -> None:
@@ -268,6 +269,11 @@ class _Emitter:
 
     def send(self, message_type: MessageType, payload: dict[str, Any]) -> None:
         with self._lock:
+            # Shutdown is terminal for the stream. A heartbeat racing the final
+            # message would turn a finished (or cleanly failed) job into a
+            # supervisor protocol failure, so nothing is written after it.
+            if self._shut_down:
+                return
             self._message_counter += 1
             envelope = Envelope.create(
                 message_type,
@@ -280,6 +286,9 @@ class _Emitter:
             self.sequence += 1
             sys.stdout.buffer.write(envelope.to_line())
             sys.stdout.buffer.flush()
+            if message_type == MessageType.SHUTDOWN:
+                self._shut_down = True
+                self._stop.set()
 
     def progress(self, fraction: float, detail: str, *, units_done: int | None = None, units_total: int | None = None) -> None:
         payload: dict[str, Any] = {"fraction": max(0.0, min(1.0, float(fraction))), "detail": detail[:4096]}

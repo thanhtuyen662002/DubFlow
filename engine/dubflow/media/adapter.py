@@ -50,6 +50,12 @@ _DEFAULT_TIMEOUT_SECONDS = 15 * 60
 # the Windows FFmpeg build and keeps the production bundle license-compatible
 # while preserving the H.264 output contract without requiring a GPU.
 _WINDOWS_H264_ENCODER = "h264_mf"
+# Media Foundation is missing on Windows "N" editions and refuses some inputs;
+# the bundled Cisco OpenH264 encoder keeps the same H.264/MP4 contract then.
+_FALLBACK_H264_ENCODER = ("libopenh264", "-b:v", "8M", "-maxrate", "12M", "-bufsize", "16M")
+# H.264 4:2:0 needs even dimensions; odd inputs (853x479) are rounded down by
+# at most one pixel instead of failing the whole export.
+_EVEN_DIMENSIONS = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
 
 
 class MediaAdapterError(RuntimeError):
@@ -341,13 +347,13 @@ def blur_filtergraph(regions: Sequence[BlurRegion]) -> str:
 
     Takes one unlabeled input and ends on an unlabeled overlay, so it can sit
     between ordinary comma-joined filters inside ``-vf``. Coordinates are kept
-    even for 4:2:0 chroma; the blur radius scales with the region so small
-    and large captions are equally unreadable.
+    even for 4:2:0 chroma. The shipped LGPL FFmpeg has no ``boxblur``; a
+    strong Gaussian blur keeps captions unreadable at any resolution.
     """
     if not regions or len(regions) > MAX_BLUR_REGIONS:
         raise MediaAdapterError("MEDIA_BLUR_INVALID", f"between 1 and {MAX_BLUR_REGIONS} blur regions are required")
     even = lambda size, fraction: f"trunc({size}*{fraction:.6f}/2)*2"
-    blur = f"boxblur=luma_radius=min(w\\,h)/3:luma_power=3:chroma_radius=min(cw\\,ch)/3:chroma_power=3"
+    blur = "gblur=sigma=40:steps=3"
     count = len(regions)
     parts = ["split=" + str(count + 1) + "[blur_b0]" + "".join(f"[blur_r{index}]" for index in range(count))]
     for index, region in enumerate(regions):
@@ -863,8 +869,8 @@ class FfmpegMediaAdapter:
                 position = 1 if source_probe is not None else 0
                 video_filters.insert(position, blur_filtergraph(blur_regions))
 
-            if video_filters:
-                args.extend(("-vf", ",".join(video_filters)))
+            video_filters.append(_EVEN_DIMENSIONS)
+            args.extend(("-vf", ",".join(video_filters)))
             if source_probe is not None and audio is None and preserve_original_audio and source_probe.has_audio:
                 rate = source_probe.audio[0].sample_rate
                 origin = audio_origin_samples(source_probe.video, rate)
@@ -882,6 +888,7 @@ class FfmpegMediaAdapter:
                 args.extend(("-map", f"{subtitle_input}:0", "-c:s", "mov_text"))
             else:
                 args.append("-sn")
+            encoder_at = len(args)
             args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-quality", "90", "-pix_fmt", "yuv420p"))
             if audio is not None or preserve_original_audio:
                 args.extend(("-c:a", "aac", "-b:a", "192k"))
@@ -896,7 +903,17 @@ class FfmpegMediaAdapter:
             elif audio is not None and (subtitle is None or burn_in_subtitles):
                 args.append("-shortest")
             args.extend(("-movflags", "+faststart"))
-            return self._write_atomic(output, tuple(args), output_format="mp4", cwd=output.parent if subtitle_staging else None)
+            cwd = output.parent if subtitle_staging else None
+            try:
+                return self._write_atomic(output, tuple(args), output_format="mp4", cwd=cwd)
+            except MediaAdapterError as error:
+                if error.code != "MEDIA_COMMAND_FAILED":
+                    raise
+                fallback = [*args[:encoder_at], "-c:v", *_FALLBACK_H264_ENCODER, "-pix_fmt", "yuv420p", *args[encoder_at + 6:]]
+                try:
+                    return self._write_atomic(output, tuple(fallback), output_format="mp4", cwd=cwd)
+                except MediaAdapterError:
+                    raise error from None
         finally:
             if subtitle_staging is not None:
                 subtitle_staging.unlink(missing_ok=True)
