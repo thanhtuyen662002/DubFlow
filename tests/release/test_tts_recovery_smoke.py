@@ -126,17 +126,20 @@ def tts2_evidence(output: Path, source_hash: str):
     from dataclasses import replace
     from engine.dubflow.asr import TimeBase, TimePoint
     from engine.dubflow.tts import LocalTtsAdapter, TtsConfig, TtsInput, TtsProvenance, DeterministicFixtureEngine, approved_default_voice
-    from engine.dubflow.worker.b2_audio import _dubbing_windows, _input_hash
+    from engine.dubflow.worker.b2_audio import (DUBBING_PHRASE_RECIPE, DUBBING_WINDOW_RECIPE, _dubbing_phrases,
+                                                _dubbing_windows, _input_hash, _write_voice_documents)
     from engine.dubflow.worker.tts_checkpoints import TtsCheckpointStore
     from engine.dubflow.worker.tts_rewrites import SpokenTextStore
     generation = output / ".dubflow-work/b2-audio/recipe/generation"
     canonical = [{"cue_id": "cue-1", "start_ms": 0, "end_ms": 1000, "source_text": "Hello",
                   "translated_text": "Xin chào", "confidence": 1.0}]
     base = TimeBase(1, 1000)
-    placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": "source-intercue-postroll-2000ms-gap120ms-v1",
+    phrases = _dubbing_phrases(canonical, default_voice="fixture")
+    placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": DUBBING_WINDOW_RECIPE,
+        "phrase_recipe": DUBBING_PHRASE_RECIPE, "phrase_input_hash": _input_hash(phrases),
         "time_base": base.to_dict(), "source_end": TimePoint(1000, base).to_dict(), "source_audio_sha256": source_hash,
         "canonical_cue_input_hash": _input_hash(canonical), "gap_evidence": "recognized-source-cue-intervals;silence-not-certified",
-        "windows": _dubbing_windows(canonical, 1000)}
+        "windows": [dict(window, member_cue_ids=["cue-1"]) for window in _dubbing_windows(phrases, 1000)]}
     payload = (json.dumps(placement, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
     digest = "sha256:" + sha256(payload).hexdigest()
     config = TtsConfig(max_attempts=1)
@@ -153,13 +156,12 @@ def tts2_evidence(output: Path, source_hash: str):
     speech = LocalTtsAdapter(DeterministicFixtureEngine(), config=config, voice=voice, provenance=provenance,
         output_dir=generation / "tts").synthesize((cue,), input_hash=digest, on_checkpoint=commit)
     tts_path = generation / "tts_document.json"
-    tts_path.write_bytes(speech.to_bytes())
+    _write_voice_documents(speech, spoken, tts_path, generation / "dubbing_spoken_text.json", phrases)
     placement_path = generation / "dubbing_placement.json"
     placement_path.write_bytes(payload)
     (output / "editable").mkdir(exist_ok=True)
     (output / "editable/dubbing_placement.json").write_bytes(payload)
-    spoken_payload = (json.dumps(spoken.document(speech), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    (generation / "dubbing_spoken_text.json").write_bytes(spoken_payload)
+    spoken_payload = (generation / "dubbing_spoken_text.json").read_bytes()
     (output / "editable/dubbing_spoken_text.json").write_bytes(spoken_payload)
     return speech, tts_path, {"schema_version": 1, "path": str(placement_path), "sha256": digest}, canonical
 
