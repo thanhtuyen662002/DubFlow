@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from engine.dubflow.tts.adapter import FAST_FIT_MAX_MILLI
+
 
 _TEXT = re.compile(r"[\x00-\x1f\x7f]")
 I64_MAX = (1 << 63) - 1
@@ -37,7 +39,7 @@ class DurationFit:
         _ticks(self.generated_duration_ticks, "generated_duration_ticks", positive=True)
         if self.fit_mode not in {"native", "padded", "speed_adjusted", "rewrite_required"}:
             raise ValueError("fit mode is invalid")
-        if type(self.speed_ratio_milli) is not int or not 100 <= self.speed_ratio_milli <= 3000:
+        if type(self.speed_ratio_milli) is not int or not 100 <= self.speed_ratio_milli <= FAST_FIT_MAX_MILLI:
             raise ValueError("speed ratio is outside the safe range")
         if self.rewritten_text is not None and (not self.rewritten_text or len(self.rewritten_text) > 16384 or _TEXT.search(self.rewritten_text)):
             raise ValueError("rewritten text is invalid")
@@ -50,8 +52,8 @@ class DurationPolicy:
     max_speed_ratio_milli: int = 1250
 
     def __post_init__(self) -> None:
-        if type(self.max_speed_ratio_milli) is not int or not 1000 <= self.max_speed_ratio_milli <= 3000:
-            raise ValueError("max speed ratio must be between 1000 and 3000 milli")
+        if type(self.max_speed_ratio_milli) is not int or not 1000 <= self.max_speed_ratio_milli <= FAST_FIT_MAX_MILLI:
+            raise ValueError("max speed ratio must be between 1000 and 1500 milli")
 
     def fit(self, segment_id: str, slot_start_ticks: int, slot_end_ticks: int, generated_duration_ticks: int, *, rewritten_text: str | None = None, rewritten_duration_ticks: int | None = None) -> DurationFit:
         _ticks(slot_start_ticks, "slot_start_ticks")

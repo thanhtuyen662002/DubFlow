@@ -574,13 +574,55 @@ fn read_json(path: &Path, limit: u64) -> Result<Value, String> {
 
 /// Cue ids whose dubbing failed in the current audio generation.
 fn failed_dub_cues(work: &Path) -> std::collections::HashSet<String> {
-    let document = read_json(&work.join("checkpoint.json"), 4 * 1024 * 1024).ok()
-        .and_then(|checkpoint| checkpoint["stages"]["b2-audio"]["tts_document"].as_str().map(PathBuf::from))
-        .filter(|path| path.starts_with(work))
-        .and_then(|path| read_json(&path, 64 * 1024 * 1024).ok());
-    document.as_ref().and_then(|value| value["failures"].as_array())
-        .map(|failures| failures.iter().filter_map(|failure| failure["segment_id"].as_str().map(str::to_owned)).collect())
-        .unwrap_or_default()
+    // Windows review paths can carry a verbatim prefix while worker paths do
+    // not. Compare resolved paths so both spellings identify the same cache.
+    let work = work.canonicalize().unwrap_or_else(|_| work.to_path_buf());
+    let checkpoint = read_json(&work.join("checkpoint.json"), 4 * 1024 * 1024).unwrap_or_else(|_| json!({}));
+    let stage = &checkpoint["stages"]["b2-audio"];
+    let mut paths: Vec<PathBuf> = stage["tts_documents"].as_array().into_iter().flatten()
+        .filter_map(|value| value.as_str().map(PathBuf::from)).collect();
+    if let Some(path) = stage["tts_document"].as_str() {
+        paths.push(PathBuf::from(path));
+    }
+    paths.sort();
+    paths.dedup();
+    let documents: Vec<Value> = paths.into_iter().filter_map(|path| path.canonicalize().ok())
+        .filter(|path| path.starts_with(&work))
+        .filter_map(|path| read_json(&path, 64 * 1024 * 1024).ok()).collect();
+    let mut members = std::collections::HashMap::new();
+    let mut failures = Vec::new();
+    for document in &documents {
+        if let Some(mapping) = document["member_cue_ids"].as_object() {
+            for (segment, cues) in mapping {
+                if let Some(cues) = cues.as_array() {
+                    let cues: Vec<String> = cues.iter().filter_map(|cue| cue.as_str().map(str::to_owned)).collect();
+                    if !cues.is_empty() {
+                        members.insert(segment.clone(), cues);
+                    }
+                }
+            }
+        }
+        let speech = if document["kind"] == "dubbing_tts_document" { &document["tts_document"] } else { document };
+        failures.extend(speech["failures"].as_array().into_iter().flatten().cloned());
+    }
+    // Mixing can reject an otherwise accepted waveform; flag its members too.
+    if let Some(document) = stage["mix_document"].as_str().map(PathBuf::from)
+        .and_then(|path| path.canonicalize().ok()).filter(|path| path.starts_with(&work))
+        .and_then(|path| read_json(&path, 64 * 1024 * 1024).ok()) {
+        failures.extend(document["failures"].as_array().into_iter().flatten().cloned());
+    }
+    let mut failed = std::collections::HashSet::new();
+    for failure in failures {
+        if let Some(segment) = failure["segment_id"].as_str() {
+            if let Some(cues) = members.get(segment) {
+                failed.extend(cues.iter().cloned());
+            } else {
+                // Old per-cue documents have no member map.
+                failed.insert(segment.to_owned());
+            }
+        }
+    }
+    failed
 }
 
 #[derive(Debug, Serialize)]
@@ -1059,6 +1101,40 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_marks_all_failed_phrase_members_across_voices_and_legacy_documents() {
+        let root = std::env::temp_dir().join(format!("dubflow-phrase-review-{}", std::process::id()));
+        let output = root.join("DubFlow Output/clip - vi");
+        fs::create_dir_all(output.join(".dubflow-work")).unwrap();
+        fs::write(output.join("final_vi.mp4"), "video").unwrap();
+        let output = PathBuf::from(display_path(&fs::canonicalize(&output).unwrap()));
+        let work = output.join(".dubflow-work");
+        let primary = work.join("tts_document.json");
+        let second = work.join("tts_document.second.json");
+        let mix = work.join("mix_document.json");
+        let checkpoint = json!({"stages": {"b2-audio": {"tts_document": primary,
+            "tts_documents": [primary, second, root.join("outside.json")], "mix_document": mix}}});
+        fs::write(work.join("checkpoint.json"), checkpoint.to_string()).unwrap();
+        fs::write(&primary, json!({"kind": "dubbing_tts_document", "member_cue_ids": {
+            "phrase-a": ["a", "b"], "phrase-c": ["c", "d"]},
+            "tts_document": {"failures": [{"segment_id": "phrase-a"}]}}).to_string()).unwrap();
+        fs::write(&second, json!({"kind": "dubbing_tts_document", "member_cue_ids": {"phrase-e": ["e", "f"]},
+            "tts_document": {"failures": [{"segment_id": "phrase-e"}]}}).to_string()).unwrap();
+        fs::write(&mix, json!({"failures": [{"segment_id": "phrase-c"}, {"segment_id": "phrase-a"}]}).to_string()).unwrap();
+        fs::write(root.join("outside.json"), json!({"failures": [{"segment_id": "g"}]}).to_string()).unwrap();
+        let source_cues = ["a", "b", "c", "d", "e", "f", "g"]
+            .map(|id| json!({"cue_id": id, "start_ms": 0, "end_ms": 1000, "source_text": "源", "translated_text": "Chào"}));
+        fs::write(work.join("translation.json"), json!({"cues": source_cues}).to_string()).unwrap();
+        let cues = review_cues(output.join("final_vi.mp4").to_string_lossy().into_owned()).unwrap();
+        assert_eq!(cues.iter().filter(|cue| cue.dub_failed).map(|cue| cue.cue_id.as_str()).collect::<Vec<_>>(),
+            ["a", "b", "c", "d", "e", "f"]);
+        assert_eq!(failed_dub_cues(&work).len(), 6);
+        fs::write(&primary, json!({"failures": [{"segment_id": "g"}]}).to_string()).unwrap();
+        fs::write(work.join("checkpoint.json"), json!({"stages": {"b2-audio": {"tts_document": primary}}}).to_string()).unwrap();
+        assert_eq!(failed_dub_cues(&work), std::collections::HashSet::from(["g".to_owned()]));
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn browser_profiles_preserve_runtime_identity_and_refuse_invalid_roots() {

@@ -527,13 +527,17 @@ class VoiceVersionQualificationTests(unittest.TestCase):
             from engine.dubflow.asr import TimeBase, TimePoint
             from engine.dubflow.tts import LocalTtsAdapter, TtsConfig, TtsInput, TtsProvenance, DeterministicFixtureEngine, approved_default_voice
             from engine.dubflow.worker.tts_checkpoints import TtsCheckpointStore
-            from engine.dubflow.worker.b2_audio import _dubbing_windows, _input_hash
+            from engine.dubflow.worker.b2_audio import (DUBBING_PHRASE_RECIPE, DUBBING_WINDOW_RECIPE, _dubbing_phrases,
+                                                        _dubbing_windows, _input_hash, _write_voice_documents)
             canonical = [{"cue_id": "cue-1", "start_ms": 0, "end_ms": 1000, "source_text": "Hello", "translated_text": "Xin chào", "confidence": 1.0}]
             base = TimeBase(1,1000)
-            placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": "source-intercue-postroll-2000ms-gap120ms-v1",
+            phrases = _dubbing_phrases(canonical, default_voice='fixture')
+            placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": DUBBING_WINDOW_RECIPE,
+                "phrase_recipe": DUBBING_PHRASE_RECIPE, "phrase_input_hash": _input_hash(phrases),
                 "time_base": base.to_dict(), "source_end": TimePoint(1000,base).to_dict(),
                 "source_audio_sha256": artifacts["original_audio"]["content_hash"], "canonical_cue_input_hash": _input_hash(canonical),
-                "gap_evidence": "recognized-source-cue-intervals;silence-not-certified", "windows": _dubbing_windows(canonical,1000)}
+                "gap_evidence": "recognized-source-cue-intervals;silence-not-certified",
+                "windows": [dict(window, member_cue_ids=["cue-1"]) for window in _dubbing_windows(phrases,1000)]}
             placement_bytes = (json.dumps(placement,ensure_ascii=False,sort_keys=True,separators=(",",":"))+"\n").encode()
             placement_digest = "sha256:" + hashlib.sha256(placement_bytes).hexdigest()
             (root/'dubbing_placement.json').write_bytes(placement_bytes)
@@ -554,10 +558,9 @@ class VoiceVersionQualificationTests(unittest.TestCase):
                 output_dir=tts_root).synthesize((cue,),input_hash=placement_digest,on_checkpoint=commit)
             tts_artifact = speech.artifacts[0].to_dict()
             record = tts_root / "checkpoints" / (hashlib.sha256(b"cue-1").hexdigest() + ".json")
-            tts_path.write_bytes(speech.to_bytes())
             spoken_path = root / 'dubbing_spoken_text.json'
-            spoken_bytes = (json.dumps(spoken.document(speech), ensure_ascii=False, sort_keys=True, separators=(',', ':')) + '\n').encode()
-            spoken_path.write_bytes(spoken_bytes)
+            _write_voice_documents(speech, spoken, tts_path, spoken_path, phrases)
+            spoken_bytes = spoken_path.read_bytes()
             (editable / 'dubbing_spoken_text.json').write_bytes(spoken_bytes)
             manifest = {"audio": {"mode": "dubbed", "backend": "vieneu-v3-turbo-onnx-v1", "tts_document": str(tts_path),
                                    "mix_document": str(mix_path), "mix_provenance": provenance,
@@ -575,7 +578,7 @@ class VoiceVersionQualificationTests(unittest.TestCase):
                 current_tts = json.loads(tts_path.read_text())
                 current_tts_bytes = tts_path.read_bytes()
                 historical_tts = json.loads(tts_path.read_text())
-                historical_tts["provenance"]["producer_version"] = "3.1.0"
+                historical_tts["tts_document"]["provenance"]["producer_version"] = "3.1.0"
                 tts_path.write_text(json.dumps(historical_tts))
                 with self.assertRaisesRegex(production_smoke.SmokeError, "selected native producer"):
                     production_smoke._verify_output(root / "ffprobe", root, 3, expect_dubbing=True)

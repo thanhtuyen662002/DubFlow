@@ -29,6 +29,8 @@ from engine.dubflow.asr import TimeBase, TimeInterval, TimePoint
 
 TTS_CONTRACT_VERSION = 1
 TARGET_LANGUAGE = "vi"
+NATURAL_FIT_MAX_MILLI = 1300
+FAST_FIT_MAX_MILLI = 1500
 PCM_FORMAT = "pcm_s16le"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _LANGUAGE = re.compile(r"^(?:und|[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)$")
@@ -365,7 +367,7 @@ class TtsConfig:
     max_clip_fraction_ppm: int = 1000
     max_duration_error_ticks: int = 80
     min_speed_ratio_milli: int = 800
-    max_speed_ratio_milli: int = 1300
+    max_speed_ratio_milli: int = NATURAL_FIT_MAX_MILLI
     resource: ResourceProfile = ResourceProfile()
 
     def __post_init__(self) -> None:
@@ -383,7 +385,7 @@ class TtsConfig:
         _integer(self.max_clip_fraction_ppm, "config.max_clip_fraction_ppm", minimum=0, maximum=1_000_000)
         _integer(self.max_duration_error_ticks, "config.max_duration_error_ticks", minimum=0, maximum=I64_MAX)
         _integer(self.min_speed_ratio_milli, "config.min_speed_ratio_milli", minimum=100, maximum=1000)
-        _integer(self.max_speed_ratio_milli, "config.max_speed_ratio_milli", minimum=1000, maximum=3000)
+        _integer(self.max_speed_ratio_milli, "config.max_speed_ratio_milli", minimum=1000, maximum=FAST_FIT_MAX_MILLI)
         if self.min_speed_ratio_milli > self.max_speed_ratio_milli:
             raise TtsError("INVALID_DURATION_POLICY", "minimum speed ratio exceeds maximum")
         if not isinstance(self.resource, ResourceProfile):
@@ -548,6 +550,7 @@ class EngineSynthesis:
     fit_mode: str = "native"
     speed_ratio_milli: int = 1000
     warnings: tuple[str, ...] = ()
+    render_window_end: TimePoint | None = None
 
     def __post_init__(self) -> None:
         _blob(self.audio_bytes, "synthesis.audio_bytes", limit=512 * 1024 * 1024)
@@ -564,6 +567,8 @@ class EngineSynthesis:
             raise TtsError("INVALID_AUDIO", "synthesis.warnings must be a tuple")
         for warning in self.warnings:
             _text(warning, "synthesis.warning", limit=4096)
+        if self.render_window_end is not None and not isinstance(self.render_window_end, TimePoint):
+            raise TtsError("INVALID_TIMELINE", "synthesis render limit must be a canonical time point")
 
 
 class TtsEngine(Protocol):
@@ -1143,10 +1148,14 @@ class LocalTtsAdapter:
         fallback_engine: TtsEngine | None = None,
         fallback_profile: str = "cpu",
         fallback_provenance: TtsProvenance | None = None,
+        render_window_limits: Mapping[str, TimePoint] | None = None,
+        allow_fast_fit: bool = False,
     ) -> None:
         self.engine = engine
         self.fallback_engine = fallback_engine
         self.config = config
+        self.render_window_limits = dict(render_window_limits or {})
+        self.allow_fast_fit = allow_fast_fit
         self.voice = voice or approved_default_voice()
         self.provenance = provenance
         self.output_dir = Path(output_dir)
@@ -1201,9 +1210,13 @@ class LocalTtsAdapter:
             raise TtsError("INVALID_RENDER_WINDOW", "one document cannot mix implicit and explicit render windows")
         prior_end = None
         for index, item in enumerate(ordered):
-            if item.render_window_end is not None and item.render_window_end.ticks > item.end.ticks:
+            limit = self.render_window_limits.get(item.segment_id, item.render_window_end)
+            if limit is not None and (not isinstance(limit, TimePoint) or limit.time_base != base
+                    or item.render_window_end is None or limit.ticks < item.render_window_end.ticks):
+                raise TtsError("INVALID_RENDER_WINDOW", "invalid fallback render limit")
+            if limit is not None and limit.ticks > item.end.ticks:
                 if ((prior_end is not None and item.start.ticks < prior_end)
-                        or (index + 1 < len(ordered) and item.render_window_end.ticks > ordered[index + 1].start.ticks)):
+                        or (index + 1 < len(ordered) and limit.ticks > ordered[index + 1].start.ticks)):
                     raise TtsError("INVALID_RENDER_WINDOW", "render extension overlaps another source utterance")
             prior_end = item.end.ticks if prior_end is None else max(prior_end, item.end.ticks)
         source_ids = tuple(item.segment_id for item in ordered)
@@ -1315,7 +1328,10 @@ class LocalTtsAdapter:
         except Exception as error:
             failure = TtsError("TTS_REQUEST_FAILED", _safe_condition(error), retryable=False, segment_id=segment.segment_id, attempt=1)
             return None, [TtsFailure.from_error(failure, segment_id=segment.segment_id)], False, False, 1, ()
-        if checkpoint is not None and checkpoint.segment_id == segment.segment_id and checkpoint.artifact_hash == self._artifact_hash(segment, checkpoint.artifact.content_hash, request_id=request_id):
+        if checkpoint is not None and (checkpoint.artifact.slot_start != segment.start or checkpoint.artifact.slot_end != segment.end):
+            checkpoint = None
+        checkpoint_segment = segment if checkpoint is None else replace(segment, render_window_end=checkpoint.artifact.render_window_end)
+        if checkpoint is not None and checkpoint.segment_id == segment.segment_id and checkpoint.artifact_hash == self._artifact_hash(checkpoint_segment, checkpoint.artifact.content_hash, request_id=request_id):
             try:
                 with Path(checkpoint.artifact.path).open("rb") as handle:
                     audio_bytes = handle.read(self.config.max_wave_bytes + 1)
@@ -1324,7 +1340,7 @@ class LocalTtsAdapter:
                     EngineSynthesis(audio_bytes, sample_rate=checkpoint.artifact.sample_rate,
                                     channels=checkpoint.artifact.channels, bits_per_sample=checkpoint.artifact.bits_per_sample,
                                     fit_mode=checkpoint.artifact.fit_mode, speed_ratio_milli=checkpoint.artifact.speed_ratio_milli,
-                                    warnings=checkpoint.artifact.warnings),
+                                    warnings=checkpoint.artifact.warnings, render_window_end=checkpoint.artifact.render_window_end),
                     request,
                 )
                 checked_end = self._actual_end(segment, checked_metrics.frame_count, checked_rate)
@@ -1337,7 +1353,7 @@ class LocalTtsAdapter:
                     and checkpoint.artifact.actual_end == checked_end
                     and checkpoint.artifact.slot_start == segment.start
                     and checkpoint.artifact.slot_end == segment.end
-                    and checkpoint.artifact.render_window_end == segment.render_window_end
+                    and checkpoint.artifact.render_window_end == checked_synthesis.render_window_end
                     and checkpoint.artifact.fit_mode == checked_synthesis.fit_mode
                     and checkpoint.artifact.speed_ratio_milli == checked_synthesis.speed_ratio_milli
                     and checkpoint.artifact.content_hash == checked_metrics.content_hash
@@ -1370,6 +1386,7 @@ class LocalTtsAdapter:
         if validated is None:
             return None, failures, used_fallback, False, max(1, attempts), ()
         synthesis, metrics, sample_rate, channels = validated
+        segment = replace(segment, render_window_end=synthesis.render_window_end)
         try:
             actual_end = self._actual_end(segment, metrics.frame_count, sample_rate)
         except Exception as error:
@@ -1441,6 +1458,13 @@ class LocalTtsAdapter:
         return None, errors, self.config.max_attempts
 
     def _validate_audio(self, segment: TtsInput, synthesis: EngineSynthesis, request: TtsRequest) -> tuple[EngineSynthesis, AudioMetrics, int, int]:
+        window = synthesis.render_window_end or segment.render_window_end
+        if window != segment.render_window_end:
+            limit = self.render_window_limits.get(segment.segment_id)
+            if (segment.render_window_end is None or limit is None or window.time_base != segment.start.time_base
+                    or limit.time_base != window.time_base or not segment.render_window_end.ticks < window.ticks <= limit.ticks):
+                raise TtsError("INVALID_TIMELINE", "engine render extension exceeds the allocated fallback window")
+        segment = replace(segment, render_window_end=window)
         if synthesis.sample_rate != self.config.sample_rate or synthesis.channels != self.config.channels or synthesis.bits_per_sample != self.config.bits_per_sample:
             raise TtsError("AUDIO_METADATA_MISMATCH", "engine WAV metadata differs from requested profile")
         sample_rate, channels, metrics = _wav_metrics(synthesis.audio_bytes, self.config)
@@ -1452,9 +1476,14 @@ class LocalTtsAdapter:
         if (abs(actual_ticks - target_ticks) > self.config.max_duration_error_ticks if window_ticks is None
                 else actual_ticks < target_ticks - self.config.max_duration_error_ticks or actual_ticks > window_ticks):
             raise TtsError("AUDIO_DURATION_MISMATCH", f"audio duration {actual_ticks} ticks differs from target {target_ticks}")
-        if synthesis.fit_mode == "speed_adjusted" and not (self.config.min_speed_ratio_milli <= synthesis.speed_ratio_milli <= self.config.max_speed_ratio_milli):
+        maximum = self.config.max_speed_ratio_milli
+        fast_warning = f"TTS_FAST_FIT: {segment.segment_id}; speed {synthesis.speed_ratio_milli}"
+        if self.allow_fast_fit and fast_warning in synthesis.warnings:
+            maximum = FAST_FIT_MAX_MILLI
+        if (synthesis.speed_ratio_milli != 1000 and synthesis.fit_mode != "speed_adjusted"
+                or not self.config.min_speed_ratio_milli <= synthesis.speed_ratio_milli <= maximum):
             raise TtsError("DURATION_FIT_REQUIRED", "engine speed adjustment exceeds safe duration-fit bounds")
-        return synthesis, metrics, sample_rate, channels
+        return replace(synthesis, render_window_end=window), metrics, sample_rate, channels
 
     def _request_id(self, segment: TtsInput, input_hash: str) -> str:
         window = "" if segment.render_window_end is None else "|render-window-v2:" + str(segment.render_window_end.ticks)

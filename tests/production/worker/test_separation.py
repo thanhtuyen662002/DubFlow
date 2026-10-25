@@ -16,6 +16,7 @@ from engine.dubflow.separation import spleeter
 from engine.dubflow.separation.production import SeparationError
 from engine.dubflow.tts import approved_default_voice
 from engine.dubflow.worker import production_job as worker
+from engine.dubflow.worker.b2_audio import _restore_source_windows, B2AudioError
 
 ROOT = Path(__file__).resolve().parents[3]
 CUES = (worker.TextCue("a", 0, 1000, "你好"),)
@@ -32,6 +33,33 @@ def write_wav(path, *, rate=48000, channels=2, value=500):
 
 
 class SeparationWorkerTests(unittest.TestCase):
+    def test_source_restore_streams_unioned_windows_with_short_fades(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, background, output = root / "source.wav", root / "background.wav", root / "bed.wav"
+            write_wav(source, rate=22050, value=1200)
+            write_wav(background, rate=22050, value=-400)
+            before = background.read_bytes()
+            _restore_source_windows(background, source, output, [(500, 1100), (900, 1500), (2000, 2001)], block_frames=257)
+            self.assertEqual(background.read_bytes(), before)
+            with wave.open(str(output), "rb") as reader:
+                self.assertEqual((reader.getnframes(), reader.getnchannels(), reader.getframerate()), (66150, 2, 22050))
+                values = tuple(struct.iter_unpack("<hh", reader.readframes(reader.getnframes())))
+            self.assertTrue(all(frame == (-400, -400) for frame in values[:11025]))
+            self.assertTrue(all(frame == (1200, 1200) for frame in values[11466:32634]))
+            self.assertTrue(all(frame == (-400, -400) for frame in values[33075:44100]))
+            self.assertTrue(all(frame == (-400, -400) for frame in values[44123:]))
+            self.assertEqual(values[11025], (-400, -400))
+            self.assertEqual(values[33074], (-400, -400))
+            self.assertTrue(-400 < values[11245][0] < 1200)
+            self.assertTrue(-400 < values[32854][0] < 1200)
+            self.assertEqual(values[22050], (1200, 1200))  # no seam at overlapped slot edges
+            self.assertTrue(any(frame == (1200, 1200) for frame in values[44100:44123]))
+            original_output = output.read_bytes()
+            write_wav(background, rate=16000, value=-400)
+            with self.assertRaises(B2AudioError):
+                _restore_source_windows(background, source, output, [(500, 1500)])
+            self.assertEqual(output.read_bytes(), original_output)
     @contextmanager
     def fixture(self):
         with TemporaryDirectory() as directory:
@@ -167,6 +195,24 @@ class SeparationWorkerTests(unittest.TestCase):
             manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
             self.assertEqual(manifest["background"], {"mode": "original"})
             self.assertEqual(manifest["audio"]["bed"], "source")
+
+    def test_fit_and_restoration_advisories_reach_job_manifest_and_qc(self):
+        advisories = ("TTS_RENDER_WINDOW_WIDENED: a; end 3000", "TTS_FAST_FIT: a; speed 1400")
+        restored = "SEPARATION_SOURCE_RESTORED: b"
+        with self.fixture() as (root, config, probe, media), self.pipeline(probe, media) as (dub, _), \
+             patch.object(spleeter, "separate_background", side_effect=self.infer):
+            def warned(**kwargs):
+                audio = self.fake_b2(**kwargs)
+                audio.tts_document.warnings = advisories
+                audio.mix_document.warnings = (restored,)
+                audio.spoken_text_document_path = kwargs["work_dir"] / "dubbing_spoken_text.json"
+                audio.spoken_text_document_path.write_text("{}")
+                return audio
+            dub.side_effect = warned
+            result = worker.run_local_file(config, Mock())
+            for name in ("manifest", "qc"):
+                document = json.loads(Path(result[name]).read_text(encoding="utf-8"))
+                self.assertTrue(set((*advisories, restored)) <= set(document["warnings"]))
 
     def test_pipeline_skips_when_disabled_without_dubbing_or_without_audio(self):
         for enabled, dubbing, audio in ((False, True, True), (True, False, True), (True, True, False)):

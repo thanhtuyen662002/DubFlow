@@ -128,7 +128,7 @@ class NativeModel:
         text, speed, sequence = request["text"], request["speed"], request["sequence"]
         if type(text) is not str or not 0 < len(text) <= 512 or "\x00" in text:
             raise ValueError("native cue text is invalid")
-        if type(sequence) is not int or not 1 <= sequence <= 1_000_000 or type(speed) not in (int, float) or not 1 <= speed <= 1.3:
+        if type(sequence) is not int or not 1 <= sequence <= 1_000_000 or type(speed) not in (int, float) or not 1 <= speed <= 1.5:
             raise ValueError("native request identity/rate is invalid")
         buffer = ctypes.create_string_buffer(text.encode())
         pointer = ctypes.c_void_p(ctypes.addressof(buffer))

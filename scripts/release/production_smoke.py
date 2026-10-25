@@ -51,6 +51,17 @@ def _run(command: Sequence[str], *, timeout: float = 120.0) -> subprocess.Comple
     return result
 
 
+def _speech(path: Path) -> tuple[dict[str, Any], dict[str, list[str]] | None]:
+    """The public TTS document and, for phrase-grouped B2, its member cue map."""
+    value = _json(path)
+    if value.get("kind") == "dubbing_tts_document":
+        speech, members = value.get("tts_document"), value.get("member_cue_ids")
+        if not isinstance(speech, dict) or not isinstance(members, dict):
+            raise SmokeError(f"invalid phrase envelope at {path}")
+        return speech, members
+    return value, None
+
+
 def _json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -267,9 +278,13 @@ def _verify_dubbing_placement(output_dir: Path, manifest: dict, speech: dict) ->
         placement = _json(path)
         if raw != (json.dumps(placement, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode():
             raise ValueError("noncanonical placement bytes")
-        fields = {"schema_version", "kind", "recipe", "time_base", "source_end", "source_audio_sha256", "canonical_cue_input_hash", "gap_evidence", "windows"}
+        from engine.dubflow.worker.b2_audio import (DUBBING_PHRASE_RECIPE, DUBBING_WINDOW_RECIPE, MAX_FALLBACK_POSTROLL_MS,
+                                                    _dubbing_phrases, _dubbing_windows)
+        fields = {"schema_version", "kind", "recipe", "phrase_recipe", "phrase_input_hash", "time_base", "source_end",
+                  "source_audio_sha256", "canonical_cue_input_hash", "gap_evidence", "windows"}
         if (set(placement) != fields or type(placement["schema_version"]) is not int or placement["schema_version"] != 1
-                or placement["kind"] != "dubbing_placement" or placement["recipe"] != "source-intercue-postroll-2000ms-gap120ms-v1"
+                or placement["kind"] != "dubbing_placement" or placement["recipe"] != DUBBING_WINDOW_RECIPE
+                or placement["phrase_recipe"] != DUBBING_PHRASE_RECIPE
                 or placement["gap_evidence"] != "recognized-source-cue-intervals;silence-not-certified"
                 or metadata["sha256"] != digest or speech["provenance"]["input_hash"] != digest):
             raise ValueError("placement recipe/source binding differs")
@@ -289,30 +304,27 @@ def _verify_dubbing_placement(output_dir: Path, manifest: dict, speech: dict) ->
         canonical = [{key: cue[key] for key in ("cue_id", "start_ms", "end_ms", "source_text", "translated_text", "confidence")} for cue in manifest["cues"]]
         cue_hash = "sha256:" + hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         if cue_hash != placement["canonical_cue_input_hash"]: raise ValueError("source cue identity was rewritten")
-        ordered = sorted(canonical, key=lambda item:(item["start_ms"],item["end_ms"],item["cue_id"]))
-        if len(ordered) != len(placement["windows"]): raise ValueError("placement omitted source cues")
-        windows = {}; prior_end = -1
-        for index, (cue, window) in enumerate(zip(ordered, placement["windows"])):
-            if set(window) != {"cue_id", "slot_start", "slot_end", "render_window_end", "next_source_start", "overlaps_source", "confidence"}:
-                raise ValueError("unknown or missing placement fields")
-            start, end = cue["start_ms"], cue["end_ms"]
-            next_start = ordered[index + 1]["start_ms"] if index + 1 < len(ordered) else None
-            limit = int(window["render_window_end"]["ticks"])
-            overlaps = start < prior_end or (next_start is not None and next_start < end)
-            if (window["cue_id"] != cue["cue_id"] or window["slot_start"] != TimePoint(start,base).to_dict()
-                    or window["slot_end"] != TimePoint(end,base).to_dict() or window["render_window_end"] != TimePoint(limit,base).to_dict()
-                    or not 0 <= start < end <= limit <= source_end or limit-end > 2000
-                    or type(window["overlaps_source"]) is not bool or window["overlaps_source"] != overlaps
-                    or window["confidence"] != cue["confidence"]
-                    or window["next_source_start"] != (None if next_start is None else TimePoint(next_start,base).to_dict())
-                    or (overlaps and limit != end) or (limit > end and next_start is not None and limit > next_start-120)):
-                raise ValueError("render limit crosses source/neighbor bounds")
-            if cue["cue_id"] in windows: raise ValueError("duplicate placement identity")
-            windows[cue["cue_id"]] = window; prior_end = max(prior_end,end)
+        # The smoke dubs one voice, so the phrase plan depends only on source timing and text.
+        phrases = _dubbing_phrases(canonical, default_voice="smoke-single-voice")
+        members = {phrase["cue_id"]: phrase["member_cue_ids"] for phrase in phrases}
+        if sorted(cue for group in members.values() for cue in group) != sorted(cue["cue_id"] for cue in canonical):
+            raise ValueError("phrase plan omitted or duplicated source cues")
+        expected = [dict(window, member_cue_ids=members[window["cue_id"]]) for window in _dubbing_windows(phrases, source_end)]
+        if placement["windows"] != expected:
+            raise ValueError("placement windows differ from the recomputed phrase plan")
+        wider = {window["cue_id"]: int(window["render_window_end"]["ticks"])
+                 for window in _dubbing_windows(phrases, source_end, max_postroll_ms=MAX_FALLBACK_POSTROLL_MS)}
+        windows = {window["cue_id"]: window for window in placement["windows"]}
         for artifact in speech["artifacts"]:
             window = windows[artifact["segment_id"]]
-            for key in ("slot_start", "slot_end", "render_window_end"):
+            for key in ("slot_start", "slot_end"):
                 if artifact[key] != window[key]: raise ValueError("TTS source/render slot differs")
+            if artifact["render_window_end"] != window["render_window_end"]:
+                # ADR-0036 ladder: a widened window is bounded and always declared.
+                widened = int(artifact["render_window_end"]["ticks"])
+                if (widened > wider[artifact["segment_id"]] or widened < int(window["render_window_end"]["ticks"])
+                        or not any(item.startswith("TTS_RENDER_WINDOW_WIDENED: " + artifact["segment_id"] + ";") for item in manifest["warnings"])):
+                    raise ValueError("TTS render window differs without a bounded, declared widening")
             if int(artifact["actual_end"]["ticks"]) > int(window["slot_end"]["ticks"]):
                 if not any(item.startswith("TTS_INTERCUE_GAP_USED: " + artifact["segment_id"] + ";") for item in manifest["warnings"]):
                     raise ValueError("used postroll was hidden")
@@ -344,16 +356,20 @@ def _verify_dubbing_spoken_text(output_dir: Path, manifest: dict, speech: dict, 
         value = json.loads(raw, object_pairs_hook=_unique)
         if raw != _encoded(value) + b"\n":
             raise ValueError("spoken-text document bytes are not canonical")
+        from engine.dubflow.worker.b2_audio import _dubbing_phrases
         placement = _json(Path(audio["dubbing_placement"]["path"]))
         windows = {window["cue_id"]: window for window in placement["windows"]}
         base = TimeBase(1, 1000)
         source_language = manifest["language"]["source_language"]
-        segments = tuple(TtsInput(cue["cue_id"], cue["cue_id"], cue["translated_text"],
-            TimePoint(cue["start_ms"], base), TimePoint(cue["end_ms"], base),
-            source_language=source_language, confidence=cue["confidence"],
-            render_window_end=TimePoint(int(windows[cue["cue_id"]]["render_window_end"]["ticks"]), base))
-            for cue in manifest["cues"])
-        validate_spoken_text_document(value, tts_path.read_bytes(), segments, identity=identity)
+        canonical = [{key: cue[key] for key in ("cue_id", "start_ms", "end_ms", "source_text", "translated_text", "confidence")} for cue in manifest["cues"]]
+        phrases = _dubbing_phrases(canonical, default_voice="smoke-single-voice")
+        segments = tuple(TtsInput(phrase["cue_id"], phrase["cue_id"], phrase["translated_text"],
+            TimePoint(phrase["start_ms"], base), TimePoint(phrase["end_ms"], base),
+            source_language=source_language, confidence=phrase["confidence"],
+            render_window_end=TimePoint(int(windows[phrase["cue_id"]]["render_window_end"]["ticks"]), base))
+            for phrase in phrases)
+        _speech_document, members = _speech(tts_path)
+        validate_spoken_text_document(value, tts_path.read_bytes(), segments, identity=identity, member_cue_ids=members)
         copied = output_dir / "editable/dubbing_spoken_text.json"
         with copied.open("rb") as stream:
             if "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest() != metadata["sha256"]:
@@ -396,7 +412,7 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         audio = manifest.get("audio")
         if not isinstance(audio, dict) or audio.get("mode") != "dubbed" or audio.get("backend") != "vieneu-v3-turbo-onnx-v1":
             raise SmokeError(f"B2 manifest does not prove the app-owned voice path: {audio!r}")
-        tts_document = _json(Path(audio["tts_document"]))
+        tts_document, _members = _speech(Path(audio["tts_document"]))
         provenance = tts_document.get("provenance", {})
         if provenance.get("backend_id") != "vieneu-v3-turbo-onnx-v1" or provenance.get("producer_version") != "3.5.0":
             raise SmokeError(f"B2 TTS receipt differs from the selected native producer: {provenance!r}")
@@ -562,7 +578,7 @@ def _verify_downgrade_receipt(output: Path, status: dict[str, Any], job_id: str,
         raise SmokeError("downgrade completion differs from the validated job/QC receipt")
     audio = manifest["audio"]
     if partial:
-        tts = _json(Path(audio["tts_document"]))
+        tts, _members = _speech(Path(audio["tts_document"]))
         mix = _json(Path(audio["mix_document"]))
         failures, artifacts = tts.get("failures", []), tts.get("artifacts", [])
         if (audio.get("mode") != "dubbed" or audio.get("tts_failures") != 1 or audio.get("mix_failures") != 1 or
@@ -702,7 +718,7 @@ def _verify_no_audio_dub(ffprobe: Path, output: Path, status: dict[str, Any], jo
                        "mix_warnings": [str(item)[:256] for item in mix_warnings[:4]] if isinstance(mix_warnings, list) else "invalid"}
         raise SmokeError("no-audio dub evidence rejected: " + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True))
     verified = _verify_output(ffprobe, output, seconds, expect_dubbing=True, expect_voice_id=voice_id, expect_audio=True)
-    tts, mix = _json(Path(audio["tts_document"])), _json(Path(audio["mix_document"]))
+    (tts, _members), mix = _speech(Path(audio["tts_document"])), _json(Path(audio["mix_document"]))
     if tts.get("failures") != [] or mix.get("failures") != [] or mix.get("warnings") != mix_warnings:
         raise SmokeError("no-audio TTS/mix documents disagree with reported failures or warnings")
     with wave.open(str(output / "editable/source_audio.wav"), "rb") as reader:
@@ -846,8 +862,10 @@ def _verify_live_job_ownership(supervisor: Path, root: Path, data_root: Path, wo
         raise SmokeError("execution owner lost durable success, checkpoint, starts or final progress")
     output_report = _verify_output(ffprobe, output, seconds, expect_dubbing=True, expect_voice_id=voice_id)
     audio = _json(output / "job_manifest.json")["audio"]
-    speech = _json(Path(audio["tts_document"]))
-    if speech.get("failures") or len(speech["artifacts"]) != cues:
+    speech, members = _speech(Path(audio["tts_document"]))
+    phrases = len(members) if members is not None else cues
+    if (speech.get("failures") or len(speech["artifacts"]) != phrases
+            or (members is not None and sum(map(len, members.values())) != cues)):
         raise SmokeError("execution owner did not commit every actual pinned-TTS cue")
     _run([ffmpeg, "-v", "error", "-i", output / "final_vi.mp4", "-f", "null", "-"], timeout=timeout)
     return {"status": "passed", "scope": "actual overlapping supervisor processes; generated media/authored VI",
@@ -973,8 +991,10 @@ def _verify_tts_recovery(supervisor: Path, root: Path, data_root: Path, work_roo
             _file_digest(Path(snapshot["record"])) != snapshot["record_sha256"]):
         raise SmokeError("TTS recovery regenerated or modified previously committed speech")
     manifest = _json(output / "job_manifest.json")
-    tts = _json(Path(manifest["audio"]["tts_document"]))
-    if (len(tts["artifacts"]) != 3 or tts.get("failures") or
+    tts, members = _speech(Path(manifest["audio"]["tts_document"]))
+    # Three source cues, dubbed as however many phrases the producer planned.
+    if (len(tts["artifacts"]) != (len(members) if members is not None else 3)
+            or (members is not None and sum(map(len, members.values())) != 3) or tts.get("failures") or
             "reused TTS checkpoint for " + snapshot["segment_id"] not in tts.get("warnings", ()) or
             not any(item["segment_id"] == snapshot["segment_id"] and item["path"] == snapshot["audio"]
                     and item["content_hash"] == "sha256:" + snapshot["sha256"] for item in tts["artifacts"])):
