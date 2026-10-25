@@ -255,8 +255,39 @@ class MediaCommandTests(unittest.TestCase):
         self.assertIn(str(extracted.resolve()), render_call)
         self.assertIn("-c:v", render_call)
         self.assertIn("h264_mf", render_call)
+        self.assertTrue(render_call[render_call.index("-vf") + 1].endswith("scale=trunc(iw/2)*2:trunc(ih/2)*2"))
         self.assertIn("-c:a", render_call)
         self.assertNotIn("|", " ".join(render_call))
+        self.assertEqual(list(self.root.glob(".*.partial")), [])
+
+    def test_render_retries_once_with_openh264_when_media_foundation_fails(self):
+        trusted_root = Path(sys.executable).resolve().parent
+
+        class MediaFoundationMissing(RecordingRunner):
+            def __call__(self, argv, timeout):
+                if "h264_mf" in argv:
+                    self.calls.append(argv)
+                    return subprocess.CompletedProcess(argv, 1, "", "Unknown encoder 'h264_mf'")
+                return super().__call__(argv, timeout)
+
+        runner = MediaFoundationMissing()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=trusted_root, runner=runner)
+        rendered = adapter.render(self.source, self.root / "fallback.mp4", subtitle_path=self.subtitle)
+        self.assertTrue(rendered.is_file())
+        first, second = runner.calls[-2], runner.calls[-1]
+        self.assertIn("h264_mf", first)
+        self.assertNotIn("h264_mf", second)
+        encoder = second.index("-c:v")
+        self.assertEqual(second[encoder + 1], "libopenh264")
+        self.assertIn("yuv420p", second)
+        self.assertEqual([item for item in first if item not in {"h264_mf", "-quality", "90"}][:encoder], list(second[:encoder]))
+        self.assertEqual(list(self.root.glob(".*.partial")), [])
+
+        failing = RecordingRunner(fail=True)
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=trusted_root, runner=failing)
+        with self.assertRaisesRegex(MediaAdapterError, "MEDIA_COMMAND_FAILED"):
+            adapter.render(self.source, self.root / "broken.mp4", subtitle_path=self.subtitle)
+        self.assertEqual(len(failing.calls), 2, "exactly one fallback attempt")
         self.assertEqual(list(self.root.glob(".*.partial")), [])
 
     def test_sparse_subtitle_cannot_choose_render_end_and_integer_video_duration_bounds_output(self):
@@ -324,7 +355,8 @@ class MediaCommandTests(unittest.TestCase):
         )
         self.assertTrue(output.is_file())
         call = runner.calls[-1]
-        filter_value = call[call.index("-vf") + 1]
+        filter_value, even = call[call.index("-vf") + 1].rsplit(",", 1)
+        self.assertEqual(even, "scale=trunc(iw/2)*2:trunc(ih/2)*2")
         self.assertIn("subtitles=", filter_value)
         self.assertTrue(filter_value.split("=", 1)[1].startswith(".dubflow-subtitle-"))
         self.assertTrue(filter_value.endswith(".ass"))
@@ -377,7 +409,8 @@ class BlurRegionTests(unittest.TestCase):
     def test_filtergraph_chains_regions_and_gates_timed_ones(self):
         graph = blur_filtergraph([BlurRegion(0.08, 0.895, 0.84, 0.06), BlurRegion(0.1, 0.1, 0.2, 0.1, 2000, 4500)])
         self.assertTrue(graph.startswith("split=3[blur_b0][blur_r0][blur_r1];"))
-        self.assertIn("crop=w=trunc(iw*0.840000/2)*2:h=trunc(ih*0.060000/2)*2:x=trunc(iw*0.080000/2)*2:y=trunc(ih*0.895000/2)*2,boxblur=", graph)
+        self.assertIn("crop=w=trunc(iw*0.840000/2)*2:h=trunc(ih*0.060000/2)*2:x=trunc(iw*0.080000/2)*2:y=trunc(ih*0.895000/2)*2,gblur=", graph)
+        self.assertNotIn("boxblur", graph, "the shipped LGPL FFmpeg has no boxblur")
         self.assertIn("[blur_b0][blur_k0]overlay=x=trunc(W*0.080000/2)*2:y=trunc(H*0.895000/2)*2[blur_b1]", graph)
         # The last overlay stays unlabeled so later -vf filters chain onto it.
         self.assertTrue(graph.endswith(":enable=between(t\\,2.000\\,4.500)"))
@@ -421,7 +454,7 @@ class RealFfmpegBlurTests(unittest.TestCase):
             # A hard white "caption" bar with sharp edges near the bottom, plus a sharp bar near the top.
             subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=black:s=320x240:d=3:r=10",
                             "-vf", "drawbox=x=60:y=200:w=200:h=16:color=white:t=fill,drawbox=x=60:y=20:w=200:h=16:color=white:t=fill",
-                            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)], check=True)
+                            "-c:v", "mpeg4", "-q:v", "2", "-pix_fmt", "yuv420p", str(source)], check=True)
             adapter = FfmpegMediaAdapter(ffmpeg, trusted_root=Path(ffmpeg).resolve().parent)
             output = adapter.render(source, root / "blurred.mp4", blur_regions=(BlurRegion(0.1, 0.75, 0.8, 0.2, 1000, 3000),), overwrite=True)
             before, after = self.gray(ffmpeg, output, 0.5), self.gray(ffmpeg, output, 2.0)
@@ -435,6 +468,20 @@ class RealFfmpegBlurTests(unittest.TestCase):
             # The top bar lies outside the region and stays sharp.
             self.assertGreater(pixel(after, 160, 28), 200)
             self.assertLess(pixel(after, 160, 42), 40)
+
+    def test_odd_dimensions_render_to_even_h264(self):
+        ffmpeg = os.environ["DUBFLOW_TEST_FFMPEG"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "odd.mkv"
+            subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=853x479:d=1:r=10",
+                            "-c:v", "ffv1", str(source)], check=True)
+            adapter = FfmpegMediaAdapter(ffmpeg, trusted_root=Path(ffmpeg).resolve().parent)
+            output = adapter.render(source, root / "even.mp4", preserve_original_audio=False, overwrite=True)
+            probe = subprocess.run([Path(ffmpeg).with_name("ffprobe.exe" if os.name == "nt" else "ffprobe"), "-v", "error",
+                                    "-show_entries", "stream=codec_name,width,height", "-of", "csv=p=0", str(output)],
+                                   check=True, capture_output=True, text=True).stdout.strip()
+            self.assertEqual(probe, "h264,852,478")
 
 
 if __name__ == "__main__":
