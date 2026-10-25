@@ -1,0 +1,158 @@
+{
+  "name": "hot_fresh",
+  "platform": "douyin",
+  "at_utc": "2026-10-25T04:01:59.430133+00:00",
+  "method": "GET",
+  "url": "https://www.douyin.com/aweme/v1/web/hot/search/list/?device_platform=webapp&aid=6383&channel=channel_pc_web&detail_list=1&source=6&main_billboard_count=5",
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.douyin.com/"
+  },
+  "cookie_names_sent": [],
+  "external_cookie_file_used": false,
+  "request_body": null,
+  "expected_items_path": "data.word_list",
+  "probe_note": "No imported cookies, no a_bogus or X-Bogus",
+  "http_status": 200,
+  "final_url": "https://www.douyin.com/aweme/v1/web/hot/search/list/?device_platform=webapp&aid=6383&channel=channel_pc_web&detail_list=1&source=6&main_billboard_count=5",
+  "content_type": "application/json",
+  "content_encoding": "gzip",
+  "wire_bytes": 12286,
+  "body_capped": false,
+  "response_headers": {
+    "Server": "Tengine",
+    "Date": "Sun, 25 Oct 2026 04:01:59 GMT",
+    "X-Tt-Logid": "20261025120159398C699A2FFD560FC3FF"
+  },
+  "set_cookie_names": [],
+  "body_bytes": 67177,
+  "response_json": {
+    "banner_dark": {
+      "uri": "32e5200049fac86168117",
+      "url_list": [
+        "https://p26-sign.douyinpic.com/obj/32e5200049fac86168117?lk3s=03ea9982&x-expires=1792922400&x-signature=IcTjwN3bgKqiJjNFK%2B%2BEY933nqE%3D&from=65706370"
+      ]
+    },
+    "banner_light": {
+      "uri": "321f4000f703369c24604",
+      "url_list": [
+        "https://p3-sign.douyinpic.com/obj/321f4000f703369c24604?lk3s=03ea9982&x-expires=1792922400&x-signature=UDDrycNqe%2FWI0nJEJneevhUdg0Q%3D&from=65706370"
+      ]
+    },
+    "data": {
+      "active_time": "2026-10-25 11:58:55",
+      "banner_display": {},
+      "display_style": 0,
+      "share_info": {
+        "share_link_desc": "我在看抖音热榜，发现最火的内容，赶快来看！戳这里>>",
+        "share_title": "我在看抖音热榜，发现最火的内容，赶快来看！",
+        "share_url": "https://www.iesdouyin.com/share/billboard/?id=0"
+      },
+      "trending_desc": "实时上升热点",
+      "trending_list": [
+        {
+          "discuss_video_count": 1,
+          "display_style": 0,
+          "event_time": 1792836438,
+          "group_id": "7699435156930991375",
+          "hot_value": 0,
+          "hotlist_param": "{\"version\":1}",
+          "label": 0,
+          "sentence_id": "2711619",
+          "sentence_tag": 1001,
+          "video_count": 3,
+          "word": "用这个滑动卡点记录日常",
+          "word_cover": {
+            "uri": "tos-cn-p-0015c000-ce/owAajvBTO1E79i3atIoUmMAIwP418BATriYPa",
+            "url_list": [
+              "https://p11-sign.douyinpic.com/tos-cn-p-0015c000-ce/owAajvBTO1E79i3atIoUmMAIwP418BATriYPa~noop.jpeg?lk3s=bfd515bb&x-expires=1792922400&x-signature=wJ2IyjoGX3Agfe0XMCPYaB6gOQA%3D&from=3218412987"
+            ]
+          },
+          "word_sub_board": [
+            3
+          ],
+          "word_type": 3
+        }
+      ],
+      "word_list": [
+        {
+          "article_detail_count": 0,
+          "can_extend_detail": false,
+          "discuss_video_count": 1,
+          "display_style": 0,
+          "event_time": 1792885023,
+          "group_id": "7553058116880930083",
+          "hot_value": 11979409,
+          "hotlist_param": "{\"version\":1}",
+          "is_n1": false,
+          "label": 0,
+          "max_rank": 1,
+          "position": 1,
+          "sentence_id": "2712021",
+          "sentence_tag": 3001,
+          "video_count": 6,
+          "word": "台湾光复81周年",
+          "word_cover": {
+            "uri": "tos-cn-p-0015/oUlLM8PQiITtA5k2PZDUiAsxQcIyAIgIwaBL8",
+            "url_list": [
+              "https://p11-sign.douyinpic.com/tos-cn-p-0015/oUlLM8PQiITtA5k2PZDUiAsxQcIyAIgIwaBL8~noop.jpeg?lk3s=bfd515bb&x-expires=1792922400&x-signature=pvf%2BkJ3Hm4cbk8wXZZOAKCdR4zU%3D&from=3218412987"
+            ]
+          },
+          "word_type": 1
+        }
+      ]
+    },
+    "extra": {
+      "logid": "20261025120159398C699A2FFD560FC3FF",
+      "now": 1792900919000,
+      "time_cost": {
+        "stream_inner": 100
+      }
+    },
+    "log_pb": {
+      "impr_id": "20261025120159398C699A2FFD560FC3FF"
+    },
+    "status_code": 0
+  },
+  "array_counts_before_trimming": {
+    "banner_dark.url_list": 3,
+    "banner_light.url_list": 3,
+    "data.trending_list": 5,
+    "data.trending_list[0].word_cover.url_list": 3,
+    "data.trending_list[0].word_sub_board": 1,
+    "data.word_list": 50,
+    "data.word_list[0].word_cover.url_list": 3
+  },
+  "application_status_code": 0,
+  "expected_item_count": 50,
+  "first_item": {
+    "article_detail_count": 0,
+    "can_extend_detail": false,
+    "discuss_video_count": 1,
+    "display_style": 0,
+    "event_time": 1792885023,
+    "group_id": "7553058116880930083",
+    "hot_value": 11979409,
+    "hotlist_param": "{\"version\":1}",
+    "is_n1": false,
+    "label": 0,
+    "max_rank": 1,
+    "position": 1,
+    "sentence_id": "2712021",
+    "sentence_tag": 3001,
+    "video_count": 6,
+    "word": "台湾光复81周年",
+    "word_cover": {
+      "uri": "tos-cn-p-0015/oUlLM8PQiITtA5k2PZDUiAsxQcIyAIgIwaBL8",
+      "url_list": [
+        "https://p11-sign.douyinpic.com/tos-cn-p-0015/oUlLM8PQiITtA5k2PZDUiAsxQcIyAIgIwaBL8~noop.jpeg?lk3s=bfd515bb&x-expires=1792922400&x-signature=pvf%2BkJ3Hm4cbk8wXZZOAKCdR4zU%3D&from=3218412987"
+      ]
+    },
+    "word_type": 1
+  },
+  "elapsed_seconds": 0.454,
+  "cookie_jar_names_after": []
+}
