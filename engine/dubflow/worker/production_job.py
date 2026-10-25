@@ -70,7 +70,7 @@ def _prepare_worker_import_path() -> None:
 _prepare_worker_import_path()
 
 from engine.dubflow.media import CANONICAL_TIME_BASE, FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult, MediaTimeline
-from engine.dubflow.media.adapter import AUDIO_DECODE_RECIPE, audio_origin_samples
+from engine.dubflow.media.adapter import AUDIO_DECODE_RECIPE, MAX_BLUR_REGIONS, BlurRegion, audio_origin_samples
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
 from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.translation.adapter import SourceSegment, TranslationError, resolve_source_language
@@ -150,6 +150,8 @@ class WorkerConfig:
     subtitle_box: bool = False
     # "hachimi" opts Chinese sources into HachimiMT-60; Argos stays the default.
     translation_engine: str = "argos"
+    # Source-caption rectangles to blur before drawing the Vietnamese subtitles.
+    blur_regions: tuple[BlurRegion, ...] = ()
     translation_package: Path | None = None
     tts_model: Path | None = None
     tts_config: Path | None = None
@@ -183,6 +185,14 @@ class WorkerConfig:
         if translation_engine not in TRANSLATION_ENGINES:
             raise ProductionJobError("COMMAND_INVALID", "translation_engine must be argos or hachimi")
 
+        raw_blur = args.get("blur_regions") or []
+        if not isinstance(raw_blur, list) or len(raw_blur) > MAX_BLUR_REGIONS:
+            raise ProductionJobError("COMMAND_INVALID", "blur_regions must be a bounded list")
+        try:
+            blur_regions = tuple(BlurRegion.from_mapping(item) for item in raw_blur)
+        except MediaAdapterError as error:
+            raise ProductionJobError("COMMAND_INVALID", error.condition) from error
+
         config = cls(
             job_id=str(args["job_id"]),
             stage_id=str(args["stage_id"]),
@@ -200,6 +210,7 @@ class WorkerConfig:
             burn_in_subtitles=optional_bool("burn_in_subtitles", True),
             subtitle_box=optional_bool("subtitle_box", False),
             translation_engine=translation_engine,
+            blur_regions=blur_regions,
             translation_package=optional_path("translation_package"),
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
@@ -1126,11 +1137,12 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     final_path = export_dir / "final_vi.mp4"
     render_stage = "render-dubbed" if audio_path is not None else "render"
     video_duration = _source_render_duration(probe)
+    blur_regions = tuple(getattr(config, "blur_regions", ()))
     # A successful B2 run always re-renders against the newly verified mix.
     # This prevents a changed voice-pack hash or regenerated mix from being
     # hidden by a stale final-video checkpoint after a resumable restart.
     def render_identity() -> str:
-        return sha256(json.dumps({"source": source_hash, "translation": translation_input, "subtitles": _sha256(ass_path), "burn_in": config.burn_in_subtitles, "audio": _sha256(audio_path) if audio_path is not None else "original", "recipe": "h264-aac-source-duration-v2", "duration": video_duration.to_dict() if video_duration else None, "adapter": _sha256(Path(__file__).parents[1] / "media" / "adapter.py")}, sort_keys=True).encode()).hexdigest()
+        return sha256(json.dumps({"source": source_hash, "translation": translation_input, "subtitles": _sha256(ass_path), "burn_in": config.burn_in_subtitles, "audio": _sha256(audio_path) if audio_path is not None else "original", "recipe": "h264-aac-source-duration-v2", "duration": video_duration.to_dict() if video_duration else None, "adapter": _sha256(Path(__file__).parents[1] / "media" / "adapter.py"), **({"blur": [region.to_dict() for region in blur_regions]} if blur_regions else {})}, sort_keys=True).encode()).hexdigest()
 
     render_input = render_identity()
     render_ready = False
@@ -1153,6 +1165,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 source_probe=probe,
                 preserve_original_audio=audio_path is None,
                 burn_in_subtitles=config.burn_in_subtitles,
+                blur_regions=blur_regions,
                 overwrite=True,
             )
         except MediaAdapterError as error:
@@ -1174,6 +1187,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 video_duration=video_duration,
                 source_probe=probe,
                 burn_in_subtitles=config.burn_in_subtitles,
+                blur_regions=blur_regions,
                 overwrite=True,
             )
         _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"], "input_hash": render_input})
@@ -1210,6 +1224,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             video_duration=video_duration,
             source_probe=probe,
             burn_in_subtitles=config.burn_in_subtitles,
+            blur_regions=blur_regions,
             overwrite=True,
         )
         output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)

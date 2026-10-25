@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from unittest.mock import patch
 import wave
 
 from engine.dubflow.media import (
+    BlurRegion,
     FfmpegMediaAdapter,
     MediaAdapterError,
     MediaProbe,
@@ -18,7 +20,7 @@ from engine.dubflow.media import (
     Rational,
     parse_ffprobe_json,
 )
-from engine.dubflow.media.adapter import audio_origin_samples
+from engine.dubflow.media.adapter import MAX_BLUR_REGIONS, audio_origin_samples, blur_filtergraph
 
 
 def _probe_document() -> dict[str, object]:
@@ -353,6 +355,86 @@ class MediaCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(MediaAdapterError, "OUTPUT_EXISTS"):
             adapter.render(self.source, output, preserve_original_audio=False)
         self.assertEqual(output.read_bytes(), b"keep")
+
+
+class BlurRegionTests(unittest.TestCase):
+    def test_region_must_fit_the_frame_with_a_coherent_time_range(self):
+        self.assertEqual(BlurRegion.from_mapping({"x": 0.1, "y": 0.8, "w": 0.8, "h": 0.1}).to_dict(), {"x": 0.1, "y": 0.8, "w": 0.8, "h": 0.1})
+        timed = BlurRegion.from_mapping({"x": 0, "y": 0, "w": 1, "h": 1, "start_ms": 0, "end_ms": 1500})
+        self.assertEqual(timed.to_dict()["end_ms"], 1500)
+        invalid = (
+            {"x": -0.1, "y": 0.8, "w": 0.5, "h": 0.1}, {"x": 0.6, "y": 0.8, "w": 0.5, "h": 0.1},
+            {"x": 0.1, "y": 0.95, "w": 0.5, "h": 0.1}, {"x": 0.1, "y": 0.8, "w": 0.001, "h": 0.1},
+            {"x": float("nan"), "y": 0.8, "w": 0.5, "h": 0.1}, {"x": "0.1", "y": 0.8, "w": 0.5, "h": 0.1},
+            {"x": 0.1, "y": 0.8, "w": 0.5}, {"x": 0.1, "y": 0.8, "w": 0.5, "h": 0.1, "color": "black"},
+            {"x": 0.1, "y": 0.8, "w": 0.5, "h": 0.1, "start_ms": 100}, {"x": 0.1, "y": 0.8, "w": 0.5, "h": 0.1, "start_ms": 900, "end_ms": 900},
+            {"x": 0.1, "y": 0.8, "w": 0.5, "h": 0.1, "start_ms": 1.5, "end_ms": 9}, [0.1, 0.8, 0.5, 0.1],
+        )
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaisesRegex(MediaAdapterError, "MEDIA_BLUR_INVALID"):
+                BlurRegion.from_mapping(value)
+
+    def test_filtergraph_chains_regions_and_gates_timed_ones(self):
+        graph = blur_filtergraph([BlurRegion(0.08, 0.895, 0.84, 0.06), BlurRegion(0.1, 0.1, 0.2, 0.1, 2000, 4500)])
+        self.assertTrue(graph.startswith("split=3[blur_b0][blur_r0][blur_r1];"))
+        self.assertIn("crop=w=trunc(iw*0.840000/2)*2:h=trunc(ih*0.060000/2)*2:x=trunc(iw*0.080000/2)*2:y=trunc(ih*0.895000/2)*2,boxblur=", graph)
+        self.assertIn("[blur_b0][blur_k0]overlay=x=trunc(W*0.080000/2)*2:y=trunc(H*0.895000/2)*2[blur_b1]", graph)
+        # The last overlay stays unlabeled so later -vf filters chain onto it.
+        self.assertTrue(graph.endswith(":enable=between(t\\,2.000\\,4.500)"))
+        for regions in ([], [BlurRegion(0, 0, 0.5, 0.5)] * (MAX_BLUR_REGIONS + 1)):
+            with self.assertRaisesRegex(MediaAdapterError, "MEDIA_BLUR_INVALID"):
+                blur_filtergraph(regions)
+
+    def test_render_blurs_after_origin_reset_and_before_vietnamese_subtitles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            subtitle = root / "captions.ass"
+            source.write_bytes(b"video")
+            subtitle.write_text("[Script Info]\n", encoding="utf-8")
+            probe = parse_ffprobe_json(json.dumps(_probe_document()), source_path=source)
+            runner = RecordingRunner()
+            adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+            region = BlurRegion(0.1, 0.85, 0.8, 0.1)
+            adapter.render(source, root / "out.mp4", subtitle_path=subtitle, source_probe=probe, burn_in_subtitles=True, blur_regions=(region,), overwrite=True)
+            filters = runner.calls[-1][runner.calls[-1].index("-vf") + 1]
+            self.assertTrue(filters.startswith("setpts=PTS-STARTPTS,split=2"))
+            self.assertRegex(filters, r"overlay=x=trunc\(W\*0\.100000/2\)\*2:y=trunc\(H\*0\.850000/2\)\*2,subtitles=\.dubflow-subtitle-")
+            # Blur also applies when subtitles are kept as separate files.
+            adapter.render(source, root / "soft.mp4", subtitle_path=subtitle, blur_regions=(region,), overwrite=True)
+            self.assertTrue(runner.calls[-1][runner.calls[-1].index("-vf") + 1].startswith("split=2"))
+            with self.assertRaisesRegex(MediaAdapterError, "MEDIA_BLUR_INVALID"):
+                adapter.render(source, root / "bad.mp4", blur_regions=({"x": 0},), overwrite=True)
+
+
+@unittest.skipUnless(os.environ.get("DUBFLOW_TEST_FFMPEG"), "set DUBFLOW_TEST_FFMPEG to a real ffmpeg.exe to run")
+class RealFfmpegBlurTests(unittest.TestCase):
+    def gray(self, ffmpeg: str, video: Path, seconds: float) -> bytes:
+        return subprocess.run([ffmpeg, "-v", "error", "-ss", str(seconds), "-i", str(video), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"],
+                              check=True, capture_output=True).stdout
+
+    def test_caption_band_is_smoothed_only_inside_the_region_and_time(self):
+        ffmpeg = os.environ["DUBFLOW_TEST_FFMPEG"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "caption.mp4"
+            # A hard white "caption" bar with sharp edges near the bottom, plus a sharp bar near the top.
+            subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=black:s=320x240:d=3:r=10",
+                            "-vf", "drawbox=x=60:y=200:w=200:h=16:color=white:t=fill,drawbox=x=60:y=20:w=200:h=16:color=white:t=fill",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)], check=True)
+            adapter = FfmpegMediaAdapter(ffmpeg, trusted_root=Path(ffmpeg).resolve().parent)
+            output = adapter.render(source, root / "blurred.mp4", blur_regions=(BlurRegion(0.1, 0.75, 0.8, 0.2, 1000, 3000),), overwrite=True)
+            before, after = self.gray(ffmpeg, output, 0.5), self.gray(ffmpeg, output, 2.0)
+            pixel = lambda frame, x, y: frame[y * 320 + x]
+            # Before 1 s the caption is untouched: its centre is white and the gap below it is black.
+            self.assertGreater(pixel(before, 160, 208), 200)
+            self.assertLess(pixel(before, 160, 222), 40)
+            # Inside the window the bar's centre darkens and its surroundings brighten.
+            self.assertLess(pixel(after, 160, 208), 200)
+            self.assertGreater(pixel(after, 160, 222), 40)
+            # The top bar lies outside the region and stays sharp.
+            self.assertGreater(pixel(after, 160, 28), 200)
+            self.assertLess(pixel(after, 160, 42), 40)
 
 
 if __name__ == "__main__":

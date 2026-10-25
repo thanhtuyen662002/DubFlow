@@ -1,3 +1,4 @@
+import { isBlurRegionList, type BlurRegion } from "../blur/region.ts";
 import type { JobStatus, JobStatusState } from "../job_status/status.ts";
 import { isDubbingOptions, type DubbingOptions } from "../voices/model.ts";
 
@@ -26,6 +27,8 @@ export type QueueJob = {
   sourceLanguage?: "zh" | "en";
   /** Opt-in Chinese translator; undefined means the default Argos route. */
   translationEngine?: "hachimi";
+  /** Source-caption rectangles to blur (fractions of the frame); undefined = no blur. */
+  blurRegions?: BlurRegion[];
   /** When processing first ran and when it reached a terminal state (ISO). */
   startedAt?: string;
   finishedAt?: string;
@@ -182,6 +185,7 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.sourceLanguage === undefined || job.sourceLanguage === "zh" || job.sourceLanguage === "en") &&
     (job.subtitleBox === undefined || typeof job.subtitleBox === "boolean") &&
     (job.translationEngine === undefined || job.translationEngine === "hachimi") &&
+    (job.blurRegions === undefined || isBlurRegionList(job.blurRegions)) &&
     (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
     (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
   );
@@ -398,6 +402,7 @@ export class QueueController {
     if (job.subtitleBox !== undefined) revision.subtitleBox = job.subtitleBox;
     if (job.sourceLanguage !== undefined) revision.sourceLanguage = job.sourceLanguage;
     if (job.translationEngine !== undefined) revision.translationEngine = job.translationEngine;
+    if (job.blurRegions !== undefined) revision.blurRegions = job.blurRegions.map((region) => ({ ...region }));
     if (job.originUrl) revision.originUrl = job.originUrl;
     revision.displayName = job.displayName;
     revision.status = { ...emptyStatus(), reason: "review_revision", message: "Chờ xử lý lại với bản dịch đã sửa" };
@@ -429,6 +434,29 @@ export class QueueController {
     if (engine === "hachimi") job.translationEngine = engine;
     else delete job.translationEngine;
     this.commit();
+  }
+
+  setBlurRegions(jobId: string, regions: readonly BlurRegion[] | null): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    if (regions === null || regions.length === 0) delete job.blurRegions;
+    else if (isBlurRegionList(regions)) job.blurRegions = regions.map((region) => ({ ...region }));
+    else throw new Error("Invalid blur regions");
+    this.commit();
+  }
+
+  /** Use the same blur regions for every job still waiting; returns how many changed. */
+  setBlurRegionsForQueued(regions: readonly BlurRegion[] | null): number {
+    if (regions !== null && regions.length > 0 && !isBlurRegionList(regions)) throw new Error("Invalid blur regions");
+    let changed = 0;
+    for (const job of this.snapshot.jobs) {
+      if (job.status.state !== "QUEUED") continue;
+      if (regions === null || regions.length === 0) delete job.blurRegions;
+      else job.blurRegions = regions.map((region) => ({ ...region }));
+      changed += 1;
+    }
+    if (changed) this.commit();
+    return changed;
   }
 
   setSubtitleBox(jobId: string, subtitleBox: boolean): void {

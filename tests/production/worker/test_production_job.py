@@ -162,6 +162,12 @@ class ProductionWorkerTests(unittest.TestCase):
             for invalid in ("gemini", 1, True):
                 with self.subTest(engine=invalid), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
                     WorkerConfig.from_args({**args, "translation_engine": invalid})
+            self.assertEqual(WorkerConfig.from_args(args).blur_regions, ())
+            regions = WorkerConfig.from_args({**args, "blur_regions": [{"x": 0.1, "y": 0.85, "w": 0.8, "h": 0.1}, {"x": 0, "y": 0, "w": 0.2, "h": 0.1, "start_ms": 0, "end_ms": 900}]}).blur_regions
+            self.assertEqual([region.to_dict() for region in regions], [{"x": 0.1, "y": 0.85, "w": 0.8, "h": 0.1}, {"x": 0, "y": 0, "w": 0.2, "h": 0.1, "start_ms": 0, "end_ms": 900}])
+            for invalid in ({"x": 0.1}, [{"x": 0.5, "y": 0.5, "w": 0.6, "h": 0.1}], [{"x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1}] * 257):
+                with self.subTest(blur=str(invalid)[:40]), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
+                    WorkerConfig.from_args({**args, "blur_regions": invalid})
 
     def test_worker_runtime_keeps_third_party_packaging_ahead_of_app_policy_package(self) -> None:
         """The bundled Argos dependency must not resolve the repo package."""

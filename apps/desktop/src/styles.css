@@ -292,3 +292,22 @@ h1, h2, h3, p { margin: 0; }
 .output-root .link { font-size: 12px; }
 @media (max-width: 1080px) { .output-root { display: none; } }
 .box-row { margin-top: 10px; }
+.blur-panel { width: min(980px, 100%); height: auto; max-height: 100%; }
+.blur-body { display: flex; flex-direction: column; gap: 12px; min-height: 0; padding: 16px 20px; overflow: auto; }
+.blur-stage { position: relative; align-self: center; max-width: 100%; line-height: 0; border-radius: 8px; overflow: hidden; background: #000; touch-action: none; user-select: none; }
+.blur-stage img { display: block; max-width: 100%; max-height: 58vh; }
+.blur-rect { position: absolute; box-sizing: border-box; border: 2px solid var(--accent); background: rgba(255,255,255,.04); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); box-shadow: 0 0 0 9999px rgba(0,0,0,.28); cursor: move; }
+.blur-rect:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.blur-rect span { position: absolute; width: 12px; height: 12px; border: 2px solid var(--accent); border-radius: 3px; background: #fff; }
+.blur-rect [data-handle="nw"] { left: -7px; top: -7px; cursor: nwse-resize; }
+.blur-rect [data-handle="n"] { left: calc(50% - 6px); top: -7px; cursor: ns-resize; }
+.blur-rect [data-handle="ne"] { right: -7px; top: -7px; cursor: nesw-resize; }
+.blur-rect [data-handle="w"] { left: -7px; top: calc(50% - 6px); cursor: ew-resize; }
+.blur-rect [data-handle="e"] { right: -7px; top: calc(50% - 6px); cursor: ew-resize; }
+.blur-rect [data-handle="sw"] { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.blur-rect [data-handle="s"] { left: calc(50% - 6px); bottom: -7px; cursor: ns-resize; }
+.blur-rect [data-handle="se"] { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.blur-loading { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: #fff; font-size: 13px; line-height: 1.4; background: rgba(0,0,0,.35); }
+.blur-loading[hidden] { display: none; }
+.blur-time { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: 13px; }
+.blur-time input { flex: 1; accent-color: var(--accent); }

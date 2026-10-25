@@ -292,6 +292,73 @@ class MediaTimeline:
         }
 
 
+MAX_BLUR_REGIONS = 256
+
+
+@dataclass(frozen=True)
+class BlurRegion:
+    """A frame rectangle to blur, as fractions of the displayed width/height.
+
+    ``start_ms``/``end_ms`` bound it in time (source-relative); both unset
+    blurs the whole video. Fractions keep a region valid for any resolution
+    or display rotation, since FFmpeg evaluates them against the real frame.
+    """
+
+    x: float
+    y: float
+    w: float
+    h: float
+    start_ms: int | None = None
+    end_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        values = (self.x, self.y, self.w, self.h)
+        if not all(type(value) in (int, float) and math.isfinite(value) for value in values):
+            raise MediaAdapterError("MEDIA_BLUR_INVALID", "blur region coordinates must be finite numbers")
+        if self.x < 0 or self.y < 0 or self.w < 0.01 or self.h < 0.01 or self.x + self.w > 1.000001 or self.y + self.h > 1.000001:
+            raise MediaAdapterError("MEDIA_BLUR_INVALID", "blur region must lie inside the frame and be at least 1% wide and tall")
+        for value in (self.start_ms, self.end_ms):
+            if value is not None and (type(value) is not int or not 0 <= value <= 86_400_000):
+                raise MediaAdapterError("MEDIA_BLUR_INVALID", "blur region times must be milliseconds within a day")
+        if (self.start_ms is None) != (self.end_ms is None) or (self.start_ms is not None and self.start_ms >= self.end_ms):
+            raise MediaAdapterError("MEDIA_BLUR_INVALID", "blur region time range must have start before end")
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "BlurRegion":
+        if not isinstance(value, Mapping) or not {"x", "y", "w", "h"} <= set(value) or not set(value) <= {"x", "y", "w", "h", "start_ms", "end_ms"}:
+            raise MediaAdapterError("MEDIA_BLUR_INVALID", "blur region needs x, y, w, h and optional start_ms/end_ms")
+        return cls(value["x"], value["y"], value["w"], value["h"], value.get("start_ms"), value.get("end_ms"))
+
+    def to_dict(self) -> dict[str, Any]:
+        value: dict[str, Any] = {"x": self.x, "y": self.y, "w": self.w, "h": self.h}
+        if self.start_ms is not None:
+            value.update(start_ms=self.start_ms, end_ms=self.end_ms)
+        return value
+
+
+def blur_filtergraph(regions: Sequence[BlurRegion]) -> str:
+    """FFmpeg filtergraph fragment that blurs each region in turn.
+
+    Takes one unlabeled input and ends on an unlabeled overlay, so it can sit
+    between ordinary comma-joined filters inside ``-vf``. Coordinates are kept
+    even for 4:2:0 chroma; the blur radius scales with the region so small
+    and large captions are equally unreadable.
+    """
+    if not regions or len(regions) > MAX_BLUR_REGIONS:
+        raise MediaAdapterError("MEDIA_BLUR_INVALID", f"between 1 and {MAX_BLUR_REGIONS} blur regions are required")
+    even = lambda size, fraction: f"trunc({size}*{fraction:.6f}/2)*2"
+    blur = f"boxblur=luma_radius=min(w\\,h)/3:luma_power=3:chroma_radius=min(cw\\,ch)/3:chroma_power=3"
+    count = len(regions)
+    parts = ["split=" + str(count + 1) + "[blur_b0]" + "".join(f"[blur_r{index}]" for index in range(count))]
+    for index, region in enumerate(regions):
+        parts.append(f"[blur_r{index}]crop=w={even('iw', region.w)}:h={even('ih', region.h)}:x={even('iw', region.x)}:y={even('ih', region.y)},{blur}[blur_k{index}]")
+    for index, region in enumerate(regions):
+        enable = "" if region.start_ms is None else f":enable=between(t\\,{region.start_ms / 1000:.3f}\\,{region.end_ms / 1000:.3f})"
+        label = "" if index == count - 1 else f"[blur_b{index + 1}]"
+        parts.append(f"[blur_b{index}][blur_k{index}]overlay=x={even('W', region.x)}:y={even('H', region.y)}{enable}{label}")
+    return ";".join(parts)
+
+
 def audio_origin_samples(video: MediaStream, sample_rate: int) -> int:
     """Map the first video PTS to PCM with explicit floor rounding.
 
@@ -727,9 +794,12 @@ class FfmpegMediaAdapter:
         source_probe: MediaProbeResult | None = None,
         preserve_original_audio: bool = True,
         burn_in_subtitles: bool = False,
+        blur_regions: Sequence[BlurRegion] = (),
         overwrite: bool = False,
     ) -> Path:
         source = _validate_input_file(source_path, "source_path")
+        if not all(isinstance(region, BlurRegion) for region in blur_regions):
+            raise MediaAdapterError("MEDIA_BLUR_INVALID", "blur_regions must contain BlurRegion values")
         subtitle = _validate_input_file(subtitle_path, "subtitle_path") if subtitle_path is not None else None
         audio = _validate_input_file(audio_path, "audio_path") if audio_path is not None else None
         if video_duration is not None and (not isinstance(video_duration, MediaTimeline) or video_duration.duration_ticks <= 0):
@@ -788,6 +858,10 @@ class FfmpegMediaAdapter:
                         retryable=True,
                     ) from error
                 video_filters.append(f"subtitles={subtitle_staging.name}")
+            if blur_regions:
+                # Blur the source captions before drawing the Vietnamese ones on top.
+                position = 1 if source_probe is not None else 0
+                video_filters.insert(position, blur_filtergraph(blur_regions))
 
             if video_filters:
                 args.extend(("-vf", ",".join(video_filters)))
@@ -912,6 +986,7 @@ class FfmpegMediaAdapter:
 
 
 __all__ = [
+    "BlurRegion",
     "FfmpegMediaAdapter",
     "MediaAdapterError",
     "MediaProbe",
@@ -919,6 +994,7 @@ __all__ = [
     "MediaStream",
     "Rational",
     "CANONICAL_TIME_BASE",
+    "blur_filtergraph",
     "parse_ffprobe_json",
     "rescale_ticks",
 ]
