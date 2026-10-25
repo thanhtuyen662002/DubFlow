@@ -106,6 +106,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
     case "open_douyin_login": return null as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
+    case "video_frame": return await previewFrame(Number(args.position)) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
     case "save_review": savedOverrides = { ...(args.overrides as Record<string, string>) }; return "D:\Videos\DubFlow Output\preview" as T;
@@ -114,6 +115,33 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
 }
 
 /** A short sine tone WAV so the review "listen" buttons work in the browser preview. */
+/** A 16:9 stand-in frame with a burned-in Chinese caption near the bottom. */
+async function previewFrame(position: number): Promise<ArrayBuffer> {
+  const canvas = document.createElement("canvas");
+  canvas.width = 960;
+  canvas.height = 540;
+  const context = canvas.getContext("2d")!;
+  const sky = context.createLinearGradient(0, 0, 0, 540);
+  sky.addColorStop(0, `hsl(${210 + position * 90} 35% 30%)`);
+  sky.addColorStop(1, "hsl(220 30% 10%)");
+  context.fillStyle = sky;
+  context.fillRect(0, 0, 960, 540);
+  context.fillStyle = "rgba(0,0,0,.55)";
+  context.beginPath();
+  context.ellipse(300 + position * 300, 330, 160, 190, 0, 0, Math.PI * 2);
+  context.fill();
+  context.font = "bold 40px 'Microsoft YaHei', sans-serif";
+  context.textAlign = "center";
+  context.lineWidth = 6;
+  context.strokeStyle = "#000";
+  context.fillStyle = "#fff";
+  const caption = position < 0.5 ? "今天我教大家做一道简单的面条" : "我们明天再来吧";
+  context.strokeText(caption, 480, 470);
+  context.fillText(caption, 480, 470);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+  return blob!.arrayBuffer();
+}
+
 function previewTone(durationMs: number, source: boolean): ArrayBuffer {
   const rate = 24000, samples = Math.min(rate * 2, Math.max(1, Math.round(rate * durationMs / 1000)));
   const buffer = new ArrayBuffer(44 + samples * 2), view = new DataView(buffer);

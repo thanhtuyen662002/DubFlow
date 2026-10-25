@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; media-src 'self' blob:"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; media-src 'self' blob:; img-src 'self' blob:"
     />
     <title>DubFlow</title>
     <link rel="stylesheet" href="./src/styles.css" />
@@ -163,13 +163,20 @@
                 </span>
                 <input id="burn-in" class="switch" type="checkbox" role="switch" checked />
               </label>
-              <label id="box-row" class="switch-row box-row">
+              <label id="blur-row" class="select-row">
                 <span>
-                  <strong>Dải che phụ đề gốc</strong>
-                  <small>Dải tối ngang vùng phụ đề, che chữ Trung in sẵn trong video</small>
+                  <strong>Làm mờ phụ đề gốc</strong>
+                  <small id="blur-summary">Tắt</small>
                 </span>
-                <input id="subtitle-box" class="switch" type="checkbox" role="switch" />
+                <select id="blur-mode">
+                  <option value="off">Tắt</option>
+                  <option value="auto">Tự động</option>
+                  <option value="manual">Thủ công</option>
+                </select>
               </label>
+              <div id="blur-manual-row" class="blur-manual-row" hidden>
+                <button id="blur-edit" class="btn" type="button">Chọn vùng…</button>
+              </div>
               <div id="voice-picker" class="voice-picker" hidden>
                 <div class="filters">
                   <select id="voice-gender" aria-label="Giới tính"><option value="">Giới tính</option></select>
@@ -191,6 +198,39 @@
           </aside>
         </section>
       </main>
+    </div>
+    <div id="blur-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="blur-title" hidden>
+      <div class="review-panel blur-panel">
+        <header class="review-head">
+          <div>
+            <h2 id="blur-title">Làm mờ phụ đề gốc</h2>
+            <p class="subtitle">Kéo khung hoặc các mép cho phủ kín chữ gốc. Kéo thanh thời gian để kiểm tra ở nhiều cảnh.</p>
+          </div>
+          <button id="blur-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <div class="blur-body">
+          <div id="blur-stage" class="blur-stage">
+            <img id="blur-frame" alt="Khung hình video" draggable="false" />
+            <div id="blur-rect" class="blur-rect" data-handle="move" role="slider" tabindex="0" aria-label="Vùng làm mờ; dùng phím mũi tên để di chuyển, Shift + mũi tên để đổi kích thước">
+              <span data-handle="nw"></span><span data-handle="n"></span><span data-handle="ne"></span>
+              <span data-handle="w"></span><span data-handle="e"></span>
+              <span data-handle="sw"></span><span data-handle="s"></span><span data-handle="se"></span>
+            </div>
+            <p id="blur-loading" class="blur-loading">Đang lấy khung hình…</p>
+          </div>
+          <label class="blur-time">
+            <span>Vị trí</span>
+            <input id="blur-time" type="range" min="0" max="100" value="40" />
+          </label>
+        </div>
+        <footer class="review-foot">
+          <button id="blur-off" class="btn ghost" type="button">Tắt làm mờ</button>
+          <button id="blur-all" class="btn" type="button">Áp dụng cho mọi video đang chờ</button>
+          <button id="blur-apply" class="btn primary" type="button">Áp dụng cho video này</button>
+        </footer>
+      </div>
     </div>
     <div id="review" class="review" role="dialog" aria-modal="true" aria-labelledby="review-title" hidden>
       <div class="review-panel">
