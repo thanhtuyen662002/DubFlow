@@ -38,7 +38,7 @@ Nếu một số câu dịch quá dài so với thời lượng, các câu đó 
 Bấm **Hoàn tác** (hoặc Ctrl+Z khi không gõ trong ô) để bỏ lần sửa gần nhất. Với video lồng *nhiều giọng*, mỗi câu có nhãn người nói (S1, S2…) và mục **Giọng theo người nói** để đổi giọng cho từng người; bấm **Lưu & xử lý lại** để lồng tiếng lại.
 
 ### Gợi ý tiêu đề & hashtag khi đăng lại
-Ở video đã xong, bấm **Gợi ý tiêu đề & hashtag**: app tạo sẵn vài tiêu đề, mô tả ngắn và hashtag tiếng Việt từ phụ đề (không cần mạng), mỗi mục có nút **Sao chép**. Bấm **Viết bằng AI (Claude)** để Claude viết lại hay hơn — cần khóa API Claude của bạn (lưu trên máy này; phụ đề tiếng Việt được gửi tới Anthropic và tính phí theo tài khoản của bạn).
+Ở video đã xong, bấm **Gợi ý tiêu đề & hashtag**: app tạo sẵn vài tiêu đề, mô tả ngắn và hashtag tiếng Việt từ phụ đề (không cần mạng), mỗi mục có nút **Sao chép**. Bấm **Viết bằng AI (Claude)** để Claude viết lại hay hơn — cần khóa API Claude của bạn (chỉ giữ trong phiên làm việc, mất khi đóng app; phụ đề tiếng Việt được gửi tới Anthropic và tính phí theo tài khoản của bạn).
 
 ### Khám phá video (xu hướng, từ khóa, lấy video hàng loạt)
 Bấm **Khám phá** ở thanh bên trái, chọn **Douyin**, **Bilibili** hoặc **Kuaishou**:
