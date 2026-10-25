@@ -31,9 +31,13 @@ concurrency:
   group: windows-release-${{ github.ref }}
   cancel-in-progress: false
 
+# Signing secrets are only reachable from a workflow_dispatch on protected
+# refs/heads/main. A dispatch on any other ref starts no job; a v* tag push
+# builds an unsigned candidate until the owner confirms v* tag protection.
 jobs:
   build:
     name: Build Windows x64 release bundle
+    if: ${{ github.event_name == 'push' || github.ref == 'refs/heads/main' }}
     runs-on: windows-latest
     timeout-minutes: 120
     env:
@@ -41,8 +45,16 @@ jobs:
       RELEASE_CHANNEL: ${{ inputs.channel || 'candidate' }}
       SOURCE_SHA: ${{ github.sha }}
       SOURCE_DATE_EPOCH: "0"
-      DUBFLOW_RELEASE_PRIVATE_KEY: ${{ secrets.DUBFLOW_RELEASE_PRIVATE_KEY }}
     steps:
+      - name: Fail closed on untrusted release refs
+        shell: pwsh
+        env:
+          TRUSTED_RELEASE: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+        run: |
+          if ($env:TRUSTED_RELEASE -ne 'true' -and $env:RELEASE_CHANNEL -ne 'candidate') {
+            throw 'Only a workflow_dispatch on refs/heads/main may build a signed stable release'
+          }
+
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -264,6 +276,8 @@ jobs:
 
       - name: Build final release bundle after qualification
         shell: pwsh
+        env:
+          DUBFLOW_RELEASE_PRIVATE_KEY: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.channel == 'stable') && secrets.DUBFLOW_RELEASE_PRIVATE_KEY || '' }}
         run: |
           $final = Join-Path $PWD 'dist/final'
           $args = @(
@@ -303,9 +317,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Rust user-owned setup bootstrapper build failed' }
 
       - name: Sign the in-app update manifest
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
         shell: pwsh
         env:
-          DUBFLOW_UPDATE_SIGNING_KEY: ${{ secrets.DUBFLOW_UPDATE_SIGNING_KEY }}
+          DUBFLOW_UPDATE_SIGNING_KEY: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') && secrets.DUBFLOW_UPDATE_SIGNING_KEY || '' }}
         run: |
           if (-not $env:DUBFLOW_UPDATE_SIGNING_KEY) { throw 'DUBFLOW_UPDATE_SIGNING_KEY secret is required to sign the update manifest' }
           $notes = Join-Path $env:RUNNER_TEMP 'update-notes.txt'
@@ -438,7 +453,7 @@ jobs:
   publish:
     name: Publish stable production GitHub Release
     needs: build
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish == true && inputs.channel == 'stable' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
