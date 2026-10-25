@@ -779,6 +779,25 @@
       ]
     },
     {
+      "id": "update",
+      "roots": [
+        "engine/dubflow/update",
+        "tests/update"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/update",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "updater-recovery",
       "roots": [
         "crates/updater",

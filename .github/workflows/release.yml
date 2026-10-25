@@ -302,6 +302,17 @@ jobs:
           & $rustc.Source --edition=2021 -O -C target-feature=+crt-static packaging/release/windows_setup.rs -o $setup
           if ($LASTEXITCODE -ne 0) { throw 'Rust user-owned setup bootstrapper build failed' }
 
+      - name: Sign the in-app update manifest
+        shell: pwsh
+        env:
+          DUBFLOW_UPDATE_SIGNING_KEY: ${{ secrets.DUBFLOW_UPDATE_SIGNING_KEY }}
+        run: |
+          if (-not $env:DUBFLOW_UPDATE_SIGNING_KEY) { throw 'DUBFLOW_UPDATE_SIGNING_KEY secret is required to sign the update manifest' }
+          $notes = Join-Path $env:RUNNER_TEMP 'update-notes.txt'
+          Set-Content -LiteralPath $notes -Value "DubFlow $env:RELEASE_VERSION" -Encoding utf8NoBOM
+          python -m engine.dubflow.update.sign --key-env DUBFLOW_UPDATE_SIGNING_KEY --version $env:RELEASE_VERSION --channel $env:RELEASE_CHANNEL --setup "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-setup.exe" --notes-file $notes --out dist/update-manifest.json
+          if ($LASTEXITCODE -ne 0) { throw 'update manifest signing failed' }
+
       - name: Produce checksums and evidence
         shell: pwsh
         run: |
@@ -414,6 +425,7 @@ jobs:
             dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-setup.exe
             dist/DubFlow-${{ env.RELEASE_VERSION }}-windows-x64-release.sha256
             dist/DubFlow-${{ env.RELEASE_VERSION }}-release-evidence.json
+            dist/update-manifest.json
             dist/qualification/pipeline-smoke.json
             dist/qualification/source-sdk-smoke.json
             dist/installed-pipeline-smoke.json
@@ -487,6 +499,7 @@ jobs:
             "dist/DubFlow-${RELEASE_VERSION}-windows-x64-setup.exe" \
             "dist/DubFlow-${RELEASE_VERSION}-windows-x64-release.sha256" \
             "dist/DubFlow-${RELEASE_VERSION}-release-evidence.json" \
+            "dist/update-manifest.json" \
             "dist/qualification/pipeline-smoke.json" \
             "dist/installed-pipeline-smoke.json" \
             --clobber

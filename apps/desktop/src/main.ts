@@ -5,6 +5,7 @@ import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import { mountDiscovery } from "./features/discovery/view.ts";
 import { extractLinks } from "./features/links/extract.ts";
+import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
@@ -1290,7 +1291,8 @@ void invoke<ReleaseInfo>("release_info")
   })
   .catch(() => {
     $("#release-version").textContent = "development";
-  });
+  })
+  .finally(() => mountUpdates(invoke));
 
 // Native drag & drop: Tauri intercepts file drops and reports real paths.
 if (isTauri) {
