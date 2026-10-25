@@ -3,6 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
+import { ReviewDraftHistory } from "./features/review/history.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
   activeStageIndex, displayJobStatus, isCancelled, PIPELINE_STAGES, progressFraction, stateLabel,
@@ -745,10 +746,12 @@ const FAST_SYLLABLES_PER_SECOND = 3.5;
 const review = $("#review");
 const reviewList = $("#review-list");
 const reviewApply = $<HTMLButtonElement>("#review-apply");
+const reviewUndo = $<HTMLButtonElement>("#review-undo");
 const reviewOnlyIssues = $<HTMLInputElement>("#review-only-issues");
 let reviewJobId: string | null = null;
 let reviewCues: ReviewCue[] = [];
-const reviewDrafts = new Map<string, string>();
+const reviewDrafts = new ReviewDraftHistory();
+let reviewSaving = false;
 
 function clock(ms: number): string {
   const total = Math.floor(ms / 100);
@@ -763,7 +766,7 @@ function pace(text: string, cue: ReviewCue): number {
 }
 
 function draftOf(cue: ReviewCue): string {
-  return reviewDrafts.get(cue.cue_id) ?? cue.text;
+  return reviewDrafts.draftOf(cue.cue_id);
 }
 
 function needsAttention(cue: ReviewCue): boolean {
@@ -771,7 +774,12 @@ function needsAttention(cue: ReviewCue): boolean {
 }
 
 function reviewDirty(): boolean {
-  return reviewCues.some((cue) => draftOf(cue).trim() !== cue.text.trim());
+  return reviewDrafts.isDirty;
+}
+
+function updateReviewControls(): void {
+  reviewApply.disabled = reviewSaving || !reviewDrafts.canSave;
+  reviewUndo.disabled = reviewSaving || !reviewDrafts.canUndo;
 }
 
 function renderReviewMeta(cue: ReviewCue, meta: HTMLElement, item: HTMLElement): void {
@@ -787,7 +795,7 @@ function renderReviewMeta(cue: ReviewCue, meta: HTMLElement, item: HTMLElement):
     const revert = element("button", "revert", "Khôi phục bản máy dịch");
     revert.type = "button";
     revert.addEventListener("click", () => {
-      reviewDrafts.set(cue.cue_id, cue.machine_text);
+      reviewDrafts.replaceDraft(cue.cue_id, cue.machine_text);
       renderReview();
     });
     meta.append(revert);
@@ -796,6 +804,8 @@ function renderReviewMeta(cue: ReviewCue, meta: HTMLElement, item: HTMLElement):
 }
 
 function renderReview(): void {
+  // Removing a focused editor need not fire blur (for example when filtering).
+  reviewDrafts.endEdit();
   reviewList.replaceChildren();
   const visible = reviewCues.filter((cue) => !reviewOnlyIssues.checked || needsAttention(cue));
   const failed = reviewCues.filter((cue) => cue.dub_failed).length;
@@ -814,10 +824,15 @@ function renderReview(): void {
     editor.rows = Math.min(4, Math.max(1, Math.ceil(editor.value.length / 90)));
     editor.setAttribute("aria-label", `Câu lúc ${clock(cue.start_ms)}`);
     const meta = element("div", "review-meta");
+    editor.addEventListener("focus", () => reviewDrafts.beginEdit(cue.cue_id));
+    editor.addEventListener("blur", () => {
+      reviewDrafts.endEdit(cue.cue_id);
+      updateReviewControls();
+    });
     editor.addEventListener("input", () => {
-      reviewDrafts.set(cue.cue_id, editor.value);
+      reviewDrafts.updateDraft(cue.cue_id, editor.value);
       renderReviewMeta(cue, meta, item);
-      reviewApply.disabled = !reviewDirty() || reviewCues.some((value) => !draftOf(value).trim());
+      updateReviewControls();
     });
     const listen = element("div", "review-listen");
     for (const [label, source] of [["▶ Gốc", true], ["▶ Lồng tiếng", false]] as const) {
@@ -831,7 +846,7 @@ function renderReview(): void {
     renderReviewMeta(cue, meta, item);
     reviewList.append(item);
   }
-  reviewApply.disabled = !reviewDirty() || reviewCues.some((cue) => !draftOf(cue).trim());
+  updateReviewControls();
 }
 
 async function openReview(): Promise<void> {
@@ -844,7 +859,7 @@ async function openReview(): Promise<void> {
     return;
   }
   reviewJobId = job.id;
-  reviewDrafts.clear();
+  reviewDrafts.reset(reviewCues);
   reviewOnlyIssues.checked = reviewCues.some(needsAttention);
   review.hidden = false;
   renderReview();
@@ -878,6 +893,13 @@ function closeReview(): void {
   if (reviewDirty() && !window.confirm("Bỏ các thay đổi chưa lưu?")) return;
   review.hidden = true;
   reviewJobId = null;
+  reviewDrafts.reset(reviewCues);
+  updateReviewControls();
+}
+
+function undoReview(): void {
+  if (reviewSaving || reviewDrafts.undo() === null) return;
+  renderReview();
 }
 
 reviewApply.addEventListener("click", async () => {
@@ -888,25 +910,35 @@ reviewApply.addEventListener("click", async () => {
     const text = draftOf(cue).trim();
     if (text !== cue.machine_text.trim()) overrides[cue.cue_id] = text;
   }
-  reviewApply.disabled = true;
+  reviewSaving = true;
+  updateReviewControls();
   try {
     const outputDir = await invoke<string>("save_review", { outputPath: job.outputPath, overrides });
     review.hidden = true;
     reviewJobId = null;
+    reviewDrafts.reset(reviewCues);
     const revisionId = queue.reviseJob(job.id, outputDir);
     const revision = queue.getSnapshot().jobs.find((candidate) => candidate.id === revisionId);
     if (revision) await startJob(revision);
   } catch (error) {
-    reviewApply.disabled = false;
     $("#review-hint").textContent = `Không lưu được: ${String(error).slice(0, 200)}`;
+  } finally {
+    reviewSaving = false;
+    updateReviewControls();
   }
 });
 $("#open-review").addEventListener("click", () => void openReview());
 $("#review-close").addEventListener("click", closeReview);
 $("#review-cancel").addEventListener("click", closeReview);
+reviewUndo.addEventListener("click", undoReview);
 reviewOnlyIssues.addEventListener("change", renderReview);
 review.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeReview();
+  if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "z"
+    && !(event.target instanceof HTMLTextAreaElement)) {
+    event.preventDefault();
+    undoReview();
+  }
 });
 
 // Tell the user in the taskbar title when a video finishes while they are away.
