@@ -17,9 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import subprocess
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Sequence
-
-import numpy as np
+from typing import TYPE_CHECKING, Callable, Iterator, Sequence
 
 from engine.dubflow.media.adapter import MAX_BLUR_REGIONS, BlurRegion
 
@@ -41,8 +39,12 @@ MIN_SPEECH_OVERLAP = 0.3
 FIXED_MIN_PRESENCE = 0.5
 FIXED_MAX_CHANGE = 6.0
 SEGMENT_GAP_S = 0.6
-MEAN = np.array([0.485, 0.456, 0.406], np.float32)
-STD = np.array([0.229, 0.224, 0.225], np.float32)
+# ImageNet normalisation used by PaddleOCR's detector.
+MEAN = (0.485, 0.456, 0.406)
+STD = (0.229, 0.224, 0.225)
+
+if TYPE_CHECKING:  # numpy ships in the app runtime; planning below does not need it.
+    import numpy as np
 
 
 @dataclass(frozen=True)
@@ -76,13 +78,15 @@ class ScanResult:
                 "regions": len(self.regions), "kept_fixed_text": [{"x": round(b.x, 4), "y": round(b.y, 4), "w": round(b.w, 4), "h": round(b.h, 4)} for b in self.fixed_text]}
 
 
-def line_boxes(prob: np.ndarray, *, threshold: float = PROB_THRESHOLD) -> list[tuple[int, int, int, int]]:
+def line_boxes(prob: "np.ndarray", *, threshold: float = PROB_THRESHOLD) -> list[tuple[int, int, int, int]]:
     """Pixel boxes (left, top, right, bottom) of horizontal text lines in a DB probability map.
 
     Rows with text form line bands; inside a band, columns closer than one line
     height join into one line. Each box is then grown like DBNet's "unclip",
     because the detector predicts a shrunken text kernel.
     """
+    import numpy as np
+
     mask = prob > threshold
     height, width = mask.shape
     rows = mask.sum(1) > 2
@@ -106,8 +110,10 @@ def line_boxes(prob: np.ndarray, *, threshold: float = PROB_THRESHOLD) -> list[t
     return boxes
 
 
-def signature(gray: np.ndarray, box: tuple[int, int, int, int]) -> tuple[float, ...]:
+def signature(gray: "np.ndarray", box: tuple[int, int, int, int]) -> tuple[float, ...]:
     """A coarse 16x4 brightness grid of a box, to tell changing captions from fixed text."""
+    import numpy as np
+
     left, top, right, bottom = box
     crop = gray[top:bottom, left:right]
     if crop.size == 0:
@@ -128,7 +134,7 @@ def _iou(a: TextBox, b: TextBox) -> float:
 def _change(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     if not a or not b or len(a) != len(b):
         return 255.0
-    return float(np.mean(np.abs(np.asarray(a) - np.asarray(b))))
+    return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
 def fixed_text(samples: Sequence[Sequence[TextBox]]) -> list[TextBox]:
@@ -148,7 +154,7 @@ def fixed_text(samples: Sequence[Sequence[TextBox]]) -> list[TextBox]:
         if len(cluster) / total < FIXED_MIN_PRESENCE:
             continue
         changes = [_change(a.signature, b.signature) for a, b in zip(cluster, cluster[1:])]
-        if not changes or float(np.median(changes)) <= FIXED_MAX_CHANGE:
+        if not changes or sorted(changes)[len(changes) // 2] <= FIXED_MAX_CHANGE:
             fixed.append(cluster[len(cluster) // 2])
     return fixed
 
@@ -228,7 +234,7 @@ class CaptionScanner:
         self.input_name = self.session.get_inputs()[0].name
         self.ffmpeg = ffmpeg_path
 
-    def _frames(self, source: Path) -> Iterator[tuple[float, np.ndarray]]:
+    def _frames(self, source: Path) -> Iterator[tuple[float, "np.ndarray"]]:
         """Sampled frames as RGB arrays, already rotated for display by FFmpeg.
 
         PPM frames carry their own size, so no probe of rotation or sample
@@ -236,6 +242,8 @@ class CaptionScanner:
         """
         command = [str(self.ffmpeg), "-nostdin", "-v", "error", "-i", str(source), "-an", "-sn", "-dn",
                    "-vf", f"fps={SAMPLE_FPS},scale={ANALYSIS_WIDTH}:-2", "-c:v", "ppm", "-f", "image2pipe", "pipe:1"]
+        import numpy as np
+
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
         index = 0
         try:
@@ -254,8 +262,11 @@ class CaptionScanner:
             process.kill()
             process.wait()
 
-    def detect(self, rgb: np.ndarray, band_top: float, band_height: float) -> list[TextBox]:
-        tensor = ((rgb.astype(np.float32) / 255 - MEAN) / STD).transpose(2, 0, 1)[None]
+    def detect(self, rgb: "np.ndarray", band_top: float, band_height: float) -> list[TextBox]:
+        import numpy as np
+
+        mean, std = np.array(MEAN, np.float32), np.array(STD, np.float32)
+        tensor = ((rgb.astype(np.float32) / 255 - mean) / std).transpose(2, 0, 1)[None]
         prob = self.session.run(None, {self.input_name: tensor})[0][0, 0]
         gray = rgb.mean(2)
         height, width = prob.shape

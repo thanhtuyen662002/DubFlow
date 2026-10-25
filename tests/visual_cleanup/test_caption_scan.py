@@ -7,7 +7,10 @@ import subprocess
 import tempfile
 import unittest
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # the CI lane has no numpy; the app runtime does.
+    np = None
 
 from engine.dubflow.ocr import caption_scan as scan
 from engine.dubflow.ocr.caption_scan import TextBox, line_boxes, plan_regions
@@ -22,6 +25,7 @@ LOGO = TextBox(0.82, 0.86, 0.14, 0.04, tuple(100.0 for _ in range(64)))
 
 
 class LineBoxTests(unittest.TestCase):
+    @unittest.skipUnless(np, "needs numpy")
     def test_rows_and_close_columns_join_into_unclipped_lines(self):
         prob = np.zeros((100, 200), np.float32)
         prob[40:46, 20:60] = 0.9
