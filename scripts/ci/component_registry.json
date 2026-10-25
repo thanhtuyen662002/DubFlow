@@ -471,6 +471,25 @@
       ]
     },
     {
+      "id": "discovery",
+      "roots": [
+        "engine/dubflow/discovery",
+        "tests/discovery"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/discovery",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "translation",
       "roots": [
         "contracts/translation",

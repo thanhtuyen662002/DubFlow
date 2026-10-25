@@ -1,0 +1,234 @@
+{
+  "name": "space_wbi_p2",
+  "platform": "bilibili_followup",
+  "at_utc": "2026-10-25T04:03:21.660792+00:00",
+  "method": "GET",
+  "url": "https://api.bilibili.com/x/space/wbi/arc/search?mid=546195&order=pubdate&order_avoided=true&platform=web&pn=2&ps=1&web_location=1550101&wts=1792901000&w_rid=%5Bredacted%5D",
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.bilibili.com/"
+  },
+  "cookie_names_sent": [],
+  "external_cookie_file_used": false,
+  "request_body": null,
+  "expected_items_path": "data.list.vlist",
+  "probe_note": null,
+  "http_status": 200,
+  "final_url": "https://api.bilibili.com/x/space/wbi/arc/search?mid=546195&order=pubdate&order_avoided=true&platform=web&pn=2&ps=1&web_location=1550101&wts=1792901000&w_rid=%5Bredacted%5D",
+  "content_type": "application/json; charset=utf-8",
+  "content_encoding": "gzip",
+  "wire_bytes": 1083,
+  "body_capped": false,
+  "response_headers": {
+    "Date": "Sun, 25 Oct 2026 04:03:22 GMT",
+    "X-Bili-Trace-Id": "665937eab6429a137df04362ca6add7f"
+  },
+  "set_cookie_names": [],
+  "body_bytes": 1858,
+  "response_json": {
+    "code": 0,
+    "message": "OK",
+    "ttl": 1,
+    "data": {
+      "list": {
+        "slist": [],
+        "tlist": {
+          "160": {
+            "tid": 160,
+            "count": 110,
+            "name": "生活"
+          },
+          "181": {
+            "tid": 181,
+            "count": 2,
+            "name": "影视"
+          },
+          "211": {
+            "tid": 211,
+            "count": 2,
+            "name": "美食"
+          },
+          "217": {
+            "tid": 217,
+            "count": 1,
+            "name": "动物圈"
+          },
+          "223": {
+            "tid": 223,
+            "count": 1,
+            "name": "汽车"
+          },
+          "3": {
+            "tid": 3,
+            "count": 23,
+            "name": "音乐"
+          },
+          "4": {
+            "tid": 4,
+            "count": 535,
+            "name": "游戏"
+          },
+          "5": {
+            "tid": 5,
+            "count": 7,
+            "name": "娱乐"
+          }
+        },
+        "vlist": [
+          {
+            "comment": 1977,
+            "typeid": 17,
+            "play": 3330320,
+            "pic": "http://i0.hdslb.com/bfs/archive/84f14dcd2b10126466fa6cc5ac8e090faaa4304b.jpg",
+            "subtitle": "",
+            "description": "游戏：午夜轮班\n如果喜欢看我们玩多人游戏，能不能给这个视频点个赞！！我一定尽快更新！！",
+            "copyright": "3",
+            "title": "超市里……未检测到人脸……",
+            "review": 0,
+            "author": "老番茄",
+            "mid": 546195,
+            "created": 1791613800,
+            "length": "48:13",
+            "video_review": 12613,
+            "aid": 117411353204712,
+            "bvid": "BV1iqpt6cEMU",
+            "hide_click": false,
+            "is_pay": 0,
+            "is_union_video": 1,
+            "is_steins_gate": 0,
+            "is_live_playback": 0,
+            "is_lesson_video": 0,
+            "is_lesson_finished": 0,
+            "lesson_update_info": "",
+            "jump_url": "",
+            "meta": {
+              "id": 1903592,
+              "title": "多人实况",
+              "cover": "https://archive.biliimg.com/bfs/archive/fc245aa2544774ae8457374bba45c81b7e098d8d.jpg",
+              "mid": 546195,
+              "intro": "",
+              "sign_state": 0,
+              "attribute": 140,
+              "stat": {
+                "season_id": 1903592,
+                "view": 211183974,
+                "danmaku": 975242,
+                "reply": 156832,
+                "favorite": 2564977,
+                "coin": 4640796,
+                "share": 581949,
+                "like": 10469576,
+                "mtime": 1792900998,
+                "vt": 0,
+                "vv": 0
+              },
+              "ep_count": 23,
+              "first_aid": 117320588531711,
+              "ptime": 1791613800,
+              "ep_num": 23,
+              "show": 1
+            },
+            "is_avoided": 0,
+            "season_id": 1903592,
+            "attribute": 16793600,
+            "is_charging_arc": false,
+            "elec_arc_type": 0,
+            "elec_arc_badge": "",
+            "vt": 0,
+            "enable_vt": 0,
+            "vt_display": "",
+            "playback_position": 0,
+            "is_self_view": false,
+            "view_self_type": 0
+          }
+        ]
+      },
+      "page": {
+        "pn": 2,
+        "ps": 1,
+        "count": 681
+      },
+      "is_risk": false,
+      "gaia_res_type": 0,
+      "gaia_data": null
+    }
+  },
+  "array_counts_before_trimming": {
+    "data.list.slist": 0,
+    "data.list.vlist": 1
+  },
+  "application_code": 0,
+  "application_message": "OK",
+  "expected_item_count": 1,
+  "first_item": {
+    "comment": 1977,
+    "typeid": 17,
+    "play": 3330320,
+    "pic": "http://i0.hdslb.com/bfs/archive/84f14dcd2b10126466fa6cc5ac8e090faaa4304b.jpg",
+    "subtitle": "",
+    "description": "游戏：午夜轮班\n如果喜欢看我们玩多人游戏，能不能给这个视频点个赞！！我一定尽快更新！！",
+    "copyright": "3",
+    "title": "超市里……未检测到人脸……",
+    "review": 0,
+    "author": "老番茄",
+    "mid": 546195,
+    "created": 1791613800,
+    "length": "48:13",
+    "video_review": 12613,
+    "aid": 117411353204712,
+    "bvid": "BV1iqpt6cEMU",
+    "hide_click": false,
+    "is_pay": 0,
+    "is_union_video": 1,
+    "is_steins_gate": 0,
+    "is_live_playback": 0,
+    "is_lesson_video": 0,
+    "is_lesson_finished": 0,
+    "lesson_update_info": "",
+    "jump_url": "",
+    "meta": {
+      "id": 1903592,
+      "title": "多人实况",
+      "cover": "https://archive.biliimg.com/bfs/archive/fc245aa2544774ae8457374bba45c81b7e098d8d.jpg",
+      "mid": 546195,
+      "intro": "",
+      "sign_state": 0,
+      "attribute": 140,
+      "stat": {
+        "season_id": 1903592,
+        "view": 211183974,
+        "danmaku": 975242,
+        "reply": 156832,
+        "favorite": 2564977,
+        "coin": 4640796,
+        "share": 581949,
+        "like": 10469576,
+        "mtime": 1792900998,
+        "vt": 0,
+        "vv": 0
+      },
+      "ep_count": 23,
+      "first_aid": 117320588531711,
+      "ptime": 1791613800,
+      "ep_num": 23,
+      "show": 1
+    },
+    "is_avoided": 0,
+    "season_id": 1903592,
+    "attribute": 16793600,
+    "is_charging_arc": false,
+    "elec_arc_type": 0,
+    "elec_arc_badge": "",
+    "vt": 0,
+    "enable_vt": 0,
+    "vt_display": "",
+    "playback_position": 0,
+    "is_self_view": false,
+    "view_self_type": 0
+  },
+  "elapsed_seconds": 0.328,
+  "cookie_jar_names_after": []
+}
