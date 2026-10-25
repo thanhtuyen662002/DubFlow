@@ -10,12 +10,12 @@ import re
 from pathlib import Path
 
 from engine.dubflow.models.runtime import ModelArtifact, ensure_model_profile
-from .adapter import EngineCapabilities, EngineHealth, TtsError, VoiceProfile
+from .adapter import EngineCapabilities, EngineHealth, TtsError, VoiceProfile, FAST_FIT_MAX_MILLI
 from .neural_vits import (
     NeuralVoicePack, NeuralVietnameseTtsEngine, _child, _digest, _install_lock,
     _json_bytes, _plain_path, _read_json,
 )
-from .vieneu_native import FRONTEND_ID, VERSIONS, INFERENCE_RECIPE
+from .vieneu_native import FRONTEND_ID, VERSIONS, INFERENCE_RECIPE, LEGACY_INFERENCE_RECIPE
 
 ENGINE_ID = "vieneu-v3-turbo-onnx-v1"
 PRODUCER_VERSION = "3.4.0"
@@ -56,7 +56,7 @@ def load_vieneu_voice(app_root, model_root, profile_path, *, voice_id=None):
     selected = _read_json(Path(profile_path))
     metadata = _child(app, selected.get("tts_neural_profile", ""))
     profile = _read_json(metadata)
-    if profile.get("schema_version") != 1 or profile.get("backend") != ENGINE_ID or profile.get("frontend") != FRONTEND_ID or profile.get("runtime_versions") != VERSIONS or profile.get("sample_rate") != 48000 or profile.get("inference") != INFERENCE_RECIPE:
+    if profile.get("schema_version") != 1 or profile.get("backend") != ENGINE_ID or profile.get("frontend") != FRONTEND_ID or profile.get("runtime_versions") != VERSIONS or profile.get("sample_rate") != 48000 or profile.get("inference") not in (INFERENCE_RECIPE, LEGACY_INFERENCE_RECIPE):
         raise TtsError("VOICE_MANIFEST_INVALID", "VieNeu recipe/runtime differs from its pinned version")
     if profile.get("license_id") != "Apache-2.0" or profile.get("approved") is not True:
         raise TtsError("VOICE_LICENSE_UNAPPROVED", "VieNeu voice license is not approved")
@@ -141,7 +141,8 @@ class VieNeuVietnameseTtsEngine(NeuralVietnameseTtsEngine):
         return max(target, min(limit, len(natural.samples)))
 
     def _duration_fit(self, request, target):
-        audio, speed_milli = super()._duration_fit(request, target, max_speed_milli=1300)
+        maximum = min(FAST_FIT_MAX_MILLI, request.config.max_speed_ratio_milli)
+        audio, speed_milli = super()._duration_fit(request, target, max_speed_milli=maximum)
         # FFmpeg atempo is not an exact frame-count division. Measure residual
         # overshoot and change the rate, using the child's cached natural speech.
         # Natural speech that already exceeds the safe rate remains a failure.
@@ -150,7 +151,7 @@ class VieNeuVietnameseTtsEngine(NeuralVietnameseTtsEngine):
             if speed_milli == 1000 or len(audio.samples) <= target:
                 break
             next_speed = math.ceil(speed_milli * (len(audio.samples) + margin) / target)
-            if not speed_milli < next_speed <= min(1300, request.config.max_speed_ratio_milli):
+            if not speed_milli < next_speed <= maximum:
                 break
             speed_milli = next_speed
             audio = self._tts.generate(request.segment.text, sid=0, speed=speed_milli / 1000)

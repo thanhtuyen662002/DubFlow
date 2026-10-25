@@ -1343,7 +1343,10 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 audio_metadata["dubbing_spoken_text"] = {"schema_version": 1,
                     "path": str(b2_audio.spoken_text_document_path), "sha256": _sha256(b2_audio.spoken_text_document_path)}
                 warnings.extend(warning for document in tts_documents for warning in document.warnings
-                                if warning.startswith(("TTS_DURATION_REWRITE_APPLIED:", "TTS_SPOKEN_TEXT_CHECKPOINT_INVALID:")))
+                                if warning.startswith(("TTS_DURATION_REWRITE_APPLIED:", "TTS_SPOKEN_TEXT_CHECKPOINT_INVALID:",
+                                                       "TTS_RENDER_WINDOW_WIDENED:", "TTS_FAST_FIT:", "TTS_DURATION_FIT_REFUSED:")))
+            warnings.extend(warning for warning in b2_audio.mix_document.warnings
+                            if warning.startswith("SEPARATION_SOURCE_RESTORED:"))
             _write_stage(
                 checkpoint,
                 checkpoint_path,

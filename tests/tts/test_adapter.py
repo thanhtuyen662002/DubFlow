@@ -137,6 +137,56 @@ def adapter(engine, *, config: TtsConfig | None = None, voice: VoiceProfile | No
 
 
 class TtsAdapterTests(unittest.TestCase):
+    def test_duration_policy_uses_the_same_fast_ceiling(self):
+        from engine.dubflow.tts.duration import DurationPolicy
+        policy = DurationPolicy(max_speed_ratio_milli=1500)
+        self.assertEqual(policy.fit("fits", 0, 1000, 1500).fit_mode, "speed_adjusted")
+        self.assertEqual(policy.fit("long", 0, 1000, 1501).fit_mode, "rewrite_required")
+        with self.assertRaises(ValueError):
+            DurationPolicy(max_speed_ratio_milli=1501)
+
+    def test_fast_fit_requires_explicit_opt_in_advisory_and_1500_bound(self):
+        class FastEngine(DeterministicFixtureEngine):
+            def synthesize(self, request):
+                return replace(super().synthesize(request), fit_mode="speed_adjusted",
+                               speed_ratio_milli=speed, warnings=warnings)
+        for speed, warnings, allowed, accepted in (
+                (1400, (), False, False), (1400, (), True, False),
+                (1400, ("TTS_FAST_FIT: fast; speed 1400",), False, False),
+                (1400, ("TTS_FAST_FIT: other; speed 1400",), True, False),
+                (1400, ("TTS_FAST_FIT: fast; speed 1400",), True, True),
+                (1500, ("TTS_FAST_FIT: fast; speed 1500",), True, True),
+                (1501, ("TTS_FAST_FIT: fast; speed 1501",), True, False)):
+            with self.subTest(speed=speed, warnings=warnings, allowed=allowed), TemporaryDirectory() as directory:
+                config = TtsConfig(max_attempts=1)
+                worker = LocalTtsAdapter(FastEngine(), config=config, provenance=make_provenance(config),
+                    output_dir=directory, allow_fast_fit=allowed)
+                if accepted:
+                    doc = worker.synthesize((segment("fast"),), input_hash=INPUT_HASH)
+                    self.assertEqual(doc.artifacts[0].speed_ratio_milli, speed)
+                else:
+                    with self.assertRaises(TtsStageError) as error:
+                        worker.synthesize((segment("fast"),), input_hash=INPUT_HASH)
+                    self.assertEqual(error.exception.document.failures[0].code, "DURATION_FIT_REQUIRED")
+
+    def test_fallback_window_cannot_cross_source_overlap_or_exceed_allocation(self):
+        cue = replace(segment("window"), render_window_end=point(1200))
+        class WindowEngine(DeterministicFixtureEngine):
+            def synthesize(self, request):
+                return replace(super().synthesize(request), render_window_end=point(2200))
+        with TemporaryDirectory() as directory:
+            config = TtsConfig(max_attempts=1)
+            for limits in ({}, {"window": point(2000)}):
+                worker = LocalTtsAdapter(WindowEngine(), config=config, provenance=make_provenance(config),
+                    output_dir=directory, render_window_limits=limits)
+                with self.assertRaises(TtsStageError) as error:
+                    worker.synthesize((cue,), input_hash=INPUT_HASH)
+                self.assertEqual(error.exception.document.failures[0].code, "INVALID_TIMELINE")
+            worker = LocalTtsAdapter(WindowEngine(), config=config, provenance=make_provenance(config),
+                output_dir=directory, render_window_limits={"window": point(2200)})
+            with self.assertRaisesRegex(TtsError, "overlaps"):
+                worker.synthesize((cue, replace(segment("next", 2100, 3100), render_window_end=point(3100))), input_hash=INPUT_HASH)
+
     def test_explicit_window_preserves_source_slots_measured_tail_and_strict_version(self):
         cue = replace(segment("window"), render_window_end=point(2000))
         config = TtsConfig(max_attempts=1)

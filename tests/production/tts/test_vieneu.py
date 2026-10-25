@@ -137,6 +137,27 @@ class VieNeuPackTests(unittest.TestCase):
 
 
 class VieNeuBoundsTests(unittest.TestCase):
+    def test_native_fast_tempo_accepts_1500_and_reuses_complete_natural_pcm(self):
+        import numpy as np
+        model = NativeModel.__new__(NativeModel)
+        model.np = np
+        model.last_text, model.last_warnings = "Xin chào", ()
+        model.last_samples = np.full(720, .1, dtype=np.float32)
+        with TemporaryDirectory() as directory:
+            model.output = Path(directory)
+            model.ffmpeg = str(model.output / "ffmpeg.exe")
+            def tempo(command, **kwargs):
+                self.assertEqual(command[command.index("-af") + 1], "atempo=1.5")
+                Path(command[-1]).write_bytes(np.full(480, .1, dtype="<f4").tobytes())
+                return SimpleNamespace(returncode=0)
+            with patch("engine.dubflow.tts.vieneu_native.subprocess.run", side_effect=tempo) as process:
+                result = model.generate({"text": "Xin chào", "speed": 1.5, "sequence": 1})
+            self.assertEqual(result["frames"], 480)
+            self.assertEqual(len(model.last_samples), 720)
+            process.assert_called_once()
+            self.assertFalse((model.output / "tempo-source.f32").exists())
+            self.assertFalse((model.output / "tempo-fit.f32").exists())
+
     def test_no_eos_is_rejected_after_one_changed_seed_without_publication(self):
         model = NativeModel.__new__(NativeModel)
         model.last_text = None
@@ -263,7 +284,7 @@ class VieNeuBoundsTests(unittest.TestCase):
 
     def test_invalid_text_and_speed_fail_before_sdk_inference(self):
         model = NativeModel.__new__(NativeModel)
-        for text, speed in (("", 1.), ("x" * 513, 1.), ("xin chào", float("nan")), ("xin chào", 1.31), ("xin chào", True)):
+        for text, speed in (("", 1.), ("x" * 513, 1.), ("xin chào", float("nan")), ("xin chào", 1.501), ("xin chào", True)):
             with self.subTest(text=text[:20], speed=speed), self.assertRaises(ValueError):
                 model.generate({"text": text, "speed": speed, "sequence": 1})
 
@@ -325,13 +346,29 @@ class MeasuredVieNeuFitTests(unittest.TestCase):
             self.assertEqual(reader.readframes(100), b"\0" * 200)
 
     def test_rate_cap_rejects_residual_instead_of_cutting_or_sending_unsafe_speed(self):
-        error, speeds = self.synthesize([62400, 48500], maximum=2000)
+        error, speeds = self.synthesize([62400, 48500])
         self.assertEqual(speeds, [1.0, 1.3])
         self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
         self.assertIn("spoken samples will not be cut", error.condition)
-        error, speeds = self.synthesize([96000], maximum=2000)
+        error, speeds = self.synthesize([96000], maximum=1500)
         self.assertEqual(speeds, [1.0])
         self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
+
+    def test_opt_in_fast_tier_measures_residuals_and_never_exceeds_1500(self):
+        result, speeds = self.synthesize([67200, 48000], maximum=1500)
+        self.assertEqual(speeds, [1.0, 1.4])
+        self.assertEqual(result.speed_ratio_milli, 1400)
+        result, speeds = self.synthesize([72000, 48000], maximum=1500)
+        self.assertEqual(speeds, [1.0, 1.5])
+        self.assertEqual(result.speed_ratio_milli, 1500)
+        error, speeds = self.synthesize([72001], maximum=1500)
+        self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
+        self.assertEqual(speeds, [1.0])
+        error, speeds = self.synthesize([72000, 48001], maximum=1500)
+        self.assertEqual(error.code, "DURATION_FIT_REQUIRED")
+        self.assertEqual(speeds, [1.0, 1.5])
+        with self.assertRaises(TtsError):
+            TtsConfig(max_speed_ratio_milli=1501)
 
     def test_residual_retries_are_bounded_and_each_rate_changes(self):
         error, speeds = self.synthesize([57600, 48500, 48200, 48100])

@@ -1,4 +1,4 @@
-"""One bounded lexical duration fallback, with separate spoken-text evidence.
+"""Bounded per-cue duration ladder, with separate spoken-text evidence.
 
 This is not a general semantic rewriter. It never selects a model hypothesis,
 removes arbitrary words, or modifies B1 translation/source timing. A failed
@@ -16,15 +16,36 @@ import tempfile
 from typing import Mapping, Sequence
 
 from engine.dubflow.tts import TtsCheckpoint, TtsError, TtsInput
+from engine.dubflow.tts.adapter import FAST_FIT_MAX_MILLI
 from .export_publication import plain
 
 
-RECIPE = "vi-first-time-contraction-v1"
+RECIPE = "vi-safe-condensation-v2-window4000-fast1500"
 RULE = "first-time-adverb"
 WARNING = "TTS_DURATION_REWRITE_APPLIED: "
 MAX_RECORD_BYTES = 65536
-_PHRASE = re.compile(r"(?<!\w)lần đầu tiên(?!\w)")
 _QUOTES = frozenset('\"\'“”‘’«»`')
+_RULES = (
+    ("actually-filler", "thực ra thì", "thực ra"),
+    ("copula-filler", r"thì là(?= \w)", "là"),
+    ("discourse-filler", "à thì|ừm|ờ|kiểu như", ""),
+    (RULE, "lần đầu tiên", "lần đầu"),
+    ("now-adverb", "bây giờ", "giờ"),
+    ("how-adverb", "như thế nào", "thế nào"),
+    ("because-connective", "tại vì", "vì"),
+    ("but-connective", "nhưng mà", "nhưng"),
+    ("so-connective", "cho nên", "nên"),
+    ("very-intensifier", "rất là", "rất"),
+    ("indefinite-filler", r"một cái(?= (?:gì đó|cách|kiểu|cảm giác)(?!\w))", "cái"),
+)
+_FINAL = re.compile(r"(?<!\w)(?:à|ạ|nhé|nha|đấy|đó|vậy|thế|mà|chứ|cơ|hả|nhỉ)(?=[.!?,;…]*$)")
+_COMPLEMENT_ENDINGS = frozenset((
+    "ở tại đến tới từ là như làm nói cái điều người gì nào sao vì không chẳng chưa đừng "
+    "nghĩ biết thấy muốn cần chọn giữ lấy mua có được bằng về cũng vẫn phải đúng chính tên "
+    "trên dưới sau trước bên ngoài trong chỗ nơi hôm lúc khi ngày ai đâu cứ "
+    "thay tư ưu lợi xu gia quyền tình trần"
+).split())
+_CO_COMPOUNDS = frozenset("động nguy hữu vô phi thời thừa căn nương đầu quân".split())
 
 
 def _encoded(value: dict) -> bytes:
@@ -44,28 +65,38 @@ class RewritePlan:
 
 
 def plan_rewrite(text: str) -> RewritePlan | None:
-    """Shorten just a first-time adverb, declining names, quotes and titles.
-
-    Only one lowercase occurrence following a temporal connective is allowed.
-    Pronouns, negation, numbers, predicates and all punctuation are retained.
-    The lexical equivalence has no numeric semantic-confidence claim.
-    """
+    """Apply reviewed lexical contractions once; decline names and quotations."""
     if not isinstance(text, str) or not 1 <= len(text) <= 512:
         return None
-    if any(char in _QUOTES or ord(char) < 32 for char in text):
+    if any(char in _QUOTES or ord(char) < 32 or ord(char) == 127 for char in text):
         return None
     words = list(re.finditer(r"[^\W\d_]+", text))
     if any(word.group()[0].isupper() for word in words[1:]):
         return None
-    matches = list(_PHRASE.finditer(text))
-    if len(matches) != 1:
+    spoken, rules = text, []
+    for name, phrase, replacement in _RULES:
+        pattern = re.compile(r"(?<!\w)(?:" + phrase + r")(?!\w)", re.IGNORECASE)
+        def contract(match):
+            value = replacement
+            return value.capitalize() if value and match.group()[0].isupper() else value
+        changed = pattern.sub(contract, spoken)
+        if changed != spoken:
+            rules.append(name)
+            spoken = changed
+    # Locative/demonstrative complements and predicates are not particles.
+    while (match := _FINAL.search(spoken)) is not None:
+        before = spoken[:match.start()].rstrip()
+        previous = before.rsplit(maxsplit=1)[-1].casefold() if before else ""
+        if (not before or match.group() in {"đó", "đấy", "vậy", "thế"} and previous in _COMPLEMENT_ENDINGS
+                or match.group() == "cơ" and previous in _CO_COMPOUNDS):
+            break
+        if "final-particle" not in rules:
+            rules.append("final-particle")
+        spoken = before + spoken[match.end():]
+    spoken = re.sub(r"\s+([,.!?;:…])", r"\1", " ".join(spoken.split())).lstrip(",; ")
+    if not spoken or not re.search(r"\w", spoken) or spoken == text or not rules:
         return None
-    match = matches[0]
-    before = text[:match.start()]
-    if not re.search(r"(?:^|\W)(?:[Kk]hi|trong|vào|từ|đến|ngay|chỉ) $", before):
-        return None
-    spoken = text[:match.start()] + "lần đầu" + text[match.end():]
-    return RewritePlan(text, spoken, (RULE,))
+    return RewritePlan(text, spoken, tuple(rules))
 
 
 def _unique(pairs: list[tuple[str, object]]) -> dict:
@@ -118,17 +149,17 @@ class SpokenTextStore:
     def _fields(self, checkpoint: TtsCheckpoint, plan: RewritePlan | None) -> dict:
         segment = self.segments[checkpoint.segment_id]
         return _fields(segment, checkpoint.artifact_hash, checkpoint.artifact.content_hash,
-                       self.identity, self.recipe_hash, plan)
+                       self.identity, self.recipe_hash, plan, checkpoint.artifact.to_dict())
 
     def _plan_for_artifact(self, checkpoint: TtsCheckpoint) -> RewritePlan | None:
         markers = [warning for warning in checkpoint.artifact.warnings if warning.startswith(WARNING)]
         if not markers:
             return None
-        if markers != [rewrite_warning(checkpoint.segment_id)]:
-            raise ValueError("unrecognized spoken-text rewrite advisory")
         plan = plan_rewrite(self.segments[checkpoint.segment_id].text)
         if plan is None:
             raise ValueError("rewritten waveform has no applicable lexical rule")
+        if markers != [rewrite_warning(checkpoint.segment_id, plan.rules)]:
+            raise ValueError("unrecognized spoken-text rewrite advisory")
         return plan
 
     def filter_checkpoints(self, checkpoints: Mapping[str, TtsCheckpoint]) -> dict[str, TtsCheckpoint]:
@@ -180,17 +211,20 @@ class SpokenTextStore:
                 "fidelity_evidence": "restricted-lexical-rule;semantic-confidence-not-calibrated"}
 
 
-def rewrite_warning(identifier: str) -> str:
-    return WARNING + identifier + "; " + RECIPE + "; original translation retained; review spoken text"
+def rewrite_warning(identifier: str, rules: tuple[str, ...] = (RULE,)) -> str:
+    return WARNING + identifier + "; " + RECIPE + "; rules " + ",".join(rules) + "; original translation retained; review spoken text"
 
 
-def _fields(segment, artifact_hash, audio_hash, identity, digest, plan):
+def _fields(segment, artifact_hash, audio_hash, identity, digest, plan, artifact):
     spoken = segment.text if plan is None else plan.spoken_text
     return {"schema_version": 1, "kind": "dubbing_spoken_text", "recipe": RECIPE,
             "recipe_hash": digest, "checkpoint_identity": identity,
             "original_input": segment.to_dict(), "mode": "original" if plan is None else "rewritten",
             "spoken_text": spoken, "spoken_text_hash": "sha256:" + sha256(spoken.encode("utf-8")).hexdigest(),
             "rules": [] if plan is None else list(plan.rules),
+            "fit": {"render_window_end": artifact.get("render_window_end"),
+                    "speed_ratio_milli": artifact["speed_ratio_milli"],
+                    "warnings": [item for item in artifact["warnings"] if item.startswith(("TTS_RENDER_WINDOW_WIDENED:", "TTS_FAST_FIT:"))]},
             "artifact_hash": artifact_hash, "audio_hash": audio_hash}
 
 
@@ -211,12 +245,12 @@ def validate_spoken_text_document(value: dict, speech_bytes: bytes,
         markers = [warning for warning in artifact["warnings"] if warning.startswith(WARNING)]
         plan = None
         if markers:
-            if markers != [rewrite_warning(segment.segment_id)]:
-                raise ValueError("unrecognized spoken-text rewrite advisory")
             plan = plan_rewrite(segment.text)
             if plan is None:
                 raise ValueError("rewritten speech has no applicable rule")
-        entries.append(_fields(segment, artifact["artifact_hash"], artifact["content_hash"], identity, digest, plan))
+            if markers != [rewrite_warning(segment.segment_id, plan.rules)]:
+                raise ValueError("unrecognized spoken-text rewrite advisory")
+        entries.append(_fields(segment, artifact["artifact_hash"], artifact["content_hash"], identity, digest, plan, artifact))
     expected = {"schema_version": 1, "kind": "dubbing_spoken_text_document", "recipe": RECIPE,
                 "recipe_hash": digest, "checkpoint_identity": identity,
                 "tts_document_hash": "sha256:" + sha256(speech_bytes).hexdigest(),
@@ -227,10 +261,11 @@ def validate_spoken_text_document(value: dict, speech_bytes: bytes,
 
 
 class BoundedDurationRewriteEngine:
-    def __init__(self, engine, store: SpokenTextStore):
+    def __init__(self, engine, store: SpokenTextStore, *, render_window_limits=None):
         self.engine = engine
         self.store = store
         self.rewritten_requests: set[str] = set()
+        self.render_window_limits = dict(render_window_limits or {})
 
     def capabilities(self):
         return self.engine.capabilities()
@@ -246,24 +281,40 @@ class BoundedDurationRewriteEngine:
     def synthesize(self, request):
         if request.segment != self.store.segments.get(request.segment.segment_id):
             raise TtsError("TTS_SPOKEN_TEXT_INPUT_INVALID", "synthesis input differs from the bound source cue")
-        try:
-            return self.engine.synthesize(request)
-        except TtsError as error:
-            if error.code != "DURATION_FIT_REQUIRED":
-                raise
-            plan = plan_rewrite(request.segment.text)
-            if plan is None or request.request_id in self.rewritten_requests:
-                raise
-            # A changed text gets just one fresh native inference. The underlying
-            # native EOS/tempo bounds and the outer waveform checks still apply.
-            self.rewritten_requests.add(request.request_id)
-            rewritten = replace(request, segment=replace(request.segment,
-                                text=plan.spoken_text, normalized_text=None))
+        identifier = request.segment.segment_id
+        plan, warnings = None, ()
+        current = request
+        limit = self.render_window_limits.get(identifier)
+        for tier in range(4):
+            if tier == 1:
+                if limit is None or request.segment.render_window_end is None or limit.ticks <= request.segment.render_window_end.ticks:
+                    continue
+                current = replace(current, segment=replace(current.segment, render_window_end=limit))
+                warnings += (f"TTS_RENDER_WINDOW_WIDENED: {identifier}; end {limit.ticks}",)
+            elif tier == 2:
+                candidate = plan_rewrite(request.segment.text)
+                if candidate is None or request.request_id in self.rewritten_requests:
+                    continue
+                plan = candidate
+                self.rewritten_requests.add(request.request_id)
+                current = replace(current, segment=replace(current.segment, text=plan.spoken_text, normalized_text=None))
+                warnings += (rewrite_warning(identifier, plan.rules),)
+            elif tier == 3:
+                current = replace(current, config=replace(current.config, max_speed_ratio_milli=FAST_FIT_MAX_MILLI))
             try:
-                result = self.engine.synthesize(rewritten)
-            except TtsError as rewrite_error:
-                raise TtsError(rewrite_error.code,
-                               "bounded lexical duration rewrite refused: " + rewrite_error.condition,
-                               retryable=False) from rewrite_error
-            self.store.pending[request.segment.segment_id] = plan
-            return replace(result, warnings=result.warnings + (rewrite_warning(request.segment.segment_id),))
+                result = self.engine.synthesize(current)
+            except TtsError as error:
+                if tier == 0 and error.code != "DURATION_FIT_REQUIRED":
+                    raise
+                if error.code != "DURATION_FIT_REQUIRED" or tier == 3:
+                    evidence = f"TTS_DURATION_FIT_REFUSED: {identifier}; " + "; ".join(warnings)
+                    if tier == 3:
+                        evidence += f"; max speed {FAST_FIT_MAX_MILLI}"
+                    self.store.warnings.append(evidence)
+                    raise TtsError(error.code, error.condition + "; " + evidence, retryable=False) from error
+                continue
+            if tier == 3:
+                warnings += (f"TTS_FAST_FIT: {identifier}; speed {result.speed_ratio_milli}",)
+            self.store.pending[identifier] = plan
+            return replace(result, warnings=result.warnings + warnings,
+                           render_window_end=current.segment.render_window_end)

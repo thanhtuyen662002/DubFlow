@@ -27,7 +27,7 @@ import wave
 from engine.dubflow.models import ensure_model_profile
 from engine.dubflow.tts.adapter import (
     EngineCapabilities, EngineHealth, EngineSynthesis, TtsBackendError,
-    TtsError, TtsRequest, VoiceProfile,
+    TtsError, TtsRequest, VoiceProfile, FAST_FIT_MAX_MILLI,
 )
 
 ENGINE_ID = "mimic3-vits-onnx-v1"
@@ -402,7 +402,8 @@ class NeuralVietnameseTtsEngine:
         speed_milli = 1000
         if len(audio.samples) > target:
             speed_milli = math.ceil(len(audio.samples) * 1000 / target)
-            maximum = request.config.max_speed_ratio_milli if max_speed_milli is None else min(max_speed_milli, request.config.max_speed_ratio_milli)
+            maximum = min(FAST_FIT_MAX_MILLI, request.config.max_speed_ratio_milli,
+                          FAST_FIT_MAX_MILLI if max_speed_milli is None else max_speed_milli)
             if speed_milli > maximum:
                 raise TtsBackendError("DURATION_FIT_REQUIRED", "natural speech cannot fit this cue within the safe speaking rate")
             audio = self._tts.generate(request.segment.text, sid=0, speed=speed_milli / 1000)

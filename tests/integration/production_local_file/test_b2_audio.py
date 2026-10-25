@@ -13,7 +13,7 @@ import wave
 from types import SimpleNamespace
 
 from engine.dubflow.worker.b2_audio import B2AudioError, run_b2_audio, tts_recipe_identity, mix_recipe_identity, _dubbing_windows
-from engine.dubflow.mix import streaming
+from engine.dubflow.mix import streaming, FileSegment
 from engine.dubflow.media import FfmpegMediaAdapter, Rational
 from engine.dubflow.media.adapter import MediaStream
 from engine.dubflow.tts.adapter import TtsError
@@ -44,6 +44,102 @@ class HermeticDecodedAudioAdapter:
 
 
 class ProductionLocalFileB2Tests(unittest.TestCase):
+    def test_wider_window_is_attempted_only_after_duration_failure_and_resumes(self):
+        requests = []
+        class Engine(DeterministicFixtureEngine):
+            def synthesize(self, request):
+                requests.append(request)
+                if request.segment.render_window_end.ticks < 3000:
+                    raise TtsError("DURATION_FIT_REQUIRED", "complete speech needs a wider window")
+                return super().synthesize(replace(request, sample_end=44800))
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",
+            return_value=(SimpleNamespace(sample_rate=16000, channels=1), approved_default_voice())), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", side_effect=lambda *a, **kw: Engine()):
+            root = Path(directory)
+            options = dict(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2",
+                translated_cues=(TextCue("a", 0, 500, "Hello", "Xin chào"),))
+            result = run_b2_audio(**options)
+            self.assertEqual([r.segment.render_window_end.ticks for r in requests], [2500, 3000])
+            self.assertEqual([r.config.max_speed_ratio_milli for r in requests], [1300, 1300])
+            artifact = result.tts_document.artifacts[0]
+            self.assertEqual((artifact.slot_end.ticks, artifact.actual_end.ticks, artifact.render_window_end.ticks), (500, 2800, 3000))
+            self.assertEqual(result.mix_document.duck_windows[0].end_sample, 44800)
+            self.assertTrue(any(w.startswith("TTS_RENDER_WINDOW_WIDENED: a;") for w in result.tts_document.warnings))
+            requests.clear()
+            resumed = run_b2_audio(**options)
+            self.assertEqual(requests, [])
+            self.assertEqual(resumed.tts_document.artifacts, result.tts_document.artifacts)
+
+    def test_separated_bed_restores_failed_cue_with_fades_and_preserves_pure_stem(self):
+        class Engine(DeterministicFixtureEngine):
+            def synthesize(self, request):
+                if request.segment.segment_id == "failed":
+                    raise TtsError("DURATION_FIT_REQUIRED", "complete speech exceeds every bounded tier")
+                return super().synthesize(request)
+        def load(*args, voice_id=None):
+            voice = approved_default_voice()
+            return SimpleNamespace(sample_rate=16000, channels=1), replace(voice, voice_id=voice_id or voice.voice_id)
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice", side_effect=load), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", side_effect=lambda *a, **kw: Engine()):
+            root = Path(directory)
+            background = root / "background.wav"
+            with wave.open(str(background), "wb") as writer:
+                writer.setparams((2, 2, 16000, 0, "NONE", "not compressed"))
+                writer.writeframes(struct.pack("<hh", 400, 500) * 48000)
+            result = run_b2_audio(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2", background_path=background,
+                voice_by_cue={"good": "other"},
+                translated_cues=(TextCue("failed", 500, 1500, "Hello", "Bây giờ không đi nhé."),
+                                 TextCue("good", 2000, 2500, "Thanks", "Cảm ơn")))
+            self.assertEqual(result.background_stem_path.read_bytes(), background.read_bytes())
+            self.assertEqual([a.segment_id for doc in result.tts_documents for a in doc.artifacts], ["good"])
+            self.assertEqual(result.tts_documents[0].failures[0].segment_id, "failed")
+            self.assertTrue(any("max speed 1500" in warning for warning in result.tts_documents[0].warnings))
+            self.assertIn("SEPARATION_SOURCE_RESTORED: failed", result.mix_document.warnings)
+            self.assertEqual([w.segment_id for w in result.mix_document.duck_windows], ["good"])
+            with wave.open(result.mix_document.original_audio.path, "rb") as reader:
+                frames = tuple(struct.iter_unpack("<hh", reader.readframes(reader.getnframes())))
+            self.assertTrue(all(frame == (400, 500) for frame in frames[:8000] + frames[24000:]))
+            self.assertTrue(all(frame == (1200, -1200) for frame in frames[8320:23680]))
+            self.assertEqual(frames[8000], (400, 500))
+            self.assertEqual(frames[23999], (400, 500))
+            self.assertTrue(400 < frames[8160][0] < 1200)
+            self.assertTrue(-1200 < frames[8160][1] < 500)
+            self.assertTrue(400 < frames[23840][0] < 1200)
+
+    def test_separated_bed_also_restores_tts_rejected_by_the_mixer(self):
+        bridge = FileSegment.from_tts_artifact
+        def rejected(artifact):
+            segment = bridge(artifact)
+            return replace(segment, content_hash="sha256:" + "0" * 64) if artifact.segment_id == "bad-hash" else segment
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",
+            return_value=(SimpleNamespace(sample_rate=16000, channels=1), approved_default_voice())), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", side_effect=lambda *a, **kw: DeterministicFixtureEngine()), patch.object(
+            FileSegment, "from_tts_artifact", side_effect=rejected):
+            root = Path(directory)
+            background = root / "background.wav"
+            with wave.open(str(background), "wb") as writer:
+                writer.setparams((2, 2, 16000, 0, "NONE", "not compressed"))
+                writer.writeframes(struct.pack("<hh", 400, 500) * 48000)
+            result = run_b2_audio(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2", background_path=background,
+                translated_cues=(TextCue("bad-hash", 500, 1500, "Hello", "Xin chào"),
+                                 TextCue("good", 2000, 2500, "Thanks", "Cảm ơn")))
+            self.assertFalse(result.tts_document.failures)
+            self.assertEqual(result.mix_document.failures[0].code, "AUDIO_HASH_MISMATCH")
+            self.assertIn("SEPARATION_SOURCE_RESTORED: bad-hash", result.mix_document.warnings)
+            with wave.open(result.mix_document.original_audio.path, "rb") as reader:
+                reader.setpos(16000)
+                self.assertEqual(reader.readframes(1), struct.pack("<hh", 1200, -1200))
+            self.assertEqual(result.background_stem_path.read_bytes(), background.read_bytes())
+
     def test_multivoice_groups_keep_global_windows_union_artifacts_and_voice_caches(self):
         engines = []
         class Engine(DeterministicFixtureEngine):
@@ -195,6 +291,12 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
         self.assertEqual([int(item["render_window_end"]["ticks"]) for item in windows], [1580, 3800, 6000, 4600, 9500])
         self.assertEqual([item["overlaps_source"] for item in windows], [False, False, True, True, False])
         self.assertEqual(mappings, before)
+        wider = _dubbing_windows(mappings, 9500, max_postroll_ms=4000)
+        self.assertEqual([int(item["render_window_end"]["ticks"]) for item in wider], [1580, 3880, 6000, 4600, 9500])
+        isolated = _dubbing_windows([mappings[0], {**mappings[-1], "start_ms": 8500}], 12000, max_postroll_ms=4000)
+        self.assertEqual(int(isolated[0]["render_window_end"]["ticks"]), 4500)
+        with self.assertRaises(B2AudioError):
+            _dubbing_windows(mappings, 9500, max_postroll_ms=4001)
         for invalid in (mappings + [mappings[0]], [{**mappings[0], "end_ms": 9501}]):
             with self.assertRaises(B2AudioError): _dubbing_windows(invalid, 9500)
 

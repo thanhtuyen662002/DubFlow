@@ -46,6 +46,7 @@ from .tts_rewrites import BoundedDurationRewriteEngine, SpokenTextStore
 BASE_TIME = TimeBase(1, 1000)
 DUBBING_WINDOW_RECIPE = "source-intercue-postroll-2000ms-gap120ms-v1"
 MAX_POSTROLL_MS = 2000
+MAX_FALLBACK_POSTROLL_MS = 4000
 NEXT_CUE_GUARD_MS = 120
 B2_TTS_PRODUCER_VERSION = "3.5.0"
 
@@ -65,7 +66,7 @@ def _tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
         return "legacy-profile-without-neural-recipe"
     metadata = _child(app_root, relative)
     source = Path(__file__).parents[1] / "tts"
-    paths = (metadata, source / "adapter.py", source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py", Path(__file__).with_name("tts_checkpoints.py"), Path(__file__).with_name("tts_rewrites.py"), Path(__file__).with_name("tts_cache.py"))
+    paths = (metadata, source / "adapter.py", source / "vieneu.py", source / "vieneu_native.py", source / "neural_vits.py", source / "mimic3_native.py", source / "native_process.py", source / "windows_job.py", Path(__file__), Path(__file__).with_name("tts_checkpoints.py"), Path(__file__).with_name("tts_rewrites.py"), Path(__file__).with_name("tts_cache.py"))
     return sha256("".join(_digest(path) for path in paths).encode()).hexdigest()
 
 
@@ -73,7 +74,8 @@ def mix_recipe_identity() -> str:
     """Pin the selected PCM producer and code before reusing a B2 generation."""
     try:
         recipe = {"producer": streaming.PRODUCER_VERSION, "backend": streaming.BACKEND_ID,
-                  "numpy": streaming.NUMPY_VERSION, "adapter": _digest(Path(streaming.__file__))}
+                  "numpy": streaming.NUMPY_VERSION, "adapter": _digest(Path(streaming.__file__)),
+                  "bed_recipe": _digest(Path(__file__))}
         return sha256(json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     except (OSError, TypeError, ValueError) as error:
         raise B2AudioError("MIX_RECIPE_UNAVAILABLE", "selected mixer recipe cannot be verified") from error
@@ -190,12 +192,14 @@ def _cue_mapping(cue: Any) -> dict[str, Any]:
     }
 
 
-def _dubbing_windows(mappings: Sequence[Mapping[str, Any]], source_end: int) -> tuple[dict[str, Any], ...]:
+def _dubbing_windows(mappings: Sequence[Mapping[str, Any]], source_end: int, *, max_postroll_ms: int = MAX_POSTROLL_MS) -> tuple[dict[str, Any], ...]:
     """Derive render limits without changing canonical source cue intervals.
 
     The gaps are between recognized cues, not certified source silence. An
     overlap on either side keeps the original slot. Planning is O(n log n).
     """
+    if type(max_postroll_ms) is not int or not 0 <= max_postroll_ms <= MAX_FALLBACK_POSTROLL_MS:
+        raise B2AudioError("TTS_INPUT_INVALID", "postroll exceeds the bounded fit policy")
     ordered = sorted(mappings, key=lambda item: (item["start_ms"], item["end_ms"], item["cue_id"]))
     if len({item["cue_id"] for item in ordered}) != len(ordered):
         raise B2AudioError("TTS_INPUT_INVALID", "source cue identity is duplicated")
@@ -210,7 +214,7 @@ def _dubbing_windows(mappings: Sequence[Mapping[str, Any]], source_end: int) -> 
         window_end = end
         if not overlaps:
             limit = source_end if next_start is None else next_start - NEXT_CUE_GUARD_MS
-            window_end = max(end, min(end + MAX_POSTROLL_MS, limit, source_end))
+            window_end = max(end, min(end + max_postroll_ms, limit, source_end))
         result.append({"cue_id": item["cue_id"], "slot_start": TimePoint(start, BASE_TIME).to_dict(),
             "slot_end": TimePoint(end, BASE_TIME).to_dict(), "render_window_end": TimePoint(window_end, BASE_TIME).to_dict(),
             "next_source_start": None if next_start is None else TimePoint(next_start, BASE_TIME).to_dict(),
@@ -231,9 +235,66 @@ def _media_extent_ms(probe: MediaProbeResult, decoded_end: int) -> int:
     return decoded_end
 
 
+def _restore_source_windows(background: Path, source: Path, output: Path,
+                            windows: Sequence[tuple[int, int]], *, block_frames: int = 262144) -> None:
+    """Stream a disposable PCM16 bed; union failed slots before 20 ms fades."""
+    import numpy as np
+    limits = streaming.StreamLimits()
+    original = streaming._wave(source, limits.max_source_bytes)
+    bed = streaming._wave(background, limits.max_source_bytes)
+    if (original.rate != bed.rate or original.channels != bed.channels
+            or abs(original.frames - bed.frames) * 1000 > original.rate * 50):
+        raise B2AudioError("SEPARATION_BED_FAILED", "accompaniment format/duration differs from source")
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(windows):
+        start = max(0, start * original.rate // 1000)
+        end = min(original.frames, (end * original.rate + 999) // 1000)
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    streaming._plain(output)
+    descriptor, name = tempfile.mkstemp(prefix=".restored-bed-", suffix=".partial", dir=output.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle, wave.open(str(background), "rb") as bg, wave.open(str(source), "rb") as src:
+            with wave.open(handle, "wb") as writer:
+                writer.setparams((original.channels, 2, original.rate, 0, "NONE", "not compressed"))
+                first = 0
+                for offset in range(0, original.frames, block_frames):
+                    count = min(block_frames, original.frames - offset)
+                    raw = bg.readframes(count)
+                    raw += bytes(count * original.channels * 2 - len(raw))
+                    values = np.frombuffer(raw, dtype="<i2").reshape(count, original.channels).astype(np.int64)
+                    source_values = np.frombuffer(src.readframes(count), dtype="<i2").reshape(count, original.channels).astype(np.int64)
+                    while first < len(merged) and merged[first][1] <= offset:
+                        first += 1
+                    for index in range(first, len(merged)):
+                        start, end = merged[index]
+                        if start >= offset + count:
+                            break
+                        left, right = max(start, offset), min(end, offset + count)
+                        positions = np.arange(left, right, dtype=np.int64)
+                        fade = max(1, min(original.rate * 20 // 1000, (end - start - 1) // 2))
+                        weight = np.minimum(fade, np.minimum(positions - start, end - 1 - positions))
+                        if end - start < 3:
+                            weight[:] = fade
+                        weight = weight[:, None]
+                        selection = slice(left - offset, right - offset)
+                        values[selection] = (values[selection] * (fade - weight) + source_values[selection] * weight) // fade
+                    writer.writeframesraw(values.astype("<i2").tobytes())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_version, runtime_id,
                       mappings, windows_by_id, input_hash, source_language, tts_dir,
-                      app_root, profile_path, synthesis_cache_dir):
+                      app_root, profile_path, synthesis_cache_dir, render_window_limits=None, allow_all_failed=False):
     """One voice's existing synthesis/checkpoint/cache/rewrite pipeline."""
     try:
         tts_config = TtsConfig(
@@ -295,7 +356,7 @@ def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_ve
         on_checkpoint = checkpoints.commit
         if backend_id == vieneu.ENGINE_ID:
             spoken_store = SpokenTextStore(tts_dir, identity=checkpoint_identity, segments=segments)
-            engine = BoundedDurationRewriteEngine(engine, spoken_store)
+            engine = BoundedDurationRewriteEngine(engine, spoken_store, render_window_limits=render_window_limits)
             reusable = spoken_store.filter_checkpoints(reusable)
 
             def on_checkpoint(checkpoint):
@@ -311,6 +372,8 @@ def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_ve
             provenance=provenance,
             voice=voice,
             output_dir=tts_dir,
+            render_window_limits=render_window_limits,
+            allow_fast_fit=backend_id == vieneu.ENGINE_ID,
         ).synthesize(segments, input_hash=input_hash, checkpoints=reusable,
                      on_checkpoint=on_checkpoint)
         if checkpoints.warnings:
@@ -318,7 +381,12 @@ def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_ve
         if spoken_store is not None and spoken_store.warnings:
             tts_document = replace(tts_document, warnings=tts_document.warnings + tuple(spoken_store.warnings))
     except TtsStageError as error:
-        raise B2AudioError("TTS_FAILED", str(error), retryable=error.retryable) from error
+        if not allow_all_failed:
+            raise B2AudioError("TTS_FAILED", str(error), retryable=error.retryable) from error
+        # A voice group may contain only one refused cue. Retain its failure
+        # document so other groups can still contribute usable Vietnamese PCM.
+        tts_document = replace(error.document, warnings=error.document.warnings + tuple(checkpoints.warnings)
+                               + (() if spoken_store is None else tuple(spoken_store.warnings)))
     except Exception as error:
         code = getattr(error, "code", "TTS_BOOTSTRAP_FAILED")
         condition = getattr(error, "condition", str(error))
@@ -421,8 +489,11 @@ def run_b2_audio(
         input_hash = _input_hash(mappings)
         placement_document_path = None
         windows_by_id: dict[str, dict[str, Any]] = {}
+        render_window_limits = {}
         if backend_id == vieneu.ENGINE_ID:
             windows = _dubbing_windows(mappings, _media_extent_ms(source_probe, source_end_ticks))
+            wider = _dubbing_windows(mappings, _media_extent_ms(source_probe, source_end_ticks), max_postroll_ms=MAX_FALLBACK_POSTROLL_MS)
+            render_window_limits = {item["cue_id"]: TimePoint(int(item["render_window_end"]["ticks"]), BASE_TIME) for item in wider}
             placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": DUBBING_WINDOW_RECIPE,
                 "time_base": BASE_TIME.to_dict(), "source_end": TimePoint(_media_extent_ms(source_probe, source_end_ticks), BASE_TIME).to_dict(),
                 "source_audio_sha256": "sha256:" + _digest(source_audio_path), "canonical_cue_input_hash": input_hash,
@@ -483,7 +554,9 @@ def run_b2_audio(
             producer_version=producer_version, runtime_id=runtime_id, mappings=items,
             windows_by_id=windows_by_id, input_hash=group_hash, source_language=source_language,
             tts_dir=root / "tts" / identifier if multivoice else root / "tts",
-            app_root=app_root, profile_path=profile_path, synthesis_cache_dir=synthesis_cache_dir)
+            app_root=app_root, profile_path=profile_path, synthesis_cache_dir=synthesis_cache_dir,
+            render_window_limits={item["cue_id"]: render_window_limits[item["cue_id"]] for item in items} if render_window_limits else None,
+            allow_all_failed=multivoice)
         document_path = root / ("tts_document.json" if index == 0 else f"tts_document.{identifier}.json")
         spoken_path = root / ("dubbing_spoken_text.json" if index == 0 else f"dubbing_spoken_text.{identifier}.json")
         _write_voice_documents(tts_document, spoken_store, document_path, spoken_path)
@@ -513,13 +586,20 @@ def run_b2_audio(
                     )
                 )
         background_stem_path = None
+        restored = {item["cue_id"] for item in mappings if item["cue_id"] not in artifacts_by_id}
+        bed_path = source_audio_path
         if background_path is not None:
             # A generation retains its own immutable bed even when the optional
             # analysis stage later regenerates work_dir/separation/background.wav.
             background_stem_path = root / "background_stem.wav"
             shutil.copyfile(background_path, background_stem_path)
+            bed_path = background_stem_path
+            if restored:
+                bed_path = root / "mix_bed.wav"
+                _restore_source_windows(background_stem_path, source_audio_path, bed_path,
+                    [(item["start_ms"], item["end_ms"]) for item in mappings if item["cue_id"] in restored])
         source = FileSource(
-            background_stem_path or source_audio_path,
+            bed_path,
             start=TimePoint(0, BASE_TIME),
             end=TimePoint(source_end_ticks, BASE_TIME),
             source_id=Path(source_path).name,
@@ -537,6 +617,21 @@ def run_b2_audio(
             tuple(segments_for_mix),
             input_hash="sha256:" + sha256(b"".join(document.to_bytes() for document in documents)).hexdigest(),
         )
+        if background_stem_path is not None:
+            rejected = {failure.segment_id for failure in mix_document.failures} - restored
+            if rejected:
+                # A validated TTS file can still be unavailable at mix time.
+                # Change the bed once for these newly observed failures.
+                restored.update(rejected)
+                bed_path = root / "mix_bed.wav"
+                _restore_source_windows(background_stem_path, source_audio_path, bed_path,
+                    [(item["start_ms"], item["end_ms"]) for item in mappings if item["cue_id"] in restored])
+                mix_document = mixer.mix(replace(source, path=bed_path), tuple(segments_for_mix),
+                    input_hash="sha256:" + sha256(b"".join(document.to_bytes() for document in documents)).hexdigest())
+                if any(failure.segment_id not in restored for failure in mix_document.failures):
+                    raise B2AudioError("SEPARATION_BED_FAILED", "TTS inputs changed during source restoration; use the original bed")
+            mix_document = replace(mix_document, warnings=mix_document.warnings + tuple(
+                "SEPARATION_SOURCE_RESTORED: " + item["cue_id"] for item in mappings if item["cue_id"] in restored))
     except Exception as error:
         if background_path is not None:
             raise B2AudioError("SEPARATION_BED_FAILED", getattr(error, "condition", str(error))) from error

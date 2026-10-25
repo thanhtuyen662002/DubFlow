@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import io
 import json
@@ -149,6 +150,17 @@ class NeuralDurationTests(unittest.TestCase):
         self.assertEqual(native.speeds, [1.0, 1.2])
         self.assertEqual(result.fit_mode, "speed_adjusted")
         self.assertEqual(result.speed_ratio_milli, 1200)
+
+    def test_explicit_fast_bound_accepts_1500_but_refuses_longer_complete_speech(self) -> None:
+        self.request = replace(self.request, config=replace(self.config, max_speed_ratio_milli=1500))
+        native = ScriptedNative([33075, 22050])
+        result = self.synthesize(native)
+        self.assertEqual(native.speeds, [1.0, 1.5])
+        self.assertEqual(result.speed_ratio_milli, 1500)
+        native = ScriptedNative([33076])
+        with self.assertRaisesRegex(TtsError, "DURATION_FIT_REQUIRED"):
+            self.synthesize(native)
+        self.assertEqual(native.speeds, [1.0])
 
     def test_unsafe_fit_is_rejected_without_second_inference(self) -> None:
         native = ScriptedNative([44100])

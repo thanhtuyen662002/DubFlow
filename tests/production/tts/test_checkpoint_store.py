@@ -66,7 +66,7 @@ class TtsCheckpointTests(unittest.TestCase):
                 root = Path(directory)
                 script = """import os, runpy, sys
 from pathlib import Path
-s = runpy.run_path(sys.argv[1], run_name='test_checkpoint_store')
+s = runpy.run_path(sys.argv[1], run_name=sys.argv[4])
 root = Path(sys.argv[2])
 store = s['TtsCheckpointStore'](root, identity=s['IDENTITY'])
 def committed(value):
@@ -74,7 +74,7 @@ def committed(value):
     os._exit(42)
 s['adapter'](root, s['FittedFixture'](sys.argv[3])).synthesize(s['SEGMENTS'], input_hash=s['INPUT'], on_checkpoint=committed)
 """
-                result = subprocess.run([sys.executable, "-c", script, str(Path(__file__).absolute()), str(root), mode],
+                result = subprocess.run([sys.executable, "-B", "-c", script, str(Path(__file__).absolute()), str(root), mode, __name__],
                                         capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 42, result.stderr)
                 wav = next(root.glob("tts-*.wav"))

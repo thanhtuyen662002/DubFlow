@@ -17,7 +17,10 @@ import sys
 
 FRONTEND_ID = "vieneu-sea-g2p-preset-v1"
 VERSIONS = {"vieneu": "3.8.3", "sea-g2p": "0.9.1", "onnxruntime": "1.30.0", "numpy": "2.2.6", "tokenizers": "0.23.2"}
-INFERENCE_RECIPE = {"seed": 20261007, "eos_retry_seed": 20261008, "eos_retries": 1, "threads": 2, "max_new_frames": 300, "frame_budget": "pinned-sdk-phoneme-cap", "eos_retry_frame_budget_multiplier": 2, "temperature": 0.8, "top_k": 25, "top_p": 0.95, "repetition_penalty": 1.2, "babble_retries": 0, "precision": "fp32", "duration_fit": "app-owned-ffmpeg-atempo-max1.3-measured3-pad5ms"}
+INFERENCE_RECIPE = {"seed": 20261007, "eos_retry_seed": 20261008, "eos_retries": 1, "threads": 2, "max_new_frames": 300, "frame_budget": "pinned-sdk-phoneme-cap", "eos_retry_frame_budget_multiplier": 2, "temperature": 0.8, "top_k": 25, "top_p": 0.95, "repetition_penalty": 1.2, "babble_retries": 0, "precision": "fp32", "duration_fit": "app-owned-ffmpeg-atempo-max1.3-fallback1.5-measured3-pad5ms"}
+# Existing data-only manifests retain their hashes; the parent/child source
+# recipe pins the opt-in faster tier independently of the unchanged model data.
+LEGACY_INFERENCE_RECIPE = {**INFERENCE_RECIPE, "duration_fit": "app-owned-ffmpeg-atempo-max1.3-measured3-pad5ms"}
 SOURCE_FILES = {
     "vieneu/_v3_turbo_engine/onnx_runtime_lite.py": "7747ac18fb5b660a810a434461bd8386ba40b0b46d559c07907db0c19414084e",
     "vieneu/_v3_turbo_engine/rep_history.py": "2cfc52f9a860fb53450e5b3b364fa5955fba03acf558195c423b476535104a2b",
@@ -123,7 +126,7 @@ class NativeModel:
 
     def generate(self, request: dict) -> dict:
         text, speed = request["text"], request["speed"]
-        if type(text) is not str or not text.strip() or len(text) > 512 or isinstance(speed, bool) or not isinstance(speed, (float, int)) or not math.isfinite(speed) or not 1.0 <= speed <= 1.3:
+        if type(text) is not str or not text.strip() or len(text) > 512 or isinstance(speed, bool) or not isinstance(speed, (float, int)) or not math.isfinite(speed) or not 1.0 <= speed <= 1.5:
             raise ValueError("invalid bounded native speech request")
         if text != self.last_text:
             phones = self.phonemize(text)
