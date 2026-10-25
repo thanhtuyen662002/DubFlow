@@ -23,8 +23,10 @@ The upstream model card states that its training data includes **Gemini API
 teacher distillation** and asks downstream users to verify the current Gemini
 API terms for derivative-work training. Google's current Gemini API terms
 restrict using outputs to develop competing models. The upstream training
-data also lists `chi-vi/hirashiba-mt-zh2vi-b-filtered`, whose terms were not
-established. DubFlow has **not** established that commercial use of this model
+data also lists `chi-vi/hirashiba-mt-zh2vi-b-filtered`, a gated Hugging Face
+dataset published under **GPL-3.0** (checked 2026-10-25). Whether model
+weights trained on GPL-3.0 data inherit its copyleft terms is legally
+unsettled. DubFlow has **not** established that commercial use of this model
 is permitted. It is offered as an **experimental, opt-in** option; the
 default translator remains Argos Translate. Do not use it for commercial work
 until you have verified these terms yourself.
