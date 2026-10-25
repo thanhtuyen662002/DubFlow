@@ -452,6 +452,33 @@ struct ReviewCue {
     dub_failed: bool,
 }
 
+/// Offline Vietnamese titles, description and hashtags for posting a
+/// finished video (`python -m engine.dubflow.seo`). Off the UI thread.
+#[tauri::command]
+async fn post_suggestions(output_path: String, source_title: Option<String>) -> Result<Value, String> {
+    let dir = review_dir(&output_path)?;
+    let timeline = dir.join("editable").join("timeline.json");
+    if !timeline.is_file() {
+        return Err(fail("Không tìm thấy phụ đề của video này"));
+    }
+    let root = version_root()?;
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app")).args(["-B", "-m", "engine.dubflow.seo"]).arg(&timeline);
+    if let Some(title) = source_title.filter(|title| !title.trim().is_empty() && title.chars().count() <= 200 && !title.chars().any(char::is_control)) {
+        command.args(["--source-title", title.trim()]);
+    }
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = tauri::async_runtime::spawn_blocking(move || command.output())
+        .await.map_err(|error| fail(error.to_string()))?
+        .map_err(|error| fail(format!("Không chạy được bộ gợi ý: {error}")))?;
+    let line = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(line.lines().last().unwrap_or_default())
+        .ok().filter(Value::is_object)
+        .ok_or_else(|| fail("Bộ gợi ý không trả về dữ liệu"))
+}
+
 #[tauri::command]
 fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
     let dir = review_dir(&output_path)?;
@@ -607,7 +634,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, post_suggestions])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

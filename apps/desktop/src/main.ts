@@ -3,6 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
+import { mountPostSuggestions } from "./features/seo/view.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
@@ -928,6 +929,11 @@ reviewApply.addEventListener("click", async () => {
   }
 });
 $("#open-review").addEventListener("click", () => void openReview());
+const postSuggestions = mountPostSuggestions(invoke);
+$("#open-post").addEventListener("click", () => {
+  const job = selectedJob();
+  if (job?.outputPath) postSuggestions.open(job.outputPath, job.displayName);
+});
 $("#review-close").addEventListener("click", closeReview);
 $("#review-cancel").addEventListener("click", closeReview);
 reviewUndo.addEventListener("click", undoReview);
