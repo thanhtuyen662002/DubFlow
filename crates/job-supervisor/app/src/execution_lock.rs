@@ -73,7 +73,8 @@ mod tests {
     }
 
     #[test]
-    fn independent_handles_reject_same_job_and_release_on_drop() {
+    #[ignore = "helper is executed alone in a child by the release-on-drop regression"]
+    fn child_rejects_same_job_and_releases_on_drop() {
         let db = database();
         let guard = JobExecutionGuard::acquire(&db, "job-one").unwrap();
         let error = JobExecutionGuard::acquire(&db, "job-one").err().unwrap();
@@ -85,6 +86,30 @@ mod tests {
         drop(other);
         drop(guard);
         let _reclaimed = JobExecutionGuard::acquire(&db, "job-one").unwrap();
+        println!("release-on-drop-verified");
+    }
+
+    // A flock belongs to the open file description. A child forked by a
+    // parallel test keeps a duplicate of the guard's descriptor until its
+    // exec, so a drop in that window would not release. A child process that
+    // runs only this check has no forking neighbours.
+    #[test]
+    fn independent_handles_reject_same_job_and_release_on_drop() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "execution_lock::tests::child_rejects_same_job_and_releases_on_drop",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("release-on-drop-verified"),
+            "isolated release-on-drop check failed:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
