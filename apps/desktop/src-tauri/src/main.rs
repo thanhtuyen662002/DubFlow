@@ -290,7 +290,7 @@ struct BlurRegion {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
@@ -359,6 +359,21 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     }
     if blur_auto == Some(true) {
         args.push("--blur-auto".into());
+    }
+    // Experimental multi-voice only matters when dubbing.
+    if multi_voice == Some(true) && enable_dubbing == Some(true) {
+        args.push("--multi-voice".into());
+        if let Some(voices) = speaker_voices.filter(|voices| !voices.is_empty()) {
+            let known = load_voice_catalog(&root)?;
+            let valid = voices.len() <= 8 && voices.iter().all(|(speaker, voice)| {
+                speaker.len() == 2 && speaker.starts_with('S') && matches!(speaker.as_bytes()[1], b'1'..=b'8')
+                    && known.voices.iter().any(|entry| &entry.voice_id == voice)
+            });
+            if !valid {
+                return Err(fail("Giọng theo người nói không hợp lệ"));
+            }
+            args.extend(["--speaker-voices".into(), serde_json::to_string(&voices).map_err(|error| fail(error.to_string()))?]);
+        }
     }
     command.args(args);
     command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;
@@ -470,6 +485,17 @@ struct ReviewCue {
     text: String,
     edited: bool,
     dub_failed: bool,
+    /// Detected source speaker ("S1"…) when experimental multi-voice ran.
+    speaker: Option<String>,
+}
+
+/// Detected speakers and their voices for a finished multi-voice video
+/// (`job_manifest.json`'s "speakers"); empty when multi-voice did not run.
+#[tauri::command]
+fn review_speakers(output_path: String) -> Result<Value, String> {
+    let dir = review_dir(&output_path)?;
+    let manifest = read_json(&dir.join("job_manifest.json"), 16 * 1024 * 1024)?;
+    Ok(manifest.get("speakers").filter(|value| value.is_array()).cloned().unwrap_or_else(|| json!([])))
 }
 
 #[tauri::command]
@@ -479,6 +505,7 @@ fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
     let translation = read_json(&work.join("translation.json"), 64 * 1024 * 1024)?;
     let overrides = if dir.join(OVERRIDES_FILE).is_file() { read_json(&dir.join(OVERRIDES_FILE), 4 * 1024 * 1024)? } else { json!({}) };
     let failed = failed_dub_cues(&work);
+    let speakers = if work.join("speakers.json").is_file() { read_json(&work.join("speakers.json"), 16 * 1024 * 1024)? } else { json!({}) };
     let cues = translation["cues"].as_array().ok_or_else(|| fail("translation.json has no cues"))?;
     cues.iter().map(|cue| {
         let text = |key: &str| cue[key].as_str().unwrap_or_default().to_owned();
@@ -490,6 +517,7 @@ fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
             end_ms: cue["end_ms"].as_u64().ok_or_else(|| fail("cue has no end"))?,
             source_text: text("source_text"),
             dub_failed: failed.contains(&cue_id),
+            speaker: speakers["labels"][&cue_id].as_str().map(str::to_owned),
             edited: edited.is_some(),
             text: edited.unwrap_or_else(|| machine_text.clone()),
             machine_text,
@@ -664,7 +692,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, video_frame])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, review_speakers, video_frame])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-speaker-campplus-zh-v1",
+  "distribution": "download-on-opt-in",
+  "license": "Apache-2.0",
+  "license_policy": "redistributed unchanged with notice, see docs/licenses/campplus.md",
+  "upstream": {"repository": "https://github.com/modelscope/3D-Speaker", "model": "iic/speech_campplus_sv_zh-cn_16k-common", "onnx_export": "https://github.com/k2-fsa/sherpa-onnx"},
+  "model_path": "speaker/campplus-zh-v1/3dspeaker_campplus_zh-cn_16k.onnx",
+  "artifacts": [
+    {"id": "campplus-zh", "path": "speaker/campplus-zh-v1/3dspeaker_campplus_zh-cn_16k.onnx", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-campplus-zh-v1/3dspeaker_campplus_zh-cn_16k.onnx", "sha256": "f682b514c05d947ee3fa91cd6ec6c5c7543479a128373fa29b1faedccd21fd11", "size_bytes": 28281138},
+    {"id": "campplus-notice", "path": "speaker/campplus-zh-v1/NOTICE-campplus.md", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-campplus-zh-v1/NOTICE-campplus.md", "sha256": "e4d20b1b6b52a281a99b3adf2e01c36872a4fa68953504fb18b714d96d9cfa69", "size_bytes": 798}
+  ]
+}

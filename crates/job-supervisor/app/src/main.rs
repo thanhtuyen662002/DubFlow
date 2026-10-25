@@ -367,6 +367,10 @@ struct StartSpec {
     blur_regions: Option<Value>,
     /// Detect burned-in captions and blur them automatically.
     blur_auto: bool,
+    /// Experimental: a different Vietnamese voice per detected source speaker.
+    multi_voice: bool,
+    /// Speaker id ("S1".."S8") -> voice id chosen by the user.
+    speaker_voices: Option<Value>,
 }
 
 impl StartSpec {
@@ -417,6 +421,8 @@ impl StartSpec {
             translation_engine: "argos".into(),
             blur_regions: None,
             blur_auto: false,
+            multi_voice: false,
+            speaker_voices: None,
         })
     }
     fn with_voice_id(mut self, voice_id: Option<String>) -> SupervisorResult<Self> {
@@ -442,6 +448,24 @@ impl StartSpec {
             ));
         }
         self.translation_engine = engine;
+        Ok(self)
+    }
+    fn with_multi_voice(mut self, multi_voice: bool, speaker_voices: Option<String>) -> SupervisorResult<Self> {
+        self.multi_voice = multi_voice;
+        let Some(text) = speaker_voices else { return Ok(self) };
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|_| SupervisorError::Invalid("speaker_voices must be a JSON object".into()))?;
+        let valid = value.as_object().is_some_and(|map| {
+            map.len() <= 8 && map.iter().all(|(speaker, voice)| {
+                speaker.len() == 2 && speaker.starts_with('S') && speaker[1..].parse::<u8>().is_ok_and(|n| (1..=8).contains(&n))
+                    && voice.as_str().is_some_and(|voice| !voice.is_empty() && voice.len() <= 96
+                        && voice.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+            })
+        });
+        if !valid {
+            return Err(SupervisorError::Invalid("speaker_voices must map S1..S8 to voice ids".into()));
+        }
+        self.speaker_voices = value.as_object().filter(|map| !map.is_empty()).map(|_| value.clone());
         Ok(self)
     }
     fn with_blur_auto(mut self, blur_auto: bool) -> Self {
@@ -522,6 +546,12 @@ impl StartSpec {
         }
         if self.blur_auto {
             request["blur_auto"] = json!(true);
+        }
+        if self.multi_voice {
+            request["multi_voice"] = json!(true);
+        }
+        if let Some(voices) = &self.speaker_voices {
+            request["speaker_voices"] = voices.clone();
         }
         Ok(serde_json::to_string(&request)?)
     }
@@ -656,6 +686,8 @@ enum CliMode {
         translation_engine: Option<String>,
         blur_regions: Option<String>,
         blur_auto: bool,
+        multi_voice: bool,
+        speaker_voices: Option<String>,
     },
     Cancel {
         root: Option<PathBuf>,
@@ -701,6 +733,8 @@ fn run() -> SupervisorResult<()> {
             translation_engine,
             blur_regions,
             blur_auto,
+            multi_voice,
+            speaker_voices,
         } => {
             return run_one_shot(
                 root,
@@ -719,6 +753,8 @@ fn run() -> SupervisorResult<()> {
                 translation_engine,
                 blur_regions,
                 blur_auto,
+                multi_voice,
+                speaker_voices,
             );
         }
         CliMode::Cancel {
@@ -810,6 +846,8 @@ where
             let mut translation_engine = None;
             let mut blur_regions = None;
             let mut blur_auto = false;
+            let mut multi_voice = false;
+            let mut speaker_voices = None;
             let mut burn_in_subtitles = true;
             while let Some(arg) = args.next() {
                 match arg.to_string_lossy().as_ref() {
@@ -845,6 +883,10 @@ where
                         blur_regions = Some(next_arg(&mut args, "--blur-regions")?)
                     }
                     "--blur-auto" => blur_auto = true,
+                    "--multi-voice" => multi_voice = true,
+                    "--speaker-voices" => {
+                        speaker_voices = Some(next_arg(&mut args, "--speaker-voices")?)
+                    }
                     "--help" | "-h" => {
                         println!("dubflow-supervisor run --source <absolute file> --output-dir <absolute dir> --data-root <absolute dir> [--root <version root>] [--status-path <file>]");
                         std::process::exit(0);
@@ -876,6 +918,8 @@ where
                 translation_engine,
                 blur_regions,
                 blur_auto,
+                multi_voice,
+                speaker_voices,
             }
         }
         Some("cancel") => {
@@ -1004,6 +1048,8 @@ fn run_one_shot(
     translation_engine: Option<String>,
     blur_regions: Option<String>,
     blur_auto: bool,
+    multi_voice: bool,
+    speaker_voices: Option<String>,
 ) -> SupervisorResult<()> {
     let root = match root {
         Some(root) => root,
@@ -1025,7 +1071,7 @@ fn run_one_shot(
         Some(burn_in_subtitles),
     )?.with_voice_id(tts_voice_id)?.with_subtitle_box(subtitle_box)
     .with_translation_engine(translation_engine)?.with_blur_regions(blur_regions)?
-    .with_blur_auto(blur_auto);
+    .with_blur_auto(blur_auto).with_multi_voice(multi_voice, speaker_voices)?;
     // Keep the kernel lease through the final status write. A duplicate must
     // not change SQL/status, reconcile artifacts or start another worker.
     let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
@@ -2165,6 +2211,12 @@ fn run_worker_attempt(
     if spec.blur_auto {
         args["blur_auto"] = json!(true);
     }
+    if spec.multi_voice {
+        args["multi_voice"] = json!(true);
+    }
+    if let Some(voices) = &spec.speaker_voices {
+        args["speaker_voices"] = voices.clone();
+    }
     let args_json = serde_json::to_string(&args)?;
     let command = Envelope::new(
         MessageType::Command,
@@ -2654,7 +2706,7 @@ mod tests {
         let runtime = RuntimePaths { root:root.clone(), app_root:root.join("app"), python:root.join("python.exe"), worker_script:root.join("worker.py"),
             ffmpeg:root.join("ffmpeg.exe"), ffprobe:root.join("ffprobe.exe"), model_root:root.join("models"), db:root.join("state.sqlite") };
         let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
-            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false };
+            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None };
         (root, runtime, spec)
     }
 
@@ -2803,6 +2855,13 @@ mod tests {
         assert!(spec.clone().with_blur_regions(Some(too_many)).is_err());
         let auto: Value = serde_json::from_str(&spec.clone().with_blur_auto(true).durable_request(&runtime).unwrap()).unwrap();
         assert_eq!(auto["blur_auto"], true);
+        let voiced = spec.clone().with_multi_voice(true, Some(r#"{"S2":"vi-adam-bua-vieneu3-v1"}"#.into())).unwrap();
+        let request: Value = serde_json::from_str(&voiced.durable_request(&runtime).unwrap()).unwrap();
+        assert_eq!((request["multi_voice"].clone(), request["speaker_voices"]["S2"].clone()), (json!(true), json!("vi-adam-bua-vieneu3-v1")));
+        for invalid in [r#"{"S9":"v"}"#, r#"{"X1":"v"}"#, r#"{"S1":"Bad Voice"}"#, "[]", "nope"] {
+            assert!(spec.clone().with_multi_voice(true, Some(invalid.into())).is_err(), "{invalid}");
+        }
+        assert!(!spec.clone().with_multi_voice(false, None).unwrap().durable_request(&runtime).unwrap().contains("multi_voice"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3083,7 +3142,7 @@ mod tests {
         let spec = StartSpec {
             job_id:"test".into(), source_path:PathBuf::from("source"), output_dir:PathBuf::from("output"),
             source_language:"auto".into(), target_language:"vi".into(), enable_dubbing:true,
-            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false,
+            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None,
         };
         for invalid in ["", "../escape", "Unknown", "a\nb", &"a".repeat(97)] {
             assert!(spec.clone().with_voice_id(Some(invalid.into())).is_err());
