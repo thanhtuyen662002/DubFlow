@@ -1,0 +1,49 @@
+{
+  "name": "homepage",
+  "platform": "kuaishou",
+  "at_utc": "2026-10-25T04:02:00.533247+00:00",
+  "method": "GET",
+  "url": "https://www.kuaishou.com/",
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.kuaishou.com/"
+  },
+  "cookie_names_sent": [],
+  "external_cookie_file_used": false,
+  "request_body": null,
+  "expected_items_path": null,
+  "probe_note": null,
+  "http_status": 200,
+  "final_url": "https://www.kuaishou.com/new-reco",
+  "content_type": "text/html; charset=utf-8",
+  "content_encoding": "gzip",
+  "wire_bytes": 53451,
+  "body_capped": false,
+  "response_headers": {
+    "Date": "Sun, 25 Oct 2026 04:02:02 GMT"
+  },
+  "set_cookie_names": [
+    "clientid",
+    "did",
+    "kpf",
+    "kpn",
+    "ktrace-context"
+  ],
+  "body_bytes": 345282,
+  "response_text_prefix": "<!DOCTYPE html>\n<html lang=\"zh-CN\" style=\"font-size: 100px\">\n    <head><meta name=\"buildId\" content=\"106835728\"></meta>\n      <script>window.__CDN_DISPATCH__={\"ug-common-cdn\":[\"p66-plat.wsbkwai.com\",\"p5-plat.wskwai.com\"]}</script><script>window.kfxEnv={\"channelId\":\"\",\"version\":\"32328076\",\"appId\":\"af10b2cda5\"}</script><script type=\"module\" crossorigin=\"\" src=\"https://p66-plat.wsbkwai.com/kos/nlav111422/ks-web/assets/polyfills-DKUfclXl.js\"></script>\n\n        <script>\n            if (typeof performance !== 'undefined' && performance.mark) {\n                performance.mark('html_start');\n            }\n            window.cdn_public_path = 'https://p66-plat.wsbkwai.com';\n        </script>\n        <meta charset=\"UTF-8\">\n        <link rel=\"icon\" href=\"https://p66-plat.wsbkwai.com/udata/pkg/WEB-LIVE/kwai_icon.8f6787d8.ico\">\n        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=0, viewport-fit=cover\">\n        <meta name=\"baidu_union_verify\" content=\"d74a15e9285b0ccce49a1bd76879e2f8\">\n        <meta name=\"google-site-verification\" content=\"Ki3_WD-vQ08VwcTHL",
+  "body_markers": [
+    "verify",
+    "412"
+  ],
+  "elapsed_seconds": 2.75,
+  "cookie_jar_names_after": [
+    "clientid",
+    "did",
+    "kpf",
+    "kpn",
+    "ktrace-context"
+  ]
+}
