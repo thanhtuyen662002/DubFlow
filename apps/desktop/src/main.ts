@@ -3,6 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
+import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
@@ -62,10 +63,11 @@ const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const burnInToggle = $<HTMLInputElement>("#burn-in");
 const sourceLanguageSelect = $<HTMLSelectElement>("#source-language");
-const subtitleBoxToggle = $<HTMLInputElement>("#subtitle-box");
 const translationEngineSelect = $<HTMLSelectElement>("#translation-engine");
+const blurModeSelect = $<HTMLSelectElement>("#blur-mode");
 const runAllButton = $<HTMLButtonElement>("#run-all");
 let batchRunning = false;
+let blurJobId: string | null = null;
 const voiceList = $("#voice-list");
 const genderFilter = $<HTMLSelectElement>("#voice-gender");
 const accentFilter = $<HTMLSelectElement>("#voice-accent");
@@ -167,8 +169,11 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   voiceControls.disabled = !editable;
   dubbingToggle.checked = job?.dubbing.enabled ?? false;
   burnInToggle.checked = job?.burnIn ?? true;
-  subtitleBoxToggle.checked = job?.subtitleBox ?? false;
-  $("#box-row").hidden = !burnInToggle.checked;
+  const blurMode = job?.blurAuto ? "auto" : job?.blurRegions?.length ? "manual" : "off";
+  // "Thủ công" stays selected while the user has not drawn a region yet.
+  if (blurModeSelect.value !== "manual" || blurMode !== "off" || blurJobId === null) blurModeSelect.value = blurMode;
+  $("#blur-summary").textContent = blurMode === "auto" ? "Tự dò phụ đề và làm mờ khi nó xuất hiện" : describeRegions(job?.blurRegions);
+  $("#blur-manual-row").hidden = blurModeSelect.value !== "manual";
   sourceLanguageSelect.value = job?.sourceLanguage ?? "";
   translationEngineSelect.value = job?.translationEngine ?? "argos";
   // Hachimi only translates Chinese, so the choice is moot for English sources.
@@ -364,7 +369,7 @@ function beginPolling(jobId: string): void {
 // The last options the user chose become the defaults for newly added videos,
 // so a batch needs its dubbing/voice/burn-in set once (per-viewer convenience).
 const DEFAULTS_KEY = "dubflow.defaults.v1";
-type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; subtitleBox?: boolean; translationEngine?: "hachimi" };
+type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[]; blurAuto?: true };
 
 function readDefaults(): JobDefaults | null {
   try {
@@ -372,7 +377,9 @@ function readDefaults(): JobDefaults | null {
     if (!value || typeof value.dubbing !== "boolean" || typeof value.burnIn !== "boolean") return null;
     return { dubbing: value.dubbing, burnIn: value.burnIn, voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
       sourceLanguage: value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? value.sourceLanguage : undefined,
-      subtitleBox: value.subtitleBox === true, translationEngine: value.translationEngine === "hachimi" ? "hachimi" : undefined };
+      translationEngine: value.translationEngine === "hachimi" ? "hachimi" : undefined,
+      blurRegions: isBlurRegionList(value.blurRegions) ? value.blurRegions : undefined,
+      blurAuto: value.blurAuto === true ? true : undefined };
   } catch {
     return null;
   }
@@ -381,8 +388,8 @@ function readDefaults(): JobDefaults | null {
 function rememberDefaults(job: QueueJob): void {
   try {
     window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
-      burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, subtitleBox: job.subtitleBox ?? false,
-      translationEngine: job.translationEngine }));
+      burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, translationEngine: job.translationEngine,
+      blurRegions: job.blurRegions, blurAuto: job.blurAuto }));
   } catch {
     // Defaults are a convenience; the queue works without storage.
   }
@@ -395,7 +402,8 @@ function applyDefaults(jobIds: readonly string[]): void {
     try {
       if (!defaults.burnIn) queue.setBurnIn(id, false);
       if (defaults.sourceLanguage) queue.setSourceLanguage(id, defaults.sourceLanguage);
-      if (defaults.subtitleBox) queue.setSubtitleBox(id, true);
+      if (defaults.blurRegions) queue.setBlurRegions(id, defaults.blurRegions);
+      if (defaults.blurAuto) queue.setBlurAuto(id, true);
       if (defaults.translationEngine) queue.setTranslationEngine(id, defaults.translationEngine);
       if (defaults.dubbing && voiceCatalog) {
         const known = voiceCatalog.voices.some((voice) => voice.voice_id === defaults.voiceId);
@@ -524,7 +532,8 @@ async function startJob(job: QueueJob): Promise<void> {
       jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null, outputRoot: job.outputDir ? null : outputRoot(),
       enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId, burnIn: job.burnIn ?? true,
       sourceLanguage: job.sourceLanguage ?? "auto", subtitleBox: job.subtitleBox ?? false,
-      translationEngine: job.translationEngine ?? "argos",
+      translationEngine: job.translationEngine ?? "argos", blurRegions: job.blurRegions ?? null,
+      blurAuto: job.blurAuto ?? false,
     });
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
@@ -1006,11 +1015,128 @@ translationEngineSelect.addEventListener("change", () => {
   queue.setTranslationEngine(job.id, engine);
   rememberDefaults(selectedJob() ?? job);
 });
-subtitleBoxToggle.addEventListener("change", () => {
+// Blur editor: drag a rectangle over a frame of the video to hide its burned-in captions.
+const blurDialog = $("#blur-dialog");
+const blurStage = $("#blur-stage");
+const blurFrame = $<HTMLImageElement>("#blur-frame");
+const blurRect = $("#blur-rect");
+const blurTime = $<HTMLInputElement>("#blur-time");
+const blurLoading = $("#blur-loading");
+let blurDraft: BlurRegion = DEFAULT_REGION;
+let blurFrameUrl: string | null = null;
+let blurFrameRequest = 0;
+let blurDrag: { handle: DragHandle; start: BlurRegion; x: number; y: number } | null = null;
+
+function renderBlurRect(): void {
+  blurRect.style.left = `${blurDraft.x * 100}%`;
+  blurRect.style.top = `${blurDraft.y * 100}%`;
+  blurRect.style.width = `${blurDraft.w * 100}%`;
+  blurRect.style.height = `${blurDraft.h * 100}%`;
+  blurRect.setAttribute("aria-valuetext", describeRegions([blurDraft]));
+}
+
+async function loadBlurFrame(): Promise<void> {
+  const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === blurJobId);
+  if (!job) return;
+  const request = ++blurFrameRequest;
+  blurLoading.hidden = false;
+  blurLoading.textContent = "Đang lấy khung hình…";
+  try {
+    const bytes = await invoke<ArrayBuffer>("video_frame", { sourcePath: job.sourcePath, position: Number(blurTime.value) / 100 });
+    if (request !== blurFrameRequest) return;
+    if (blurFrameUrl) URL.revokeObjectURL(blurFrameUrl);
+    blurFrameUrl = URL.createObjectURL(new Blob([bytes]));
+    blurFrame.src = blurFrameUrl;
+    await blurFrame.decode().catch(() => undefined);
+    if (request === blurFrameRequest) blurLoading.hidden = true;
+  } catch (error) {
+    if (request === blurFrameRequest) blurLoading.textContent = `Không lấy được khung hình: ${String(error).slice(0, 160)}`;
+  }
+}
+
+function openBlurEditor(): void {
+  const job = selectedJob();
+  if (!job || job.status.state !== "QUEUED") return;
+  blurJobId = job.id;
+  blurDraft = job.blurRegions?.[0] ?? readDefaults()?.blurRegions?.[0] ?? DEFAULT_REGION;
+  renderBlurRect();
+  blurDialog.hidden = false;
+  blurRect.focus();
+  void loadBlurFrame();
+}
+
+function closeBlurEditor(): void {
+  blurDialog.hidden = true;
+  blurJobId = null;
+  // Cancelling a first manual pick returns the mode select to what the job has.
+  renderVoiceControls(selectedJob());
+  blurFrameRequest += 1;
+  blurFrame.removeAttribute("src");
+  if (blurFrameUrl) URL.revokeObjectURL(blurFrameUrl);
+  blurFrameUrl = null;
+}
+
+function applyBlur(regions: BlurRegion[] | null, everyQueued: boolean): void {
+  const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === blurJobId);
+  if (!job) return closeBlurEditor();
+  if (everyQueued) {
+    const count = queue.setBlurRegionsForQueued(regions);
+    $("#action-hint").textContent = `Đã áp dụng vùng làm mờ cho ${count} video đang chờ.`;
+  } else {
+    queue.setBlurRegions(job.id, regions);
+  }
+  rememberDefaults(queue.getSnapshot().jobs.find((candidate) => candidate.id === job.id) ?? job);
+  closeBlurEditor();
+}
+
+blurRect.addEventListener("pointerdown", (event) => {
+  const handle = (event.target as HTMLElement).dataset.handle as DragHandle | undefined;
+  if (!handle || event.button !== 0) return;
+  event.preventDefault();
+  blurRect.setPointerCapture(event.pointerId);
+  blurDrag = { handle, start: blurDraft, x: event.clientX, y: event.clientY };
+});
+blurRect.addEventListener("pointermove", (event) => {
+  if (!blurDrag) return;
+  const box = blurStage.getBoundingClientRect();
+  blurDraft = dragRegion(blurDrag.start, blurDrag.handle, (event.clientX - blurDrag.x) / box.width, (event.clientY - blurDrag.y) / box.height);
+  renderBlurRect();
+});
+const endBlurDrag = (): void => { blurDrag = null; };
+blurRect.addEventListener("pointerup", endBlurDrag);
+blurRect.addEventListener("pointercancel", endBlurDrag);
+blurRect.addEventListener("keydown", (event) => {
+  const step = 0.01;
+  const moves: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  const move = moves[event.key];
+  if (!move) return;
+  event.preventDefault();
+  // Shift resizes from the bottom-right corner; plain arrows move the whole box.
+  blurDraft = dragRegion(blurDraft, event.shiftKey ? "se" : "move", move[0], move[1]);
+  renderBlurRect();
+});
+blurTime.addEventListener("change", () => void loadBlurFrame());
+$("#blur-edit").addEventListener("click", openBlurEditor);
+blurModeSelect.addEventListener("change", () => {
   const job = selectedJob();
   if (!job) return;
-  queue.setSubtitleBox(job.id, subtitleBoxToggle.checked);
+  if (blurModeSelect.value === "auto") {
+    queue.setBlurAuto(job.id, true);
+  } else if (blurModeSelect.value === "off") {
+    queue.setBlurAuto(job.id, false);
+    queue.setBlurRegions(job.id, null);
+  } else {
+    openBlurEditor();
+    queue.setBlurAuto(job.id, false);
+  }
   rememberDefaults(selectedJob() ?? job);
+});
+$("#blur-close").addEventListener("click", closeBlurEditor);
+$("#blur-apply").addEventListener("click", () => applyBlur([blurDraft], false));
+$("#blur-all").addEventListener("click", () => applyBlur([blurDraft], true));
+$("#blur-off").addEventListener("click", () => applyBlur(null, false));
+blurDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeBlurEditor();
 });
 burnInToggle.addEventListener("change", () => {
   const job = selectedJob();

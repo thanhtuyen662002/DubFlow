@@ -280,8 +280,17 @@ fn pick_files() -> Result<Vec<String>, String> {
     Ok(files.into_iter().map(|path| path.to_string_lossy().into_owned()).collect())
 }
 
+/// One source-caption rectangle to blur, as fractions of the frame.
+#[derive(Debug, Deserialize, Serialize)]
+struct BlurRegion {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
@@ -339,6 +348,17 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
         // Opt-in HachimiMT-60 (Chinese only; see docs/licenses/hachimi-mt-60.md).
         Some("hachimi") => args.extend(["--translation-engine".into(), "hachimi".into()]),
         Some(_) => return Err(fail("Bộ dịch không được hỗ trợ")),
+    }
+    if let Some(regions) = blur_regions.filter(|regions| !regions.is_empty()) {
+        let inside = |r: &BlurRegion| [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite())
+            && r.x >= 0.0 && r.y >= 0.0 && r.w >= 0.01 && r.h >= 0.01 && r.x + r.w <= 1.000001 && r.y + r.h <= 1.000001;
+        if regions.len() > 16 || !regions.iter().all(inside) {
+            return Err(fail("Vùng làm mờ không hợp lệ; hãy chọn lại"));
+        }
+        args.extend(["--blur-regions".into(), serde_json::to_string(&regions).map_err(|error| fail(error.to_string()))?]);
+    }
+    if blur_auto == Some(true) {
+        args.push("--blur-auto".into());
     }
     command.args(args);
     command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;
@@ -580,6 +600,43 @@ async fn review_clip(output_path: String, start_ms: u64, end_ms: u64, source: bo
     Ok(tauri::ipc::Response::new(output.stdout))
 }
 
+/// One JPEG frame of a local video at `position` (0–1 of its duration), for
+/// drawing blur regions on. Async: FFprobe/FFmpeg run off the UI thread.
+/// Scaled to at most 960 px wide.
+#[tauri::command]
+async fn video_frame(source_path: String, position: f64) -> Result<tauri::ipc::Response, String> {
+    if !(0.0..=1.0).contains(&position) {
+        return Err(fail("Vị trí khung hình phải trong khoảng 0–1"));
+    }
+    let source = absolute_file(&source_path, "source_path")?;
+    let media = version_root()?.join("runtime").join("media");
+    let mut probe = Command::new(media.join("ffprobe.exe"));
+    probe.args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
+        .arg(&source)
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    probe.creation_flags(CREATE_NO_WINDOW);
+    let duration = probe.output().ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|text| text.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(0.0);
+    // Stay a little before the end, where a seek can land past the last frame.
+    let seconds = (duration * position).min((duration - 0.5).max(0.0));
+    let mut command = Command::new(media.join("ffmpeg.exe"));
+    command.args(["-nostdin", "-v", "error", "-ss", &format!("{seconds:.3}"), "-i"])
+        .arg(&source)
+        .args(["-frames:v", "1", "-vf", "scale='min(960,iw)':-2", "-q:v", "4", "-f", "image2", "-c:v", "mjpeg", "pipe:1"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().map_err(|error| fail(format!("Không chạy được FFmpeg: {error}")))?;
+    if !output.status.success() || output.stdout.len() < 128 {
+        return Err(fail("Không lấy được khung hình ở thời điểm này"));
+    }
+    Ok(tauri::ipc::Response::new(output.stdout))
+}
+
 const DOUYIN_LOGIN: &str = "douyin-login";
 const DOUYIN_HOME: &str = "https://www.douyin.com/";
 
@@ -634,7 +691,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, post_suggestions])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

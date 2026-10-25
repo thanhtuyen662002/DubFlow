@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-ppocrv4-det-v1",
+  "distribution": "download-on-opt-in",
+  "license": "Apache-2.0",
+  "license_policy": "redistributed unchanged with notice, see docs/licenses/ppocrv4-det.md",
+  "upstream": {"repository": "https://huggingface.co/SWHL/RapidOCR", "file": "PP-OCRv4/ch_PP-OCRv4_det_infer.onnx", "original": "https://github.com/PaddlePaddle/PaddleOCR"},
+  "model_path": "ocr/ppocrv4-det-v1/ch_PP-OCRv4_det_infer.onnx",
+  "artifacts": [
+    {"id": "ppocrv4-det", "path": "ocr/ppocrv4-det-v1/ch_PP-OCRv4_det_infer.onnx", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-ppocrv4-det-v1/ch_PP-OCRv4_det_infer.onnx", "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9", "size_bytes": 4745517},
+    {"id": "ppocrv4-det-notice", "path": "ocr/ppocrv4-det-v1/NOTICE-ppocrv4-det.md", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-ppocrv4-det-v1/NOTICE-ppocrv4-det.md", "sha256": "ba6709f6078c9cdae82adfec14091a15ff1fd9180ee9b24e7fbb00a528bc1ffc", "size_bytes": 663}
+  ]
+}

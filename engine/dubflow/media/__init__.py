@@ -7,6 +7,7 @@ required to be absolute regular files; no command is resolved from ``PATH``.
 
 from .adapter import (
     CANONICAL_TIME_BASE,
+    BlurRegion,
     FfmpegMediaAdapter,
     MediaAdapterError,
     MediaProbe,
@@ -19,6 +20,7 @@ from .adapter import (
 )
 
 __all__ = [
+    "BlurRegion",
     "FfmpegMediaAdapter",
     "CANONICAL_TIME_BASE",
     "MediaAdapterError",
