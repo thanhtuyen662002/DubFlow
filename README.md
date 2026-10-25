@@ -33,6 +33,14 @@ Bấm **Xem & sửa bản dịch** ở video đã xong. Mỗi dòng hiện câu 
 
 Nếu một số câu dịch quá dài so với thời lượng, các câu đó vẫn giữ tiếng gốc và thẻ kết quả sẽ cảnh báo — hãy rút gọn chúng ở đây.
 
+### Khám phá video (xu hướng, từ khóa, lấy video hàng loạt)
+Bấm **Khám phá** ở thanh bên trái, chọn **Douyin**, **Bilibili** hoặc **Kuaishou**:
+- **Đang hot**: từ khóa đang thịnh hành của nền tảng; bấm một từ để tìm ngay.
+- **Từ khóa**: gõ từ khóa tiếng Trung, app gợi ý từ khóa liên quan (Douyin, Bilibili). Bilibili hiện kết quả ngay trong app (có **Thịnh hành** và **Tải thêm**).
+- **Douyin / Kuaishou**, hoặc khi Bilibili tạm chặn: trang tìm kiếm mở trong cửa sổ **Khám phá video**; cuộn trang (hoặc bấm **Cuộn thêm**) rồi bấm **Lấy video từ trang**.
+- **Trang kênh**: chọn *Trang kênh* và dán link kênh (ví dụ `https://space.bilibili.com/…`, trang người dùng Douyin/Kuaishou) để lấy video của kênh đó.
+- Tích chọn video rồi bấm **Thêm vào hàng đợi**: video được tải về và xếp vào hàng đợi như khi dán link.
+
 ### Link Bilibili / Douyin
 - **Link video trực tiếp** (`.mp4`, …): dán và tải ngay.
 - **Bilibili**: dán link video `bilibili.com/video/BV…`. Nếu trang báo giới hạn truy cập, đợi vài phút rồi thử lại.

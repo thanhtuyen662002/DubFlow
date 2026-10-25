@@ -3,6 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
+import { mountDiscovery } from "./features/discovery/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
@@ -702,6 +703,35 @@ function douyinActions(status: FetchStatus): HTMLElement {
   actions.append(open, save);
   return actions;
 }
+
+// Sidebar navigation between the queue and the discovery view.
+const discovery = mountDiscovery(invoke, startFetch, () => {
+  try {
+    return window.localStorage.getItem("dubflow.hachimiAck.v1") === "1" ? "hachimi" : "argos";
+  } catch {
+    return "argos";
+  }
+});
+function showView(view: "queue" | "discover"): void {
+  const discover = view === "discover";
+  $("#discover-view").hidden = !discover;
+  $("#queue-topbar").hidden = discover;
+  $("#queue-content").hidden = discover;
+  for (const [id, active] of [["#nav-queue", !discover], ["#nav-discover", discover]] as const) {
+    $(id).classList.toggle("active", active);
+    if (active) $(id).setAttribute("aria-current", "page");
+    else $(id).removeAttribute("aria-current");
+  }
+  if (discover) discovery.show();
+}
+$("#nav-queue").addEventListener("click", (event) => {
+  event.preventDefault();
+  showView("queue");
+});
+$("#nav-discover").addEventListener("click", (event) => {
+  event.preventDefault();
+  showView("discover");
+});
 
 async function startFetch(url: string): Promise<void> {
   const started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url });

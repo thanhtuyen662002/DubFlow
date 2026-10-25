@@ -1,0 +1,49 @@
+{
+  "name": "search_video",
+  "platform": "douyin",
+  "at_utc": "2026-10-25T04:02:06.027151+00:00",
+  "method": "GET",
+  "url": "https://www.douyin.com/aweme/v1/web/search/item/?device_platform=webapp&aid=6383&channel=channel_pc_web&search_channel=aweme_video_web&enable_history=1&keyword=%E7%BE%8E%E9%A3%9F&search_source=normal_search&query_correct_type=1&is_filter_search=0&offset=0&count=1&need_filter_settings=0",
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.douyin.com/"
+  },
+  "cookie_names_sent": [
+    "__ac_nonce"
+  ],
+  "external_cookie_file_used": false,
+  "request_body": null,
+  "expected_items_path": "data",
+  "probe_note": null,
+  "http_status": 200,
+  "final_url": "https://www.douyin.com/aweme/v1/web/search/item/?device_platform=webapp&aid=6383&channel=channel_pc_web&search_channel=aweme_video_web&enable_history=1&keyword=%E7%BE%8E%E9%A3%9F&search_source=normal_search&query_correct_type=1&is_filter_search=0&offset=0&count=1&need_filter_settings=0",
+  "content_type": "application/json; charset=utf-8",
+  "content_encoding": null,
+  "wire_bytes": 127,
+  "body_capped": false,
+  "response_headers": {
+    "Server": "Tengine",
+    "Date": "Sun, 25 Oct 2026 04:02:06 GMT",
+    "X-Tt-Logid": "202610251202060E8E2F4CA9CA2C3B21A7"
+  },
+  "set_cookie_names": [],
+  "body_bytes": 127,
+  "response_json": {
+    "log_pb": {
+      "impr_id": "202610251202060E8E2F4CA9CA2C3B21A7"
+    },
+    "status_code": 2483,
+    "status_msg": "请先登录，再继续搜索吧"
+  },
+  "array_counts_before_trimming": {},
+  "application_status_code": 2483,
+  "application_status_msg": "请先登录，再继续搜索吧",
+  "expected_item_count": null,
+  "elapsed_seconds": 0.313,
+  "cookie_jar_names_after": [
+    "__ac_nonce"
+  ]
+}
