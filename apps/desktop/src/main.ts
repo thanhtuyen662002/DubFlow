@@ -23,7 +23,8 @@ type ReleaseInfo = { version: string; channel: string; backend: string };
 type StatusResponse = { status: JobStatus; output_path: string | null };
 
 const STORAGE_KEY = "dubflow.queue.v2";
-const VIDEO_EXTENSIONS = /\.(mp4|mkv|mov|avi|webm|m4v)$/i;
+const VIDEO_EXTENSIONS = /\.(mp4|mkv|mov|avi|webm|m4v|flv|ts|m2ts|mts|3gp|wmv|mpg|mpeg)$/i;
+const FORMAT_LIST = "MP4, MKV, MOV, AVI, WEBM, M4V, FLV, TS, 3GP, WMV, MPG";
 const ACTIVE: JobStatusState[] = ["RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST"];
 const isTauri = "__TAURI_INTERNALS__" in window;
 const invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T> = isTauri ? tauriInvoke : previewInvoke;
@@ -421,9 +422,22 @@ function rememberDefaults(job: QueueJob): void {
   }
 }
 
+// A first-time user gets a dubbed video, not subtitles only.
+const FIRST_RUN_DEFAULTS: JobDefaults = { dubbing: true, voiceId: null, burnIn: true };
+/** Videos added before the voice catalog loaded; they get their dubbing default once it arrives. */
+const awaitingCatalog = new Set<string>();
+
+function applyDubbingDefault(id: string, voiceId: string | null): void {
+  if (!voiceCatalog) {
+    awaitingCatalog.add(id);
+    return;
+  }
+  const known = voiceCatalog.voices.some((voice) => voice.voice_id === voiceId);
+  queue.setDubbing(id, dubbingOptions(voiceCatalog, true, known ? voiceId : null));
+}
+
 function applyDefaults(jobIds: readonly string[]): void {
-  const defaults = readDefaults();
-  if (!defaults) return;
+  const defaults = readDefaults() ?? FIRST_RUN_DEFAULTS;
   for (const id of jobIds) {
     try {
       if (!defaults.burnIn) queue.setBurnIn(id, false);
@@ -433,10 +447,7 @@ function applyDefaults(jobIds: readonly string[]): void {
       if (defaults.multiVoice) queue.setMultiVoice(id, true);
       if (defaults.separateBackground) queue.setSeparateBackground(id, true);
       if (defaults.translationEngine) queue.setTranslationEngine(id, defaults.translationEngine);
-      if (defaults.dubbing && voiceCatalog) {
-        const known = voiceCatalog.voices.some((voice) => voice.voice_id === defaults.voiceId);
-        queue.setDubbing(id, dubbingOptions(voiceCatalog, true, known ? defaults.voiceId : null));
-      }
+      if (defaults.dubbing) applyDubbingDefault(id, defaults.voiceId);
     } catch {
       // A job that already started keeps its own options.
     }
@@ -446,7 +457,7 @@ function applyDefaults(jobIds: readonly string[]): void {
 function addPaths(paths: string[]): void {
   const videos = paths.filter((path) => VIDEO_EXTENSIONS.test(path));
   if (paths.length && !videos.length) {
-    showError("Chỉ hỗ trợ file video MP4, MKV, MOV, AVI, WEBM, M4V.");
+    showError(`Chỉ hỗ trợ file video ${FORMAT_LIST}.`);
     return;
   }
   showError("");
@@ -462,7 +473,7 @@ async function addDropped(paths: string[]): Promise<void> {
   try {
     const videos = await invoke<string[]>("expand_video_paths", { paths });
     if (!videos.length) {
-      showError("Không tìm thấy video MP4, MKV, MOV, AVI, WEBM, M4V trong mục đã thả.");
+      showError(`Không tìm thấy video ${FORMAT_LIST} trong mục đã thả.`);
       return;
     }
     addPaths(videos);
@@ -1291,6 +1302,15 @@ void invoke<unknown>("voice_catalog").then((data) => {
       select.append(option);
     }
   }
+  const voiceId = (readDefaults() ?? FIRST_RUN_DEFAULTS).voiceId;
+  for (const id of awaitingCatalog) {
+    try {
+      applyDubbingDefault(id, voiceId);
+    } catch {
+      // Removed, started or changed by the user meanwhile.
+    }
+  }
+  awaitingCatalog.clear();
   if (lastModel) render(lastModel);
 }).catch((error) => {
   voiceCatalogError = `Không đọc được danh mục giọng: ${String(error).slice(0, 160)}`;
