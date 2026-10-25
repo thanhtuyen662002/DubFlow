@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { MemorySnapshotStorage, QueueController } from "../src/features/queue/model.ts";
 import { ReviewDraftHistory } from "../src/features/review/history.ts";
-import { chooseTranslator, reviewOverrides, saveReviewRevision, startJobRequest } from "../src/features/translation_review/flow.ts";
+import {
+  applySourceLanguage, chooseTranslator, effectiveTranslator, hachimiAllowed, reviewOverrides, saveReviewRevision,
+  startJobRequest, translatorDefaults,
+} from "../src/features/translation_review/flow.ts";
 
 const clock = () => "2026-10-25T00:00:00.000Z";
 const VOICE = "vi-truc-ly-vieneu3-v1";
@@ -32,13 +35,63 @@ assert.equal(autoRequest.sourceLanguage, "auto", "Auto must never silently becom
 assert.equal(autoRequest.translationEngine, "argos");
 assert.equal(startJobRequest(job(reopened, enId), null).translationEngine, "argos", "Hachimi is Chinese-only");
 
-// Hachimi needs the licence acknowledgement; Argos never asks.
+// Hachimi needs an explicit Chinese source and the licence acknowledgement; Argos never asks.
 let asked = 0;
-assert.equal(chooseTranslator("argos", () => { asked += 1; return true; }), "argos");
+const ack = (answer) => () => { asked += 1; return answer; };
+assert.equal(chooseTranslator("argos", "zh", ack(true)), "argos");
 assert.equal(asked, 0);
-assert.equal(chooseTranslator("hachimi", () => { asked += 1; return false; }), null);
-assert.equal(chooseTranslator("hachimi", () => { asked += 1; return true; }), "hachimi");
+assert.equal(chooseTranslator("hachimi", "zh", ack(false)), null, "declining keeps the previous (Argos) choice");
+assert.equal(chooseTranslator("hachimi", "zh", ack(true)), "hachimi");
 assert.equal(asked, 2);
+assert.equal(chooseTranslator("hachimi", undefined, ack(true)), "argos", "Auto cannot pick Hachimi");
+assert.equal(chooseTranslator("hachimi", "en", ack(true)), "argos", "English cannot pick Hachimi");
+assert.equal(asked, 2, "no acknowledgement is asked when Hachimi is not allowed");
+assert.deepEqual(["zh", "en", undefined, null, "auto"].map(hachimiAllowed), [true, false, false, false, false]);
+
+// A Hachimi choice stored with Auto or English is never used or requested.
+const guard = new QueueController(new MemorySnapshotStorage(), clock);
+const [autoStoredId] = guard.addPaths(["C:/clips/auto-hachimi.mp4"]);
+guard.setTranslationEngine(autoStoredId, "hachimi");
+const autoStored = job(guard, autoStoredId);
+assert.equal(effectiveTranslator(autoStored), "argos");
+assert.equal(startJobRequest(autoStored, null).sourceLanguage, "auto", "Auto is never rewritten to Chinese");
+assert.equal(startJobRequest(autoStored, null).translationEngine, "argos");
+const enStored = job(reopened, enId);
+assert.equal(enStored.translationEngine, "hachimi");
+assert.equal(startJobRequest(enStored, null).sourceLanguage, "en");
+assert.equal(startJobRequest(enStored, null).translationEngine, "argos");
+
+// Leaving Chinese resets Hachimi; returning to Chinese does not bring it back silently.
+const [switchId] = guard.addPaths(["C:/clips/switch.mp4"]);
+applySourceLanguage(guard, switchId, "zh");
+guard.setTranslationEngine(switchId, "hachimi");
+assert.equal(effectiveTranslator(job(guard, switchId)), "hachimi");
+applySourceLanguage(guard, switchId, "");
+assert.equal(job(guard, switchId).sourceLanguage, undefined);
+assert.equal(job(guard, switchId).translationEngine, undefined);
+applySourceLanguage(guard, switchId, "zh");
+assert.equal(effectiveTranslator(job(guard, switchId)), "argos");
+guard.setTranslationEngine(switchId, "hachimi");
+applySourceLanguage(guard, switchId, "en");
+assert.equal(job(guard, switchId).sourceLanguage, "en");
+assert.equal(job(guard, switchId).translationEngine, undefined);
+applySourceLanguage(guard, switchId, "zh");
+guard.setTranslationEngine(switchId, "hachimi");
+applySourceLanguage(guard, switchId, "zh");
+assert.equal(job(guard, switchId).translationEngine, "hachimi", "re-selecting Chinese keeps Hachimi");
+applySourceLanguage(guard, autoStoredId, "zh");
+assert.equal(job(guard, autoStoredId).sourceLanguage, "zh");
+assert.equal(job(guard, autoStoredId).translationEngine, undefined, "a stale Auto+Hachimi choice is not revived by Chinese");
+assert.equal(startJobRequest(job(guard, autoStoredId), null).translationEngine, "argos");
+
+// Saved defaults keep Hachimi only together with Chinese, so old Auto/English defaults cannot restore it.
+assert.deepEqual(translatorDefaults({ dubbing: true, sourceLanguage: "zh", translationEngine: "hachimi" }),
+  { dubbing: true, sourceLanguage: "zh", translationEngine: "hachimi" });
+assert.deepEqual(translatorDefaults({ dubbing: true, sourceLanguage: undefined, translationEngine: "hachimi" }),
+  { dubbing: true, sourceLanguage: undefined });
+assert.deepEqual(translatorDefaults({ dubbing: true, sourceLanguage: "en", translationEngine: "hachimi" }),
+  { dubbing: true, sourceLanguage: "en" });
+assert.deepEqual(translatorDefaults({ dubbing: false }), { dubbing: false });
 
 // A completed job opens its review, one cue is edited and an edit is undone.
 const firstOutput = "D:/Results/douyin/douyin.vi.mp4";
