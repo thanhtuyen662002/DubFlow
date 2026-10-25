@@ -323,7 +323,7 @@ fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-const VIDEO_EXTENSIONS: [&str; 6] = ["mp4", "mkv", "mov", "avi", "webm", "m4v"];
+const VIDEO_EXTENSIONS: [&str; 14] = ["mp4", "mkv", "mov", "avi", "webm", "m4v", "flv", "ts", "m2ts", "mts", "3gp", "wmv", "mpg", "mpeg"];
 const MAX_EXPANDED_VIDEOS: usize = 500;
 
 /// Dropped paths -> video files: files pass through, folders are searched up
@@ -379,7 +379,7 @@ fn pick_folder() -> Option<String> {
 #[tauri::command]
 fn pick_files() -> Result<Vec<String>, String> {
     let files = rfd::FileDialog::new()
-        .add_filter("Video", &["mp4", "mkv", "mov", "avi", "webm", "m4v"])
+        .add_filter("Video", &VIDEO_EXTENSIONS)
         .pick_files()
         .unwrap_or_default();
     Ok(files.into_iter().map(|path| path.to_string_lossy().into_owned()).collect())
