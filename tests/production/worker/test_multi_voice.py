@@ -156,9 +156,41 @@ class MultiVoiceWorkerTests(unittest.TestCase):
             recast = replace(config, speaker_voices={"S2": OTHER})
             worker.run_local_file(recast, Mock())
             self.assertEqual(dub.call_args.kwargs["voice_by_cue"], {"a": PRIMARY, "b": OTHER})
+            self.assertEqual(dub.call_args.kwargs["speaker_by_cue"], RESULT.labels)
             self.assertNotEqual(dub.call_args.kwargs["work_dir"].parent.name, first_identity)
             self.assertEqual(assign.call_count, 1)
             self.assertTrue(first_dir.is_dir())
+
+    def test_failed_phrase_counts_all_member_cues_in_review_metadata(self):
+        with self.fixture(multi_voice=False) as (root, config, probe, media), self.pipeline(config, probe, media) as dub:
+            def failed_phrase(**kwargs):
+                audio = self.fake_b2(**kwargs)
+                audio.member_cue_ids = {"phrase-a": ("a", "b")}
+                audio.tts_document.failures = (SimpleNamespace(segment_id="phrase-a"),)
+                audio.mix_document.failures = (SimpleNamespace(segment_id="phrase-a"),)
+                audio.tts_document_paths = (audio.tts_document_path,)
+                return audio
+            dub.side_effect = failed_phrase
+            result = worker.run_local_file(config, Mock())
+            manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+            qc = json.loads(Path(result["qc"]).read_text(encoding="utf-8"))
+            checkpoint = json.loads((config.output_dir / ".dubflow-work/checkpoint.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["audio"]["tts_failures"], 2)
+            self.assertEqual(manifest["audio"]["mix_failures"], 2)
+            self.assertEqual(qc["audio"]["tts_failures"], 2)
+            self.assertEqual(checkpoint["stages"]["b2-audio"]["tts_documents"], [manifest["audio"]["tts_document"]])
+
+    def test_b1_fallback_retains_all_failed_phrase_review_paths_and_counts(self):
+        with self.fixture(multi_voice=False) as (root, config, probe, media), self.pipeline(config, probe, media) as dub:
+            review = {"tts_document": str(config.output_dir / ".dubflow-work/tts_document.json"),
+                      "tts_documents": [str(config.output_dir / ".dubflow-work/tts_document.json")], "tts_failures": 2}
+            dub.side_effect = worker.B2AudioError("TTS_FAILED", "refused phrase", review=review)
+            result = worker.run_local_file(config, Mock())
+            manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+            checkpoint = json.loads((config.output_dir / ".dubflow-work/checkpoint.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["audio"]["mode"], "original")
+            self.assertEqual(manifest["audio"]["tts_failures"], 2)
+            self.assertEqual(checkpoint["stages"]["b2-audio"], {"status": "failed", **review})
 
     def test_pipeline_optional_failure_dubs_one_voice_and_default_is_opt_in(self):
         for multi, dubbing in ((True, True), (False, True), (True, False)):

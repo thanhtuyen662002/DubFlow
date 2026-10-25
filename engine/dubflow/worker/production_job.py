@@ -1277,7 +1277,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             selected_voice = getattr(config, "tts_voice_id", None)
             def dub(cue_voices):
                 nonlocal background_path, background_summary
-                casting_identity = json.dumps({"casting": casting, "voice_by_cue": cue_voices}, sort_keys=True) if cue_voices is not None else ""
+                casting_identity = json.dumps({"casting": casting, "voice_by_cue": cue_voices,
+                    "speaker_by_cue": speaker_result.labels}, sort_keys=True) if cue_voices is not None else ""
                 bed_hash = None
                 if background_path is not None:
                     try:
@@ -1303,7 +1304,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                         # Shared by every generation in this output folder, so a reviewed
                         # re-run synthesises only the cues whose request changed.
                         synthesis_cache_dir=work_dir / "tts-cache",
-                        **({"voice_by_cue": cue_voices} if cue_voices is not None else {}),
+                        **({"voice_by_cue": cue_voices, "speaker_by_cue": speaker_result.labels} if cue_voices is not None else {}),
                         **({"background_path": background_path} if background_path is not None else {}),
                     )
                 except B2AudioError as error:
@@ -1326,6 +1327,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 for speaker in speaker_summary:
                     speaker["voice_id"] = b2_audio.voice.voice_id
             tts_documents = getattr(b2_audio, "tts_documents", (b2_audio.tts_document,))
+            members = getattr(b2_audio, "member_cue_ids", None) or {}
             audio_path = b2_audio.final_mix_path
             audio_metadata = {
                 "mode": "dubbed",
@@ -1337,8 +1339,10 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 "tts_document": str(b2_audio.tts_document_path),
                 "mix_document": str(b2_audio.mix_document_path),
                 "mix_provenance": b2_audio.mix_document.provenance.to_dict(),
-                "tts_failures": sum(len(document.failures) for document in tts_documents),
-                "mix_failures": len(b2_audio.mix_document.failures),
+                "tts_failures": len({cue for document in tts_documents for failure in document.failures
+                                     for cue in members.get(failure.segment_id, (failure.segment_id,))}),
+                "mix_failures": len({cue for failure in b2_audio.mix_document.failures
+                                     for cue in members.get(failure.segment_id, (failure.segment_id,))}),
                 "mix_warnings": list(b2_audio.mix_document.warnings),
                 "bed": "spleeter-2stems" if background_path is not None else "source",
             }
@@ -1363,6 +1367,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 {
                     "source_audio": str(b2_audio.source_audio_path),
                     "tts_document": str(b2_audio.tts_document_path),
+                    "tts_documents": [str(path) for path in getattr(b2_audio, "tts_document_paths", (b2_audio.tts_document_path,))],
                     "mix_document": str(b2_audio.mix_document_path),
                     "final_mix": str(b2_audio.final_mix_path),
                     "dialogue_stem": str(b2_audio.dialogue_stem_path),
@@ -1371,12 +1376,15 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 },
             )
             if any(document.failures for document in tts_documents) or b2_audio.mix_document.failures:
-                warnings.append("B2_AUDIO_DEGRADED: one or more dialogue cues used bounded per-cue fallback; "
+                warnings.append("B2_AUDIO_DEGRADED: one or more dialogue cues used bounded phrase fallback; "
                                 + ("source audio was preserved" if probe.has_audio else "source has no audio; refused cues remain silent"))
             emitter.checkpoint("b2-audio", _sha256(b2_audio.final_mix_path))
         except B2AudioError as error:
             b2_audio = None
             audio_path = None
+            if error.review:
+                _write_stage(checkpoint, checkpoint_path, "b2-audio", {**error.review, "status": "failed"})
+                audio_metadata.update({key: error.review[key] for key in ("tts_failures", "mix_failures") if key in error.review})
             warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: {error.code}: {error.condition}")
             emitter.progress(0.70, "B2 audio không khả dụng; giữ Vietsub và audio gốc" if probe.has_audio
                              else "Video nguồn không có audio; tiếp tục xuất Vietsub")
@@ -1521,7 +1529,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             (b2_audio.final_mix_path, "final_mix.wav", b2_audio.mix_document.final_mix.content_hash),
         ]
         if getattr(b2_audio, "background_stem_path", None) is not None:
-            editable_audio.append((b2_audio.background_stem_path, "background_stem.wav", b2_audio.mix_document.original_audio.content_hash))
+            # The mixer may have used a bed with original audio restored over
+            # undubbed phrases; the editable stem is always the pure accompaniment.
+            editable_audio.append((b2_audio.background_stem_path, "background_stem.wav", _sha256(b2_audio.background_stem_path)))
         if b2_audio.placement_document_path is not None:
             editable_audio.append((b2_audio.placement_document_path, "dubbing_placement.json", _sha256(b2_audio.placement_document_path)))
         if b2_audio.spoken_text_document_path is not None:

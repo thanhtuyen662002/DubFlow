@@ -229,12 +229,26 @@ def _fields(segment, artifact_hash, audio_hash, identity, digest, plan, artifact
 
 
 def validate_spoken_text_document(value: dict, speech_bytes: bytes,
-                                  segments: Sequence[TtsInput], *, identity: str) -> None:
+                                  segments: Sequence[TtsInput], *, identity: str,
+                                  member_cue_ids: Mapping[str, Sequence[str]] | None = None) -> None:
     """Read-only source/input/provenance validation for release/export readers."""
     from engine.dubflow.tts import parse_tts_json
     if not isinstance(identity, str) or not re.fullmatch(r"[a-f0-9]{64}", identity):
         raise ValueError("invalid spoken-text checkpoint identity")
-    speech = parse_tts_json(speech_bytes)
+    if member_cue_ids is None:
+        speech = parse_tts_json(speech_bytes)
+    else:
+        from .b2_audio import DUBBING_PHRASE_RECIPE
+        envelope = json.loads(speech_bytes, object_pairs_hook=_unique)
+        members = {key: list(cues) for key, cues in member_cue_ids.items()}
+        if (set(envelope) != {"schema_version", "kind", "recipe", "member_cue_ids", "tts_document"}
+                or type(envelope["schema_version"]) is not int or envelope["schema_version"] != 1
+                or envelope["kind"] != "dubbing_tts_document" or envelope["recipe"] != DUBBING_PHRASE_RECIPE
+                or envelope["member_cue_ids"] != members or set(members) != {segment.segment_id for segment in segments}
+                or any(not cues or len(set(cues)) != len(cues) for cues in members.values())
+                or len({cue for cues in members.values() for cue in cues}) != sum(map(len, members.values()))):
+            raise ValueError("dubbing phrase membership differs from the source cues")
+        speech = parse_tts_json(_encoded(envelope["tts_document"]))
     sources = {segment.segment_id: segment for segment in segments}
     if len(sources) != len(segments) or set(sources) != set(speech["source_segment_ids"]):
         raise ValueError("spoken-text source cues differ")
@@ -256,6 +270,8 @@ def validate_spoken_text_document(value: dict, speech_bytes: bytes,
                 "tts_document_hash": "sha256:" + sha256(speech_bytes).hexdigest(),
                 "provenance": speech["provenance"], "source_segment_ids": speech["source_segment_ids"],
                 "entries": entries, "fidelity_evidence": "restricted-lexical-rule;semantic-confidence-not-calibrated"}
+    if member_cue_ids is not None:
+        expected["member_cue_ids"] = members
     if _encoded(value) != _encoded(expected):
         raise ValueError("spoken-text document differs from the source/input/recipe/accepted waveform")
 
