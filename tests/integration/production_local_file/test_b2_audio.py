@@ -12,7 +12,7 @@ from unittest.mock import patch
 import wave
 from types import SimpleNamespace
 
-from engine.dubflow.worker.b2_audio import B2AudioError, run_b2_audio, tts_recipe_identity, mix_recipe_identity, _dubbing_windows
+from engine.dubflow.worker.b2_audio import B2AudioError, run_b2_audio, tts_recipe_identity, mix_recipe_identity, _dubbing_windows, _clamped_mappings
 from engine.dubflow.mix import streaming, FileSegment
 from engine.dubflow.media import FfmpegMediaAdapter, Rational
 from engine.dubflow.media.adapter import MediaStream
@@ -44,6 +44,13 @@ class HermeticDecodedAudioAdapter:
 
 
 class ProductionLocalFileB2Tests(unittest.TestCase):
+    def test_cues_past_the_media_end_are_clamped_not_fatal(self) -> None:
+        cue = lambda cue_id, start, end: SimpleNamespace(cue_id=cue_id, start_ms=start, end_ms=end, source_text="你好",
+                                                       translated_text="Xin chào", confidence=0.9)
+        mappings = _clamped_mappings([cue("a", 0, 900), cue("b", 39_500, 40_100), cue("c", 39_900, 40_500)], 39_800)
+        self.assertEqual([(item["cue_id"], item["start_ms"], item["end_ms"]) for item in mappings], [("a", 0, 900), ("b", 39_500, 39_800)])
+        self.assertEqual(len(_dubbing_windows(mappings, 39_800)), 2)
+
     def test_wider_window_is_attempted_only_after_duration_failure_and_resumes(self):
         requests = []
         class Engine(DeterministicFixtureEngine):

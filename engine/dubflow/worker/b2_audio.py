@@ -192,6 +192,17 @@ def _cue_mapping(cue: Any) -> dict[str, Any]:
     }
 
 
+def _clamped_mappings(cues: Sequence[Any], extent_ms: int) -> tuple[dict[str, Any], ...]:
+    """Cue mappings bounded by the media extent.
+
+    VFR or container metadata can put the last recognized cue slightly past
+    the video's end. Such a cue is shortened (or dropped when it starts after
+    the end) instead of failing every cue's dubbing; the render ends there anyway.
+    """
+    return tuple(dict(item, end_ms=min(item["end_ms"], extent_ms))
+                 for item in map(_cue_mapping, cues) if item["start_ms"] < extent_ms)
+
+
 def _dubbing_windows(mappings: Sequence[Mapping[str, Any]], source_end: int, *, max_postroll_ms: int = MAX_POSTROLL_MS) -> tuple[dict[str, Any], ...]:
     """Derive render limits without changing canonical source cue intervals.
 
@@ -485,7 +496,7 @@ def run_b2_audio(
         raise
 
     try:
-        mappings = tuple(_cue_mapping(cue) for cue in translated_cues)
+        mappings = _clamped_mappings(translated_cues, _media_extent_ms(source_probe, source_end_ticks))
         input_hash = _input_hash(mappings)
         placement_document_path = None
         windows_by_id: dict[str, dict[str, Any]] = {}
