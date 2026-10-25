@@ -193,6 +193,12 @@ def _separated_blocks(read, length, session_factory, *, batch_splits=BATCH_SPLIT
         yield (tail / np.maximum(norm_tail, 1e-8))[:, :length - offset]
 
 
+# Ratio masks on loud, already-limited sources can push the float accompaniment
+# past full scale; a lookahead limiter keeps it below the clipping gate instead
+# of rejecting separation for exactly the loud videos users dub most.
+LIMITER = "alimiter=limit=0.95:attack=5:release=50:level=0"
+
+
 def _validate_background(source, background):
     """AUD-2 safety gate and dBFS metrics measured on the converted PCM."""
     import numpy as np
@@ -282,7 +288,7 @@ def separate_background(source_wav: Path, background_wav: Path, *, model_dir: Pa
                 _finite(data)
                 return data
             encoder = _ffmpeg([str(ffmpeg_path), "-v", "error", "-nostdin", "-y", "-f", "f32le", "-ar", str(RATE),
-                "-ac", "2", "-i", "pipe:0", "-ar", str(rate), "-ac", str(channels), "-c:a", "pcm_s16le", str(candidate)],
+                "-ac", "2", "-i", "pipe:0", "-af", LIMITER, "-ar", str(rate), "-ac", str(channels), "-c:a", "pcm_s16le", str(candidate)],
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errors)
             try:
                 with encoder.stdin:

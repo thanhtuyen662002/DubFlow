@@ -27,6 +27,17 @@ from engine.dubflow.worker.protocol import Envelope, MessageType
 
 
 class ProductionWorkerTests(unittest.TestCase):
+    def test_nothing_is_written_after_shutdown_even_by_a_racing_heartbeat(self) -> None:
+        stdout = SimpleNamespace(buffer=io.BytesIO())
+        with patch.object(sys, "stdout", stdout):
+            emitter = worker._Emitter("job-1", "stage-1")
+            emitter.progress(0.5, "half")
+            emitter.send(MessageType.SHUTDOWN, {"status": "failed"})
+            emitter.send(MessageType.HEARTBEAT, {"monotonic_ms": 1})
+            emitter._heartbeat_loop()  # a late loop iteration exits at once and writes nothing
+        lines = stdout.buffer.getvalue().splitlines()
+        self.assertEqual([Envelope.from_line(line).message_type for line in lines], [MessageType.PROGRESS, MessageType.SHUTDOWN])
+
     def test_audio_recipe_identity_binds_source_clock_and_refuses_unknown_origin(self):
         source = Path("source.mp4").absolute()
         probe = parse_ffprobe_json(json.dumps({"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264",
