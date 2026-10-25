@@ -153,6 +153,11 @@ class ProductionWorkerTests(unittest.TestCase):
                 "enable_dubbing": True, "tts_voice_id": "vi-thuy-dung-vieneu3-v1"}
             self.assertEqual(WorkerConfig.from_args(args).tts_voice_id, args["tts_voice_id"])
             self.assertFalse(WorkerConfig.from_args(args).multi_voice)
+            self.assertFalse(WorkerConfig.from_args(args).separate_background)
+            self.assertTrue(WorkerConfig.from_args({**args, "separate_background": True}).separate_background)
+            for invalid in (1, "true", None, {}, []):
+                with self.subTest(separate_background=invalid), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
+                    WorkerConfig.from_args({**args, "separate_background": invalid})
             self.assertEqual(WorkerConfig.from_args(args).speaker_voices, {})
             multi = WorkerConfig.from_args({**args, "multi_voice": True, "speaker_voices": {"S1": "voice-a", "S8": "voice-b"}})
             self.assertTrue(multi.multi_voice)

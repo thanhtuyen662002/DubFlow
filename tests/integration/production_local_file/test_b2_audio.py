@@ -114,11 +114,42 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
                 translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào"),))
             result = run_b2_audio(**options)
             previous = {path: path.read_bytes() for path in (root / "b2").rglob("*") if path.is_file()}
-            explicit = run_b2_audio(**options, voice_by_cue=None)
+            explicit = run_b2_audio(**options, voice_by_cue=None, background_path=None)
             self.assertEqual(previous, {path: path.read_bytes() for path in (root / "b2").rglob("*") if path.is_file()})
             self.assertEqual(explicit.tts_document.to_bytes(), result.tts_document.to_bytes())
             self.assertEqual(result.voices, (result.voice.voice_id,))
             self.assertEqual(Path(result.tts_document.artifacts[0].path).parent, root / "b2/tts")
+            self.assertIsNone(explicit.background_stem_path)
+            self.assertEqual(explicit.bed, "source")
+
+    def test_background_replaces_mixer_bed_and_retains_original_source(self):
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",
+            return_value=(SimpleNamespace(sample_rate=16000, channels=1), approved_default_voice())), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", side_effect=lambda *a, **kw: DeterministicFixtureEngine()):
+            root = Path(directory)
+            background = root / "background.wav"
+            with wave.open(str(background), "wb") as writer:
+                writer.setparams((2, 2, 16000, 0, "NONE", "not compressed"))
+                writer.writeframes(struct.pack("<hh", 400, 500) * 48000)
+            options = dict(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json",
+                translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào"),))
+            original = run_b2_audio(**options, work_dir=root / "original")
+            separated = run_b2_audio(**options, work_dir=root / "separated", background_path=background)
+            self.assertEqual(separated.original_audio_path.read_bytes(), original.original_audio_path.read_bytes())
+            self.assertEqual(separated.background_stem_path.read_bytes(), background.read_bytes())
+            self.assertEqual(Path(separated.mix_document.original_audio.path).read_bytes(), background.read_bytes())
+            self.assertNotEqual(separated.final_mix_path.read_bytes(), original.final_mix_path.read_bytes())
+            self.assertEqual(separated.dialogue_stem_path.read_bytes(), original.dialogue_stem_path.read_bytes())
+            self.assertEqual(separated.bed, "spleeter-2stems")
+            self.assertEqual(separated.mix_document.source_layout, "stereo-accompaniment")
+            # A later analysis cannot mutate the bed of a published generation.
+            background.write_bytes(b"later candidate")
+            self.assertNotEqual(separated.background_stem_path.read_bytes(), background.read_bytes())
+            with self.assertRaisesRegex(B2AudioError, "SEPARATION_BED_FAILED"):
+                run_b2_audio(**options, work_dir=root / "bad-bed", background_path=root / "missing.wav")
 
     def test_reassigning_every_cue_uses_first_actual_voice_as_base_document(self):
         def load(*args, voice_id=None):

@@ -386,7 +386,8 @@ class PublicationTests(unittest.TestCase):
                     write_pcm(source, 1000, frames=512)
                     old = CpuAttenuationBackend().process(source, out)
                     write_pcm(source, 9000, frames=512)
-                    child = subprocess.Popen([sys.executable, "-m", "tests.audio_cleanup.publication_fixture", "run", str(source), str(out), str(marker), milestone], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    fixture = str(Path(__file__).with_name("publication_fixture.py"))
+                    child = subprocess.Popen([sys.executable, "-B", fixture, "run", str(source), str(out), str(marker), milestone], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     try:
                         deadline = time.monotonic() + 15
                         while not marker.exists() and child.poll() is None and time.monotonic() < deadline:
@@ -399,7 +400,7 @@ class PublicationTests(unittest.TestCase):
                         if child.poll() is None:
                             child.kill()
                         child.communicate(timeout=10)
-                    recovered = subprocess.run([sys.executable, "-m", "tests.audio_cleanup.publication_fixture", "recover", str(out)], capture_output=True, text=True, timeout=10, check=True)
+                    recovered = subprocess.run([sys.executable, "-B", fixture, "recover", str(out)], capture_output=True, text=True, timeout=10, check=True)
                     report = json.loads(recovered.stdout)
                     current = read_result(report)
                     self.assert_valid(old)
