@@ -987,7 +987,7 @@ function hachimiAcknowledged(): boolean {
     // Without storage, ask every time.
   }
   const accepted = window.confirm("HachimiMT-60 là bộ dịch thử nghiệm. Giấy phép chưa được xác minh cho mục đích thương mại "
-    + "(model được huấn luyện có dữ liệu chưng cất từ Gemini). Chỉ dùng cá nhân/thử nghiệm và tự kiểm tra điều khoản trước khi dùng thương mại.\n\n"
+    + "(model được huấn luyện có dữ liệu chưng cất từ Gemini và một bộ dữ liệu GPL-3.0). Chỉ dùng cá nhân/thử nghiệm và tự kiểm tra điều khoản trước khi dùng thương mại.\n\n"
     + "Lần đầu dùng sẽ tải model khoảng 58 MB. Tiếp tục?");
   if (accepted) {
     try {
