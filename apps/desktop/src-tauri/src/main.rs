@@ -606,6 +606,7 @@ async fn open_discovery(app: tauri::AppHandle, platform: String, kind: String, q
         return Ok(url.to_string());
     }
     tauri::WebviewWindowBuilder::new(&app, discovery::WINDOW, tauri::WebviewUrl::External(url.clone()))
+        .initialization_script(discovery::CAPTURE_SCRIPT)
         .title("Khám phá video — cuộn trang để tải thêm, rồi quay lại DubFlow bấm “Lấy video từ trang”")
         .inner_size(1200.0, 860.0)
         .build()

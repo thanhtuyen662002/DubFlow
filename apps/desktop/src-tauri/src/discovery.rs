@@ -79,6 +79,56 @@ pub fn page_url(platform: Platform, kind: &str, query: &str) -> Result<tauri::Ur
     tauri::Url::parse(&text).map_err(|error| error.to_string())
 }
 
+/// Installed before any page script in the discovery window. It copies video
+/// entries out of the JSON the page itself receives (Douyin `aweme` objects,
+/// Kuaishou `photo` objects), so lists that only render after a signed API
+/// call, or in a virtualised player, can still be collected. Read-only: the
+/// page's requests and responses are not changed.
+pub const CAPTURE_SCRIPT: &str = r##"(() => {
+  if (window.__dubflowCapture) return;
+  const found = new Map();
+  window.__dubflowCapture = found;
+  const first = (value) => Array.isArray(value) ? value[0] : value;
+  const text = (value) => typeof value === "string" ? value : "";
+  const remember = (key, item) => { if (found.size < 1000 && !found.has(key)) found.set(key, item); };
+  const walk = (node, depth, budget) => {
+    if (!node || typeof node !== "object" || depth > 14 || budget.left-- <= 0) return;
+    if (Array.isArray(node)) { for (const child of node) walk(child, depth + 1, budget); return; }
+    if (/^\d{8,24}$/.test(text(node.aweme_id)) && typeof node.desc === "string") {
+      const cover = node.video && node.video.cover && first(node.video.cover.url_list);
+      remember("dy" + node.aweme_id, { page_url: "https://www.douyin.com/video/" + node.aweme_id, title: node.desc,
+        cover_url: text(cover), author: text(node.author && node.author.nickname), media_url: "" });
+    }
+    const photo = node.photo && typeof node.photo === "object" ? node.photo : node;
+    const media = text(photo.photoUrl) || text(first(photo.photoUrls) && first(photo.photoUrls).url) || text(first(photo.mainMvUrls) && first(photo.mainMvUrls).url);
+    if (text(photo.id) && media && (photo.caption !== undefined || photo.coverUrl)) {
+      remember("ks" + photo.id, { page_url: "https://www.kuaishou.com/short-video/" + photo.id, title: text(photo.caption),
+        cover_url: text(photo.coverUrl), author: text(node.author && node.author.name), media_url: media });
+    }
+    for (const key in node) walk(node[key], depth + 1, budget);
+  };
+  const inspect = (body) => {
+    if (typeof body !== "string" || body.length > 8000000 || !/aweme_id|photoUrl|mainMvUrls/.test(body)) return;
+    try { walk(JSON.parse(body), 0, { left: 50000 }); } catch (error) {}
+  };
+  const originalFetch = window.fetch;
+  if (originalFetch) {
+    window.fetch = function (...args) {
+      return originalFetch.apply(this, args).then((response) => {
+        try { response.clone().text().then(inspect, () => {}); } catch (error) {}
+        return response;
+      });
+    };
+  }
+  const send = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function (...args) {
+    this.addEventListener("load", () => {
+      try { inspect(this.responseType === "" || this.responseType === "text" ? this.responseText : (this.responseType === "json" ? JSON.stringify(this.response) : "")); } catch (error) {}
+    });
+    return send.apply(this, args);
+  };
+})();"##;
+
 /// Runs inside the platform page and returns a JSON string of the video
 /// cards currently in the DOM (and, on Kuaishou, its Apollo cache, which
 /// also carries the direct media URL).
@@ -95,6 +145,11 @@ pub const COLLECT_SCRIPT: &str = r##"(() => {
   const coverOf = (el) => { const img = el.querySelector("img"); return img ? (img.currentSrc || img.src || img.getAttribute("data-src") || "") : ""; };
   const host = location.hostname;
   try {
+    for (const item of (window.__dubflowCapture || new Map()).values()) {
+      if (host.endsWith("kuaishou.com") ? item.page_url.includes("kuaishou.com") : item.page_url.includes("douyin.com")) {
+        add(item.page_url, item.title, item.cover_url, item.author, item.media_url);
+      }
+    }
     if (host.endsWith("kuaishou.com")) {
       const state = (window.__APOLLO_STATE__ || {}).defaultClient || {};
       for (const value of Object.values(state)) {
