@@ -9,6 +9,7 @@ import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
+import { chooseTranslator, reviewOverrides, saveReviewRevision, startJobRequest } from "./features/translation_review/flow.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
   activeStageIndex, displayJobStatus, isCancelled, PIPELINE_STAGES, progressFraction, stateLabel,
@@ -542,15 +543,7 @@ async function startJob(job: QueueJob): Promise<void> {
   startButton.disabled = true;
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    const started = await invoke<{ output_dir: string } | null>("start_job", {
-      jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null, outputRoot: job.outputDir ? null : outputRoot(),
-      enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId, burnIn: job.burnIn ?? true,
-      sourceLanguage: job.sourceLanguage ?? "auto", subtitleBox: job.subtitleBox ?? false,
-      translationEngine: job.translationEngine ?? "argos", blurRegions: job.blurRegions ?? null,
-      blurAuto: job.blurAuto ?? false,
-      multiVoice: job.multiVoice ?? false, speakerVoices: job.speakerVoices ?? null,
-      separateBackground: job.separateBackground ?? false,
-    });
+    const started = await invoke<{ output_dir: string } | null>("start_job", startJobRequest(job, outputRoot()));
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
     if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);
@@ -1024,19 +1017,14 @@ function undoReview(): void {
 reviewApply.addEventListener("click", async () => {
   const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === reviewJobId);
   if (!job?.outputPath) return;
-  const overrides: Record<string, string> = {};
-  for (const cue of reviewCues) {
-    const text = draftOf(cue).trim();
-    if (text !== cue.machine_text.trim()) overrides[cue.cue_id] = text;
-  }
+  const overrides = reviewOverrides(reviewCues, (cueId) => reviewDrafts.draftOf(cueId));
   reviewSaving = true;
   updateReviewControls();
   try {
-    const outputDir = await invoke<string>("save_review", { outputPath: job.outputPath, overrides });
+    const revisionId = await saveReviewRevision(invoke, queue, job, overrides);
     review.hidden = true;
     reviewJobId = null;
     reviewDrafts.reset(reviewCues);
-    const revisionId = queue.reviseJob(job.id, outputDir);
     if (speakersChanged()) {
       queue.setSpeakerVoices(revisionId, Object.fromEntries(reviewSpeakers.map((speaker) => [speaker.id, speakerChoice.get(speaker.id) ?? speaker.voice_id])));
     }
@@ -1120,8 +1108,8 @@ function hachimiAcknowledged(): boolean {
 translationEngineSelect.addEventListener("change", () => {
   const job = selectedJob();
   if (!job) return;
-  const engine = translationEngineSelect.value === "hachimi" ? "hachimi" : "argos";
-  if (engine === "hachimi" && !hachimiAcknowledged()) {
+  const engine = chooseTranslator(translationEngineSelect.value, hachimiAcknowledged);
+  if (engine === null) {
     translationEngineSelect.value = job.translationEngine ?? "argos";
     return;
   }
