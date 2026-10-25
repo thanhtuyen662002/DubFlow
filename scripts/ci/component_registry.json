@@ -737,6 +737,27 @@
       ]
     },
     {
+      "id": "spleeter-separation",
+      "roots": [
+        "engine/dubflow/separation/spleeter.py",
+        "models/manifests/production-separation-spleeter-v1.json",
+        "docs/licenses/spleeter.md",
+        "tests/separation"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/separation",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "visual-cleanup",
       "roots": [
         "engine/dubflow/inpaint",
@@ -773,6 +794,25 @@
           "discover",
           "-s",
           "tests/character_speaker",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
+      "id": "update",
+      "roots": [
+        "engine/dubflow/update",
+        "tests/update"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/update",
           "-p",
           "test_*.py"
         ]

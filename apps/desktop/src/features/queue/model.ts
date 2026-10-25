@@ -33,6 +33,8 @@ export type QueueJob = {
   blurAuto?: true;
   /** Experimental: a different Vietnamese voice per detected source speaker. */
   multiVoice?: true;
+  /** Experimental: dub over the separated music/effects instead of the ducked original audio. */
+  separateBackground?: true;
   /** Speaker id ("S1"…) -> voice id, chosen in review after a multi-voice run. */
   speakerVoices?: Record<string, string>;
   /** When processing first ran and when it reached a terminal state (ISO). */
@@ -194,6 +196,7 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.blurRegions === undefined || isBlurRegionList(job.blurRegions)) &&
     (job.blurAuto === undefined || job.blurAuto === true) &&
     (job.multiVoice === undefined || job.multiVoice === true) &&
+    (job.separateBackground === undefined || job.separateBackground === true) &&
     (job.speakerVoices === undefined || isSpeakerVoices(job.speakerVoices)) &&
     (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
     (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
@@ -422,6 +425,7 @@ export class QueueController {
     if (job.blurRegions !== undefined) revision.blurRegions = job.blurRegions.map((region) => ({ ...region }));
     if (job.blurAuto) revision.blurAuto = true;
     if (job.multiVoice) revision.multiVoice = true;
+    if (job.separateBackground) revision.separateBackground = true;
     if (job.speakerVoices) revision.speakerVoices = { ...job.speakerVoices };
     if (job.originUrl) revision.originUrl = job.originUrl;
     revision.displayName = job.displayName;
@@ -464,6 +468,14 @@ export class QueueController {
       job.blurRegions = regions.map((region) => ({ ...region }));
       delete job.blurAuto;
     } else throw new Error("Invalid blur regions");
+    this.commit();
+  }
+
+  setSeparateBackground(jobId: string, separate: boolean): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    if (separate) job.separateBackground = true;
+    else delete job.separateBackground;
     this.commit();
   }
 

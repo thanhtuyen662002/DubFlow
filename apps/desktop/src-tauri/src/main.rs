@@ -1,5 +1,6 @@
 mod discovery;
 mod source;
+mod updater;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -219,6 +220,109 @@ fn release_info() -> ReleaseInfo {
     }
 }
 
+/// Run the bundled Python with `args` from the app folder and parse the single
+/// JSON object it prints. Off the UI thread: network and hashing can be slow.
+async fn python_json(args: Vec<std::ffi::OsString>, what: &'static str) -> Result<Value, String> {
+    let root = version_root()?;
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app")).arg("-B").args(args);
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = tauri::async_runtime::spawn_blocking(move || command.output())
+        .await.map_err(|error| fail(error.to_string()))?
+        .map_err(|error| fail(format!("Không chạy được {what}: {error}")))?;
+    let line = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(line.lines().last().unwrap_or_default())
+        .ok().filter(Value::is_object)
+        .ok_or_else(|| fail(format!("{what} không trả về dữ liệu")))
+}
+
+fn install_root_or_unsupported() -> Result<PathBuf, String> {
+    updater::install_root(&version_root()?).ok_or_else(|| fail("Bản phát triển không hỗ trợ cập nhật tự động"))
+}
+
+/// Ask GitHub Releases for a newer signed version on this build's channel.
+#[tauri::command]
+async fn check_update() -> Result<Value, String> {
+    if updater::install_root(&version_root()?).is_none() {
+        return Ok(json!({"ok": true, "available": false, "unsupported": true}));
+    }
+    let info = release_info();
+    python_json(["-m", "engine.dubflow.update", "check", "--current", &info.version, "--channel", &info.channel]
+        .into_iter().map(Into::into).collect(), "bộ cập nhật").await
+}
+
+/// Download the newer version's setup into `<install root>\updates`, verified
+/// against the signed manifest's SHA-256 and size.
+#[tauri::command]
+async fn download_update() -> Result<Value, String> {
+    let updates = updater::updates_dir(&install_root_or_unsupported()?);
+    fs::create_dir_all(&updates).map_err(|error| fail(format!("Không tạo được thư mục cập nhật: {error}")))?;
+    let info = release_info();
+    let mut args: Vec<std::ffi::OsString> = ["-m", "engine.dubflow.update", "download", "--current", &info.version, "--channel", &info.channel, "--dest"]
+        .into_iter().map(Into::into).collect();
+    args.push(updates.into_os_string());
+    python_json(args, "bộ cập nhật").await
+}
+
+/// Run a downloaded setup and close DubFlow so it can start the new version.
+/// The setup installs side by side; the running version stays on disk.
+#[tauri::command]
+fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let root = install_root_or_unsupported()?;
+    let setup = PathBuf::from(&path);
+    if !updater::is_update_setup(&root, &setup) {
+        return Err(fail("Tệp cài đặt cập nhật không hợp lệ"));
+    }
+    Command::new(&setup).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        .map_err(|error| fail(format!("Không chạy được bộ cài: {error}")))?;
+    app.exit(0);
+    Ok(())
+}
+
+fn bootstrap_args(mode: &[&str]) -> Result<Vec<std::ffi::OsString>, String> {
+    let root = version_root()?;
+    let install = install_root_or_unsupported()?;
+    let mut args: Vec<std::ffi::OsString> = vec![root.join("app").join("packaging").join("release").join("bootstrap.py").into_os_string()];
+    args.extend(mode.iter().map(Into::into));
+    args.push("--install-root".into());
+    args.push(install.into_os_string());
+    Ok(args)
+}
+
+/// Installed versions, newest first, and which one is current.
+#[tauri::command]
+async fn list_versions() -> Result<Value, String> {
+    python_json(bootstrap_args(&["--list"])?, "trình quản lý phiên bản").await
+}
+
+/// Make an installed version current (rollback or roll forward). It is
+/// verified file by file before the switch; it takes effect on next start.
+#[tauri::command]
+async fn activate_version(version: String) -> Result<Value, String> {
+    if !updater::valid_version(&version) {
+        return Err(fail("Phiên bản không hợp lệ"));
+    }
+    python_json(bootstrap_args(&["--activate", &version])?, "trình quản lý phiên bản").await
+}
+
+/// Start the current version through the user launcher and close this one.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+    let launcher = install_root_or_unsupported()?.join("DubFlow.cmd");
+    if !launcher.is_file() {
+        return Err(fail("Không tìm thấy trình khởi động DubFlow"));
+    }
+    let mut command = Command::new(std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into()));
+    command.args(["/d", "/c"]).arg(&launcher).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.spawn().map_err(|error| fail(format!("Không khởi động lại được: {error}")))?;
+    app.exit(0);
+    Ok(())
+}
+
 const VIDEO_EXTENSIONS: [&str; 6] = ["mp4", "mkv", "mov", "avi", "webm", "m4v"];
 const MAX_EXPANDED_VIDEOS: usize = 500;
 
@@ -291,7 +395,7 @@ struct BlurRegion {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>, separate_background: Option<bool>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
@@ -360,6 +464,9 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     }
     if blur_auto == Some(true) {
         args.push("--blur-auto".into());
+    }
+    if separate_background == Some(true) && enable_dubbing == Some(true) {
+        args.push("--separate-background".into());
     }
     // Experimental multi-voice only matters when dubbing.
     if multi_voice == Some(true) && enable_dubbing == Some(true) {
@@ -835,7 +942,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

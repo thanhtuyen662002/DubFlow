@@ -30,3 +30,16 @@ for (const invalid of [{}, { S9: "v" }, { X1: "v" }, { S1: "Bad Voice" }, ["S1"]
 assert.throws(() => queue.setSpeakerVoices(revision, { S0: "v" }), /Invalid speaker voices/);
 assert.equal(parseQueueSnapshot(JSON.stringify({ ...queue.getSnapshot(), jobs: [{ ...queue.getSnapshot().jobs[0], speakerVoices: { S1: 5 } }] })), null);
 console.log("desktop multi-voice queue tests passed");
+
+// Background separation is a per-job dubbing option copied to revisions.
+const sep = new QueueController(new MemorySnapshotStorage(), clock);
+const [sepId] = sep.addPaths(["C:/music.mp4"]);
+sep.setSeparateBackground(sepId, true);
+assert.equal(parseQueueSnapshot(JSON.stringify(sep.getSnapshot())).jobs[0].separateBackground, true);
+sep.updateStatus(sepId, { ...sep.getSnapshot().jobs[0].status, state: "COMPLETED" });
+const sepRevision = sep.reviseJob(sepId, "D:/Out/sep");
+assert.equal(sep.getSnapshot().jobs.find((job) => job.id === sepRevision).separateBackground, true);
+sep.setSeparateBackground(sepRevision, false);
+assert.equal(sep.getSnapshot().jobs.find((job) => job.id === sepRevision).separateBackground, undefined);
+assert.equal(parseQueueSnapshot(JSON.stringify({ ...sep.getSnapshot(), jobs: [{ ...sep.getSnapshot().jobs[0], separateBackground: 1 }] })), null);
+console.log("desktop background separation option tests passed");
