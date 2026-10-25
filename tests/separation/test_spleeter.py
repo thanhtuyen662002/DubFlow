@@ -191,8 +191,11 @@ class SpleeterMathTests(unittest.TestCase):
                 self.assertEqual(output.read_bytes(), previous)
                 self.assertFalse(list(root.glob(".background-*.wav")))
                 if rate == 16000:
-                    for invalid in (np.full((2, 44100), np.nan, np.float32),
-                                    np.ones((2, 44100), np.float32), np.zeros((2, 22050), np.float32)):
+                    # A full-scale bed is limited below the clipping gate, not rejected.
+                    with patch.object(sep, "_separated_blocks", return_value=iter((np.ones((2, 44100), np.float32),))):
+                        loud = sep.separate_background(source, root / "loud.wav", model_dir=models, ffmpeg_path=Path(FFMPEG))
+                    self.assertLess(loud["peak"], .999)
+                    for invalid in (np.full((2, 44100), np.nan, np.float32), np.zeros((2, 22050), np.float32)):
                         with patch.object(sep, "_separated_blocks", return_value=iter((invalid,))), \
                              self.assertRaisesRegex(SeparationError, "SEPARATION_REJECTED"):
                             sep.separate_background(source, output, model_dir=models, ffmpeg_path=Path(FFMPEG))
