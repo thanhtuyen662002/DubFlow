@@ -1,6 +1,10 @@
 # Chinese real-media desktop review evidence (#271)
 
-Status: **FAIL — Issue #271 not accepted.** The production Chinese path passed on real media; the review revision replaced the original output in place, which acceptance item 4 forbids. The desktop GUI was not driven (**NOT_RUN**). This is not full #175 qualification.
+Status: **#271 still not accepted, because the desktop GUI was not driven (NOT_RUN).**
+- First run (1.0.0 contract): FAIL. The review revision replaced the original output in place, which acceptance item 4 forbids. Filed as #273.
+- Re-run after the #273 fix (see the last section): all 31 checks pass, using a replay of the new host contract.
+
+This is not full #175 qualification.
 
 ## What ran
 
@@ -53,6 +57,27 @@ The deterministic desktop test from #267 checks queue state with a fake `save_re
 ## Additional quality finding (not an acceptance failure)
 
 45 of 124 cues (36%) were not dubbed. All 45 have code `DURATION_FIT_REQUIRED`: natural Vietnamese speech cannot fit the cue at the safe speaking rate. As designed, those cues keep the original audio, the job ends `completed_partial_dubbing`, and the manifest records `B2_AUDIO_DEGRADED`. 17 cues used `TTS_INTERCUE_GAP_USED`. On fast real Douyin speech this rate is high enough to matter to users.
+
+## Re-run after the #273 fix
+
+The fix makes `save_review` create a sibling folder "<name> (sửa N)". That folder holds a copy of the worker cache (without the rebuilt `b2-audio` and `export-pending`), the reviewed text and `revision_of.json`, which records the original folder and the SHA-256 of its manifest. The original folder is only read.
+
+The harness replay was updated to that contract, and the same real video was run again on the same installed 1.0.0 runtime (2026-10-25 13:38:40Z – 13:43:33Z). The Rust host change is covered by its own unit test (`review_revisions_go_to_new_sibling_folders_and_leave_the_original_untouched`). It is not part of an installed build yet, so this run exercises the worker and the file contract, not the shipped host binary.
+
+| Stage | Seconds | Exit | State | Reason |
+| --- | --- | --- | --- | --- |
+| production | 196.0 | 0 | COMPLETED | `completed_partial_dubbing` |
+| revision in "… (sửa 1)" | 95.6 | 0 | COMPLETED | `completed_partial_dubbing` |
+
+**Verdict: pass, 31/31 checks.**
+- The production checks above pass again.
+- An invalid save creates nothing; the retried save persists the edit in the new folder.
+- The revision's captions contain the edit, and `reviewed_overrides` is recorded.
+- The revision folder is separate from the original.
+- All five original outputs (`final_vi.mp4`, both caption files, `job_manifest.json`, `qc_report.json`) are byte-identical after the revision.
+- `revision_of.json` points to the original folder and its manifest hash.
+
+The revision took about half the production time because it reused the copied transcription, translation and TTS cache. The undubbed-cue finding is unchanged (45/124, `DURATION_FIT_REQUIRED`).
 
 ## Not run
 
