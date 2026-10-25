@@ -31,6 +31,10 @@ export type QueueJob = {
   blurRegions?: BlurRegion[];
   /** Detect and blur burned-in captions automatically (instead of manual regions). */
   blurAuto?: true;
+  /** Experimental: a different Vietnamese voice per detected source speaker. */
+  multiVoice?: true;
+  /** Speaker id ("S1"…) -> voice id, chosen in review after a multi-voice run. */
+  speakerVoices?: Record<string, string>;
   /** When processing first ran and when it reached a terminal state (ISO). */
   startedAt?: string;
   finishedAt?: string;
@@ -189,9 +193,19 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.translationEngine === undefined || job.translationEngine === "hachimi") &&
     (job.blurRegions === undefined || isBlurRegionList(job.blurRegions)) &&
     (job.blurAuto === undefined || job.blurAuto === true) &&
+    (job.multiVoice === undefined || job.multiVoice === true) &&
+    (job.speakerVoices === undefined || isSpeakerVoices(job.speakerVoices)) &&
     (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
     (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
   );
+}
+
+/** Up to eight "S1".."S8" -> voice id entries. */
+export function isSpeakerVoices(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value as Record<string, unknown>);
+  return entries.length > 0 && entries.length <= 8
+    && entries.every(([speaker, voice]) => /^S[1-8]$/.test(speaker) && typeof voice === "string" && /^[a-z0-9-]{1,96}$/.test(voice));
 }
 
 export function parseQueueSnapshot(serialized: string | null): QueueSnapshot | null {
@@ -407,6 +421,8 @@ export class QueueController {
     if (job.translationEngine !== undefined) revision.translationEngine = job.translationEngine;
     if (job.blurRegions !== undefined) revision.blurRegions = job.blurRegions.map((region) => ({ ...region }));
     if (job.blurAuto) revision.blurAuto = true;
+    if (job.multiVoice) revision.multiVoice = true;
+    if (job.speakerVoices) revision.speakerVoices = { ...job.speakerVoices };
     if (job.originUrl) revision.originUrl = job.originUrl;
     revision.displayName = job.displayName;
     revision.status = { ...emptyStatus(), reason: "review_revision", message: "Chờ xử lý lại với bản dịch đã sửa" };
@@ -448,6 +464,27 @@ export class QueueController {
       job.blurRegions = regions.map((region) => ({ ...region }));
       delete job.blurAuto;
     } else throw new Error("Invalid blur regions");
+    this.commit();
+  }
+
+  setMultiVoice(jobId: string, multiVoice: boolean): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    if (multiVoice) job.multiVoice = true;
+    else {
+      delete job.multiVoice;
+      delete job.speakerVoices;
+    }
+    this.commit();
+  }
+
+  /** Voices per detected speaker for a queued revision; turns multi-voice on. */
+  setSpeakerVoices(jobId: string, voices: Record<string, string>): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    if (!isSpeakerVoices(voices)) throw new Error("Invalid speaker voices");
+    job.multiVoice = true;
+    job.speakerVoices = { ...voices };
     this.commit();
   }
 

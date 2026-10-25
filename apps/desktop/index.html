@@ -248,6 +248,13 @@
                 <div id="voice-list" class="voice-list" role="radiogroup" aria-label="Giọng lồng tiếng"></div>
                 <select id="tts-voice" hidden aria-hidden="true"></select>
               </div>
+              <label id="multi-voice-row" class="switch-row multi-voice-row" hidden>
+                <span>
+                  <strong>Nhiều giọng theo người nói <em class="tag">thử nghiệm</em></strong>
+                  <small>Nhận diện người nói và đổi giọng riêng cho từng người; có thể nhận nhầm, đổi lại trong Xem &amp; sửa bản dịch</small>
+                </span>
+                <input id="multi-voice" class="switch" type="checkbox" role="switch" />
+              </label>
               <p id="voice-catalog-status" class="hint"></p>
             </fieldset>
 
@@ -330,6 +337,10 @@
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
         </header>
+        <section id="review-speakers" class="review-speakers" hidden>
+          <h3>Giọng theo người nói</h3>
+          <div id="review-speaker-list" class="review-speaker-list"></div>
+        </section>
         <ol id="review-list" class="review-list"></ol>
         <footer class="review-foot">
           <p id="review-hint" class="hint">Sửa câu tiếng Việt cho ngắn gọn, tự nhiên. Câu quá dài so với thời lượng sẽ không lồng tiếng được.</p>

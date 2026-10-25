@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import json
+from dataclasses import replace
 from pathlib import Path
 import struct
 import sys
@@ -42,6 +44,99 @@ class HermeticDecodedAudioAdapter:
 
 
 class ProductionLocalFileB2Tests(unittest.TestCase):
+    def test_multivoice_groups_keep_global_windows_union_artifacts_and_voice_caches(self):
+        engines = []
+        class Engine(DeterministicFixtureEngine):
+            def __init__(self, pack, **kwargs):
+                super().__init__()
+                self.voice_id, self.cues, self.closed = pack.voice_id, [], False
+                engines.append(self)
+            def synthesize(self, request):
+                self.cues.append(request.segment.segment_id)
+                return super().synthesize(request)
+            def close(self):
+                self.closed = True
+        def load(*args, voice_id=None):
+            voice_id = voice_id or "primary"
+            return SimpleNamespace(sample_rate=16000, channels=1, voice_id=voice_id), replace(approved_default_voice(), voice_id=voice_id)
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice", side_effect=load), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", side_effect=Engine):
+            root = Path(directory)
+            options = dict(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json", tts_voice_id="primary",
+                synthesis_cache_dir=root / "cache", translated_cues=(
+                    TextCue("a", 0, 800, "Hello", "Xin chào"),
+                    TextCue("b", 1000, 1800, "World", "Thế giới"),
+                    TextCue("c", 2000, 2800, "Thanks", "Cảm ơn")))
+            result = run_b2_audio(**options, work_dir=root / "first", voice_by_cue={"b": "second"})
+            self.assertEqual(result.voices, ("primary", "second"))
+            self.assertEqual([engine.cues for engine in engines], [["a", "c"], ["b"]])
+            self.assertTrue(all(engine.closed for engine in engines))
+            self.assertEqual([doc.source_segment_ids for doc in result.tts_documents], [("a", "c"), ("b",)])
+            self.assertEqual(len(result.mix_document.segments), 3)
+            self.assertFalse(result.mix_document.failures)
+            primary, second = result.tts_documents
+            self.assertEqual(primary.provenance.voice_id, "primary")
+            self.assertEqual(second.provenance.voice_id, "second")
+            self.assertNotEqual(primary.provenance.input_hash, second.provenance.input_hash)
+            for voice_id, document in zip(result.voices, result.tts_documents):
+                self.assertTrue(all(Path(artifact.path).parent == root / "first/tts" / voice_id for artifact in document.artifacts))
+                self.assertEqual(len(list((root / "first/tts" / voice_id / "checkpoints").glob("*.json"))), len(document.artifacts))
+            self.assertEqual(primary.artifacts[0].render_window_end.ticks, 880)
+            self.assertEqual(second.artifacts[0].render_window_end.ticks, 1880)
+            self.assertTrue((root / "first/tts_document.json").is_file())
+            self.assertTrue((root / "first/tts_document.second.json").is_file())
+            self.assertTrue((root / "first/dubbing_spoken_text.second.json").is_file())
+            first = json.loads(next((root / "first/tts/primary/checkpoints").iterdir()).read_text())
+            other = json.loads(next((root / "first/tts/second/checkpoints").iterdir()).read_text())
+            self.assertNotEqual(first["identity"], other["identity"])
+            # A recast changes only b: a and c retain their cached primary voice.
+            engines.clear()
+            recast = run_b2_audio(**options, work_dir=root / "recast", voice_by_cue={"b": "third"})
+            self.assertEqual([engine.cues for engine in engines], [[], ["b"]])
+            self.assertEqual(recast.voices, ("primary", "third"))
+            engines.clear()
+            run_b2_audio(**options, work_dir=root / "again", voice_by_cue={"b": "second"})
+            self.assertTrue(all(not engine.cues for engine in engines))
+
+    def test_explicit_none_matches_default_bytes_and_flat_legacy_paths(self):
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",
+            return_value=(SimpleNamespace(sample_rate=16000, channels=1), approved_default_voice())), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", side_effect=lambda *a, **kw: DeterministicFixtureEngine()), patch(
+            "engine.dubflow.worker.b2_audio.TtsCheckpointStore.load", return_value={}):
+            root = Path(directory)
+            options = dict(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2",
+                translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào"),))
+            result = run_b2_audio(**options)
+            previous = {path: path.read_bytes() for path in (root / "b2").rglob("*") if path.is_file()}
+            explicit = run_b2_audio(**options, voice_by_cue=None)
+            self.assertEqual(previous, {path: path.read_bytes() for path in (root / "b2").rglob("*") if path.is_file()})
+            self.assertEqual(explicit.tts_document.to_bytes(), result.tts_document.to_bytes())
+            self.assertEqual(result.voices, (result.voice.voice_id,))
+            self.assertEqual(Path(result.tts_document.artifacts[0].path).parent, root / "b2/tts")
+
+    def test_reassigning_every_cue_uses_first_actual_voice_as_base_document(self):
+        def load(*args, voice_id=None):
+            voice_id = voice_id or "primary"
+            return SimpleNamespace(sample_rate=16000, channels=1), replace(approved_default_voice(), voice_id=voice_id)
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice", side_effect=load), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", side_effect=lambda *a, **kw: DeterministicFixtureEngine()):
+            root = Path(directory)
+            result = run_b2_audio(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json", work_dir=root / "b2", tts_voice_id="primary",
+                translated_cues=(TextCue("cue-1", 0, 1000, "Hello", "Xin chào"),), voice_by_cue={"cue-1": "second"})
+            self.assertEqual(result.voices, ("second",))
+            self.assertEqual(result.tts_document.provenance.voice_id, "second")
+            self.assertEqual(result.voice.voice_id, "second")
+            self.assertEqual(result.tts_document_path.name, "tts_document.json")
+
     def test_invalid_spoken_text_evidence_is_typed_and_preserves_existing_b1(self):
         with TemporaryDirectory() as directory, patch(
             "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",

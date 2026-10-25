@@ -384,3 +384,13 @@ h1, h2, h3, p { margin: 0; }
 .blur-loading[hidden] { display: none; }
 .blur-time { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: 13px; }
 .blur-time input { flex: 1; accent-color: var(--accent); }
+.multi-voice-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.multi-voice-row[hidden] { display: none; }
+.multi-voice-row em.tag { margin-left: 6px; font-style: normal; font-size: 11px; }
+.review-speakers { padding: 10px 20px; border-bottom: 1px solid var(--border); }
+.review-speakers[hidden] { display: none; }
+.review-speakers h3 { margin-bottom: 8px; font-size: 13px; font-weight: 650; }
+.review-speaker-list { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.review-speaker { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.review-speaker select { height: 30px; padding: 0 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+.speaker-chip { display: inline-block; margin-top: 4px; padding: 0 6px; border-radius: 99px; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: 11px; font-weight: 650; }

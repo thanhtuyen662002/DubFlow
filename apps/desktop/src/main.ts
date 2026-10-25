@@ -63,6 +63,7 @@ const queueState = $("#queue-state");
 const inspector = $("#inspector");
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
+const multiVoiceToggle = $<HTMLInputElement>("#multi-voice");
 const burnInToggle = $<HTMLInputElement>("#burn-in");
 const sourceLanguageSelect = $<HTMLSelectElement>("#source-language");
 const translationEngineSelect = $<HTMLSelectElement>("#translation-engine");
@@ -170,6 +171,8 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   const editable = !!job && job.status.state === "QUEUED" && !!voiceCatalog;
   voiceControls.disabled = !editable;
   dubbingToggle.checked = job?.dubbing.enabled ?? false;
+  multiVoiceToggle.checked = job?.multiVoice ?? false;
+  $("#multi-voice-row").hidden = !dubbingToggle.checked;
   burnInToggle.checked = job?.burnIn ?? true;
   const blurMode = job?.blurAuto ? "auto" : job?.blurRegions?.length ? "manual" : "off";
   // "Thủ công" stays selected while the user has not drawn a region yet.
@@ -371,7 +374,7 @@ function beginPolling(jobId: string): void {
 // The last options the user chose become the defaults for newly added videos,
 // so a batch needs its dubbing/voice/burn-in set once (per-viewer convenience).
 const DEFAULTS_KEY = "dubflow.defaults.v1";
-type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[]; blurAuto?: true };
+type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[]; blurAuto?: true; multiVoice?: true };
 
 function readDefaults(): JobDefaults | null {
   try {
@@ -381,7 +384,8 @@ function readDefaults(): JobDefaults | null {
       sourceLanguage: value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? value.sourceLanguage : undefined,
       translationEngine: value.translationEngine === "hachimi" ? "hachimi" : undefined,
       blurRegions: isBlurRegionList(value.blurRegions) ? value.blurRegions : undefined,
-      blurAuto: value.blurAuto === true ? true : undefined };
+      blurAuto: value.blurAuto === true ? true : undefined,
+      multiVoice: value.multiVoice === true ? true : undefined };
   } catch {
     return null;
   }
@@ -391,7 +395,7 @@ function rememberDefaults(job: QueueJob): void {
   try {
     window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
       burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, translationEngine: job.translationEngine,
-      blurRegions: job.blurRegions, blurAuto: job.blurAuto }));
+      blurRegions: job.blurRegions, blurAuto: job.blurAuto, multiVoice: job.multiVoice }));
   } catch {
     // Defaults are a convenience; the queue works without storage.
   }
@@ -406,6 +410,7 @@ function applyDefaults(jobIds: readonly string[]): void {
       if (defaults.sourceLanguage) queue.setSourceLanguage(id, defaults.sourceLanguage);
       if (defaults.blurRegions) queue.setBlurRegions(id, defaults.blurRegions);
       if (defaults.blurAuto) queue.setBlurAuto(id, true);
+      if (defaults.multiVoice) queue.setMultiVoice(id, true);
       if (defaults.translationEngine) queue.setTranslationEngine(id, defaults.translationEngine);
       if (defaults.dubbing && voiceCatalog) {
         const known = voiceCatalog.voices.some((voice) => voice.voice_id === defaults.voiceId);
@@ -536,6 +541,7 @@ async function startJob(job: QueueJob): Promise<void> {
       sourceLanguage: job.sourceLanguage ?? "auto", subtitleBox: job.subtitleBox ?? false,
       translationEngine: job.translationEngine ?? "argos", blurRegions: job.blurRegions ?? null,
       blurAuto: job.blurAuto ?? false,
+      multiVoice: job.multiVoice ?? false, speakerVoices: job.speakerVoices ?? null,
     });
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
@@ -800,8 +806,42 @@ $<HTMLInputElement>("#link-input").addEventListener("paste", (event) => {
 // Review: edit Vietnamese text per cue, then re-run in the same output folder.
 type ReviewCue = {
   cue_id: string; start_ms: number; end_ms: number; source_text: string;
-  machine_text: string; text: string; edited: boolean; dub_failed: boolean;
+  machine_text: string; text: string; edited: boolean; dub_failed: boolean; speaker?: string | null;
 };
+type ReviewSpeaker = { id: string; gender?: string; voice_id: string; cues?: number };
+let reviewSpeakers: ReviewSpeaker[] = [];
+/** Voice per speaker as currently chosen in the review dialog. */
+const speakerChoice = new Map<string, string>();
+
+function speakersChanged(): boolean {
+  return reviewSpeakers.some((speaker) => (speakerChoice.get(speaker.id) ?? speaker.voice_id) !== speaker.voice_id);
+}
+
+function renderReviewSpeakers(): void {
+  const panel = $("#review-speakers");
+  panel.hidden = reviewSpeakers.length < 2 || !voiceCatalog;
+  if (panel.hidden || !voiceCatalog) return;
+  const catalog = voiceCatalog;
+  $("#review-speaker-list").replaceChildren(...reviewSpeakers.map((speaker) => {
+    const row = element("label", "review-speaker");
+    const gender = speaker.gender === "male" ? "giọng nam" : speaker.gender === "female" ? "giọng nữ" : "";
+    row.append(element("span", "speaker-chip", speaker.id), element("span", "", [gender, speaker.cues ? `${speaker.cues} câu` : ""].filter(Boolean).join(" · ")));
+    const select = document.createElement("select");
+    for (const voice of catalog.voices) {
+      const option = document.createElement("option");
+      option.value = voice.voice_id;
+      option.textContent = `${voice.name} (${voice.gender}, ${voice.accent})`;
+      select.append(option);
+    }
+    select.value = speakerChoice.get(speaker.id) ?? speaker.voice_id;
+    select.addEventListener("change", () => {
+      speakerChoice.set(speaker.id, select.value);
+      updateReviewControls();
+    });
+    row.append(select);
+    return row;
+  }));
+}
 // Estimate only: the built-in voice failed a 3.9 syllable/s cue in real runs
 // while ~2.5 syllable/s cues fit, so warn above 3.5.
 const FAST_SYLLABLES_PER_SECOND = 3.5;
@@ -840,7 +880,7 @@ function reviewDirty(): boolean {
 }
 
 function updateReviewControls(): void {
-  reviewApply.disabled = reviewSaving || !reviewDrafts.canSave;
+  reviewApply.disabled = reviewSaving || !(reviewDrafts.canSave || (speakersChanged() && !reviewDrafts.isDirty));
   reviewUndo.disabled = reviewSaving || !reviewDrafts.canUndo;
 }
 
@@ -879,6 +919,7 @@ function renderReview(): void {
     const item = element("li", "review-cue");
     const time = element("div", "review-time");
     time.append(element("b", "", clock(cue.start_ms)), document.createTextNode(`${((cue.end_ms - cue.start_ms) / 1000).toFixed(1)} giây`));
+    if (cue.speaker) time.append(element("span", "speaker-chip", cue.speaker));
     const body = element("div");
     const editor = document.createElement("textarea");
     editor.value = draftOf(cue);
@@ -920,6 +961,13 @@ async function openReview(): Promise<void> {
     showError(`Không mở được bản dịch: ${String(error).slice(0, 200)}`);
     return;
   }
+  try {
+    reviewSpeakers = await invoke<ReviewSpeaker[]>("review_speakers", { outputPath: job.outputPath });
+  } catch {
+    reviewSpeakers = [];
+  }
+  speakerChoice.clear();
+  renderReviewSpeakers();
   reviewJobId = job.id;
   reviewDrafts.reset(reviewCues);
   reviewOnlyIssues.checked = reviewCues.some(needsAttention);
@@ -952,7 +1000,8 @@ async function playClip(cue: ReviewCue, source: boolean, button: HTMLButtonEleme
 
 function closeReview(): void {
   clipPlayer?.pause();
-  if (reviewDirty() && !window.confirm("Bỏ các thay đổi chưa lưu?")) return;
+  if ((reviewDirty() || speakersChanged()) && !window.confirm("Bỏ các thay đổi chưa lưu?")) return;
+  speakerChoice.clear();
   review.hidden = true;
   reviewJobId = null;
   reviewDrafts.reset(reviewCues);
@@ -980,6 +1029,10 @@ reviewApply.addEventListener("click", async () => {
     reviewJobId = null;
     reviewDrafts.reset(reviewCues);
     const revisionId = queue.reviseJob(job.id, outputDir);
+    if (speakersChanged()) {
+      queue.setSpeakerVoices(revisionId, Object.fromEntries(reviewSpeakers.map((speaker) => [speaker.id, speakerChoice.get(speaker.id) ?? speaker.voice_id])));
+    }
+    speakerChoice.clear();
     const revision = queue.getSnapshot().jobs.find((candidate) => candidate.id === revisionId);
     if (revision) await startJob(revision);
   } catch (error) {
@@ -1196,6 +1249,12 @@ burnInToggle.addEventListener("change", () => {
     queue.setBurnIn(job.id, burnInToggle.checked);
     rememberDefaults(selectedJob() ?? job);
   }
+});
+multiVoiceToggle.addEventListener("change", () => {
+  const job = selectedJob();
+  if (!job) return;
+  queue.setMultiVoice(job.id, multiVoiceToggle.checked);
+  rememberDefaults(selectedJob() ?? job);
 });
 dubbingToggle.addEventListener("change", () => {
   const job = selectedJob();

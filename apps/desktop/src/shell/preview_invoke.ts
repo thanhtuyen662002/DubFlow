@@ -105,6 +105,10 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     }
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
     case "open_douyin_login": return null as T;
+    case "review_speakers": return [
+      { id: "S1", gender: "female", voice_id: "vi-truc-ly-vieneu3-v1", cues: 9 },
+      { id: "S2", gender: "male", voice_id: "vi-adam-bua-vieneu3-v1", cues: 5 },
+    ] as T;
     case "post_suggestions": return { ok: true,
       titles: ["Tiên hiệp: Bí mật linh kiếm thức tỉnh (Vietsub)", "Thanh linh kiếm này đã ngủ yên suốt 300 năm!", "Linh kiếm khiến ai cũng bất ngờ"],
       description: "Thanh linh kiếm này đã ngủ yên suốt 300 năm! Vì sao một đệ tử tu tiên lại đánh thức được linh kiếm?\n#vietsub",
