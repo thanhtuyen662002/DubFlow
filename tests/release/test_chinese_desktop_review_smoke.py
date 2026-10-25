@@ -121,10 +121,14 @@ class ReviewContractTests(unittest.TestCase):
                 {"cue_id": "c2", "start_ms": 900, "end_ms": 1800, "source_text": "谢谢", "translated_text": "Cảm ơn"},
             ]}, ensure_ascii=False), encoding="utf-8")
             self.assertEqual([cue["text"] for cue in smoke.review_cues(output)], ["Xin chào", "Cảm ơn"])
+            stale = output.parent / "clip - vi (sửa 1).partial"
+            stale.mkdir()
+            (stale / "sentinel.txt").write_text("keep")
             for invalid in ({"c1": "  "}, {"": "x"}, {"c1": "x" * 2001}):
                 with self.subTest(invalid=invalid), self.assertRaises(smoke.SmokeError):
                     smoke.save_review(output, invalid)
-            self.assertEqual(sorted(path.name for path in output.parent.iterdir()), ["clip - vi"], "a rejected save creates nothing")
+            self.assertEqual(sorted(path.name for path in output.parent.iterdir()), ["clip - vi", "clip - vi (sửa 1).partial"],
+                             "a rejected save creates nothing")
 
             first = smoke.save_review(output, {"c2": "Cám ơn nhiều"})
             self.assertEqual(first, output.parent / "clip - vi (sửa 1)")
@@ -143,6 +147,18 @@ class ReviewContractTests(unittest.TestCase):
             self.assertEqual(second.name, "clip - vi (sửa 2)")
             self.assertFalse((second / smoke.OVERRIDES_FILE).exists())
             self.assertEqual(smoke.save_review(first, {}).name, "clip - vi (sửa 3)")
+            self.assertEqual((stale / "sentinel.txt").read_text(), "keep", "a pre-existing .partial folder survives")
+            self.assertFalse([path for path in output.parent.iterdir() if ".revision-" in path.name])
+            (output.parent / "clip - vi (sửa 4)").mkdir()
+            (output.parent / "clip - vi (sửa 4)" / "sentinel.txt").write_text("keep")
+            self.assertEqual(smoke.save_review(output, {}).name, "clip - vi (sửa 5)")
+            self.assertEqual((output.parent / "clip - vi (sửa 4)" / "sentinel.txt").read_text(), "keep")
+            broken = output.parent / "broken - vi"
+            broken.mkdir()
+            with self.assertRaises(FileNotFoundError):
+                smoke.save_review(broken, {})
+            self.assertFalse([path for path in output.parent.iterdir() if ".revision-" in path.name], "a failed save cleans only itself")
+            self.assertEqual((stale / "sentinel.txt").read_text(), "keep")
 
     def test_supervisor_command_matches_desktop_start_job_for_chinese(self) -> None:
         version, install, output = Path("V"), Path("I"), Path("O")

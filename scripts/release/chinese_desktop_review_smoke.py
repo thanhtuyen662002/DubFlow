@@ -22,6 +22,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import tempfile
 import subprocess
 import sys
 import time
@@ -187,9 +188,10 @@ def save_review(output_dir: Path, overrides: dict[str, str]) -> Path:
     if len(overrides) > 10_000 or any(not cue_id or len(cue_id) > 128 or not text.strip() or len(text) > 2000
                                       for cue_id, text in overrides.items()):
         raise SmokeError("SAVE_REJECTED", "invalid reviewed text: empty or longer than 2000 characters")
-    target = revision_dir(output_dir)
-    partial = target.with_name(target.name + ".partial")
-    shutil.rmtree(partial, ignore_errors=True)
+    match = REVISION_NAME.match(output_dir.name)
+    base = match.group("base") if match else output_dir.name
+    # A new, uniquely named folder; only this folder is ever cleaned up.
+    partial = Path(tempfile.mkdtemp(prefix=f"{base}.revision-", suffix=".partial", dir=output_dir.parent))
     try:
         shutil.copytree(output_dir / ".dubflow-work", partial / ".dubflow-work", symlinks=True,
                         ignore=lambda directory, names: [name for name in names if Path(directory) == output_dir / ".dubflow-work"
@@ -202,11 +204,19 @@ def save_review(output_dir: Path, overrides: dict[str, str]) -> Path:
                 "original_manifest_sha256": "sha256:" + sha256_file(manifest) if manifest.is_file() else None,
                 "created_unix": int(time.time())}
         (partial / REVISION_OF_FILE).write_text(json.dumps(link, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(partial, target)
+        for _ in range(16):
+            target = revision_dir(output_dir)
+            if os.path.lexists(target):
+                continue
+            try:
+                os.rename(partial, target)  # never replaces: Windows refuses an existing destination
+                return target
+            except FileExistsError:
+                continue
+        raise SmokeError("SAVE_REJECTED", "revision folder names kept colliding")
     except BaseException:
         shutil.rmtree(partial, ignore_errors=True)
         raise
-    return target
 
 
 def supervisor_command(version: Path, install_root: Path, job_id: str, source: Path, output_dir: Path,
@@ -352,7 +362,7 @@ class Smoke:
         self.check("review: invalid save rejected without changes",
                    rejected and revision_dir(output_dir) == output_dir.parent / f"{output_dir.name} (sửa 1)"
                    and not (output_dir / OVERRIDES_FILE).exists()
-                   and output_hashes(output_dir) == before and not any(path.name.endswith(".partial") for path in output_dir.parent.iterdir()))
+                   and output_hashes(output_dir) == before and not any(".revision-" in path.name for path in output_dir.parent.iterdir()))
         edited_text = target["machine_text"].rstrip(" .") + " (đã duyệt)"
         returned = save_review(output_dir, {target["cue_id"]: edited_text})
         reopened = {cue["cue_id"]: cue for cue in review_cues(returned)}

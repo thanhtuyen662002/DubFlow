@@ -708,9 +708,7 @@ fn copy_work_cache(from: &Path, to: &Path, skip: &[&str]) -> std::io::Result<()>
 /// output folder is only read, so its validated outputs stay as they were.
 fn create_revision(original: &Path, overrides: &std::collections::BTreeMap<String, String>) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
-    let target = revision_dir(original)?;
-    let partial = target.with_file_name(format!("{}.partial", target.file_name().unwrap_or_default().to_string_lossy()));
-    let _ = fs::remove_dir_all(&partial);
+    let partial = create_revision_temp(original).map_err(|error| fail(format!("Không tạo được thư mục bản sửa: {error}")))?;
     let build = || -> Result<(), String> {
         copy_work_cache(&original.join(".dubflow-work"), &partial.join(".dubflow-work"), &REVISION_SKIP)
             .map_err(|error| fail(format!("Không chép được dữ liệu bản dịch: {error}")))?;
@@ -724,11 +722,58 @@ fn create_revision(original: &Path, overrides: &std::collections::BTreeMap<Strin
         let link = json!({"schema_version": 1, "original_output_dir": display_path(original),
             "original_manifest_sha256": manifest, "created_unix": created});
         fs::write(partial.join(REVISION_OF_FILE), serde_json::to_vec_pretty(&link).map_err(|error| fail(error.to_string()))?)
-            .map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))?;
-        fs::rename(&partial, &target).map_err(|error| fail(format!("Không tạo được thư mục bản sửa: {error}")))
+            .map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))
     };
-    build().inspect_err(|_| { let _ = fs::remove_dir_all(&partial); })?;
-    Ok(target)
+    let result = build().and_then(|()| publish_revision(&partial, original));
+    if result.is_err() {
+        // Only ever the folder this call created; nothing else is removed.
+        let _ = fs::remove_dir_all(&partial);
+    }
+    result
+}
+
+/// A new, uniquely named temporary folder beside `original`. `create_dir`
+/// fails on an existing path, so a folder that is already there (a user's,
+/// or another save in progress) is never reused or cleaned up.
+fn create_revision_temp(original: &Path) -> std::io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let parent = original.parent().ok_or_else(|| std::io::Error::other("output has no parent directory"))?;
+    let name = original.file_name().unwrap_or_default().to_string_lossy();
+    for _ in 0..64 {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+        let candidate = parent.join(format!("{}.revision-{}-{nanos:08x}-{}.partial", revision_base(&name),
+            std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)));
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no unique temporary folder name"))
+}
+
+/// Move a finished temporary folder to the first free "(sửa N)" name. A name
+/// taken in the meantime (a concurrent save) moves on to the next number.
+fn publish_revision(partial: &Path, original: &Path) -> Result<PathBuf, String> {
+    for _ in 0..16 {
+        let target = revision_dir(original)?;
+        match move_to_new_path(partial, &target) {
+            Ok(()) => return Ok(target),
+            Err(_) if fs::symlink_metadata(&target).is_ok() => continue,
+            Err(error) => return Err(fail(format!("Không tạo được thư mục bản sửa: {error}"))),
+        }
+    }
+    Err(fail("Không tạo được thư mục bản sửa: tên thư mục liên tục bị trùng"))
+}
+
+/// Rename that never replaces an existing path. Windows already refuses a
+/// directory destination; the check also covers other platforms.
+fn move_to_new_path(from: &Path, to: &Path) -> std::io::Result<()> {
+    if fs::symlink_metadata(to).is_ok() {
+        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "destination already exists"));
+    }
+    fs::rename(from, to)
 }
 
 /// Save reviewed texts into a new sibling folder "<name> (sửa N)" and return
@@ -1052,9 +1097,20 @@ mod tests {
         let before = snapshot(&original);
         let output = original.join("final_vi.mp4").to_string_lossy().into_owned();
         let overrides = std::collections::BTreeMap::from([("c1".to_owned(), "Xin chào".to_owned())]);
+        // A user's folder that happens to look like an old temporary name must survive every save.
+        for stale in ["clip - vi (sửa 1).partial", "clip - vi (sửa 2).partial"] {
+            fs::create_dir_all(root.join(stale)).unwrap();
+            fs::write(root.join(stale).join("sentinel.txt"), "keep").unwrap();
+        }
+        let sentinels_intact = || ["clip - vi (sửa 1).partial", "clip - vi (sửa 2).partial"].iter()
+            .all(|stale| fs::read_to_string(root.join(stale).join("sentinel.txt")).is_ok_and(|text| text == "keep"));
+        let temporaries_left = || root.read_dir().unwrap().filter(|entry| {
+            entry.as_ref().unwrap().file_name().to_string_lossy().contains(".revision-")
+        }).count();
 
         assert!(save_review(output.clone(), std::collections::BTreeMap::from([("c1".to_owned(), "  ".to_owned())])).is_err());
         assert!(!root.join("clip - vi (sửa 1)").exists(), "a rejected save creates nothing");
+        assert!(sentinels_intact() && temporaries_left() == 0);
 
         let first = PathBuf::from(save_review(output.clone(), overrides.clone()).unwrap());
         assert_eq!(first, root.join("clip - vi (sửa 1)"));
@@ -1073,9 +1129,30 @@ mod tests {
         assert_eq!(PathBuf::from(save_review(output, std::collections::BTreeMap::new()).unwrap()), root.join("clip - vi (sửa 2)"));
         assert!(!root.join("clip - vi (sửa 2)").join(OVERRIDES_FILE).exists());
         fs::write(first.join("final_vi.mp4"), "revised").unwrap();
-        let again = save_review(first.join("final_vi.mp4").to_string_lossy().into_owned(), overrides).unwrap();
+        let again = save_review(first.join("final_vi.mp4").to_string_lossy().into_owned(), overrides.clone()).unwrap();
         assert_eq!(PathBuf::from(again), root.join("clip - vi (sửa 3)"), "a revision of a revision stays a sibling");
-        assert!(root.read_dir().unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().ends_with(".partial")));
+        assert!(sentinels_intact(), "pre-existing .partial folders are never removed");
+        assert_eq!(temporaries_left(), 0, "each save's own temporary folder is gone");
+
+        // A save that fails part-way removes only its own temporary folder.
+        let broken = root.join("broken - vi");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("final_vi.mp4"), "video").unwrap();
+        assert!(create_revision(&broken, &overrides).is_err(), "no work cache to copy");
+        assert!(!root.join("broken - vi (sửa 1)").exists());
+        assert!(sentinels_intact() && temporaries_left() == 0);
+
+        // Moving into place never replaces an existing folder.
+        let taken = root.join("taken");
+        fs::create_dir_all(&taken).unwrap();
+        fs::write(taken.join("sentinel.txt"), "keep").unwrap();
+        let source = create_revision_temp(&original).unwrap();
+        assert!(fs::read_dir(root.join("clip - vi (sửa 1).partial")).is_ok());
+        assert!(move_to_new_path(&source, &taken).is_err());
+        assert_eq!(fs::read_to_string(taken.join("sentinel.txt")).unwrap(), "keep");
+        assert!(source.is_dir(), "the caller still owns its temporary folder");
+        let other = create_revision_temp(&original).unwrap();
+        assert_ne!(source, other, "every save gets its own temporary folder");
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
 
         assert_eq!(revision_base("clip - vi (sửa 12)"), "clip - vi");
