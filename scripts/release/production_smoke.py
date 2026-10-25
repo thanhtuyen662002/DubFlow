@@ -718,7 +718,7 @@ def _verify_no_audio_dub(ffprobe: Path, output: Path, status: dict[str, Any], jo
                        "mix_warnings": [str(item)[:256] for item in mix_warnings[:4]] if isinstance(mix_warnings, list) else "invalid"}
         raise SmokeError("no-audio dub evidence rejected: " + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True))
     verified = _verify_output(ffprobe, output, seconds, expect_dubbing=True, expect_voice_id=voice_id, expect_audio=True)
-    tts, mix = _json(Path(audio["tts_document"])), _json(Path(audio["mix_document"]))
+    (tts, _members), mix = _speech(Path(audio["tts_document"])), _json(Path(audio["mix_document"]))
     if tts.get("failures") != [] or mix.get("failures") != [] or mix.get("warnings") != mix_warnings:
         raise SmokeError("no-audio TTS/mix documents disagree with reported failures or warnings")
     with wave.open(str(output / "editable/source_audio.wav"), "rb") as reader:
@@ -862,8 +862,10 @@ def _verify_live_job_ownership(supervisor: Path, root: Path, data_root: Path, wo
         raise SmokeError("execution owner lost durable success, checkpoint, starts or final progress")
     output_report = _verify_output(ffprobe, output, seconds, expect_dubbing=True, expect_voice_id=voice_id)
     audio = _json(output / "job_manifest.json")["audio"]
-    speech = _json(Path(audio["tts_document"]))
-    if speech.get("failures") or len(speech["artifacts"]) != cues:
+    speech, members = _speech(Path(audio["tts_document"]))
+    phrases = len(members) if members is not None else cues
+    if (speech.get("failures") or len(speech["artifacts"]) != phrases
+            or (members is not None and sum(map(len, members.values())) != cues)):
         raise SmokeError("execution owner did not commit every actual pinned-TTS cue")
     _run([ffmpeg, "-v", "error", "-i", output / "final_vi.mp4", "-f", "null", "-"], timeout=timeout)
     return {"status": "passed", "scope": "actual overlapping supervisor processes; generated media/authored VI",
@@ -989,8 +991,10 @@ def _verify_tts_recovery(supervisor: Path, root: Path, data_root: Path, work_roo
             _file_digest(Path(snapshot["record"])) != snapshot["record_sha256"]):
         raise SmokeError("TTS recovery regenerated or modified previously committed speech")
     manifest = _json(output / "job_manifest.json")
-    tts = _json(Path(manifest["audio"]["tts_document"]))
-    if (len(tts["artifacts"]) != 3 or tts.get("failures") or
+    tts, members = _speech(Path(manifest["audio"]["tts_document"]))
+    # Three source cues, dubbed as however many phrases the producer planned.
+    if (len(tts["artifacts"]) != (len(members) if members is not None else 3)
+            or (members is not None and sum(map(len, members.values())) != 3) or tts.get("failures") or
             "reused TTS checkpoint for " + snapshot["segment_id"] not in tts.get("warnings", ()) or
             not any(item["segment_id"] == snapshot["segment_id"] and item["path"] == snapshot["audio"]
                     and item["content_hash"] == "sha256:" + snapshot["sha256"] for item in tts["artifacts"])):

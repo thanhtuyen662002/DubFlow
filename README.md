@@ -33,7 +33,7 @@ DubFlow chuyển video tiếng Trung/Anh thành video tiếng Việt **ngay trê
 ### Sửa bản dịch
 Bấm **Xem & sửa bản dịch** ở video đã xong. Mỗi dòng hiện câu gốc và câu tiếng Việt, với nút **▶ Gốc** / **▶ Lồng tiếng** để nghe thử; câu lồng tiếng lỗi hoặc đọc quá nhanh được đánh dấu. Sửa câu (ngắn gọn, tự nhiên hơn) rồi bấm **Lưu & xử lý lại** — DubFlow chỉ chạy lại phần cần thiết và chỉ lồng tiếng lại các câu đã sửa. Bản sửa được lưu vào một thư mục mới bên cạnh (tên kết thúc bằng “(sửa 1)”, “(sửa 2)”…); video và phụ đề cũ được giữ nguyên.
 
-Nếu một số câu dịch quá dài so với thời lượng, các câu đó vẫn giữ tiếng gốc và thẻ kết quả sẽ cảnh báo — hãy rút gọn chúng ở đây.
+Với lời thoại nhanh, DubFlow tự gộp các câu liền nhau thành cụm để đọc cho vừa, tự rút gọn từ đệm và đọc nhanh hơn một chút khi cần (tối đa 1,5 lần). Nếu một câu vẫn quá dài so với thời lượng, câu đó giữ tiếng gốc và thẻ kết quả sẽ cảnh báo — hãy rút gọn nó ở đây.
 
 Bấm **Hoàn tác** (hoặc Ctrl+Z khi không gõ trong ô) để bỏ lần sửa gần nhất. Với video lồng *nhiều giọng*, mỗi câu có nhãn người nói (S1, S2…) và mục **Giọng theo người nói** để đổi giọng cho từng người; bấm **Lưu & xử lý lại** để lồng tiếng lại.
 
