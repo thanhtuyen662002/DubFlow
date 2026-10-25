@@ -84,6 +84,7 @@
                 <h2>Đang hot</h2>
                 <button id="trends-refresh" class="link" type="button">Làm mới</button>
               </div>
+              <label class="gloss-toggle"><input id="trend-gloss" type="checkbox" /> Dịch nghĩa sang tiếng Việt</label>
               <ol id="trend-list" class="trend-list"></ol>
               <p id="trend-state" class="hint"></p>
             </aside>
@@ -100,6 +101,10 @@
                 <button class="btn primary" type="submit">Tìm</button>
                 <button id="discover-popular" class="btn" type="button" hidden>Thịnh hành</button>
               </form>
+              <div class="topic-row" aria-label="Chủ đề gợi ý">
+                <span class="hint">Chủ đề:</span>
+                <div id="topic-chips" class="topic-chips"></div>
+              </div>
               <div id="discover-browser" class="discover-browser" hidden>
                 <p>Trang đang mở trong cửa sổ <b>Khám phá video</b>. Cuộn trang để tải thêm kết quả rồi bấm <b>Lấy video từ trang</b>.</p>
                 <p class="hint">Douyin và Kuaishou thường yêu cầu đăng nhập để tìm kiếm hoặc xem danh sách kênh: đăng nhập (quét mã QR bằng app trên điện thoại) ngay trong cửa sổ đó. Phiên đăng nhập được lưu lại cho lần sau.</p>

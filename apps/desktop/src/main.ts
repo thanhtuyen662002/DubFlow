@@ -690,7 +690,13 @@ function douyinActions(status: FetchStatus): HTMLElement {
 }
 
 // Sidebar navigation between the queue and the discovery view.
-const discovery = mountDiscovery(invoke, startFetch);
+const discovery = mountDiscovery(invoke, startFetch, () => {
+  try {
+    return window.localStorage.getItem("dubflow.hachimiAck.v1") === "1" ? "hachimi" : "argos";
+  } catch {
+    return "argos";
+  }
+});
 function showView(view: "queue" | "discover"): void {
   const discover = view === "discover";
   $("#discover-view").hidden = !discover;

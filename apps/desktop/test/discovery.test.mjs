@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  bilibiliMid, discoveryError, formatCount, formatDuration, mergeVideos, parseCollected, parseTrends, parseVideos,
+  TOPICS, bilibiliMid, discoveryError, formatCount, formatDuration, mergeVideos, parseCollected, parseGlosses, parseTrends, parseVideos,
 } from "../src/features/discovery/model.ts";
 
 // Trends: keyword required, unknown heat stays null, ranks default to order.
@@ -56,3 +56,12 @@ assert.match(discoveryError("BLOCKED", "bilibili"), /Mở trang/);
 assert.match(discoveryError("UNSUPPORTED", "kuaishou"), /Kuaishou/);
 
 console.log("desktop discovery model tests passed");
+
+// Keyword glosses must line up with the terms sent; topics map to Chinese searches.
+const glossed = parseGlosses({ ok: true, items: ["Tiên hiệp", ""] }, ["仙侠", "坏"]);
+assert.deepEqual([...glossed], [["仙侠", "Tiên hiệp"], ["坏", ""]]);
+assert.equal(parseGlosses({ ok: true, items: ["a"] }, ["x", "y"]), null);
+assert.equal(parseGlosses({ ok: false, code: "TRANSLATION_PACKAGE_MISSING" }, ["x"]), null);
+assert.ok(TOPICS.length >= 20 && TOPICS.every((topic) => topic.vi && /[\u4e00-\u9fff]/.test(topic.zh)));
+assert.equal(new Set(TOPICS.map((topic) => topic.zh)).size, TOPICS.length);
+console.log("desktop discovery gloss and topic tests passed");

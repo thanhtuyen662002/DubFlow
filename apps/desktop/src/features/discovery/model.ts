@@ -9,6 +9,30 @@ export const PLATFORMS: ReadonlyArray<{ id: Platform; name: string; suggest: boo
 
 export type Trend = { keyword: string; rank: number; heat: number | null };
 
+/**
+ * Vietnamese topics a reup channel usually looks for, with the Chinese search
+ * keyword that finds them on Douyin/Bilibili/Kuaishou.
+ */
+export const TOPICS: ReadonlyArray<{ vi: string; zh: string }> = [
+  { vi: "Review phim", zh: "电影解说" }, { vi: "Phim ngắn", zh: "短剧" }, { vi: "Tiên hiệp", zh: "仙侠剧" },
+  { vi: "Cổ trang", zh: "古装剧" }, { vi: "Hoạt hình TQ", zh: "国漫" }, { vi: "Anime", zh: "动漫" },
+  { vi: "Tổng tài", zh: "霸道总裁" }, { vi: "Xuyên không", zh: "穿越剧" }, { vi: "Võ thuật", zh: "功夫" },
+  { vi: "Kinh dị", zh: "恐怖片解说" }, { vi: "Ẩm thực", zh: "美食" }, { vi: "Nấu ăn", zh: "做饭教程" },
+  { vi: "Du lịch", zh: "旅行vlog" }, { vi: "Hài hước", zh: "搞笑视频" }, { vi: "Thú cưng", zh: "萌宠" },
+  { vi: "Nông thôn", zh: "农村生活" }, { vi: "Thủ công", zh: "手工制作" }, { vi: "Mẹo vặt", zh: "生活小妙招" },
+  { vi: "Làm đẹp", zh: "美妆教程" }, { vi: "Thời trang", zh: "穿搭" }, { vi: "Công nghệ", zh: "数码测评" },
+  { vi: "Ô tô", zh: "汽车评测" }, { vi: "Game", zh: "游戏解说" }, { vi: "Lịch sử", zh: "历史故事" },
+  { vi: "Khoa học", zh: "科普" }, { vi: "Thể hình", zh: "健身" }, { vi: "Cảm động", zh: "感人视频" },
+];
+
+/** Glosses keyed by keyword; an empty gloss means the term could not be translated. */
+export function parseGlosses(value: unknown, terms: readonly string[]): Map<string, string> | null {
+  const object = (value ?? {}) as Record<string, unknown>;
+  const items = object.items;
+  if (object.ok !== true || !Array.isArray(items) || items.length !== terms.length) return null;
+  return new Map(terms.map((term, index) => [term, text(items[index], 120)]));
+}
+
 /** One video the user can pick, from the API or from the discovery page. */
 export type DiscoveredVideo = {
   title: string;

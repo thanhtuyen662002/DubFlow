@@ -1,5 +1,5 @@
 import {
-  PLATFORMS, bilibiliMid, discoveryError, formatCount, formatDuration, mergeVideos, parseCollected, parseTrends, parseVideos,
+  PLATFORMS, TOPICS, bilibiliMid, parseGlosses, discoveryError, formatCount, formatDuration, mergeVideos, parseCollected, parseTrends, parseVideos,
   type DiscoveredVideo, type Platform, type Trend,
 } from "./model.ts";
 
@@ -12,8 +12,12 @@ const $ = <T extends HTMLElement>(selector: string): T => {
   return node;
 };
 
-/** Wire the "Khám phá" view. `enqueue` downloads one link into the queue. */
-export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise<void>): { show(): void } {
+/**
+ * Wire the "Khám phá" view. `enqueue` downloads one link into the queue;
+ * `glossEngine` says which translator may gloss keywords ("hachimi" only once
+ * the user accepted its licence warning).
+ */
+export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise<void>, glossEngine: () => "argos" | "hachimi"): { show(): void } {
   const tabs = $("#platform-tabs");
   const trendList = $("#trend-list");
   const trendState = $("#trend-state");
@@ -40,6 +44,10 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
   let suggestRequest = 0;
   let trendRequest = 0;
   const trendCache = new Map<Platform, { at: number; items: Trend[] }>();
+  const glossToggle = $<HTMLInputElement>("#trend-gloss");
+  const glosses = new Map<string, string>();
+  let shownTrends: Trend[] = [];
+  let glossRequest = 0;
 
   const info = () => PLATFORMS.find((entry) => entry.id === platform)!;
 
@@ -59,7 +67,28 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
       : "Từ khóa tiếng Trung, ví dụ 仙侠 hoặc 美食";
   }
 
+  async function loadGlosses(items: Trend[]): Promise<void> {
+    const missing = items.map((trend) => trend.keyword).filter((keyword) => !glosses.has(keyword)).slice(0, 60);
+    if (!glossToggle.checked || missing.length === 0) return;
+    const request = ++glossRequest;
+    trendState.textContent = "Đang dịch nghĩa…";
+    try {
+      const result = parseGlosses(await invoke<unknown>("translate_terms", { terms: missing, engine: glossEngine() }), missing);
+      if (request !== glossRequest) return;
+      if (!result) {
+        trendState.textContent = "Chưa dịch được (cần xử lý một video tiếng Trung trước để tải model dịch).";
+        return;
+      }
+      for (const [keyword, gloss] of result) glosses.set(keyword, gloss);
+      trendState.textContent = "";
+      renderTrends(shownTrends);
+    } catch (error) {
+      if (request === glossRequest) trendState.textContent = `Không dịch được: ${String(error).slice(0, 120)}`;
+    }
+  }
+
   function renderTrends(items: Trend[]): void {
+    shownTrends = items;
     trendList.replaceChildren(...items.slice(0, 50).map((trend, index) => {
       const item = document.createElement("li");
       const button = document.createElement("button");
@@ -71,6 +100,12 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
       const word = document.createElement("span");
       word.className = "word";
       word.textContent = trend.keyword;
+      const gloss = glossToggle.checked ? glosses.get(trend.keyword) : undefined;
+      if (gloss) {
+        const small = document.createElement("small");
+        small.textContent = gloss;
+        word.append(small);
+      }
       const heat = document.createElement("span");
       heat.className = "heat";
       heat.textContent = formatCount(trend.heat);
@@ -90,6 +125,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
     if (!force && cached && Date.now() - cached.at < 5 * 60_000) {
       renderTrends(cached.items);
       trendState.textContent = "";
+      void loadGlosses(cached.items);
       return;
     }
     const request = ++trendRequest;
@@ -106,6 +142,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
       trendCache.set(forPlatform, { at: Date.now(), items: result.items });
       renderTrends(result.items);
       trendState.textContent = result.items.length ? "" : "Chưa có xu hướng.";
+      void loadGlosses(result.items);
     } catch (error) {
       if (request === trendRequest) trendState.textContent = `Không tải được xu hướng: ${String(error).slice(0, 120)}`;
     }
@@ -342,6 +379,24 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
     state.textContent = `Đã đưa ${added} video vào hàng đợi tải.` + (failures.length ? ` ${failures.length} video lỗi: ${failures[0]}` : " Xem tiến độ ở Hàng đợi video.");
     renderResults();
   });
+
+  glossToggle.addEventListener("change", () => {
+    renderTrends(shownTrends);
+    void loadGlosses(shownTrends);
+  });
+  $("#topic-chips").replaceChildren(...TOPICS.map((topic) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.textContent = topic.vi;
+    chip.title = `Tìm “${topic.zh}”`;
+    chip.addEventListener("click", () => {
+      kind.value = "search";
+      query.value = topic.zh;
+      renderTabs();
+      void search();
+    });
+    return chip;
+  }));
 
   renderTabs();
   let loaded = false;

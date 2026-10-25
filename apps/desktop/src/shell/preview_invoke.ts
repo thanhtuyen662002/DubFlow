@@ -108,6 +108,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "discover": return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1)) as T;
     case "open_discovery": return `https://example.invalid/${String(args.platform)}` as T;
     case "scroll_discovery": return null as T;
+    case "translate_terms": return { ok: true, items: (args.terms as string[]).map((term) => `(nghĩa) ${term}`) } as T;
     case "collect_discovery": return previewCollected(String(args.platform)) as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;

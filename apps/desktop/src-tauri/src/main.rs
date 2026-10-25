@@ -593,6 +593,38 @@ async fn discover(platform: String, action: String, query: Option<String>, page:
         .ok_or_else(|| fail("Bộ khám phá không trả về dữ liệu"))
 }
 
+/// Vietnamese glosses for short Chinese terms (trend keywords), in order.
+/// `engine` "hachimi" only after the user accepted its licence warning.
+#[tauri::command]
+async fn translate_terms(terms: Vec<String>, engine: Option<String>) -> Result<Value, String> {
+    if terms.is_empty() || terms.len() > 60 || terms.iter().any(|term| term.trim().is_empty() || term.chars().count() > 80 || term.chars().any(char::is_control)) {
+        return Err(fail("Danh sách từ khóa không hợp lệ"));
+    }
+    let engine = match engine.as_deref() {
+        None | Some("argos") => "argos",
+        Some("hachimi") => "hachimi",
+        Some(_) => return Err(fail("Bộ dịch không được hỗ trợ")),
+    };
+    let root = version_root()?;
+    let models = control_root()?.join("models");
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app"))
+        .args(["-B", "-m", "engine.dubflow.translation.terms", "--engine", engine, "--model-root"])
+        .arg(&models)
+        .arg("--")
+        .args(terms.iter().map(|term| term.trim()));
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = tauri::async_runtime::spawn_blocking(move || command.output())
+        .await.map_err(|error| fail(error.to_string()))?
+        .map_err(|error| fail(format!("Không chạy được bộ dịch: {error}")))?;
+    let line = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(line.lines().last().unwrap_or_default())
+        .ok().filter(Value::is_object)
+        .ok_or_else(|| fail("Bộ dịch không trả về dữ liệu"))
+}
+
 /// Open (or navigate) the discovery browser at a search or creator page.
 /// It shares the app's browser profile, so a saved Douyin visit helps here.
 #[tauri::command]
@@ -691,7 +723,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, discover, open_discovery, scroll_discovery, collect_discovery])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
