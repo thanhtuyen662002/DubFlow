@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -37,6 +38,7 @@ from packaging.release.trust import RELEASE_KEY_ID, RELEASE_PUBLIC_KEY_B64  # no
 
 
 STATE_SCHEMA_VERSION = 1
+_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 
 
 class BootstrapInstallError(RuntimeError):
@@ -287,7 +289,7 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
     destination = requested_destination.resolve()
     try:
         manifest = load_manifest(root / "release-manifest.json")
-    except ManifestError as exc:
+    except (ManifestError, UnicodeError) as exc:
         raise BootstrapInstallError("MANIFEST_INVALID", str(exc)) from exc
     verify_bundle(root, manifest)
     source_manifest_hash = hash_file(root / "release-manifest.json")
@@ -405,6 +407,15 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
                 pass
             raise
 
+    return _activate(destination, manifest)
+
+
+def _activate(destination: Path, manifest: ReleaseManifest) -> dict[str, Any]:
+    """Publish an already verified version through the existing atomic writers."""
+
+    version_path = _installed_version_path(destination, manifest.version)
+    for name in ("current.json", "install-state.json", "DubFlow.cmd"):
+        _reject_link_components(destination / name, "activation path")
     manifest_hash = hash_file(version_path / "release-manifest.json")
     pointer = {
         "schema_version": STATE_SCHEMA_VERSION,
@@ -413,10 +424,6 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
         "manifest_sha256": manifest_hash,
         "updated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     }
-    _atomic_write(
-        destination / "current.json",
-        (json.dumps(pointer, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
-    )
     qualification_path = version_path / "release-status.json"
     production_qualified = False
     try:
@@ -429,7 +436,7 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
             and qualification.get("release_channel") == manifest.release_channel
             and qualification.get("production_qualified") is True
         )
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         raise BootstrapInstallError("STATUS_INVALID", "installed release qualification status is unreadable")
     state = {
         "schema_version": STATE_SCHEMA_VERSION,
@@ -438,6 +445,10 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
         "release_channel": manifest.release_channel,
         "production_qualified": production_qualified,
     }
+    _atomic_write(
+        destination / "current.json",
+        (json.dumps(pointer, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+    )
     _atomic_write(
         destination / "install-state.json",
         (json.dumps(state, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
@@ -453,9 +464,76 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
     }
 
 
+def activate_version(install_root: Path | str, version: str) -> dict[str, Any]:
+    """Verify a retained version in full before switching the active install."""
+
+    if not isinstance(version, str) or not _VERSION.fullmatch(version):
+        raise BootstrapInstallError("VERSION_INVALID", "version has an invalid format")
+    requested_root = Path(install_root).expanduser()
+    _reject_link_components(requested_root, "install root")
+    destination = requested_root.resolve()
+    version_path = _installed_version_path(destination, version)
+    _reject_link_components(version_path / "release-manifest.json", "installed version")
+    if not version_path.is_dir():
+        raise BootstrapInstallError("VERSION_MISSING", f"version is not installed: {version}")
+    try:
+        manifest = load_manifest(version_path / "release-manifest.json")
+    except (ManifestError, UnicodeError) as exc:
+        raise BootstrapInstallError("MANIFEST_INVALID", str(exc)) from exc
+    if manifest.version != version:
+        raise BootstrapInstallError("VERSION_CONFLICT", "installed manifest version does not match its directory")
+    verify_bundle(version_path, manifest)
+    return _activate(destination, manifest)
+
+
+def list_versions(install_root: Path | str) -> dict[str, Any]:
+    """List retained releases by directory mtime, excluding staging directories."""
+
+    destination = Path(install_root).expanduser()
+    _reject_link_components(destination, "install root")
+    pointer_path = destination / "current.json"
+    _reject_link_components(pointer_path, "current pointer")
+    current = None
+    if pointer_path.exists():
+        try:
+            pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+            current = pointer["current_version"]
+            if not isinstance(current, str) or not _VERSION.fullmatch(current):
+                raise ValueError("invalid current version")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise BootstrapInstallError("STATE_INVALID", "current pointer is unreadable or invalid") from exc
+    versions_path = destination / "versions"
+    _reject_link_components(versions_path, "versions directory")
+    entries = []
+    if versions_path.is_dir():
+        for path in versions_path.iterdir():
+            if path.name.startswith(".") or not _VERSION.fullmatch(path.name):
+                continue
+            _reject_link_components(path / "release-manifest.json", "installed version")
+            if not path.is_dir():
+                continue
+            try:
+                manifest = load_manifest(path / "release-manifest.json")
+            except (ManifestError, UnicodeError):
+                continue
+            if manifest.version != path.name:
+                continue
+            installed_at = path.stat().st_mtime
+            entries.append((installed_at, {
+                "version": manifest.version,
+                "channel": manifest.release_channel,
+                "installed_at_utc": datetime.fromtimestamp(installed_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+            }))
+    entries.sort(key=lambda item: (item[0], item[1]["version"]), reverse=True)
+    return {"current": current, "versions": [entry for _, entry in entries]}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bundle-root", type=Path, required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--bundle-root", type=Path)
+    mode.add_argument("--activate", metavar="VERSION")
+    mode.add_argument("--list", action="store_true")
     parser.add_argument("--install-root", type=Path, required=True)
     return parser
 
@@ -463,9 +541,15 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        print(json.dumps(install_bundle(args.bundle_root, args.install_root), ensure_ascii=False, sort_keys=True))
+        if args.activate is not None:
+            result = activate_version(args.install_root, args.activate)
+        elif args.list:
+            result = list_versions(args.install_root)
+        else:
+            result = install_bundle(args.bundle_root, args.install_root)
+        print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     except BootstrapInstallError as exc:
-        print(json.dumps({"ready": False, "code": exc.code, "message": exc.message}, ensure_ascii=False, sort_keys=True))
+        print(json.dumps({"ready": False, "code": exc.code, "message": exc.message}, ensure_ascii=True, sort_keys=True))
         return 2
     return 0
 
@@ -474,4 +558,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["BootstrapInstallError", "install_bundle", "main", "verify_bundle"]
+__all__ = ["BootstrapInstallError", "activate_version", "install_bundle", "list_versions", "main", "verify_bundle"]

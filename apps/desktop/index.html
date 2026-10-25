@@ -44,8 +44,20 @@
           </div>
         </div>
         <div class="sidebar-foot">
+          <div id="update-card" class="update-card" hidden>
+            <strong id="update-title">Có bản mới</strong>
+            <small id="update-detail"></small>
+            <div class="update-actions">
+              <button id="update-install" class="btn primary" type="button">Cập nhật</button>
+              <button id="update-later" class="link" type="button">Để sau</button>
+            </div>
+          </div>
           <div class="engine"><span class="dot"></span><span>Xử lý cục bộ · CPU</span></div>
-          <div class="version"><span id="release-version">—</span><span id="release-channel" class="tag"></span></div>
+          <div class="version">
+            <button id="release-version" class="link version-link" type="button" title="Các phiên bản đã cài">—</button>
+            <span id="release-channel" class="tag"></span>
+          </div>
+          <button id="update-check" class="link update-check" type="button">Kiểm tra cập nhật</button>
         </div>
       </aside>
 
@@ -330,6 +342,21 @@
           <button id="blur-all" class="btn" type="button">Áp dụng cho mọi video đang chờ</button>
           <button id="blur-apply" class="btn primary" type="button">Áp dụng cho video này</button>
         </footer>
+      </div>
+    </div>
+    <div id="versions-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="versions-title" hidden>
+      <div class="review-panel versions-panel">
+        <header class="review-head">
+          <div>
+            <h2 id="versions-title">Phiên bản đã cài</h2>
+            <p class="subtitle">Các bản cũ được giữ lại để có thể quay lại nếu bản mới gặp lỗi.</p>
+          </div>
+          <button id="versions-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <ul id="versions-list" class="versions-list"></ul>
+        <p id="versions-state" class="hint versions-state"></p>
       </div>
     </div>
     <div id="review" class="review" role="dialog" aria-modal="true" aria-labelledby="review-title" hidden>

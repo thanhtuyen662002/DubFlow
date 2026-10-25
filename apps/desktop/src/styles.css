@@ -384,6 +384,18 @@ h1, h2, h3, p { margin: 0; }
 .blur-loading[hidden] { display: none; }
 .blur-time { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: 13px; }
 .blur-time input { flex: 1; accent-color: var(--accent); }
+.update-card { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 10px; color: var(--text-2); background: var(--surface); }
+.update-card[hidden] { display: none; }
+.update-card strong { color: var(--text); font-size: 13px; }
+.update-card small { line-height: 1.4; }
+.update-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.update-actions .btn { height: 28px; }
+.version-link { padding: 0; color: var(--text-3); font-size: 12px; }
+.update-check { align-self: flex-start; padding: 0; font-size: 12px; }
+.versions-panel { width: min(520px, 100%); height: auto; }
+.versions-list { margin: 0; padding: 8px 20px; list-style: none; }
+.versions-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.versions-state { padding: 0 20px 16px; }
 .multi-voice-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .multi-voice-row[hidden] { display: none; }
 .multi-voice-row em.tag { margin-left: 6px; font-style: normal; font-size: 11px; }
