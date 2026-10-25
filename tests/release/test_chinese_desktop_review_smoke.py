@@ -109,9 +109,14 @@ class ReportValidationTests(unittest.TestCase):
 class ReviewContractTests(unittest.TestCase):
     def test_replayed_review_matches_the_host_contract(self) -> None:
         with TemporaryDirectory() as temporary:
-            output = Path(temporary)
-            (output / ".dubflow-work").mkdir()
-            (output / ".dubflow-work" / "translation.json").write_text(json.dumps({"cues": [
+            output = Path(temporary) / "clip - vi"
+            work = output / ".dubflow-work"
+            for name, body in (("tts-cache/a.wav", "tts"), ("b2-audio/x/y.wav", "mix"), ("export-pending/final_vi.mp4", "p")):
+                (work / name).parent.mkdir(parents=True, exist_ok=True)
+                (work / name).write_text(body)
+            (output / "final_vi.mp4").write_text("video")
+            (output / "job_manifest.json").write_text("{}")
+            (work / "translation.json").write_text(json.dumps({"cues": [
                 {"cue_id": "c1", "start_ms": 0, "end_ms": 900, "source_text": "你好", "translated_text": "Xin chào"},
                 {"cue_id": "c2", "start_ms": 900, "end_ms": 1800, "source_text": "谢谢", "translated_text": "Cảm ơn"},
             ]}, ensure_ascii=False), encoding="utf-8")
@@ -119,14 +124,25 @@ class ReviewContractTests(unittest.TestCase):
             for invalid in ({"c1": "  "}, {"": "x"}, {"c1": "x" * 2001}):
                 with self.subTest(invalid=invalid), self.assertRaises(smoke.SmokeError):
                     smoke.save_review(output, invalid)
-                self.assertFalse((output / smoke.OVERRIDES_FILE).exists())
-            self.assertEqual(smoke.save_review(output, {"c2": "Cám ơn nhiều"}), output)
-            stored = json.loads((output / smoke.OVERRIDES_FILE).read_text(encoding="utf-8"))
-            self.assertEqual(stored, {"schema_version": 1, "cues": {"c2": "Cám ơn nhiều"}})
-            cues = {cue["cue_id"]: cue for cue in smoke.review_cues(output)}
-            self.assertEqual((cues["c2"]["text"], cues["c2"]["edited"], cues["c1"]["edited"]), ("Cám ơn nhiều", True, False))
-            smoke.save_review(output, {})
+            self.assertEqual(sorted(path.name for path in output.parent.iterdir()), ["clip - vi"], "a rejected save creates nothing")
+
+            first = smoke.save_review(output, {"c2": "Cám ơn nhiều"})
+            self.assertEqual(first, output.parent / "clip - vi (sửa 1)")
             self.assertFalse((output / smoke.OVERRIDES_FILE).exists())
+            self.assertEqual((output / "final_vi.mp4").read_text(), "video")
+            self.assertEqual((first / ".dubflow-work" / "tts-cache" / "a.wav").read_text(), "tts")
+            self.assertFalse((first / ".dubflow-work" / "b2-audio").exists() or (first / ".dubflow-work" / "export-pending").exists())
+            stored = json.loads((first / smoke.OVERRIDES_FILE).read_text(encoding="utf-8"))
+            self.assertEqual(stored, {"schema_version": 1, "cues": {"c2": "Cám ơn nhiều"}})
+            link = json.loads((first / smoke.REVISION_OF_FILE).read_text(encoding="utf-8"))
+            self.assertEqual((link["original_output_dir"], link["original_manifest_sha256"]),
+                             (str(output), "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"))
+            cues = {cue["cue_id"]: cue for cue in smoke.review_cues(first)}
+            self.assertEqual((cues["c2"]["text"], cues["c2"]["edited"], cues["c1"]["edited"]), ("Cám ơn nhiều", True, False))
+            second = smoke.save_review(output, {})
+            self.assertEqual(second.name, "clip - vi (sửa 2)")
+            self.assertFalse((second / smoke.OVERRIDES_FILE).exists())
+            self.assertEqual(smoke.save_review(first, {}).name, "clip - vi (sửa 3)")
 
     def test_supervisor_command_matches_desktop_start_job_for_chinese(self) -> None:
         version, install, output = Path("V"), Path("I"), Path("O")

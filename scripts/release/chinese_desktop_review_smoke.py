@@ -2,10 +2,11 @@
 
 The production run uses the app-owned supervisor with the same arguments the
 desktop host's ``start_job`` passes, with explicit Chinese routing. The review
-step replays the host's ``review_cues``/``save_review`` file contract
-(``translation_overrides.json`` beside the outputs) and then starts the
-revision the way the desktop does: a new job id with the folder ``save_review``
-returned. The GUI itself is not driven, and the report says so.
+step replays the host's ``review_cues``/``save_review`` file contract (#273: a
+new sibling folder "<name> (sửa N)" holding a copy of the work cache, the
+reviewed text and ``revision_of.json``) and then starts the revision the way
+the desktop does: a new job id with the folder ``save_review`` returned. The
+GUI itself is not driven, and the report says so.
 
 The script never downloads media or models and never writes into the
 repository. Reports keep only placeholders for local paths.
@@ -20,6 +21,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -30,6 +32,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 VIDEO_SUFFIXES = frozenset({".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"})
 SIDECAR_SUFFIXES = frozenset({".srt", ".ass", ".ssa", ".vtt", ".lrc"})
 OVERRIDES_FILE = "translation_overrides.json"
+REVISION_OF_FILE = "revision_of.json"
+REVISION_SKIP = frozenset({"b2-audio", "export-pending"})
+REVISION_NAME = re.compile(r"^(?P<base>.*) \(sửa (?P<number>\d+)\)$")
 CJK = re.compile(r"[㐀-鿿]")
 VIETNAMESE = re.compile(r"[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]", re.IGNORECASE)
 ABSOLUTE_PATH = re.compile(r"(?i)(?:\b[a-z]:[\\/]|^\\\\|/(?:users|home|mnt)/)")
@@ -167,19 +172,41 @@ def review_cues(output_dir: Path) -> list[dict[str, Any]]:
     return cues
 
 
+def revision_dir(original: Path) -> Path:
+    match = REVISION_NAME.match(original.name)
+    base = match.group("base") if match else original.name
+    for number in range(1, 1000):
+        candidate = original.parent / f"{base} (sửa {number})"
+        if not candidate.exists():
+            return candidate
+    raise SmokeError("SAVE_REJECTED", "too many revisions")
+
+
 def save_review(output_dir: Path, overrides: dict[str, str]) -> Path:
-    """Python replay of the desktop host's ``save_review``: same validation, same file, same folder."""
+    """Python replay of the desktop host's ``save_review``: same validation, a new sibling folder."""
     if len(overrides) > 10_000 or any(not cue_id or len(cue_id) > 128 or not text.strip() or len(text) > 2000
                                       for cue_id, text in overrides.items()):
         raise SmokeError("SAVE_REJECTED", "invalid reviewed text: empty or longer than 2000 characters")
-    path = output_dir / OVERRIDES_FILE
-    if not overrides:
-        path.unlink(missing_ok=True)
-    else:
-        partial = output_dir / f"{OVERRIDES_FILE}.partial"
-        partial.write_text(json.dumps({"schema_version": 1, "cues": overrides}, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(partial, path)
-    return output_dir
+    target = revision_dir(output_dir)
+    partial = target.with_name(target.name + ".partial")
+    shutil.rmtree(partial, ignore_errors=True)
+    try:
+        shutil.copytree(output_dir / ".dubflow-work", partial / ".dubflow-work", symlinks=True,
+                        ignore=lambda directory, names: [name for name in names if Path(directory) == output_dir / ".dubflow-work"
+                                                         and name in REVISION_SKIP])
+        if overrides:
+            (partial / OVERRIDES_FILE).write_text(json.dumps({"schema_version": 1, "cues": overrides}, ensure_ascii=False, indent=2),
+                                                  encoding="utf-8")
+        manifest = output_dir / "job_manifest.json"
+        link = {"schema_version": 1, "original_output_dir": str(output_dir),
+                "original_manifest_sha256": "sha256:" + sha256_file(manifest) if manifest.is_file() else None,
+                "created_unix": int(time.time())}
+        (partial / REVISION_OF_FILE).write_text(json.dumps(link, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(partial, target)
+    except BaseException:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise
+    return target
 
 
 def supervisor_command(version: Path, install_root: Path, job_id: str, source: Path, output_dir: Path,
@@ -323,10 +350,12 @@ class Smoke:
         except SmokeError:
             rejected = True
         self.check("review: invalid save rejected without changes",
-                   rejected and not (output_dir / OVERRIDES_FILE).exists() and output_hashes(output_dir) == before)
+                   rejected and revision_dir(output_dir) == output_dir.parent / f"{output_dir.name} (sửa 1)"
+                   and not (output_dir / OVERRIDES_FILE).exists()
+                   and output_hashes(output_dir) == before and not any(path.name.endswith(".partial") for path in output_dir.parent.iterdir()))
         edited_text = target["machine_text"].rstrip(" .") + " (đã duyệt)"
         returned = save_review(output_dir, {target["cue_id"]: edited_text})
-        reopened = {cue["cue_id"]: cue for cue in review_cues(output_dir)}
+        reopened = {cue["cue_id"]: cue for cue in review_cues(returned)}
         self.check("review: retried save persisted the edit", reopened[target["cue_id"]]["text"] == edited_text
                    and reopened[target["cue_id"]]["edited"] is True, {"cue_id": target["cue_id"]})
         report["review"] = {"cues": len(cues), "edited_cue": target["cue_id"], "save_review_returned_same_folder": returned == output_dir}
@@ -336,7 +365,7 @@ class Smoke:
                           {"exit_code": second["exit_code"], "state": second["state"], "reason": second["reason"]}):
             return self.finish(report)
         revised = self.verify_output("revision", returned, version)
-        after = output_hashes(returned)
+        after = output_hashes(output_dir)
         srt = (returned / "captions_vi.srt").read_text(encoding="utf-8")
         self.check("revision: edited text in new captions", edited_text in srt)
         self.check("revision: provenance records reviewed overrides",
@@ -345,8 +374,14 @@ class Smoke:
                    {"revision_folder_is_original_folder": returned == output_dir})
         preserved = [name for name in PRIMARY_OUTPUTS if before[name] is not None and before[name] == after[name]]
         replaced = [name for name in PRIMARY_OUTPUTS if before[name] is not None and before[name] != after[name]]
-        self.check("revision: original validated output still available", before["final_vi.mp4"] == after["final_vi.mp4"],
+        self.check("revision: original validated output still available", not replaced and len(preserved) == len(PRIMARY_OUTPUTS),
                    {"unchanged": preserved, "replaced_in_place": replaced})
+        link_path = returned / REVISION_OF_FILE
+        link = json.loads(link_path.read_text(encoding="utf-8")) if link_path.is_file() else {}
+        self.check("revision: links back to the original output",
+                   Path(link.get("original_output_dir", "")) == output_dir
+                   and link.get("original_manifest_sha256") == "sha256:" + str(before["job_manifest.json"]),
+                   {"revision_of": bool(link)})
         return self.finish(report)
 
     def finish(self, report: dict[str, Any]) -> dict[str, Any]:

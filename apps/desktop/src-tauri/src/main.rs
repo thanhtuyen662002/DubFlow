@@ -661,27 +661,86 @@ fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
     }).collect()
 }
 
-/// Persist reviewed texts beside the outputs; an empty map removes the file.
-/// Returns the output directory so the caller can re-run the job in place.
+const REVISION_OF_FILE: &str = "revision_of.json";
+/// Work-cache entries every revision rebuilds; copying them would only cost disk.
+const REVISION_SKIP: [&str; 2] = ["b2-audio", "export-pending"];
+const REVISION_SUFFIX: &str = " (sửa ";
+
+/// "Clip - vi (sửa 2)" -> "Clip - vi", so revisions of revisions stay siblings.
+fn revision_base(name: &str) -> &str {
+    name.strip_suffix(')')
+        .and_then(|rest| rest.rfind(REVISION_SUFFIX).map(|index| (index, &rest[index + REVISION_SUFFIX.len()..])))
+        .filter(|(_, number)| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+        .map_or(name, |(index, _)| &name[..index])
+}
+
+/// The first unused sibling folder "<name> (sửa N)" for a review revision.
+fn revision_dir(original: &Path) -> Result<PathBuf, String> {
+    let parent = original.parent().ok_or_else(|| fail("output has no parent directory"))?;
+    let name = original.file_name().and_then(|name| name.to_str()).ok_or_else(|| fail("output folder name is not valid text"))?;
+    let base = revision_base(name);
+    (1..=999).map(|number| parent.join(format!("{base}{REVISION_SUFFIX}{number})")))
+        .find(|candidate| !candidate.exists())
+        .ok_or_else(|| fail("Video này đã có quá nhiều bản sửa"))
+}
+
+/// Copy the worker cache so a revision reuses transcription and translation;
+/// links are skipped so the copy never reaches outside the cache.
+fn copy_work_cache(from: &Path, to: &Path, skip: &[&str]) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let kind = entry.file_type()?;
+        if kind.is_symlink() || skip.iter().any(|skipped| name == *skipped) {
+            continue;
+        }
+        if kind.is_dir() {
+            copy_work_cache(&entry.path(), &to.join(&name), &[])?;
+        } else {
+            fs::copy(entry.path(), to.join(&name))?;
+        }
+    }
+    Ok(())
+}
+
+/// Prepare a separate folder for a review revision and return it. The original
+/// output folder is only read, so its validated outputs stay as they were.
+fn create_revision(original: &Path, overrides: &std::collections::BTreeMap<String, String>) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    let target = revision_dir(original)?;
+    let partial = target.with_file_name(format!("{}.partial", target.file_name().unwrap_or_default().to_string_lossy()));
+    let _ = fs::remove_dir_all(&partial);
+    let build = || -> Result<(), String> {
+        copy_work_cache(&original.join(".dubflow-work"), &partial.join(".dubflow-work"), &REVISION_SKIP)
+            .map_err(|error| fail(format!("Không chép được dữ liệu bản dịch: {error}")))?;
+        if !overrides.is_empty() {
+            let body = serde_json::to_vec_pretty(&json!({"schema_version": 1, "cues": overrides})).map_err(|error| fail(error.to_string()))?;
+            fs::write(partial.join(OVERRIDES_FILE), body).map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))?;
+        }
+        let manifest = fs::read(original.join("job_manifest.json")).ok()
+            .map(|bytes| format!("sha256:{:x}", Sha256::digest(bytes)));
+        let created = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| fail(error.to_string()))?.as_secs();
+        let link = json!({"schema_version": 1, "original_output_dir": display_path(original),
+            "original_manifest_sha256": manifest, "created_unix": created});
+        fs::write(partial.join(REVISION_OF_FILE), serde_json::to_vec_pretty(&link).map_err(|error| fail(error.to_string()))?)
+            .map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))?;
+        fs::rename(&partial, &target).map_err(|error| fail(format!("Không tạo được thư mục bản sửa: {error}")))
+    };
+    build().inspect_err(|_| { let _ = fs::remove_dir_all(&partial); })?;
+    Ok(target)
+}
+
+/// Save reviewed texts into a new sibling folder "<name> (sửa N)" and return
+/// it; the caller re-runs the job there. An empty map re-runs the machine text.
 #[tauri::command]
 fn save_review(output_path: String, overrides: std::collections::BTreeMap<String, String>) -> Result<String, String> {
     let dir = review_dir(&output_path)?;
-    let path = dir.join(OVERRIDES_FILE);
     if overrides.len() > 10_000 || overrides.iter().any(|(id, text)| id.is_empty() || id.len() > 128
         || text.trim().is_empty() || text.chars().count() > 2000) {
         return Err(fail("Câu sửa không hợp lệ: không được để trống hoặc dài quá 2000 ký tự"));
     }
-    if overrides.is_empty() {
-        if path.is_file() {
-            fs::remove_file(&path).map_err(|error| fail(format!("Không xóa được bản sửa: {error}")))?;
-        }
-    } else {
-        let temporary = dir.join(format!("{OVERRIDES_FILE}.partial"));
-        let body = serde_json::to_vec_pretty(&json!({"schema_version": 1, "cues": overrides})).map_err(|error| fail(error.to_string()))?;
-        fs::write(&temporary, body).and_then(|_| fs::rename(&temporary, &path))
-            .map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))?;
-    }
-    Ok(display_path(&dir))
+    Ok(display_path(&create_revision(&dir, &overrides)?))
 }
 
 #[derive(Debug, Serialize)]
@@ -971,6 +1030,58 @@ mod tests {
         }
         assert!(webview_data_root(&local, &"x".repeat(65)).is_err());
         assert!(webview_data_root(&local, &"x".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn review_revisions_go_to_new_sibling_folders_and_leave_the_original_untouched() {
+        let root = std::env::temp_dir().join(format!("dubflow-revision-{}", std::process::id())).join("DubFlow Output");
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+        let original = root.join("clip - vi");
+        let files = [("final_vi.mp4", "video"), ("captions_vi.srt", "srt"), ("job_manifest.json", "{}"),
+            (".dubflow-work/translation.json", "{\"cues\": []}"), (".dubflow-work/checkpoint.json", "{}"),
+            (".dubflow-work/tts-cache/a.wav", "tts"), (".dubflow-work/b2-audio/x/y.wav", "mix"),
+            (".dubflow-work/export-pending/final_vi.mp4", "pending")];
+        for (path, body) in files {
+            fs::create_dir_all(original.join(path).parent().unwrap()).unwrap();
+            fs::write(original.join(path), body).unwrap();
+        }
+        // Outputs are canonicalized (long names, no `\\?\`), so compare against the same spelling.
+        let root = PathBuf::from(display_path(&fs::canonicalize(&root).unwrap()));
+        let original = root.join("clip - vi");
+        let snapshot =|dir: &Path| files.map(|(path, _)| fs::read(dir.join(path)).ok());
+        let before = snapshot(&original);
+        let output = original.join("final_vi.mp4").to_string_lossy().into_owned();
+        let overrides = std::collections::BTreeMap::from([("c1".to_owned(), "Xin chào".to_owned())]);
+
+        assert!(save_review(output.clone(), std::collections::BTreeMap::from([("c1".to_owned(), "  ".to_owned())])).is_err());
+        assert!(!root.join("clip - vi (sửa 1)").exists(), "a rejected save creates nothing");
+
+        let first = PathBuf::from(save_review(output.clone(), overrides.clone()).unwrap());
+        assert_eq!(first, root.join("clip - vi (sửa 1)"));
+        assert_eq!(snapshot(&original), before, "the original outputs are byte-identical");
+        assert!(!original.join(OVERRIDES_FILE).exists());
+        assert_eq!(fs::read_to_string(first.join(".dubflow-work/tts-cache/a.wav")).unwrap(), "tts");
+        assert!(first.join(".dubflow-work/translation.json").is_file() && first.join(".dubflow-work/checkpoint.json").is_file());
+        assert!(!first.join(".dubflow-work/b2-audio").exists() && !first.join(".dubflow-work/export-pending").exists());
+        assert!(!first.join("final_vi.mp4").exists(), "the revision renders its own output");
+        let stored: Value = serde_json::from_slice(&fs::read(first.join(OVERRIDES_FILE)).unwrap()).unwrap();
+        assert_eq!(stored, json!({"schema_version": 1, "cues": {"c1": "Xin chào"}}));
+        let link: Value = serde_json::from_slice(&fs::read(first.join(REVISION_OF_FILE)).unwrap()).unwrap();
+        assert_eq!(link["original_output_dir"], display_path(&original));
+        assert_eq!(link["original_manifest_sha256"], "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+
+        assert_eq!(PathBuf::from(save_review(output, std::collections::BTreeMap::new()).unwrap()), root.join("clip - vi (sửa 2)"));
+        assert!(!root.join("clip - vi (sửa 2)").join(OVERRIDES_FILE).exists());
+        fs::write(first.join("final_vi.mp4"), "revised").unwrap();
+        let again = save_review(first.join("final_vi.mp4").to_string_lossy().into_owned(), overrides).unwrap();
+        assert_eq!(PathBuf::from(again), root.join("clip - vi (sửa 3)"), "a revision of a revision stays a sibling");
+        assert!(root.read_dir().unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().ends_with(".partial")));
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
+
+        assert_eq!(revision_base("clip - vi (sửa 12)"), "clip - vi");
+        for name in ["clip - vi", "clip (sửa )", "clip (sửa x)", "clip (sửa 1) extra", "(sửa 1)x"] {
+            assert_eq!(revision_base(name), name);
+        }
     }
 
     #[test]
