@@ -79,6 +79,8 @@ The harness replay was updated to that contract, and the same real video was run
 
 The revision took about half the production time because it reused the copied transcription, translation and TTS cache. The undubbed-cue finding is unchanged (45/124, `DURATION_FIT_REQUIRED`).
 
+Follow-up (#273, S5): the first fix removed any existing `<target>.partial` folder before building, which could delete a user's folder or another save in progress. Each save now creates its own uniquely named temporary folder with a create-only call. It removes only that folder on failure, and it never moves onto an existing name. Sentinel tests cover this in the Rust host and the harness. The same real video re-run (2026-10-25 16:41:56Z – 16:46:13Z) passed 31/31 checks: production took 194.7 s and the revision 60.6 s, and no temporary folder was left behind.
+
 ## Not run
 
 - **Desktop GUI**: the review/revision was exercised through the host's file contract, not by clicking the WebView UI.
