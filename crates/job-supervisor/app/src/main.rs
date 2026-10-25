@@ -371,6 +371,8 @@ struct StartSpec {
     multi_voice: bool,
     /// Speaker id ("S1".."S8") -> voice id chosen by the user.
     speaker_voices: Option<Value>,
+    /// Experimental: keep the music/effects, remove the original voices.
+    separate_background: bool,
 }
 
 impl StartSpec {
@@ -423,6 +425,7 @@ impl StartSpec {
             blur_auto: false,
             multi_voice: false,
             speaker_voices: None,
+            separate_background: false,
         })
     }
     fn with_voice_id(mut self, voice_id: Option<String>) -> SupervisorResult<Self> {
@@ -467,6 +470,10 @@ impl StartSpec {
         }
         self.speaker_voices = value.as_object().filter(|map| !map.is_empty()).map(|_| value.clone());
         Ok(self)
+    }
+    fn with_separate_background(mut self, separate_background: bool) -> Self {
+        self.separate_background = separate_background;
+        self
     }
     fn with_blur_auto(mut self, blur_auto: bool) -> Self {
         self.blur_auto = blur_auto;
@@ -552,6 +559,9 @@ impl StartSpec {
         }
         if let Some(voices) = &self.speaker_voices {
             request["speaker_voices"] = voices.clone();
+        }
+        if self.separate_background {
+            request["separate_background"] = json!(true);
         }
         Ok(serde_json::to_string(&request)?)
     }
@@ -688,6 +698,7 @@ enum CliMode {
         blur_auto: bool,
         multi_voice: bool,
         speaker_voices: Option<String>,
+        separate_background: bool,
     },
     Cancel {
         root: Option<PathBuf>,
@@ -735,6 +746,7 @@ fn run() -> SupervisorResult<()> {
             blur_auto,
             multi_voice,
             speaker_voices,
+            separate_background,
         } => {
             return run_one_shot(
                 root,
@@ -755,6 +767,7 @@ fn run() -> SupervisorResult<()> {
                 blur_auto,
                 multi_voice,
                 speaker_voices,
+                separate_background,
             );
         }
         CliMode::Cancel {
@@ -848,6 +861,7 @@ where
             let mut blur_auto = false;
             let mut multi_voice = false;
             let mut speaker_voices = None;
+            let mut separate_background = false;
             let mut burn_in_subtitles = true;
             while let Some(arg) = args.next() {
                 match arg.to_string_lossy().as_ref() {
@@ -884,6 +898,7 @@ where
                     }
                     "--blur-auto" => blur_auto = true,
                     "--multi-voice" => multi_voice = true,
+                    "--separate-background" => separate_background = true,
                     "--speaker-voices" => {
                         speaker_voices = Some(next_arg(&mut args, "--speaker-voices")?)
                     }
@@ -920,6 +935,7 @@ where
                 blur_auto,
                 multi_voice,
                 speaker_voices,
+                separate_background,
             }
         }
         Some("cancel") => {
@@ -1050,6 +1066,7 @@ fn run_one_shot(
     blur_auto: bool,
     multi_voice: bool,
     speaker_voices: Option<String>,
+    separate_background: bool,
 ) -> SupervisorResult<()> {
     let root = match root {
         Some(root) => root,
@@ -1071,7 +1088,8 @@ fn run_one_shot(
         Some(burn_in_subtitles),
     )?.with_voice_id(tts_voice_id)?.with_subtitle_box(subtitle_box)
     .with_translation_engine(translation_engine)?.with_blur_regions(blur_regions)?
-    .with_blur_auto(blur_auto).with_multi_voice(multi_voice, speaker_voices)?;
+    .with_blur_auto(blur_auto).with_multi_voice(multi_voice, speaker_voices)?
+    .with_separate_background(separate_background);
     // Keep the kernel lease through the final status write. A duplicate must
     // not change SQL/status, reconcile artifacts or start another worker.
     let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
@@ -2217,6 +2235,9 @@ fn run_worker_attempt(
     if let Some(voices) = &spec.speaker_voices {
         args["speaker_voices"] = voices.clone();
     }
+    if spec.separate_background {
+        args["separate_background"] = json!(true);
+    }
     let args_json = serde_json::to_string(&args)?;
     let command = Envelope::new(
         MessageType::Command,
@@ -2706,7 +2727,7 @@ mod tests {
         let runtime = RuntimePaths { root:root.clone(), app_root:root.join("app"), python:root.join("python.exe"), worker_script:root.join("worker.py"),
             ffmpeg:root.join("ffmpeg.exe"), ffprobe:root.join("ffprobe.exe"), model_root:root.join("models"), db:root.join("state.sqlite") };
         let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
-            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None };
+            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false };
         (root, runtime, spec)
     }
 
@@ -2862,6 +2883,9 @@ mod tests {
             assert!(spec.clone().with_multi_voice(true, Some(invalid.into())).is_err(), "{invalid}");
         }
         assert!(!spec.clone().with_multi_voice(false, None).unwrap().durable_request(&runtime).unwrap().contains("multi_voice"));
+        assert!(!spec.durable_request(&runtime).unwrap().contains("separate_background"));
+        let separated: Value = serde_json::from_str(&spec.clone().with_separate_background(true).durable_request(&runtime).unwrap()).unwrap();
+        assert_eq!(separated["separate_background"], true);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3142,7 +3166,7 @@ mod tests {
         let spec = StartSpec {
             job_id:"test".into(), source_path:PathBuf::from("source"), output_dir:PathBuf::from("output"),
             source_language:"auto".into(), target_language:"vi".into(), enable_dubbing:true,
-            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None,
+            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false,
         };
         for invalid in ["", "../escape", "Unknown", "a\nb", &"a".repeat(97)] {
             assert!(spec.clone().with_voice_id(Some(invalid.into())).is_err());

@@ -65,6 +65,7 @@ const inspector = $("#inspector");
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const multiVoiceToggle = $<HTMLInputElement>("#multi-voice");
+const separateToggle = $<HTMLInputElement>("#separate-background");
 const burnInToggle = $<HTMLInputElement>("#burn-in");
 const sourceLanguageSelect = $<HTMLSelectElement>("#source-language");
 const translationEngineSelect = $<HTMLSelectElement>("#translation-engine");
@@ -174,6 +175,8 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   dubbingToggle.checked = job?.dubbing.enabled ?? false;
   multiVoiceToggle.checked = job?.multiVoice ?? false;
   $("#multi-voice-row").hidden = !dubbingToggle.checked;
+  separateToggle.checked = job?.separateBackground ?? false;
+  $("#separate-row").hidden = !dubbingToggle.checked;
   burnInToggle.checked = job?.burnIn ?? true;
   const blurMode = job?.blurAuto ? "auto" : job?.blurRegions?.length ? "manual" : "off";
   // "Thủ công" stays selected while the user has not drawn a region yet.
@@ -375,7 +378,7 @@ function beginPolling(jobId: string): void {
 // The last options the user chose become the defaults for newly added videos,
 // so a batch needs its dubbing/voice/burn-in set once (per-viewer convenience).
 const DEFAULTS_KEY = "dubflow.defaults.v1";
-type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[]; blurAuto?: true; multiVoice?: true };
+type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[]; blurAuto?: true; multiVoice?: true; separateBackground?: true };
 
 function readDefaults(): JobDefaults | null {
   try {
@@ -386,7 +389,8 @@ function readDefaults(): JobDefaults | null {
       translationEngine: value.translationEngine === "hachimi" ? "hachimi" : undefined,
       blurRegions: isBlurRegionList(value.blurRegions) ? value.blurRegions : undefined,
       blurAuto: value.blurAuto === true ? true : undefined,
-      multiVoice: value.multiVoice === true ? true : undefined };
+      multiVoice: value.multiVoice === true ? true : undefined,
+      separateBackground: value.separateBackground === true ? true : undefined };
   } catch {
     return null;
   }
@@ -396,7 +400,8 @@ function rememberDefaults(job: QueueJob): void {
   try {
     window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
       burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, translationEngine: job.translationEngine,
-      blurRegions: job.blurRegions, blurAuto: job.blurAuto, multiVoice: job.multiVoice }));
+      blurRegions: job.blurRegions, blurAuto: job.blurAuto, multiVoice: job.multiVoice,
+      separateBackground: job.separateBackground }));
   } catch {
     // Defaults are a convenience; the queue works without storage.
   }
@@ -412,6 +417,7 @@ function applyDefaults(jobIds: readonly string[]): void {
       if (defaults.blurRegions) queue.setBlurRegions(id, defaults.blurRegions);
       if (defaults.blurAuto) queue.setBlurAuto(id, true);
       if (defaults.multiVoice) queue.setMultiVoice(id, true);
+      if (defaults.separateBackground) queue.setSeparateBackground(id, true);
       if (defaults.translationEngine) queue.setTranslationEngine(id, defaults.translationEngine);
       if (defaults.dubbing && voiceCatalog) {
         const known = voiceCatalog.voices.some((voice) => voice.voice_id === defaults.voiceId);
@@ -543,6 +549,7 @@ async function startJob(job: QueueJob): Promise<void> {
       translationEngine: job.translationEngine ?? "argos", blurRegions: job.blurRegions ?? null,
       blurAuto: job.blurAuto ?? false,
       multiVoice: job.multiVoice ?? false, speakerVoices: job.speakerVoices ?? null,
+      separateBackground: job.separateBackground ?? false,
     });
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
@@ -1250,6 +1257,12 @@ burnInToggle.addEventListener("change", () => {
     queue.setBurnIn(job.id, burnInToggle.checked);
     rememberDefaults(selectedJob() ?? job);
   }
+});
+separateToggle.addEventListener("change", () => {
+  const job = selectedJob();
+  if (!job) return;
+  queue.setSeparateBackground(job.id, separateToggle.checked);
+  rememberDefaults(selectedJob() ?? job);
 });
 multiVoiceToggle.addEventListener("change", () => {
   const job = selectedJob();

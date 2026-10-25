@@ -15,6 +15,7 @@ from hashlib import sha256
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import tempfile
 import wave
@@ -103,6 +104,7 @@ class B2AudioResult:
     tts_documents: tuple[TtsDocument, ...] = ()
     tts_document_paths: tuple[Path, ...] = ()
     spoken_text_document_paths: tuple[Path, ...] = ()
+    background_stem_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.voices:
@@ -124,7 +126,13 @@ class B2AudioResult:
 
     @property
     def original_audio_path(self) -> Path:
+        if self.background_stem_path is not None:
+            return self.source_audio_path
         return Path(self.mix_document.original_audio.path)
+
+    @property
+    def bed(self) -> str:
+        return "spleeter-2stems" if self.background_stem_path is not None else "source"
 
 
 def _input_hash(cues: Sequence[Mapping[str, Any]]) -> str:
@@ -351,6 +359,7 @@ def run_b2_audio(
     tts_voice_id: str | None = None,
     synthesis_cache_dir: str | Path | None = None,
     voice_by_cue: Mapping[str, str] | None = None,
+    background_path: str | Path | None = None,
 ) -> B2AudioResult:
     """Execute TTS/AUD-0; optional VieNeu casting keeps per-voice provenance.
 
@@ -503,12 +512,18 @@ def run_b2_audio(
                         confidence=item["confidence"],
                     )
                 )
+        background_stem_path = None
+        if background_path is not None:
+            # A generation retains its own immutable bed even when the optional
+            # analysis stage later regenerates work_dir/separation/background.wav.
+            background_stem_path = root / "background_stem.wav"
+            shutil.copyfile(background_path, background_stem_path)
         source = FileSource(
-            source_audio_path,
+            background_stem_path or source_audio_path,
             start=TimePoint(0, BASE_TIME),
             end=TimePoint(source_end_ticks, BASE_TIME),
             source_id=Path(source_path).name,
-            layout="generated-silence-stereo" if silence_duration is not None else "stereo-source",
+            layout="stereo-accompaniment" if background_stem_path is not None else "generated-silence-stereo" if silence_duration is not None else "stereo-source",
         )
         mixer = StreamingAudioMixer(
             config=MixConfig(
@@ -523,6 +538,8 @@ def run_b2_audio(
             input_hash="sha256:" + sha256(b"".join(document.to_bytes() for document in documents)).hexdigest(),
         )
     except Exception as error:
+        if background_path is not None:
+            raise B2AudioError("SEPARATION_BED_FAILED", getattr(error, "condition", str(error))) from error
         code = getattr(error, "code", "AUDIO_MIX_FAILED")
         condition = getattr(error, "condition", str(error))
         raise B2AudioError(code, condition, retryable=bool(getattr(error, "retryable", False))) from error
@@ -536,7 +553,7 @@ def run_b2_audio(
     except OSError as error:
         raise B2AudioError("MIX_ARTIFACT_WRITE_FAILED", str(error), retryable=True) from error
     return B2AudioResult(source_audio_path, tts_document_path, mix_document_path, tts_document, mix_document, primary_voice, placement_document_path, spoken_text_document_path,
-                         tuple(groups), tuple(documents), tuple(document_paths), tuple(spoken_paths))
+                         tuple(groups), tuple(documents), tuple(document_paths), tuple(spoken_paths), background_stem_path)
 
 
 __all__ = ["B2AudioError", "B2AudioResult", "BASE_TIME", "run_b2_audio", "mix_recipe_identity"]

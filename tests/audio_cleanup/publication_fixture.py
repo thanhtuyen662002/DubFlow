@@ -6,6 +6,9 @@ import sys
 import threading
 from unittest.mock import patch
 
+# Run by file path so an installed package named tests cannot shadow this helper.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from engine.dubflow.separation import CpuAttenuationBackend, load_current
 from engine.dubflow.separation import publication
 

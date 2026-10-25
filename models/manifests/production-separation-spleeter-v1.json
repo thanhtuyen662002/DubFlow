@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-spleeter-2stems-v1",
+  "distribution": "download-on-opt-in",
+  "license": "MIT (Deezer) + Apache-2.0 (sherpa-onnx export)",
+  "license_policy": "redistributed unchanged with notice, see docs/licenses/spleeter.md",
+  "upstream": {"repository": "https://github.com/deezer/spleeter", "export": "https://github.com/k2-fsa/sherpa-onnx"},
+  "model_dir": "separation/spleeter-2stems-v1",
+  "artifacts": [
+    {"id": "spleeter-vocals", "path": "separation/spleeter-2stems-v1/spleeter-2stems-vocals.onnx", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-spleeter-2stems-v1/spleeter-2stems-vocals.onnx", "sha256": "bdc16ab6bf6117ddd4842c19e80e40e2be188fc555295064d424616b0224ac97", "size_bytes": 39318336},
+    {"id": "spleeter-accompaniment", "path": "separation/spleeter-2stems-v1/spleeter-2stems-accompaniment.onnx", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-spleeter-2stems-v1/spleeter-2stems-accompaniment.onnx", "sha256": "671ace17acd3720674a2bc14de32ac6292453dec20d9eb0ba4255d4ad8e3d8c0", "size_bytes": 39318343},
+    {"id": "spleeter-notice", "path": "separation/spleeter-2stems-v1/NOTICE-spleeter.md", "url": "https://github.com/thanhtuyen662002/DubFlow/releases/download/model-spleeter-2stems-v1/NOTICE-spleeter.md", "sha256": "5da4d1b0b901b34d34e61f6fc4fc24deb150d227b4bef16fcd37e80d21dc6112", "size_bytes": 782}
+  ]
+}

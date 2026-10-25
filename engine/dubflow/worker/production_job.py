@@ -160,6 +160,7 @@ class WorkerConfig:
     checkpoint_path: Path | None = None
     multi_voice: bool = False
     speaker_voices: Mapping[str, str] = field(default_factory=dict)
+    separate_background: bool = False
 
     @classmethod
     def from_args(cls, args: Mapping[str, Any]) -> "WorkerConfig":
@@ -230,6 +231,7 @@ class WorkerConfig:
             checkpoint_path=optional_path("checkpoint_path"),
             multi_voice=optional_bool("multi_voice", False),
             speaker_voices=dict(speaker_voices),
+            separate_background=optional_bool("separate_background", False),
         )
         if config.target_language != "vi":
             raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the production baseline currently supports Vietnamese output only")
@@ -871,6 +873,7 @@ def _write_manifest(
     translation: Mapping[str, Any] | None = None,
     asr: Mapping[str, Any] | None = None,
     speakers: Sequence[Mapping[str, Any]] | None = None,
+    background: Mapping[str, Any] | None = None,
 ) -> Path:
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -895,14 +898,74 @@ def _write_manifest(
         manifest["asr"] = dict(asr)
     if speakers is not None:
         manifest["speakers"] = list(speakers)
+    if background is not None:
+        manifest["background"] = dict(background)
     path = output_dir / "job_manifest.json"
     _atomic_json(path, manifest)
     return path
 
 
 OCR_PROFILE_PATH = "models/manifests/production-ocr-det-v1.json"
+SEPARATION_PROFILE_PATH = "models/manifests/production-separation-spleeter-v1.json"
 SPEAKER_PROFILE_PATH = "models/manifests/production-speaker-campplus-v1.json"
 SPEAKER_THRESHOLD = 0.3
+
+
+def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: MediaProbeResult,
+                               media: FfmpegMediaAdapter, work_dir: Path, checkpoint: dict[str, Any],
+                               checkpoint_path: Path, emitter: Any, warnings: list[str]):
+    """Opt-in analysis; source-video origin and the B2 PCM format are retained."""
+    try:
+        from engine.dubflow.separation import spleeter
+        from engine.dubflow.tts.neural_vits import _child, _read_json
+
+        profile_path = config.app_root / SEPARATION_PROFILE_PATH
+        profile = _read_json(profile_path)
+        selector = _read_json(config.app_root / "models/manifests/production-cpu-v1.json")
+        voice_profile = _read_json(_child(config.app_root, selector.get("tts_neural_profile", "")))
+        rate = voice_profile["sample_rate"]
+        if type(rate) is not int or not 8000 <= rate <= 96000:
+            raise ValueError("invalid B2 PCM sample rate")
+        identity = "sha256:" + sha256(json.dumps({"source": source_hash,
+            "audio": _audio_decode_identity(source_hash, probe), "sample_rate": rate, "channels": 2,
+            "ffmpeg": _sha256(config.ffmpeg_path), "profile": _sha256(profile_path),
+            "adapter": _sha256(Path(spleeter.__file__))}, sort_keys=True).encode()).hexdigest()
+        directory = work_dir / "separation"
+        background_path = directory / "background.wav"
+        source_audio = directory / "source_audio.wav"
+        emitter.progress(0.68, "Đang tách nhạc nền khỏi giọng gốc (thử nghiệm)")
+        stage = checkpoint.get("stages", {}).get("separation", {})
+        if _stage_ready(checkpoint, "separation", (background_path,)) and stage.get("input_hash") == identity:
+            metrics = dict(stage["metrics"])
+            if metrics.get("backend") != spleeter.BACKEND or any(
+                type(metrics.get(key)) not in (int, float) or not math.isfinite(metrics[key])
+                for key in ("seconds", "source_rms_db", "background_rms_db", "removed_db", "peak")
+            ) or not 0 <= metrics["peak"] <= .999:
+                raise ValueError("invalid separation checkpoint metrics")
+        else:
+            directory.mkdir(parents=True, exist_ok=True)
+            ensure_model_profile(profile_path, config.model_root,
+                progress=lambda *_: emitter.progress(0.68, "Đang tách nhạc nền khỏi giọng gốc (thử nghiệm)"))
+            # Same B2 extraction recipe (including leading gaps and video origin).
+            # Independent analysis avoids introducing an optional model into TTS.
+            media.extract_audio(config.source_path, source_audio, sample_rate=rate, channels=2,
+                                video_stream=probe.video, overwrite=True)
+            metrics = spleeter.separate_background(source_audio, background_path,
+                model_dir=_child(config.model_root, profile["model_dir"]), ffmpeg_path=config.ffmpeg_path,
+                progress=lambda fraction: emitter.progress(0.68 + .01 * fraction,
+                    "Đang tách nhạc nền khỏi giọng gốc (thử nghiệm)"))
+            _write_stage(checkpoint, checkpoint_path, "separation", {"path": str(background_path),
+                "sha256": _sha256(background_path), "input_hash": identity, "metrics": metrics,
+                "profile_sha256": _sha256(profile_path), "adapter_sha256": _sha256(Path(spleeter.__file__))})
+        emitter.checkpoint("separation", _sha256(background_path))
+        return background_path, {"mode": "spleeter-2stems", **metrics, "input_hash": identity,
+                                 "profile_sha256": _sha256(profile_path)}
+    except Exception as error:
+        code = getattr(error, "code", type(error).__name__)
+        condition = getattr(error, "condition", getattr(error, "detail", str(error)))
+        condition = " ".join(str(condition).replace("\x00", " ").split())[:300]
+        warnings.append(f"SEPARATION_SKIPPED: {code}: {condition}")
+        return None, {"mode": "original"}
 
 
 def _multi_voice_cast(config: WorkerConfig, source_hash: str, cues: Sequence[TextCue], probe: MediaProbeResult,
@@ -1194,30 +1257,52 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     b2_audio: B2AudioResult | None = None
     audio_path: Path | None = None
     audio_metadata: dict[str, Any] = {"mode": "original", "backend": "source-audio"}
+    background_path, background_summary = None, {"mode": "original"}
+    if config.enable_dubbing and getattr(config, "separate_background", False) and probe.has_audio:
+        background_path, background_summary = _separate_background_stage(config, source_hash, probe, media,
+            work_dir, checkpoint, checkpoint_path, emitter, warnings)
     if config.enable_dubbing:
         emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
         try:
             from engine.dubflow.worker.b2_audio import tts_recipe_identity, mix_recipe_identity
             selected_voice = getattr(config, "tts_voice_id", None)
             def dub(cue_voices):
+                nonlocal background_path, background_summary
                 casting_identity = json.dumps({"casting": casting, "voice_by_cue": cue_voices}, sort_keys=True) if cue_voices is not None else ""
-                generation_identity = sha256((translation_input + (overrides_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice) + casting_identity).encode()).hexdigest()
-                return run_b2_audio(
-                    media=media,
-                    source_path=config.source_path,
-                    source_probe=probe,
-                    translated_cues=translated,
-                    source_language=transcript.source_language,
-                    app_root=config.app_root,
-                    profile_path=profile_path,
-                    work_dir=_b2_generation(checkpoint, checkpoint_path, work_dir, config.output_dir.absolute(), generation_identity),
-                    model_root=config.model_root,
-                    tts_voice_id=selected_voice,
-                    # Shared by every generation in this output folder, so a reviewed
-                    # re-run synthesises only the cues whose request changed.
-                    synthesis_cache_dir=work_dir / "tts-cache",
-                    **({"voice_by_cue": cue_voices} if cue_voices is not None else {}),
-                )
+                bed_hash = None
+                if background_path is not None:
+                    try:
+                        bed_hash = _sha256(background_path)
+                    except ProductionJobError as error:
+                        warnings.append(f"SEPARATION_SKIPPED: {error.code}: {error.condition}")
+                        background_path, background_summary = None, {"mode": "original"}
+                bed_identity = json.dumps({"requested": True, "mode": background_summary["mode"],
+                    "input_hash": background_summary.get("input_hash"), "sha256": bed_hash}, sort_keys=True) if getattr(config, "separate_background", False) else ""
+                generation_identity = sha256((translation_input + (overrides_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice) + casting_identity + bed_identity).encode()).hexdigest()
+                try:
+                    return run_b2_audio(
+                        media=media,
+                        source_path=config.source_path,
+                        source_probe=probe,
+                        translated_cues=translated,
+                        source_language=transcript.source_language,
+                        app_root=config.app_root,
+                        profile_path=profile_path,
+                        work_dir=_b2_generation(checkpoint, checkpoint_path, work_dir, config.output_dir.absolute(), generation_identity),
+                        model_root=config.model_root,
+                        tts_voice_id=selected_voice,
+                        # Shared by every generation in this output folder, so a reviewed
+                        # re-run synthesises only the cues whose request changed.
+                        synthesis_cache_dir=work_dir / "tts-cache",
+                        **({"voice_by_cue": cue_voices} if cue_voices is not None else {}),
+                        **({"background_path": background_path} if background_path is not None else {}),
+                    )
+                except B2AudioError as error:
+                    if background_path is None or error.code != "SEPARATION_BED_FAILED":
+                        raise
+                    warnings.append(f"SEPARATION_SKIPPED: {error.code}: {error.condition}")
+                    background_path, background_summary = None, {"mode": "original"}
+                    return dub(cue_voices)  # One changed-condition retry with AUD-0.
 
             try:
                 b2_audio = dub(voice_by_cue)
@@ -1246,6 +1331,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 "tts_failures": sum(len(document.failures) for document in tts_documents),
                 "mix_failures": len(b2_audio.mix_document.failures),
                 "mix_warnings": list(b2_audio.mix_document.warnings),
+                "bed": "spleeter-2stems" if background_path is not None else "source",
             }
             if voice_by_cue is not None:
                 audio_metadata["voices"] = list(b2_audio.voices)
@@ -1268,6 +1354,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                     "mix_document": str(b2_audio.mix_document_path),
                     "final_mix": str(b2_audio.final_mix_path),
                     "dialogue_stem": str(b2_audio.dialogue_stem_path),
+                    "bed": audio_metadata["bed"],
                     "sha256": _sha256(b2_audio.final_mix_path),
                 },
             )
@@ -1385,16 +1472,21 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         validate_output(output_probe)
         _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original", "input_hash": render_identity()})
     output_duration = output_probe.duration_ticks
+    if b2_audio is None:
+        background_summary = {"mode": "original"}
     qc_path = export_dir / "qc_report.json"
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata,
           **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions)}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if speaker_summary is not None:
         qc["speakers"] = speaker_summary
+    qc["background"] = background_summary
     _atomic_json(qc_path, qc)
     editable_dir = export_dir / "editable"
     editable_names = {"captions_vi.srt", "captions_vi.ass", "timeline.json"}
     if b2_audio is not None:
         editable_names.update({"source_audio.wav", "dialogue_stem.wav", "final_mix.wav"})
+        if getattr(b2_audio, "background_stem_path", None) is not None:
+            editable_names.add("background_stem.wav")
         if b2_audio.placement_document_path is not None:
             editable_names.add("dubbing_placement.json")
         if b2_audio.spoken_text_document_path is not None:
@@ -1412,10 +1504,12 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     editable_audio: list[tuple[Path, str, str]] = []
     if b2_audio is not None:
         editable_audio = [
-            (b2_audio.original_audio_path, "source_audio.wav", b2_audio.mix_document.original_audio.content_hash),
+            (b2_audio.original_audio_path, "source_audio.wav", _sha256(b2_audio.original_audio_path) if background_path is not None else b2_audio.mix_document.original_audio.content_hash),
             (b2_audio.dialogue_stem_path, "dialogue_stem.wav", b2_audio.mix_document.dialogue_stem.content_hash),
             (b2_audio.final_mix_path, "final_mix.wav", b2_audio.mix_document.final_mix.content_hash),
         ]
+        if getattr(b2_audio, "background_stem_path", None) is not None:
+            editable_audio.append((b2_audio.background_stem_path, "background_stem.wav", b2_audio.mix_document.original_audio.content_hash))
         if b2_audio.placement_document_path is not None:
             editable_audio.append((b2_audio.placement_document_path, "dubbing_placement.json", _sha256(b2_audio.placement_document_path)))
         if b2_audio.spoken_text_document_path is not None:
@@ -1440,6 +1534,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             "editable_dialogue_stem": editable_dir / "dialogue_stem.wav",
             "editable_final_mix": editable_dir / "final_mix.wav",
         })
+        if getattr(b2_audio, "background_stem_path", None) is not None:
+            artifacts["background_stem"] = b2_audio.background_stem_path
+            artifacts["editable_background_stem"] = editable_dir / "background_stem.wav"
         if b2_audio.placement_document_path is not None:
             artifacts["dubbing_placement"] = b2_audio.placement_document_path
             artifacts["editable_dubbing_placement"] = editable_dir / "dubbing_placement.json"
@@ -1451,7 +1548,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         for path in getattr(b2_audio, "spoken_text_document_paths", ())[1:]:
             artifacts[path.stem] = path
             artifacts["editable_" + path.stem] = editable_dir / path.name
-    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=dict(translation_provenance, reviewed_overrides=overrides_identity), asr=transcript.asr_evidence,
+    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, background=background_summary, language=transcript.language_metadata(), translation=dict(translation_provenance, reviewed_overrides=overrides_identity), asr=transcript.asr_evidence,
                                     **({"speakers": speaker_summary} if speaker_summary is not None else {}))
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.checkpoint("qc", _sha256(qc_path))
