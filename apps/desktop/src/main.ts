@@ -6,6 +6,7 @@ import { QueueController, type QueueJob, type SnapshotStorage } from "./features
 import { mountDiscovery } from "./features/discovery/view.ts";
 import { extractLinks } from "./features/links/extract.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
+import { mountPostSuggestions } from "./features/seo/view.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
@@ -989,6 +990,11 @@ reviewApply.addEventListener("click", async () => {
   }
 });
 $("#open-review").addEventListener("click", () => void openReview());
+const postSuggestions = mountPostSuggestions(invoke);
+$("#open-post").addEventListener("click", () => {
+  const job = selectedJob();
+  if (job?.outputPath) postSuggestions.open(job.outputPath, job.displayName);
+});
 $("#review-close").addEventListener("click", closeReview);
 $("#review-cancel").addEventListener("click", closeReview);
 reviewUndo.addEventListener("click", undoReview);

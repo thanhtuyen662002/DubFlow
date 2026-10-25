@@ -105,6 +105,10 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     }
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
     case "open_douyin_login": return null as T;
+    case "post_suggestions": return { ok: true,
+      titles: ["Tiên hiệp: Bí mật linh kiếm thức tỉnh (Vietsub)", "Thanh linh kiếm này đã ngủ yên suốt 300 năm!", "Linh kiếm khiến ai cũng bất ngờ"],
+      description: "Thanh linh kiếm này đã ngủ yên suốt 300 năm! Vì sao một đệ tử tu tiên lại đánh thức được linh kiếm?\n#vietsub",
+      hashtags: ["#linhkiem", "#tienhiep", "#phimtienhiep", "#vietsub", "#trungquoc"], keywords: [] } as T;
     case "discover": return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1)) as T;
     case "open_discovery": return `https://example.invalid/${String(args.platform)}` as T;
     case "scroll_discovery": return null as T;

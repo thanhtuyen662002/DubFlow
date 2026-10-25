@@ -292,6 +292,21 @@ h1, h2, h3, p { margin: 0; }
 .output-root .link { font-size: 12px; }
 @media (max-width: 1080px) { .output-root { display: none; } }
 .box-row { margin-top: 10px; }
+.post-panel { width: min(760px, 100%); }
+.post-body { flex: 1; overflow: auto; padding: 4px 20px 20px; }
+.post-state { padding: 8px 20px 0; }
+.post-key-row { padding: 12px 20px 0; }
+.post-key-row[hidden] { display: none; }
+.post-key-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.post-key-actions input { flex: 1; height: 34px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); }
+.post-section { margin-top: 14px; }
+.post-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.post-head h3 { font-size: 13px; font-weight: 650; }
+.post-titles { margin: 0; padding-left: 20px; }
+.post-titles li { display: list-item; padding: 4px 0; }
+.post-titles li span { margin-right: 8px; }
+.post-tags { color: var(--accent); line-height: 1.6; }
+.link.copy { font-size: 12px; }
 .discover { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .discover[hidden] { display: none; }
 .platform-tabs { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }

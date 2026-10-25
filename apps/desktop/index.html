@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; media-src 'self' blob:; img-src 'self' blob: https:"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com; media-src 'self' blob:; img-src 'self' blob: https:"
     />
     <title>DubFlow</title>
     <link rel="stylesheet" href="./src/styles.css" />
@@ -181,6 +181,7 @@
                 <button id="reveal-output" class="btn" type="button">Mở thư mục</button>
               </div>
               <button id="open-review" class="btn block review-btn" type="button">Xem &amp; sửa bản dịch</button>
+              <button id="open-post" class="btn block review-btn" type="button">Gợi ý tiêu đề &amp; hashtag</button>
             </section>
 
             <fieldset id="voice-controls" class="settings" disabled>
@@ -259,6 +260,30 @@
           </aside>
         </section>
       </main>
+    </div>
+    <div id="post-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="post-title" hidden>
+      <div class="review-panel post-panel">
+        <header class="review-head">
+          <div>
+            <h2 id="post-title">Gợi ý đăng bài</h2>
+            <p class="subtitle">Tiêu đề, mô tả và hashtag tiếng Việt cho video đã Việt hóa</p>
+          </div>
+          <button id="post-ai" class="btn" type="button">Viết bằng AI (Claude)</button>
+          <button id="post-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <div id="post-key-row" class="post-key-row" hidden>
+          <p class="hint">Nhập khóa API Claude của bạn (console.anthropic.com). Khóa chỉ lưu trên máy này; khi dùng, phụ đề tiếng Việt của video được gửi tới Anthropic và tính phí theo tài khoản của bạn.</p>
+          <div class="post-key-actions">
+            <input id="post-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API Claude" />
+            <button id="post-key-save" class="btn primary" type="button">Lưu &amp; viết</button>
+            <button id="post-key-clear" class="link" type="button">Xóa khóa</button>
+          </div>
+        </div>
+        <p id="post-state" class="discover-state post-state" role="status"></p>
+        <div id="post-body" class="post-body"></div>
+      </div>
     </div>
     <div id="blur-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="blur-title" hidden>
       <div class="review-panel blur-panel">
