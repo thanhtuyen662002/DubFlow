@@ -1,3 +1,4 @@
+mod discovery;
 mod source;
 
 use serde::{Deserialize, Serialize};
@@ -600,6 +601,121 @@ async fn review_clip(output_path: String, start_ms: u64, end_ms: u64, source: bo
     Ok(tauri::ipc::Response::new(output.stdout))
 }
 
+/// Trends, keyword suggestions and Bilibili lists from the bundled Python
+/// discovery adapters (`python -m engine.dubflow.discovery`). Async: network
+/// calls run off the UI thread. Always returns the adapter's JSON object.
+#[tauri::command]
+async fn discover(platform: String, action: String, query: Option<String>, page: Option<u32>, mid: Option<String>) -> Result<Value, String> {
+    discovery::Platform::parse(&platform)?;
+    if !["trends", "suggest", "popular", "search", "creator"].contains(&action.as_str()) {
+        return Err(fail("Thao tác khám phá không hợp lệ"));
+    }
+    let root = version_root()?;
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app")).args(["-B", "-m", "engine.dubflow.discovery", &platform, &action]);
+    if let Some(query) = query.filter(|value| !value.trim().is_empty()) {
+        if query.chars().count() > 100 || query.chars().any(char::is_control) {
+            return Err(fail("Từ khóa quá dài"));
+        }
+        command.args(["--query", query.trim()]);
+    }
+    if let Some(page) = page {
+        command.args(["--page", &page.clamp(1, 50).to_string()]);
+    }
+    if let Some(mid) = mid {
+        if mid.is_empty() || mid.len() > 20 || !mid.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(fail("Mã kênh Bilibili không hợp lệ"));
+        }
+        command.args(["--mid", &mid]);
+    }
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = tauri::async_runtime::spawn_blocking(move || command.output())
+        .await.map_err(|error| fail(error.to_string()))?
+        .map_err(|error| fail(format!("Không chạy được bộ khám phá: {error}")))?;
+    let line = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(line.lines().last().unwrap_or_default())
+        .ok().filter(Value::is_object)
+        .ok_or_else(|| fail("Bộ khám phá không trả về dữ liệu"))
+}
+
+/// Vietnamese glosses for short Chinese terms (trend keywords), in order.
+/// `engine` "hachimi" only after the user accepted its licence warning.
+#[tauri::command]
+async fn translate_terms(terms: Vec<String>, engine: Option<String>) -> Result<Value, String> {
+    if terms.is_empty() || terms.len() > 60 || terms.iter().any(|term| term.trim().is_empty() || term.chars().count() > 80 || term.chars().any(char::is_control)) {
+        return Err(fail("Danh sách từ khóa không hợp lệ"));
+    }
+    let engine = match engine.as_deref() {
+        None | Some("argos") => "argos",
+        Some("hachimi") => "hachimi",
+        Some(_) => return Err(fail("Bộ dịch không được hỗ trợ")),
+    };
+    let root = version_root()?;
+    let models = control_root()?.join("models");
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app"))
+        .args(["-B", "-m", "engine.dubflow.translation.terms", "--engine", engine, "--model-root"])
+        .arg(&models)
+        .arg("--")
+        .args(terms.iter().map(|term| term.trim()));
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = tauri::async_runtime::spawn_blocking(move || command.output())
+        .await.map_err(|error| fail(error.to_string()))?
+        .map_err(|error| fail(format!("Không chạy được bộ dịch: {error}")))?;
+    let line = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(line.lines().last().unwrap_or_default())
+        .ok().filter(Value::is_object)
+        .ok_or_else(|| fail("Bộ dịch không trả về dữ liệu"))
+}
+
+/// Open (or navigate) the discovery browser at a search or creator page.
+/// It shares the app's browser profile, so a saved Douyin visit helps here.
+#[tauri::command]
+async fn open_discovery(app: tauri::AppHandle, platform: String, kind: String, query: String) -> Result<String, String> {
+    use tauri::Manager;
+    let platform = discovery::Platform::parse(&platform)?;
+    let url = discovery::page_url(platform, &kind, &query)?;
+    if let Some(window) = app.get_webview_window(discovery::WINDOW) {
+        window.navigate(url.clone()).map_err(|error| fail(error.to_string()))?;
+        let _ = window.set_focus();
+        return Ok(url.to_string());
+    }
+    tauri::WebviewWindowBuilder::new(&app, discovery::WINDOW, tauri::WebviewUrl::External(url.clone()))
+        .initialization_script(discovery::CAPTURE_SCRIPT)
+        .title("Khám phá video — cuộn trang để tải thêm, rồi quay lại DubFlow bấm “Lấy video từ trang”")
+        .inner_size(1200.0, 860.0)
+        .build()
+        .map_err(|error| fail(format!("Không mở được cửa sổ khám phá: {error}")))?;
+    Ok(url.to_string())
+}
+
+/// Scroll the discovery page so it loads more results.
+#[tauri::command]
+fn scroll_discovery(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let window = app.get_webview_window(discovery::WINDOW).ok_or_else(|| fail("Hãy mở trang khám phá trước"))?;
+    window.eval(discovery::SCROLL_SCRIPT).map_err(|error| fail(error.to_string()))
+}
+
+/// Read the video cards the discovery page currently shows.
+#[tauri::command]
+async fn collect_discovery(app: tauri::AppHandle, platform: String) -> Result<Vec<discovery::DiscoveredVideo>, String> {
+    use tauri::Manager;
+    let platform = discovery::Platform::parse(&platform)?;
+    let window = app.get_webview_window(discovery::WINDOW).ok_or_else(|| fail("Hãy mở trang khám phá trước"))?;
+    let (sender, receiver) = std::sync::mpsc::channel::<String>();
+    window.eval_with_callback(discovery::COLLECT_SCRIPT, move |result| { let _ = sender.send(result); })
+        .map_err(|error| fail(error.to_string()))?;
+    let result = tauri::async_runtime::spawn_blocking(move || receiver.recv_timeout(std::time::Duration::from_secs(10)))
+        .await.map_err(|error| fail(error.to_string()))?
+        .map_err(|_| fail("Trang không phản hồi; hãy đợi trang tải xong rồi thử lại"))?;
+    discovery::parse_collection(platform, &result).map_err(fail)
+}
+
 /// One JPEG frame of a local video at `position` (0–1 of its duration), for
 /// drawing blur regions on. Async: FFprobe/FFmpeg run off the UI thread.
 /// Scaled to at most 960 px wide.
@@ -691,7 +807,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

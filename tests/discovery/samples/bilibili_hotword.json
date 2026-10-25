@@ -1,0 +1,105 @@
+{
+  "name": "hotword",
+  "platform": "bilibili",
+  "at_utc": "2026-10-25T04:02:01.613792+00:00",
+  "method": "GET",
+  "url": "https://s.search.bilibili.com/main/hotword?limit=10",
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.bilibili.com/"
+  },
+  "cookie_names_sent": [],
+  "external_cookie_file_used": false,
+  "request_body": null,
+  "expected_items_path": "list",
+  "probe_note": null,
+  "http_status": 200,
+  "final_url": "https://s.search.bilibili.com/main/hotword?limit=10",
+  "content_type": null,
+  "content_encoding": null,
+  "wire_bytes": 5054,
+  "body_capped": false,
+  "response_headers": {
+    "Date": "Sun, 25 Oct 2026 04:02:01 GMT"
+  },
+  "set_cookie_names": [],
+  "body_bytes": 5054,
+  "response_json": {
+    "code": 0,
+    "exp_str": "_",
+    "list": [
+      {
+        "hot_id": 278837,
+        "keyword": "锐评LPL瑞士轮第二轮战绩",
+        "show_name": "锐评LPL瑞士轮第二轮战绩",
+        "score": 0.0,
+        "word_type": 4,
+        "goto_type": 0,
+        "goto_value": "",
+        "icon": "http://i0.hdslb.com/bfs/activity-plat/static/20221118/eaf2dd702d7cc14d8d9511190245d057/UF7B1wVKT2.png",
+        "live_id": [],
+        "call_reason": 1,
+        "heat_layer": "B",
+        "pos": 1,
+        "id": 1,
+        "status": "",
+        "name_type": "",
+        "resource_id": 0,
+        "set_gray": 0,
+        "card_values": [],
+        "heat_score": 6614542,
+        "stat_datas": {
+          "stime": "1792899179",
+          "cny_flag": "0",
+          "etime": "1792945979",
+          "is_commercial": "0"
+        }
+      }
+    ],
+    "top_list": [],
+    "hotword_egg_info": "0",
+    "seid": "2736083262897829949",
+    "timestamp": 1792900921,
+    "total_count": 10
+  },
+  "array_counts_before_trimming": {
+    "list": 10,
+    "list[0].live_id": 0,
+    "list[0].card_values": 0,
+    "top_list": 0
+  },
+  "application_code": 0,
+  "expected_item_count": 10,
+  "first_item": {
+    "hot_id": 278837,
+    "keyword": "锐评LPL瑞士轮第二轮战绩",
+    "show_name": "锐评LPL瑞士轮第二轮战绩",
+    "score": 0.0,
+    "word_type": 4,
+    "goto_type": 0,
+    "goto_value": "",
+    "icon": "http://i0.hdslb.com/bfs/activity-plat/static/20221118/eaf2dd702d7cc14d8d9511190245d057/UF7B1wVKT2.png",
+    "live_id": [],
+    "call_reason": 1,
+    "heat_layer": "B",
+    "pos": 1,
+    "id": 1,
+    "status": "",
+    "name_type": "",
+    "resource_id": 0,
+    "set_gray": 0,
+    "card_values": [],
+    "heat_score": 6614542,
+    "stat_datas": {
+      "stime": "1792899179",
+      "cny_flag": "0",
+      "etime": "1792945979",
+      "is_commercial": "0"
+    }
+  },
+  "elapsed_seconds": 0.282,
+  "cookie_jar_names_after": []
+}

@@ -1,0 +1,83 @@
+{
+  "name": "suggest",
+  "platform": "bilibili",
+  "at_utc": "2026-10-25T04:02:02.708333+00:00",
+  "method": "GET",
+  "url": "https://s.search.bilibili.com/main/suggest?term=%E4%BB%99%E4%BE%A0&main_ver=v1&func=suggest&suggest_type=accurate&sub_type=tag&tag_num=10&highlight=",
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.bilibili.com/"
+  },
+  "cookie_names_sent": [],
+  "external_cookie_file_used": false,
+  "request_body": null,
+  "expected_items_path": "result.tag",
+  "probe_note": null,
+  "http_status": 200,
+  "final_url": "https://s.search.bilibili.com/main/suggest?term=%E4%BB%99%E4%BE%A0&main_ver=v1&func=suggest&suggest_type=accurate&sub_type=tag&tag_num=10&highlight=",
+  "content_type": null,
+  "content_encoding": null,
+  "wire_bytes": 1662,
+  "body_capped": false,
+  "response_headers": {
+    "Date": "Sun, 25 Oct 2026 04:02:02 GMT"
+  },
+  "set_cookie_names": [],
+  "body_bytes": 1662,
+  "response_json": {
+    "exp_str": "",
+    "code": 0,
+    "result": {
+      "tag": [
+        {
+          "value": "仙侠游戏",
+          "term": "仙侠游戏",
+          "ref": 0,
+          "name": "<em class=\"suggest_high_light\">仙侠</em>游戏",
+          "spid": 5,
+          "type": "",
+          "item_feature": ""
+        }
+      ]
+    },
+    "stoken": "[redacted]",
+    "total_count": 10,
+    "debug_response_info": {
+      "debug_record": []
+    },
+    "user_feature": ""
+  },
+  "array_counts_before_trimming": {
+    "result.tag": 10,
+    "debug_response_info.debug_record": 0
+  },
+  "application_code": 0,
+  "application_result": {
+    "tag": [
+      {
+        "value": "仙侠游戏",
+        "term": "仙侠游戏",
+        "ref": 0,
+        "name": "<em class=\"suggest_high_light\">仙侠</em>游戏",
+        "spid": 5,
+        "type": "",
+        "item_feature": ""
+      }
+    ]
+  },
+  "expected_item_count": 10,
+  "first_item": {
+    "value": "仙侠游戏",
+    "term": "仙侠游戏",
+    "ref": 0,
+    "name": "<em class=\"suggest_high_light\">仙侠</em>游戏",
+    "spid": 5,
+    "type": "",
+    "item_feature": ""
+  },
+  "elapsed_seconds": 0.203,
+  "cookie_jar_names_after": []
+}
