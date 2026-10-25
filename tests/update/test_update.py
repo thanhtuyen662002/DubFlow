@@ -378,6 +378,11 @@ class CliTests(KeyTestCase):
 
         cli._app_root_last()
         self.assertEqual(Path(sys.path[-1]), ROOT)
+        # Only meaningful where a third-party ``packaging`` exists (the app
+        # runtime has one; a bare CI interpreter may not).
+        probe = "import sys, importlib.util; sys.path[:] = [p for p in sys.path if p not in ('', '.')]; print(bool(importlib.util.find_spec('packaging')))"
+        if subprocess.run([sys.executable, "-B", "-c", probe], cwd=ROOT.parent, capture_output=True, text=True).stdout.strip() != "True":
+            self.skipTest("no third-party packaging distribution installed")
         script = "import engine.dubflow.update.__main__; import packaging; print(packaging.__file__)"
         result = subprocess.run([sys.executable, "-B", "-c", script], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
