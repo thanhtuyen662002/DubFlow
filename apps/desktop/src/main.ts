@@ -3,6 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
+import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
@@ -1173,7 +1174,8 @@ void invoke<ReleaseInfo>("release_info")
   })
   .catch(() => {
     $("#release-version").textContent = "development";
-  });
+  })
+  .finally(() => mountUpdates(invoke));
 
 // Native drag & drop: Tauri intercepts file drops and reports real paths.
 if (isTauri) {

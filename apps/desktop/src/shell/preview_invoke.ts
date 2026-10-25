@@ -105,6 +105,14 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     }
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
     case "open_douyin_login": return null as T;
+    case "check_update": return { ok: true, available: true, version: "0.3.0", channel: "candidate", notes: "DubFlow 0.3.0", setup: { size_bytes: 325_000_000 } } as T;
+    case "download_update": return { ok: true, path: "C:/Users/preview/AppData/Local/DubFlow/updates/DubFlow-0.3.0-windows-x64-setup.exe", version: "0.3.0" } as T;
+    case "install_update": case "restart_app": return null as T;
+    case "list_versions": return { ok: true, current: "0.2.0-rc6", versions: [
+      { version: "0.2.0-rc6", channel: "candidate", installed_at_utc: "2026-10-25T00:00:00Z" },
+      { version: "0.2.0-rc5", channel: "candidate", installed_at_utc: "2026-10-24T00:00:00Z" },
+    ] } as T;
+    case "activate_version": return { ok: true, current_version: String(args.version) } as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
     case "video_frame": return await previewFrame(Number(args.position)) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
