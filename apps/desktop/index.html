@@ -163,11 +163,18 @@
                 </span>
                 <input id="burn-in" class="switch" type="checkbox" role="switch" checked />
               </label>
-              <div id="blur-row" class="select-row">
+              <label id="blur-row" class="select-row">
                 <span>
                   <strong>Làm mờ phụ đề gốc</strong>
                   <small id="blur-summary">Tắt</small>
                 </span>
+                <select id="blur-mode">
+                  <option value="off">Tắt</option>
+                  <option value="auto">Tự động</option>
+                  <option value="manual">Thủ công</option>
+                </select>
+              </label>
+              <div id="blur-manual-row" class="blur-manual-row" hidden>
                 <button id="blur-edit" class="btn" type="button">Chọn vùng…</button>
               </div>
               <div id="voice-picker" class="voice-picker" hidden>

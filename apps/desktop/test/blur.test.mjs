@@ -51,3 +51,19 @@ const revision = queue.reviseJob(first, "D:/Out/rev");
 assert.deepEqual(queue.getSnapshot().jobs.find((job) => job.id === revision).blurRegions, [region]);
 
 console.log("desktop blur region geometry and queue tests passed");
+
+// Automatic blur and manual regions replace each other.
+const autoQueue = new QueueController(new MemorySnapshotStorage(), clock);
+const [autoId] = autoQueue.addPaths(["C:/auto.mp4"]);
+autoQueue.setBlurRegions(autoId, [start]);
+autoQueue.setBlurAuto(autoId, true);
+assert.equal(autoQueue.getSnapshot().jobs[0].blurAuto, true);
+assert.equal(autoQueue.getSnapshot().jobs[0].blurRegions, undefined);
+assert.equal(parseQueueSnapshot(JSON.stringify(autoQueue.getSnapshot())).jobs[0].blurAuto, true);
+autoQueue.setBlurRegionsForQueued([start]);
+assert.equal(autoQueue.getSnapshot().jobs[0].blurAuto, undefined);
+autoQueue.setBlurAuto(autoId, true);
+autoQueue.setBlurAuto(autoId, false);
+assert.equal(autoQueue.getSnapshot().jobs[0].blurAuto, undefined);
+assert.equal(parseQueueSnapshot(JSON.stringify({ ...autoQueue.getSnapshot(), jobs: [{ ...autoQueue.getSnapshot().jobs[0], blurAuto: "yes" }] })), null);
+console.log("desktop automatic blur option tests passed");

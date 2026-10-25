@@ -152,6 +152,8 @@ class WorkerConfig:
     translation_engine: str = "argos"
     # Source-caption rectangles to blur before drawing the Vietnamese subtitles.
     blur_regions: tuple[BlurRegion, ...] = ()
+    # Detect burned-in captions automatically and blur them while on screen.
+    blur_auto: bool = False
     translation_package: Path | None = None
     tts_model: Path | None = None
     tts_config: Path | None = None
@@ -211,6 +213,7 @@ class WorkerConfig:
             subtitle_box=optional_bool("subtitle_box", False),
             translation_engine=translation_engine,
             blur_regions=blur_regions,
+            blur_auto=optional_bool("blur_auto", False),
             translation_package=optional_path("translation_package"),
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
@@ -882,6 +885,44 @@ def _write_manifest(
     return path
 
 
+OCR_PROFILE_PATH = "models/manifests/production-ocr-det-v1.json"
+
+
+def _auto_blur_regions(config: WorkerConfig, source_hash: str, duration_ms: int | None, cues: Sequence[TextCue],
+                       work_dir: Path, checkpoint: dict[str, Any], checkpoint_path: Path, emitter: Any,
+                       warnings: list[str]) -> tuple[tuple[BlurRegion, ...], dict[str, Any] | None]:
+    """Detected caption regions, or none with a warning; this stage never fails a job."""
+    from engine.dubflow.ocr import caption_scan
+
+    scan_path = work_dir / "caption_scan.json"
+    profile_path = config.app_root / OCR_PROFILE_PATH
+    speech = [[cue.start_ms, cue.end_ms] for cue in cues]
+    try:
+        identity = "sha256:" + sha256(json.dumps({"source": source_hash, "profile": _sha256(profile_path), "recipe": caption_scan.SCAN_RECIPE,
+                                                  "scanner": _sha256(Path(caption_scan.__file__)), "speech": speech}, sort_keys=True).encode()).hexdigest()
+        stage = checkpoint.get("stages", {}).get("caption_scan", {})
+        if _stage_ready(checkpoint, "caption_scan", (scan_path,)) and stage.get("input_hash") == identity:
+            saved = json.loads(scan_path.read_text(encoding="utf-8"))
+            return tuple(BlurRegion.from_mapping(item) for item in saved["regions"]), saved["summary"]
+        emitter.progress(0.67, "Đang chuẩn bị model dò phụ đề gốc")
+        ensure_model_profile(profile_path, config.model_root)
+        model_path = config.model_root / json.loads(profile_path.read_text(encoding="utf-8"))["model_path"]
+        emitter.progress(0.67, "Đang dò phụ đề gốc để làm mờ")
+        scanner = caption_scan.CaptionScanner(model_path, config.ffmpeg_path)
+        result = scanner.scan(config.source_path, duration_s=(duration_ms or 0) / 1000, speech_ms=speech,
+                              progress=lambda fraction: emitter.progress(0.67 + 0.02 * fraction, "Đang dò phụ đề gốc để làm mờ"))
+        summary = result.summary()
+        _atomic_json(scan_path, {"schema_version": 1, "input_hash": identity, "summary": summary,
+                                 "regions": [region.to_dict() for region in result.regions]})
+        _write_stage(checkpoint, checkpoint_path, "caption_scan", {"path": str(scan_path), "sha256": _sha256(scan_path), "input_hash": identity})
+        emitter.checkpoint("caption_scan", _sha256(scan_path))
+        return result.regions, summary
+    except Exception as error:  # noqa: BLE001 - a failed scan downgrades to an unblurred render.
+        code = getattr(error, "code", type(error).__name__)
+        warnings.append(f"AUTO_BLUR_SKIPPED: caption scan failed: {code}: {str(error)[:300]}")
+        return (), None
+
+
 def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     output = config.output_dir.absolute()
     source = config.source_path.resolve()
@@ -1138,6 +1179,12 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     render_stage = "render-dubbed" if audio_path is not None else "render"
     video_duration = _source_render_duration(probe)
     blur_regions = tuple(getattr(config, "blur_regions", ()))
+    caption_scan_summary: dict[str, Any] | None = None
+    if getattr(config, "blur_auto", False):
+        detected, caption_scan_summary = _auto_blur_regions(config, source_hash, probe.duration_ticks, cues, work_dir,
+                                                            checkpoint, checkpoint_path, emitter, warnings)
+        # Manual regions keep their slots when the combined list would be too long.
+        blur_regions = (blur_regions + detected)[:MAX_BLUR_REGIONS]
     # A successful B2 run always re-renders against the newly verified mix.
     # This prevents a changed voice-pack hash or regenerated mix from being
     # hidden by a stale final-video checkpoint after a resumable restart.
@@ -1232,7 +1279,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original", "input_hash": render_identity()})
     output_duration = output_probe.duration_ticks
     qc_path = export_dir / "qc_report.json"
-    qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata, "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata,
+          **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions)}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _atomic_json(qc_path, qc)
     editable_dir = export_dir / "editable"
     editable_names = {"captions_vi.srt", "captions_vi.ass", "timeline.json"}

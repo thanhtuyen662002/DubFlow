@@ -29,6 +29,8 @@ export type QueueJob = {
   translationEngine?: "hachimi";
   /** Source-caption rectangles to blur (fractions of the frame); undefined = no blur. */
   blurRegions?: BlurRegion[];
+  /** Detect and blur burned-in captions automatically (instead of manual regions). */
+  blurAuto?: true;
   /** When processing first ran and when it reached a terminal state (ISO). */
   startedAt?: string;
   finishedAt?: string;
@@ -186,6 +188,7 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.subtitleBox === undefined || typeof job.subtitleBox === "boolean") &&
     (job.translationEngine === undefined || job.translationEngine === "hachimi") &&
     (job.blurRegions === undefined || isBlurRegionList(job.blurRegions)) &&
+    (job.blurAuto === undefined || job.blurAuto === true) &&
     (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
     (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
   );
@@ -403,6 +406,7 @@ export class QueueController {
     if (job.sourceLanguage !== undefined) revision.sourceLanguage = job.sourceLanguage;
     if (job.translationEngine !== undefined) revision.translationEngine = job.translationEngine;
     if (job.blurRegions !== undefined) revision.blurRegions = job.blurRegions.map((region) => ({ ...region }));
+    if (job.blurAuto) revision.blurAuto = true;
     if (job.originUrl) revision.originUrl = job.originUrl;
     revision.displayName = job.displayName;
     revision.status = { ...emptyStatus(), reason: "review_revision", message: "Chờ xử lý lại với bản dịch đã sửa" };
@@ -440,8 +444,21 @@ export class QueueController {
     const job = this.requireJob(jobId);
     if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
     if (regions === null || regions.length === 0) delete job.blurRegions;
-    else if (isBlurRegionList(regions)) job.blurRegions = regions.map((region) => ({ ...region }));
-    else throw new Error("Invalid blur regions");
+    else if (isBlurRegionList(regions)) {
+      job.blurRegions = regions.map((region) => ({ ...region }));
+      delete job.blurAuto;
+    } else throw new Error("Invalid blur regions");
+    this.commit();
+  }
+
+  /** Automatic caption blur replaces any manual regions, and vice versa. */
+  setBlurAuto(jobId: string, auto: boolean): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    if (auto) {
+      job.blurAuto = true;
+      delete job.blurRegions;
+    } else delete job.blurAuto;
     this.commit();
   }
 
@@ -452,7 +469,10 @@ export class QueueController {
     for (const job of this.snapshot.jobs) {
       if (job.status.state !== "QUEUED") continue;
       if (regions === null || regions.length === 0) delete job.blurRegions;
-      else job.blurRegions = regions.map((region) => ({ ...region }));
+      else {
+        job.blurRegions = regions.map((region) => ({ ...region }));
+        delete job.blurAuto;
+      }
       changed += 1;
     }
     if (changed) this.commit();

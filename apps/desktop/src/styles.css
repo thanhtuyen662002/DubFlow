@@ -292,6 +292,8 @@ h1, h2, h3, p { margin: 0; }
 .output-root .link { font-size: 12px; }
 @media (max-width: 1080px) { .output-root { display: none; } }
 .box-row { margin-top: 10px; }
+.blur-manual-row { display: flex; justify-content: flex-end; margin-top: 8px; }
+.blur-manual-row[hidden] { display: none; }
 .blur-panel { width: min(980px, 100%); height: auto; max-height: 100%; }
 .blur-body { display: flex; flex-direction: column; gap: 12px; min-height: 0; padding: 16px 20px; overflow: auto; }
 .blur-stage { position: relative; align-self: center; max-width: 100%; line-height: 0; border-radius: 8px; overflow: hidden; background: #000; touch-action: none; user-select: none; }

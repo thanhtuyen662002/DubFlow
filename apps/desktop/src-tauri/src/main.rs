@@ -290,7 +290,7 @@ struct BlurRegion {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
@@ -356,6 +356,9 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
             return Err(fail("Vùng làm mờ không hợp lệ; hãy chọn lại"));
         }
         args.extend(["--blur-regions".into(), serde_json::to_string(&regions).map_err(|error| fail(error.to_string()))?]);
+    }
+    if blur_auto == Some(true) {
+        args.push("--blur-auto".into());
     }
     command.args(args);
     command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;

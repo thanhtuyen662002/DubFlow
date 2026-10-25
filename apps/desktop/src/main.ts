@@ -62,8 +62,10 @@ const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const burnInToggle = $<HTMLInputElement>("#burn-in");
 const sourceLanguageSelect = $<HTMLSelectElement>("#source-language");
 const translationEngineSelect = $<HTMLSelectElement>("#translation-engine");
+const blurModeSelect = $<HTMLSelectElement>("#blur-mode");
 const runAllButton = $<HTMLButtonElement>("#run-all");
 let batchRunning = false;
+let blurJobId: string | null = null;
 const voiceList = $("#voice-list");
 const genderFilter = $<HTMLSelectElement>("#voice-gender");
 const accentFilter = $<HTMLSelectElement>("#voice-accent");
@@ -165,7 +167,11 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   voiceControls.disabled = !editable;
   dubbingToggle.checked = job?.dubbing.enabled ?? false;
   burnInToggle.checked = job?.burnIn ?? true;
-  $("#blur-summary").textContent = describeRegions(job?.blurRegions);
+  const blurMode = job?.blurAuto ? "auto" : job?.blurRegions?.length ? "manual" : "off";
+  // "Thủ công" stays selected while the user has not drawn a region yet.
+  if (blurModeSelect.value !== "manual" || blurMode !== "off" || blurJobId === null) blurModeSelect.value = blurMode;
+  $("#blur-summary").textContent = blurMode === "auto" ? "Tự dò phụ đề và làm mờ khi nó xuất hiện" : describeRegions(job?.blurRegions);
+  $("#blur-manual-row").hidden = blurModeSelect.value !== "manual";
   sourceLanguageSelect.value = job?.sourceLanguage ?? "";
   translationEngineSelect.value = job?.translationEngine ?? "argos";
   // Hachimi only translates Chinese, so the choice is moot for English sources.
@@ -361,7 +367,7 @@ function beginPolling(jobId: string): void {
 // The last options the user chose become the defaults for newly added videos,
 // so a batch needs its dubbing/voice/burn-in set once (per-viewer convenience).
 const DEFAULTS_KEY = "dubflow.defaults.v1";
-type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[] };
+type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[]; blurAuto?: true };
 
 function readDefaults(): JobDefaults | null {
   try {
@@ -370,7 +376,8 @@ function readDefaults(): JobDefaults | null {
     return { dubbing: value.dubbing, burnIn: value.burnIn, voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
       sourceLanguage: value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? value.sourceLanguage : undefined,
       translationEngine: value.translationEngine === "hachimi" ? "hachimi" : undefined,
-      blurRegions: isBlurRegionList(value.blurRegions) ? value.blurRegions : undefined };
+      blurRegions: isBlurRegionList(value.blurRegions) ? value.blurRegions : undefined,
+      blurAuto: value.blurAuto === true ? true : undefined };
   } catch {
     return null;
   }
@@ -380,7 +387,7 @@ function rememberDefaults(job: QueueJob): void {
   try {
     window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
       burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, translationEngine: job.translationEngine,
-      blurRegions: job.blurRegions }));
+      blurRegions: job.blurRegions, blurAuto: job.blurAuto }));
   } catch {
     // Defaults are a convenience; the queue works without storage.
   }
@@ -394,6 +401,7 @@ function applyDefaults(jobIds: readonly string[]): void {
       if (!defaults.burnIn) queue.setBurnIn(id, false);
       if (defaults.sourceLanguage) queue.setSourceLanguage(id, defaults.sourceLanguage);
       if (defaults.blurRegions) queue.setBlurRegions(id, defaults.blurRegions);
+      if (defaults.blurAuto) queue.setBlurAuto(id, true);
       if (defaults.translationEngine) queue.setTranslationEngine(id, defaults.translationEngine);
       if (defaults.dubbing && voiceCatalog) {
         const known = voiceCatalog.voices.some((voice) => voice.voice_id === defaults.voiceId);
@@ -523,6 +531,7 @@ async function startJob(job: QueueJob): Promise<void> {
       enableDubbing: job.dubbing.enabled, ttsVoiceId: job.dubbing.voiceId, burnIn: job.burnIn ?? true,
       sourceLanguage: job.sourceLanguage ?? "auto", subtitleBox: job.subtitleBox ?? false,
       translationEngine: job.translationEngine ?? "argos", blurRegions: job.blurRegions ?? null,
+      blurAuto: job.blurAuto ?? false,
     });
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
@@ -975,7 +984,6 @@ const blurFrame = $<HTMLImageElement>("#blur-frame");
 const blurRect = $("#blur-rect");
 const blurTime = $<HTMLInputElement>("#blur-time");
 const blurLoading = $("#blur-loading");
-let blurJobId: string | null = null;
 let blurDraft: BlurRegion = DEFAULT_REGION;
 let blurFrameUrl: string | null = null;
 let blurFrameRequest = 0;
@@ -1022,6 +1030,8 @@ function openBlurEditor(): void {
 function closeBlurEditor(): void {
   blurDialog.hidden = true;
   blurJobId = null;
+  // Cancelling a first manual pick returns the mode select to what the job has.
+  renderVoiceControls(selectedJob());
   blurFrameRequest += 1;
   blurFrame.removeAttribute("src");
   if (blurFrameUrl) URL.revokeObjectURL(blurFrameUrl);
@@ -1069,6 +1079,20 @@ blurRect.addEventListener("keydown", (event) => {
 });
 blurTime.addEventListener("change", () => void loadBlurFrame());
 $("#blur-edit").addEventListener("click", openBlurEditor);
+blurModeSelect.addEventListener("change", () => {
+  const job = selectedJob();
+  if (!job) return;
+  if (blurModeSelect.value === "auto") {
+    queue.setBlurAuto(job.id, true);
+  } else if (blurModeSelect.value === "off") {
+    queue.setBlurAuto(job.id, false);
+    queue.setBlurRegions(job.id, null);
+  } else {
+    openBlurEditor();
+    queue.setBlurAuto(job.id, false);
+  }
+  rememberDefaults(selectedJob() ?? job);
+});
 $("#blur-close").addEventListener("click", closeBlurEditor);
 $("#blur-apply").addEventListener("click", () => applyBlur([blurDraft], false));
 $("#blur-all").addEventListener("click", () => applyBlur([blurDraft], true));

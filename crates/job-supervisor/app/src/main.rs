@@ -365,6 +365,8 @@ struct StartSpec {
     translation_engine: String,
     /// Source-caption rectangles to blur; the worker validates each region.
     blur_regions: Option<Value>,
+    /// Detect burned-in captions and blur them automatically.
+    blur_auto: bool,
 }
 
 impl StartSpec {
@@ -414,6 +416,7 @@ impl StartSpec {
             subtitle_box: false,
             translation_engine: "argos".into(),
             blur_regions: None,
+            blur_auto: false,
         })
     }
     fn with_voice_id(mut self, voice_id: Option<String>) -> SupervisorResult<Self> {
@@ -440,6 +443,10 @@ impl StartSpec {
         }
         self.translation_engine = engine;
         Ok(self)
+    }
+    fn with_blur_auto(mut self, blur_auto: bool) -> Self {
+        self.blur_auto = blur_auto;
+        self
     }
     fn with_blur_regions(mut self, regions: Option<String>) -> SupervisorResult<Self> {
         let Some(text) = regions else { return Ok(self) };
@@ -512,6 +519,9 @@ impl StartSpec {
         }
         if let Some(regions) = &self.blur_regions {
             request["blur_regions"] = regions.clone();
+        }
+        if self.blur_auto {
+            request["blur_auto"] = json!(true);
         }
         Ok(serde_json::to_string(&request)?)
     }
@@ -645,6 +655,7 @@ enum CliMode {
         subtitle_box: bool,
         translation_engine: Option<String>,
         blur_regions: Option<String>,
+        blur_auto: bool,
     },
     Cancel {
         root: Option<PathBuf>,
@@ -689,6 +700,7 @@ fn run() -> SupervisorResult<()> {
             subtitle_box,
             translation_engine,
             blur_regions,
+            blur_auto,
         } => {
             return run_one_shot(
                 root,
@@ -706,6 +718,7 @@ fn run() -> SupervisorResult<()> {
                 subtitle_box,
                 translation_engine,
                 blur_regions,
+                blur_auto,
             );
         }
         CliMode::Cancel {
@@ -796,6 +809,7 @@ where
             let mut subtitle_box = false;
             let mut translation_engine = None;
             let mut blur_regions = None;
+            let mut blur_auto = false;
             let mut burn_in_subtitles = true;
             while let Some(arg) = args.next() {
                 match arg.to_string_lossy().as_ref() {
@@ -830,6 +844,7 @@ where
                     "--blur-regions" => {
                         blur_regions = Some(next_arg(&mut args, "--blur-regions")?)
                     }
+                    "--blur-auto" => blur_auto = true,
                     "--help" | "-h" => {
                         println!("dubflow-supervisor run --source <absolute file> --output-dir <absolute dir> --data-root <absolute dir> [--root <version root>] [--status-path <file>]");
                         std::process::exit(0);
@@ -860,6 +875,7 @@ where
                 subtitle_box,
                 translation_engine,
                 blur_regions,
+                blur_auto,
             }
         }
         Some("cancel") => {
@@ -987,6 +1003,7 @@ fn run_one_shot(
     subtitle_box: bool,
     translation_engine: Option<String>,
     blur_regions: Option<String>,
+    blur_auto: bool,
 ) -> SupervisorResult<()> {
     let root = match root {
         Some(root) => root,
@@ -1007,7 +1024,8 @@ fn run_one_shot(
         Some(enable_dubbing),
         Some(burn_in_subtitles),
     )?.with_voice_id(tts_voice_id)?.with_subtitle_box(subtitle_box)
-    .with_translation_engine(translation_engine)?.with_blur_regions(blur_regions)?;
+    .with_translation_engine(translation_engine)?.with_blur_regions(blur_regions)?
+    .with_blur_auto(blur_auto);
     // Keep the kernel lease through the final status write. A duplicate must
     // not change SQL/status, reconcile artifacts or start another worker.
     let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
@@ -2144,6 +2162,9 @@ fn run_worker_attempt(
     if let Some(regions) = &spec.blur_regions {
         args["blur_regions"] = regions.clone();
     }
+    if spec.blur_auto {
+        args["blur_auto"] = json!(true);
+    }
     let args_json = serde_json::to_string(&args)?;
     let command = Envelope::new(
         MessageType::Command,
@@ -2633,7 +2654,7 @@ mod tests {
         let runtime = RuntimePaths { root:root.clone(), app_root:root.join("app"), python:root.join("python.exe"), worker_script:root.join("worker.py"),
             ffmpeg:root.join("ffmpeg.exe"), ffprobe:root.join("ffprobe.exe"), model_root:root.join("models"), db:root.join("state.sqlite") };
         let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
-            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None };
+            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false };
         (root, runtime, spec)
     }
 
@@ -2780,6 +2801,8 @@ mod tests {
         }
         let too_many = format!("[{}]", vec![r#"{"x":0}"#; 257].join(","));
         assert!(spec.clone().with_blur_regions(Some(too_many)).is_err());
+        let auto: Value = serde_json::from_str(&spec.clone().with_blur_auto(true).durable_request(&runtime).unwrap()).unwrap();
+        assert_eq!(auto["blur_auto"], true);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3060,7 +3083,7 @@ mod tests {
         let spec = StartSpec {
             job_id:"test".into(), source_path:PathBuf::from("source"), output_dir:PathBuf::from("output"),
             source_language:"auto".into(), target_language:"vi".into(), enable_dubbing:true,
-            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None,
+            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false,
         };
         for invalid in ["", "../escape", "Unknown", "a\nb", &"a".repeat(97)] {
             assert!(spec.clone().with_voice_id(Some(invalid.into())).is_err());

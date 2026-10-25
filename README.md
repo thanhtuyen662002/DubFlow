@@ -18,7 +18,9 @@ DubFlow chuyển video tiếng Trung/Anh thành video tiếng Việt **ngay trê
    - **Ngôn ngữ gốc**: để *Tự động*, hoặc chọn *Tiếng Trung* / *Tiếng Anh* nếu nhận diện sai (video nhiều nhạc).
    - **Bộ dịch tiếng Trung**: mặc định *Argos*. *HachimiMT-60 (thử nghiệm)* dịch tiếng Trung thường tự nhiên hơn (tải thêm khoảng 58 MB ở lần dùng đầu), nhưng có thể dùng văn phong kiểu truyện (ta/ngươi). **Giấy phép chưa được xác minh cho mục đích thương mại** (model huấn luyện có dữ liệu chưng cất từ Gemini), nên chỉ dùng cá nhân/thử nghiệm; xem [docs/licenses/hachimi-mt-60.md](docs/licenses/hachimi-mt-60.md). Video tiếng Anh luôn dịch bằng Argos.
    - **Gắn phụ đề vào video**: tắt nếu chỉ muốn file phụ đề SRT/ASS rời.
-   - **Làm mờ phụ đề gốc**: bấm **Chọn vùng…**, kéo khung (hoặc kéo từng mép, ví dụ hai mép trái/phải vào giữa) cho phủ kín chữ Trung in sẵn; chữ trong khung sẽ được làm mờ suốt video, phụ đề tiếng Việt vẽ đè lên trên. Kéo thanh **Vị trí** để kiểm tra ở nhiều cảnh. **Áp dụng cho mọi video đang chờ** dùng cùng một vùng cho cả lô; vùng gần nhất cũng tự áp dụng cho video thêm sau.
+   - **Làm mờ phụ đề gốc** (che chữ Trung in sẵn trong video, phụ đề tiếng Việt vẽ đè lên trên):
+     - *Tự động*: app dò dòng phụ đề ở nửa dưới khung hình và làm mờ đúng lúc nó xuất hiện cùng lời thoại; logo/watermark đứng yên được giữ nguyên. Lần đầu tải thêm model dò chữ khoảng 5 MB.
+     - *Thủ công*: bấm **Chọn vùng…**, kéo khung (hoặc kéo từng mép, ví dụ hai mép trái/phải vào giữa) cho phủ kín chữ gốc; vùng này được làm mờ suốt video. Kéo thanh **Vị trí** để kiểm tra ở nhiều cảnh. **Áp dụng cho mọi video đang chờ** dùng cùng một vùng cho cả lô.
 
    Tùy chọn bạn chọn gần nhất sẽ tự áp dụng cho các video thêm sau.
 3. Bấm **Bắt đầu xử lý**, hoặc **Xử lý tất cả** để chạy lần lượt mọi video đang chờ. Bảng bên phải hiện từng bước, thời gian đã chạy và ước tính còn lại. Có thể **Hủy xử lý**, hoặc đóng ứng dụng giữa chừng — lần sau sẽ tiếp tục từ checkpoint.
