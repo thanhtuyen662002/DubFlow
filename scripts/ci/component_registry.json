@@ -510,6 +510,25 @@
       ]
     },
     {
+      "id": "seo",
+      "roots": [
+        "engine/dubflow/seo",
+        "tests/seo"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/seo",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "source-adapter",
       "roots": [
         "contracts/source",

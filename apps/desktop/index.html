@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; media-src 'self' blob:; img-src 'self' blob: https:"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com; media-src 'self' blob:; img-src 'self' blob: https:"
     />
     <title>DubFlow</title>
     <link rel="stylesheet" href="./src/styles.css" />
@@ -70,7 +70,7 @@
           <div class="topbar-actions">
             <form id="link-form" class="link-form" autocomplete="off">
               <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
-              <input id="link-input" type="url" inputmode="url" placeholder="Dán link Bilibili, Douyin hoặc link video…" aria-label="Link video" />
+              <input id="link-input" type="text" inputmode="url" placeholder="Dán link Bilibili, Douyin… (có thể dán nhiều link)" aria-label="Link video" />
               <button id="link-submit" class="btn" type="submit">Tải link</button>
             </form>
             <button id="clear-queue" class="btn ghost" type="button" hidden>Xóa danh sách</button>
@@ -193,6 +193,7 @@
                 <button id="reveal-output" class="btn" type="button">Mở thư mục</button>
               </div>
               <button id="open-review" class="btn block review-btn" type="button">Xem &amp; sửa bản dịch</button>
+              <button id="open-post" class="btn block review-btn" type="button">Gợi ý tiêu đề &amp; hashtag</button>
             </section>
 
             <fieldset id="voice-controls" class="settings" disabled>
@@ -259,6 +260,13 @@
                 <div id="voice-list" class="voice-list" role="radiogroup" aria-label="Giọng lồng tiếng"></div>
                 <select id="tts-voice" hidden aria-hidden="true"></select>
               </div>
+              <label id="multi-voice-row" class="switch-row multi-voice-row" hidden>
+                <span>
+                  <strong>Nhiều giọng theo người nói <em class="tag">thử nghiệm</em></strong>
+                  <small>Nhận diện người nói và đổi giọng riêng cho từng người; có thể nhận nhầm, đổi lại trong Xem &amp; sửa bản dịch</small>
+                </span>
+                <input id="multi-voice" class="switch" type="checkbox" role="switch" />
+              </label>
               <p id="voice-catalog-status" class="hint"></p>
             </fieldset>
 
@@ -271,6 +279,30 @@
           </aside>
         </section>
       </main>
+    </div>
+    <div id="post-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="post-title" hidden>
+      <div class="review-panel post-panel">
+        <header class="review-head">
+          <div>
+            <h2 id="post-title">Gợi ý đăng bài</h2>
+            <p class="subtitle">Tiêu đề, mô tả và hashtag tiếng Việt cho video đã Việt hóa</p>
+          </div>
+          <button id="post-ai" class="btn" type="button">Viết bằng AI (Claude)</button>
+          <button id="post-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <div id="post-key-row" class="post-key-row" hidden>
+          <p class="hint">Nhập khóa API Claude của bạn (console.anthropic.com). Khóa chỉ lưu trên máy này; khi dùng, phụ đề tiếng Việt của video được gửi tới Anthropic và tính phí theo tài khoản của bạn.</p>
+          <div class="post-key-actions">
+            <input id="post-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API Claude" />
+            <button id="post-key-save" class="btn primary" type="button">Lưu &amp; viết</button>
+            <button id="post-key-clear" class="link" type="button">Xóa khóa</button>
+          </div>
+        </div>
+        <p id="post-state" class="discover-state post-state" role="status"></p>
+        <div id="post-body" class="post-body"></div>
+      </div>
     </div>
     <div id="blur-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="blur-title" hidden>
       <div class="review-panel blur-panel">
@@ -332,6 +364,10 @@
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
         </header>
+        <section id="review-speakers" class="review-speakers" hidden>
+          <h3>Giọng theo người nói</h3>
+          <div id="review-speaker-list" class="review-speaker-list"></div>
+        </section>
         <ol id="review-list" class="review-list"></ol>
         <footer class="review-foot">
           <p id="review-hint" class="hint">Sửa câu tiếng Việt cho ngắn gọn, tự nhiên. Câu quá dài so với thời lượng sẽ không lồng tiếng được.</p>

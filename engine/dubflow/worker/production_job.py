@@ -17,7 +17,7 @@ subtitle result instead of silently returning fixture text.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import json
 import math
@@ -158,6 +158,8 @@ class WorkerConfig:
     tts_model: Path | None = None
     tts_config: Path | None = None
     checkpoint_path: Path | None = None
+    multi_voice: bool = False
+    speaker_voices: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_args(cls, args: Mapping[str, Any]) -> "WorkerConfig":
@@ -182,6 +184,14 @@ class WorkerConfig:
         voice_id = args.get("tts_voice_id")
         if voice_id is not None and (not isinstance(voice_id, str) or re.fullmatch(r"[a-z0-9-]{1,96}", voice_id) is None):
             raise ProductionJobError("COMMAND_INVALID", "tts_voice_id must be a bounded preset identifier")
+
+        speaker_voices = args.get("speaker_voices", {})
+        if not isinstance(speaker_voices, Mapping) or len(speaker_voices) > 8 or any(
+            not isinstance(key, str) or re.fullmatch(r"S[1-8]", key) is None
+            or not isinstance(value, str) or re.fullmatch(r"[a-z0-9-]{1,96}", value) is None
+            for key, value in speaker_voices.items()
+        ):
+            raise ProductionJobError("COMMAND_INVALID", "speaker_voices must map up to eight S1..S8 speakers to preset voice identifiers")
 
         translation_engine = args.get("translation_engine") or "argos"
         if translation_engine not in TRANSLATION_ENGINES:
@@ -218,6 +228,8 @@ class WorkerConfig:
             tts_model=optional_path("tts_model"),
             tts_config=optional_path("tts_config"),
             checkpoint_path=optional_path("checkpoint_path"),
+            multi_voice=optional_bool("multi_voice", False),
+            speaker_voices=dict(speaker_voices),
         )
         if config.target_language != "vi":
             raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the production baseline currently supports Vietnamese output only")
@@ -858,6 +870,7 @@ def _write_manifest(
     language: Mapping[str, Any] | None = None,
     translation: Mapping[str, Any] | None = None,
     asr: Mapping[str, Any] | None = None,
+    speakers: Sequence[Mapping[str, Any]] | None = None,
 ) -> Path:
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -880,12 +893,76 @@ def _write_manifest(
         manifest["translation"] = dict(translation)
     if asr is not None:
         manifest["asr"] = dict(asr)
+    if speakers is not None:
+        manifest["speakers"] = list(speakers)
     path = output_dir / "job_manifest.json"
     _atomic_json(path, manifest)
     return path
 
 
 OCR_PROFILE_PATH = "models/manifests/production-ocr-det-v1.json"
+SPEAKER_PROFILE_PATH = "models/manifests/production-speaker-campplus-v1.json"
+SPEAKER_THRESHOLD = 0.3
+
+
+def _multi_voice_cast(config: WorkerConfig, source_hash: str, cues: Sequence[TextCue], probe: MediaProbeResult,
+                      media: FfmpegMediaAdapter, work_dir: Path, checkpoint: dict[str, Any],
+                      checkpoint_path: Path, emitter: Any, warnings: list[str]):
+    """Optional, checkpointed audio clusters; every failure retains one-voice B2."""
+    try:
+        from engine.dubflow.diarization import speakers
+        from engine.dubflow.tts import vieneu
+        from engine.dubflow.tts.neural_vits import _child, _read_json
+
+        selector = _read_json(config.app_root / "models/manifests/production-cpu-v1.json")
+        catalog = _read_json(_child(config.app_root, selector.get("tts_neural_profile", "")))
+        if catalog.get("backend") != vieneu.ENGINE_ID:
+            raise ValueError("multi-voice requires the VieNeu backend")
+        voices = vieneu.voice_choices(catalog)
+        primary = config.tts_voice_id or catalog["voice_id"]
+        profile_path = config.app_root / SPEAKER_PROFILE_PATH
+        identity = "sha256:" + sha256(json.dumps({"source": source_hash,
+            "audio": _audio_decode_identity(source_hash, probe),
+            "cues": [[cue.cue_id, cue.start_ms, cue.end_ms] for cue in cues],
+            "profile": _sha256(profile_path), "adapter": _sha256(Path(speakers.__file__)),
+            "threshold": SPEAKER_THRESHOLD}, sort_keys=True).encode()).hexdigest()
+        result_path = work_dir / "speakers.json"
+        emitter.progress(0.39, "Đang nhận diện người nói (thử nghiệm)")
+        stage = checkpoint.get("stages", {}).get("speakers", {})
+        if _stage_ready(checkpoint, "speakers", (result_path,)) and stage.get("input_hash") == identity:
+            saved = json.loads(result_path.read_text(encoding="utf-8"))
+            result = speakers.SpeakerResult(saved["labels"], saved["speakers"])
+        else:
+            if not probe.has_audio:
+                raise ValueError("source has no audio for speaker recognition")
+            ensure_model_profile(profile_path, config.model_root)
+            model_path = _child(config.model_root, _read_json(profile_path)["model_path"])
+            audio_path = work_dir / "analysis.wav"
+            audio_identity = _audio_decode_identity(source_hash, probe)
+            if not _stage_ready(checkpoint, "audio", (audio_path,)) or checkpoint["stages"]["audio"].get("input_hash") != audio_identity:
+                media.extract_audio(config.source_path, audio_path, sample_rate=16000, channels=1,
+                                    video_stream=probe.video, overwrite=True)
+                _write_stage(checkpoint, checkpoint_path, "audio", {"path": str(audio_path), "sha256": _sha256(audio_path),
+                    "input_hash": audio_identity, "clock_mapping": _source_clock_mapping(probe)})
+            result = speakers.assign_speakers(audio_path, cues, model_path, threshold=SPEAKER_THRESHOLD,
+                checkpoint_dir=work_dir / "speaker-chunks" / identity.removeprefix("sha256:"))
+            _atomic_json(result_path, {"labels": result.labels, "speakers": result.speakers})
+            _write_stage(checkpoint, checkpoint_path, "speakers", {"path": str(result_path),
+                "sha256": _sha256(result_path), "input_hash": identity})
+        ids = {speaker["id"] for speaker in result.speakers}
+        if not 1 <= len(ids) <= 8 or len(ids) != len(result.speakers) or ids != {f"S{i}" for i in range(1, len(ids) + 1)} or set(result.labels) != {cue.cue_id for cue in cues} or set(result.labels.values()) != ids:
+            raise ValueError("speaker checkpoint does not cover current cues")
+        for speaker in result.speakers:
+            expected = {identifier for identifier, label in result.labels.items() if label == speaker["id"]}
+            if speaker["gender"] not in {"male", "female", "unknown"} or not isinstance(speaker["cues"], list) or set(speaker["cues"]) != expected or len(speaker["cues"]) != len(expected):
+                raise ValueError("speaker checkpoint has invalid cluster metadata")
+        casting = speakers.cast_voices(result.speakers, voices, primary, getattr(config, "speaker_voices", {}))
+        emitter.checkpoint("speakers", _sha256(result_path))
+        return result, casting
+    except Exception as error:  # optional experimental analysis must never stop a job
+        detail = " ".join(str(error).replace("\x00", " ").split())[:300]
+        warnings.append(f"MULTI_VOICE_SKIPPED: {getattr(error, 'code', type(error).__name__)}: {detail}")
+        return None, {}
 
 
 def _auto_blur_regions(config: WorkerConfig, source_hash: str, duration_ms: int | None, cues: Sequence[TextCue],
@@ -1075,6 +1152,18 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     emitter.progress(0.38, "Đã nhận dạng lời thoại", units_done=len(cues), units_total=len(cues))
     emitter.checkpoint("transcript", _sha256(work_dir / "transcript.json"))
 
+    warnings: list[str] = []
+    speaker_result, casting = None, {}
+    voice_by_cue = None
+    speaker_summary = None
+    if config.enable_dubbing and getattr(config, "multi_voice", False):
+        speaker_result, casting = _multi_voice_cast(config, source_hash, cues, probe, media, work_dir,
+                                                   checkpoint, checkpoint_path, emitter, warnings)
+        if speaker_result is not None:
+            voice_by_cue = {identifier: casting[speaker] for identifier, speaker in speaker_result.labels.items()}
+            speaker_summary = [{"id": speaker["id"], "gender": speaker["gender"],
+                "voice_id": casting[speaker["id"]], "cues": speaker["cues"]} for speaker in speaker_result.speakers]
+
     translation_path = work_dir / "translation.json"
     try:
         translation_runtime = create_translation_runtime(getattr(config, "translation_engine", "argos"), config.app_root, config.model_root, transcript.source_language)
@@ -1102,7 +1191,6 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     emitter.progress(0.66, "Đã tạo subtitle SRT/ASS")
     emitter.checkpoint("subtitles", _sha256(srt_path))
 
-    warnings: list[str] = []
     b2_audio: B2AudioResult | None = None
     audio_path: Path | None = None
     audio_metadata: dict[str, Any] = {"mode": "original", "backend": "source-audio"}
@@ -1111,22 +1199,39 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         try:
             from engine.dubflow.worker.b2_audio import tts_recipe_identity, mix_recipe_identity
             selected_voice = getattr(config, "tts_voice_id", None)
-            generation_identity = sha256((translation_input + (overrides_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice)).encode()).hexdigest()
-            b2_audio = run_b2_audio(
-                media=media,
-                source_path=config.source_path,
-                source_probe=probe,
-                translated_cues=translated,
-                source_language=transcript.source_language,
-                app_root=config.app_root,
-                profile_path=profile_path,
-                work_dir=_b2_generation(checkpoint, checkpoint_path, work_dir, config.output_dir.absolute(), generation_identity),
-                model_root=config.model_root,
-                tts_voice_id=selected_voice,
-                # Shared by every generation in this output folder, so a reviewed
-                # re-run synthesises only the cues whose request changed.
-                synthesis_cache_dir=work_dir / "tts-cache",
-            )
+            def dub(cue_voices):
+                casting_identity = json.dumps({"casting": casting, "voice_by_cue": cue_voices}, sort_keys=True) if cue_voices is not None else ""
+                generation_identity = sha256((translation_input + (overrides_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice) + casting_identity).encode()).hexdigest()
+                return run_b2_audio(
+                    media=media,
+                    source_path=config.source_path,
+                    source_probe=probe,
+                    translated_cues=translated,
+                    source_language=transcript.source_language,
+                    app_root=config.app_root,
+                    profile_path=profile_path,
+                    work_dir=_b2_generation(checkpoint, checkpoint_path, work_dir, config.output_dir.absolute(), generation_identity),
+                    model_root=config.model_root,
+                    tts_voice_id=selected_voice,
+                    # Shared by every generation in this output folder, so a reviewed
+                    # re-run synthesises only the cues whose request changed.
+                    synthesis_cache_dir=work_dir / "tts-cache",
+                    **({"voice_by_cue": cue_voices} if cue_voices is not None else {}),
+                )
+
+            try:
+                b2_audio = dub(voice_by_cue)
+            except B2AudioError as error:
+                if voice_by_cue is None:
+                    raise
+                warnings.append(f"MULTI_VOICE_SKIPPED: grouped synthesis failed: {error.code}: {error.condition[:300]}")
+                # One changed-condition retry: remove the experimental casting.
+                # Its separate generation cannot overwrite grouped artifacts.
+                b2_audio = dub(None)
+                voice_by_cue = None
+                for speaker in speaker_summary:
+                    speaker["voice_id"] = b2_audio.voice.voice_id
+            tts_documents = getattr(b2_audio, "tts_documents", (b2_audio.tts_document,))
             audio_path = b2_audio.final_mix_path
             audio_metadata = {
                 "mode": "dubbed",
@@ -1138,18 +1243,20 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 "tts_document": str(b2_audio.tts_document_path),
                 "mix_document": str(b2_audio.mix_document_path),
                 "mix_provenance": b2_audio.mix_document.provenance.to_dict(),
-                "tts_failures": len(b2_audio.tts_document.failures),
+                "tts_failures": sum(len(document.failures) for document in tts_documents),
                 "mix_failures": len(b2_audio.mix_document.failures),
                 "mix_warnings": list(b2_audio.mix_document.warnings),
             }
+            if voice_by_cue is not None:
+                audio_metadata["voices"] = list(b2_audio.voices)
             if b2_audio.placement_document_path is not None:
                 audio_metadata["dubbing_placement"] = {"schema_version": 1, "path": str(b2_audio.placement_document_path),
                     "sha256": _sha256(b2_audio.placement_document_path)}
-                warnings.extend(warning for warning in b2_audio.tts_document.warnings if warning.startswith("TTS_INTERCUE_GAP_USED:"))
+                warnings.extend(warning for document in tts_documents for warning in document.warnings if warning.startswith("TTS_INTERCUE_GAP_USED:"))
             if b2_audio.spoken_text_document_path is not None:
                 audio_metadata["dubbing_spoken_text"] = {"schema_version": 1,
                     "path": str(b2_audio.spoken_text_document_path), "sha256": _sha256(b2_audio.spoken_text_document_path)}
-                warnings.extend(warning for warning in b2_audio.tts_document.warnings
+                warnings.extend(warning for document in tts_documents for warning in document.warnings
                                 if warning.startswith(("TTS_DURATION_REWRITE_APPLIED:", "TTS_SPOKEN_TEXT_CHECKPOINT_INVALID:")))
             _write_stage(
                 checkpoint,
@@ -1164,7 +1271,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                     "sha256": _sha256(b2_audio.final_mix_path),
                 },
             )
-            if b2_audio.tts_document.failures or b2_audio.mix_document.failures:
+            if any(document.failures for document in tts_documents) or b2_audio.mix_document.failures:
                 warnings.append("B2_AUDIO_DEGRADED: one or more dialogue cues used bounded per-cue fallback; "
                                 + ("source audio was preserved" if probe.has_audio else "source has no audio; refused cues remain silent"))
             emitter.checkpoint("b2-audio", _sha256(b2_audio.final_mix_path))
@@ -1281,6 +1388,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     qc_path = export_dir / "qc_report.json"
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata,
           **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions)}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if speaker_summary is not None:
+        qc["speakers"] = speaker_summary
     _atomic_json(qc_path, qc)
     editable_dir = export_dir / "editable"
     editable_names = {"captions_vi.srt", "captions_vi.ass", "timeline.json"}
@@ -1290,6 +1399,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             editable_names.add("dubbing_placement.json")
         if b2_audio.spoken_text_document_path is not None:
             editable_names.add("dubbing_spoken_text.json")
+        editable_names.update(path.name for path in getattr(b2_audio, "spoken_text_document_paths", ()))
     if editable_dir.exists():
         for path in editable_dir.iterdir():
             export_publication.plain(path.absolute())
@@ -1310,11 +1420,14 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             editable_audio.append((b2_audio.placement_document_path, "dubbing_placement.json", _sha256(b2_audio.placement_document_path)))
         if b2_audio.spoken_text_document_path is not None:
             editable_audio.append((b2_audio.spoken_text_document_path, "dubbing_spoken_text.json", _sha256(b2_audio.spoken_text_document_path)))
+        for path in getattr(b2_audio, "spoken_text_document_paths", ())[1:]:
+            editable_audio.append((path, path.name, _sha256(path)))
         for source, name, expected_hash in editable_audio:
             target = editable_dir / name
             _copy_editable_artifact(source, target, expected_hash=expected_hash)
     timeline_path = editable_dir / "timeline.json"
-    _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": [cue.to_dict() for cue in translated], "source_clock_mapping": _source_clock_mapping(probe)})
+    timeline_cues = [dict(cue.to_dict(), **({"speaker": speaker_result.labels[cue.cue_id]} if speaker_result is not None else {})) for cue in translated]
+    _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": timeline_cues, "source_clock_mapping": _source_clock_mapping(probe)})
     artifacts = {"final_video": final_path, "captions_srt": srt_path, "captions_ass": ass_path, "qc_report": qc_path, "editable_timeline": timeline_path}
     if b2_audio is not None:
         artifacts.update({
@@ -1333,7 +1446,13 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         if b2_audio.spoken_text_document_path is not None:
             artifacts["dubbing_spoken_text"] = b2_audio.spoken_text_document_path
             artifacts["editable_dubbing_spoken_text"] = editable_dir / "dubbing_spoken_text.json"
-    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=dict(translation_provenance, reviewed_overrides=overrides_identity), asr=transcript.asr_evidence)
+        for path in getattr(b2_audio, "tts_document_paths", ())[1:]:
+            artifacts[path.stem] = path
+        for path in getattr(b2_audio, "spoken_text_document_paths", ())[1:]:
+            artifacts[path.stem] = path
+            artifacts["editable_" + path.stem] = editable_dir / path.name
+    manifest_path = _write_manifest(export_dir, config, probe, translated, artifacts, warnings, audio=audio_metadata, language=transcript.language_metadata(), translation=dict(translation_provenance, reviewed_overrides=overrides_identity), asr=transcript.asr_evidence,
+                                    **({"speakers": speaker_summary} if speaker_summary is not None else {}))
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.checkpoint("qc", _sha256(qc_path))
     return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "manifest": str(manifest_path)}

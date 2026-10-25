@@ -152,6 +152,19 @@ class ProductionWorkerTests(unittest.TestCase):
                 "media_runtime_root": str(root), "ffmpeg_path": str(root / "ffmpeg.exe"), "ffprobe_path": str(root / "ffprobe.exe"),
                 "enable_dubbing": True, "tts_voice_id": "vi-thuy-dung-vieneu3-v1"}
             self.assertEqual(WorkerConfig.from_args(args).tts_voice_id, args["tts_voice_id"])
+            self.assertFalse(WorkerConfig.from_args(args).multi_voice)
+            self.assertEqual(WorkerConfig.from_args(args).speaker_voices, {})
+            multi = WorkerConfig.from_args({**args, "multi_voice": True, "speaker_voices": {"S1": "voice-a", "S8": "voice-b"}})
+            self.assertTrue(multi.multi_voice)
+            self.assertEqual(multi.speaker_voices, {"S1": "voice-a", "S8": "voice-b"})
+            for invalid in (1, "true", None, {}):
+                with self.subTest(multi_voice=invalid), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
+                    WorkerConfig.from_args({**args, "multi_voice": invalid})
+            for invalid in (None, [], "voice-a", {"S0": "v"}, {"S9": "v"}, {"s1": "v"},
+                            {"S1": "../escape"}, {"S1": "A"}, {"S1": "a" * 97}, {"S1": True},
+                            {i: "v" for i in range(9)}):
+                with self.subTest(speaker_voices=invalid), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
+                    WorkerConfig.from_args({**args, "speaker_voices": invalid})
             for invalid in (True, 123, "", "../escape", "a" * 97):
                 with self.subTest(invalid=invalid), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
                     WorkerConfig.from_args({**args, "tts_voice_id": invalid})

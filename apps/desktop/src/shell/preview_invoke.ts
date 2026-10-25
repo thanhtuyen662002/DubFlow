@@ -113,6 +113,14 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       { version: "0.2.0-rc5", channel: "candidate", installed_at_utc: "2026-10-24T00:00:00Z" },
     ] } as T;
     case "activate_version": return { ok: true, current_version: String(args.version) } as T;
+    case "review_speakers": return [
+      { id: "S1", gender: "female", voice_id: "vi-truc-ly-vieneu3-v1", cues: 9 },
+      { id: "S2", gender: "male", voice_id: "vi-adam-bua-vieneu3-v1", cues: 5 },
+    ] as T;
+    case "post_suggestions": return { ok: true,
+      titles: ["Tiên hiệp: Bí mật linh kiếm thức tỉnh (Vietsub)", "Thanh linh kiếm này đã ngủ yên suốt 300 năm!", "Linh kiếm khiến ai cũng bất ngờ"],
+      description: "Thanh linh kiếm này đã ngủ yên suốt 300 năm! Vì sao một đệ tử tu tiên lại đánh thức được linh kiếm?\n#vietsub",
+      hashtags: ["#linhkiem", "#tienhiep", "#phimtienhiep", "#vietsub", "#trungquoc"], keywords: [] } as T;
     case "discover": return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1)) as T;
     case "open_discovery": return `https://example.invalid/${String(args.platform)}` as T;
     case "scroll_discovery": return null as T;
