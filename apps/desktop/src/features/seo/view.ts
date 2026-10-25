@@ -2,7 +2,8 @@ import { normalizeSuggestion, writeWithClaude, type PostSuggestion } from "./ai.
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
-const KEY_STORAGE = "dubflow.anthropicApiKey.v1";
+/** Where rc7 kept the key; only ever removed now, never read. */
+const LEGACY_KEY_STORAGE = "dubflow.anthropicApiKey.v1";
 const CJK = /[㐀-鿿]/;
 
 const $ = <T extends HTMLElement>(selector: string): T => {
@@ -11,15 +12,29 @@ const $ = <T extends HTMLElement>(selector: string): T => {
   return node;
 };
 
-function readKey(): string {
-  try { return window.localStorage.getItem(KEY_STORAGE) ?? ""; } catch { return ""; }
+export const KEY_HINT = "Nhập khóa API Claude của bạn (console.anthropic.com). Khóa chỉ được giữ trong phiên làm việc này và sẽ mất khi đóng hoặc tải lại app; khi dùng, phụ đề tiếng Việt của video được gửi tới Anthropic và tính phí theo tài khoản của bạn.";
+export const KEY_CLEAR_LABEL = "Xóa khóa khỏi phiên này";
+export const KEY_CLEARED = "Đã xóa khóa API khỏi phiên làm việc này.";
+
+/** The Claude API key, held only in memory for the current app session. */
+export interface SessionKey {
+  read(): string;
+  set(value: string): void;
+  clear(): void;
 }
 
-function storeKey(value: string): void {
-  try {
-    if (value) window.localStorage.setItem(KEY_STORAGE, value);
-    else window.localStorage.removeItem(KEY_STORAGE);
-  } catch { /* the key is then asked for again next time */ }
+export function createSessionKey(): SessionKey {
+  let key = "";
+  return {
+    read: () => key,
+    set: (value) => { key = value.trim(); },
+    clear: () => { key = ""; },
+  };
+}
+
+/** Drop a key an earlier version left in persistent WebView storage. */
+function purgeLegacyKey(): void {
+  try { window.localStorage.removeItem(LEGACY_KEY_STORAGE); } catch { /* nothing stored */ }
 }
 
 /** Offline suggestions from `post_suggestions`, or null when the engine failed. */
@@ -41,6 +56,11 @@ export function mountPostSuggestions(invoke: Invoke): { open(outputPath: string,
   const aiButton = $<HTMLButtonElement>("#post-ai");
   const keyRow = $("#post-key-row");
   const keyInput = $<HTMLInputElement>("#post-key");
+  const keyClear = $<HTMLButtonElement>("#post-key-clear");
+  const apiKey = createSessionKey();
+  purgeLegacyKey();
+  keyRow.querySelector(".hint")!.textContent = KEY_HINT;
+  keyClear.textContent = KEY_CLEAR_LABEL;
   let outputPath = "";
   let sourceTitle = "";
   let request = 0;
@@ -121,7 +141,7 @@ export function mountPostSuggestions(invoke: Invoke): { open(outputPath: string,
   }
 
   async function runAi(): Promise<void> {
-    const key = readKey();
+    const key = apiKey.read();
     if (!key) {
       keyRow.hidden = false;
       keyInput.focus();
@@ -151,15 +171,15 @@ export function mountPostSuggestions(invoke: Invoke): { open(outputPath: string,
 
   aiButton.addEventListener("click", () => void runAi());
   $("#post-key-save").addEventListener("click", () => {
-    storeKey(keyInput.value.trim());
+    apiKey.set(keyInput.value);
     keyInput.value = "";
     keyRow.hidden = true;
     void runAi();
   });
-  $("#post-key-clear").addEventListener("click", () => {
-    storeKey("");
+  keyClear.addEventListener("click", () => {
+    apiKey.clear();
     keyInput.value = "";
-    state.textContent = "Đã xóa khóa API khỏi máy này.";
+    state.textContent = KEY_CLEARED;
   });
   $("#post-close").addEventListener("click", () => { dialog.hidden = true; request += 1; });
   dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { dialog.hidden = true; request += 1; } });
