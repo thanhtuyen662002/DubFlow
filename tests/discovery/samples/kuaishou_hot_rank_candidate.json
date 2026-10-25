@@ -1,0 +1,71 @@
+{
+  "name": "hot_rank_candidate",
+  "platform": "kuaishou",
+  "at_utc": "2026-10-25T04:02:04.644562+00:00",
+  "method": "POST",
+  "url": "https://www.kuaishou.com/graphql",
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.kuaishou.com/",
+    "Content-Type": "application/json",
+    "Origin": "https://www.kuaishou.com"
+  },
+  "cookie_names_sent": [
+    "clientid",
+    "did",
+    "kpf",
+    "kpn",
+    "ktrace-context"
+  ],
+  "external_cookie_file_used": false,
+  "request_body": {
+    "operationName": "visionHotRank",
+    "variables": {},
+    "query": "query visionHotRank { visionHotRank { result items { name hotValue } } }"
+  },
+  "expected_items_path": "data.visionHotRank.items",
+  "probe_note": "Candidate operation: HTTP success alone does not verify GraphQL schema",
+  "http_status": 200,
+  "final_url": "https://www.kuaishou.com/graphql",
+  "content_type": "application/json",
+  "content_encoding": "gzip",
+  "wire_bytes": 1504,
+  "body_capped": false,
+  "response_headers": {
+    "Date": "Sun, 25 Oct 2026 04:02:05 GMT"
+  },
+  "set_cookie_names": [],
+  "body_bytes": 3247,
+  "response_json": {
+    "data": {
+      "visionHotRank": {
+        "result": 1,
+        "items": [
+          {
+            "name": "总书记深情讲述这条伟大胜利之路",
+            "hotValue": null
+          }
+        ]
+      }
+    }
+  },
+  "array_counts_before_trimming": {
+    "data.visionHotRank.items": 49
+  },
+  "expected_item_count": 49,
+  "first_item": {
+    "name": "总书记深情讲述这条伟大胜利之路",
+    "hotValue": null
+  },
+  "elapsed_seconds": 0.812,
+  "cookie_jar_names_after": [
+    "clientid",
+    "did",
+    "kpf",
+    "kpn",
+    "ktrace-context"
+  ]
+}

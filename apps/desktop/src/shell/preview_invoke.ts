@@ -113,6 +113,11 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       { version: "0.2.0-rc5", channel: "candidate", installed_at_utc: "2026-10-24T00:00:00Z" },
     ] } as T;
     case "activate_version": return { ok: true, current_version: String(args.version) } as T;
+    case "discover": return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1)) as T;
+    case "open_discovery": return `https://example.invalid/${String(args.platform)}` as T;
+    case "scroll_discovery": return null as T;
+    case "translate_terms": return { ok: true, items: (args.terms as string[]).map((term) => `(nghĩa) ${term}`) } as T;
+    case "collect_discovery": return previewCollected(String(args.platform)) as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
     case "video_frame": return await previewFrame(Number(args.position)) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
@@ -123,6 +128,31 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
 }
 
 /** A short sine tone WAV so the review "listen" buttons work in the browser preview. */
+const PREVIEW_WORDS = ["仙侠剧名场面", "美食探店", "国漫新番", "古装剧高能", "萌宠日常", "搞笑配音", "旅行vlog", "手工制作", "健身打卡", "动画短片"];
+
+function previewDiscover(platform: string, action: string, page: number): unknown {
+  if (action === "trends" || action === "suggest") {
+    return { ok: true, next_page: null, items: PREVIEW_WORDS.map((keyword, index) => ({ platform, keyword, rank: index + 1, heat: index < 6 ? 9_800_000 - index * 1_250_000 : null, url: "" })) };
+  }
+  if (platform !== "bilibili") return { ok: false, code: "UNSUPPORTED", message: "preview" };
+  return {
+    ok: true, next_page: page < 3 ? page + 1 : null,
+    items: Array.from({ length: 8 }, (_, index) => ({
+      platform, video_id: `BV1preview${page}${index}`, title: `【预览】${PREVIEW_WORDS[index]} 第${page}页 · 精彩片段合集`, author: "UP主示例",
+      author_id: "1", duration_s: 95 + index * 37, plays: 12_000 * (index + 1) * page, likes: null, cover_url: "",
+      page_url: `https://www.bilibili.com/video/BV1preview${page}${index}`,
+    })),
+  };
+}
+
+function previewCollected(platform: string): unknown {
+  const host = platform === "kuaishou" ? "www.kuaishou.com/short-video" : platform === "douyin" ? "www.douyin.com/video" : "www.bilibili.com/video";
+  return Array.from({ length: 6 }, (_, index) => ({
+    page_url: `https://${host}/7${index}00000000000000`, title: `${PREVIEW_WORDS[index + 2]} · 视频 ${index + 1}`, cover_url: null,
+    author: "示例作者", fetch_url: `https://${host}/7${index}00000000000000`,
+  }));
+}
+
 /** A 16:9 stand-in frame with a burned-in Chinese caption near the bottom. */
 async function previewFrame(position: number): Promise<ArrayBuffer> {
   const canvas = document.createElement("canvas");

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; media-src 'self' blob:; img-src 'self' blob:"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; media-src 'self' blob:; img-src 'self' blob: https:"
     />
     <title>DubFlow</title>
     <link rel="stylesheet" href="./src/styles.css" />
@@ -20,10 +20,14 @@
           <span class="brand-name">DubFlow</span>
         </div>
         <nav class="nav" aria-label="Điều hướng">
-          <a class="nav-item active" href="#" aria-current="page">
+          <a id="nav-queue" class="nav-item active" href="#" aria-current="page">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>
             Hàng đợi video
             <span id="nav-count" class="nav-count">0</span>
+          </a>
+          <a id="nav-discover" class="nav-item" href="#">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            Khám phá
           </a>
         </nav>
         <div class="sidebar-stats">
@@ -58,7 +62,7 @@
       </aside>
 
       <main class="main">
-        <header class="topbar">
+        <header id="queue-topbar" class="topbar">
           <div>
             <h1>Hàng đợi video</h1>
             <p id="queue-summary" class="subtitle">Chưa có video</p>
@@ -78,7 +82,64 @@
           </div>
         </header>
 
-        <section class="content">
+        <section id="discover-view" class="discover" hidden>
+          <header class="topbar">
+            <div>
+              <h1>Khám phá video</h1>
+              <p class="subtitle">Xu hướng, gợi ý từ khóa và lấy video từ Douyin, Bilibili, Kuaishou</p>
+            </div>
+            <div id="platform-tabs" class="platform-tabs" role="tablist" aria-label="Nền tảng"></div>
+          </header>
+          <div class="discover-body">
+            <aside class="trend-panel">
+              <div class="trend-head">
+                <h2>Đang hot</h2>
+                <button id="trends-refresh" class="link" type="button">Làm mới</button>
+              </div>
+              <label class="gloss-toggle"><input id="trend-gloss" type="checkbox" /> Dịch nghĩa sang tiếng Việt</label>
+              <ol id="trend-list" class="trend-list"></ol>
+              <p id="trend-state" class="hint"></p>
+            </aside>
+            <div class="discover-main">
+              <form id="discover-form" class="discover-form" autocomplete="off">
+                <select id="discover-kind" aria-label="Kiểu tìm">
+                  <option value="search">Từ khóa</option>
+                  <option value="creator">Trang kênh</option>
+                </select>
+                <div class="suggest-box">
+                  <input id="discover-query" type="text" placeholder="Từ khóa tiếng Trung, ví dụ 仙侠 hoặc 美食" aria-label="Từ khóa" aria-autocomplete="list" aria-controls="suggest-list" />
+                  <ul id="suggest-list" class="suggest-list" role="listbox" hidden></ul>
+                </div>
+                <button class="btn primary" type="submit">Tìm</button>
+                <button id="discover-popular" class="btn" type="button" hidden>Thịnh hành</button>
+              </form>
+              <div class="topic-row" aria-label="Chủ đề gợi ý">
+                <span class="hint">Chủ đề:</span>
+                <div id="topic-chips" class="topic-chips"></div>
+              </div>
+              <div id="discover-browser" class="discover-browser" hidden>
+                <p>Trang đang mở trong cửa sổ <b>Khám phá video</b>. Cuộn trang để tải thêm kết quả rồi bấm <b>Lấy video từ trang</b>.</p>
+                <p class="hint">Douyin và Kuaishou thường yêu cầu đăng nhập để tìm kiếm hoặc xem danh sách kênh: đăng nhập (quét mã QR bằng app trên điện thoại) ngay trong cửa sổ đó. Phiên đăng nhập được lưu lại cho lần sau.</p>
+                <div class="discover-browser-actions">
+                  <button id="discover-scroll" class="btn" type="button">Cuộn thêm</button>
+                  <button id="discover-collect" class="btn primary" type="button">Lấy video từ trang</button>
+                </div>
+              </div>
+              <p id="discover-state" class="discover-state" role="status"></p>
+              <div id="result-bar" class="result-bar" hidden>
+                <label><input id="select-all" type="checkbox" /> Chọn tất cả</label>
+                <span id="selected-count" class="hint"></span>
+                <button id="discover-clear" class="btn ghost" type="button">Xóa kết quả</button>
+                <button id="discover-add" class="btn primary" type="button" disabled>Thêm vào hàng đợi</button>
+              </div>
+              <ul id="discover-results" class="discover-results"></ul>
+              <button id="discover-more" class="btn more-btn" type="button" hidden>Tải thêm</button>
+              <p class="hint discover-note">Chỉ tải và xử lý video bạn có quyền sử dụng; tuân thủ điều khoản của từng nền tảng.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="queue-content" class="content">
           <div class="queue-area">
             <div id="drop-zone" class="drop-zone">
               <div class="drop-icon" aria-hidden="true">
@@ -165,7 +226,7 @@
                 </select>
               </label>
               <p id="hachimi-warning" class="result-warning" hidden>
-                <strong>Giấy phép chưa xác minh.</strong> HachimiMT-60 (CC-BY-4.0, tác giả ngocdang83) được huấn luyện có dùng dữ liệu chưng cất từ Gemini; chưa rõ có được dùng cho mục đích thương mại. Chỉ nên dùng cá nhân/thử nghiệm.
+                <strong>Giấy phép chưa xác minh.</strong> HachimiMT-60 (CC-BY-4.0, tác giả ngocdang83) được huấn luyện có dùng dữ liệu chưng cất từ Gemini và một bộ dữ liệu giấy phép GPL-3.0; chưa rõ có được dùng cho mục đích thương mại. Chỉ nên dùng cá nhân/thử nghiệm.
                 Model khoảng 58 MB, tải về ở lần dùng đầu. Văn phong có thể giống truyện (ta/ngươi), hãy xem lại bản dịch. Video tiếng Anh vẫn dịch bằng Argos.
               </p>
               <label class="switch-row burn-row">

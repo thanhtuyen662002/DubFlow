@@ -1,0 +1,218 @@
+{
+  "name": "suggest_fresh",
+  "platform": "douyin_followup",
+  "at_utc": "2026-10-25T04:03:12.915995+00:00",
+  "method": "GET",
+  "url": "https://www.douyin.com/aweme/v1/web/search/sug/?device_platform=webapp&aid=6383&channel=channel_pc_web&keyword=%E4%BB%99%E4%BE%A0&source=aweme_video_web",
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.douyin.com/"
+  },
+  "cookie_names_sent": [],
+  "external_cookie_file_used": false,
+  "request_body": null,
+  "expected_items_path": "sug_list",
+  "probe_note": null,
+  "http_status": 200,
+  "final_url": "https://www.douyin.com/aweme/v1/web/search/sug/?device_platform=webapp&aid=6383&channel=channel_pc_web&keyword=%E4%BB%99%E4%BE%A0&source=aweme_video_web",
+  "content_type": "application/json; charset=utf-8",
+  "content_encoding": "gzip",
+  "wire_bytes": 4622,
+  "body_capped": false,
+  "response_headers": {
+    "Server": "Tengine",
+    "Date": "Sun, 25 Oct 2026 04:03:13 GMT",
+    "X-Tt-Logid": "2026102512031382CF58049A2F21353FB7"
+  },
+  "set_cookie_names": [],
+  "body_bytes": 26484,
+  "response_json": {
+    "sug_list": [
+      {
+        "pos": [
+          {
+            "begin": 0,
+            "end": 1
+          }
+        ],
+        "content": "仙侠手游要充钱吗",
+        "sug_type": "",
+        "word_record": {
+          "group_id": "6974689439705011487",
+          "words_position": 0,
+          "words_content": "仙侠手游要充钱吗",
+          "words_source": "sug"
+        },
+        "extra_info": {
+          "ctr_score": "0.000000",
+          "deep_think": 0,
+          "ecom_ctr": -10000.0,
+          "ecom_cvr": -10000.0,
+          "ecom_gmv": -10000.0,
+          "ecom_rel_product_count": -1,
+          "ecom_rel_product_score": -10000.0,
+          "ecpm_score": 49.60469436645508,
+          "exemptions": {},
+          "is_useful_query": "1",
+          "play_finish_rate": -10000.0,
+          "poi_id": "",
+          "poi_location_recall_log_id": "2026102512031382CF58049A2F21353FB7",
+          "predict_ctr_score": 1.585118494795701e-11,
+          "predict_order": 14,
+          "predict_utility_score": -4172.38037109375,
+          "qrec_for_search": "{\"sug_ecom_intent\":0,\"sug_ecom_people_intent\":0,\"sug_ecom_shw_good\":-10000.0,\"sug_ecom_shw_live\":-10000.0,\"sug_ecom_shw\":-10000.0,\"sug_ecom_ctr\":-10000.0,\"sug_ecom_cvr\":-10000.0,\"sug_ecom_gmv\":-10000.0,\"is_ecom_live_top_user\":0,\"qrec_for_feed_query\":{\"ecom_bp_strong\":0},\"sug_top_query\":\"仙侠手游要充钱吗,,\",\"search_result_scores\":\"{\\\"search_result_click\\\":0.019407447427511215,\\\"search_video_play\\\":0.3711860477924347,\\\"search_duration_time\\\":0.0703933984041214,\\\"search_change_query\\\":0.022062810137867928}\"}",
+          "ranking_labels": {
+            "0": [
+              "27837"
+            ],
+            "20764": [
+              "仙侠手游需要充钱吗知乎_仙侠手游要充钱吗"
+            ],
+            "5": [
+              "仙侠手游需要充钱吗知乎_仙侠手游要充钱吗"
+            ],
+            "7": [
+              "仙侠手游要充钱吗"
+            ],
+            "8": [
+              "仙侠手游要充钱吗"
+            ]
+          },
+          "ranking_rule_score": -10000.0,
+          "reason": "aweme_word_experience:19 aweme_ori_word_experience:19",
+          "recall_position": {
+            "aweme_ori_word_experience": 19,
+            "aweme_word_experience": 19
+          },
+          "recall_score": {
+            "aweme_ori_word_experience": "12.936454",
+            "aweme_word_experience": "12.936454"
+          },
+          "relevance_score": -10000.0,
+          "res_click_rate": -10000.0,
+          "roughsort_order": 55,
+          "roughsort_score": 12.936453819274902,
+          "search_params": "{\"sug_poi_id\":\"\"}",
+          "slot_utility_scores": [],
+          "sq": "仙侠手游要充钱吗",
+          "src_query_is_prefix": 2,
+          "sug_enter_type": "3"
+        }
+      }
+    ],
+    "sug_virtual_list": null,
+    "status_code": 0,
+    "status_msg": "",
+    "rid": "2026102512031382CF58049A2F21353FB7",
+    "words_query_record": {
+      "info": "{}",
+      "words_source": "sug",
+      "query_id": "6537219024604910855"
+    },
+    "extra": {
+      "now": 1792900993000,
+      "logid": "2026102512031382CF58049A2F21353FB7",
+      "fatal_item_ids": [],
+      "search_request_id": ""
+    },
+    "log_pb": {
+      "impr_id": "2026102512031382CF58049A2F21353FB7"
+    },
+    "time_cost": {},
+    "words_lists": [],
+    "cache_conf": {
+      "enable": false
+    }
+  },
+  "array_counts_before_trimming": {
+    "sug_list": 10,
+    "sug_list[0].pos": 1,
+    "sug_list[0].extra_info.ranking_labels.0": 5,
+    "sug_list[0].extra_info.ranking_labels.20764": 2,
+    "sug_list[0].extra_info.ranking_labels.5": 2,
+    "sug_list[0].extra_info.ranking_labels.7": 1,
+    "sug_list[0].extra_info.ranking_labels.8": 1,
+    "sug_list[0].extra_info.slot_utility_scores": 0,
+    "extra.fatal_item_ids": 0,
+    "words_lists": 0
+  },
+  "application_status_code": 0,
+  "application_status_msg": "",
+  "expected_item_count": 10,
+  "first_item": {
+    "pos": [
+      {
+        "begin": 0,
+        "end": 1
+      }
+    ],
+    "content": "仙侠手游要充钱吗",
+    "sug_type": "",
+    "word_record": {
+      "group_id": "6974689439705011487",
+      "words_position": 0,
+      "words_content": "仙侠手游要充钱吗",
+      "words_source": "sug"
+    },
+    "extra_info": {
+      "ctr_score": "0.000000",
+      "deep_think": 0,
+      "ecom_ctr": -10000.0,
+      "ecom_cvr": -10000.0,
+      "ecom_gmv": -10000.0,
+      "ecom_rel_product_count": -1,
+      "ecom_rel_product_score": -10000.0,
+      "ecpm_score": 49.60469436645508,
+      "exemptions": {},
+      "is_useful_query": "1",
+      "play_finish_rate": -10000.0,
+      "poi_id": "",
+      "poi_location_recall_log_id": "2026102512031382CF58049A2F21353FB7",
+      "predict_ctr_score": 1.585118494795701e-11,
+      "predict_order": 14,
+      "predict_utility_score": -4172.38037109375,
+      "qrec_for_search": "{\"sug_ecom_intent\":0,\"sug_ecom_people_intent\":0,\"sug_ecom_shw_good\":-10000.0,\"sug_ecom_shw_live\":-10000.0,\"sug_ecom_shw\":-10000.0,\"sug_ecom_ctr\":-10000.0,\"sug_ecom_cvr\":-10000.0,\"sug_ecom_gmv\":-10000.0,\"is_ecom_live_top_user\":0,\"qrec_for_feed_query\":{\"ecom_bp_strong\":0},\"sug_top_query\":\"仙侠手游要充钱吗,,\",\"search_result_scores\":\"{\\\"search_result_click\\\":0.019407447427511215,\\\"search_video_play\\\":0.3711860477924347,\\\"search_duration_time\\\":0.0703933984041214,\\\"search_change_query\\\":0.022062810137867928}\"}",
+      "ranking_labels": {
+        "0": [
+          "27837"
+        ],
+        "20764": [
+          "仙侠手游需要充钱吗知乎_仙侠手游要充钱吗"
+        ],
+        "5": [
+          "仙侠手游需要充钱吗知乎_仙侠手游要充钱吗"
+        ],
+        "7": [
+          "仙侠手游要充钱吗"
+        ],
+        "8": [
+          "仙侠手游要充钱吗"
+        ]
+      },
+      "ranking_rule_score": -10000.0,
+      "reason": "aweme_word_experience:19 aweme_ori_word_experience:19",
+      "recall_position": {
+        "aweme_ori_word_experience": 19,
+        "aweme_word_experience": 19
+      },
+      "recall_score": {
+        "aweme_ori_word_experience": "12.936454",
+        "aweme_word_experience": "12.936454"
+      },
+      "relevance_score": -10000.0,
+      "res_click_rate": -10000.0,
+      "roughsort_order": 55,
+      "roughsort_score": 12.936453819274902,
+      "search_params": "{\"sug_poi_id\":\"\"}",
+      "slot_utility_scores": [],
+      "sq": "仙侠手游要充钱吗",
+      "src_query_is_prefix": 2,
+      "sug_enter_type": "3"
+    }
+  },
+  "elapsed_seconds": 0.578,
+  "cookie_jar_names_after": []
+}
