@@ -47,6 +47,11 @@ def qualify(root: Path, expected_source_sha: str) -> dict:
     manifest = ReleaseManifest.from_mapping(json.loads(raw))
     if manifest.source_sha != expected_source_sha:
         raise ValueError("bundle source SHA does not match qualification source")
+    # This runs under `python -I -S`; a signed stable bundle needs the
+    # bundle runtime's own cryptography to verify its manifest signature.
+    site_packages = str(root / "runtime/Lib/site-packages")
+    if site_packages not in sys.path:
+        sys.path.append(site_packages)
     # Includes signature policy, all runtime DLL/stdlib files, links, inventory
     # equality and bounded per-file hashes before any native SDK invocation.
     verify_bundle(root, manifest)
