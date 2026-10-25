@@ -4,6 +4,7 @@ import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_she
 import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import { mountDiscovery } from "./features/discovery/view.ts";
+import { extractLinks } from "./features/links/extract.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
@@ -759,19 +760,40 @@ async function pollFetch(scanId: string): Promise<void> {
 $("#link-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = $<HTMLInputElement>("#link-input");
-  const url = input.value.trim();
-  if (!url) return;
+  if (!input.value.trim()) return;
+  // Several links (pasted lines or a share message) start one download each;
+  // a bad link reports its own error and never blocks the others.
+  const { links, tooLong, dropped } = extractLinks(input.value);
+  if (links.length === 0) {
+    showError(tooLong.length ? "Link quá dài (tối đa 2048 byte)." : "Không thấy link http(s) hợp lệ trong nội dung đã dán.");
+    return;
+  }
   const submit = $<HTMLButtonElement>("#link-submit");
   submit.disabled = true;
-  try {
-    await startFetch(url);
-    input.value = "";
-    showError("");
-  } catch (error) {
-    showError(String(error).slice(0, 300));
-  } finally {
-    submit.disabled = false;
+  const failures: string[] = [];
+  for (const link of links) {
+    try {
+      await startFetch(link);
+    } catch (error) {
+      failures.push(`${link.slice(0, 60)}: ${String(error).slice(0, 120)}`);
+    }
   }
+  submit.disabled = false;
+  input.value = failures.length ? input.value : "";
+  const notes = [
+    ...failures,
+    ...(tooLong.length ? [`${tooLong.length} link quá dài bị bỏ qua.`] : []),
+    ...(dropped ? [`Chỉ nhận tối đa 50 link mỗi lần; ${dropped} link chưa được thêm.`] : []),
+  ];
+  showError(notes.length ? `${links.length - failures.length}/${links.length} link đã bắt đầu tải. ${notes.join(" · ")}`.slice(0, 600) : "");
+});
+// Pasting several lines into the one-line box keeps the line breaks as spaces.
+$<HTMLInputElement>("#link-input").addEventListener("paste", (event) => {
+  const text = event.clipboardData?.getData("text") ?? "";
+  if (!/[\r\n]/.test(text)) return;
+  event.preventDefault();
+  const input = event.currentTarget as HTMLInputElement;
+  input.value = text.replace(/\s+/g, " ").trim();
 });
 
 // Review: edit Vietnamese text per cue, then re-run in the same output folder.
