@@ -1,0 +1,63 @@
+{
+  "name": "profile_corrected",
+  "platform": "kuaishou_schema",
+  "at_utc": "2026-10-25T04:05:56.060898+00:00",
+  "method": "POST",
+  "url": "https://www.kuaishou.com/graphql",
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.kuaishou.com/",
+    "Content-Type": "application/json",
+    "Origin": "https://www.kuaishou.com"
+  },
+  "cookie_names_sent": [
+    "clientid",
+    "did",
+    "kpf",
+    "kpn",
+    "ktrace-context"
+  ],
+  "external_cookie_file_used": false,
+  "request_body": {
+    "query": "query visionProfilePhotoList($pcursor: String, $userId: String, $page: String) {\n  visionProfilePhotoList(pcursor: $pcursor, userId: $userId, page: $page) {\n    result llsid pcursor feeds { type author { id name } photo { __typename\n  ... on PhotoEntity { id caption duration likeCount viewCount coverUrl timestamp }\n  ... on recoPhotoEntity { id caption duration likeCount viewCount coverUrl timestamp }\n} } } }",
+    "variables": {
+      "userId": "3xnaukdq7fa8hx2",
+      "pcursor": "",
+      "page": "profile"
+    },
+    "operationName": "visionProfilePhotoList"
+  },
+  "expected_items_path": "data.visionProfilePhotoList.feeds",
+  "probe_note": null,
+  "http_status": 200,
+  "final_url": "https://www.kuaishou.com/graphql",
+  "content_type": "application/json",
+  "content_encoding": "gzip",
+  "wire_bytes": 572,
+  "body_capped": false,
+  "response_headers": {
+    "Date": "Sun, 25 Oct 2026 04:05:56 GMT"
+  },
+  "set_cookie_names": [],
+  "body_bytes": 710,
+  "response_json": {
+    "data": {
+      "result": 400002,
+      "jsSdkUrl": "//static.yximgs.com/udata/pkg/fe/indentity-verification.umd.f6645615.js",
+      "url": "https://captcha.zt.kuaishou.com/iframe/index.html?captchaSession=Cgp6dC5jYXB0Y2hhEocCZLJ-DaDJyx0_F50mtLqz6ZxdmcPP-SKMM1J0EgRpaNyfxJNMhV3MYIFfnj9pTAkY9E2j1Tfl1f2uPxzLBHw1lnfOsv9-zOmudXzbFc3mNUy0uNw7ltF4KPNtCdT18JPIQbRWWAIjza0wiRUsxm9mPjY_4QeMFrL4tOPnFk0obGz50z5UYPkbm9EdZgiO5IypDzzQdjJ0wwSShlm666kpi999i7P1Crs3tFYwgJlhxuBpGMpyW5bYyJYzTnr1ZZ0P27k0aGmFmJUjKukEmqlF6TCLpNnmTi5otOd8PyVzdoV0S3IPVQX4z6iRg0-pvloUZaM1Kxl4npYqtcYeV5tlDF9DJwL_BBIaEs4EAnvGBHFOrQ6Twb8AOGgOFigFMAI&type=1&configUrl=https%3A%2F%2Fcaptcha.zt.kuaishou.com%2Frest%2Fzt%2Fcaptcha%2Fsliding%2Fconfig&bizName=ANTICRAWL_DEFAULT"
+    }
+  },
+  "array_counts_before_trimming": {},
+  "expected_item_count": null,
+  "elapsed_seconds": 0.625,
+  "cookie_jar_names_after": [
+    "clientid",
+    "did",
+    "kpf",
+    "kpn",
+    "ktrace-context"
+  ]
+}

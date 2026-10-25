@@ -105,6 +105,10 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     }
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
     case "open_douyin_login": return null as T;
+    case "discover": return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1)) as T;
+    case "open_discovery": return `https://example.invalid/${String(args.platform)}` as T;
+    case "scroll_discovery": return null as T;
+    case "collect_discovery": return previewCollected(String(args.platform)) as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
@@ -114,6 +118,31 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
 }
 
 /** A short sine tone WAV so the review "listen" buttons work in the browser preview. */
+const PREVIEW_WORDS = ["仙侠剧名场面", "美食探店", "国漫新番", "古装剧高能", "萌宠日常", "搞笑配音", "旅行vlog", "手工制作", "健身打卡", "动画短片"];
+
+function previewDiscover(platform: string, action: string, page: number): unknown {
+  if (action === "trends" || action === "suggest") {
+    return { ok: true, next_page: null, items: PREVIEW_WORDS.map((keyword, index) => ({ platform, keyword, rank: index + 1, heat: index < 6 ? 9_800_000 - index * 1_250_000 : null, url: "" })) };
+  }
+  if (platform !== "bilibili") return { ok: false, code: "UNSUPPORTED", message: "preview" };
+  return {
+    ok: true, next_page: page < 3 ? page + 1 : null,
+    items: Array.from({ length: 8 }, (_, index) => ({
+      platform, video_id: `BV1preview${page}${index}`, title: `【预览】${PREVIEW_WORDS[index]} 第${page}页 · 精彩片段合集`, author: "UP主示例",
+      author_id: "1", duration_s: 95 + index * 37, plays: 12_000 * (index + 1) * page, likes: null, cover_url: "",
+      page_url: `https://www.bilibili.com/video/BV1preview${page}${index}`,
+    })),
+  };
+}
+
+function previewCollected(platform: string): unknown {
+  const host = platform === "kuaishou" ? "www.kuaishou.com/short-video" : platform === "douyin" ? "www.douyin.com/video" : "www.bilibili.com/video";
+  return Array.from({ length: 6 }, (_, index) => ({
+    page_url: `https://${host}/7${index}00000000000000`, title: `${PREVIEW_WORDS[index + 2]} · 视频 ${index + 1}`, cover_url: null,
+    author: "示例作者", fetch_url: `https://${host}/7${index}00000000000000`,
+  }));
+}
+
 function previewTone(durationMs: number, source: boolean): ArrayBuffer {
   const rate = 24000, samples = Math.min(rate * 2, Math.max(1, Math.round(rate * durationMs / 1000)));
   const buffer = new ArrayBuffer(44 + samples * 2), view = new DataView(buffer);
