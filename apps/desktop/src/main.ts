@@ -9,7 +9,10 @@ import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
-import { chooseTranslator, reviewOverrides, saveReviewRevision, startJobRequest } from "./features/translation_review/flow.ts";
+import {
+  applySourceLanguage, chooseTranslator, effectiveTranslator, hachimiAllowed, reviewOverrides, saveReviewRevision,
+  startJobRequest, translatorDefaults,
+} from "./features/translation_review/flow.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
   activeStageIndex, displayJobStatus, isCancelled, PIPELINE_STAGES, progressFraction, stateLabel,
@@ -69,7 +72,13 @@ const multiVoiceToggle = $<HTMLInputElement>("#multi-voice");
 const separateToggle = $<HTMLInputElement>("#separate-background");
 const burnInToggle = $<HTMLInputElement>("#burn-in");
 const sourceLanguageSelect = $<HTMLSelectElement>("#source-language");
+const hachimiOption = $<HTMLOptionElement>('#translation-engine option[value="hachimi"]');
+const hachimiNeedsChinese = document.createElement("small");
+hachimiNeedsChinese.className = "hint";
+hachimiNeedsChinese.textContent = "Muốn dùng HachimiMT-60, hãy chọn ngôn ngữ nguồn là Tiếng Trung (không dùng được với Tự động).";
+hachimiNeedsChinese.hidden = true;
 const translationEngineSelect = $<HTMLSelectElement>("#translation-engine");
+translationEngineSelect.after(hachimiNeedsChinese);
 const blurModeSelect = $<HTMLSelectElement>("#blur-mode");
 const runAllButton = $<HTMLButtonElement>("#run-all");
 let batchRunning = false;
@@ -185,10 +194,14 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   $("#blur-summary").textContent = blurMode === "auto" ? "Tự dò phụ đề và làm mờ khi nó xuất hiện" : describeRegions(job?.blurRegions);
   $("#blur-manual-row").hidden = blurModeSelect.value !== "manual";
   sourceLanguageSelect.value = job?.sourceLanguage ?? "";
-  translationEngineSelect.value = job?.translationEngine ?? "argos";
-  // Hachimi only translates Chinese, so the choice is moot for English sources.
+  // Hachimi only translates Chinese: English hides the choice, Auto shows Argos and asks for Chinese.
+  const engine = job ? effectiveTranslator(job) : "argos";
+  const chinese = hachimiAllowed(job?.sourceLanguage);
+  translationEngineSelect.value = engine;
+  hachimiOption.disabled = !chinese;
   $("#translator-row").hidden = job?.sourceLanguage === "en";
-  $("#hachimi-warning").hidden = job?.translationEngine !== "hachimi" || job?.sourceLanguage === "en";
+  hachimiNeedsChinese.hidden = chinese || job?.sourceLanguage === "en";
+  $("#hachimi-warning").hidden = engine !== "hachimi";
   $("#voice-picker").hidden = !dubbingToggle.checked || (!!job && job.status.state !== "QUEUED");
   voiceList.replaceChildren();
   const status = $("#voice-catalog-status");
@@ -385,13 +398,13 @@ function readDefaults(): JobDefaults | null {
   try {
     const value = JSON.parse(window.localStorage.getItem(DEFAULTS_KEY) ?? "null") as Partial<JobDefaults> | null;
     if (!value || typeof value.dubbing !== "boolean" || typeof value.burnIn !== "boolean") return null;
-    return { dubbing: value.dubbing, burnIn: value.burnIn, voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
+    return translatorDefaults<JobDefaults>({ dubbing: value.dubbing, burnIn: value.burnIn, voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
       sourceLanguage: value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? value.sourceLanguage : undefined,
       translationEngine: value.translationEngine === "hachimi" ? "hachimi" : undefined,
       blurRegions: isBlurRegionList(value.blurRegions) ? value.blurRegions : undefined,
       blurAuto: value.blurAuto === true ? true : undefined,
       multiVoice: value.multiVoice === true ? true : undefined,
-      separateBackground: value.separateBackground === true ? true : undefined };
+      separateBackground: value.separateBackground === true ? true : undefined });
   } catch {
     return null;
   }
@@ -399,10 +412,10 @@ function readDefaults(): JobDefaults | null {
 
 function rememberDefaults(job: QueueJob): void {
   try {
-    window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
+    window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify(translatorDefaults({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
       burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, translationEngine: job.translationEngine,
       blurRegions: job.blurRegions, blurAuto: job.blurAuto, multiVoice: job.multiVoice,
-      separateBackground: job.separateBackground }));
+      separateBackground: job.separateBackground })));
   } catch {
     // Defaults are a convenience; the queue works without storage.
   }
@@ -1081,8 +1094,7 @@ for (const job of queue.getSnapshot().jobs) {
 sourceLanguageSelect.addEventListener("change", () => {
   const job = selectedJob();
   if (!job) return;
-  const value = sourceLanguageSelect.value;
-  queue.setSourceLanguage(job.id, value === "zh" || value === "en" ? value : null);
+  applySourceLanguage(queue, job.id, sourceLanguageSelect.value);
   rememberDefaults(selectedJob() ?? job);
 });
 // Ask once per viewer before the first opt-in: the model's licence terms are unverified.
@@ -1108,7 +1120,7 @@ function hachimiAcknowledged(): boolean {
 translationEngineSelect.addEventListener("change", () => {
   const job = selectedJob();
   if (!job) return;
-  const engine = chooseTranslator(translationEngineSelect.value, hachimiAcknowledged);
+  const engine = chooseTranslator(translationEngineSelect.value, job.sourceLanguage, hachimiAcknowledged);
   if (engine === null) {
     translationEngineSelect.value = job.translationEngine ?? "argos";
     return;
