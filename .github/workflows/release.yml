@@ -380,7 +380,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
           $setup = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-setup.exe"
           # The setup is a windowed program; --silent installs without its window.
-          $setupProcess = Start-Process -FilePath $setup -ArgumentList '--silent' -Wait -PassThru
+          # Wait for the setup process only: pwsh's Start-Process -Wait also
+          # waits for the DubFlow window the setup opens, which never exits here.
+          $setupProcess = Start-Process -FilePath $setup -ArgumentList '--silent' -PassThru
+          if (-not $setupProcess.WaitForExit(1800000)) { throw 'Windows setup did not finish within 30 minutes' }
           if ($setupProcess.ExitCode -ne 0) {
             Get-Content -LiteralPath (Join-Path $env:TEMP 'DubFlow-setup.log') -ErrorAction SilentlyContinue | Out-Host
             throw "Windows setup failed with exit code $($setupProcess.ExitCode)"
