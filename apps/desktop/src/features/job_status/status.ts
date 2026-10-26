@@ -131,7 +131,7 @@ export function displayJobStatus(status: JobStatus): string {
   if (status.state === "BLOCKED_NEEDS_ACTION") {
     return "Đã dừng; cần thao tác";
   }
-  if (status.state === "QUEUED") return "Chờ xử lý";
+  if (status.state === "QUEUED") return status.reason === "interrupted" ? "Bị gián đoạn; sẽ tiếp tục từ chỗ dừng" : "Chờ xử lý";
   // Checkpoint ids are internal; show the stage instead.
   if (status.reason === "checkpoint" || status.message.startsWith("Đã lưu checkpoint")) {
     const index = activeStageIndex(status);

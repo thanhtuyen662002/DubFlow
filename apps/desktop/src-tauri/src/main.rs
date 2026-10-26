@@ -139,6 +139,27 @@ fn webview_data_root(local_app_data: &Path, version: &str) -> Result<PathBuf, St
     Ok(local_app_data.join("DubFlow/control/webview2").join(encoded))
 }
 
+const LOCAL_STORAGE: [&str; 3] = ["EBWebView", "Default", "Local Storage"];
+
+/// A version's first launch starts from the newest earlier version's
+/// localStorage (queue, results folder, saved choices) instead of an empty
+/// profile. Best effort; the earlier profile is only read, so rolling back
+/// still finds its own data.
+fn inherit_previous_profile(profile: &Path) {
+    if profile.exists() {
+        return;
+    }
+    let Some(root) = profile.parent() else { return };
+    let storage = |dir: &Path| LOCAL_STORAGE.iter().fold(dir.to_path_buf(), |path, part| path.join(part));
+    let newest = fs::read_dir(root).into_iter().flatten().flatten()
+        .map(|entry| storage(&entry.path()))
+        .filter_map(|path| fs::metadata(path.join("leveldb")).and_then(|metadata| metadata.modified()).ok().map(|modified| (modified, path)))
+        .max_by_key(|(modified, _)| *modified);
+    if let Some((_, previous)) = newest {
+        let _ = copy_work_cache(&previous, &storage(profile), &[]);
+    }
+}
+
 #[cfg(windows)]
 fn configure_webview_data() -> Result<(), String> {
     let local_app_data = std::env::var_os("LOCALAPPDATA")
@@ -150,6 +171,7 @@ fn configure_webview_data() -> Result<(), String> {
     if ancestor.canonicalize().map_err(|error| fail(format!("unable to resolve desktop profile parent: {error}")))?.starts_with(&runtime) {
         return Err(fail("desktop profile cannot be inside the immutable runtime"));
     }
+    inherit_previous_profile(&profile);
     fs::create_dir_all(&profile).map_err(|error| fail(format!("unable to create desktop profile: {error}")))?;
     let profile = profile.canonicalize().map_err(|error| fail(format!("unable to resolve desktop profile: {error}")))?;
     if profile.starts_with(runtime) {
@@ -485,7 +507,53 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     }
     command.args(args);
     command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;
+    if let Ok(mut launched) = launched_jobs().lock() {
+        launched.insert(job_id.clone(), std::time::Instant::now());
+    }
     Ok(StartJobResponse { job_id, status_path: status.to_string_lossy().into_owned(), output_dir: output.to_string_lossy().into_owned() })
+}
+
+/// Jobs this host started recently. Their supervisor may not hold its
+/// execution lock yet, so they are never probed during that window.
+fn launched_jobs() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+    static LAUNCHED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
+    LAUNCHED.get_or_init(Default::default)
+}
+
+const STALE_STATUS: std::time::Duration = std::time::Duration::from_secs(20);
+const LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether no supervisor owns a job that its status file still calls active,
+/// e.g. after a power loss or a killed app. The supervisor holds an exclusive
+/// lock on its execution-lock file for the whole run, so if that lock can be
+/// taken here (and immediately released) nothing is processing the job. Only
+/// probed when the status has been unchanged for a while and this host did not
+/// just start the job, so a supervisor that is starting up is never raced.
+fn supervisor_gone(data_root: &Path, job_id: &str, status: &Path) -> bool {
+    use sha2::{Digest, Sha256};
+    let quiet = fs::metadata(status).and_then(|metadata| metadata.modified()).ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age >= STALE_STATUS);
+    let recently_launched = launched_jobs().lock().ok()
+        .and_then(|launched| launched.get(job_id).map(|at| at.elapsed() < LAUNCH_GRACE))
+        .unwrap_or(false);
+    if !quiet || recently_launched {
+        return false;
+    }
+    // Same identity as the supervisor's JobExecutionGuard: canonical database
+    // path, a NUL separator and the job id, under ".execution-locks".
+    let Ok(database) = fs::canonicalize(data_root.join("control").join("jobs.sqlite3")) else { return false };
+    let Some(parent) = database.parent() else { return false };
+    let mut key = Sha256::new();
+    key.update(database.as_os_str().as_encoded_bytes());
+    key.update([0]);
+    key.update(job_id.as_bytes());
+    let lock = parent.join(".execution-locks").join(format!("{:x}.lock", key.finalize()));
+    let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(&lock) else {
+        // No lock file: no supervisor ever ran this job in this data root.
+        return !lock.exists();
+    };
+    matches!(file.try_lock(), Ok(()))
 }
 
 #[tauri::command]
@@ -496,7 +564,15 @@ fn job_status(job_id: String) -> Result<Option<Value>, String> {
         return Ok(None);
     }
     let text = fs::read_to_string(&status).map_err(|error| fail(format!("unable to read job status: {error}")))?;
-    let envelope: StatusEnvelope = serde_json::from_str(&text).map_err(|error| fail(format!("job status is invalid: {error}")))?;
+    let mut envelope: StatusEnvelope = serde_json::from_str(&text).map_err(|error| fail(format!("job status is invalid: {error}")))?;
+    let active = matches!(envelope.status["state"].as_str(), Some("RUNNING" | "RETRYING" | "RECOVERED" | "WORKER_LOST"));
+    if active && supervisor_gone(&control, &job_id, &status) {
+        // Interrupted, not failed: starting it again resumes from its checkpoints.
+        envelope.status["state"] = json!("QUEUED");
+        envelope.status["reason"] = json!("interrupted");
+        envelope.status["message"] = json!("Bị gián đoạn khi đang xử lý (máy tắt hoặc app bị đóng); bấm Bắt đầu để tiếp tục từ chỗ dừng");
+        envelope.status["resource"]["held"] = json!(false);
+    }
     Ok(Some(json!({"status": envelope.status, "output_path": envelope.output_path})))
 }
 
@@ -1277,6 +1353,69 @@ mod tests {
         for name in ["clip - vi", "clip (sửa )", "clip (sửa x)", "clip (sửa 1) extra", "(sửa 1)x"] {
             assert_eq!(revision_base(name), name);
         }
+    }
+
+    #[test]
+    fn interrupted_jobs_are_detected_only_when_no_supervisor_holds_the_lock() {
+        use sha2::{Digest, Sha256};
+        let root = std::env::temp_dir().join(format!("dubflow-liveness-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("control/jobs")).unwrap();
+        fs::write(root.join("control/jobs.sqlite3"), b"").unwrap();
+        let status = root.join("control/jobs/job-1.json");
+        fs::write(&status, b"{}").unwrap();
+        let database = fs::canonicalize(root.join("control/jobs.sqlite3")).unwrap();
+        let mut key = Sha256::new();
+        key.update(database.as_os_str().as_encoded_bytes());
+        key.update([0]);
+        key.update(b"job-1");
+        let locks = database.parent().unwrap().join(".execution-locks");
+        fs::create_dir_all(&locks).unwrap();
+        let lock = locks.join(format!("{:x}.lock", key.finalize()));
+        fs::write(&lock, b"").unwrap();
+
+        assert!(!supervisor_gone(&root, "job-1", &status), "a freshly written status is never probed");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        fs::File::options().write(true).open(&status).unwrap().set_modified(old).unwrap();
+        let held = fs::OpenOptions::new().read(true).write(true).open(&lock).unwrap();
+        held.try_lock().unwrap();
+        assert!(!supervisor_gone(&root, "job-1", &status), "a live supervisor holds the lock");
+        drop(held);
+        assert!(supervisor_gone(&root, "job-1", &status), "nobody holds the lock after a power loss");
+        assert!(fs::OpenOptions::new().read(true).write(true).open(&lock).unwrap().try_lock().is_ok(), "the probe released the lock");
+        launched_jobs().lock().unwrap().insert("job-1".into(), std::time::Instant::now());
+        assert!(!supervisor_gone(&root, "job-1", &status), "a job this host just started is not probed");
+        launched_jobs().lock().unwrap().remove("job-1");
+        fs::remove_file(&lock).unwrap();
+        assert!(supervisor_gone(&root, "job-1", &status), "no lock file: no supervisor ever ran it here");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_new_version_inherits_the_newest_earlier_local_storage() {
+        let root = std::env::temp_dir().join(format!("dubflow-profile-inherit-{}", std::process::id())).join("webview2");
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+        let storage = |version: &str| LOCAL_STORAGE.iter().fold(root.join(version), |path, part| path.join(part));
+        for (version, body) in [("old", "older queue"), ("new", "newest queue")] {
+            fs::create_dir_all(storage(version).join("leveldb")).unwrap();
+            fs::write(storage(version).join("leveldb/000003.log"), body).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        inherit_previous_profile(&root.join("next"));
+        assert_eq!(fs::read_to_string(storage("next").join("leveldb/000003.log")).unwrap(), "newest queue");
+        assert_eq!(fs::read_to_string(storage("new").join("leveldb/000003.log")).unwrap(), "newest queue", "the source is untouched");
+        // An existing profile is never overwritten.
+        fs::write(storage("next").join("leveldb/000003.log"), "own data").unwrap();
+        inherit_previous_profile(&root.join("next"));
+        assert_eq!(fs::read_to_string(storage("next").join("leveldb/000003.log")).unwrap(), "own data");
+        // No earlier profile: nothing is created here (WebView2 creates its own).
+        let lonely = std::env::temp_dir().join(format!("dubflow-profile-alone-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&lonely);
+        fs::create_dir_all(&lonely).unwrap();
+        inherit_previous_profile(&lonely.join("first"));
+        assert!(!lonely.join("first").exists());
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
+        fs::remove_dir_all(&lonely).unwrap();
     }
 
     #[test]
