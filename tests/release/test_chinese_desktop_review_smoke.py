@@ -153,6 +153,18 @@ class ReviewContractTests(unittest.TestCase):
             (output.parent / "clip - vi (sửa 4)" / "sentinel.txt").write_text("keep")
             self.assertEqual(smoke.save_review(output, {}).name, "clip - vi (sửa 5)")
             self.assertEqual((output.parent / "clip - vi (sửa 4)" / "sentinel.txt").read_text(), "keep")
+            # An existing empty folder is never replaced either.
+            (output.parent / "clip - vi (sửa 6)").mkdir()
+            self.assertEqual(smoke.save_review(output, {}).name, "clip - vi (sửa 7)")
+            self.assertEqual(list((output.parent / "clip - vi (sửa 6)").iterdir()), [])
+            # Concurrent saves each publish their own folder and never share one.
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(6) as pool:
+                published = list(pool.map(lambda _: smoke.save_review(output, {"c2": "Cám ơn nhiều"}), range(6)))
+            self.assertEqual(len(set(published)), 6)
+            for folder in published:
+                self.assertTrue((folder / smoke.OVERRIDES_FILE).is_file() and (folder / smoke.REVISION_OF_FILE).is_file())
+            self.assertEqual((output / "final_vi.mp4").read_text(), "video")
             broken = output.parent / "broken - vi"
             broken.mkdir()
             with self.assertRaises(FileNotFoundError):

@@ -795,27 +795,46 @@ fn create_revision_temp(original: &Path) -> std::io::Result<PathBuf> {
     Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no unique temporary folder name"))
 }
 
-/// Move a finished temporary folder to the first free "(sửa N)" name. A name
-/// taken in the meantime (a concurrent save) moves on to the next number.
+/// Publish a finished temporary folder under the first free "(sửa N)" name.
+/// The name is reserved with `create_dir`, which fails on any existing path
+/// (an empty folder included), so nothing is ever replaced; a name taken by a
+/// concurrent save moves on to the next number.
 fn publish_revision(partial: &Path, original: &Path) -> Result<PathBuf, String> {
-    for _ in 0..16 {
+    for _ in 0..64 {
         let target = revision_dir(original)?;
-        match move_to_new_path(partial, &target) {
-            Ok(()) => return Ok(target),
-            Err(_) if fs::symlink_metadata(&target).is_ok() => continue,
+        match fs::create_dir(&target) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(fail(format!("Không tạo được thư mục bản sửa: {error}"))),
         }
+        return move_into_reserved(partial, &target)
+            .map(|()| target)
+            .map_err(|error| fail(format!("Không tạo được thư mục bản sửa: {error}")));
     }
     Err(fail("Không tạo được thư mục bản sửa: tên thư mục liên tục bị trùng"))
 }
 
-/// Rename that never replaces an existing path. Windows already refuses a
-/// directory destination; the check also covers other platforms.
-fn move_to_new_path(from: &Path, to: &Path) -> std::io::Result<()> {
-    if fs::symlink_metadata(to).is_ok() {
-        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "destination already exists"));
+/// Move every entry of `partial` into the freshly reserved, empty `target`.
+/// On failure only what this call moved is removed, then the reservation
+/// itself, which `remove_dir` drops only while it is empty.
+fn move_into_reserved(partial: &Path, target: &Path) -> std::io::Result<()> {
+    let mut moved = Vec::new();
+    let result = (|| {
+        for entry in fs::read_dir(partial)? {
+            let name = entry?.file_name();
+            fs::rename(partial.join(&name), target.join(&name))?;
+            moved.push(name);
+        }
+        fs::remove_dir(partial)
+    })();
+    if result.is_err() {
+        for name in &moved {
+            let path = target.join(name);
+            let _ = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+        }
+        let _ = fs::remove_dir(target);
     }
-    fs::rename(from, to)
+    result
 }
 
 /// Save reviewed texts into a new sibling folder "<name> (sửa N)" and return
@@ -1202,7 +1221,7 @@ mod tests {
         assert_eq!(link["original_output_dir"], display_path(&original));
         assert_eq!(link["original_manifest_sha256"], "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
 
-        assert_eq!(PathBuf::from(save_review(output, std::collections::BTreeMap::new()).unwrap()), root.join("clip - vi (sửa 2)"));
+        assert_eq!(PathBuf::from(save_review(output.clone(), std::collections::BTreeMap::new()).unwrap()), root.join("clip - vi (sửa 2)"));
         assert!(!root.join("clip - vi (sửa 2)").join(OVERRIDES_FILE).exists());
         fs::write(first.join("final_vi.mp4"), "revised").unwrap();
         let again = save_review(first.join("final_vi.mp4").to_string_lossy().into_owned(), overrides.clone()).unwrap();
@@ -1218,17 +1237,40 @@ mod tests {
         assert!(!root.join("broken - vi (sửa 1)").exists());
         assert!(sentinels_intact() && temporaries_left() == 0);
 
-        // Moving into place never replaces an existing folder.
-        let taken = root.join("taken");
-        fs::create_dir_all(&taken).unwrap();
-        fs::write(taken.join("sentinel.txt"), "keep").unwrap();
+        // Publication never replaces an existing folder, empty or not.
+        fs::create_dir(root.join("clip - vi (sửa 4)")).unwrap();
+        fs::create_dir(root.join("clip - vi (sửa 5)")).unwrap();
+        fs::write(root.join("clip - vi (sửa 5)").join("sentinel.txt"), "keep").unwrap();
+        let next = PathBuf::from(save_review(output.clone(), overrides.clone()).unwrap());
+        assert_eq!(next, root.join("clip - vi (sửa 6)"));
+        assert_eq!(fs::read_dir(root.join("clip - vi (sửa 4)")).unwrap().count(), 0, "an empty folder stays empty");
+        assert_eq!(fs::read_to_string(root.join("clip - vi (sửa 5)").join("sentinel.txt")).unwrap(), "keep");
         let source = create_revision_temp(&original).unwrap();
-        assert!(fs::read_dir(root.join("clip - vi (sửa 1).partial")).is_ok());
-        assert!(move_to_new_path(&source, &taken).is_err());
-        assert_eq!(fs::read_to_string(taken.join("sentinel.txt")).unwrap(), "keep");
-        assert!(source.is_dir(), "the caller still owns its temporary folder");
         let other = create_revision_temp(&original).unwrap();
         assert_ne!(source, other, "every save gets its own temporary folder");
+        fs::write(source.join("marker.txt"), "mine").unwrap();
+        // A reserved target receives exactly this call's entries.
+        let reserved = root.join("reserved");
+        fs::create_dir(&reserved).unwrap();
+        move_into_reserved(&source, &reserved).unwrap();
+        assert_eq!(fs::read_to_string(reserved.join("marker.txt")).unwrap(), "mine");
+        assert!(!source.exists());
+        fs::remove_dir_all(&other).unwrap();
+
+        // Concurrent saves each publish their own folder; nothing is shared or replaced.
+        let workers: Vec<_> = (0..6).map(|_| {
+            let (output, overrides) = (output.clone(), overrides.clone());
+            std::thread::spawn(move || save_review(output, overrides).map(PathBuf::from))
+        }).collect();
+        let mut published: Vec<PathBuf> = workers.into_iter().map(|worker| worker.join().unwrap().unwrap()).collect();
+        published.sort();
+        published.dedup();
+        assert_eq!(published.len(), 6, "every concurrent save got a distinct folder");
+        for folder in &published {
+            assert!(folder.join(OVERRIDES_FILE).is_file() && folder.join(REVISION_OF_FILE).is_file());
+        }
+        assert_eq!(snapshot(&original), before, "the original outputs are still byte-identical");
+        assert!(sentinels_intact() && temporaries_left() == 0);
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
 
         assert_eq!(revision_base("clip - vi (sửa 12)"), "clip - vi");

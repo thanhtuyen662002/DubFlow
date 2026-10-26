@@ -81,6 +81,8 @@ The revision took about half the production time because it reused the copied tr
 
 Follow-up (#273, S5): the first fix removed any existing `<target>.partial` folder before building, which could delete a user's folder or another save in progress. Each save now creates its own uniquely named temporary folder with a create-only call. It removes only that folder on failure, and it never moves onto an existing name. Sentinel tests cover this in the Rust host and the harness. The same real video re-run (2026-10-25 16:41:56Z – 16:46:13Z) passed 31/31 checks: production took 194.7 s and the revision 60.6 s, and no temporary folder was left behind.
 
+Follow-up (#273, no-replace publication): revisions are now published by reserving the `(sửa N)` name with a create-only directory call. That call fails on any existing path, empty folders included. The save then moves its own entries into the reservation and removes only those entries on failure. Rust and harness tests cover empty and non-empty existing folders and six concurrent saves. The same real video, re-run on the installed, signed **1.1.0** (2026-10-26 01:56:01Z – 02:00:44Z), passed 31/31 checks: production took 235.5 s and the revision 45.0 s.
+
 ## Not run
 
 - **Desktop GUI**: the review/revision was exercised through the host's file contract, not by clicking the WebView UI.
