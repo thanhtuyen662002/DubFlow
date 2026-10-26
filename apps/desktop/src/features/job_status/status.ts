@@ -56,6 +56,17 @@ export function isCancelled(status: Pick<JobStatus, "state" | "reason">): boolea
   return status.state === "FAILED" && status.reason === "cancelled";
 }
 
+/**
+ * Whether a polled status may replace the queue's own. A supervisor publishes
+ * QUEUED before it begins working; applying that to a job the desktop already
+ * started would make the job look idle and let the queue start it a second
+ * time. Only the host's "interrupted" QUEUED (no supervisor left) is applied.
+ */
+export function acceptsPolledStatus(current: Pick<JobStatus, "state">, polled: Pick<JobStatus, "state" | "reason">): boolean {
+  const started = ["RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST"].includes(current.state);
+  return !(started && polled.state === "QUEUED" && polled.reason !== "interrupted");
+}
+
 export function stateLabel(state: JobStatusState, reason?: string): string {
   return state === "FAILED" && reason === "cancelled" ? "Đã hủy" : STATE_LABELS[state];
 }

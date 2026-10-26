@@ -529,7 +529,13 @@ fn watch_supervisor(mut child: std::process::Child, status: PathBuf, log: PathBu
             return;
         }
         let detail = fs::read_to_string(&log).unwrap_or_default();
-        let _ = mark_supervisor_failed(&status, &job_id, &supervisor_failure_message(&detail, exit.code()));
+        let message = supervisor_failure_message(&detail, exit.code());
+        // A duplicate start was refused because another supervisor owns the
+        // job; that one reports the job's outcome.
+        if message.starts_with("JOB_ALREADY_RUNNING") {
+            return;
+        }
+        let _ = mark_supervisor_failed(&status, &job_id, &message);
     });
 }
 

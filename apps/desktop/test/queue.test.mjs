@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { MemorySnapshotStorage, QueueController, parseQueueSnapshot } from "../src/features/queue/model.ts";
 import { toQueueViewModel } from "../src/features/queue/view_model.ts";
-import { failureHint } from "../src/features/job_status/status.ts";
+import { acceptsPolledStatus, failureHint } from "../src/features/job_status/status.ts";
 
 const clock = () => "2026-09-29T02:30:00.000Z";
 const storage = new MemorySnapshotStorage();
@@ -110,6 +110,12 @@ assert.throws(() => burnQueue.setBurnIn(burnId, true), /before processing/);
 // Common worker failures get actionable Vietnamese hints; unknown ones keep their message.
 assert.match(failureHint("ASR_EMPTY: ASR produced no speech segments"), /Không tìm thấy lời thoại/);
 assert.match(failureHint("SOURCE_LANGUAGE_UNRESOLVED: x"), /Ngôn ngữ gốc/);
+// A starting supervisor's QUEUED must not make a started job look idle (it was
+// started twice in a 500-video batch); the host's "interrupted" QUEUED applies.
+assert.equal(acceptsPolledStatus({ state: "RUNNING" }, { state: "QUEUED", reason: "queued" }), false);
+assert.equal(acceptsPolledStatus({ state: "RUNNING" }, { state: "QUEUED", reason: "interrupted" }), true);
+assert.equal(acceptsPolledStatus({ state: "RUNNING" }, { state: "COMPLETED", reason: "completed" }), true);
+assert.equal(acceptsPolledStatus({ state: "QUEUED" }, { state: "QUEUED", reason: "queued" }), true);
 assert.equal(failureHint("ASR_EMPTYISH: x"), null);
 assert.equal(failureHint("SOMETHING_ELSE: x"), null);
 
