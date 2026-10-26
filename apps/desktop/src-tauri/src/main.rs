@@ -506,38 +506,87 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
         }
     }
     command.args(args);
-    command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;
+    // The supervisor reports through its status file; when it exits before it
+    // can (a refused job, a crash), its stderr is the only explanation.
+    let log_path = status.with_extension("supervisor.log");
+    let log = fs::File::create(&log_path).map_err(|error| fail(format!("unable to create supervisor log: {error}")))?;
+    command.stderr(log);
+    let child = command.spawn().map_err(|error| fail(format!("unable to start supervisor: {error}")))?;
     if let Ok(mut launched) = launched_jobs().lock() {
         launched.insert(job_id.clone(), std::time::Instant::now());
     }
+    watch_supervisor(child, status.clone(), log_path, job_id.clone());
     Ok(StartJobResponse { job_id, status_path: status.to_string_lossy().into_owned(), output_dir: output.to_string_lossy().into_owned() })
 }
 
-/// Jobs this host started recently. Their supervisor may not hold its
-/// execution lock yet, so they are never probed during that window.
+/// Wait for a launched supervisor off the UI thread. If it fails without having
+/// reported a terminal state, record FAILED with its own error so the queue
+/// moves on instead of showing (and later re-running) a job nobody processes.
+fn watch_supervisor(mut child: std::process::Child, status: PathBuf, log: PathBuf, job_id: String) {
+    std::thread::spawn(move || {
+        let Ok(exit) = child.wait() else { return };
+        if exit.success() {
+            return;
+        }
+        let detail = fs::read_to_string(&log).unwrap_or_default();
+        let _ = mark_supervisor_failed(&status, &job_id, &supervisor_failure_message(&detail, exit.code()));
+    });
+}
+
+/// The supervisor's last stderr line without its program prefix, so codes such
+/// as JOB_ID_CONFLICT reach the desktop's failure hints unchanged.
+fn supervisor_failure_message(stderr: &str, code: Option<i32>) -> String {
+    stderr.lines().rev().map(str::trim).find(|line| !line.is_empty())
+        .map(|line| line.strip_prefix("DubFlow supervisor:").unwrap_or(line).trim().to_owned())
+        .unwrap_or_else(|| format!("SUPERVISOR_EXITED: supervisor stopped with exit code {}", code.map_or("unknown".into(), |code| code.to_string())))
+        .chars().take(400).collect()
+}
+
+/// Record FAILED unless the supervisor already reported a terminal state.
+fn mark_supervisor_failed(status: &Path, job_id: &str, message: &str) -> std::io::Result<()> {
+    let mut envelope: Value = fs::read(status).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .filter(|value: &Value| value["status"]["progress"].is_object() && value["status"]["retry"].is_object())
+        .unwrap_or_else(|| json!({"job_id": job_id, "output_path": null, "schema_version": 1, "status": {
+            "schema_version": 1, "state": "QUEUED", "reason": "queued", "message": "", "checkpoint_id": null,
+            "progress": {"completed_units": "0", "total_units": null, "heartbeat_sequence": "0"},
+            "retry": {"attempt": "0", "max_attempts": "3", "condition_fingerprint": null},
+            "resource": {"kind": null, "held": false, "release_requested": false}}}));
+    if matches!(envelope["status"]["state"].as_str(), Some("COMPLETED" | "FAILED" | "BLOCKED_NEEDS_ACTION")) {
+        return Ok(());
+    }
+    let state = &mut envelope["status"];
+    state["state"] = json!("FAILED");
+    state["reason"] = json!("supervisor_exited");
+    state["message"] = json!(message);
+    state["resource"]["held"] = json!(false);
+    let partial = status.with_extension("json.partial");
+    fs::write(&partial, serde_json::to_vec_pretty(&envelope).map_err(std::io::Error::other)?)?;
+    fs::rename(&partial, status)
+}
+
+/// Jobs this host started in this session. The watcher above reports their
+/// fate, so only jobs from an earlier session (power loss, killed app) are
+/// probed for a missing supervisor.
 fn launched_jobs() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
     static LAUNCHED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
     LAUNCHED.get_or_init(Default::default)
 }
 
 const STALE_STATUS: std::time::Duration = std::time::Duration::from_secs(20);
-const LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Whether no supervisor owns a job that its status file still calls active,
 /// e.g. after a power loss or a killed app. The supervisor holds an exclusive
 /// lock on its execution-lock file for the whole run, so if that lock can be
 /// taken here (and immediately released) nothing is processing the job. Only
-/// probed when the status has been unchanged for a while and this host did not
-/// just start the job, so a supervisor that is starting up is never raced.
+/// probed when the status has been unchanged for a while and the job was not
+/// started by this host session, so a supervisor starting up is never raced.
 fn supervisor_gone(data_root: &Path, job_id: &str, status: &Path) -> bool {
     use sha2::{Digest, Sha256};
     let quiet = fs::metadata(status).and_then(|metadata| metadata.modified()).ok()
         .and_then(|modified| modified.elapsed().ok())
         .is_some_and(|age| age >= STALE_STATUS);
-    let recently_launched = launched_jobs().lock().ok()
-        .and_then(|launched| launched.get(job_id).map(|at| at.elapsed() < LAUNCH_GRACE))
-        .unwrap_or(false);
-    if !quiet || recently_launched {
+    let launched_here = launched_jobs().lock().map(|launched| launched.contains_key(job_id)).unwrap_or(true);
+    if !quiet || launched_here {
         return false;
     }
     // Same identity as the supervisor's JobExecutionGuard: canonical database
@@ -1384,7 +1433,7 @@ mod tests {
         assert!(supervisor_gone(&root, "job-1", &status), "nobody holds the lock after a power loss");
         assert!(fs::OpenOptions::new().read(true).write(true).open(&lock).unwrap().try_lock().is_ok(), "the probe released the lock");
         launched_jobs().lock().unwrap().insert("job-1".into(), std::time::Instant::now());
-        assert!(!supervisor_gone(&root, "job-1", &status), "a job this host just started is not probed");
+        assert!(!supervisor_gone(&root, "job-1", &status), "a job this host session started is watched, not probed");
         launched_jobs().lock().unwrap().remove("job-1");
         fs::remove_file(&lock).unwrap();
         assert!(supervisor_gone(&root, "job-1", &status), "no lock file: no supervisor ever ran it here");
@@ -1416,6 +1465,43 @@ mod tests {
         assert!(!lonely.join("first").exists());
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
         fs::remove_dir_all(&lonely).unwrap();
+    }
+
+    #[test]
+    fn a_supervisor_that_exits_without_reporting_fails_the_job_with_its_error() {
+        let root = std::env::temp_dir().join(format!("dubflow-watch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        assert_eq!(supervisor_failure_message("\nDubFlow supervisor: JOB_ID_CONFLICT: job ID belongs to different input\n\n", Some(2)),
+            "JOB_ID_CONFLICT: job ID belongs to different input");
+        assert_eq!(supervisor_failure_message("", Some(3)), "SUPERVISOR_EXITED: supervisor stopped with exit code 3");
+        // A stale RUNNING status from an earlier attempt becomes FAILED with the reason.
+        let status = root.join("job-1.json");
+        fs::write(&status, serde_json::to_vec(&json!({"job_id": "job-1", "output_path": null, "schema_version": 1, "status": {
+            "schema_version": 1, "state": "RUNNING", "reason": "running", "message": "Đang xử lý", "checkpoint_id": "subtitles",
+            "progress": {"completed_units": "700", "total_units": "1000", "heartbeat_sequence": "21"},
+            "retry": {"attempt": "3", "max_attempts": "3", "condition_fingerprint": null},
+            "resource": {"kind": "CPU", "held": true, "release_requested": false}}})).unwrap()).unwrap();
+        mark_supervisor_failed(&status, "job-1", "JOB_ID_CONFLICT: refused").unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&status).unwrap()).unwrap();
+        assert_eq!((value["status"]["state"].as_str(), value["status"]["reason"].as_str(), value["status"]["message"].as_str()),
+            (Some("FAILED"), Some("supervisor_exited"), Some("JOB_ID_CONFLICT: refused")));
+        assert_eq!(value["status"]["resource"]["held"], false);
+        assert_eq!(value["status"]["progress"]["completed_units"], "700", "the last real progress is kept");
+        // A terminal state the supervisor wrote itself is never overwritten.
+        let done = root.join("job-2.json");
+        let mut completed = value.clone();
+        completed["status"]["state"] = json!("COMPLETED");
+        fs::write(&done, serde_json::to_vec(&completed).unwrap()).unwrap();
+        mark_supervisor_failed(&done, "job-2", "late").unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&fs::read(&done).unwrap()).unwrap()["status"]["state"], "COMPLETED");
+        // No status at all (refused before writing): a complete FAILED status is created.
+        let missing = root.join("job-3.json");
+        mark_supervisor_failed(&missing, "job-3", "JOB_ID_CONFLICT: refused").unwrap();
+        let created: Value = serde_json::from_slice(&fs::read(&missing).unwrap()).unwrap();
+        assert_eq!((created["job_id"].as_str(), created["status"]["state"].as_str()), (Some("job-3"), Some("FAILED")));
+        assert!(created["status"]["progress"].is_object() && created["status"]["retry"].is_object());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
