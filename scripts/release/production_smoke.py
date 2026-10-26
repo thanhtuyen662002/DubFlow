@@ -623,7 +623,9 @@ def _verify_visible_downgrades(supervisor: Path, root: Path, data_root: Path, wo
     # Authored extreme numeric input exercises the real pinned phonemizer's
     # content guard. Explicit Vietnamese makes this a TTS/fallback qualification;
     # generated sine audio cannot establish ASR language or translation quality.
-    rejected_text = "12345678901234567890123456789012345678901234567890" * 10
+    # Non-repeating digits: the worker collapses repeated-token loops (#286), so
+    # a repeated pattern would no longer reach the phonemizer's guard.
+    rejected_text = "".join(str(int(hashlib.sha256(f"dubflow-refusal-{index}".encode()).hexdigest(), 16)) for index in range(7))[:500]
     first_cue = f"1\n00:00:00,000 --> 00:00:09,000\n{rejected_text}\n\n"
     source.with_suffix(".srt").write_text(first_cue +
         "2\n00:00:09,000 --> 00:00:17,500\nĐừng đi. Tôi còn điều muốn nói với anh.\n\n", encoding="utf-8")
