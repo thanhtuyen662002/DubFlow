@@ -4,19 +4,19 @@ Evidence for #250. This is a full, non-selective run of every registered integra
 
 | Field | Value |
 |---|---|
-| Source SHA | `15e1b2d836725a3021bdc75c9b9306d6dc28a4df` (main after #280) |
-| Runner | GitHub Actions `ubuntu-latest`, workflow **PR Integration**, run [40255620223](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40255620223) (job 121356725650), event `workflow_dispatch` |
+| Source SHA | `aaa7ce31e760554589018bd5ddf7a4ca8b1b671e` (main after #287; source of release 1.1.1) |
+| Runner | GitHub Actions `ubuntu-latest`, workflow **PR Integration**, run [40269270812](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40269270812) (job 121398355502), event `workflow_dispatch` |
 | Python | CPython 3.12.15 (`actions/setup-python`, `python-version: "3.12"`) |
 | Command | `python scripts/ci/run_integration.py --base-sha ""`. The base SHA is empty for `workflow_dispatch`, so `changed_paths` returns `None` and every registered component runs; there is no component filter. It is preceded by `python -m unittest discover -s tests/ci` (37 tests OK). |
 | Pre-installed test imports | `cryptography==46.0.1` and `numpy==2.2.6` (same pins as the app runtime) |
-| Start / end (UTC) | 2026-10-26T01:43:44Z / 2026-10-26T01:46:50Z (job) |
+| Start / end (UTC) | 2026-10-26T04:28:45Z / 2026-10-26T04:31:46Z (job) |
 | Registered components | 49 (`scripts/ci/component_registry.json`) |
 | Selected components | 49 (full registry; the executed list matches the registry exactly) |
 | Overall exit code | 0. The log ends with `Integration passed for 49 component(s).` |
 
 The governance validation (`scripts/validate_governance.py`) ran first and passed.
 
-The previous report covered `60d92bc74005110bd37d06eba1547cd83aa27081` (run 40175033014) and remains valid only for that SHA.
+Earlier reports covered `60d92bc7…` (run 40175033014) and `15e1b2d8…` (run 40255620223, release 1.1.0); each remains valid only for its SHA.
 
 ## Component results
 Every component below ran all of its registered commands, and every command exited 0. The runner stops on the first non-zero exit, so a final exit of 0 means all of them passed.
