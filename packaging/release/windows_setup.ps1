@@ -40,9 +40,13 @@ function Write-Log([string]$Message) {
     try { Add-Content -LiteralPath $LogPath -Value ("{0:u} {1}" -f (Get-Date), $Message) -Encoding UTF8 } catch { }
 }
 
+# A DubFlow install, or a DubFlow data folder (job state written by an earlier
+# install or by the supervisor) that a new install may safely reuse.
 function Test-DubFlowRoot([string]$Path) {
     return (Test-Path -LiteralPath (Join-Path $Path 'current.json') -PathType Leaf) -or
-        (Test-Path -LiteralPath (Join-Path $Path 'versions') -PathType Container)
+        (Test-Path -LiteralPath (Join-Path $Path 'versions') -PathType Container) -or
+        (Test-Path -LiteralPath (Join-Path $Path 'control\jobs.sqlite3') -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $Path 'control\jobs') -PathType Container)
 }
 
 function Get-InstalledVersion([string]$Path) {
