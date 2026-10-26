@@ -23,13 +23,23 @@ Every job used the desktop host's exact `start_job` arguments: Chinese source, A
 | Defect found | 1 clip fell back to subtitles only. Whisper looped "1.5.5.5…" hundreds of times, translation copied it and the native TTS exited. Fixed in #286 (repetition loops collapsed before translation and TTS). |
 | Peak memory | **2142 MiB** |
 
+## Batch (500 items, installed 1.1.1)
+| Item | Value |
+|---|---|
+| Runtime | installed, signed **DubFlow 1.1.1** (source `9cf32309cf828619a8c2330c8e9ad796aa271b26`), with the same job arguments as above |
+| Inputs | 475 twenty-second clips at many offsets (Douyin 226, Twitter/zh 101, elephants narration 81, speech+music 21, two speakers 18, cooking EN/portrait and hard-subbed 3, Douyin at half-second offsets 25), plus 25 bad files: 10 truncated, 5 empty, 5 without audio and 5 random-byte "MP4"s |
+| Run | 2026-10-26 05:52:16Z – 08:55:19Z, **3 h 03 min** sequential, median 22.7 s per job, longest 113 s |
+| Completed | **466**: QC `passed` for all, every output has video and audio, all durations match their sources (±0.5 s). 92 of 3691 cues undubbed (**2.5 %**). |
+| Bad inputs | all 25 failed fast (1.5–2 s) with typed reasons: `MEDIA_PROBE_FAILED` ×20, `AUDIO_STREAM_MISSING` ×5. None affected another job. |
+| Other failures | 9 × `ASR_EMPTY`, none of them a product defect. Five Douyin clips start at 221–225 s, after the video's last speech ends at 219.9 s. Four elephant clips start at 28–31 s and hold only the 2–5 s English tail of a sentence; the run forced Chinese, and the narration resumes at 52 s. |
+| Peak memory | **3512 MiB** summed over one job's process tree. Every job starts fresh supervisor and worker processes, so memory cannot accumulate across the batch. |
+
 ## CI lanes on exact main
 - Release / Soak run [40257299667](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40257299667) on `46b15af7076ff087b2a4c9488d2d74218f2b43c9`: passed **Release/Soak** (bounded release rehearsal, chaos assertions, interrupted source acquisition and atomic publication, generated-PCM hard process exit and recovery) and **Windows source session boundary**.
 - Each Windows Release run qualifies a clean runner: install, auto-launch, staged and installed pipeline smokes, synthetic long form, batch failure isolation, corrupt media/state, hard-killed supervisor recovery, TTS checkpoint recovery, voice-version isolation and source clock. Signed stable 1.1.0 was run [40225945746](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40225945746).
 - Desktop GUI flow (#271): see `CHINESE_DESKTOP_REVIEW_EVIDENCE.md`.
 
 ## Not run
-- **500-item batch.** The 100-item run shows bounded memory and failure isolation; 500 items would take about 3.2 h on this CPU.
 - **Physical interruptions:** reboot, sleep/resume, power loss, disk-pressure exhaustion, and removable/NAS loss. They need manual or hardware interventions; only the process hard-kill/recovery lanes above are automated.
 - **GPU OOM / CPU fallback.** There is no NVIDIA GPU here, and the shipped profile is CPU-only by design.
 - **Real 2–6 h single recordings.** The long-form source is real speech concatenated, not one continuous recording.
