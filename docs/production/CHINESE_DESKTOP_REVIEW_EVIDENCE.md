@@ -99,6 +99,16 @@ Follow-up (#273, no-replace publication): revisions are now published by reservi
 
 Finding from this run, fixed in the same PR: the dialog summary flagged "79 câu đọc quá nhanh". It still judged pace per cue, although the engine dubs close cues as phrases at up to 1.5x. Pace is now computed per dubbing phrase, and only phrases above 5.25 syllables/s are flagged.
 
+## Desktop GUI revalidation (installed 1.1.1)
+
+The same GUI procedure was repeated on the installed, signed **DubFlow 1.1.1** (source `9cf32309cf828619a8c2330c8e9ad796aa271b26`, including #282, #283 and #286), with a fresh isolated LocalAppData, on 2026-10-26 05:38–05:42 UTC:
+- **Production:** drop, Tiếng Trung, Bắt đầu. COMPLETED in 3 m 28 s (`completed_partial_dubbing`).
+- **Review:** the summary now reads "124 câu · 1 câu lồng tiếng lỗi · 22 câu có thể không kịp lồng tiếng". On 1.1.0 it read "79 câu đọc quá nhanh".
+- **Edits:** a blank edit disables **Lưu & xử lý lại**. After a valid edit, the revision COMPLETED in 33 s in its own `(sửa 1)` folder.
+- **On disk:** the five original outputs are byte-identical, the edit is in the new captions, and `revision_of.json` links the original folder and manifest SHA-256.
+
+The phrase pace still flags more lines than actually fail, because the engine may also widen the window by up to 4 s and condense text. The flag is a conservative "may not fit" hint.
+
 ## Not run
 
 - Hachimi translator, multi-voice, background separation and blur were not part of this run.
