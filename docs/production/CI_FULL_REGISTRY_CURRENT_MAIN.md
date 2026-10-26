@@ -4,17 +4,19 @@ Evidence for #250. This is a full, non-selective run of every registered integra
 
 | Field | Value |
 |---|---|
-| Source SHA | `60d92bc74005110bd37d06eba1547cd83aa27081` (main after #258) |
-| Runner | GitHub Actions `ubuntu-latest`, workflow **PR Integration**, run [40175033014](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40175033014), event `workflow_dispatch` |
+| Source SHA | `15e1b2d836725a3021bdc75c9b9306d6dc28a4df` (main after #280) |
+| Runner | GitHub Actions `ubuntu-latest`, workflow **PR Integration**, run [40255620223](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40255620223) (job 121356725650), event `workflow_dispatch` |
 | Python | CPython 3.12.15 (`actions/setup-python`, `python-version: "3.12"`) |
-| Command | `python scripts/ci/run_integration.py --base-sha ""` (empty base SHA, so `changed_paths` returns `None` and every registered component runs), preceded by `python -m unittest discover -s tests/ci` |
+| Command | `python scripts/ci/run_integration.py --base-sha ""`. The base SHA is empty for `workflow_dispatch`, so `changed_paths` returns `None` and every registered component runs; there is no component filter. It is preceded by `python -m unittest discover -s tests/ci` (37 tests OK). |
 | Pre-installed test imports | `cryptography==46.0.1` and `numpy==2.2.6` (same pins as the app runtime) |
-| Start / end (UTC) | 2026-10-25T08:02:00Z / 2026-10-25T08:05:19Z |
-| Registered components | 49 |
-| Selected components | 49 (full registry) |
+| Start / end (UTC) | 2026-10-26T01:43:44Z / 2026-10-26T01:46:50Z (job) |
+| Registered components | 49 (`scripts/ci/component_registry.json`) |
+| Selected components | 49 (full registry; the executed list matches the registry exactly) |
 | Overall exit code | 0. The log ends with `Integration passed for 49 component(s).` |
 
 The governance validation (`scripts/validate_governance.py`) ran first and passed.
+
+The previous report covered `60d92bc74005110bd37d06eba1547cd83aa27081` (run 40175033014) and remains valid only for that SHA.
 
 ## Component results
 Every component below ran all of its registered commands, and every command exited 0. The runner stops on the first non-zero exit, so a final exit of 0 means all of them passed.
@@ -70,3 +72,6 @@ Every component below ran all of its registered commands, and every command exit
 | 47 | `subtitle-render` | PASS |
 | 48 | `release-bundle` | PASS |
 | 49 | `production-b2-dubbing` | PASS |
+
+## Scope
+This run is the Linux, deterministic integration registry. It is not Windows Release, Release / Soak, real-media or GPU evidence; those lanes stay separate under #175. The desktop host's Rust unit tests are not part of this registry.
