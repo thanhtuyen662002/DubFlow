@@ -1,4 +1,19 @@
-# Full deterministic Integration registry — current main
+# Current-main full-registry revalidation — 2026-10-26
+
+**Status: NOT_RUN — assigned to Coder 1; this report is not yet current-main evidence.**
+
+- Exact main at claim creation: `3b1d2c6998ea16395dceea28b98671cf9c8fbc4a`.
+- Latest main PR Fast: [run 40342007137](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40342007137), SUCCESS on this SHA.
+- Latest main PR Integration: [run 40342006922](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40342006922), SUCCESS on this SHA. This was the push-triggered selective run after the documentation-only #292 merge; it is **not** proof that all registry components ran.
+- The historical 49/49 report below is for `9cf32309cf828619a8c2330c8e9ad796aa271b26` only. It must not be reused for current main.
+- Lead capability boundary: no local checkout/runner is available in this runtime, and the connected GitHub actions do not expose a workflow-dispatch operation. No current-main full-registry command was executed by the Lead.
+- Required execution: on a complete checkout at the exact SHA above, run `python scripts/ci/run_integration.py` with no `--base-sha` and no component filter. Record Python version, UTC start/end, registered/selected counts, every component result, skipped results separately, and exit code. Preserve any failure verbatim enough to reproduce; do not change registry/selectors/workflows or weaken tests.
+- After the evidence update, run PR Fast + PR Integration on the final documentation PR HEAD/current tested base. These doc-only checks do not replace the full-registry command.
+- Scope limit: this leaf does not prove Windows Release, Release / Soak, real media, long-form, GPU, or complete #175 acceptance.
+
+---
+
+# Historical full deterministic Integration registry — source 9cf32309
 
 Evidence for #250. This is a full, non-selective run of every registered integration component on one exact source SHA.
 
