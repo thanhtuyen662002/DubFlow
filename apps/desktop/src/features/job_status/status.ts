@@ -98,6 +98,7 @@ export function activeStageIndex(status: JobStatus): number {
 /** Plain-language explanations for failures users can act on. */
 const FAILURE_HINTS: Array<[RegExp, string]> = [
   [/^ASR_EMPTY(?![A-Z_])/, "Không tìm thấy lời thoại trong video (có thể chỉ có nhạc nền hoặc tiếng quá nhỏ)."],
+  [/^JOB_ID_CONFLICT(?![A-Z_])/, "Video này đang xử lý dở ở phiên bản app trước nên không tiếp tục được. Bấm xử lý lại để chạy từ đầu."],
   [/^AUDIO_STREAM_MISSING(?![A-Z_])/, "Video không có âm thanh nên không thể nhận dạng lời thoại."],
   [/^SOURCE_LANGUAGE_(UNRESOLVED|MISMATCH)(?![A-Z_])/, "Không xác định được ngôn ngữ gốc. Hãy chọn “Ngôn ngữ gốc” rồi xử lý lại."],
   [/^LANGUAGE_UNSUPPORTED(?![A-Z_])/, "Ngôn ngữ của video chưa được hỗ trợ (hiện hỗ trợ tiếng Trung và tiếng Anh)."],
@@ -131,7 +132,7 @@ export function displayJobStatus(status: JobStatus): string {
   if (status.state === "BLOCKED_NEEDS_ACTION") {
     return "Đã dừng; cần thao tác";
   }
-  if (status.state === "QUEUED") return "Chờ xử lý";
+  if (status.state === "QUEUED") return status.reason === "interrupted" ? "Bị gián đoạn; sẽ tiếp tục từ chỗ dừng" : "Chờ xử lý";
   // Checkpoint ids are internal; show the stage instead.
   if (status.reason === "checkpoint" || status.message.startsWith("Đã lưu checkpoint")) {
     const index = activeStageIndex(status);
