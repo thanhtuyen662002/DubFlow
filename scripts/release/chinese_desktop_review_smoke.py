@@ -183,6 +183,24 @@ def revision_dir(original: Path) -> Path:
     raise SmokeError("SAVE_REJECTED", "too many revisions")
 
 
+def _move_into_reserved(partial: Path, target: Path) -> None:
+    """Move this save's entries into its freshly reserved folder; undo only them on failure."""
+    moved = []
+    try:
+        for entry in list(partial.iterdir()):
+            os.rename(entry, target / entry.name)
+            moved.append(target / entry.name)
+        partial.rmdir()
+    except BaseException:
+        for path in moved:
+            shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)
+        try:
+            target.rmdir()  # only while empty: never removes anything this save did not move
+        except OSError:
+            pass
+        raise
+
+
 def save_review(output_dir: Path, overrides: dict[str, str]) -> Path:
     """Python replay of the desktop host's ``save_review``: same validation, a new sibling folder."""
     if len(overrides) > 10_000 or any(not cue_id or len(cue_id) > 128 or not text.strip() or len(text) > 2000
@@ -204,15 +222,14 @@ def save_review(output_dir: Path, overrides: dict[str, str]) -> Path:
                 "original_manifest_sha256": "sha256:" + sha256_file(manifest) if manifest.is_file() else None,
                 "created_unix": int(time.time())}
         (partial / REVISION_OF_FILE).write_text(json.dumps(link, ensure_ascii=False, indent=2), encoding="utf-8")
-        for _ in range(16):
+        for _ in range(64):
             target = revision_dir(output_dir)
-            if os.path.lexists(target):
-                continue
             try:
-                os.rename(partial, target)  # never replaces: Windows refuses an existing destination
-                return target
+                target.mkdir()  # the reservation: fails on any existing path, empty folders included
             except FileExistsError:
                 continue
+            _move_into_reserved(partial, target)
+            return target
         raise SmokeError("SAVE_REJECTED", "revision folder names kept colliding")
     except BaseException:
         shutil.rmtree(partial, ignore_errors=True)
