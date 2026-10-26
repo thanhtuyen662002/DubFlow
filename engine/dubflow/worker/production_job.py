@@ -98,6 +98,25 @@ class ProductionJobError(RuntimeError):
         super().__init__(f"{self.code}: {self.condition}")
 
 
+# Whisper can loop on one token ("1.5.5.5.5…") and translation copies the loop.
+# Such runs are noise in subtitles and can crash speech synthesis, so a unit of
+# up to 16 characters repeated six or more times in a row is kept once.
+_REPEATED_RUN = re.compile(r"(.{1,16}?)\1{5,}", re.DOTALL)
+
+
+def _collapse_repeats(text: str | None) -> str | None:
+    if not text:
+        return text
+    collapsed = _REPEATED_RUN.sub(r"\1", text)
+    return collapsed if collapsed.strip() else text
+
+
+def _without_repeat_loops(cues: Sequence["TextCue"]) -> tuple[tuple["TextCue", ...], int]:
+    cleaned = tuple(replace(cue, source_text=_collapse_repeats(cue.source_text), translated_text=_collapse_repeats(cue.translated_text))
+                    for cue in cues)
+    return cleaned, sum(1 for before, after in zip(cues, cleaned) if before != after)
+
+
 @dataclass(frozen=True)
 class TextCue:
     cue_id: str
@@ -1225,6 +1244,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     emitter.checkpoint("transcript", _sha256(work_dir / "transcript.json"))
 
     warnings: list[str] = []
+    cues, looped = _without_repeat_loops(cues)
+    if looped:
+        warnings.append(f"ASR_REPETITION_COLLAPSED: {looped} cue(s) had a repeated-token loop removed")
     speaker_result, casting = None, {}
     voice_by_cue = None
     speaker_summary = None
@@ -1251,7 +1273,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             translation_changed = False
     if translation_changed:
         emitter.progress(0.44, "Đang dịch bằng HachimiMT-60 (thử nghiệm)" if translation_provenance.get("backend", "").startswith("hachimi") else "Đang dịch cục bộ sang tiếng Việt")
-        translated = _translate_with_argos(cues, config.model_root, transcript.source_language, runtime=translation_runtime, chunks_dir=work_dir / "translation-chunks")
+        translated, _ = _without_repeat_loops(_translate_with_argos(cues, config.model_root, transcript.source_language, runtime=translation_runtime, chunks_dir=work_dir / "translation-chunks"))
         _atomic_json(translation_path, {"schema_version": 2, "source_language": transcript.source_language, "target_language": "vi", "provenance": translation_provenance, "input_hash": translation_input, "cues": [cue.to_dict() for cue in translated]})
         _write_stage(checkpoint, checkpoint_path, "translation", {"path": str(translation_path), "sha256": _sha256(translation_path)})
     translated, overrides_identity = _apply_translation_overrides(translated, config.output_dir)

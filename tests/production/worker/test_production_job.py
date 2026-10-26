@@ -27,6 +27,20 @@ from engine.dubflow.worker.protocol import Envelope, MessageType
 
 
 class ProductionWorkerTests(unittest.TestCase):
+    def test_whisper_repetition_loops_are_collapsed_before_translation_and_speech(self) -> None:
+        loop = "推特网费输入最多1" + ".5" * 120
+        cases = {loop: "推特网费输入最多1.5", "nhắn" + ".5" * 9: "nhắn.5", "哈" * 7: "哈",
+                 "ha ha ha ha ha": "ha ha ha ha ha", "对对对对对": "对对对对对", "Bình thường thôi.": "Bình thường thôi.", "": ""}
+        for text, expected in cases.items():
+            with self.subTest(text=text[:20]):
+                self.assertEqual(worker._collapse_repeats(text), expected)
+        self.assertIsNone(worker._collapse_repeats(None))
+        cues = (TextCue("a", 0, 1000, loop, "Xin chào" + ".5" * 30), TextCue("b", 1000, 2000, "你好", "Xin chào"))
+        cleaned, changed = worker._without_repeat_loops(cues)
+        self.assertEqual(changed, 1)
+        self.assertEqual((cleaned[0].source_text, cleaned[0].translated_text), ("推特网费输入最多1.5", "Xin chào.5"))
+        self.assertEqual(cleaned[1], cues[1])
+
     def test_nothing_is_written_after_shutdown_even_by_a_racing_heartbeat(self) -> None:
         stdout = SimpleNamespace(buffer=io.BytesIO())
         with patch.object(sys, "stdout", stdout):
