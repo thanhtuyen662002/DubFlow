@@ -56,6 +56,17 @@ export function isCancelled(status: Pick<JobStatus, "state" | "reason">): boolea
   return status.state === "FAILED" && status.reason === "cancelled";
 }
 
+/**
+ * Whether a polled status may replace the queue's own. A supervisor publishes
+ * QUEUED before it begins working; applying that to a job the desktop already
+ * started would make the job look idle and let the queue start it a second
+ * time. Only the host's "interrupted" QUEUED (no supervisor left) is applied.
+ */
+export function acceptsPolledStatus(current: Pick<JobStatus, "state">, polled: Pick<JobStatus, "state" | "reason">): boolean {
+  const started = ["RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST"].includes(current.state);
+  return !(started && polled.state === "QUEUED" && polled.reason !== "interrupted");
+}
+
 export function stateLabel(state: JobStatusState, reason?: string): string {
   return state === "FAILED" && reason === "cancelled" ? "Đã hủy" : STATE_LABELS[state];
 }
@@ -98,6 +109,7 @@ export function activeStageIndex(status: JobStatus): number {
 /** Plain-language explanations for failures users can act on. */
 const FAILURE_HINTS: Array<[RegExp, string]> = [
   [/^ASR_EMPTY(?![A-Z_])/, "Không tìm thấy lời thoại trong video (có thể chỉ có nhạc nền hoặc tiếng quá nhỏ)."],
+  [/^JOB_ID_CONFLICT(?![A-Z_])/, "Video này đang xử lý dở ở phiên bản app trước nên không tiếp tục được. Bấm xử lý lại để chạy từ đầu."],
   [/^AUDIO_STREAM_MISSING(?![A-Z_])/, "Video không có âm thanh nên không thể nhận dạng lời thoại."],
   [/^SOURCE_LANGUAGE_(UNRESOLVED|MISMATCH)(?![A-Z_])/, "Không xác định được ngôn ngữ gốc. Hãy chọn “Ngôn ngữ gốc” rồi xử lý lại."],
   [/^LANGUAGE_UNSUPPORTED(?![A-Z_])/, "Ngôn ngữ của video chưa được hỗ trợ (hiện hỗ trợ tiếng Trung và tiếng Anh)."],
@@ -131,7 +143,7 @@ export function displayJobStatus(status: JobStatus): string {
   if (status.state === "BLOCKED_NEEDS_ACTION") {
     return "Đã dừng; cần thao tác";
   }
-  if (status.state === "QUEUED") return "Chờ xử lý";
+  if (status.state === "QUEUED") return status.reason === "interrupted" ? "Bị gián đoạn; sẽ tiếp tục từ chỗ dừng" : "Chờ xử lý";
   // Checkpoint ids are internal; show the stage instead.
   if (status.reason === "checkpoint" || status.message.startsWith("Đã lưu checkpoint")) {
     const index = activeStageIndex(status);
