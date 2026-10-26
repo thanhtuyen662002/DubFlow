@@ -15,7 +15,7 @@ import {
 } from "./features/translation_review/flow.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
-  activeStageIndex, displayJobStatus, isCancelled, PIPELINE_STAGES, progressFraction, stateLabel,
+  acceptsPolledStatus, activeStageIndex, displayJobStatus, isCancelled, PIPELINE_STAGES, progressFraction, stateLabel,
   type JobStatus, type JobStatusState,
 } from "./features/job_status/status.ts";
 
@@ -367,7 +367,8 @@ async function refreshJob(jobId: string): Promise<void> {
   try {
     const response = await invoke<StatusResponse | null>("job_status", { jobId });
     if (!response) return;
-    if (!queue.getSnapshot().jobs.some((candidate) => candidate.id === jobId)) return;
+    const current = queue.getSnapshot().jobs.find((candidate) => candidate.id === jobId);
+    if (!current || !acceptsPolledStatus(current.status, response.status)) return;
     queue.updateStatus(jobId, response.status, response.output_path);
     if (response.status.state === "COMPLETED" || response.status.state === "FAILED") stopPolling(jobId);
   } catch (error) {
