@@ -19,6 +19,7 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Callable, Sequence
 import uuid
@@ -224,6 +225,9 @@ def _remove_progress(path: Path) -> None:
         # A stale observer snapshot cannot overrule verified activation state.
 
 
+ProgressReporter = Callable[[str, int, int], None]
+
+
 def _copy_bundle(
     bundle_root: Path,
     destination: Path,
@@ -234,17 +238,32 @@ def _copy_bundle(
 ) -> None:
     expected: dict[str, str] = {artifact.path: artifact.sha256 for artifact in manifest.artifacts}
     expected["release-manifest.json"] = manifest_sha256
+    lock = threading.Lock()
+
+    def record(relative: str) -> None:
+        with lock:
+            progress.add(relative)
+            progress_callback(progress)
+
+    # Paths are resolved and directories created up front, one at a time:
+    # resolving a path while another thread creates its parent directory can
+    # yield a `\\?\`-prefixed result on Windows that fails the containment check.
+    paths: dict[str, tuple[Path, Path]] = {}
     for relative in sorted(expected):
-        source = _safe_join(bundle_root, relative)
         target = _safe_join(destination, relative)
+        if not _is_link(target) and not target.parent.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+        paths[relative] = (_safe_join(bundle_root, relative), target)
+
+    def stage(relative: str) -> None:
+        source, target = paths[relative]
         if _is_link(source) or not source.is_file():
             raise BootstrapInstallError("ARTIFACT_MISSING", f"release artifact is not a regular file: {relative}")
         if _is_link(target):
             raise BootstrapInstallError("SYMLINK_REJECTED", f"symlink is not allowed in install path: {relative}")
         if target.is_file() and hash_file(target) == expected[relative]:
-            progress.add(relative)
-            progress_callback(progress)
-            continue
+            record(relative)
+            return
         if target.exists() and not target.is_file():
             raise BootstrapInstallError("INSTALL_PATH_CONFLICT", f"install path is not a regular file: {relative}")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -259,8 +278,19 @@ def _copy_bundle(
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
-        progress.add(relative)
-        progress_callback(progress)
+        record(relative)
+
+    # Thousands of small files dominate install time (each new file is also
+    # scanned by antivirus), so they are staged in parallel. Every file is
+    # still hashed after copying; the first failure stops the remaining work.
+    pool = ThreadPoolExecutor(max_workers=_HASH_WORKERS)
+    try:
+        for future in [pool.submit(stage, relative) for relative in sorted(expected)]:
+            future.result()
+    except BaseException:
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown()
 
 
 def _installed_version_path(install_root: Path, version: str) -> Path:
@@ -280,9 +310,14 @@ endlocal & exit /b %EXIT_CODE%
     _atomic_write(install_root / "DubFlow.cmd", content.replace("\n", "\r\n").encode("utf-8"))
 
 
-def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[str, Any]:
-    """Verify and activate one bundle version atomically."""
+def install_bundle(bundle_root: Path | str, install_root: Path | str, on_progress: ProgressReporter | None = None) -> dict[str, Any]:
+    """Verify and activate one bundle version atomically.
 
+    ``on_progress(stage, done, total)`` reports the stages ``verify``, ``copy``,
+    ``check`` and ``activate`` for a setup window; it never affects the install.
+    """
+
+    report = on_progress or (lambda stage, done, total: None)
     root = Path(bundle_root).resolve()
     requested_destination = Path(install_root).expanduser()
     _reject_link_components(requested_destination, "install root")
@@ -291,6 +326,8 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
         manifest = load_manifest(root / "release-manifest.json")
     except (ManifestError, UnicodeError) as exc:
         raise BootstrapInstallError("MANIFEST_INVALID", str(exc)) from exc
+    total = len(manifest.artifacts) + 1
+    report("verify", 0, total)
     verify_bundle(root, manifest)
     source_manifest_hash = hash_file(root / "release-manifest.json")
     try:
@@ -368,10 +405,14 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
 
         last_progress_count = 0
         last_progress_at = 0.0
+        last_report_at = 0.0
 
         def save_progress(done: set[str], *, status: str = "staging", error: str | None = None, force: bool = False) -> None:
-            nonlocal last_progress_count, last_progress_at
+            nonlocal last_progress_count, last_progress_at, last_report_at
             now = time.monotonic()
+            if force or now - last_report_at >= 0.25:
+                last_report_at = now
+                report("copy", len(done), total)
             if not force and status == "staging" and len(done) - last_progress_count < 64 and now - last_progress_at < 1.0:
                 return
             # Bound attempts even while a reader keeps the old file open.
@@ -397,6 +438,7 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
                     partial.unlink()
             _copy_bundle(root, staging, manifest, source_manifest_hash, completed, save_progress)
             save_progress(completed, force=True)
+            report("check", total, total)
             verify_bundle(staging, manifest)
             os.replace(staging, version_path)
             _remove_progress(progress_path)
@@ -407,6 +449,7 @@ def install_bundle(bundle_root: Path | str, install_root: Path | str) -> dict[st
                 pass
             raise
 
+    report("activate", total, total)
     return _activate(destination, manifest)
 
 
@@ -535,7 +578,19 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--activate", metavar="VERSION")
     mode.add_argument("--list", action="store_true")
     parser.add_argument("--install-root", type=Path, required=True)
+    parser.add_argument("--progress-file", type=Path, help="overwrite this file with 'stage done total' while installing")
     return parser
+
+
+def _progress_file_reporter(path: Path) -> ProgressReporter:
+    def report(stage: str, done: int, total: int) -> None:
+        try:
+            _atomic_write(path, f"{stage} {done} {total}\n".encode("ascii"))
+        except OSError:
+            # The setup window may hold the previous snapshot open; the next
+            # report supersedes it and the install itself never depends on it.
+            pass
+    return report
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -546,7 +601,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.list:
             result = list_versions(args.install_root)
         else:
-            result = install_bundle(args.bundle_root, args.install_root)
+            reporter = _progress_file_reporter(args.progress_file) if args.progress_file else None
+            result = install_bundle(args.bundle_root, args.install_root, reporter)
         print(json.dumps(result, ensure_ascii=True, sort_keys=True))
     except BootstrapInstallError as exc:
         print(json.dumps({"ready": False, "code": exc.code, "message": exc.message}, ensure_ascii=True, sort_keys=True))

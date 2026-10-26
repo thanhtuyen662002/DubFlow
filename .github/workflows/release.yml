@@ -311,8 +311,19 @@ jobs:
           $payload = (Resolve-Path (Join-Path $PWD "dist/final/DubFlow-$env:RELEASE_VERSION-windows-x64.zip")).Path
           $rustc = Get-Command rustc.exe -ErrorAction SilentlyContinue
           if ($null -eq $rustc) { throw 'rustc.exe is required to build the non-elevated Windows setup executable' }
-          $env:DUBFLOW_PAYLOAD = $payload
           & $rustc.Source --version | Out-Host
+          # The stable root DubFlow.exe that shortcuts open; setup embeds it.
+          $launcherTests = Join-Path $env:RUNNER_TEMP 'windows-launcher-tests.exe'
+          & $rustc.Source --edition=2021 --test packaging/release/windows_launcher.rs -o $launcherTests
+          if ($LASTEXITCODE -ne 0) { throw 'Root launcher test build failed' }
+          & $launcherTests
+          if ($LASTEXITCODE -ne 0) { throw 'Root launcher tests failed' }
+          $launcher = Join-Path $env:RUNNER_TEMP 'DubFlow-root-launcher.exe'
+          & $rustc.Source --edition=2021 -O -C target-feature=+crt-static packaging/release/windows_launcher.rs -o $launcher
+          if ($LASTEXITCODE -ne 0) { throw 'Root launcher build failed' }
+          $env:DUBFLOW_PAYLOAD = $payload
+          $env:DUBFLOW_LAUNCHER = $launcher
+          $env:DUBFLOW_VERSION = $env:RELEASE_VERSION
           & $rustc.Source --edition=2021 -O -C target-feature=+crt-static packaging/release/windows_setup.rs -o $setup
           if ($LASTEXITCODE -ne 0) { throw 'Rust user-owned setup bootstrapper build failed' }
 
@@ -368,15 +379,31 @@ jobs:
           $env:LOCALAPPDATA = Join-Path $smokeRoot 'LocalAppData'
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
           $setup = Join-Path $PWD "dist/DubFlow-$env:RELEASE_VERSION-windows-x64-setup.exe"
-          & $setup
-          if ($LASTEXITCODE -ne 0) { throw "Windows setup failed with exit code $LASTEXITCODE" }
+          # The setup is a windowed program; --silent installs without its window.
+          $setupProcess = Start-Process -FilePath $setup -ArgumentList '--silent' -Wait -PassThru
+          if ($setupProcess.ExitCode -ne 0) {
+            Get-Content -LiteralPath (Join-Path $env:TEMP 'DubFlow-setup.log') -ErrorAction SilentlyContinue | Out-Host
+            throw "Windows setup failed with exit code $($setupProcess.ExitCode)"
+          }
+          $installRoot = Join-Path $env:LOCALAPPDATA 'DubFlow'
+          foreach ($file in @('DubFlow.exe', 'DubFlow.ico', 'uninstall.ps1')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $installRoot $file) -PathType Leaf)) { throw "Setup did not create $file" }
+          }
+          $registered = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DubFlow'
+          if ($registered.InstallLocation -ne $installRoot -or $registered.DisplayVersion -ne $env:RELEASE_VERSION) { throw 'Setup did not register DubFlow under Installed apps' }
+          $startMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'DubFlow.lnk'
+          if ((New-Object -ComObject WScript.Shell).CreateShortcut($startMenu).TargetPath -ne (Join-Path $installRoot 'DubFlow.exe')) { throw 'Setup did not create the Start menu shortcut' }
           $launcher = Join-Path $env:LOCALAPPDATA 'DubFlow/DubFlow.cmd'
           if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "Installed launcher is missing: $launcher" }
           $check = & $launcher --self-check | ConvertFrom-Json
           if (-not $check.ready) { throw "Installed self-check failed: $($check | ConvertTo-Json -Compress)" }
           $installedRoot = Join-Path $env:LOCALAPPDATA "DubFlow/versions/$env:RELEASE_VERSION"
           $installedHost = Join-Path $installedRoot 'app/bin/DubFlow.exe'
-          $hosts = @(Get-Process -Name 'DubFlow' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $installedHost })
+          for ($wait = 0; $wait -lt 30; $wait++) {
+            $hosts = @(Get-Process -Name 'DubFlow' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $installedHost })
+            if ($hosts.Count -ge 1) { break }
+            Start-Sleep -Seconds 1
+          }
           if ($hosts.Count -ne 1) { throw 'Setup did not auto-launch exactly one host from the installed runtime' }
           $installedHostPid = $hosts[0].Id
           & (Join-Path $installedRoot 'runtime/python.exe') -I -S -B scripts/release/desktop_runtime_smoke.py `
