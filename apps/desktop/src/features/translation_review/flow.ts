@@ -90,3 +90,38 @@ export async function saveReviewRevision(
   const outputDir = await invoke<string>("save_review", { outputPath: job.outputPath, overrides });
   return queue.reviseJob(job.id, outputDir);
 }
+
+// The dubbing engine (ADR-0036) speaks runs of close cues as one phrase and may
+// speed speech up to 1.5x, so per-cue pace alone overstates what cannot be dubbed.
+export const NATURAL_SYLLABLES_PER_SECOND = 3.5;
+export const MAX_FIT_SPEED = 1.5;
+export const FAST_PHRASE_SYLLABLES_PER_SECOND = NATURAL_SYLLABLES_PER_SECOND * MAX_FIT_SPEED;
+const PHRASE_GAP_MS = 250;
+const PHRASE_SPAN_MS = 8000;
+const PHRASE_CUES = 5;
+
+type PaceCue = { cue_id: string; start_ms: number; end_ms: number; speaker?: string | null };
+
+/** Syllables per second of each cue's dubbing phrase, grouped like the engine groups them. */
+export function phrasePaces(cues: readonly PaceCue[], textOf: (cueId: string) => string): Map<string, number> {
+  const ordered = [...cues].sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms || a.cue_id.localeCompare(b.cue_id));
+  const groups: PaceCue[][] = [];
+  for (const cue of ordered) {
+    const group = groups.at(-1);
+    const previous = group?.at(-1);
+    if (group && previous && Math.max(0, cue.start_ms - previous.end_ms) < PHRASE_GAP_MS
+        && (cue.speaker ?? null) === (group[0].speaker ?? null) && group.length < PHRASE_CUES
+        && Math.max(...group.map((item) => item.end_ms), cue.end_ms) - group[0].start_ms <= PHRASE_SPAN_MS) {
+      group.push(cue);
+    } else {
+      groups.push([cue]);
+    }
+  }
+  const paces = new Map<string, number>();
+  for (const group of groups) {
+    const syllables = group.reduce((sum, cue) => sum + textOf(cue.cue_id).trim().split(/\s+/).filter(Boolean).length, 0);
+    const seconds = Math.max(0.5, (Math.max(...group.map((cue) => cue.end_ms)) - group[0].start_ms) / 1000);
+    for (const cue of group) paces.set(cue.cue_id, syllables / seconds);
+  }
+  return paces;
+}

@@ -10,8 +10,8 @@ import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type Blu
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import {
-  applySourceLanguage, chooseTranslator, effectiveTranslator, hachimiAllowed, reviewOverrides, saveReviewRevision,
-  startJobRequest, translatorDefaults,
+  applySourceLanguage, chooseTranslator, effectiveTranslator, FAST_PHRASE_SYLLABLES_PER_SECOND, hachimiAllowed,
+  phrasePaces, reviewOverrides, saveReviewRevision, startJobRequest, translatorDefaults,
 } from "./features/translation_review/flow.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
@@ -869,7 +869,6 @@ function renderReviewSpeakers(): void {
 }
 // Estimate only: the built-in voice failed a 3.9 syllable/s cue in real runs
 // while ~2.5 syllable/s cues fit, so warn above 3.5.
-const FAST_SYLLABLES_PER_SECOND = 3.5;
 const review = $("#review");
 const reviewList = $("#review-list");
 const reviewApply = $<HTMLButtonElement>("#review-apply");
@@ -887,9 +886,9 @@ function clock(ms: number): string {
   return `${String(minutes).padStart(2, "0")}:${seconds}`;
 }
 
-function pace(text: string, cue: ReviewCue): number {
-  const syllables = text.trim().split(/\s+/).filter(Boolean).length;
-  return syllables / Math.max(0.5, (cue.end_ms - cue.start_ms) / 1000);
+/** Pace of the phrase this cue is dubbed in, for the current drafts. */
+function pace(cue: ReviewCue): number {
+  return phrasePaces(reviewCues, (cueId) => reviewDrafts.draftOf(cueId)).get(cue.cue_id) ?? 0;
 }
 
 function draftOf(cue: ReviewCue): string {
@@ -897,7 +896,7 @@ function draftOf(cue: ReviewCue): string {
 }
 
 function needsAttention(cue: ReviewCue): boolean {
-  return cue.dub_failed || pace(draftOf(cue), cue) > FAST_SYLLABLES_PER_SECOND;
+  return cue.dub_failed || pace(cue) > FAST_PHRASE_SYLLABLES_PER_SECOND;
 }
 
 function reviewDirty(): boolean {
@@ -911,12 +910,13 @@ function updateReviewControls(): void {
 
 function renderReviewMeta(cue: ReviewCue, meta: HTMLElement, item: HTMLElement): void {
   const text = draftOf(cue);
-  const rate = pace(text, cue);
+  const rate = pace(cue);
   meta.replaceChildren();
   if (cue.dub_failed) meta.append(element("span", "badge err", "Lồng tiếng lỗi"));
   if (text.trim() !== cue.machine_text.trim()) meta.append(element("span", "badge run", "Đã sửa"));
-  const speed = element("span", `pace${rate > FAST_SYLLABLES_PER_SECOND ? " fast" : ""}`,
-    `${rate.toFixed(1)} tiếng/giây${rate > FAST_SYLLABLES_PER_SECOND ? " · có thể quá nhanh, nên rút gọn" : ""}`);
+  const fast = rate > FAST_PHRASE_SYLLABLES_PER_SECOND;
+  const speed = element("span", `pace${fast ? " fast" : ""}`,
+    `${rate.toFixed(1)} tiếng/giây${fast ? " · có thể không kịp lồng tiếng, nên rút gọn" : ""}`);
   meta.append(speed);
   if (text.trim() !== cue.machine_text.trim()) {
     const revert = element("button", "revert", "Khôi phục bản máy dịch");
@@ -936,9 +936,10 @@ function renderReview(): void {
   reviewList.replaceChildren();
   const visible = reviewCues.filter((cue) => !reviewOnlyIssues.checked || needsAttention(cue));
   const failed = reviewCues.filter((cue) => cue.dub_failed).length;
-  const fast = reviewCues.filter((cue) => pace(draftOf(cue), cue) > FAST_SYLLABLES_PER_SECOND).length;
+  const paces = phrasePaces(reviewCues, (cueId) => reviewDrafts.draftOf(cueId));
+  const fast = reviewCues.filter((cue) => !cue.dub_failed && (paces.get(cue.cue_id) ?? 0) > FAST_PHRASE_SYLLABLES_PER_SECOND).length;
   $("#review-summary").textContent = [`${reviewCues.length} câu`, failed ? `${failed} câu lồng tiếng lỗi` : "",
-    fast ? `${fast} câu đọc quá nhanh` : ""].filter(Boolean).join(" · ");
+    fast ? `${fast} câu có thể không kịp lồng tiếng` : ""].filter(Boolean).join(" · ");
   if (!visible.length) reviewList.append(element("li", "review-empty", "Không có câu nào cần xem."));
   for (const cue of visible) {
     const item = element("li", "review-cue");
