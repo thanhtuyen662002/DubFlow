@@ -8,8 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
-/// The per-user install root (`%LOCALAPPDATA%\DubFlow`) when this host runs
-/// from `<root>\versions\<version>`; `None` for development builds.
+/// The per-user install root (the folder chosen in setup, by default
+/// `%LOCALAPPDATA%\DubFlow`) when this host runs from
+/// `<root>\versions\<version>`; `None` for development builds.
 pub fn install_root(version_root: &Path) -> Option<PathBuf> {
     let versions = version_root.parent()?;
     if versions.file_name()?.to_str()? != "versions" {

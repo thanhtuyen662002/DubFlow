@@ -1,3 +1,8 @@
+// A release build is a windowed program: without this, Windows opens a
+// terminal next to the app on every launch. Every console tool the host starts
+// (Python, FFmpeg, the supervisor) uses CREATE_NO_WINDOW.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod discovery;
 mod source;
 mod updater;
@@ -121,22 +126,33 @@ fn version_root() -> Result<PathBuf, String> {
     Ok(app.parent().unwrap_or(app).to_path_buf())
 }
 
-fn control_root() -> Result<PathBuf, String> {
+/// Where models, job state and the browser profile live: the install folder
+/// the user chose in setup (`<root>\versions\<version>\app\bin\DubFlow.exe`),
+/// so another drive really holds the large data. Development builds outside
+/// that layout use `%LOCALAPPDATA%\DubFlow`, the default install folder.
+fn data_root() -> Result<PathBuf, String> {
+    if let Some(root) = version_root().ok().as_deref().and_then(updater::install_root) {
+        return Ok(root);
+    }
     let local_app_data = std::env::var_os("LOCALAPPDATA").ok_or_else(|| fail("LOCALAPPDATA is unavailable"))?;
-    let root = PathBuf::from(local_app_data).join("DubFlow");
+    Ok(PathBuf::from(local_app_data).join("DubFlow"))
+}
+
+fn control_root() -> Result<PathBuf, String> {
+    let root = data_root()?;
     fs::create_dir_all(root.join("control").join("jobs")).map_err(|error| fail(format!("unable to create DubFlow control root: {error}")))?;
     Ok(root)
 }
 
-fn webview_data_root(local_app_data: &Path, version: &str) -> Result<PathBuf, String> {
-    if !local_app_data.is_absolute() || version.is_empty() || version.len() > 64
+fn webview_data_root(data_root: &Path, version: &str) -> Result<PathBuf, String> {
+    if !data_root.is_absolute() || version.is_empty() || version.len() > 64
         || !version.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
     {
         return Err(fail("desktop profile root or release version is invalid"));
     }
     // Preserve version identity even on case-insensitive Windows filesystems.
     let encoded: String = version.bytes().map(|byte| format!("{byte:02x}")).collect();
-    Ok(local_app_data.join("DubFlow/control/webview2").join(encoded))
+    Ok(data_root.join("control").join("webview2").join(encoded))
 }
 
 const LOCAL_STORAGE: [&str; 3] = ["EBWebView", "Default", "Local Storage"];
@@ -162,9 +178,7 @@ fn inherit_previous_profile(profile: &Path) {
 
 #[cfg(windows)]
 fn configure_webview_data() -> Result<(), String> {
-    let local_app_data = std::env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| fail("LOCALAPPDATA is unavailable"))?;
-    let profile = webview_data_root(Path::new(&local_app_data), &release_info().version)?;
+    let profile = webview_data_root(&data_root()?, &release_info().version)?;
     let runtime = version_root()?.canonicalize().map_err(|error| fail(format!("unable to resolve desktop runtime: {error}")))?;
     let ancestor = profile.ancestors().find(|path| path.exists())
         .ok_or_else(|| fail("desktop profile has no available parent"))?;
@@ -1290,7 +1304,7 @@ mod tests {
     fn browser_profiles_preserve_runtime_identity_and_refuse_invalid_roots() {
         let local = std::env::temp_dir().join("DubFlow profile [spaces]");
         let original = webview_data_root(&local, "0.1.0-rc.film").unwrap();
-        assert!(original.starts_with(local.join("DubFlow/control/webview2")));
+        assert!(original.starts_with(local.join("control").join("webview2")));
         assert_eq!(original, webview_data_root(&local, "0.1.0-rc.film").unwrap());
         assert_ne!(original.to_string_lossy().to_lowercase(),
             webview_data_root(&local, "0.1.0-rc.Film").unwrap().to_string_lossy().to_lowercase());

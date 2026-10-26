@@ -8,8 +8,14 @@ DubFlow chuyển video tiếng Trung/Anh thành video tiếng Việt **ngay trê
 
 ### Cài đặt (Windows 10/11 x64)
 1. Vào [Releases](https://github.com/thanhtuyen662002/DubFlow/releases), tải `DubFlow-<phiên bản>-windows-x64-setup.exe`.
-2. Chạy file cài đặt. Ứng dụng tự mở sau khi cài xong (không cần cài Python hay Node).
-3. Lần xử lý đầu tiên sẽ tải model nhận dạng/dịch/giọng đọc (vài trăm MB); các lần sau chạy ngoại tuyến.
+2. Chạy file cài đặt (không cần quyền quản trị, không cần cài Python hay Node):
+   - chọn **thư mục cài đặt** (mặc định `%LOCALAPPDATA%\DubFlow`; có thể chọn ổ khác, ví dụ `D:\Apps\DubFlow`) và có tạo lối tắt trên Desktop hay không;
+   - bấm **Cài đặt** và chờ thanh tiến trình chạy hết (thường 1–3 phút);
+   - bấm **Hoàn tất** để mở DubFlow.
+3. Sau này mở DubFlow từ menu Start hoặc lối tắt trên Desktop (file `DubFlow.exe` nằm ngay trong thư mục cài đặt). Gỡ cài đặt trong **Settings > Apps > Installed apps > DubFlow**; video kết quả của bạn không bị xóa.
+4. Lần xử lý đầu tiên sẽ tải model nhận dạng/dịch/giọng đọc (khoảng 1 GB, lưu trong thư mục cài đặt); các lần sau chạy ngoại tuyến.
+
+Khi app báo có bản mới, bấm **Cập nhật**: bản mới được cài vào đúng thư mục đang dùng và app tự mở lại. Cài bằng dòng lệnh: `DubFlow-<phiên bản>-windows-x64-setup.exe --silent [--install-root <thư mục>] [--no-launch]`.
 
 ### Xử lý một video
 1. **Thêm video**: kéo thả file hoặc cả thư mục vào cửa sổ, bấm **Thêm video**, hoặc dán link vào ô **Dán link…** rồi bấm **Tải link**.

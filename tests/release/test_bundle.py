@@ -274,6 +274,35 @@ class ReleaseBundleTests(unittest.TestCase):
             report = install_bundle(result.staging_dir, root / "install")
             self.assertTrue(report["ready"])
 
+    def test_install_reports_progress_for_a_setup_window(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            _runtime(runtime)
+            result = build_bundle(
+                source_root=".",
+                output_dir=root / "out",
+                version="0.1.0-rc1",
+                source_sha=SOURCE_SHA,
+                runtime_root=runtime,
+                source_date_epoch=SOURCE_DATE_EPOCH,
+            )
+            events: list[tuple[str, int, int]] = []
+            install_bundle(result.staging_dir, root / "install", lambda stage, done, total: events.append((stage, done, total)))
+            total = len(load_manifest(result.staging_dir / "release-manifest.json").artifacts) + 1
+            self.assertEqual(events[0], ("verify", 0, total))
+            self.assertIn(("copy", total, total), events)
+            self.assertEqual(events[-2:], [("check", total, total), ("activate", total, total)])
+            copied = [done for stage, done, _ in events if stage == "copy"]
+            self.assertEqual(copied, sorted(copied))
+
+            # The CLI writes the latest stage to a small file a setup window polls.
+            from packaging.release import bootstrap
+            progress = root / "progress.txt"
+            with mock.patch("sys.stdout", new_callable=io.StringIO):
+                self.assertEqual(bootstrap.main(["--bundle-root", str(result.staging_dir), "--install-root", str(root / "cli"), "--progress-file", str(progress)]), 0)
+            self.assertEqual(progress.read_text(encoding="ascii"), f"activate {total} {total}\n")
+
     def test_install_resumes_deterministic_staging_and_removes_progress(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -457,16 +486,30 @@ class ReleaseBundleTests(unittest.TestCase):
 
     def test_setup_bootstrap_is_user_owned_and_embeds_the_release_payload(self) -> None:
         source = Path("packaging/release/windows_setup.rs").read_text(encoding="utf-8")
+        script = Path("packaging/release/windows_setup.ps1").read_text(encoding="utf-8")
         workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn('include_bytes!(env!("DUBFLOW_PAYLOAD"))', source)
-        self.assertIn("Expand-Archive", source)
-        self.assertIn("drop(output)", source)
+        self.assertIn('include_bytes!(env!("DUBFLOW_LAUNCHER"))', source)
+        self.assertIn('include_str!("windows_setup.ps1")', source)
+        # A windowed program: no console, errors are shown in a message box.
+        self.assertIn('#![windows_subsystem = "windows"]', source)
+        self.assertIn("MessageBoxW", source)
+        self.assertIn("CREATE_NO_WINDOW", source)
+        self.assertIn(r'b"\xEF\xBB\xBF"', source)
         self.assertIn("system_binary", source)
         self.assertIn('"System32"', source)
         self.assertIn("fs::create_dir(&root)", source)
-        self.assertIn('.current_dir(&extracted)', source)
-        self.assertIn('"setup.cmd"', source)
         self.assertNotIn("requireAdministrator", source)
+        # The window: folder choice with checks, progress from bootstrap.py,
+        # the Windows integration, update and silent modes.
+        for needle in ("FolderBrowserDialog", "Test-InstallRoot", "--progress-file", "ProgressBar", "Get-UpdateRoot",
+                       "WScript.Shell", "Uninstall\\DubFlow", "uninstall.ps1", "if ($Silent)", "ZipFile]::OpenRead", "unsafe archive entry"):
+            self.assertIn(needle, script)
+        # The uninstaller removes only DubFlow's own entries, never the folder's other files.
+        self.assertIn("$owned = @('versions', 'control', 'models'", script)
+        self.assertNotIn("Remove-Item -LiteralPath $root -Recurse", script)
+        self.assertIn("--silent", workflow)
+        self.assertIn("windows_launcher.rs", workflow)
         self.assertNotIn("7z.sfx", workflow)
         self.assertIn("target-feature=+crt-static", workflow)
         self.assertIn("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020", workflow)

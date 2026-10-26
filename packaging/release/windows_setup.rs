@@ -1,9 +1,18 @@
-//! User-owned Windows bootstrapper for the downloadable release candidate.
+//! User-owned Windows setup for a DubFlow release.
 //!
-//! The executable embeds the exact release ZIP at build time. It uses the
-//! inbox PowerShell `Expand-Archive` command only to unpack that payload, then
-//! invokes the existing user-owned `setup.cmd`. No elevation manifest or
-//! installer service is requested.
+//! The executable embeds the exact release ZIP, the root `DubFlow.exe` stub
+//! (windows_launcher.rs) and the setup window script (windows_setup.ps1) at
+//! build time. It is a GUI-subsystem program, so no console opens: it writes
+//! those files to a private temporary folder and runs the script with the
+//! inbox Windows PowerShell, which shows the setup window (or installs
+//! silently with `--silent`). No elevation manifest or installer service is
+//! requested.
+//!
+//! Arguments: `--silent` (no window), `--no-launch` (do not open DubFlow
+//! afterwards) and `--install-root <folder>` (preselect or, when silent, use
+//! that folder).
+
+#![windows_subsystem = "windows"]
 
 use std::env;
 use std::error::Error;
@@ -13,10 +22,52 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const PAYLOAD: &[u8] = include_bytes!(env!("DUBFLOW_PAYLOAD"));
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
-fn quote_powershell(path: &Path) -> String {
-    path.to_string_lossy().replace('\'', "''")
+const PAYLOAD: &[u8] = include_bytes!(env!("DUBFLOW_PAYLOAD"));
+const LAUNCHER: &[u8] = include_bytes!(env!("DUBFLOW_LAUNCHER"));
+const SCRIPT: &str = include_str!("windows_setup.ps1");
+const VERSION: Option<&str> = option_env!("DUBFLOW_VERSION");
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn MessageBoxW(window: *mut core::ffi::c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+}
+
+/// Without a console, an error before the setup window exists is shown here.
+fn show_error(message: &str) {
+    #[cfg(windows)]
+    {
+        let wide = |text: &str| text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (text, caption) = (wide(message), wide("Cài đặt DubFlow"));
+        // MB_OK | MB_ICONERROR
+        unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), 0x10) };
+    }
+    #[cfg(not(windows))]
+    eprintln!("{message}");
+}
+
+struct Options {
+    silent: bool,
+    no_launch: bool,
+    install_root: Option<String>,
+}
+
+fn options() -> Result<Options, String> {
+    let mut options = Options { silent: false, no_launch: false, install_root: None };
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--silent" | "/S" => options.silent = true,
+            "--no-launch" => options.no_launch = true,
+            "--install-root" => options.install_root = Some(args.next().ok_or("--install-root needs a folder")?),
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok(options)
 }
 
 fn temporary_root() -> PathBuf {
@@ -39,76 +90,79 @@ fn system_binary(parts: &[&str]) -> Result<PathBuf, Box<dyn Error>> {
     Ok(path)
 }
 
-fn run() -> Result<i32, Box<dyn Error>> {
-    if PAYLOAD.is_empty() {
+fn write_file(path: &Path, parts: &[&[u8]]) -> Result<(), Box<dyn Error>> {
+    let mut output = File::create(path)?;
+    for part in parts {
+        output.write_all(part)?;
+    }
+    output.flush()?;
+    output.sync_all()?;
+    Ok(())
+}
+
+fn run(options: &Options) -> Result<i32, Box<dyn Error>> {
+    if PAYLOAD.is_empty() || LAUNCHER.is_empty() {
         return Err("embedded release payload is empty".into());
     }
+    let setup = env::current_exe()?;
     let root = temporary_root();
-    let archive = root.join("release.zip");
-    let extracted = root.join("bundle");
     // A single create_dir call makes a pre-created predictable temp path fail
     // closed instead of silently reusing an attacker-controlled directory.
     fs::create_dir(&root)?;
     let result = (|| -> Result<i32, Box<dyn Error>> {
-        fs::create_dir(&extracted)?;
-        let mut output = File::create(&archive)?;
-        output.write_all(PAYLOAD)?;
-        output.flush()?;
-        output.sync_all()?;
-        // PowerShell must be able to open the ZIP for reading on Windows.
-        // Explicitly close the writer before starting the extractor.
-        drop(output);
+        let archive = root.join("release.zip");
+        let launcher = root.join("DubFlow.exe");
+        let script = root.join("setup.ps1");
+        write_file(&archive, &[PAYLOAD])?;
+        write_file(&launcher, &[LAUNCHER])?;
+        // Windows PowerShell 5.1 reads a script without a BOM as the ANSI code
+        // page, which would garble the Vietnamese text.
+        write_file(&script, &[b"\xEF\xBB\xBF", SCRIPT.as_bytes()])?;
 
-        let archive_literal = quote_powershell(&archive);
-        let extracted_literal = quote_powershell(&extracted);
-        let script = format!(
-            "$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath '{archive}' -DestinationPath '{destination}' -Force",
-            archive = archive_literal,
-            destination = extracted_literal,
-        );
         let powershell = system_binary(&["System32", "WindowsPowerShell", "v1.0", "powershell.exe"])?;
-        let unpack = Command::new(powershell)
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-            ])
-            .arg(script)
-            .status()?;
-        if !unpack.success() {
-            return Err(format!("Expand-Archive failed with status {unpack}").into());
+        let mut command = Command::new(powershell);
+        command
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script)
+            .arg("-Archive").arg(&archive)
+            .arg("-Work").arg(&root)
+            .arg("-Launcher").arg(&launcher)
+            .arg("-SetupPath").arg(&setup);
+        if let Some(version) = VERSION.filter(|version| !version.is_empty()) {
+            command.arg("-Version").arg(version);
         }
-
-        let setup = extracted.join("setup.cmd");
-        if setup.is_symlink() || !setup.is_file() {
-            return Err(format!("release payload did not contain setup.cmd: {}", setup.display()).into());
+        if let Some(folder) = &options.install_root {
+            command.arg("-InstallRoot").arg(folder);
         }
-        // Avoid passing a quoted temporary path through `cmd /C`: Windows
-        // command parsing differs between `Command` and `cmd.exe` for paths
-        // containing spaces. Running from the extracted directory lets the
-        // batch file resolve `%~dp0` itself and keeps the command literal.
-        let command = system_binary(&["System32", "cmd.exe"])?;
-        let install = Command::new(command)
-            .current_dir(&extracted)
-            .args(["/D", "/S", "/C", "setup.cmd"])
-            .status()?;
-        Ok(install.code().unwrap_or(1))
+        if options.silent {
+            command.arg("-Silent");
+        }
+        if options.no_launch {
+            command.arg("-NoLaunch");
+        }
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let status = command.status()?;
+        Ok(status.code().unwrap_or(1))
     })();
-    let cleanup = fs::remove_dir_all(&root);
-    if let Err(error) = cleanup {
-        eprintln!("warning: unable to remove temporary setup directory {}: {error}", root.display());
-    }
+    let _ = fs::remove_dir_all(&root);
     result
 }
 
 fn main() -> ExitCode {
-    match run() {
+    let options = match options() {
+        Ok(options) => options,
+        Err(error) => {
+            show_error(&format!("Tham số không hợp lệ: {error}\n\nDùng: --silent, --no-launch, --install-root <thư mục>"));
+            return ExitCode::from(1);
+        }
+    };
+    match run(&options) {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
         Err(error) => {
-            eprintln!("DubFlow setup failed: {error}");
+            if !options.silent {
+                show_error(&format!("Không mở được trình cài đặt DubFlow.\n\n{error}\n\nỔ C: có thể đã đầy; hãy giải phóng dung lượng rồi chạy lại."));
+            }
             ExitCode::from(1)
         }
     }
