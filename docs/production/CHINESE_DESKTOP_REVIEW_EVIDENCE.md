@@ -1,8 +1,7 @@
 # Chinese real-media desktop review evidence (#271)
 
-Status: **#271 still not accepted, because the desktop GUI was not driven (NOT_RUN).**
-- First run (1.0.0 contract): FAIL. The review revision replaced the original output in place, which acceptance item 4 forbids. Filed as #273.
-- Re-run after the #273 fix (see the last section): all 31 checks pass, using a replay of the new host contract.
+Status: **#271 accepted on the shipped app.** The real desktop window of the installed, signed DubFlow 1.1.0 ran the whole Chinese review/revision flow on the owner-provided real video (see "Desktop GUI run").
+- The first run (1.0.0 contract) failed because the revision overwrote the original; that was fixed in #273/#274/#275/#282.
 
 This is not full #175 qualification.
 
@@ -83,9 +82,25 @@ Follow-up (#273, S5): the first fix removed any existing `<target>.partial` fold
 
 Follow-up (#273, no-replace publication): revisions are now published by reserving the `(sửa N)` name with a create-only directory call. That call fails on any existing path, empty folders included. The save then moves its own entries into the reservation and removes only those entries on failure. Rust and harness tests cover empty and non-empty existing folders and six concurrent saves. The same real video, re-run on the installed, signed **1.1.0** (2026-10-26 01:56:01Z – 02:00:44Z), passed 31/31 checks: production took 235.5 s and the revision 45.0 s.
 
+## Desktop GUI run (installed 1.1.0)
+
+- **Setup.** The installed, signed **DubFlow 1.1.0** (`DubFlow.exe` from its version root, data under an isolated LocalAppData) was started with WebView2's documented `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port`. Its real window was driven over the DevTools protocol, so every action went through the real UI code and the real Tauri host commands (`expand_video_paths`, `start_job`, `review_cues`, `save_review`). The only setup outside the UI was the results-folder preference: the per-viewer `dubflow.outputRoot.v1` entry was pointed at a sandbox folder so the run would not write next to the user's video.
+- **Run 2026-10-26 02:04–02:10 UTC.** Six screenshots were kept locally; they are not committed because they show local paths.
+
+| Step | Result |
+|---|---|
+| Video added through the window's native drag-drop event (`tauri://drag-drop`) | queued; **dubbing on by default** with the catalog default voice `vi-truc-ly-vieneu3-v1` |
+| Source language set to Tiếng Trung in the real select; **Bắt đầu** clicked | COMPLETED in 4 m 52 s, `completed_partial_dubbing`; the result card warns about the undubbed line |
+| **Xem & sửa bản dịch** opened | 124 cues listed, 1 with failed dubbing |
+| Blank text typed into a cue | **Lưu & xử lý lại** disabled, so a failed save is impossible from the UI (the host also rejects it) |
+| Valid edit "Đôi mắt đã bị hạ." → "Đôi mắt đã bị hạ (đã duyệt)"; **Lưu & xử lý lại** clicked | revision job queued with `revisionOf` and output folder `… (sửa 1)` |
+| Revision | COMPLETED in 42 s; the queue shows both jobs and a "Bản sửa" tag |
+| On disk | the original folder's `final_vi.mp4`, both captions, `job_manifest.json` and `qc_report.json` are **byte-identical** before and after. The revision folder is separate, its captions contain the edit, and `revision_of.json` links the original folder and manifest SHA-256 |
+
+Finding from this run, fixed in the same PR: the dialog summary flagged "79 câu đọc quá nhanh". It still judged pace per cue, although the engine dubs close cues as phrases at up to 1.5x. Pace is now computed per dubbing phrase, and only phrases above 5.25 syllables/s are flagged.
+
 ## Not run
 
-- **Desktop GUI**: the review/revision was exercised through the host's file contract, not by clicking the WebView UI.
 - Hachimi translator, multi-voice, background separation and blur were not part of this run.
 - Long-form (2–6 h), batch, chaos and GPU scope remain under #175.
 

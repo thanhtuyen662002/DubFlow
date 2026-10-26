@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { MemorySnapshotStorage, QueueController } from "../src/features/queue/model.ts";
 import { ReviewDraftHistory } from "../src/features/review/history.ts";
 import {
-  applySourceLanguage, chooseTranslator, effectiveTranslator, hachimiAllowed, reviewOverrides, saveReviewRevision,
-  startJobRequest, translatorDefaults,
+  applySourceLanguage, chooseTranslator, effectiveTranslator, FAST_PHRASE_SYLLABLES_PER_SECOND, hachimiAllowed,
+  phrasePaces, reviewOverrides, saveReviewRevision, startJobRequest, translatorDefaults,
 } from "../src/features/translation_review/flow.ts";
 
 const clock = () => "2026-10-25T00:00:00.000Z";
@@ -160,4 +160,24 @@ assert.equal(new QueueController(storage, clock).getSnapshot().jobs.find((candid
 
 // Reviewing needs a finished output.
 await assert.rejects(saveReviewRevision(invoke, reopened, job(reopened, autoId), {}), /completed job/);
+// Review pace follows the engine's phrases: a long line next to short ones is not flagged.
+const paceCues = [
+  { cue_id: "p1", start_ms: 0, end_ms: 1000 }, { cue_id: "p2", start_ms: 1000, end_ms: 2000 },
+  { cue_id: "p3", start_ms: 2100, end_ms: 3000 }, { cue_id: "lone", start_ms: 9000, end_ms: 10000 },
+];
+const paceText = { p1: "một hai ba bốn năm sáu bảy tám", p2: "chín", p3: "mười", lone: "một hai ba bốn năm sáu bảy" };
+const paces = phrasePaces(paceCues, (id) => paceText[id]);
+assert.equal(paces.get("p1"), 10 / 3, "p1-p3 are one phrase (gaps < 250 ms)");
+assert.equal(paces.get("p1"), paces.get("p3"));
+assert.ok(paces.get("p1") < FAST_PHRASE_SYLLABLES_PER_SECOND, "8 syllables in 1 s alone, but fine within its phrase");
+assert.equal(paces.get("lone"), 7);
+assert.ok(paces.get("lone") > FAST_PHRASE_SYLLABLES_PER_SECOND, "a lone over-long line is still flagged");
+assert.equal(FAST_PHRASE_SYLLABLES_PER_SECOND, 5.25);
+const speakers = phrasePaces([{ cue_id: "a", start_ms: 0, end_ms: 1000, speaker: "S1" }, { cue_id: "b", start_ms: 1000, end_ms: 2000, speaker: "S2" }],
+  () => "một hai");
+assert.equal(speakers.get("a"), 2, "different speakers never share a phrase");
+const long = Array.from({ length: 7 }, (_, index) => ({ cue_id: `c${index}`, start_ms: index * 1000, end_ms: index * 1000 + 1000 }));
+const capped = phrasePaces(long, () => "một");
+assert.equal(capped.get("c0"), 1, "at most 5 cues per phrase");
+assert.equal(capped.get("c5"), 1);
 console.log("desktop Chinese review and revision flow tests passed");
