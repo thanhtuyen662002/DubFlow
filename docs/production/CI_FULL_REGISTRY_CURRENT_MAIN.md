@@ -1,4 +1,4 @@
-## Current main checkpoint — 2026-10-27T13:42:00Z — NOT_RUN, not acceptance
+## Current main checkpoint � 2026-10-27T13:42:00Z � NOT_RUN, not acceptance
 
 - **Source SHA:** `b4714892565789b1569663b35fa2d544a392f545` (current main at claim creation).
 - **Status:** `NOT_RUN`. The Lead runtime has GitHub connector access but no complete checkout/local shell/Cargo runner. No `python -m unittest discover -s tests/ci` or unfiltered Integration command was executed by this Lead run.
@@ -8,7 +8,7 @@
 
 ---
 
-# Full deterministic Integration registry â€” current main
+# Full deterministic Integration registry � current main
 
 Evidence for #250. This is a full, non-selective run of every registered integration component on one exact source SHA.
 
@@ -26,12 +26,12 @@ Evidence for #250. This is a full, non-selective run of every registered integra
 | Overall exit code | 0. The log ends with `Integration passed for 49 component(s).` |
 
 ## Component results
-Every component ran all of its registered commands, and every command exited 0. The runner stops at the first non-zero exit, so a final exit of 0 means all of them passed. "Python unittest tests run" counts the `Ran N tests` lines of that component's `unittest` commands. Components whose commands are only `cargo test` or `node` show "â€”".
+Every component ran all of its registered commands, and every command exited 0. The runner stops at the first non-zero exit, so a final exit of 0 means all of them passed. "Python unittest tests run" counts the `Ran N tests` lines of that component's `unittest` commands. Components whose commands are only `cargo test` or `node` show "—".
 
 | # | Component | Commands | Python unittest tests run | Skipped | Result |
 |---|---|---|---|---|---|
 | 1 | `supervisor-workspace` | 3 (cargo, python) | 3 | 0 | PASS |
-| 2 | `media-contracts` | 2 (cargo, python) | — | 0 | PASS |
+| 2 | `media-contracts` | 2 (cargo, python) | � | 0 | PASS |
 | 3 | `worker-protocol` | 2 (cargo, python) | 7 | 0 | PASS |
 | 4 | `job-state` | 2 (cargo, python) | 5 | 0 | PASS |
 | 5 | `storage-recovery` | 3 (cargo, python) | 2 | 0 | PASS |
@@ -42,7 +42,7 @@ Every component ran all of its registered commands, and every command exited 0. 
 | 10 | `fair-scheduler` | 3 (cargo, python) | 2 | 0 | PASS |
 | 11 | `artifact-provenance` | 3 (cargo, python) | 2 | 0 | PASS |
 | 12 | `model-retention` | 2 (cargo, python) | 2 | 0 | PASS |
-| 13 | `local-file-slice` | 1 (cargo) | — | 0 | PASS |
+| 13 | `local-file-slice` | 1 (cargo) | � | 0 | PASS |
 | 14 | `slice-b1-vietsub` | 2 (python) | 8 | 0 | PASS |
 | 15 | `tts` | 1 (python) | 21 | 0 | PASS |
 | 16 | `audio-mix` | 2 (python) | 22 | 0 | PASS |
