@@ -8,7 +8,7 @@
 
 ---
 
-# Full deterministic Integration registry â€” current main
+# Full deterministic Integration registry — current main
 
 Evidence for #250. This is a full, non-selective run of every registered integration component on one exact source SHA.
 
@@ -26,7 +26,7 @@ Evidence for #250. This is a full, non-selective run of every registered integra
 | Overall exit code | 0. The log ends with `Integration passed for 49 component(s).` |
 
 ## Component results
-Every component ran all of its registered commands, and every command exited 0. The runner stops at the first non-zero exit, so a final exit of 0 means all of them passed. "Python unittest tests run" counts the `Ran N tests` lines of that component's `unittest` commands. Components whose commands are only `cargo test` or `node` show "â€”".
+Every component ran all of its registered commands, and every command exited 0. The runner stops at the first non-zero exit, so a final exit of 0 means all of them passed. "Python unittest tests run" counts the `Ran N tests` lines of that component's `unittest` commands. Components whose commands are only `cargo test` or `node` show "—".
 
 | # | Component | Commands | Python unittest tests run | Skipped | Result |
 |---|---|---|---|---|---|
