@@ -365,6 +365,35 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             run_b2_audio(**options, work_dir=root / "again", voice_by_cue={"b": "second"})
             self.assertTrue(all(not engine.cues for engine in engines))
 
+    def test_progress_counts_every_phrase_once_across_voices_failures_and_resume(self):
+        class Engine(DeterministicFixtureEngine):
+            def __init__(self, pack, **kwargs):
+                super().__init__()
+            def synthesize(self, request):
+                if request.segment.segment_id == "b":
+                    raise TtsError("DURATION_FIT_REQUIRED", "refused phrase")
+                return super().synthesize(request)
+        def load(*args, voice_id=None):
+            voice_id = voice_id or "primary"
+            return SimpleNamespace(sample_rate=16000, channels=1, voice_id=voice_id), replace(approved_default_voice(), voice_id=voice_id)
+        with TemporaryDirectory() as directory, patch(
+            "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice", side_effect=load), patch(
+            "engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", side_effect=Engine):
+            root = Path(directory)
+            reports = []
+            options = dict(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), source_language="en", app_root=ROOT,
+                profile_path=ROOT / "models/manifests/production-cpu-v1.json", tts_voice_id="primary",
+                work_dir=root / "b2", voice_by_cue={"b": "second"}, on_progress=lambda *report: reports.append(report),
+                translated_cues=(TextCue("a", 0, 800, "Hello", "Xin chào"), TextCue("b", 1000, 1800, "World", "Thế giới"),
+                                 TextCue("c", 2000, 2800, "Thanks", "Cảm ơn")))
+            result = run_b2_audio(**options)
+            self.assertEqual(result.tts_documents[1].failures[0].segment_id, "b")
+            self.assertEqual(reports, [(1, 3), (2, 3), (3, 3)])
+            reports.clear()
+            run_b2_audio(**options)  # Reused phrases count as settled too.
+            self.assertEqual(reports, [(1, 3), (2, 3), (3, 3)])
+
     def test_explicit_none_matches_default_bytes_and_flat_legacy_paths(self):
         with TemporaryDirectory() as directory, patch(
             "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",

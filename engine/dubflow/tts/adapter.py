@@ -1189,7 +1189,10 @@ class LocalTtsAdapter:
         input_hash: str,
         checkpoints: Mapping[str, TtsCheckpoint] | None = None,
         on_checkpoint: Callable[[TtsCheckpoint], None] | None = None,
+        on_segment: Callable[[], None] | None = None,
     ) -> TtsDocument:
+        """``on_segment`` runs once per input segment after it is settled
+        (synthesized, reused or failed), so callers can report progress."""
         if input_hash != self.provenance.input_hash:
             raise TtsError("PROVENANCE_INPUT_MISMATCH", "TTS input hash differs from provenance")
         values = tuple(item if isinstance(item, TtsInput) else TtsInput.from_translation(item) for item in segments)
@@ -1258,6 +1261,8 @@ class LocalTtsAdapter:
                 if segment_artifact is None:
                     chunk_failed = True
                     chunk_reused = False
+                    if on_segment is not None:
+                        on_segment()
                     continue
                 if on_checkpoint is not None and not reused:
                     try:
@@ -1276,6 +1281,8 @@ class LocalTtsAdapter:
                 else:
                     primary_successes += 1
                 warnings.extend(segment_warning)
+                if on_segment is not None:
+                    on_segment()
             if chunk_failed:
                 chunk_status = "failed"
             elif chunk_reused:

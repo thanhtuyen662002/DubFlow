@@ -1072,13 +1072,14 @@ def _auto_blur_regions(config: WorkerConfig, source_hash: str, duration_ms: int 
         if _stage_ready(checkpoint, "caption_scan", (scan_path,)) and stage.get("input_hash") == identity:
             saved = json.loads(scan_path.read_text(encoding="utf-8"))
             return tuple(BlurRegion.from_mapping(item) for item in saved["regions"]), saved["summary"]
-        emitter.progress(0.67, "Đang chuẩn bị model dò phụ đề gốc")
+        # The scan runs after dubbing, so its band follows the dubbing band.
+        emitter.progress(0.84, "Đang chuẩn bị model dò phụ đề gốc")
         ensure_model_profile(profile_path, config.model_root)
         model_path = config.model_root / json.loads(profile_path.read_text(encoding="utf-8"))["model_path"]
-        emitter.progress(0.67, "Đang dò phụ đề gốc để làm mờ")
+        emitter.progress(0.84, "Đang dò phụ đề gốc để làm mờ")
         scanner = caption_scan.CaptionScanner(model_path, config.ffmpeg_path)
         result = scanner.scan(config.source_path, duration_s=(duration_ms or 0) / 1000, speech_ms=speech,
-                              progress=lambda fraction: emitter.progress(0.67 + 0.02 * fraction, "Đang dò phụ đề gốc để làm mờ"))
+                              progress=lambda fraction: emitter.progress(0.84 + 0.02 * fraction, "Đang dò phụ đề gốc để làm mờ"))
         summary = result.summary()
         _atomic_json(scan_path, {"schema_version": 1, "input_hash": identity, "summary": summary,
                                  "regions": [region.to_dict() for region in result.regions]})
@@ -1294,6 +1295,17 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             work_dir, checkpoint, checkpoint_path, emitter, warnings)
     if config.enable_dubbing:
         emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
+        last_report = [0.0]
+
+        def dubbing_progress(done: int, total: int) -> None:
+            # Resumed phrases settle in milliseconds; one report a second is enough.
+            now = time.monotonic()
+            if done < total and now - last_report[0] < 1.0:
+                return
+            last_report[0] = now
+            emitter.progress(0.70 + 0.14 * done / total,
+                             f"Đang lồng tiếng Việt: đoạn {done}/{total}" if done < total else "Đang trộn giọng Việt với audio nền",
+                             units_done=done, units_total=total)
         try:
             from engine.dubflow.worker.b2_audio import tts_recipe_identity, mix_recipe_identity
             selected_voice = getattr(config, "tts_voice_id", None)
@@ -1328,6 +1340,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                         synthesis_cache_dir=work_dir / "tts-cache",
                         **({"voice_by_cue": cue_voices, "speaker_by_cue": speaker_result.labels} if cue_voices is not None else {}),
                         **({"background_path": background_path} if background_path is not None else {}),
+                        on_progress=dubbing_progress,
                     )
                 except B2AudioError as error:
                     if background_path is None or error.code != "SEPARATION_BED_FAILED":
@@ -1437,7 +1450,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 final_path, render_ready = candidate, True
                 break
     if not render_ready:
-        emitter.progress(0.74, "Đang render video H.264/AAC")
+        emitter.progress(0.86, "Đang render video H.264/AAC")
         try:
             media.render(
                 config.source_path,

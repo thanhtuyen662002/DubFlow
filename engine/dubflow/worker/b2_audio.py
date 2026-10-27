@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 import tempfile
 import wave
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.media import CANONICAL_TIME_BASE, FfmpegMediaAdapter, MediaAdapterError, MediaProbeResult, MediaTimeline
@@ -365,7 +365,8 @@ def _restore_source_windows(background: Path, source: Path, output: Path,
 
 def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_version, runtime_id,
                       mappings, windows_by_id, input_hash, source_language, tts_dir,
-                      app_root, profile_path, synthesis_cache_dir, render_window_limits=None, allow_all_failed=False):
+                      app_root, profile_path, synthesis_cache_dir, render_window_limits=None, allow_all_failed=False,
+                      on_segment=None):
     """One voice's existing synthesis/checkpoint/cache/rewrite pipeline."""
     try:
         tts_config = TtsConfig(
@@ -446,7 +447,7 @@ def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_ve
             render_window_limits=render_window_limits,
             allow_fast_fit=backend_id == vieneu.ENGINE_ID,
         ).synthesize(segments, input_hash=input_hash, checkpoints=reusable,
-                     on_checkpoint=on_checkpoint)
+                     on_checkpoint=on_checkpoint, on_segment=on_segment)
         if checkpoints.warnings:
             tts_document = replace(tts_document, warnings=tts_document.warnings + tuple(checkpoints.warnings))
         if spoken_store is not None and spoken_store.warnings:
@@ -508,10 +509,13 @@ def run_b2_audio(
     voice_by_cue: Mapping[str, str] | None = None,
     speaker_by_cue: Mapping[str, str] | None = None,
     background_path: str | Path | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> B2AudioResult:
     """Execute TTS/AUD-0; optional VieNeu casting keeps per-voice provenance.
 
-    A missing voice map retains the flat TTS directory layout.
+    A missing voice map retains the flat TTS directory layout. ``on_progress``
+    receives (settled phrases, all phrases) across every voice group; the
+    final (total, total) call comes before the mix starts.
     """
 
     if not translated_cues:
@@ -618,6 +622,12 @@ def run_b2_audio(
 
     documents, document_paths, spoken_paths = [], [], []
     primary_voice = voice
+    settled = 0
+
+    def segment_settled() -> None:
+        nonlocal settled
+        settled += 1
+        on_progress(settled, len(mappings))
     for index, (identifier, items) in enumerate(groups.items()):
         if index != 0 or identifier != voice.voice_id:
             if index == 0:
@@ -642,7 +652,7 @@ def run_b2_audio(
             tts_dir=root / "tts" / identifier if multivoice else root / "tts",
             app_root=app_root, profile_path=profile_path, synthesis_cache_dir=synthesis_cache_dir,
             render_window_limits={item["cue_id"]: render_window_limits[item["cue_id"]] for item in items} if render_window_limits else None,
-            allow_all_failed=True)
+            allow_all_failed=True, on_segment=segment_settled if on_progress is not None else None)
         document_path = root / ("tts_document.json" if index == 0 else f"tts_document.{identifier}.json")
         spoken_path = root / ("dubbing_spoken_text.json" if index == 0 else f"dubbing_spoken_text.{identifier}.json")
         _write_voice_documents(tts_document, spoken_store, document_path, spoken_path, items)
@@ -650,6 +660,8 @@ def run_b2_audio(
         document_paths.append(document_path)
         if spoken_store is not None:
             spoken_paths.append(spoken_path)
+    if on_progress is not None and settled != len(mappings):
+        on_progress(len(mappings), len(mappings))
     tts_document, tts_document_path = documents[0], document_paths[0]
     spoken_text_document_path = spoken_paths[0] if spoken_paths else None
     if not any(document.artifacts for document in documents):
