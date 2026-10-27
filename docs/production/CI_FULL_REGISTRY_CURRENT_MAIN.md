@@ -64,14 +64,14 @@ Every component ran all of its registered commands, and every command exited 0. 
 | 32 | `visual-cleanup` | 1 (python) | 12 | 1 | PASS |
 | 33 | `character-speaker` | 1 (python) | 5 | 0 | PASS |
 | 34 | `update` | 1 (python) | 24 | 1 | PASS |
-| 35 | `updater-recovery` | 1 (cargo) | — | 0 | PASS |
+| 35 | `updater-recovery` | 1 (cargo) | � | 0 | PASS |
 | 36 | `installer-bootstrap` | 1 (python) | 16 | 0 | PASS |
-| 37 | `native-source-controller` | 1 (cargo) | — | 0 | PASS |
+| 37 | `native-source-controller` | 1 (cargo) | � | 0 | PASS |
 | 38 | `source-queue` | 2 (cargo, python) | 47 | 1 | PASS |
 | 39 | `release-soak` | 1 (python) | 8 | 0 | PASS |
 | 40 | `capcut-import-pack` | 1 (python) | 3 | 0 | PASS |
 | 41 | `capcut-direct-draft` | 1 (python) | 4 | 0 | PASS |
-| 42 | `review-center` | 1 (node) | — | 0 | PASS |
+| 42 | `review-center` | 1 (node) | � | 0 | PASS |
 | 43 | `benchmark-harness` | 1 (python) | 4 | 0 | PASS |
 | 44 | `qc-provenance` | 1 (python) | 4 | 0 | PASS |
 | 45 | `governance-watchdog` | 1 (python) | 6 | 0 | PASS |
