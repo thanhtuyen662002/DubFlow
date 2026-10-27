@@ -505,8 +505,10 @@ class ReleaseBundleTests(unittest.TestCase):
         for needle in ("FolderBrowserDialog", "Test-InstallRoot", "--progress-file", "ProgressBar", "Get-UpdateRoot",
                        "WScript.Shell", "Uninstall\\DubFlow", "uninstall.ps1", "if ($Silent)", "ZipFile]::OpenRead", "unsafe archive entry"):
             self.assertIn(needle, script)
-        # The uninstaller removes only DubFlow's own entries, never the folder's other files.
-        self.assertIn("$owned = @('versions', 'control', 'models'", script)
+        # The uninstaller removes only DubFlow's own entries, never the folder's
+        # other files; tests/release/test_windows_setup.py runs those rules.
+        self.assertIn("$failed = Remove-DubFlowFiles $root", script)
+        self.assertIn("if (-not (Test-DubFlowRoot $root))", script)
         self.assertNotIn("Remove-Item -LiteralPath $root -Recurse", script)
         self.assertIn("--silent", workflow)
         self.assertIn("windows_launcher.rs", workflow)
