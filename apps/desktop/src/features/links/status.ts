@@ -31,7 +31,7 @@ export function fetchMessage(status: FetchStatus, nowMs: number): string {
     case "preparing":
       return `${status.detail ?? "Đang phân tích link…"}${elapsed}`;
     case "downloading":
-      return (status.total_bytes
+      return (status.detail ? `${status.detail} ` : "") + (status.total_bytes
         ? `Đang tải ${megabytes(status.downloaded_bytes)}/${megabytes(status.total_bytes)} MB`
         : `Đang tải ${megabytes(status.downloaded_bytes)} MB`) + elapsed;
     default:

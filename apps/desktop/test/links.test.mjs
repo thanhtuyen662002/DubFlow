@@ -42,6 +42,8 @@ assert.equal(fetchMessage({ ...base, state: "preparing", detail: "Đang đọc t
 assert.equal(fetchMessage({ ...base, state: "downloading", started_at_ms: 5_000, downloaded_bytes: 52_428_800, total_bytes: 209_715_200 }, 3_730_000),
   "Đang tải 50/200 MB · 1:02:05");
 assert.equal(fetchMessage({ ...base, state: "failed", error: "Không tìm thấy video (có thể đã bị xóa)." }, 0), "Không tìm thấy video (có thể đã bị xóa).");
+assert.equal(fetchMessage({ ...base, state: "downloading", detail: "Mất kết nối, đang tải tiếp (lần 1/2)…", started_at_ms: 1_000, downloaded_bytes: 80_740_352 }, 61_000),
+  "Mất kết nối, đang tải tiếp (lần 1/2)… Đang tải 77 MB · 1:00");
 assert.equal(fetchBadge("queued"), "Đang chờ");
 assert.equal(clock(59_999), "0:59");
 assert.equal(shortPath("C:\\Users\\me\\Videos\\DubFlow Output\\BV1B5xkzPEhx - vi\\link-1"), "…\\DubFlow Output\\BV1B5xkzPEhx - vi\\link-1");

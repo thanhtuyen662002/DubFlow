@@ -51,7 +51,13 @@ pub struct Sources {
     launch: Mutex<Option<(PathBuf, PathBuf, PathBuf)>>,
     /// Latest `source_session` / `source_session_error` event.
     session: Mutex<Option<Value>>,
+    /// Automatic resumes used per link after a dropped connection.
+    resumes: Mutex<HashMap<String, u8>>,
 }
+
+/// The service allows two retries of a failed download; each resumes the
+/// part already downloaded.
+const MAX_RESUMES: u8 = 2;
 
 #[derive(Default)]
 struct LinkQueue {
@@ -221,9 +227,10 @@ impl Sources {
             return;
         }
         let current = self.queue.lock().ok().and_then(|queue| queue.current.clone())
-            .filter(|scan| self.status(scan).is_some_and(|s| s.state == "preparing"));
+            .filter(|scan| self.status(scan).is_some_and(|s| s.state == "preparing"
+                || s.detail.as_deref().is_some_and(|d| d.starts_with("Mất kết nối"))));
         // A rejected request names no scan. Only the running link sends
-        // requests, and only a rejected start leaves it stuck in preparing.
+        // requests, and only a rejected start or resume leaves it waiting.
         let Some(scan) = event["scan_id"].as_str().map(str::to_owned)
             .or_else(|| if event["event"] == "source_error" { current } else { None }) else { return };
         let scan = scan.as_str();
@@ -261,8 +268,10 @@ impl Sources {
                     let _ = self.send(json!({"command":"download", "scan_id":scan, "identity_key":identity, "resume":false}));
                 }
             }
+            "source_download_failed" if self.resume_after_drop(scan, event) => {}
             "source_download_progress" => {
                 self.update(scan, |s| {
+                    s.detail = None;
                     s.downloaded_bytes = event["downloaded_bytes"].as_u64().unwrap_or(s.downloaded_bytes);
                     s.total_bytes = event["total_bytes"].as_u64().or(s.total_bytes);
                 });
@@ -286,6 +295,37 @@ impl Sources {
         if self.status(scan).is_some_and(|s| finished(&s.state)) {
             self.pump();
         }
+    }
+
+    /// A download that lost its connection resumes from the part already on
+    /// disk, up to `MAX_RESUMES` times. Returns whether a resume was started.
+    fn resume_after_drop(self: &Arc<Self>, scan: &str, event: &Value) -> bool {
+        let code = event["code"].as_str().unwrap_or_default();
+        let Some(identity) = event["identity_key"].as_str().map(str::to_owned) else { return false };
+        if event["retryable"] != true || !matches!(code, "NETWORK" | "RATE_LIMITED") {
+            return false;
+        }
+        let attempt = {
+            let Ok(mut resumes) = self.resumes.lock() else { return false };
+            let used = resumes.entry(scan.to_owned()).or_insert(0);
+            if *used >= MAX_RESUMES {
+                return false;
+            }
+            *used += 1;
+            *used
+        };
+        self.update(scan, |s| s.detail = Some(format!("Mất kết nối, đang tải tiếp (lần {attempt}/{MAX_RESUMES})…")));
+        let this = Arc::clone(self);
+        let scan = scan.to_owned();
+        thread::spawn(move || {
+            // Give the source a moment before asking it again.
+            thread::sleep(std::time::Duration::from_secs(5));
+            if let Err(error) = this.send(json!({"command":"retry_download", "scan_id":scan, "identity_key":identity})) {
+                this.fail_link(&scan, error);
+                this.pump();
+            }
+        });
+        true
     }
 
     /// Start the next waiting link once the running one has finished.
@@ -518,6 +558,28 @@ mod tests {
         // A late event for a finished link changes nothing.
         sources.on_event(&json!({"event":"source_error", "scan_id":"running", "code":"NETWORK"}));
         assert_eq!(sources.status("running").unwrap().error.as_deref(), Some("Dịch vụ tải không nhận link này. Hãy thử lại."));
+    }
+
+    #[test]
+    fn a_dropped_download_resumes_twice_then_fails() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "big", "downloading");
+        sources.queue.lock().unwrap().current = Some("big".into());
+        let dropped = json!({"event":"source_download_failed", "scan_id":"big", "identity_key":"bilibili:BV1",
+            "code":"NETWORK", "retryable":true});
+        for attempt in 1..=MAX_RESUMES {
+            sources.on_event(&dropped);
+            let status = sources.status("big").unwrap();
+            assert_eq!(status.state, "downloading");
+            assert_eq!(status.detail, Some(format!("Mất kết nối, đang tải tiếp (lần {attempt}/2)…")));
+        }
+        sources.on_event(&dropped);
+        assert_eq!(sources.status("big").unwrap().state, "failed");
+        // A failure that a retry cannot fix fails at once.
+        queued(&sources, "gone", "downloading");
+        sources.on_event(&json!({"event":"source_download_failed", "scan_id":"gone", "identity_key":"bilibili:BV2",
+            "code":"NOT_FOUND", "retryable":false}));
+        assert_eq!(sources.status("gone").unwrap().state, "failed");
     }
 
     #[test]
