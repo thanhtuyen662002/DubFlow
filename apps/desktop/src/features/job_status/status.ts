@@ -79,7 +79,7 @@ export const PIPELINE_STAGES = [
   { id: "translate", label: "Dịch sang tiếng Việt", from: 0.44 },
   { id: "subtitles", label: "Tạo phụ đề", from: 0.66 },
   { id: "dubbing", label: "Lồng tiếng", from: 0.7 },
-  { id: "render", label: "Render video", from: 0.74 },
+  { id: "render", label: "Render video", from: 0.86 },
   { id: "qc", label: "Kiểm tra chất lượng", from: 0.88 },
 ] as const;
 

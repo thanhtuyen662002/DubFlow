@@ -14,8 +14,8 @@ const STEPS: Array<[number, string]> = [
   [0.18, "Đang nhận dạng lời thoại"],
   [0.44, "Đang dịch cục bộ sang tiếng Việt"],
   [0.66, "Đã tạo subtitle SRT/ASS"],
-  [0.7, "Đang tổng hợp giọng Việt CPU và trộn audio"],
-  [0.74, "Đang render video H.264/AAC"],
+  [0.7, "Đang lồng tiếng Việt"],
+  [0.86, "Đang render video H.264/AAC"],
   [0.88, "Đang kiểm tra codec, thời lượng và khả năng đọc output"],
 ];
 
