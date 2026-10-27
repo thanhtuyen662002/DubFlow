@@ -1007,12 +1007,47 @@ fn fetch_url(url: String, sources: tauri::State<'_, std::sync::Arc<source::Sourc
     let supervisor = supervisor_binary(&root)?;
     let status = sources.fetch(url.clone(), &supervisor, &root, &control_root()?)?;
     let output_dir = source::link_output_dir(&url, &status.scan_id)?;
+    // Exists from the start, so "Mở thư mục" works while the link downloads.
+    fs::create_dir_all(&output_dir).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
     Ok(FetchStarted { output_dir: output_dir.to_string_lossy().into_owned(), status })
 }
 
 #[tauri::command]
 fn fetch_status(scan_id: String, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Option<source::FetchStatus> {
     sources.status(&scan_id)
+}
+
+/// Drop a link that is still waiting for its turn.
+#[tauri::command]
+fn withdraw_fetch(scan_id: String, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> bool {
+    sources.withdraw(&scan_id)
+}
+
+/// Open a results folder; only folders below "DubFlow Output".
+#[tauri::command]
+fn open_folder(path: String) -> Result<(), String> {
+    let dir = PathBuf::from(&path);
+    let inside_output = dir.is_absolute() && dir.ancestors().skip(1).any(|d| d.file_name().is_some_and(|name| name == "DubFlow Output"));
+    if !inside_output || !dir.is_dir() || path.contains("..") {
+        return Err(fail("Chỉ mở được thư mục kết quả của DubFlow"));
+    }
+    Command::new("explorer.exe").arg(display_path(&dir)).spawn()
+        .map_err(|error| fail(format!("Không mở được thư mục: {error}")))?;
+    Ok(())
+}
+
+/// Show a downloaded source video in Explorer; only files the link service
+/// saved below `<data root>\source-media`.
+#[tauri::command]
+fn reveal_download(path: String) -> Result<(), String> {
+    let file = PathBuf::from(&path).canonicalize().map_err(|_| fail("Không tìm thấy video đã tải"))?;
+    let media = data_root()?.join("source-media").canonicalize().map_err(|_| fail("Không tìm thấy video đã tải"))?;
+    if !file.starts_with(&media) || !file.is_file() {
+        return Err(fail("Chỉ mở được video DubFlow đã tải về"));
+    }
+    Command::new("explorer.exe").arg(format!("/select,{}", display_path(&file))).spawn()
+        .map_err(|error| fail(format!("Không mở được thư mục: {error}")))?;
+    Ok(())
 }
 
 /// A short WAV clip of the source or the finished video for one review cue.
@@ -1252,7 +1287,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app])
+        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, open_folder, reveal_download, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

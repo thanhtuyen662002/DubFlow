@@ -1,14 +1,15 @@
 //! Video links: drive the supervisor's `source-serve` (scan -> items ->
 //! download) and hand back a verified local media file for the queue.
 //!
-//! One long-lived service child is the single writer of the source store.
-//! A reader thread advances each link through its steps; the webview polls
-//! `fetch_status` and adds the finished file as an ordinary local job.
+//! One long-lived service child is the single writer of the source store and
+//! runs one link at a time, so links wait in a queue here and start one after
+//! another. A reader thread advances each link through its steps; the webview
+//! polls `fetch_status` and adds the finished file as an ordinary local job.
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -21,8 +22,14 @@ pub struct FetchStatus {
     pub scan_id: String,
     pub url: String,
     pub provider: String,
-    /// preparing | downloading | done | failed
+    /// queued | preparing | downloading | done | failed
     pub state: String,
+    /// What a preparing link is doing right now, for the user.
+    pub detail: Option<String>,
+    /// 1-based place among the links still waiting, while queued.
+    pub queue_position: Option<usize>,
+    /// When this link left the queue (ms since the Unix epoch).
+    pub started_at_ms: Option<u64>,
     pub downloaded_bytes: u64,
     pub total_bytes: Option<u64>,
     pub media_path: Option<String>,
@@ -38,8 +45,26 @@ struct Service {
 pub struct Sources {
     service: Mutex<Option<Service>>,
     fetches: Arc<Mutex<HashMap<String, FetchStatus>>>,
+    /// Links waiting for the service, oldest first, and the one it is running.
+    queue: Mutex<LinkQueue>,
+    /// Supervisor, release root and data root to (re)start the service with.
+    launch: Mutex<Option<(PathBuf, PathBuf, PathBuf)>>,
     /// Latest `source_session` / `source_session_error` event.
     session: Mutex<Option<Value>>,
+}
+
+#[derive(Default)]
+struct LinkQueue {
+    waiting: VecDeque<String>,
+    current: Option<String>,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+fn finished(state: &str) -> bool {
+    state == "done" || state == "failed"
 }
 
 /// Cookies yt-dlp's Douyin extractor needs first; the service accepts one
@@ -108,6 +133,7 @@ fn human_error(code: &str, provider: &str) -> String {
         "NETWORK" => "Không tải được video từ link này (lỗi mạng hoặc trang không hỗ trợ).".into(),
         "UNSUPPORTED" => "Link này chưa được hỗ trợ.".into(),
         "INVALID_INPUT" => "Link không hợp lệ.".into(),
+        "SOURCE_REQUEST_REJECTED" => "Dịch vụ tải không nhận link này. Hãy thử lại.".into(),
         other => format!("Tải link thất bại ({other})."),
     }
 }
@@ -127,6 +153,8 @@ impl Sources {
     }
 
     fn ensure_started(self: &Arc<Self>, supervisor: &Path, root: &Path, data: &Path) -> Result<(), String> {
+        *self.launch.lock().map_err(|_| fail("source launch lock poisoned"))? =
+            Some((supervisor.to_path_buf(), root.to_path_buf(), data.to_path_buf()));
         let mut guard = self.service.lock().map_err(|_| fail("source service lock poisoned"))?;
         if let Some(service) = guard.as_mut() {
             if matches!(service.child.try_wait(), Ok(None)) {
@@ -156,13 +184,16 @@ impl Sources {
                     this.on_event(&event);
                 }
             }
-            // Service exited: anything still in flight cannot finish.
+            // Service exited: the running link cannot finish; the next one
+            // restarts the service.
             if let Ok(mut fetches) = this.fetches.lock() {
                 for status in fetches.values_mut().filter(|s| s.state == "preparing" || s.state == "downloading") {
                     status.state = "failed".into();
+                    status.detail = None;
                     status.error = Some("Dịch vụ tải link đã dừng giữa chừng. Hãy thử lại.".into());
                 }
             }
+            this.pump();
         });
         Ok(())
     }
@@ -174,27 +205,59 @@ impl Sources {
         Some(status.clone())
     }
 
-    fn on_event(&self, event: &Value) {
+    fn fail_link(&self, scan: &str, error: String) {
+        self.update(scan, |s| if !finished(&s.state) {
+            s.state = "failed".into();
+            s.detail = None;
+            s.error = Some(error);
+        });
+    }
+
+    fn on_event(self: &Arc<Self>, event: &Value) {
         if matches!(event["event"].as_str(), Some("source_session" | "source_session_error")) {
             if let Ok(mut slot) = self.session.lock() {
                 *slot = Some(event.clone());
             }
             return;
         }
-        let Some(scan) = event["scan_id"].as_str() else { return };
+        let current = self.queue.lock().ok().and_then(|queue| queue.current.clone())
+            .filter(|scan| self.status(scan).is_some_and(|s| s.state == "preparing"));
+        // A rejected request names no scan. Only the running link sends
+        // requests, and only a rejected start leaves it stuck in preparing.
+        let Some(scan) = event["scan_id"].as_str().map(str::to_owned)
+            .or_else(|| if event["event"] == "source_error" { current } else { None }) else { return };
+        let scan = scan.as_str();
         match event["event"].as_str().unwrap_or_default() {
+            "source_preparing" => {
+                self.update(scan, |s| s.detail = Some("Đang mở trang video…".into()));
+            }
+            "source_status" if event["status"] == "running" => {
+                self.update(scan, |s| s.detail = Some("Đang đọc thông tin video…".into()));
+            }
             "source_status" if event["status"] == "completed" && event["discovered_count"].as_u64().unwrap_or(0) > 0 => {
-                if self.update(scan, |_| ()).is_some_and(|s| s.state == "preparing") {
+                // The service may report completion more than once; ask for the item once.
+                const FOUND: &str = "Đã tìm thấy video, chuẩn bị tải…";
+                let mut first = false;
+                self.update(scan, |s| if s.state == "preparing" && s.detail.as_deref() != Some(FOUND) {
+                    s.detail = Some(FOUND.into());
+                    first = true;
+                });
+                if first {
                     let _ = self.send(json!({"command":"items", "scan_id":scan, "offset":0, "limit":1}));
                 }
             }
             "source_status" if event["status"] == "completed" => {
-                self.update(scan, |s| { s.state = "failed".into(); s.error = Some("Link không chứa video nào.".into()); });
+                self.fail_link(scan, "Link không chứa video nào.".into());
             }
             "source_items" => {
                 let identity = event["items"][0]["identity_key"].as_str().map(str::to_owned);
-                let started = self.update(scan, |s| if s.state == "preparing" { s.state = "downloading".into(); });
-                if let (Some(identity), Some(_)) = (identity, started) {
+                let mut started = false;
+                self.update(scan, |s| if s.state == "preparing" {
+                    s.state = "downloading".into();
+                    s.detail = None;
+                    started = true;
+                });
+                if let (Some(identity), true) = (identity, started) {
                     let _ = self.send(json!({"command":"download", "scan_id":scan, "identity_key":identity, "resume":false}));
                 }
             }
@@ -207,28 +270,94 @@ impl Sources {
             "source_downloaded" => {
                 self.update(scan, |s| {
                     s.state = "done".into();
+                    s.detail = None;
                     s.media_path = event["media_path"].as_str().map(str::to_owned);
                     s.downloaded_bytes = event["size_bytes"].as_u64().unwrap_or(s.downloaded_bytes);
                     s.total_bytes = Some(s.downloaded_bytes);
                 });
             }
-            "source_error" | "source_download_failed" | "source_download_cancelled" => {
+            "source_error" | "source_download_failed" | "source_download_cancelled" | "source_retry_refused" => {
                 let code = event["code"].as_str().unwrap_or("SOURCE_FAILED").to_owned();
-                self.update(scan, |s| { s.state = "failed".into(); s.error = Some(human_error(&code, &s.provider)); });
+                let provider = self.status(scan).map(|s| s.provider).unwrap_or_default();
+                self.fail_link(scan, human_error(&code, &provider));
             }
             _ => {}
         }
+        if self.status(scan).is_some_and(|s| finished(&s.state)) {
+            self.pump();
+        }
     }
 
+    /// Start the next waiting link once the running one has finished.
+    fn pump(self: &Arc<Self>) {
+        loop {
+            // Lock order everywhere: fetches, then queue.
+            let (next, status) = {
+                let Ok(mut fetches) = self.fetches.lock() else { return };
+                let Ok(mut queue) = self.queue.lock() else { return };
+                if queue.current.as_ref().and_then(|scan| fetches.get(scan)).is_some_and(|s| !finished(&s.state)) {
+                    return;
+                }
+                queue.current = queue.waiting.pop_front();
+                let Some(next) = queue.current.clone() else { return };
+                for (place, scan) in queue.waiting.iter().enumerate() {
+                    if let Some(status) = fetches.get_mut(scan) {
+                        status.queue_position = Some(place + 1);
+                    }
+                }
+                let Some(status) = fetches.get_mut(&next) else { continue };
+                status.state = "preparing".into();
+                status.queue_position = None;
+                status.detail = Some("Đang khởi động dịch vụ tải…".into());
+                status.started_at_ms = Some(now_ms());
+                (next, status.clone())
+            };
+            let launch = self.launch.lock().ok().and_then(|launch| launch.clone());
+            let started = match launch {
+                Some((supervisor, root, data)) => self.ensure_started(&supervisor, &root, &data),
+                None => Err(fail("Dịch vụ tải link chưa chạy")),
+            }
+            .and_then(|_| self.send(json!({"command":"start_video", "scan_id":next, "provider_id":status.provider, "source_ref":status.url})));
+            match started {
+                Ok(()) => return,
+                Err(error) => self.fail_link(&next, error),
+            }
+        }
+    }
+
+    /// Queue a link; it starts once every earlier link has finished.
     pub fn fetch(self: &Arc<Self>, url: String, supervisor: &Path, root: &Path, data: &Path) -> Result<FetchStatus, String> {
         let provider = provider_for(&url)?;
         self.ensure_started(supervisor, root, data)?;
         let scan = scan_id(&url);
-        let status = FetchStatus { scan_id: scan.clone(), url: url.clone(), provider: provider.into(), state: "preparing".into(),
-            downloaded_bytes: 0, total_bytes: None, media_path: None, error: None };
-        self.fetches.lock().map_err(|_| fail("fetch table lock poisoned"))?.insert(scan.clone(), status.clone());
-        self.send(json!({"command":"start_video", "scan_id":scan, "provider_id":provider, "source_ref":url}))?;
-        Ok(status)
+        {
+            let mut fetches = self.fetches.lock().map_err(|_| fail("fetch table lock poisoned"))?;
+            // The same link again while it is waiting or running is the same fetch.
+            if let Some(existing) = fetches.get(&scan).filter(|s| !finished(&s.state)) {
+                return Ok(existing.clone());
+            }
+            let mut queue = self.queue.lock().map_err(|_| fail("link queue lock poisoned"))?;
+            queue.waiting.push_back(scan.clone());
+            fetches.insert(scan.clone(), FetchStatus { scan_id: scan.clone(), url, provider: provider.into(), state: "queued".into(),
+                detail: None, queue_position: Some(queue.waiting.len()), started_at_ms: None,
+                downloaded_bytes: 0, total_bytes: None, media_path: None, error: None });
+        }
+        self.pump();
+        self.status(&scan).ok_or_else(|| fail("fetch disappeared"))
+    }
+
+    /// Drop a link that is still waiting; a running link cannot be withdrawn here.
+    pub fn withdraw(&self, scan: &str) -> bool {
+        let (Ok(mut fetches), Ok(mut queue)) = (self.fetches.lock(), self.queue.lock()) else { return false };
+        let Some(place) = queue.waiting.iter().position(|waiting| waiting == scan) else { return false };
+        queue.waiting.remove(place);
+        fetches.remove(scan);
+        for (place, waiting) in queue.waiting.iter().enumerate() {
+            if let Some(status) = fetches.get_mut(waiting) {
+                status.queue_position = Some(place + 1);
+            }
+        }
+        true
     }
 
     /// Store a provider session in the service's protected (DPAPI) store and
@@ -344,6 +473,51 @@ mod tests {
         assert!(header.split("; ").count() <= 64);
         assert!(!header.contains("bad=") && !header.contains("quoted="));
         assert_eq!(cookie_header(&[("a".into(), "".into())], &DOUYIN_PRIORITY), None);
+    }
+
+    fn queued(sources: &Sources, scan: &str, state: &str) {
+        sources.fetches.lock().unwrap().insert(scan.into(), FetchStatus { scan_id: scan.into(), url: format!("https://www.bilibili.com/video/{scan}/"),
+            provider: "bilibili".into(), state: state.into(), detail: None, queue_position: None, started_at_ms: None,
+            downloaded_bytes: 0, total_bytes: None, media_path: None, error: None });
+    }
+
+    #[test]
+    fn withdrawing_a_waiting_link_renumbers_the_rest() {
+        let sources = Sources::default();
+        for scan in ["a", "b", "c"] {
+            queued(&sources, scan, "queued");
+            sources.queue.lock().unwrap().waiting.push_back(scan.into());
+        }
+        assert!(sources.withdraw("b"));
+        assert!(!sources.withdraw("b"));
+        assert!(sources.status("b").is_none());
+        assert_eq!(sources.status("c").unwrap().queue_position, Some(2));
+        assert_eq!(sources.queue.lock().unwrap().waiting, ["a", "c"]);
+    }
+
+    #[test]
+    fn a_rejection_without_a_scan_fails_the_running_link_and_moves_the_queue_on() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "running", "preparing");
+        queued(&sources, "next", "queued");
+        {
+            let mut queue = sources.queue.lock().unwrap();
+            queue.current = Some("running".into());
+            queue.waiting.push_back("next".into());
+        }
+        sources.on_event(&json!({"event":"source_error", "code":"SOURCE_REQUEST_REJECTED", "retryable":false}));
+        let running = sources.status("running").unwrap();
+        assert_eq!((running.state.as_str(), running.error.as_deref()), ("failed", Some("Dịch vụ tải không nhận link này. Hãy thử lại.")));
+        // The next link left the queue; with no service in this test it fails
+        // to start, and the queue ends empty instead of waiting forever.
+        assert!(sources.queue.lock().unwrap().waiting.is_empty());
+        assert_eq!(sources.queue.lock().unwrap().current, None);
+        let next = sources.status("next").unwrap();
+        assert_eq!(next.state, "failed");
+        assert!(next.started_at_ms.is_some());
+        // A late event for a finished link changes nothing.
+        sources.on_event(&json!({"event":"source_error", "scan_id":"running", "code":"NETWORK"}));
+        assert_eq!(sources.status("running").unwrap().error.as_deref(), Some("Dịch vụ tải không nhận link này. Hãy thử lại."));
     }
 
     #[test]

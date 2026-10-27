@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { MAX_LINKS, extractLinks } from "../src/features/links/extract.ts";
+import { clock, fetchBadge, fetchMessage, shortPath } from "../src/features/links/status.ts";
 
 // One per line, Windows line ends, duplicates dropped, URL commas preserved.
 const lines = extractLinks("https://www.bilibili.com/video/BV1gKJ86JEuP\r\nhttps://archive.org/a,b.mp4\nhttps://www.bilibili.com/video/BV1gKJ86JEuP\n  http://x.example/scene//1  ");
@@ -24,4 +25,24 @@ const many = extractLinks(Array.from({ length: 55 }, (_, i) => `https://a.exampl
 assert.equal(many.links.length, MAX_LINKS);
 assert.equal(many.dropped, 5);
 assert.deepEqual(extractLinks("không có link ftp://x").links, []);
+
+// Links pasted back to back, or with " , " between them, are still separate.
+const bili = ["https://www.bilibili.com/video/BV1B5xkzPEhx/", "https://www.bilibili.com/video/BV1FwY4zkEef/", "https://www.bilibili.com/video/BV1Lha9zCEJ4/"];
+assert.deepEqual(extractLinks(bili.join("")).links, bili);
+assert.deepEqual(extractLinks(bili.join(" , ")).links, bili);
+assert.deepEqual(extractLinks(bili.join(",")).links, bili);
+
+// Link rows: waiting, analysing with elapsed time, downloading, failed.
+const base = { scan_id: "link-1", url: bili[0], provider: "bilibili", detail: null, queue_position: null, started_at_ms: null,
+  downloaded_bytes: 0, total_bytes: null, media_path: null, error: null };
+assert.equal(fetchMessage({ ...base, state: "queued", queue_position: 1 }, 0), "Đang chờ link trước tải xong");
+assert.equal(fetchMessage({ ...base, state: "queued", queue_position: 3 }, 0), "Đang chờ: còn 2 link phía trước");
+assert.equal(fetchMessage({ ...base, state: "preparing", detail: "Đang đọc thông tin video…", started_at_ms: 1_000 }, 84_000),
+  "Đang đọc thông tin video… · 1:23");
+assert.equal(fetchMessage({ ...base, state: "downloading", started_at_ms: 5_000, downloaded_bytes: 52_428_800, total_bytes: 209_715_200 }, 3_730_000),
+  "Đang tải 50/200 MB · 1:02:05");
+assert.equal(fetchMessage({ ...base, state: "failed", error: "Không tìm thấy video (có thể đã bị xóa)." }, 0), "Không tìm thấy video (có thể đã bị xóa).");
+assert.equal(fetchBadge("queued"), "Đang chờ");
+assert.equal(clock(59_999), "0:59");
+assert.equal(shortPath("C:\\Users\\me\\Videos\\DubFlow Output\\BV1B5xkzPEhx - vi\\link-1"), "…\\DubFlow Output\\BV1B5xkzPEhx - vi\\link-1");
 console.log("desktop link extraction tests passed");

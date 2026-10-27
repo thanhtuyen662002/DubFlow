@@ -4,8 +4,9 @@ export const MAX_LINKS = 50;
 export const MAX_LINK_BYTES = 2048;
 
 // Stop at whitespace, quotes, angle brackets and full-width punctuation that
-// share messages put right after the link.
-const LINK = /https?:\/\/[^\s<>"'，。！？、；：（）【】《》]+/giu;
+// share messages put right after the link, and where the next link starts
+// when two were pasted back to back.
+const LINK = /https?:\/\/(?:(?!https?:\/\/)[^\s<>"'，。！？、；：（）【】《》])+/giu;
 
 export type ExtractedLinks = { links: string[]; tooLong: string[]; dropped: number };
 

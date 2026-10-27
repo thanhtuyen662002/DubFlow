@@ -5,6 +5,7 @@ import { previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import { mountDiscovery } from "./features/discovery/view.ts";
 import { extractLinks } from "./features/links/extract.ts";
+import { fetchBadge, fetchMessage, shortPath, type FetchStatus } from "./features/links/status.ts";
 import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
@@ -50,10 +51,6 @@ function browserStorage(): SnapshotStorage {
 
 const queue = new QueueController(browserStorage());
 const pollers = new Map<string, number>();
-type FetchStatus = {
-  scan_id: string; url: string; provider: string; state: "preparing" | "downloading" | "done" | "failed";
-  downloaded_bytes: number; total_bytes: number | null; media_path: string | null; error: string | null;
-};
 type FetchEntry = { status: FetchStatus; outputDir: string; timer: number };
 const fetches = new Map<string, FetchEntry>();
 
@@ -333,6 +330,10 @@ function renderInspector(job: QueueJob | null): void {
   warning.textContent = warning.hidden ? "" : "Một số câu chưa lồng tiếng được (vẫn là tiếng gốc), thường vì câu dịch quá dài. Bấm “Xem & sửa bản dịch” để rút gọn rồi xử lý lại.";
   $("#open-review").classList.toggle("primary", !warning.hidden);
   $("#result-path").textContent = output ?? "";
+  // A link job: where its downloaded video and its results live.
+  $("#link-card").hidden = !job.originUrl;
+  $("#link-media").textContent = job.originUrl ? job.sourcePath : "";
+  $("#link-output").textContent = job.originUrl ? job.outputDir ?? "" : "";
 
   renderVoiceControls(job);
   startButton.disabled = !canStart(job);
@@ -639,6 +640,14 @@ $("#open-output").addEventListener("click", () => {
   const path = selectedJob()?.outputPath;
   if (path) invoke("open_path", { path }).catch((error) => showError(`Không mở được video: ${String(error).slice(0, 160)}`));
 });
+$("#reveal-download").addEventListener("click", () => {
+  const path = selectedJob()?.sourcePath;
+  if (path) invoke("reveal_download", { path }).catch((error) => showError(`Không mở được video gốc: ${String(error).slice(0, 160)}`));
+});
+$("#open-link-output").addEventListener("click", () => {
+  const dir = selectedJob()?.outputDir;
+  if (dir) openFolder(dir);
+});
 $("#reveal-output").addEventListener("click", () => {
   const path = selectedJob()?.outputPath;
   if (path) invoke("reveal_path", { path }).catch((error) => showError(`Không mở được thư mục: ${String(error).slice(0, 160)}`));
@@ -659,45 +668,52 @@ function linkName(url: string): string {
   }
 }
 
-function megabytes(bytes: number): string {
-  return (bytes / 1_048_576).toFixed(bytes < 10_485_760 ? 1 : 0);
+function openFolder(path: string): void {
+  invoke("open_folder", { path }).catch((error) => showError(`Không mở được thư mục: ${String(error).slice(0, 160)}`));
 }
 
 function renderFetches(): void {
   fetchList.replaceChildren();
   fetchList.hidden = fetches.size === 0;
   dropZone.hidden = fetches.size > 0 || queue.getSnapshot().jobs.length > 0;
-  for (const { status } of fetches.values()) {
-    const item = element("li", `job${status.state === "failed" ? " failed" : ""}`);
+  const now = Date.now();
+  for (const { status, outputDir } of fetches.values()) {
+    const failed = status.state === "failed";
+    const item = element("li", `job${failed ? " failed" : ""}`);
     const thumb = element("span", "job-thumb");
     thumb.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>`;
     const main = element("div", "job-main");
     const meta = element("div", "job-meta");
     meta.append(element("span", "mini-tag muted", PROVIDER_NAMES[status.provider] ?? status.provider));
-    const message = status.state === "failed" ? status.error ?? "Tải link thất bại"
-      : status.state === "preparing" ? "Đang phân tích link…"
-      : status.total_bytes ? `Đang tải ${megabytes(status.downloaded_bytes)}/${megabytes(status.total_bytes)} MB`
-      : `Đang tải ${megabytes(status.downloaded_bytes)} MB`;
-    meta.append(element("span", `msg${status.state === "failed" ? " err" : ""}`, message));
+    meta.append(element("span", `msg${failed ? " err" : ""}`, fetchMessage(status, now)));
     main.append(element("span", "job-title", linkName(status.url)), meta);
-    if (status.state !== "failed") {
+    if (!failed && status.state !== "queued") {
       const fraction = status.state === "downloading" && status.total_bytes ? status.downloaded_bytes / status.total_bytes : null;
       main.append(progressBar(fraction, "RUNNING"));
     }
-    if (status.state === "failed" && status.provider === "douyin") main.append(douyinActions(status));
+    // Where the results of this link will be saved, from the moment it is added.
+    const where = element("div", "fetch-where");
+    const open = element("button", "link", "Mở thư mục");
+    open.type = "button";
+    open.addEventListener("click", () => openFolder(outputDir));
+    where.append(element("span", "path", `Lưu vào ${shortPath(outputDir)}`), open);
+    where.title = outputDir;
+    main.append(where);
+    if (failed && status.provider === "douyin") main.append(douyinActions(status));
     const side = element("div", "job-side");
-    if (status.state === "failed") {
+    side.append(element("span", `badge ${failed ? "err" : status.state === "queued" ? "" : "run"}`, fetchBadge(status.state)));
+    if (failed || status.state === "queued") {
       const dismiss = element("button", "icon-btn");
       dismiss.type = "button";
-      dismiss.title = dismiss.ariaLabel = "Bỏ qua";
+      dismiss.title = dismiss.ariaLabel = failed ? "Bỏ qua" : "Bỏ link này";
       dismiss.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
-      dismiss.addEventListener("click", () => {
+      dismiss.addEventListener("click", async () => {
+        if (status.state === "queued" && !(await invoke<boolean>("withdraw_fetch", { scanId: status.scan_id }))) return;
+        window.clearInterval(fetches.get(status.scan_id)?.timer);
         fetches.delete(status.scan_id);
         renderFetches();
       });
-      side.append(element("span", "badge err", "Lỗi"), dismiss);
-    } else {
-      side.append(element("span", "badge run", status.state === "preparing" ? "Đang phân tích" : "Đang tải"));
+      side.append(dismiss);
     }
     item.append(thumb, main, side);
     item.title = status.url;
@@ -818,7 +834,7 @@ $("#link-form").addEventListener("submit", async (event) => {
     ...(tooLong.length ? [`${tooLong.length} link quá dài bị bỏ qua.`] : []),
     ...(dropped ? [`Chỉ nhận tối đa 50 link mỗi lần; ${dropped} link chưa được thêm.`] : []),
   ];
-  showError(notes.length ? `${links.length - failures.length}/${links.length} link đã bắt đầu tải. ${notes.join(" · ")}`.slice(0, 600) : "");
+  showError(notes.length ? `${links.length - failures.length}/${links.length} link đã được thêm vào hàng tải. ${notes.join(" · ")}`.slice(0, 600) : "");
 });
 // Pasting several lines into the one-line box keeps the line breaks as spaces.
 $<HTMLInputElement>("#link-input").addEventListener("paste", (event) => {
