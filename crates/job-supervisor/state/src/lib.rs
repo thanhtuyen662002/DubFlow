@@ -569,10 +569,20 @@ impl DurableStore {
     }
 
     /// The supervisor must hold exclusive execution ownership for this job.
-    pub fn recover_job_after_restart(&self, job_id: &str, now_ms: u64) -> Result<u64> {
+    ///
+    /// A new execution owner is the materially changed retry condition: the
+    /// previous process may have spent its whole budget on workers that the OS
+    /// or the app closing killed. Every unfinished stage of a live job
+    /// therefore gets `restart_budget` further worker starts. `attempt` keeps
+    /// counting real starts (artifact IDs are attempt-scoped), so the budget is
+    /// renewed by raising `max_attempts`, still capped by `MAX_RETRY_ATTEMPTS`.
+    /// Calling this twice in one process is idempotent.
+    pub fn recover_job_after_restart(&self, job_id: &str, restart_budget: u8, now_ms: u64) -> Result<u64> {
         self.require_job(job_id)?;
+        if restart_budget == 0 { return Err(StateError::InvalidInput("restart_budget must be positive".into())); }
         let now = to_i64(now_ms, "now_ms")?;
         let tx = self.connection.unchecked_transaction()?;
+        tx.execute("UPDATE stages SET max_attempts = MIN(attempt + ?2, ?3), retry_condition = 'process-restart-after-attempt-' || attempt WHERE job_id = ?1 AND status IN ('running', 'recovering', 'paused') AND attempt + ?2 > max_attempts AND EXISTS (SELECT 1 FROM jobs WHERE job_id = ?1 AND status NOT IN ('succeeded', 'failed', 'cancelled'))", params![job_id, i64::from(restart_budget), i64::from(MAX_RETRY_ATTEMPTS)])?;
         let stages = tx.execute("UPDATE stages SET status = 'recovering', last_error = 'PROCESS_RESTART' WHERE job_id = ?1 AND status = 'running' AND EXISTS (SELECT 1 FROM jobs WHERE job_id = ?1 AND status <> 'cancelled')", params![job_id])?;
         tx.execute("UPDATE jobs SET status = 'recovering', updated_at_ms = ?2, last_error = 'PROCESS_RESTART' WHERE job_id = ?1 AND status = 'running'", params![job_id, now])?;
         tx.execute("UPDATE jobs SET status = 'recovering', updated_at_ms = ?2, last_error = 'PROCESS_RESTART' WHERE job_id = ?1 AND status NOT IN ('recovering', 'cancelled') AND EXISTS (SELECT 1 FROM stages WHERE job_id = ?1 AND status = 'recovering' AND last_error = 'PROCESS_RESTART')", params![job_id, now])?;
@@ -754,6 +764,116 @@ mod tests {
         assert!(store.retry_stage("job-1", "analysis", "fourth-condition", 12).is_err());
     }
 
+    /// Spend the whole stage budget the way a Windows shutdown does: every
+    /// worker dies with EOF and the supervisor retries until it is killed
+    /// itself while the last attempt is running.
+    fn exhaust_budget_like_a_shutdown(store: &DurableStore) {
+        store.start_job("job-1", 2).unwrap();
+        for attempt in 1..=3u8 {
+            assert_eq!(store.start_stage("job-1", "analysis", 10 * u64::from(attempt)).unwrap(), attempt);
+            if attempt < 3 {
+                store.fail_stage("job-1", "analysis", "WORKER_EOF: killed", true, 10 * u64::from(attempt) + 1).unwrap();
+                store.retry_stage("job-1", "analysis", &format!("worker-restart-attempt-{attempt}-WORKER_EOF"), 10 * u64::from(attempt) + 2).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn job_whose_attempts_were_lost_to_shutdown_kills_resumes_after_restart() {
+        let path = temp_path("shutdown-budget", "sqlite");
+        {
+            let store = DurableStore::open(&path).unwrap();
+            setup(&store);
+            exhaust_budget_like_a_shutdown(&store);
+            store.record_checkpoint("job-1", "analysis", "transcript", None, true, 40).unwrap();
+        }
+        {
+            // Reboot: a new supervisor process owns the job.
+            let store = DurableStore::open(&path).unwrap();
+            assert_eq!(store.recover_job_after_restart("job-1", 3, 100).unwrap(), 1);
+            // Idempotent: the one-shot path recovers before and inside execution.
+            assert_eq!(store.recover_job_after_restart("job-1", 3, 101).unwrap(), 0);
+            let history = store.stage_history("job-1", "analysis").unwrap();
+            assert_eq!((history.attempt, history.max_attempts), (3, 6));
+            assert_eq!(history.retry_condition.as_deref(), Some("process-restart-after-attempt-3"));
+            assert_eq!(history.checkpoint_id.as_deref(), Some("transcript"), "checkpoints stay reusable");
+            assert_eq!(store.start_stage("job-1", "analysis", 102).unwrap(), 4, "attempt IDs stay unique");
+            store.complete_stage("job-1", "analysis", 103).unwrap();
+            store.complete_job("job-1", 104).unwrap();
+            assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Succeeded);
+        }
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn stage_already_recovering_at_full_budget_resumes_after_restart() {
+        // The 1.1.6 shape: an earlier start already moved the stage to
+        // `recovering` with attempt 3/3 before failing to start attempt 4.
+        let store = DurableStore::open_in_memory().unwrap();
+        setup(&store);
+        exhaust_budget_like_a_shutdown(&store);
+        store.recover_after_restart(50).unwrap();
+        assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Recovering);
+        assert!(matches!(store.start_stage("job-1", "analysis", 51), Err(StateError::InvalidInput(_))));
+        assert_eq!(store.recover_job_after_restart("job-1", 3, 52).unwrap(), 0);
+        assert_eq!(store.start_stage("job-1", "analysis", 53).unwrap(), 4);
+    }
+
+    #[test]
+    fn genuinely_failing_worker_still_stops_after_bounded_attempts_per_restart() {
+        let store = DurableStore::open_in_memory().unwrap();
+        setup(&store);
+        exhaust_budget_like_a_shutdown(&store);
+        store.recover_job_after_restart("job-1", 3, 100).unwrap();
+        // The resumed run gets exactly three more starts, then stops.
+        for attempt in 4..=6u8 {
+            let now = 100 + 10 * u64::from(attempt);
+            assert_eq!(store.start_stage("job-1", "analysis", now).unwrap(), attempt);
+            store.fail_stage("job-1", "analysis", "WORKER_EOF: crashed", true, now + 1).unwrap();
+            let retry = store.retry_stage("job-1", "analysis", &format!("worker-restart-attempt-{attempt}-WORKER_EOF"), now + 2);
+            if attempt < 6 { assert_eq!(retry.unwrap(), attempt + 1); }
+            else { assert!(matches!(retry, Err(StateError::InvalidInput(_)))); }
+        }
+        store.fail_job("job-1", "WORKER_EOF: crashed", 200).unwrap();
+        // A terminal job is never revived by a later restart.
+        assert_eq!(store.recover_job_after_restart("job-1", 3, 201).unwrap(), 0);
+        assert_eq!(store.stage_history("job-1", "analysis").unwrap().max_attempts, 6);
+        assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Failed);
+        assert!(store.start_stage("job-1", "analysis", 202).is_err());
+    }
+
+    #[test]
+    fn restart_budget_is_capped_and_never_renews_cancelled_or_pending_work() {
+        let store = DurableStore::open_in_memory().unwrap();
+        setup(&store);
+        assert!(matches!(store.recover_job_after_restart("job-1", 0, 2), Err(StateError::InvalidInput(_))));
+        // A stage that never started keeps its configured budget.
+        store.recover_job_after_restart("job-1", 3, 2).unwrap();
+        assert_eq!(store.stage_history("job-1", "analysis").unwrap().max_attempts, 3);
+        store.create_job("job-2", "file:///other.mp4", 1).unwrap();
+        store.create_stage("job-2", "analysis", "analysis", 3).unwrap();
+        store.start_job("job-2", 2).unwrap();
+        store.start_stage("job-2", "analysis", 3).unwrap();
+        store.cancel_job("job-2", "user cancellation", 4).unwrap();
+        store.recover_job_after_restart("job-2", 3, 5).unwrap();
+        assert_eq!(store.stage_history("job-2", "analysis").unwrap().max_attempts, 3);
+        // The absolute u8 attempt cap still bounds repeated restarts.
+        store.start_job("job-1", 6).unwrap();
+        for now in 0..300u64 {
+            store.recover_job_after_restart("job-1", 3, 7 + 2 * now).unwrap();
+            match store.start_stage("job-1", "analysis", 8 + 2 * now) {
+                Ok(_) => store.recover_after_restart(8 + 2 * now).map(|_| ()).unwrap(),
+                Err(StateError::InvalidInput(_)) => break,
+                Err(error) => panic!("unexpected {error:?}"),
+            }
+        }
+        let history = store.stage_history("job-1", "analysis").unwrap();
+        assert_eq!((history.attempt, history.max_attempts), (255, 255));
+        assert!(store.start_stage("job-1", "analysis", 999).is_err());
+    }
+
     #[test]
     fn hard_kill_recovery_marks_running_work_recovering() {
         let path = temp_path("restart", "sqlite");
@@ -931,17 +1051,17 @@ mod tests {
         }
         store.record_checkpoint("job-1", "analysis", "transcript", None, true, 4).unwrap();
         let neighbor = store.stage_history("job-1", "analysis").unwrap();
-        assert_eq!(store.recover_job_after_restart("job-2", 5).unwrap(), 1);
+        assert_eq!(store.recover_job_after_restart("job-2", 3, 5).unwrap(), 1);
         assert_eq!(store.job_status("job-1").unwrap(), JobStatus::Running);
         assert_eq!(store.stage_status("job-1", "analysis").unwrap(), StageStatus::Running);
         assert_eq!(store.stage_history("job-1", "analysis").unwrap(), neighbor);
         assert_eq!(store.job_status("job-2").unwrap(), JobStatus::Recovering);
         assert_eq!(store.start_stage("job-2", "analysis", 6).unwrap(), 2);
         store.cancel_job("job-2", "user cancellation", 7).unwrap();
-        assert_eq!(store.recover_job_after_restart("job-2", 8).unwrap(), 0);
+        assert_eq!(store.recover_job_after_restart("job-2", 3, 8).unwrap(), 0);
         assert_eq!(store.job_status("job-2").unwrap(), JobStatus::Cancelled);
         assert_eq!(store.stage_status("job-2", "analysis").unwrap(), StageStatus::Cancelled);
-        assert!(matches!(store.recover_job_after_restart("missing", 9), Err(StateError::NotFound { .. })));
+        assert!(matches!(store.recover_job_after_restart("missing", 3, 9), Err(StateError::NotFound { .. })));
         assert_eq!(store.stage_history("job-1", "analysis").unwrap(), neighbor);
     }
 

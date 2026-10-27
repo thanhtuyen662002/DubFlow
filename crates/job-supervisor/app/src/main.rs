@@ -39,6 +39,13 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(35);
 const STDERR_LIMIT: usize = 64 * 1024;
 const QC_SUMMARY_LIMIT: u64 = 1024 * 1024;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+/// Set when Windows ends the session (console close, logoff or shutdown).
+/// Workers killed in that window were interrupted, not failing, so their
+/// deaths must not spend the stage retry budget.
+static SESSION_ENDING: AtomicBool = AtomicBool::new(false);
+/// A shutdown can kill the worker a moment before this process receives its
+/// own control event; wait this long before calling an attempt failed.
+const SESSION_END_GRACE: Duration = Duration::from_millis(1500);
 
 type SupervisorResult<T> = Result<T, SupervisorError>;
 
@@ -720,6 +727,7 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    watch_session_end();
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("source-serve")) {
         return source_server::run(std::env::args_os().skip(2)).map_err(|_| {
             SupervisorError::Invalid("source service stopped; inspect its scoped events".into())
@@ -1097,7 +1105,7 @@ fn run_one_shot(
     // Verify/admit before changing status files or restart state. A conflicting
     // caller has no authority to fail or relabel the original durable job.
     ensure_job(&startup_store, &spec, &runtime)?;
-    startup_store.recover_job_after_restart(&spec.job_id, now_ms())?;
+    startup_store.recover_job_after_restart(&spec.job_id, MAX_ATTEMPTS, now_ms())?;
     let final_status_path = status_path.unwrap_or_else(|| {
         data_root
             .join("control")
@@ -1341,7 +1349,9 @@ fn contract_counter(status: &Value, path: &[&str]) -> u64 {
 /// Missing, modified or legacy reports cannot authorize a full-dub claim.
 fn committed_qc_summary(store: &DurableStore, spec: &StartSpec) -> Option<Value> {
     let expected_path = spec.output_dir.join("qc_report.json");
-    for attempt in (1..=MAX_ATTEMPTS).rev() {
+    // A restart renews the budget, so attempts can exceed MAX_ATTEMPTS.
+    let started = store.stage_history(&spec.job_id, STAGE_ID).map(|history| history.attempt).unwrap_or(MAX_ATTEMPTS);
+    for attempt in (1..=started).rev() {
         let id = format!("{}-{}-qc-report-a{}", spec.job_id, STAGE_ID, attempt);
         let artifact = match store.artifact(&id) {
             Ok(artifact) => artifact,
@@ -1954,7 +1964,7 @@ fn execute_job_owned(
 ) -> SupervisorResult<()> {
     let store = DurableStore::open(&runtime.db)?;
     ensure_job(&store, &spec, runtime)?;
-    store.recover_job_after_restart(&spec.job_id, now_ms())?;
+    store.recover_job_after_restart(&spec.job_id, MAX_ATTEMPTS, now_ms())?;
     // A process can die between artifact registration and its final commit.
     // Reconcile those durable rows before deciding whether the job is already
     // complete or starting another worker attempt.
@@ -1996,6 +2006,9 @@ fn execute_job_owned(
         let _ = tx.send(InternalMessage::Output(json!({"event":"completed", "job_id":spec.job_id, "status":"succeeded", "resumed":true})));
         return Ok(());
     }
+    // Recovery may have renewed the budget for this process; the durable row,
+    // not the constant, bounds this run's retries.
+    let max_attempts = store.stage_history(&spec.job_id, STAGE_ID)?.max_attempts;
 
     loop {
         if control.cancelled.load(Ordering::Acquire) {
@@ -2012,6 +2025,10 @@ fn execute_job_owned(
             let _ = tx.send(InternalMessage::Output(
                 json!({"event":"cancelled", "job_id":spec.job_id, "status":"cancelled"}),
             ));
+            return Ok(());
+        }
+        // Never start a replacement worker into a session that is ending.
+        if SESSION_ENDING.load(Ordering::Acquire) {
             return Ok(());
         }
         let attempt = store.start_stage(&spec.job_id, STAGE_ID, now_ms())?;
@@ -2060,9 +2077,12 @@ fn execute_job_owned(
                 condition,
                 retryable,
             }) => {
+                if session_ending_within(SESSION_END_GRACE) {
+                    return Ok(leave_for_restart_recovery(&spec, attempt, &code, &tx));
+                }
                 let reason = format!("{code}: {condition}");
                 store.fail_stage(&spec.job_id, STAGE_ID, &reason, retryable, now_ms())?;
-                if retryable && attempt < MAX_ATTEMPTS {
+                if retryable && attempt < max_attempts {
                     let retry_condition = format!("worker-restart-attempt-{attempt}-{code}");
                     store.retry_stage(&spec.job_id, STAGE_ID, &retry_condition, now_ms())?;
                     let _ = tx.send(InternalMessage::Output(json!({"event":"retrying", "job_id":spec.job_id, "stage_id":STAGE_ID, "attempt":attempt, "next_attempt":attempt.saturating_add(1), "code":code, "condition":condition})));
@@ -2073,6 +2093,9 @@ fn execute_job_owned(
                 return Ok(());
             }
             Err(error) => {
+                if session_ending_within(SESSION_END_GRACE) {
+                    return Ok(leave_for_restart_recovery(&spec, attempt, supervisor_error_code(&error), &tx));
+                }
                 let reason = error.to_string();
                 let retryable = matches!(
                     error,
@@ -2089,7 +2112,7 @@ fn execute_job_owned(
                     _ => "SUPERVISOR_WORKER_ERROR".into(),
                 };
                 let _ = store.fail_stage(&spec.job_id, STAGE_ID, &reason, retryable, now_ms());
-                if retryable && attempt < MAX_ATTEMPTS {
+                if retryable && attempt < max_attempts {
                     let retry_condition = format!("supervisor-restart-attempt-{attempt}-{code}");
                     if store
                         .retry_stage(&spec.job_id, STAGE_ID, &retry_condition, now_ms())
@@ -2109,6 +2132,60 @@ fn execute_job_owned(
                 return Ok(());
             }
         }
+    }
+}
+
+/// Windows is ending the session: record no failure and start no attempt. The
+/// stage stays `running`, so the next supervisor's restart recovery resumes it
+/// from its checkpoints with a renewed budget.
+fn leave_for_restart_recovery(spec: &StartSpec, attempt: u8, code: &str, tx: &Sender<InternalMessage>) {
+    let _ = tx.send(InternalMessage::Output(json!({"event":"interrupted", "job_id":spec.job_id, "stage_id":STAGE_ID, "attempt":attempt, "code":code, "condition":"windows session is ending"})));
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_session_end_event(ctrl_type: u32) -> bool {
+    // CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT. Ctrl+C and
+    // Ctrl+Break keep their default handling.
+    matches!(ctrl_type, 2 | 5 | 6)
+}
+
+#[cfg(windows)]
+fn watch_session_end() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+    }
+
+    unsafe extern "system" fn on_console_event(ctrl_type: u32) -> i32 {
+        if is_session_end_event(ctrl_type) {
+            SESSION_ENDING.store(true, Ordering::Release);
+            1
+        } else {
+            0
+        }
+    }
+
+    // SAFETY: the handler is a static function that only stores an atomic.
+    // Registration failure only loses the shutdown hint; restart recovery
+    // still renews the budget.
+    unsafe {
+        SetConsoleCtrlHandler(Some(on_console_event), 1);
+    }
+}
+
+#[cfg(not(windows))]
+fn watch_session_end() {}
+
+fn session_ending_within(grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        if SESSION_ENDING.load(Ordering::Acquire) {
+            return true;
+        }
+        if cfg!(not(windows)) || Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -2994,6 +3071,50 @@ mod tests {
         assert_eq!(status["progress"]["heartbeat_sequence"], heartbeat);
         assert_eq!(status["resource"]["held"], false);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn job_resumed_after_shutdown_kills_completes_with_verified_quality() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        store.create_job(&spec.job_id, "file:///source", 1).unwrap();
+        store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS).unwrap();
+        store.start_job(&spec.job_id, 2).unwrap();
+        // Windows shutdown: two workers die with EOF, the supervisor retries,
+        // then dies itself while the third attempt is running.
+        for attempt in 1..=MAX_ATTEMPTS {
+            assert_eq!(store.start_stage(&spec.job_id, STAGE_ID, 3).unwrap(), attempt);
+            if attempt < MAX_ATTEMPTS {
+                store.fail_stage(&spec.job_id, STAGE_ID, "WORKER_EOF: killed", true, 4).unwrap();
+                store.retry_stage(&spec.job_id, STAGE_ID, &format!("worker-restart-attempt-{attempt}-WORKER_EOF"), 5).unwrap();
+            }
+        }
+        store.record_checkpoint(&spec.job_id, STAGE_ID, "transcript", None, true, 6).unwrap();
+        // "Bắt đầu xử lý" after reboot: both recovery calls of one run.
+        store.recover_job_after_restart(&spec.job_id, MAX_ATTEMPTS, 7).unwrap();
+        store.recover_job_after_restart(&spec.job_id, MAX_ATTEMPTS, 8).unwrap();
+        assert_eq!(store.start_stage(&spec.job_id, STAGE_ID, 9).unwrap(), MAX_ATTEMPTS + 1);
+        let mut status = default_contract_status();
+        restore_stage_history(&mut status, &spec, &store);
+        assert_eq!(status["retry"]["attempt"], "4");
+        assert_eq!(status["retry"]["max_attempts"], "6");
+        assert_eq!(status["checkpoint_id"], "transcript");
+        let path = spec.output_dir.join("qc_report.json");
+        fs::create_dir_all(&spec.output_dir).unwrap();
+        fs::write(&path, serde_json::to_vec(&test_qc(json!({"mode":"dubbed", "tts_failures":0, "mix_failures":0, "mix_warnings":[]}))).unwrap()).unwrap();
+        let id = format!("{}-{}-qc-report-a4", spec.job_id, STAGE_ID);
+        store.record_artifact_written(&id, &spec.job_id, STAGE_ID, &path, None, true, 10).unwrap();
+        store.commit_artifact(&id, 11).unwrap();
+        store.complete_job(&spec.job_id, 12).unwrap();
+        assert_eq!(completion_summary(&store, &spec).0, "completed", "attempt-4 QC must be found");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_session_end_console_events_stop_retries() {
+        for ctrl_type in [2, 5, 6] { assert!(is_session_end_event(ctrl_type)); }
+        for ctrl_type in [0, 1, 3, 4, 7] { assert!(!is_session_end_event(ctrl_type)); }
+        assert!(!session_ending_within(Duration::ZERO));
     }
 
     #[test]
