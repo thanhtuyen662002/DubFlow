@@ -699,7 +699,7 @@ function renderFetches(): void {
     where.append(element("span", "path", `Lưu vào ${shortPath(outputDir)}`), open);
     where.title = outputDir;
     main.append(where);
-    if (failed && status.provider === "douyin") main.append(douyinActions(status));
+    if (failed) main.append(status.provider === "douyin" ? douyinActions(status) : retryAction(status));
     const side = element("div", "job-side");
     side.append(element("span", `badge ${failed ? "err" : status.state === "queued" ? "" : "run"}`, fetchBadge(status.state)));
     if (failed || status.state === "queued") {
@@ -719,6 +719,26 @@ function renderFetches(): void {
     item.title = status.url;
     fetchList.append(item);
   }
+}
+
+/** Fetch a failed link again, as a new row. */
+function retryAction(status: FetchStatus): HTMLElement {
+  const actions = element("div", "fetch-actions");
+  const retry = element("button", "btn", "Thử lại");
+  retry.type = "button";
+  retry.addEventListener("click", async () => {
+    retry.disabled = true;
+    try {
+      await startFetch(status.url);
+      fetches.delete(status.scan_id);
+      renderFetches();
+    } catch (error) {
+      retry.disabled = false;
+      showError(String(error).slice(0, 300));
+    }
+  });
+  actions.append(retry);
+  return actions;
 }
 
 function douyinActions(status: FetchStatus): HTMLElement {
