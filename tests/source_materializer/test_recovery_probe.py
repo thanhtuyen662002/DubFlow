@@ -94,6 +94,16 @@ class RecoveryProbeTests(unittest.TestCase):
             self.assertEqual(response.body.reads, [1])
             self.assertEqual(headers, {"Range": "bytes=0-0", "Accept-Encoding": "identity"})
 
+    def test_audio_labelled_by_its_container_is_accepted_but_not_another_container(self):
+        # Bilibili's CDN answers a DASH audio .m4s with Content-Type: video/mp4.
+        video = replace(self.video, has_audio=False, kind="dash")
+        responses = [self.response(headers={"Content-Type": "video/mp4"}), self.response(headers={"Content-Type": "video/mp4"})]
+        self.assertEqual(MediaMaterializer(Transport(responses)).probe_access(video, self.audio), 2)
+        responses = [self.response(headers={"Content-Type": "video/mp4"}), self.response(headers={"Content-Type": "audio/webm"})]
+        with self.assertRaises(SourceError) as failure:
+            MediaMaterializer(Transport(responses)).probe_access(video, self.audio)
+        self.assertEqual(failure.exception.code, SourceErrorCode.SOURCE_CHANGED)
+
     def test_ignored_range_is_bounded_and_no_metadata_only_pass(self):
         response = self.response(status=200, body=b"x" * 100000)
         self.assertEqual(MediaMaterializer(Transport([response])).probe_access(self.video), 1)

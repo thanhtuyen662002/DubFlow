@@ -109,7 +109,7 @@ BILIBILI_API = "https://api.bilibili.com"
 _BVID = re.compile(r"/video/(BV[0-9A-Za-z]{10})")
 
 
-def bilibili_api_json(downloader, path, query):
+def bilibili_api_json(downloader, path, query, *, expect=dict):
     from urllib.parse import urlencode
     from yt_dlp.networking import Request
     request = Request(f"{BILIBILI_API}{path}?{urlencode(query)}",
@@ -132,7 +132,7 @@ def bilibili_api_json(downloader, path, query):
         # Risk control answers bursts with an HTML page instead of JSON.
         raise ProviderError("Bilibili API rate limited", 3) from None
     code = document.get("code") if isinstance(document, dict) else None
-    if code == 0 and isinstance(document.get("data"), dict):
+    if code == 0 and isinstance(document.get("data"), expect):
         return document["data"]
     if code in {-404, 62002, 62004, 62012}:
         raise ProviderError("Bilibili video not found or unavailable", 4)
@@ -141,6 +141,54 @@ def bilibili_api_json(downloader, path, query):
     if code in {-412, -509, -799}:
         raise ProviderError("Bilibili API rate limited", 3)
     raise ValueError("unexpected Bilibili API response")
+
+
+def bilibili_page_state(downloader, bvid):
+    """videoData of the server-rendered international page, or None.
+
+    `/video/<bvid>/` is now a client-rendered shell, but `/zh-Hans/video/<bvid>/`
+    still embeds the initial state the web player starts from."""
+    from yt_dlp.networking import Request
+    # Chinese page and language: the default English locale machine-translates titles.
+    request = Request(f"https://www.bilibili.com/zh-Hans/video/{bvid}/",
+                      headers={"Referer": "https://www.bilibili.com/", "Accept-Language": "zh-CN,zh;q=0.9"})
+    try:
+        with downloader.urlopen(request) as response:
+            data = response.read(8 * 1024 * 1024 + 1)
+    except Exception:
+        return None
+    if len(data) > 8 * 1024 * 1024:
+        return None
+    text = data.decode("utf-8", "replace")
+    marker = text.find("window.__INITIAL_STATE__=")
+    if marker < 0:
+        return None
+    try:
+        state, _ = json.JSONDecoder().raw_decode(text, marker + len("window.__INITIAL_STATE__="))
+    except ValueError:
+        return None
+    video = state.get("videoData") if isinstance(state, dict) else None
+    return video if isinstance(video, dict) and video.get("bvid") == bvid else None
+
+
+def bilibili_view(downloader, bvid):
+    """Video metadata. Risk control answers the view API with an HTML 412
+    page while the page list, the play URLs and the server-rendered page
+    still answer, so fall back to those before reporting a rate limit."""
+    try:
+        return bilibili_api_json(downloader, "/x/web-interface/view", {"bvid": bvid})
+    except ProviderError as error:
+        if error.native_exit_code != 3:
+            raise
+        limited = error
+    view = bilibili_page_state(downloader, bvid)
+    if view is not None:
+        return view
+    pages = bilibili_api_json(downloader, "/x/player/pagelist", {"bvid": bvid}, expect=list)
+    first = pages[0] if pages and isinstance(pages[0], dict) else None
+    if first is None:
+        raise limited
+    return {"bvid": bvid, "cid": first.get("cid"), "duration": first.get("duration"), "pages": pages}
 
 
 def bilibili_api_metadata(downloader, url, original_error):
@@ -153,7 +201,7 @@ def bilibili_api_metadata(downloader, url, original_error):
     for key, value in parse_qsl(parts.query):
         if key == "p" and value.isdigit() and 1 <= int(value) <= 10000:
             page = int(value)
-    view = bilibili_api_json(downloader, "/x/web-interface/view", {"bvid": bvid})
+    view = bilibili_view(downloader, bvid)
     pages = view.get("pages") if isinstance(view.get("pages"), list) else []
     selected = next((item for item in pages if isinstance(item, dict) and item.get("page") == page), None)
     if selected is None:
@@ -184,8 +232,9 @@ def bilibili_api_metadata(downloader, url, original_error):
                             "ext": "mp4", "protocol": "https", "height": 360})
     if not formats:
         raise ProviderError("Bilibili returned no playable format", 4)
-    title = view.get("title")
-    if len(pages) > 1 and isinstance(selected.get("part"), str) and selected["part"]:
+    # Only the page list answered: its part name is the best title there is.
+    title = view.get("title") or selected.get("part") or bvid
+    if view.get("title") and len(pages) > 1 and isinstance(selected.get("part"), str) and selected["part"]:
         title = f"{title} - {selected['part']}"
     return {"id": bvid if page == 1 else f"{bvid}_p{page}", "title": title, "description": view.get("desc"),
             "duration": selected.get("duration") or view.get("duration"), "formats": formats, "subtitles": {}}

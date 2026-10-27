@@ -330,8 +330,12 @@ class MediaMaterializer:
                     raise SourceError(SourceErrorCode.SOURCE_CHANGED, "selected recovery stream response was refused")
                 encoding = _header(response.headers, "content-encoding")
                 content_type = _header(response.headers, "content-type")
+                # CDNs label a DASH audio track by its container (Bilibili
+                # serves audio .m4s as video/mp4); same container is the same object.
+                container = candidate.mime_type.split("/", 1)[1]
                 if (encoding and encoding.lower() != "identity") or (content_type and content_type.split(";", 1)[0].strip().lower()
-                        not in {candidate.mime_type, "application/octet-stream", "binary/octet-stream"}):
+                        not in {candidate.mime_type, f"video/{container}", f"audio/{container}",
+                                "application/octet-stream", "binary/octet-stream"}):
                     raise SourceError(SourceErrorCode.SOURCE_CHANGED, "selected recovery response is not a media object")
                 if response.status == 206:
                     raw_range = _header(response.headers, "content-range") or ""

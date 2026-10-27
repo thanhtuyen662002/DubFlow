@@ -259,6 +259,11 @@ h1, h2, h3, p { margin: 0; }
 @media (max-width: 1080px) { .link-form input { width: 180px; } }
 .fetch-actions { display: flex; gap: 8px; margin-top: 4px; }
 .fetch-actions .btn { height: 28px; font-size: 12.5px; }
+.fetch-where { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-top: 4px; font-size: 12px; }
+.fetch-where .path { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fetch-where .link { flex: none; font-size: 12px; }
+.path-label { margin-top: 8px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+#link-card h3 { color: var(--text); }
 .burn-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 
 /* Keep the top bar on one line at narrow widths. */
