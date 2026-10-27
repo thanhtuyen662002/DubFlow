@@ -229,7 +229,10 @@ staged and installed source-runtime reports; this is not live-login approval.
 
 `retry_download` accepts only `scan_id` and `identity_key`. It is available for
 failed `NETWORK`, `AUTH_REQUIRED` or `RATE_LIMITED` materialization under the
-original admitted producer, at most twice in addition to the initial attempt.
+original admitted producer, at most twice in a row without progress. A failed
+attempt that retained at least 1 MiB more than it started with resets the
+counter to zero, so a long download over a weak connection can resume after
+every drop that followed real progress.
 Use `session_save` first when authentication needs repair. Ordinary `download`
 cannot retry a failed row, and a caller cannot supply its own retry count or
 assert that a condition changed. Terminal identity/runtime failures require

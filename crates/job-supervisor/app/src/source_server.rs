@@ -27,6 +27,9 @@ use std::time::{Duration, Instant};
 
 const STAGE: &str = "source-enumeration";
 const MAX_PACKET: u64 = 4 * 1024 * 1024;
+/// A failed attempt that retained at least this much more of the media did
+/// not consume the retry budget: only failures in a row without progress do.
+const RETRY_PROGRESS_BYTES: u64 = 1024 * 1024;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn invalid() -> Box<dyn std::error::Error> {
@@ -767,6 +770,8 @@ struct Active {
 
 struct DownloadDispatch {
     retry_pending: Option<Instant>,
+    /// Bytes retained when this attempt started.
+    start_bytes: u64,
     original: ScanRecord,
     item: SourceQueueItem,
     origin_revision: u64,
@@ -1466,6 +1471,7 @@ impl Server {
         };
         active.download = Some(DownloadDispatch {
             retry_pending: retry.then(Instant::now),
+            start_bytes: item.downloaded_bytes,
             origin_revision: original.dispatch_revision,
             original,
             item,
@@ -2101,13 +2107,18 @@ impl Server {
             active.stop()?;
             return Ok(value);
         }
-        let progress = observed_progress(
+        let mut progress = observed_progress(
             &download.item,
             ItemStatus::Failed,
             download.item.downloaded_bytes,
             download.item.total_bytes,
             Some(code),
         );
+        // A long download over a weak connection may drop many times; each
+        // drop after real progress starts a fresh budget.
+        if download.item.downloaded_bytes >= download.start_bytes.saturating_add(RETRY_PROGRESS_BYTES) {
+            progress.retry_count = 0;
+        }
         self.queue.update_item_progress_checked(
             &download.original,
             &download.item,
@@ -2559,7 +2570,9 @@ while True:
   packet({'schema_version':1,'kind':'source-download-progress',**binding,'downloaded_bytes':4,'total_bytes':8})
   if mode=='pause':
    sys.stdin.buffer.readline();sys.exit(0)
-  if mode=='fail':
+  if mode=='fail-after-progress':
+   packet({'schema_version':1,'kind':'source-download-progress',**binding,'downloaded_bytes':4+2**21,'total_bytes':2**22})
+  if mode in ('fail','fail-after-progress'):
    emit('failure',{'code':'NETWORK','retryable':True,'attempt':1,'condition':'recorded network failure'})
    emit('shutdown',{'status':'failed'});sys.exit(2)
   raw=partial.read_bytes()+b'efgh';(work/'source-media.mp4').write_bytes(raw)
@@ -3005,6 +3018,35 @@ while True:
         begin_download(&mut server, "generic:two", "complete", false);
         assert_eq!(finish_download(&mut server)["event"], "source_downloaded");
         assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+    }
+
+    #[test]
+    fn native_retry_budget_restarts_after_a_failure_that_made_progress() {
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        let work = failed_download(&mut server);
+        let retries = |server: &Server| server.queue.item("scan", "generic:one").unwrap().retry_count;
+        // A retry that fails again without new bytes consumes its attempt.
+        begin_retry(&mut server, "complete");
+        assert_eq!(recovery_event(&mut server).unwrap().unwrap()["retry_count"], 1);
+        pump(&mut server);
+        pump(&mut server);
+        assert_eq!(retries(&server), 1);
+        // The last allowed retry fails after retaining 2 MiB more: the budget starts over.
+        fs::write(work.join("download-mode.json"), serde_json::to_vec("fail-after-progress").unwrap()).unwrap();
+        begin_retry(&mut server, "complete");
+        assert_eq!(recovery_event(&mut server).unwrap().unwrap()["retry_count"], 2);
+        pump(&mut server);
+        pump(&mut server);
+        pump(&mut server);
+        let item = server.queue.item("scan", "generic:one").unwrap();
+        assert_eq!((item.status, item.retry_count, item.downloaded_bytes), (ItemStatus::Failed, 0, 4 + (2 << 20)));
+        drop(server);
+        let mut server = Server::open(temp.recorded_runtime()).unwrap();
+        fs::write(work.join("download-mode.json"), serde_json::to_vec("complete").unwrap()).unwrap();
+        begin_retry(&mut server, "complete");
+        assert_eq!(recovery_event(&mut server).unwrap().unwrap()["retry_count"], 1);
+        assert_eq!(finish_download(&mut server)["event"], "source_downloaded");
     }
 
     #[test]

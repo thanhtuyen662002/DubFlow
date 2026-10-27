@@ -14,6 +14,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -51,13 +52,25 @@ pub struct Sources {
     launch: Mutex<Option<(PathBuf, PathBuf, PathBuf)>>,
     /// Latest `source_session` / `source_session_error` event.
     session: Mutex<Option<Value>>,
-    /// Automatic resumes used per link after a dropped connection.
-    resumes: Mutex<HashMap<String, u8>>,
+    /// Automatic resumes per link after a dropped connection.
+    resumes: Mutex<HashMap<String, Resumes>>,
 }
 
-/// The service allows two retries of a failed download; each resumes the
-/// part already downloaded.
+/// The service allows two retries in a row that bring no new bytes; each
+/// resumes the part already downloaded.
 const MAX_RESUMES: u8 = 2;
+/// A drop after at least this much more was downloaded starts a fresh budget,
+/// as it does in the service.
+const PROGRESS_BYTES: u64 = 1024 * 1024;
+
+#[derive(Default)]
+struct Resumes {
+    /// Resumes since the download last made progress.
+    in_a_row: u8,
+    total: u32,
+    /// Bytes downloaded when the last resume started.
+    from_bytes: u64,
+}
 
 #[derive(Default)]
 struct LinkQueue {
@@ -121,8 +134,11 @@ pub fn provider_for(url: &str) -> Result<&'static str, String> {
     Ok(if on("bilibili.com") || on("b23.tv") { "bilibili" } else if on("douyin.com") || on("iesdouyin.com") { "douyin" } else { "generic" })
 }
 
+/// A new id for every fetch, so a link that failed can be fetched again in
+/// the same session: the service never starts a scan id twice.
 fn scan_id(url: &str) -> String {
-    let digest = Sha256::digest(format!("{url}\n{}", std::process::id()).as_bytes());
+    static FETCHES: AtomicU64 = AtomicU64::new(0);
+    let digest = Sha256::digest(format!("{url}\n{}\n{}", std::process::id(), FETCHES.fetch_add(1, Ordering::Relaxed)).as_bytes());
     let mut id = String::from("link-");
     for byte in &digest[..12] {
         id.push_str(&format!("{byte:02x}"));
@@ -298,28 +314,36 @@ impl Sources {
     }
 
     /// A download that lost its connection resumes from the part already on
-    /// disk, up to `MAX_RESUMES` times. Returns whether a resume was started.
+    /// disk: as long as it keeps making progress, and otherwise up to
+    /// `MAX_RESUMES` times in a row. Returns whether a resume was started.
     fn resume_after_drop(self: &Arc<Self>, scan: &str, event: &Value) -> bool {
         let code = event["code"].as_str().unwrap_or_default();
         let Some(identity) = event["identity_key"].as_str().map(str::to_owned) else { return false };
         if event["retryable"] != true || !matches!(code, "NETWORK" | "RATE_LIMITED") {
             return false;
         }
-        let attempt = {
+        let Some(bytes) = self.status(scan).map(|s| s.downloaded_bytes) else { return false };
+        let (total, in_a_row) = {
             let Ok(mut resumes) = self.resumes.lock() else { return false };
-            let used = resumes.entry(scan.to_owned()).or_insert(0);
-            if *used >= MAX_RESUMES {
+            let resumes = resumes.entry(scan.to_owned()).or_default();
+            if bytes >= resumes.from_bytes.saturating_add(PROGRESS_BYTES) {
+                resumes.in_a_row = 0;
+            }
+            if resumes.in_a_row >= MAX_RESUMES {
                 return false;
             }
-            *used += 1;
-            *used
+            resumes.in_a_row += 1;
+            resumes.total += 1;
+            resumes.from_bytes = bytes;
+            (resumes.total, resumes.in_a_row)
         };
-        self.update(scan, |s| s.detail = Some(format!("Mất kết nối, đang tải tiếp (lần {attempt}/{MAX_RESUMES})…")));
+        self.update(scan, |s| s.detail = Some(format!("Mất kết nối, đang tải tiếp (lần {total})…")));
         let this = Arc::clone(self);
         let scan = scan.to_owned();
         thread::spawn(move || {
-            // Give the source a moment before asking it again.
-            thread::sleep(std::time::Duration::from_secs(5));
+            // Give the source a moment before asking it again, longer when
+            // the last resume brought nothing.
+            thread::sleep(std::time::Duration::from_secs(if in_a_row > 1 { 30 } else { 5 }));
             if let Err(error) = this.send(json!({"command":"retry_download", "scan_id":scan, "identity_key":identity})) {
                 this.fail_link(&scan, error);
                 this.pump();
@@ -372,8 +396,9 @@ impl Sources {
         let scan = scan_id(&url);
         {
             let mut fetches = self.fetches.lock().map_err(|_| fail("fetch table lock poisoned"))?;
-            // The same link again while it is waiting or running is the same fetch.
-            if let Some(existing) = fetches.get(&scan).filter(|s| !finished(&s.state)) {
+            // The same link again while it is waiting or running is the same
+            // fetch; once it has finished, it is fetched afresh.
+            if let Some(existing) = fetches.values().find(|s| s.url == url && !finished(&s.state)) {
                 return Ok(existing.clone());
             }
             let mut queue = self.queue.lock().map_err(|_| fail("link queue lock poisoned"))?;
@@ -561,17 +586,27 @@ mod tests {
     }
 
     #[test]
-    fn a_dropped_download_resumes_twice_then_fails() {
+    fn a_dropped_download_resumes_while_it_makes_progress_then_twice_more() {
         let sources = Arc::new(Sources::default());
         queued(&sources, "big", "downloading");
         sources.queue.lock().unwrap().current = Some("big".into());
         let dropped = json!({"event":"source_download_failed", "scan_id":"big", "identity_key":"bilibili:BV1",
             "code":"NETWORK", "retryable":true});
-        for attempt in 1..=MAX_RESUMES {
+        let progress = |mb: u64| json!({"event":"source_download_progress", "scan_id":"big", "identity_key":"bilibili:BV1",
+            "downloaded_bytes":mb << 20, "total_bytes":600u64 << 20});
+        // Every drop after new bytes resumes, however many there are.
+        for attempt in 1..=5 {
+            sources.on_event(&progress(attempt * 100));
             sources.on_event(&dropped);
             let status = sources.status("big").unwrap();
             assert_eq!(status.state, "downloading");
-            assert_eq!(status.detail, Some(format!("Mất kết nối, đang tải tiếp (lần {attempt}/2)…")));
+            assert_eq!(status.detail, Some(format!("Mất kết nối, đang tải tiếp (lần {attempt})…")));
+        }
+        // A stalled download gets `MAX_RESUMES` resumes since its last
+        // progress, the one above included, and then the link fails.
+        for _ in 1..MAX_RESUMES {
+            sources.on_event(&dropped);
+            assert_eq!(sources.status("big").unwrap().state, "downloading");
         }
         sources.on_event(&dropped);
         assert_eq!(sources.status("big").unwrap().state, "failed");
@@ -580,6 +615,13 @@ mod tests {
         sources.on_event(&json!({"event":"source_download_failed", "scan_id":"gone", "identity_key":"bilibili:BV2",
             "code":"NOT_FOUND", "retryable":false}));
         assert_eq!(sources.status("gone").unwrap().state, "failed");
+    }
+
+    #[test]
+    fn every_fetch_of_a_link_gets_its_own_scan() {
+        let url = "https://www.bilibili.com/video/BV1Lha9zCEJ4/";
+        assert_ne!(scan_id(url), scan_id(url));
+        assert!(scan_id(url).starts_with("link-") && scan_id(url).len() == 29);
     }
 
     #[test]
