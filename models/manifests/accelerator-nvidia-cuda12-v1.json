@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-nvidia-cuda12-v1",
+  "description": "Optional NVIDIA cuBLAS 12 and cuDNN 9 libraries for the CUDA build of the shipped CTranslate2 4.8.2 (ADR-0038).",
+  "distribution": "download-on-first-use-when-an-nvidia-driver-is-present",
+  "license": "NVIDIA proprietary; downloaded unmodified from NVIDIA's PyPI wheels on the user's machine, see docs/licenses/nvidia-cuda-runtime.md",
+  "pack_dir": "accelerators/nvidia-cuda12-v1",
+  "requires": {
+    "cuda_driver_version": 12000,
+    "min_compute_capability": [
+      6,
+      1
+    ],
+    "min_total_memory_bytes": 2147483648
+  },
+  "artifacts": [
+    {
+      "id": "cublas-wheel",
+      "path": "accelerators/nvidia-cuda12-v1/wheels/nvidia_cublas_cu12-12.8.4.1-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/70/61/7d7b3c70186fb651d0fbd35b01dbfc8e755f69fd58f817f3d0f642df20c3/nvidia_cublas_cu12-12.8.4.1-py3-none-win_amd64.whl",
+      "sha256": "47e9b82132fa8d2b4944e708049229601448aaad7e6f296f630f2d1a32de35af",
+      "size_bytes": 567544208
+    },
+    {
+      "id": "cudnn-wheel",
+      "path": "accelerators/nvidia-cuda12-v1/wheels/nvidia_cudnn_cu12-9.10.2.21-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/3d/90/0bd6e586701b3a890fd38aa71c387dab4883d619d6e5ad912ccbd05bfd67/nvidia_cudnn_cu12-9.10.2.21-py3-none-win_amd64.whl",
+      "sha256": "c6288de7d63e6cf62988f0923f96dc339cea362decb1bf5b3141883392a7d65e",
+      "size_bytes": 692992268
+    }
+  ],
+  "libraries": [
+    {
+      "name": "cublasLt64_12.dll",
+      "artifact": "cublas-wheel",
+      "member": "nvidia/cublas/bin/cublasLt64_12.dll",
+      "sha256": "b199d1ff892a81b7fd3d57ba1781549609b41500b36008fef326038393ad46c7",
+      "size_bytes": 674667520
+    },
+    {
+      "name": "cublas64_12.dll",
+      "artifact": "cublas-wheel",
+      "member": "nvidia/cublas/bin/cublas64_12.dll",
+      "sha256": "9513540e4ec4c51ee9e7304138c2cc255c29a8c181f9e80c38efa25738becd99",
+      "size_bytes": 113716224
+    },
+    {
+      "name": "cudnn_graph64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_graph64_9.dll",
+      "sha256": "a933efeb280a3252297f92d79f7e83003bcbc6f665872d11645d1dbbab9cb598",
+      "size_bytes": 2420256
+    },
+    {
+      "name": "cudnn_ops64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_ops64_9.dll",
+      "sha256": "851d8f4191a24b322b0be738d191a3159455f0da4db47a19f5cc7ad6e55edf61",
+      "size_bytes": 126508576
+    },
+    {
+      "name": "cudnn_cnn64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_cnn64_9.dll",
+      "sha256": "3f03dec3b81f137f049e1d1c06ff469248eef54ff9424b3b9045fc0f69559d1a",
+      "size_bytes": 4618272
+    },
+    {
+      "name": "cudnn_adv64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_adv64_9.dll",
+      "sha256": "f202e8ff36209ac4292fe2ef79d4539487495b3b948f0c978cc63298f43a1850",
+      "size_bytes": 282445872
+    },
+    {
+      "name": "cudnn_heuristic64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_heuristic64_9.dll",
+      "sha256": "458175f12771a35de0ea39c04250d727c2424d42a7ffe0bc987ae81204748fba",
+      "size_bytes": 56823328
+    },
+    {
+      "name": "cudnn_engines_precompiled64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_engines_precompiled64_9.dll",
+      "sha256": "ebc2c1f74366b029a4350f7f9a3b109ccd5aa9b4ae02527950793dd29f7b74fb",
+      "size_bytes": 513926688
+    },
+    {
+      "name": "cudnn_engines_runtime_compiled64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_engines_runtime_compiled64_9.dll",
+      "sha256": "93ab6351ca0f2b6ca842f83d284e56c427525778c14657229801a13cf8121bd8",
+      "size_bytes": 20201008
+    }
+  ],
+  "notices": [
+    {
+      "name": "LICENSE-cublas.txt",
+      "artifact": "cublas-wheel",
+      "member": "nvidia_cublas_cu12-12.8.4.1.dist-info/License.txt",
+      "sha256": "ad6f5853fba0ca0d159d0f58d49ae49830c2f8c93f7a92648b9ce90adb4c6ccd",
+      "size_bytes": 59262
+    },
+    {
+      "name": "LICENSE-cudnn.txt",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia_cudnn_cu12-9.10.2.21.dist-info/licenses/License.txt",
+      "sha256": "49cf79bdb35734b52fe6203013b3bd759f81e998cd32aa2c65c51db9a88c61d2",
+      "size_bytes": 18174
+    }
+  ]
+}

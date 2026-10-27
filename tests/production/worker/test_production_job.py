@@ -205,6 +205,11 @@ class ProductionWorkerTests(unittest.TestCase):
             for invalid in ("gemini", 1, True):
                 with self.subTest(engine=invalid), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
                     WorkerConfig.from_args({**args, "translation_engine": invalid})
+            self.assertEqual(WorkerConfig.from_args(args).accelerator, "auto")
+            self.assertEqual(WorkerConfig.from_args({**args, "accelerator": "cpu"}).accelerator, "cpu")
+            for invalid in ("gpu", "cuda", "", None, False, 1, {}):
+                with self.subTest(accelerator=invalid), self.assertRaisesRegex(ProductionJobError, "COMMAND_INVALID"):
+                    WorkerConfig.from_args({**args, "accelerator": invalid})
             self.assertEqual(WorkerConfig.from_args(args).blur_regions, ())
             self.assertFalse(WorkerConfig.from_args(args).blur_auto)
             self.assertTrue(WorkerConfig.from_args({**args, "blur_auto": True}).blur_auto)
