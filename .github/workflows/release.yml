@@ -251,8 +251,9 @@ jobs:
         shell: pwsh
         run: |
           $stage = Join-Path $PWD "dist/qualification/DubFlow-$env:RELEASE_VERSION-windows-x64-staging"
-          $smokeRoot = Join-Path $env:RUNNER_TEMP 'DubFlow smoke host'
-          $dataRoot = Join-Path $smokeRoot 'LocalAppData/DubFlow'
+          # Kept apart from the install smoke's %LOCALAPPDATA%\DubFlow: setup
+          # refuses a folder that holds DubFlow job data but no install.
+          $dataRoot = Join-Path $env:RUNNER_TEMP 'DubFlow qualification data'
           $workRoot = Join-Path $env:RUNNER_TEMP 'DubFlow qualification work'
           $supervisor = Join-Path $stage 'app/bin/dubflow-supervisor.exe'
           $ffmpeg = Join-Path $stage 'runtime/media/ffmpeg.exe'

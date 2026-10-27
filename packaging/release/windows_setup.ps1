@@ -40,13 +40,96 @@ function Write-Log([string]$Message) {
     try { Add-Content -LiteralPath $LogPath -Value ("{0:u} {1}" -f (Get-Date), $Message) -Encoding UTF8 } catch { }
 }
 
-# A DubFlow install, or a DubFlow data folder (job state written by an earlier
-# install or by the supervisor) that a new install may safely reuse.
-function Test-DubFlowRoot([string]$Path) {
-    return (Test-Path -LiteralPath (Join-Path $Path 'current.json') -PathType Leaf) -or
-        (Test-Path -LiteralPath (Join-Path $Path 'versions') -PathType Container) -or
-        (Test-Path -LiteralPath (Join-Path $Path 'control\jobs.sqlite3') -PathType Leaf) -or
-        (Test-Path -LiteralPath (Join-Path $Path 'control\jobs') -PathType Container)
+# Folder ownership (#304). A folder is DubFlow's only when it holds a working
+# install, setup's ownership marker, or bootstrap's own interrupted staging;
+# a stray `versions` or `control` folder proves nothing. The uninstaller
+# reuses these functions (see Write-Uninstaller), so they use param() blocks
+# and [IO.Path]::Combine and keep the version pattern of bootstrap.py inline.
+
+# A working install: current.json points at an installed release.
+function Test-DubFlowInstall {
+    param([string]$Path)
+    try {
+        $pointer = [IO.File]::ReadAllText([IO.Path]::Combine($Path, 'current.json')) | ConvertFrom-Json
+        $version = [string]$pointer.current_version
+        if ($pointer.schema_version -ne 1 -or $version -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$' -or
+            [string]$pointer.version_path -cne "versions/$version") { return $false }
+        return [IO.File]::Exists([IO.Path]::Combine($Path, 'versions', $version, 'release-manifest.json'))
+    } catch { return $false }
+}
+
+# Setup writes this marker before it copies anything into a folder it has
+# checked, so an install interrupted before activation stays recognisable.
+function Test-OwnerMarker {
+    param([string]$Path)
+    try {
+        $marker = [IO.File]::ReadAllText([IO.Path]::Combine($Path, '.dubflow-install.json')) | ConvertFrom-Json
+        $recorded = [IO.Path]::GetFullPath([string]$marker.install_root).TrimEnd('\', '/')
+        return ($marker.schema_version -eq 1) -and ($marker.product -ceq 'DubFlow') -and
+            ($recorded -ieq [IO.Path]::GetFullPath($Path).TrimEnd('\', '/'))
+    } catch { return $false }
+}
+
+# An install interrupted by an older setup, which wrote no marker: bootstrap's
+# resume state names its own staging folder inside this root.
+function Test-InterruptedInstall {
+    param([string]$Path)
+    foreach ($file in @(Get-ChildItem -LiteralPath $Path -Filter 'install-progress-*.json' -File -Force -ErrorAction SilentlyContinue)) {
+        try {
+            $resume = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json
+            $version = [string]$resume.version
+            if ($resume.schema_version -ne 1 -or @('staging', 'failed') -cnotcontains $resume.status -or
+                $version -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$' -or $file.Name -cne "install-progress-$version.json") { continue }
+            $staging = [IO.Path]::Combine($Path, 'versions', ".$version.staging")
+            if ([IO.Directory]::Exists($staging) -and
+                ([IO.Path]::GetFullPath([string]$resume.staging_path) -ieq [IO.Path]::GetFullPath($staging))) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
+function Test-DubFlowRoot {
+    param([string]$Path)
+    return (Test-DubFlowInstall $Path) -or (Test-OwnerMarker $Path) -or (Test-InterruptedInstall $Path)
+}
+
+function Write-OwnerMarker([string]$Root) {
+    $marker = [ordered]@{ schema_version = 1; product = 'DubFlow'; install_root = [IO.Path]::GetFullPath($Root) }
+    [IO.File]::WriteAllText([IO.Path]::Combine($Root, '.dubflow-install.json'), ($marker | ConvertTo-Json))
+}
+
+# Removes DubFlow's own entries from a DubFlow root and keeps everything
+# else: only release folders with a manifest and bootstrap's staging folders
+# inside `versions`, and only DubFlow's names at the top. Returns the entries
+# that could not be removed (locked files).
+function Remove-DubFlowFiles {
+    param([string]$Root)
+    $failed = @()
+    $versions = [IO.Path]::Combine($Root, 'versions')
+    if ([IO.Directory]::Exists($versions)) {
+        foreach ($entry in @(Get-ChildItem -LiteralPath $versions -Directory -Force)) {
+            $release = ($entry.Name -cmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$') -and
+                [IO.File]::Exists([IO.Path]::Combine($entry.FullName, 'release-manifest.json'))
+            $staging = $entry.Name -cmatch '^\.[A-Za-z0-9][A-Za-z0-9._+-]{0,63}\.staging$'
+            if (-not ($release -or $staging)) { continue }
+            try { Remove-Item -LiteralPath $entry.FullName -Recurse -Force } catch { $failed += "versions\$($entry.Name)" }
+        }
+        if (@(Get-ChildItem -LiteralPath $versions -Force).Count -eq 0) { Remove-Item -LiteralPath $versions -Force }
+    }
+    foreach ($name in @('control', 'models', 'source-work', 'updates', 'current.json', 'install-state.json', 'DubFlow.cmd', 'DubFlow.exe', 'DubFlow.ico')) {
+        $path = [IO.Path]::Combine($Root, $name)
+        if (Test-Path -LiteralPath $path) {
+            try { Remove-Item -LiteralPath $path -Recurse -Force } catch { $failed += $name }
+        }
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $Root -Filter 'install-progress-*.json' -File -Force -ErrorAction SilentlyContinue)) {
+        if ($file.Name -cmatch '^install-progress-[A-Za-z0-9][A-Za-z0-9._+-]{0,63}\.json$') {
+            try { Remove-Item -LiteralPath $file.FullName -Force } catch { $failed += $file.Name }
+        }
+    }
+    # The marker goes last, so a retry after a locked file still recognises the folder.
+    if ($failed.Count -eq 0) { Remove-Item -LiteralPath ([IO.Path]::Combine($Root, '.dubflow-install.json')) -Force -ErrorAction SilentlyContinue }
+    return , $failed
 }
 
 function Get-InstalledVersion([string]$Path) {
@@ -67,7 +150,7 @@ function Get-UpdateRoot {
     $folder = Split-Path -Parent $SetupPath
     if ((Split-Path -Leaf $folder) -ieq 'updates') {
         $root = Split-Path -Parent $folder
-        if (Test-Path -LiteralPath (Join-Path $root 'current.json') -PathType Leaf) { return $root }
+        if (Test-DubFlowInstall $root) { return $root }
     }
     return $null
 }
@@ -198,12 +281,21 @@ function Get-BootstrapFailure {
 }
 
 function Write-Uninstaller([string]$Root) {
+    # The uninstaller carries the same ownership checks and removal rules.
+    $functions = foreach ($name in @('Test-DubFlowInstall', 'Test-OwnerMarker', 'Test-InterruptedInstall', 'Test-DubFlowRoot', 'Remove-DubFlowFiles')) {
+        "function $name {$((Get-Item "function:$name").ScriptBlock.ToString())}`r`n"
+    }
     $script = @'
 # DubFlow uninstaller, written by setup. Removes only DubFlow's own files.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
+#FUNCTIONS#
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $title = 'Gỡ cài đặt DubFlow'
+if (-not (Test-DubFlowRoot $root)) {
+    [Windows.Forms.MessageBox]::Show("Không nhận ra bản cài DubFlow trong:`r`n$root`r`n`r`nTrình gỡ không xóa gì. Bạn có thể tự xóa thư mục này nếu chắc chắn.", $title, 'OK', 'Warning') | Out-Null
+    exit 3
+}
 $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase) })
 if ($running.Count -gt 0) {
     [Windows.Forms.MessageBox]::Show("DubFlow đang chạy. Hãy đóng DubFlow (và chờ video đang xử lý dừng) rồi gỡ lại.", $title, 'OK', 'Warning') | Out-Null
@@ -220,24 +312,20 @@ try {
     $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DubFlow'
     if ((Get-ItemProperty -LiteralPath $key -ErrorAction Stop).InstallLocation -eq $root) { Remove-Item -LiteralPath $key -Recurse -Force }
 } catch { }
-$owned = @('versions', 'control', 'models', 'source-work', 'updates', 'current.json', 'install-state.json', 'DubFlow.cmd', 'DubFlow.exe', 'DubFlow.ico')
-$failed = @()
-foreach ($name in $owned) {
-    $path = Join-Path $root $name
-    if (Test-Path -LiteralPath $path) {
-        try { Remove-Item -LiteralPath $path -Recurse -Force } catch { $failed += $name }
-    }
-}
-Get-ChildItem -LiteralPath $root -Filter 'install-progress-*.json' -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+$failed = Remove-DubFlowFiles $root
 if ($failed.Count -gt 0) {
-    [Windows.Forms.MessageBox]::Show("Đã gỡ DubFlow, nhưng một số tệp đang bị khóa nên chưa xóa được:`r`n$($failed -join ', ')`r`n`r`nKhởi động lại máy rồi xóa thư mục $root.", $title, 'OK', 'Warning') | Out-Null
+    [Windows.Forms.MessageBox]::Show("Đã gỡ DubFlow, nhưng một số tệp đang bị khóa nên chưa xóa được:`r`n$($failed -join ', ')`r`n`r`nKhởi động lại máy rồi chạy lại trình gỡ (Settings > Apps > Installed apps).", $title, 'OK', 'Warning') | Out-Null
 } else {
-    # This script is the last file; remove it and the folder once it has exited.
+    $kept = @(Get-ChildItem -LiteralPath $root -Force | Where-Object { $_.Name -ne 'uninstall.ps1' })
+    # This script is DubFlow's last file; remove it once it has exited. rd
+    # removes the folder only when nothing else is left in it.
     $command = "ping -n 3 127.0.0.1 >nul & del /f /q `"$root\uninstall.ps1`" & rd `"$root`""
     Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/c', $command) -WindowStyle Hidden
-    [Windows.Forms.MessageBox]::Show('Đã gỡ DubFlow khỏi máy.', $title, 'OK', 'Information') | Out-Null
+    $message = if ($kept.Count -gt 0) { "Đã gỡ DubFlow khỏi máy.`r`n`r`nThư mục $root vẫn còn tệp không phải của DubFlow nên được giữ lại." } else { 'Đã gỡ DubFlow khỏi máy.' }
+    [Windows.Forms.MessageBox]::Show($message, $title, 'OK', 'Information') | Out-Null
 }
 '@
+    $script = $script.Replace('#FUNCTIONS#', ($functions -join ''))
     # Windows PowerShell 5.1 reads scripts without a BOM as the ANSI code page.
     [IO.File]::WriteAllText((Join-Path $Root 'uninstall.ps1'), $script, (New-Object Text.UTF8Encoding $true))
 }
@@ -300,6 +388,7 @@ if ($Silent) {
         $root = if ($InstallRoot) { $InstallRoot } elseif ($updateRoot) { $updateRoot } elseif (Get-ExistingRoot) { Get-ExistingRoot } else { Join-Path $env:LOCALAPPDATA 'DubFlow' }
         $problem = Test-InstallRoot $root
         if ($problem) { throw $problem }
+        Write-OwnerMarker $root
         $unpack = Start-Unpack; $unpack.WaitForExit()
         if ($unpack.ExitCode -ne 0) { throw "unpack failed with exit code $($unpack.ExitCode)" }
         $install = Start-Bootstrap $root; $install.WaitForExit()
@@ -553,6 +642,7 @@ function Start-Install([string]$Root) {
     $statusLabel.Text = 'Đang giải nén…'
     Show-Page $working
     try {
+        Write-OwnerMarker $state.Root
         $state.Process = Start-Unpack
         $state.Step = 'unpack'
         $timer.Start()
