@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #271
 Lease-Owner: Claude/issue-320-audio-track-storage
 Lease-Heartbeat: 2026-10-29T06:51:00Z
-Tested-Base-SHA: eebc0be36587165c32f4ce66100d984b856fb7ae
+Tested-Base-SHA: a35553cd40190ce481cd00db13649eafced331cd
 Conflict-Domains: desktop-real-chinese-media-smoke
 Expected-Paths: .claims/issue-271-current-main-gui-revalidation.md,scripts/release/chinese_desktop_review_smoke.py,tests/release/test_chinese_desktop_review_smoke.py,docs/production/CHINESE_DESKTOP_REVIEW_EVIDENCE.md
 Required-CI: PR Fast + Integration
@@ -11,7 +11,7 @@ Required-CI: PR Fast + Integration
 Existing GUI evidence from installed 1.1.1 is historical. This bounded harness/evidence leaf revalidates the Chinese→Vietnamese review/revision flow after #320, #321 and #323; it does not qualify all of #175.
 
 ### Source target and base freshness
-Current main is `eebc0be36587165c32f4ce66100d984b856fb7ae`. Signed stable v1.1.10 targets older source SHA `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`, not current main. Use a non-published Windows build from exactly `eebc0be36587165c32f4ce66100d984b856fb7ae`; if that build/host is unavailable, mark NOT_RUN. Record actual binary/source identity.
+Current main is `a35553cd40190ce481cd00db13649eafced331cd`. Signed stable v1.1.10 targets older source SHA `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`, not current main. Use a non-published Windows build from exactly `a35553cd40190ce481cd00db13649eafced331cd`; if that build/host is unavailable, mark NOT_RUN. Record actual binary/source identity.
 Lead recovery sync: current main eebc0be36587165c32f4ce66100d984b856fb7ae is incorporated by this coordination-only merge commit. The resulting branch HEAD is recorded in the latest PR checkpoint. This does not imply coder STARTED/CODED/TESTED or product acceptance. PR Fast [40867700605](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700605) and Integration [40867700424](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700424) passed on that pre-metadata HEAD. This claim now records the incorporated/tested base `eebc0be36587165c32f4ce66100d984b856fb7ae`; the metadata change requires fresh exact-HEAD PR Fast + Integration. Desktop npm tests/build, harness tests and real GUI/media acceptance remain NOT_RUN until the existing coder executes them, so this PR is not merge-ready.
 
 ### Acceptance
@@ -32,9 +32,9 @@ Forbidden: all other `scripts/**` and `tests/**` paths; `apps/desktop/**`, `engi
 
 Coordination status: this is still ASSIGNED. The claim heartbeat above is intentionally not refreshed by the Lead; no coder start, code, test or real-media GUI run is implied by this metadata repair.
 
-## Live recovery checkpoint — 2026-10-29T15:41Z
-- Current main/base: `eebc0be36587165c32f4ce66100d984b856fb7ae`.
-- This branch is being synchronized with current main after later merges (#338 and #336). The resulting recovery commit changes no product code and preserves the existing Issue lease/branch.
-- Prior claim-only PR Fast/Integration evidence is for the previous HEAD and is stale for merge purposes. Fresh required checks must run on the resulting HEAD against this base.
-- Coder heartbeat remains `2026-10-29T06:51:00Z`; Lead does not refresh it. No product code/test/media evidence is implied by this sync.
-- Product acceptance remains `NOT_RUN`; keep Draft until the task-specific acceptance below is executed and recorded.
+## Live recovery checkpoint — 2026-10-29T17:42Z
+- Authoritative main SHA: `a35553cd40190ce481cd00db13649eafced331cd` (merge #342; includes the zero-byte extension fix from #341).
+- Lead performed a coordination-only branch sync with current main using an expected-head guard. No product code, harness, tests or real-media evidence changed.
+- Previous claim-only PR Fast/Integration evidence on HEAD `9251f7eeb88db1438415eeb5cc45103f1db60d52` is stale for this new HEAD. Exact-head PR Fast + PR Integration must pass before this claim is considered current-base CI-tested.
+- Lease heartbeat remains `2026-10-29T06:51:00Z`; this Lead sync is not coder progress.
+- Harness, desktop npm tests/build and real Chinese-media GUI review remain pending/NOT_RUN. If the Windows GUI, authorized media or current-main build is unavailable, record the exact missing capability; do not substitute fixtures.
