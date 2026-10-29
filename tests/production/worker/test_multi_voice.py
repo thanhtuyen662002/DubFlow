@@ -159,7 +159,9 @@ class MultiVoiceWorkerTests(unittest.TestCase):
             self.assertEqual(dub.call_args.kwargs["speaker_by_cue"], RESULT.labels)
             self.assertNotEqual(dub.call_args.kwargs["work_dir"].parent.name, first_identity)
             self.assertEqual(assign.call_count, 1)
-            self.assertTrue(first_dir.is_dir())
+            # The recast publication retires the earlier, now unreachable generation.
+            self.assertFalse(first_dir.exists())
+            self.assertTrue(dub.call_args.kwargs["work_dir"].is_dir())
 
     def test_failed_phrase_counts_all_member_cues_in_review_metadata(self):
         with self.fixture(multi_voice=False) as (root, config, probe, media), self.pipeline(config, probe, media) as dub:

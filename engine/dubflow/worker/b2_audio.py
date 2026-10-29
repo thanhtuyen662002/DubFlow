@@ -145,6 +145,14 @@ class B2AudioResult:
         return "spleeter-2stems" if self.background_stem_path is not None else "source"
 
 
+def _mix_input_hash(documents: Sequence[TtsDocument]) -> str:
+    # A resumed document marks reused chunks skipped and warns about each reuse;
+    # neither changes the audio, so neither may select a new mix generation.
+    payload = [{key: value for key, value in document.to_dict().items() if key not in ("chunks", "warnings")}
+               for document in documents]
+    return "sha256:" + sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def _input_hash(cues: Sequence[Mapping[str, Any]]) -> str:
     payload = json.dumps(list(cues), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "sha256:" + sha256(payload).hexdigest()
@@ -718,7 +726,7 @@ def run_b2_audio(
         mix_document = mixer.mix(
             source,
             tuple(segments_for_mix),
-            input_hash="sha256:" + sha256(b"".join(document.to_bytes() for document in documents)).hexdigest(),
+            input_hash=_mix_input_hash(documents),
         )
         if background_stem_path is not None:
             rejected = {failure.segment_id for failure in mix_document.failures} - restored
@@ -730,12 +738,18 @@ def run_b2_audio(
                 _restore_source_windows(background_stem_path, source_audio_path, bed_path,
                     [(item["start_ms"], item["end_ms"]) for item in mappings if item["cue_id"] in restored])
                 mix_document = mixer.mix(replace(source, path=bed_path), tuple(segments_for_mix),
-                    input_hash="sha256:" + sha256(b"".join(document.to_bytes() for document in documents)).hexdigest())
+                    input_hash=_mix_input_hash(documents))
                 if any(failure.segment_id not in restored for failure in mix_document.failures):
                     raise B2AudioError("SEPARATION_BED_FAILED", "TTS inputs changed during source restoration; use the original bed")
             mix_document = replace(mix_document, warnings=mix_document.warnings + tuple(
                 "SEPARATION_SOURCE_RESTORED: " + identifier for item in mappings if item["cue_id"] in restored
                 for identifier in item["member_cue_ids"]))
+            # The mixer keeps a verified snapshot of the restored bed, and a
+            # resumed generation rebuilds it deterministically.
+            try:
+                (root / "mix_bed.wav").unlink(missing_ok=True)
+            except OSError:
+                pass
     except Exception as error:
         if background_path is not None:
             raise B2AudioError("SEPARATION_BED_FAILED", getattr(error, "condition", str(error))) from error

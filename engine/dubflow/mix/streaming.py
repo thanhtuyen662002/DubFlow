@@ -355,6 +355,7 @@ class StreamingAudioMixer:
             for artifact, name in zip((document.original_audio, document.dialogue_stem, document.final_mix), ("original.wav", "dialogue.wav", "final.wav")):
                 if Path(artifact.path) != root / name or self._artifact(root / name, artifact.kind, audio, np) != artifact:
                     raise MixError("MIX_CHECKPOINT_INVALID", "completed artifact differs from recorded bytes")
+            self._drop_spools(root)
             return document
         return self._compute(root, source, audio, valid, windows, metadata, failures, config_hash, input_hash, identity, references, np)
 
@@ -514,7 +515,17 @@ class StreamingAudioMixer:
             tuple(failures), tuple(dict.fromkeys(warnings)))
         validate_mix_document(document.to_dict())
         _atomic(root / "mix_document.json", document.to_json().encode("utf-8"))
+        self._drop_spools(root)
         return document
+
+    @staticmethod
+    def _drop_spools(root):
+        """A committed document reads only its three WAVs; the raw spools are scratch."""
+        for name in ("dialogue.pcm", "combined.pcm"):
+            try:
+                (_plain(root / name)).unlink(missing_ok=True)
+            except (OSError, MixError):
+                continue
 
     def _pass(self, root, state, phase, paths, headers, sizes, compute, *, private=False):
         """Verify committed prefixes, discard only uncommitted private tails.

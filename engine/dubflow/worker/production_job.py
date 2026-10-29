@@ -378,21 +378,35 @@ def _atomic_bytes(path: Path, value: bytes) -> None:
         raise ProductionJobError("CHECKPOINT_WRITE_FAILED", str(error), retryable=True) from error
 
 
-def _copy_editable_artifact(source: Path, target: Path, *, expected_hash: str) -> None:
+def _copy_editable_artifact(source: Path, target: Path, *, expected_hash: str, link: bool = False) -> bool:
     """Publish one verified asset with bounded memory and preserve its prior file.
 
     Completed assets can be reused after interruption; an incomplete file never
     replaces the destination. The enclosing export transaction preserves the
     preceding validated video and editable directory until all assets pass QC.
+    With ``link`` the asset shares the source's storage through a hard link
+    when the volume supports one; the result says whether it does.
     """
     export_publication.plain(source.absolute())
     export_publication.plain(target.absolute())
     if target.is_file() and _sha256(target) == expected_hash:
         if _sha256(source) != expected_hash:
             raise ProductionJobError("EDITABLE_ARTIFACT_CHANGED", "editable source differs from validated provenance")
-        return
+        if not link or os.path.samefile(source, target):
+            return link
     temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
     try:
+        if link:
+            try:
+                os.link(source, temporary)
+            except OSError:
+                if target.is_file():
+                    return False  # The verified copy above stays.
+            else:
+                if _sha256(temporary) != expected_hash:
+                    raise ProductionJobError("EDITABLE_ARTIFACT_CHANGED", "editable asset bytes differ from validated provenance")
+                os.replace(temporary, target)
+                return True
         size = source.stat().st_size
         if shutil.disk_usage(target.parent).free < size + 16 * 1024 * 1024:
             raise ProductionJobError("EDITABLE_STORAGE_INSUFFICIENT", "not enough storage for the next editable asset")
@@ -412,10 +426,77 @@ def _copy_editable_artifact(source: Path, target: Path, *, expected_hash: str) -
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or copied != size or "sha256:" + digest.hexdigest() != expected_hash or _sha256(temporary) != expected_hash:
             raise ProductionJobError("EDITABLE_ARTIFACT_CHANGED", "editable asset bytes differ from validated provenance")
         os.replace(temporary, target)
+        return False
     except OSError as error:
         raise ProductionJobError("EDITABLE_COPY_FAILED", str(error), retryable=True) from error
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _share_identical(paths: Iterable[Path]) -> None:
+    """Store identical regenerable audio once: later files become hard links.
+
+    Only regular, unlinked-path files are considered. Bytes are compared by hash
+    before linking, and a file the volume cannot link stays a separate copy.
+    """
+    groups: dict[tuple[int, str], Path] = {}
+    for path in paths:
+        try:
+            export_publication.plain(path.absolute())
+            if not path.is_file():
+                continue
+            key = (path.stat().st_size, _sha256(path))
+            first = groups.setdefault(key, path)
+            if first == path or os.path.samefile(first, path):
+                continue
+            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+            try:
+                os.link(first, temporary)
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        except (OSError, ProductionJobError, export_publication.PublicationError):
+            continue
+
+
+def _remove_scratch(work_dir: Path, *paths: Path) -> None:
+    """Delete regenerable files or folders, only inside this job's work folder.
+
+    Cleanup is best effort: a file that cannot be removed now stays as scratch.
+    """
+    root = work_dir.absolute()
+    for path in paths:
+        path = path.absolute()
+        if not path.is_relative_to(root) or path == root:
+            raise ProductionJobError("SCRATCH_OUTSIDE_WORK", "scratch cleanup is outside the job work folder")
+        try:
+            export_publication.plain(path)
+            if path.is_dir():
+                for entry in path.rglob("*"):
+                    export_publication.plain(entry)
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        except (OSError, export_publication.PublicationError):
+            continue
+
+
+def _retire_generations(work_dir: Path, keep: Path) -> None:
+    """After publication, remove B2 generations nothing references or can reuse.
+
+    The checkpoint names only the current generation, and the new manifest
+    references only it, so earlier generations are unreachable scratch.
+    """
+    root = work_dir / "b2-audio"
+    try:
+        for identity in [path for path in root.iterdir() if path.is_dir()] if root.is_dir() else ():
+            for generation in [path for path in identity.iterdir() if path.is_dir()]:
+                if generation.absolute() != keep.absolute():
+                    _remove_scratch(work_dir, generation)
+            if not any(identity.iterdir()):
+                identity.rmdir()
+    except OSError:
+        pass  # Cleanup never fails a published job; the rest stays as scratch.
 
 
 def _read_checkpoint(path: Path, source_hash: str) -> dict[str, Any]:
@@ -1015,6 +1096,9 @@ def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: Me
             _write_stage(checkpoint, checkpoint_path, "separation", {"path": str(background_path),
                 "sha256": _sha256(background_path), "input_hash": identity, "metrics": metrics,
                 "profile_sha256": _sha256(profile_path), "adapter_sha256": _sha256(Path(spleeter.__file__))})
+        # The committed stem is all a resume reads; the decoded input and the
+        # model's batch checkpoints are regenerable scratch.
+        _remove_scratch(work_dir, source_audio, directory / ".spleeter-chunks")
         emitter.checkpoint("separation", _sha256(background_path))
         return background_path, {"mode": "spleeter-2stems", **metrics, "input_hash": identity,
                                  "profile_sha256": _sha256(profile_path)}
@@ -1132,6 +1216,7 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
     try:
         pending = export_publication.prepare(output)
         result = _run_local_file(config, emitter, pending)
+        generation = result.pop("b2_generation", None)
         manifest_path = Path(result["manifest"])
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         for artifact in manifest["artifacts"].values():
@@ -1140,6 +1225,8 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
                 artifact["path"] = str(output / path.relative_to(pending))
         _atomic_json(manifest_path, manifest)
         export_publication.publish(output)
+        if generation is not None:
+            _retire_generations(output / ".dubflow-work", Path(generation))
         result = {name: str(output / Path(path).relative_to(pending)) if Path(path).is_relative_to(pending) else path for name, path in result.items()}
     except (export_publication.PublicationError, OSError) as error:
         raise ProductionJobError("OUTPUT_PUBLICATION_FAILED", str(error)) from error
@@ -1162,12 +1249,71 @@ def _b2_generation(checkpoint: dict[str, Any], checkpoint_path: Path, work_dir: 
             reusable = not any(path.is_relative_to(directory) for path in paths)
         except (OSError, ValueError, KeyError, TypeError):
             reusable = False
+    if reusable and directory.exists():
+        # A file shared with an editable asset belongs to a publication; the
+        # mixer refuses multiply linked inputs, so start a fresh generation.
+        reusable = all(path.lstat().st_nlink == 1 for path in directory.rglob("*") if path.is_file())
     if not reusable:
         generation = uuid.uuid4().hex
         directory = work_dir / "b2-audio" / identity / generation
         _write_stage(checkpoint, checkpoint_path, "b2-generation", {"input_hash": identity, "generation": generation})
     export_publication.plain(directory.absolute())
     return directory
+
+
+# Full-length PCM tracks a dubbed job holds at its peak, the last mix pass: the
+# generation's source, the mixer's snapshot, raw dialogue, the 32-bit combined
+# spool (two tracks) and both outputs. A separated bed adds the separation
+# stem, the generation's copy and the restored bed.
+DUBBING_PEAK_TRACKS = 7
+SEPARATION_PEAK_TRACKS = 3
+STORAGE_RESERVE_BYTES = 1 << 30
+
+
+def _b2_sample_rate(app_root: Path) -> int:
+    from engine.dubflow.tts.neural_vits import _child, _read_json
+    try:
+        selector = _read_json(app_root / "models/manifests/production-cpu-v1.json")
+        rate = _read_json(_child(app_root, selector.get("tts_neural_profile", "")))["sample_rate"]
+    except Exception:  # noqa: BLE001 - the estimate falls back to the largest shipped rate.
+        return 48_000
+    return rate if type(rate) is int and 8000 <= rate <= 96000 else 48_000
+
+
+def _held_bytes(root: Path) -> int:
+    seen, total = set(), 0
+    for path in root.rglob("*") if root.is_dir() else ():
+        try:
+            status = path.lstat()
+        except OSError:
+            continue
+        if path.is_file() and (status.st_dev, status.st_ino) not in seen:
+            seen.add((status.st_dev, status.st_ino))
+            total += status.st_size
+    return total
+
+
+def _storage_admission(config: WorkerConfig, probe: MediaProbeResult, work_dir: Path) -> None:
+    """Refuse a job its output volume cannot hold before any large allocation.
+
+    The estimate is the job's peak, from duration and the B2 sample rate, less
+    what a resumed attempt already holds in its work folder.
+    """
+    milliseconds = probe.duration_ticks
+    if milliseconds is None or milliseconds <= 0:
+        return
+    required = milliseconds * 16 * 2 + 2 * config.source_path.stat().st_size + STORAGE_RESERVE_BYTES
+    if config.enable_dubbing:
+        tracks = DUBBING_PEAK_TRACKS
+        if getattr(config, "separate_background", False) and probe.has_audio:
+            tracks += SEPARATION_PEAK_TRACKS
+        required += tracks * (milliseconds * _b2_sample_rate(config.app_root) // 1000 + 1) * 4
+    held, free = _held_bytes(work_dir), shutil.disk_usage(config.output_dir).free
+    if free + held < required:
+        need, have = (required - held + 10**9 - 1) // 10**9, free // 10**9
+        raise ProductionJobError("STORAGE_INSUFFICIENT",
+            f"Ổ đĩa chứa thư mục xuất cần khoảng {need} GB trống cho video này nhưng chỉ còn {have} GB. "
+            "Hãy giải phóng dung lượng hoặc chọn thư mục xuất trên ổ khác rồi xử lý lại.")
 
 
 def _source_render_duration(probe: MediaProbeResult) -> MediaTimeline | None:
@@ -1231,6 +1377,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(config.source_path)
     _write_stage(checkpoint, checkpoint_path, "probe", {"probe": probe.to_dict()})
     emitter.checkpoint("probe", source_hash)
+    _storage_admission(config, probe, work_dir)
 
     audio_path = work_dir / "analysis.wav"
     audio_identity = _audio_decode_identity(source_hash, probe)
@@ -1611,9 +1758,18 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             editable_audio.append((b2_audio.spoken_text_document_path, "dubbing_spoken_text.json", _sha256(b2_audio.spoken_text_document_path)))
         for path in getattr(b2_audio, "spoken_text_document_paths", ())[1:]:
             editable_audio.append((path, path.name, _sha256(path)))
-        for source, name, expected_hash in editable_audio:
-            target = editable_dir / name
-            _copy_editable_artifact(source, target, expected_hash=expected_hash)
+        copied = [name for source, name, expected_hash in editable_audio
+                  if not _copy_editable_artifact(source, editable_dir / name, expected_hash=expected_hash, link=name.endswith(".wav"))
+                  and name.endswith(".wav")]
+        if copied:
+            warnings.append("EDITABLE_LINK_FALLBACK: the output volume cannot hard-link; editable audio was copied: " + ", ".join(copied))
+            qc["downgrade"] = True
+            _atomic_json(qc_path, qc)
+        # The separation stem, the generation's bed copy and the mixer's source
+        # snapshot repeat the editable tracks byte for byte.
+        _share_identical((*(editable_dir / name for _, name, _ in editable_audio if name.endswith(".wav")),
+                          *((background_path,) if background_path is not None else ()), b2_audio.source_audio_path,
+                          Path(b2_audio.mix_document.original_audio.path)))
     timeline_path = editable_dir / "timeline.json"
     timeline_cues = [dict(cue.to_dict(), **({"speaker": speaker_result.labels[cue.cue_id]} if speaker_result is not None else {})) for cue in translated]
     _atomic_json(timeline_path, {"schema_version": 1, "time_base": {"numerator": 1, "denominator": TIMELINE_DENOMINATOR}, "duration_ticks": output_duration, "cues": timeline_cues, "source_clock_mapping": _source_clock_mapping(probe)})
@@ -1647,7 +1803,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                                     **({"speakers": speaker_summary} if speaker_summary is not None else {}))
     _write_stage(checkpoint, checkpoint_path, "qc", {"path": str(qc_path), "sha256": _sha256(qc_path), "manifest": str(manifest_path)})
     emitter.checkpoint("qc", _sha256(qc_path))
-    return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "manifest": str(manifest_path)}
+    return {"final_video": str(final_path), "srt": str(srt_path), "ass": str(ass_path), "qc": str(qc_path), "manifest": str(manifest_path),
+            **({"b2_generation": str(b2_audio.tts_document_path.parent)} if b2_audio is not None else {})}
 
 
 def _read_command() -> Envelope:
