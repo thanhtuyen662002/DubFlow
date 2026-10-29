@@ -380,6 +380,8 @@ struct StartSpec {
     speaker_voices: Option<Value>,
     /// Experimental: keep the music/effects, remove the original voices.
     separate_background: bool,
+    /// Run every model on the CPU even when an NVIDIA GPU is present.
+    cpu_only: bool,
 }
 
 impl StartSpec {
@@ -433,6 +435,7 @@ impl StartSpec {
             multi_voice: false,
             speaker_voices: None,
             separate_background: false,
+            cpu_only: false,
         })
     }
     fn with_voice_id(mut self, voice_id: Option<String>) -> SupervisorResult<Self> {
@@ -480,6 +483,10 @@ impl StartSpec {
     }
     fn with_separate_background(mut self, separate_background: bool) -> Self {
         self.separate_background = separate_background;
+        self
+    }
+    fn with_cpu_only(mut self, cpu_only: bool) -> Self {
+        self.cpu_only = cpu_only;
         self
     }
     fn with_blur_auto(mut self, blur_auto: bool) -> Self {
@@ -569,6 +576,9 @@ impl StartSpec {
         }
         if self.separate_background {
             request["separate_background"] = json!(true);
+        }
+        if self.cpu_only {
+            request["accelerator"] = json!("cpu");
         }
         Ok(serde_json::to_string(&request)?)
     }
@@ -706,6 +716,7 @@ enum CliMode {
         multi_voice: bool,
         speaker_voices: Option<String>,
         separate_background: bool,
+        cpu_only: bool,
     },
     Cancel {
         root: Option<PathBuf>,
@@ -755,6 +766,7 @@ fn run() -> SupervisorResult<()> {
             multi_voice,
             speaker_voices,
             separate_background,
+            cpu_only,
         } => {
             return run_one_shot(
                 root,
@@ -776,6 +788,7 @@ fn run() -> SupervisorResult<()> {
                 multi_voice,
                 speaker_voices,
                 separate_background,
+                cpu_only,
             );
         }
         CliMode::Cancel {
@@ -870,6 +883,7 @@ where
             let mut multi_voice = false;
             let mut speaker_voices = None;
             let mut separate_background = false;
+            let mut cpu_only = false;
             let mut burn_in_subtitles = true;
             while let Some(arg) = args.next() {
                 match arg.to_string_lossy().as_ref() {
@@ -907,6 +921,7 @@ where
                     "--blur-auto" => blur_auto = true,
                     "--multi-voice" => multi_voice = true,
                     "--separate-background" => separate_background = true,
+                    "--cpu-only" => cpu_only = true,
                     "--speaker-voices" => {
                         speaker_voices = Some(next_arg(&mut args, "--speaker-voices")?)
                     }
@@ -944,6 +959,7 @@ where
                 multi_voice,
                 speaker_voices,
                 separate_background,
+                cpu_only,
             }
         }
         Some("cancel") => {
@@ -1075,6 +1091,7 @@ fn run_one_shot(
     multi_voice: bool,
     speaker_voices: Option<String>,
     separate_background: bool,
+    cpu_only: bool,
 ) -> SupervisorResult<()> {
     let root = match root {
         Some(root) => root,
@@ -1097,7 +1114,7 @@ fn run_one_shot(
     )?.with_voice_id(tts_voice_id)?.with_subtitle_box(subtitle_box)
     .with_translation_engine(translation_engine)?.with_blur_regions(blur_regions)?
     .with_blur_auto(blur_auto).with_multi_voice(multi_voice, speaker_voices)?
-    .with_separate_background(separate_background);
+    .with_separate_background(separate_background).with_cpu_only(cpu_only);
     // Keep the kernel lease through the final status write. A duplicate must
     // not change SQL/status, reconcile artifacts or start another worker.
     let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
@@ -1413,7 +1430,25 @@ fn undubbed_summary(value: Option<&Value>) -> Option<String> {
     ))
 }
 
+/// Informational worker notes that are not quality advisories.
+const INFORMATIONAL_WARNINGS: [&str; 1] = ["ASR_ACCELERATOR:"];
+
 fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, String) {
+    let (reason, mut message) = quality_summary(store, spec);
+    if reason != "completed_quality_unverified" {
+        let device = committed_qc_summary(store, spec).and_then(|qc| {
+            qc.get("warnings")?.as_array()?.iter().filter_map(Value::as_str)
+                .find_map(|warning| warning.strip_prefix("ASR_ACCELERATOR: cuda "))
+                .and_then(|rest| rest.split_once(" on ")).map(|(_, label)| label.to_owned())
+        });
+        if let Some(label) = device {
+            message.push_str(&format!(" Lời thoại được nhận dạng bằng GPU {label}."));
+        }
+    }
+    (reason, message)
+}
+
+fn quality_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, String) {
     let unverified = || ("completed_quality_unverified", if spec.enable_dubbing {
         "Đã xuất video; chưa xác minh được mức độ hoàn tất lồng tiếng. Hãy kiểm tra báo cáo chất lượng."
     } else {
@@ -1475,7 +1510,9 @@ fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, 
         Some("original") if !spec.enable_dubbing => {}
         _ => return unverified(),
     }
-    if downgraded || !warnings.is_empty()
+    let advisories = warnings.iter().filter_map(Value::as_str)
+        .filter(|warning| !INFORMATIONAL_WARNINGS.iter().any(|prefix| warning.starts_with(prefix))).count();
+    if downgraded || advisories > 0
         || audio.get("mix_warnings").and_then(Value::as_array).map_or(false, |values| !values.is_empty())
     {
         ("completed_with_warnings", "Đã xuất video; có lưu ý trong báo cáo chất lượng. Hãy kiểm tra trước khi sử dụng.".into())
@@ -2342,6 +2379,9 @@ fn run_worker_attempt(
     if spec.separate_background {
         args["separate_background"] = json!(true);
     }
+    if spec.cpu_only {
+        args["accelerator"] = json!("cpu");
+    }
     let args_json = serde_json::to_string(&args)?;
     let command = Envelope::new(
         MessageType::Command,
@@ -2831,7 +2871,7 @@ mod tests {
         let runtime = RuntimePaths { root:root.clone(), app_root:root.join("app"), python:root.join("python.exe"), worker_script:root.join("worker.py"),
             ffmpeg:root.join("ffmpeg.exe"), ffprobe:root.join("ffprobe.exe"), model_root:root.join("models"), db:root.join("state.sqlite") };
         let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
-            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false };
+            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false, cpu_only:false };
         (root, runtime, spec)
     }
 
@@ -2995,7 +3035,32 @@ mod tests {
         assert!(!spec.durable_request(&runtime).unwrap().contains("separate_background"));
         let separated: Value = serde_json::from_str(&spec.clone().with_separate_background(true).durable_request(&runtime).unwrap()).unwrap();
         assert_eq!(separated["separate_background"], true);
+        assert!(!spec.durable_request(&runtime).unwrap().contains("accelerator"));
+        let cpu: Value = serde_json::from_str(&spec.clone().with_cpu_only(true).durable_request(&runtime).unwrap()).unwrap();
+        assert_eq!(cpu["accelerator"], "cpu");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn gpu_note_is_informational_and_names_the_device() {
+        let note = "ASR_ACCELERATOR: cuda int8_float16 on NVIDIA GeForce RTX 3060 (12 GB)";
+        let cases = [
+            (json!([note]), false, "completed", "Đã xuất video lồng tiếng Việt. Lời thoại được nhận dạng bằng GPU NVIDIA GeForce RTX 3060 (12 GB)."),
+            (json!([note, "EDITABLE_LINK_FALLBACK: copied"]), true, "completed_with_warnings", "GPU NVIDIA GeForce RTX 3060 (12 GB)."),
+            (json!(["ACCELERATOR_FALLBACK: ASR ran on the CPU: driver too old"]), true, "completed_with_warnings", "có lưu ý"),
+        ];
+        for (warnings, downgrade, reason, text) in cases {
+            let (_root, _, spec) = identity_fixture();
+            let store = DurableStore::open_in_memory().unwrap();
+            let mut qc = test_qc(json!({"mode":"dubbed", "tts_failures":0, "mix_failures":0, "mix_warnings":[]}));
+            qc["warnings"] = warnings;
+            qc["downgrade"] = json!(downgrade);
+            commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+            let (actual, message) = completion_summary(&store, &spec);
+            assert_eq!(actual, reason);
+            assert!(message.contains(text), "{message}");
+            assert_eq!(message.contains("GPU"), qc["warnings"].to_string().contains("ASR_ACCELERATOR"));
+        }
     }
 
     #[test]
@@ -3319,7 +3384,7 @@ mod tests {
         let spec = StartSpec {
             job_id:"test".into(), source_path:PathBuf::from("source"), output_dir:PathBuf::from("output"),
             source_language:"auto".into(), target_language:"vi".into(), enable_dubbing:true,
-            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false,
+            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false, cpu_only:false,
         };
         for invalid in ["", "../escape", "Unknown", "a\nb", &"a".repeat(97)] {
             assert!(spec.clone().with_voice_id(Some(invalid.into())).is_err());

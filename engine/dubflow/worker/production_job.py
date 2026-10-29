@@ -482,6 +482,8 @@ def _remove_scratch(work_dir: Path, *paths: Path) -> None:
 
 
 MAX_UNDUBBED_STARTS = 20
+# Notes about how the job ran, not about the quality of its output.
+INFORMATIONAL_WARNINGS = ("ASR_ACCELERATOR:",)
 
 
 def _undubbed_summary(cues: Sequence[TextCue], members: Mapping[str, Sequence[str]], failed: Iterable[str]) -> dict[str, Any]:
@@ -1735,7 +1737,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         background_summary = {"mode": "original"}
     qc_path = export_dir / "qc_report.json"
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata,
-          **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions)}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": bool(warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+          **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions)}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": any(not warning.startswith(INFORMATIONAL_WARNINGS) for warning in warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if speaker_summary is not None:
         qc["speakers"] = speaker_summary
     qc["background"] = background_summary

@@ -564,12 +564,34 @@ $("#reset-output-root").addEventListener("click", () => {
 });
 renderOutputRoot();
 
+// Processing device: an NVIDIA GPU is used automatically when present, unless
+// the user keeps every model on the CPU.
+const CPU_ONLY_KEY = "dubflow.cpuOnly.v1";
+const cpuOnlyToggle = $<HTMLInputElement>("#cpu-only");
+function cpuOnly(): boolean {
+  try {
+    return window.localStorage.getItem(CPU_ONLY_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+cpuOnlyToggle.checked = cpuOnly();
+cpuOnlyToggle.addEventListener("change", () => {
+  try {
+    if (cpuOnlyToggle.checked) window.localStorage.setItem(CPU_ONLY_KEY, "1");
+    else window.localStorage.removeItem(CPU_ONLY_KEY);
+  } catch {
+    cpuOnlyToggle.checked = !cpuOnlyToggle.checked;
+    showError("Không lưu được lựa chọn thiết bị xử lý trên máy này.");
+  }
+});
+
 async function startJob(job: QueueJob): Promise<void> {
   if (!canStart(job)) return;
   startButton.disabled = true;
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    const started = await invoke<{ output_dir: string } | null>("start_job", startJobRequest(job, outputRoot()));
+    const started = await invoke<{ output_dir: string } | null>("start_job", startJobRequest(job, outputRoot(), cpuOnly()));
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
     if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);
