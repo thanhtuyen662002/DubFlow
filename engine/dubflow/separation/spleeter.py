@@ -1,4 +1,4 @@
-"""Experimental CPU Spleeter adapter; original-bed AUD-0 remains the fallback.
+"""Experimental Spleeter adapter; original-bed AUD-0 remains the fallback.
 
 Only fixed-size STFT batches live in RAM. Decoded float PCM spools to disk;
 completed batches retain their overlap-add tails in atomic, hashed receipts.
@@ -243,7 +243,8 @@ def _ffmpeg(argv, *, stdin=None, stdout=None, stderr=None):
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
-def separate_background(source_wav: Path, background_wav: Path, *, model_dir: Path, ffmpeg_path: Path, progress=None) -> dict:
+def separate_background(source_wav: Path, background_wav: Path, *, model_dir: Path, ffmpeg_path: Path, progress=None,
+                        device: str = "cpu") -> dict:
     """Separate with the pinned pair of models and atomically publish gated PCM.
 
     ``seconds`` is elapsed processing time. RMS and removed signal energy are
@@ -260,7 +261,9 @@ def separate_background(source_wav: Path, background_wav: Path, *, model_dir: Pa
         rate, channels, _ = _read_pcm_metadata(source, SeparationConfig())
         models = [Path(model_dir) / f"spleeter-2stems-{stem}.onnx" for stem in ("vocals", "accompaniment")]
         source_hash, model_hashes = _digest(source), list(map(_digest, models))
-        identity = sha256(json.dumps([source_hash, *model_hashes, _digest(__file__), BATCH_SPLITS]).encode()).hexdigest()
+        # GPU kernels are not bit-identical to the CPU: their batches never mix on resume.
+        identity = sha256(json.dumps([source_hash, *model_hashes, _digest(__file__), BATCH_SPLITS]
+                                     + ([device] if device != "cpu" else [])).encode()).hexdigest()
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(prefix=".background-", suffix=".wav", dir=target.parent)
         os.close(descriptor)
@@ -302,7 +305,8 @@ def separate_background(source_wav: Path, background_wav: Path, *, model_dir: Pa
                 if encoder.poll() is None:
                     encoder.kill()
                 encoder.wait()
-        metrics = {"backend": BACKEND, "seconds": time.monotonic() - started, **_validate_background(source, candidate)}
+        metrics = {"backend": BACKEND, "device": device, "seconds": time.monotonic() - started,
+                   **_validate_background(source, candidate)}
         if _digest(source) != source_hash or list(map(_digest, models)) != model_hashes:
             raise SeparationError("SEPARATION_INPUT_CHANGED", "source or model changed during separation")
         with candidate.open("r+b") as stream:
@@ -319,3 +323,56 @@ def separate_background(source_wav: Path, background_wav: Path, *, model_dir: Pa
                 candidate.unlink(missing_ok=True)
             except OSError:
                 pass  # Retain an uncommitted candidate if the OS denies cleanup.
+
+
+def separate_background_on_gpu(source_wav: Path, background_wav: Path, *, model_dir: Path, ffmpeg_path: Path,
+                               accelerator, app_root: Path, progress=None, python: str | None = None) -> dict:
+    """Separate on CUDA in ``spleeter_native.py``; any failure raises for a CPU fallback.
+
+    ``accelerator`` is the verified ONNX Runtime CUDA pack (``select_tts_device``).
+    The child is contained in a Windows Job, so it ends with the worker.
+    """
+    import sys
+    from threading import Thread
+
+    command = [python or sys.executable, "-I", "-B", str(Path(__file__).with_name("spleeter_native.py"))]
+    request = json.dumps({"app_root": str(app_root), "accelerator": dict(accelerator), "source": str(source_wav),
+                          "background": str(background_wav), "model_dir": str(model_dir), "ffmpeg": str(ffmpeg_path)})
+    job = None
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            if os.name == "nt":
+                from engine.dubflow.tts.windows_job import WindowsJob
+                job = WindowsJob(process)
+            process.stdin.write(request.encode() + b"\n")
+            process.stdin.close()
+            result = None
+            for line in iter(lambda: process.stdout.readline(65537), b""):
+                reply = json.loads(line)
+                if "progress" in reply:
+                    if progress:
+                        progress(min(1.0, max(0.0, float(reply["progress"]))))
+                else:
+                    result = reply
+            code = process.wait()
+            if result is None or result.get("ok") is not True or code != 0:
+                failure = result or {}
+                errors.seek(0)
+                detail = failure.get("condition") or errors.read(2048).decode("utf-8", "replace") or f"exit {code}"
+                raise SeparationError(str(failure.get("code", "SEPARATION_GPU_FAILED"))[:64], " ".join(str(detail).split())[:1024])
+            metrics = result["metrics"]
+            if not isinstance(metrics, dict) or metrics.get("device") != "cuda":
+                raise SeparationError("SEPARATION_GPU_FAILED", "GPU separation returned no CUDA result")
+            return metrics
+        except SeparationError:
+            raise
+        except (OSError, ValueError, TypeError) as error:
+            raise SeparationError("SEPARATION_GPU_FAILED", f"{type(error).__name__}: {error}"[:1024]) from error
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            if job is not None:
+                job.close()
