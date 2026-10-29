@@ -113,6 +113,34 @@ class SeparationWorkerTests(unittest.TestCase):
             self.assertEqual(infer.call_count, 5)
             self.assertEqual(warnings, [])
 
+    def test_gpu_separates_first_and_any_gpu_failure_separates_on_the_cpu(self):
+        device = SimpleNamespace(device="cuda", runtime={"root": "pack"})
+        def gpu(source, background, **kwargs):
+            write_wav(background, value=300)
+            return dict(METRICS, device="cuda")
+        for failure in (None, SeparationError("SEPARATION_GPU_FAILED", "CUDA out of memory")):
+            with self.subTest(failure=failure), self.fixture() as (root, config, probe, media), \
+                 patch.object(worker, "ensure_model_profile"), \
+                 patch.object(spleeter, "separate_background", side_effect=self.infer) as cpu, \
+                 patch.object(spleeter, "separate_background_on_gpu", side_effect=failure or gpu) as on_gpu:
+                work, warnings = root / "work", []
+                path, summary = worker._separate_background_stage(config, "source-hash", probe, media, work, {"stages": {}},
+                                                                 work / "checkpoint.json", Mock(), warnings, device=device)
+                self.assertEqual(path, work / "separation/background.wav")
+                self.assertEqual(on_gpu.call_args.kwargs["accelerator"], {"root": "pack"})
+                self.assertEqual(on_gpu.call_args.kwargs["app_root"], config.app_root)
+                if failure is None:
+                    self.assertEqual((summary["device"], cpu.call_count, warnings), ("cuda", 0, []))
+                else:
+                    self.assertEqual(cpu.call_count, 1)
+                    self.assertEqual(len(warnings), 1)
+                    self.assertTrue(warnings[0].startswith("ACCELERATOR_FALLBACK: separation ran on the CPU"), warnings)
+        with self.fixture() as (root, config, probe, media), patch.object(worker, "ensure_model_profile"), \
+             patch.object(spleeter, "separate_background", side_effect=self.infer), \
+             patch.object(spleeter, "separate_background_on_gpu") as on_gpu:
+            self.stage(config, probe, media, root / "work", {"stages": {}}, [])
+            on_gpu.assert_not_called()  # No CUDA device: the CPU path exactly as before.
+
     def test_optional_download_decode_model_gate_and_checkpoint_errors_fall_back(self):
         for failing in ("download", "decode", "model", "gate", "checkpoint"):
             with self.subTest(failing=failing), self.fixture() as (root, config, probe, media), \

@@ -1085,8 +1085,12 @@ SPEAKER_THRESHOLD = 0.3
 
 def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: MediaProbeResult,
                                media: FfmpegMediaAdapter, work_dir: Path, checkpoint: dict[str, Any],
-                               checkpoint_path: Path, emitter: Any, warnings: list[str]):
-    """Opt-in analysis; source-video origin and the B2 PCM format are retained."""
+                               checkpoint_path: Path, emitter: Any, warnings: list[str], device: Any = None):
+    """Opt-in analysis; source-video origin and the B2 PCM format are retained.
+
+    With a CUDA ``device`` (select_tts_device) it separates on the GPU in its own
+    process first; any GPU failure separates on the CPU here, as before.
+    """
     try:
         from engine.dubflow.separation import spleeter
         from engine.dubflow.tts.neural_vits import _child, _read_json
@@ -1122,10 +1126,21 @@ def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: Me
             # Independent analysis avoids introducing an optional model into TTS.
             media.extract_audio(config.source_path, source_audio, sample_rate=rate, channels=2,
                                 video_stream=probe.video, overwrite=True)
-            metrics = spleeter.separate_background(source_audio, background_path,
-                model_dir=_child(config.model_root, profile["model_dir"]), ffmpeg_path=config.ffmpeg_path,
-                progress=lambda fraction: emitter.progress(0.68 + .01 * fraction,
-                    "Đang tách nhạc nền khỏi giọng gốc (thử nghiệm)"))
+            options = dict(model_dir=_child(config.model_root, profile["model_dir"]), ffmpeg_path=config.ffmpeg_path)
+            metrics = None
+            if getattr(device, "device", "cpu") == "cuda":
+                try:
+                    metrics = spleeter.separate_background_on_gpu(source_audio, background_path, **options,
+                        accelerator=device.runtime, app_root=config.app_root,
+                        progress=lambda fraction: emitter.progress(0.68 + .01 * fraction, "Đang tách nhạc nền bằng GPU (thử nghiệm)"))
+                except Exception as error:  # noqa: BLE001 - the CPU path below is always available.
+                    code = getattr(error, "code", type(error).__name__)
+                    detail = " ".join(str(getattr(error, "condition", error)).split())[:300]
+                    warnings.append(f"ACCELERATOR_FALLBACK: separation ran on the CPU after a GPU failure: {code}: {detail}")
+            if metrics is None:
+                metrics = spleeter.separate_background(source_audio, background_path, **options,
+                    progress=lambda fraction: emitter.progress(0.68 + .01 * fraction,
+                        "Đang tách nhạc nền khỏi giọng gốc (thử nghiệm)"))
             _write_stage(checkpoint, checkpoint_path, "separation", {"path": str(background_path),
                 "sha256": _sha256(background_path), "input_hash": identity, "metrics": metrics,
                 "profile_sha256": _sha256(profile_path), "adapter_sha256": _sha256(Path(spleeter.__file__))})
@@ -1543,11 +1558,12 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     audio_path: Path | None = None
     audio_metadata: dict[str, Any] = {"mode": "original", "backend": "source-audio"}
     background_path, background_summary = None, {"mode": "original"}
+    # One ONNX Runtime CUDA choice serves separation and dubbing.
+    tts_device = _tts_device(config, emitter, warnings) if config.enable_dubbing else None
     if config.enable_dubbing and getattr(config, "separate_background", False) and probe.has_audio:
         background_path, background_summary = _separate_background_stage(config, source_hash, probe, media,
-            work_dir, checkpoint, checkpoint_path, emitter, warnings)
+            work_dir, checkpoint, checkpoint_path, emitter, warnings, device=tts_device)
     if config.enable_dubbing:
-        tts_device = _tts_device(config, emitter, warnings)
         speaking = "GPU" if tts_device.device == "cuda" else "CPU"
         emitter.progress(0.70, f"Đang tổng hợp giọng Việt bằng {speaking} và trộn audio AUD-0")
         last_report = [0.0]
