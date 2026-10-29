@@ -1431,18 +1431,27 @@ fn undubbed_summary(value: Option<&Value>) -> Option<String> {
 }
 
 /// Informational worker notes that are not quality advisories.
-const INFORMATIONAL_WARNINGS: [&str; 1] = ["ASR_ACCELERATOR:"];
+const INFORMATIONAL_WARNINGS: [&str; 2] = ["ASR_ACCELERATOR:", "TTS_ACCELERATOR:"];
 
 fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, String) {
     let (reason, mut message) = quality_summary(store, spec);
     if reason != "completed_quality_unverified" {
-        let device = committed_qc_summary(store, spec).and_then(|qc| {
-            qc.get("warnings")?.as_array()?.iter().filter_map(Value::as_str)
-                .find_map(|warning| warning.strip_prefix("ASR_ACCELERATOR: cuda "))
-                .and_then(|rest| rest.split_once(" on ")).map(|(_, label)| label.to_owned())
-        });
-        if let Some(label) = device {
-            message.push_str(&format!(" Lời thoại được nhận dạng bằng GPU {label}."));
+        let warnings: Vec<String> = committed_qc_summary(store, spec)
+            .and_then(|qc| Some(qc.get("warnings")?.as_array()?.iter().filter_map(Value::as_str).map(str::to_owned).collect()))
+            .unwrap_or_default();
+        // "ASR_ACCELERATOR: cuda int8_float16 on <GPU>" and "TTS_ACCELERATOR: cuda on <GPU>".
+        let device = |prefix: &str| warnings.iter().find_map(|warning| warning.strip_prefix(prefix))
+            .and_then(|rest| rest.split_once("on ")).map(|(_, label)| label.to_owned());
+        match (device("ASR_ACCELERATOR: cuda "), device("TTS_ACCELERATOR: cuda ")) {
+            (Some(asr), Some(tts)) if asr == tts => message.push_str(&format!(" Lời thoại được nhận dạng và lồng tiếng bằng GPU {asr}.")),
+            (asr, tts) => {
+                if let Some(label) = asr {
+                    message.push_str(&format!(" Lời thoại được nhận dạng bằng GPU {label}."));
+                }
+                if let Some(label) = tts {
+                    message.push_str(&format!(" Giọng Việt được tạo bằng GPU {label}."));
+                }
+            }
         }
     }
     (reason, message)
@@ -3049,6 +3058,10 @@ mod tests {
             (json!([note]), false, "completed", "Đã xuất video lồng tiếng Việt. Lời thoại được nhận dạng bằng GPU NVIDIA GeForce RTX 3060 (12 GB)."),
             (json!([note, "EDITABLE_LINK_FALLBACK: copied"]), true, "completed_with_warnings", "GPU NVIDIA GeForce RTX 3060 (12 GB)."),
             (json!(["ACCELERATOR_FALLBACK: ASR ran on the CPU: driver too old"]), true, "completed_with_warnings", "có lưu ý"),
+            (json!([note, "TTS_ACCELERATOR: cuda on NVIDIA GeForce RTX 3060 (12 GB)"]), false, "completed",
+             "Lời thoại được nhận dạng và lồng tiếng bằng GPU NVIDIA GeForce RTX 3060 (12 GB)."),
+            (json!(["TTS_ACCELERATOR: cuda on NVIDIA GeForce RTX 4070 (12 GB)"]), false, "completed",
+             "Đã xuất video lồng tiếng Việt. Giọng Việt được tạo bằng GPU NVIDIA GeForce RTX 4070 (12 GB)."),
         ];
         for (warnings, downgrade, reason, text) in cases {
             let (_root, _, spec) = identity_fixture();
@@ -3060,7 +3073,7 @@ mod tests {
             let (actual, message) = completion_summary(&store, &spec);
             assert_eq!(actual, reason);
             assert!(message.contains(text), "{message}");
-            assert_eq!(message.contains("GPU"), qc["warnings"].to_string().contains("ASR_ACCELERATOR"));
+            assert_eq!(message.contains("GPU"), qc["warnings"].to_string().contains("_ACCELERATOR: cuda"));
         }
     }
 

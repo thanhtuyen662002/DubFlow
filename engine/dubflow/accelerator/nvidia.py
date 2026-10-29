@@ -1,4 +1,4 @@
-"""Optional NVIDIA CUDA acceleration for the CTranslate2 ASR path (ADR-0038).
+"""Optional NVIDIA CUDA acceleration for ASR (ADR-0038) and VieNeu dubbing (ADR-0039).
 
 A GPU is an accelerator, never a correctness dependency. On Windows with an
 NVIDIA driver this module probes the device through the CUDA driver API,
@@ -25,12 +25,16 @@ import zipfile
 from engine.dubflow.models.runtime import ModelArtifact, ModelBootstrapError, _reject_link_components, ensure_model_profile, load_profile
 
 PROFILE_PATH = "models/manifests/accelerator-nvidia-cuda12-v1.json"
+# ONNX Runtime 1.30.0 GPU is a CUDA 13 build. It shares cuDNN's DLL names with
+# the CUDA 12 pack, so it is only ever loaded in VieNeu's own native process.
+ONNX_PROFILE_PATH = "models/manifests/accelerator-nvidia-onnx-cuda13-v1.json"
 # Preferred first: int8 weights with float16 compute is Faster-Whisper's GPU default.
 COMPUTE_PREFERENCE = ("int8_float16", "int8", "float16", "float32")
 MAX_LIBRARY_BYTES = 2 * 1024 * 1024 * 1024
 _CC_MAJOR, _CC_MINOR = 75, 76  # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR/MINOR
-_DLL = re.compile(r"[A-Za-z0-9_]{1,64}\.dll")
+_DLL = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]{0,63}\.dll")
 _NOTICE = re.compile(r"[A-Za-z0-9_-]{1,64}\.txt")
+_SITE = re.compile(r"onnxruntime(?:/[A-Za-z0-9_][A-Za-z0-9_.-]{0,95}){1,4}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _LOADED: dict[str, Any] = {}
 
@@ -74,6 +78,13 @@ class Pack:
     artifacts: tuple[ModelArtifact, ...]
     libraries: tuple[PackFile, ...]
     notices: tuple[PackFile, ...]
+    site: tuple[PackFile, ...] = ()
+
+
+def _gpu_label(gpu: NvidiaDevice | None) -> str:
+    if gpu is None:
+        return "model CPU"
+    return "GPU " + (gpu.name if gpu.name.upper().startswith("NVIDIA") else "NVIDIA " + gpu.name)
 
 
 @dataclass(frozen=True)
@@ -87,13 +98,24 @@ class AsrDevice:
 
     @property
     def label(self) -> str:
-        if self.device != "cuda" or self.gpu is None:
-            return "model CPU"
-        name = self.gpu.name
-        return "GPU " + (name if name.upper().startswith("NVIDIA") else "NVIDIA " + name)
+        return _gpu_label(self.gpu if self.device == "cuda" else None)
 
 
 CPU = AsrDevice("cpu", "int8")
+
+
+@dataclass(frozen=True)
+class TtsDevice:
+    """Where VieNeu speaks. ``runtime`` tells its native process how to load CUDA."""
+
+    device: str
+    gpu: NvidiaDevice | None = None
+    reason: str | None = None
+    runtime: Mapping[str, str] | None = None
+
+    @property
+    def label(self) -> str:
+        return _gpu_label(self.gpu if self.device == "cuda" else None)
 
 
 def _system_library(name: str) -> Path:
@@ -155,8 +177,8 @@ def _file(value: Any, pattern: re.Pattern[str], artifacts: Mapping[str, ModelArt
     return PackFile(name, artifact, member, digest, size)
 
 
-def load_pack(app_root: Path) -> Pack:
-    path = Path(app_root) / PROFILE_PATH
+def load_pack(app_root: Path, profile: str = PROFILE_PATH) -> Pack:
+    path = Path(app_root) / profile
     _profile_id, artifacts = load_profile(path)
     document = json.loads(path.read_text(encoding="utf-8"))
     by_id = {artifact.artifact_id: artifact for artifact in artifacts}
@@ -171,11 +193,13 @@ def load_pack(app_root: Path) -> Pack:
         raise ModelBootstrapError("ACCELERATOR_PACK_INVALID", "pack requirements are missing")
     libraries = tuple(_file(item, _DLL, by_id) for item in document.get("libraries") or ())
     notices = tuple(_file(item, _NOTICE, by_id) for item in document.get("notices") or ())
-    names = [item.name.casefold() for item in (*libraries, *notices)]
+    # Python package files of a runtime the pack replaces, under <pack>/site.
+    site = tuple(_file(item, _SITE, by_id) for item in document.get("site") or ())
+    names = [item.name.casefold() for item in (*libraries, *notices, *site)]
     if not libraries or len(names) != len(set(names)):
         raise ModelBootstrapError("ACCELERATOR_PACK_INVALID", "pack libraries must be listed once each")
     return Pack(path, pack_dir, requires["cuda_driver_version"], tuple(requires["min_compute_capability"]),
-                requires["min_total_memory_bytes"], artifacts, libraries, notices)
+                requires["min_total_memory_bytes"], artifacts, libraries, notices, site)
 
 
 class PackMismatch(AcceleratorUnavailable):
@@ -268,7 +292,8 @@ def ensure_pack(pack: Pack, model_root: Path, *, progress: Callable[[str, int, i
     _reject_link_components(Path(model_root), "model root")
     root = Path(os.path.abspath(model_root)) / pack.pack_dir
     bin_dir = root / "bin"
-    files = [(bin_dir, item) for item in pack.libraries] + [(root, item) for item in pack.notices]
+    files = ([(bin_dir, item) for item in pack.libraries] + [(root, item) for item in pack.notices]
+             + [(root / "site", item) for item in pack.site])
     if all(_matches(folder / item.name, item, verify=verify) for folder, item in files):
         return bin_dir
     ensure_model_profile(pack.profile_path, model_root, progress=progress)
@@ -276,8 +301,11 @@ def ensure_pack(pack: Pack, model_root: Path, *, progress: Callable[[str, int, i
     _reject_link_components(bin_dir, "accelerator folder")
     wheels = {artifact.artifact_id: Path(os.path.abspath(model_root)) / artifact.relative_path for artifact in pack.artifacts}
     for folder, item in files:
-        if not _matches(folder / item.name, item):
-            _extract(wheels[item.artifact], item, folder / item.name)
+        target = folder / item.name
+        if not _matches(target, item):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _reject_link_components(target.parent, "accelerator folder")
+            _extract(wheels[item.artifact], item, target)
     # Every needed byte now lives in the verified libraries; the archives are
     # 1.2 GB of duplicates. A later tamper re-downloads them.
     for wheel in wheels.values():
@@ -327,6 +355,16 @@ def _cuda_compute_types() -> set[str]:
     return set(ctranslate2.get_supported_compute_types("cuda"))
 
 
+def _require(pack: Pack, gpu: NvidiaDevice) -> None:
+    if gpu.driver_version < pack.driver_version:
+        raise AcceleratorUnavailable(f"driver supports CUDA {gpu.driver_version // 1000}.{gpu.driver_version % 1000 // 10}; "
+                                     f"{pack.driver_version // 1000}.{pack.driver_version % 1000 // 10} or newer is required")
+    if gpu.compute_capability < pack.min_compute_capability:
+        raise AcceleratorUnavailable("compute capability {}.{} is below {}.{}".format(*gpu.compute_capability, *pack.min_compute_capability))
+    if gpu.total_memory < pack.min_total_memory:
+        raise AcceleratorUnavailable(f"{gpu.total_memory // 1024 ** 2} MB of GPU memory is below {pack.min_total_memory // 1024 ** 2} MB")
+
+
 def select_asr_device(app_root: Path, model_root: Path, preference: str = "auto", *,
                       progress: Callable[[str, int, int], None] | None = None,
                       probe: Callable[[], NvidiaDevice] = probe,
@@ -344,13 +382,7 @@ def select_asr_device(app_root: Path, model_root: Path, preference: str = "auto"
         return AsrDevice("cpu", "int8", reason=f"NVIDIA probe failed: {type(error).__name__}: {error}"[:300])
     try:
         pack = load_pack(app_root)
-        if gpu.driver_version < pack.driver_version:
-            raise AcceleratorUnavailable(f"driver supports CUDA {gpu.driver_version // 1000}.{gpu.driver_version % 1000 // 10}; "
-                                         f"{pack.driver_version // 1000}.{pack.driver_version % 1000 // 10} or newer is required")
-        if gpu.compute_capability < pack.min_compute_capability:
-            raise AcceleratorUnavailable("compute capability {}.{} is below {}.{}".format(*gpu.compute_capability, *pack.min_compute_capability))
-        if gpu.total_memory < pack.min_total_memory:
-            raise AcceleratorUnavailable(f"{gpu.total_memory // 1024 ** 2} MB of GPU memory is below {pack.min_total_memory // 1024 ** 2} MB")
+        _require(pack, gpu)
         bin_dir = ensure(pack, model_root, progress=progress)
         try:
             activate(pack, bin_dir)
@@ -371,5 +403,39 @@ def select_asr_device(app_root: Path, model_root: Path, preference: str = "auto"
         return AsrDevice("cpu", "int8", gpu, f"GPU setup failed: {type(error).__name__}: {error}"[:300])
 
 
-__all__ = ["AcceleratorUnavailable", "AsrDevice", "CPU", "NvidiaDevice", "Pack", "PackMismatch", "activate", "ensure_pack",
-           "load_pack", "probe", "select_asr_device"]
+def select_tts_device(app_root: Path, model_root: Path, preference: str = "auto", *,
+                      progress: Callable[[str, int, int], None] | None = None,
+                      probe: Callable[[], NvidiaDevice] = probe,
+                      ensure: Callable[..., Path] = ensure_pack) -> TtsDevice:
+    """Choose CUDA for VieNeu when the device and the verified pack allow it; else the CPU.
+
+    Nothing is loaded here: the worker process may already hold the CUDA 12
+    pack. The pack is verified by hash, and VieNeu's native process hashes it
+    again under lock as it loads (``vieneu_native``).
+    """
+    if preference == "cpu":
+        return TtsDevice("cpu")
+    try:
+        gpu = probe()
+    except AcceleratorUnavailable as error:
+        return TtsDevice("cpu", reason=None if error.silent else error.reason)
+    except Exception as error:  # noqa: BLE001 - a broken driver must not stop the job
+        return TtsDevice("cpu", reason=f"NVIDIA probe failed: {type(error).__name__}: {error}"[:300])
+    try:
+        pack = load_pack(app_root, ONNX_PROFILE_PATH)
+        _require(pack, gpu)
+        if not pack.site:
+            raise AcceleratorUnavailable("the ONNX Runtime GPU pack lists no runtime files")
+        root = ensure(pack, model_root, progress=progress, verify=True).parent
+        manifest = hashlib.sha256(pack.profile_path.read_bytes()).hexdigest()
+        return TtsDevice("cuda", gpu, runtime={"manifest": str(pack.profile_path), "manifest_sha256": manifest, "root": str(root)})
+    except AcceleratorUnavailable as error:
+        return TtsDevice("cpu", gpu, error.reason)
+    except ModelBootstrapError as error:
+        return TtsDevice("cpu", gpu, f"GPU libraries unavailable: {error.code}: {error.detail}"[:300])
+    except Exception as error:  # noqa: BLE001 - the CPU path is always available
+        return TtsDevice("cpu", gpu, f"GPU setup failed: {type(error).__name__}: {error}"[:300])
+
+
+__all__ = ["AcceleratorUnavailable", "AsrDevice", "CPU", "NvidiaDevice", "Pack", "PackMismatch", "TtsDevice", "activate",
+           "ensure_pack", "load_pack", "probe", "select_asr_device", "select_tts_device"]
