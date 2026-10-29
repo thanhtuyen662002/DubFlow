@@ -211,7 +211,7 @@ def transcribe_bounded(audio_path: Path, *, total_samples: int, audio_hash: str,
                "core_samples": CORE_SAMPLES, "overlap_samples": OVERLAP_SAMPLES}
     identity = _digest(binding)
     chunks = plan_chunks(total_samples, identity)
-    chunks_dir = chunks_dir / identity.removeprefix("sha256:")
+    chunks_dir = chunks_dir / identity.removeprefix("sha256:")[:16]  # Short: Windows paths stop at 260 characters.
     plain(chunks_dir)
     chunks_dir.mkdir(parents=True, exist_ok=True)
     model = None

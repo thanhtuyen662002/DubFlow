@@ -1239,7 +1239,40 @@ def _auto_blur_regions(config: WorkerConfig, source_hash: str, duration_ms: int 
         return (), None
 
 
+# Windows paths stop at 259 characters unless long paths are enabled. The
+# deepest path the worker writes inside an output folder is a multi-voice TTS
+# checkpoint record, about 125 characters; the budget keeps a margin.
+WINDOWS_MAX_PATH = 259
+WORK_PATH_DEPTH = 135
+# FFmpeg renders with its working directory in the export folder, and Windows
+# never allows a working directory beyond MAX_PATH, even with long paths on.
+RENDER_DIRECTORY_DEPTH = len("\\.dubflow-work\\export-pending") + 12
+
+
+def _long_paths_enabled() -> bool:
+    try:
+        import ctypes
+        return bool(ctypes.WinDLL("ntdll").RtlAreLongPathsEnabled())
+    except (AttributeError, OSError):
+        return False
+
+
+def _path_admission(config: WorkerConfig, *, windows: bool | None = None, long_paths: bool | None = None) -> None:
+    """Refuse an output folder too long for the work beneath it, before any work."""
+    if not (os.name == "nt" if windows is None else windows):
+        return
+    long_paths = _long_paths_enabled() if long_paths is None else long_paths
+    limit = WINDOWS_MAX_PATH - (RENDER_DIRECTORY_DEPTH if long_paths else WORK_PATH_DEPTH)
+    length = len(str(config.output_dir.absolute()))
+    if length > limit:
+        raise ProductionJobError("OUTPUT_PATH_TOO_LONG",
+            f"Đường dẫn thư mục kết quả dài {length} ký tự, vượt giới hạn {limit} ký tự của Windows. "
+            "Hãy chọn thư mục lưu kết quả ngắn hơn (ví dụ D:\\DubFlow) hoặc đổi tên video cho ngắn, "
+            "rồi xóa video khỏi hàng đợi và thêm lại.")
+
+
 def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
+    _path_admission(config)
     output = config.output_dir.absolute()
     source = config.source_path.resolve()
     for name in (*export_publication.ENTRIES, ".dubflow-work"):
@@ -1270,8 +1303,10 @@ def run_local_file(config: WorkerConfig, emitter: _Emitter) -> dict[str, Any]:
 def _b2_generation(checkpoint: dict[str, Any], checkpoint_path: Path, work_dir: Path, output_dir: Path, identity: str) -> Path:
     stage = checkpoint.get("stages", {}).get("b2-generation", {})
     generation = stage.get("generation", "")
-    reusable = stage.get("input_hash") == identity and isinstance(generation, str) and re.fullmatch(r"[a-f0-9]{32}", generation)
-    directory = work_dir / "b2-audio" / identity / generation if reusable else None
+    reusable = stage.get("input_hash") == identity and isinstance(generation, str) and re.fullmatch(r"[a-f0-9]{12}", generation)
+    # Short folder names keep Windows paths under 260 characters; the
+    # checkpoint keeps the full identity.
+    directory = work_dir / "b2-audio" / identity[:16] / generation if reusable else None
     manifest_path = output_dir / "job_manifest.json"
     if reusable and manifest_path.exists():
         try:
@@ -1287,8 +1322,8 @@ def _b2_generation(checkpoint: dict[str, Any], checkpoint_path: Path, work_dir: 
         # mixer refuses multiply linked inputs, so start a fresh generation.
         reusable = all(path.lstat().st_nlink == 1 for path in directory.rglob("*") if path.is_file())
     if not reusable:
-        generation = uuid.uuid4().hex
-        directory = work_dir / "b2-audio" / identity / generation
+        generation = uuid.uuid4().hex[:12]
+        directory = work_dir / "b2-audio" / identity[:16] / generation
         _write_stage(checkpoint, checkpoint_path, "b2-generation", {"input_hash": identity, "generation": generation})
     export_publication.plain(directory.absolute())
     return directory

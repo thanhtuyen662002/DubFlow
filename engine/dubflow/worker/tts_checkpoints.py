@@ -48,6 +48,12 @@ def _unique(pairs: list[tuple[str, object]]) -> dict:
     return value
 
 
+
+def record_name(identifier: str) -> str:
+    """A per-cue record file name: 96 bits of the cue identity, short enough for
+    Windows' 260-character paths under a deep output folder."""
+    return sha256(identifier.encode("utf-8")).hexdigest()[:24] + ".json"
+
 class TtsCheckpointStore:
     def __init__(self, audio_directory: Path, *, identity: str) -> None:
         if not re.fullmatch(r"[a-f0-9]{64}", identity):
@@ -60,7 +66,7 @@ class TtsCheckpointStore:
         self.warnings: list[str] = []
 
     def _path(self, segment_id: str) -> Path:
-        return self.directory / (sha256(segment_id.encode("utf-8")).hexdigest() + ".json")
+        return self.directory / record_name(segment_id)
 
     def _audio_path(self, artifact: TtsArtifact) -> None:
         path = Path(artifact.path)

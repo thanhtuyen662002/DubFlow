@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "producer_id": "yt-dlp-sdk-2026.08.19-v1",
+  "producer_id": "yt-dlp-sdk-2026.08.19-v2",
   "version": "2026.08.19",
   "filename": "yt_dlp-2026.8.19-py3-none-any.whl",
   "url": "https://files.pythonhosted.org/packages/69/b2/8cd1613f56eed7ceb64fbd4df3f1c01246bfb098e6f398228bafda22b80b/yt_dlp-2026.8.19-py3-none-any.whl",
@@ -19,6 +19,72 @@
     "size_bytes": "1211",
     "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c",
     "source": "https://github.com/yt-dlp/yt-dlp/tree/2026.08.19",
-    "decision": "Redistribute the exact PyPI wheel with its embedded license; no bundled executable, plugins, EJS or optional third-party dependencies."
-  }
+    "decision": "Redistribute the exact PyPI wheel with its embedded license; no plugins or remote components. The pinned extensions (ADR-0040) are extracted unmodified from their PyPI wheels with their licenses."
+  },
+  "extensions": [
+    {
+      "name": "curl-cffi",
+      "version": "0.16.0",
+      "target": "lib",
+      "filename": "curl_cffi-0.16.0-cp310-abi3-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/ad/03/b9df2973f1119f9d11d8fb3bf2682e5ffe5c52ef3ab89f720473c60fe97e/curl_cffi-0.16.0-cp310-abi3-win_amd64.whl",
+      "size_bytes": "1976497",
+      "sha256": "e22a8212d830108e977ff394237f637238e265f5f65037d6c1ee71ea8cc03bcb",
+      "spdx": "MIT"
+    },
+    {
+      "name": "cffi",
+      "version": "2.1.1",
+      "target": "lib",
+      "filename": "cffi-2.1.1-cp312-cp312-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/d9/79/615cc094e2fb508cade7de88d3b4f6c4ec2bab695c97bce9153dc65aadf5/cffi-2.1.1-cp312-cp312-win_amd64.whl",
+      "size_bytes": "185919",
+      "sha256": "f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a",
+      "spdx": "MIT-0"
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "target": "lib",
+      "filename": "certifi-2026.7.22-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/0b/a7/71ac2cff56fec219ed242bb11b8efb69fcc4bec75db06fb7bfe35de520e6/certifi-2026.7.22-py3-none-any.whl",
+      "size_bytes": "136983",
+      "sha256": "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775",
+      "spdx": "MPL-2.0"
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "target": "lib",
+      "filename": "pycparser-3.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl",
+      "size_bytes": "48172",
+      "sha256": "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
+      "spdx": "BSD-3-Clause"
+    },
+    {
+      "name": "yt-dlp-ejs",
+      "version": "0.8.0",
+      "target": "lib",
+      "filename": "yt_dlp_ejs-0.8.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/e3/bd/520769863744b669440a924271a6159ddd82ad5ae26b4ac4d4b69e9f8d44/yt_dlp_ejs-0.8.0-py3-none-any.whl",
+      "size_bytes": "53443",
+      "sha256": "79300e5fca7f937a1eeede11f0456862c1b41107ce1d726871e0207424f4bdb4",
+      "spdx": "Unlicense AND MIT AND ISC"
+    },
+    {
+      "name": "deno",
+      "version": "2.9.8",
+      "target": "deno",
+      "filename": "deno-2.9.8-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/fb/42/07b0f91b0962869218653e32a85aebf22fc359a146d8c032623994b9457f/deno-2.9.8-py3-none-win_amd64.whl",
+      "size_bytes": "41825460",
+      "sha256": "60dd97e612b8bab67c8080712646a821071e3809909489f853763cea19617700",
+      "spdx": "MIT",
+      "member": "deno-2.9.8.data/scripts/deno.exe",
+      "member_size_bytes": "98081568",
+      "member_sha256": "924397800533d3eb0ed0c889b20ad70e18b970d93acd8135bc043f425e528266",
+      "license_member": "deno-2.9.8.dist-info/licenses/LICENSE"
+    }
+  ]
 }

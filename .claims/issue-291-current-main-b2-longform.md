@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #291
 Lease-Owner: codex/01a11204/issue-174-continuation
 Lease-Heartbeat: 2026-10-29T06:51:00Z
-Tested-Base-SHA: 506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26
+Tested-Base-SHA: eebc0be36587165c32f4ce66100d984b856fb7ae
 Conflict-Domains: q175-single-continuous-longform-evidence
 Expected-Paths: .claims/issue-291-current-main-b2-longform.md,docs/production/Q175_CONTINUOUS_LONGFORM_EVIDENCE.md
 Required-CI: PR Fast + Integration
@@ -11,8 +11,8 @@ Required-CI: PR Fast + Integration
 Previous long-form evidence is from signed 1.1.6 and is historical for the later #320/#321 changes. This evidence-only leaf does not change product code or qualify all of #175.
 
 ### Source target and base freshness
-Current main is `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`. Signed stable v1.1.10 targets that exact source SHA. Use that installed signed build if available; otherwise use a non-published build from exactly that SHA. Record the actual binary/source identity and do not infer it from a version label.
-Lead recovery merged current main into this branch in commit `d56f7c6af480b61467760a80ec4bec51c3d7135f`. PR Fast [40867667498](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867667498) and Integration [40867667604](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867667604) passed on that pre-metadata HEAD. This claim now records the incorporated/tested base `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`; the metadata change requires fresh exact-HEAD PR Fast + Integration. The real continuous 2–6 h recording remains NOT_RUN until the existing coder executes it, so this PR is not merge-ready.
+Current main is `eebc0be36587165c32f4ce66100d984b856fb7ae`. Signed stable v1.1.10 targets that exact source SHA. Use that installed signed build if available; otherwise use a non-published build from exactly that SHA. Record the actual binary/source identity and do not infer it from a version label.
+Lead recovery sync: current main eebc0be36587165c32f4ce66100d984b856fb7ae is incorporated by this coordination-only merge commit. The resulting branch HEAD is recorded in the latest PR checkpoint. This does not imply coder STARTED/CODED/TESTED or product acceptance. PR Fast [40867667498](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867667498) and Integration [40867667604](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867667604) passed on that pre-metadata HEAD. This claim now records the incorporated/tested base `eebc0be36587165c32f4ce66100d984b856fb7ae`; the metadata change requires fresh exact-HEAD PR Fast + Integration. The real continuous 2–6 h recording remains NOT_RUN until the existing coder executes it, so this PR is not merge-ready.
 
 ### Acceptance
 - Run one authorized/licensed, single continuous 2–6 h recording with production CPU B2. No concatenation, loop, synthetic substitute, media download or committing media/models/private paths.
@@ -26,3 +26,10 @@ Allowed material paths: `docs/production/Q175_CONTINUOUS_LONGFORM_EVIDENCE.md` p
 Forbidden: product code, tests, scripts, workflows, registry, contracts, lockfiles, `docs/PROJECT_STATE.yaml`, release/signing/publication, media/model assets, credentials and unrelated paths.
 
 Coordination status: this is still ASSIGNED. The claim heartbeat above is intentionally not refreshed by the Lead; no coder start, code, test or media run is implied by this metadata repair.
+
+## Live recovery checkpoint — 2026-10-29T15:41Z
+- Current main/base: `eebc0be36587165c32f4ce66100d984b856fb7ae`.
+- This branch is being synchronized with current main after later merges (#338 and #336). The resulting recovery commit changes no product code and preserves the existing Issue lease/branch.
+- Prior claim-only PR Fast/Integration evidence is for the previous HEAD and is stale for merge purposes. Fresh required checks must run on the resulting HEAD against this base.
+- Coder heartbeat remains `2026-10-29T06:51:00Z`; Lead does not refresh it. No product code/test/media evidence is implied by this sync.
+- Product acceptance remains `NOT_RUN`; keep Draft until the task-specific acceptance below is executed and recorded.

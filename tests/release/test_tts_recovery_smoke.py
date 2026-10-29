@@ -343,7 +343,7 @@ class RecoverySnapshotTests(unittest.TestCase):
                 output = Path(directory)
                 speech, _, _, _ = tts2_evidence(output, "sha256:" + "a" * 64)
                 audio = Path(speech.artifacts[0].path)
-                record = audio.parent / "checkpoints" / (sha256(b"cue-1").hexdigest() + ".json")
+                record = audio.parent / "checkpoints" / (sha256(b"cue-1").hexdigest()[:24] + ".json")
                 if defect is None:
                     snapshot = smoke._tts_checkpoint_snapshot(output)
                     self.assertEqual(snapshot["sha256"], smoke._file_digest(audio))

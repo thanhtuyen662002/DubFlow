@@ -36,6 +36,10 @@ def scoped_cookies(provider, headers):
     return cookies
 
 
+# Deno by the absolute path the parent verified (ADR-0040); otherwise no JS runtime.
+JS_RUNTIMES = {}
+
+
 def downloader_options():
     class QuietLogger:
         def debug(self, message): pass
@@ -43,9 +47,10 @@ def downloader_options():
         def error(self, message): pass
 
     # Programmatic options never load CLI config. No generic custom headers,
-    # disk cookie file, system JS runtime or mutable helper downloads.
+    # disk cookie file, system JS runtime or mutable helper downloads; EJS
+    # comes from the pinned yt-dlp-ejs package, never a remote component.
     return {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
-            "cachedir": False, "js_runtimes": {}, "remote_components": [], "logger": QuietLogger(),
+            "cachedir": False, "js_runtimes": dict(JS_RUNTIMES), "remote_components": [], "logger": QuietLogger(),
             "socket_timeout": 30, "retries": 0, "extractor_retries": 0}
 
 
@@ -415,13 +420,21 @@ def failure_exit_code(error):
     return 5
 
 
+def _impersonation_available():
+    try:
+        import curl_cffi  # noqa: F401 - TikTok and similar sites need browser impersonation.
+        return True
+    except ImportError:
+        return False
+
+
 def main():
     try:
         payload = sys.stdin.buffer.read(4097)
         if len(payload) > 4096:
             return 2
         request = json.loads(payload)
-        if not isinstance(request, dict) or type(request.get("schema_version")) is not int or request["schema_version"] != 1 or len(sys.argv) != 2:
+        if not isinstance(request, dict) or type(request.get("schema_version")) is not int or request["schema_version"] != 1 or len(sys.argv) not in (2, 4):
             return 2
         operation = request.get("operation", "inspect")
         if operation not in {"inspect", "health_check", "enumerate", "douyin_creator"}:
@@ -429,6 +442,10 @@ def main():
         if operation == "health_check" and set(request) != {"schema_version", "operation"}:
             return 2
         sys.path.insert(0, sys.argv[1])  # Parent verified the whole SDK archive hash.
+        if len(sys.argv) == 4:
+            # Parent verified every extension file against the signed inventory.
+            sys.path.insert(1, sys.argv[2])
+            JS_RUNTIMES["deno"] = {"path": sys.argv[3]}
         import yt_dlp
         from yt_dlp.globals import plugin_dirs
         plugin_dirs.value = []
@@ -441,7 +458,8 @@ def main():
                           "python_version": ".".join(map(str, sys.version_info[:3])),
                           "python_executable": sys.executable, "python_prefix": sys.prefix,
                           "python_base_prefix": sys.base_prefix, "import_roots": list(sys.path),
-                          "isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site)}
+                          "isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site),
+                          "impersonation": _impersonation_available(), "js_runtime": "deno" if JS_RUNTIMES else None}
         elif operation == "enumerate":
             result = enumerate_page(request, yt_dlp.YoutubeDL)
         elif operation == "douyin_creator":
