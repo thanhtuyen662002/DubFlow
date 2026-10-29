@@ -35,8 +35,11 @@ export function applySourceLanguage(queue: QueueController, jobId: string, value
   }
 }
 
-/** The exact `start_job` arguments for a job; Auto stays "auto", never a guessed language. */
-export function startJobRequest(job: QueueJob, outputRoot: string | null): Record<string, unknown> {
+/**
+ * The exact `start_job` arguments for a job; Auto stays "auto", never a guessed language.
+ * `cpuOnly` is the app-wide choice to keep every model off the GPU.
+ */
+export function startJobRequest(job: QueueJob, outputRoot: string | null, cpuOnly = false): Record<string, unknown> {
   const sourceLanguage = job.sourceLanguage ?? "auto";
   return {
     jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null, outputRoot: job.outputDir ? null : outputRoot,
@@ -47,6 +50,7 @@ export function startJobRequest(job: QueueJob, outputRoot: string | null): Recor
     blurAuto: job.blurAuto ?? false,
     multiVoice: job.multiVoice ?? false, speakerVoices: job.speakerVoices ?? null,
     separateBackground: job.separateBackground ?? false,
+    cpuOnly,
   };
 }
 
