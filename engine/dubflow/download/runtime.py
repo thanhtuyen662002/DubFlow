@@ -256,7 +256,8 @@ def _verified_extensions(root: Path, index: Mapping[str, Mapping], profile: Mapp
     files = {}
     for name, item in index.items():
         if name.startswith(prefixes):
-            size = _byte_count(item["size_bytes"], 256 * 1024 * 1024)
+            # Packages ship empty files (py.typed, some __init__.py); zero is a valid size here.
+            size = 0 if item["size_bytes"] == "0" else _byte_count(item["size_bytes"], 256 * 1024 * 1024)
             if not isinstance(item["sha256"], str) or not _SHA256.fullmatch(item["sha256"]):
                 raise ValueError("missing extension digest")
             files[name] = (item["sha256"], size)

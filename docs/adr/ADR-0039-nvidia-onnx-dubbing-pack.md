@@ -49,6 +49,6 @@ Three facts constrain the design:
 - **What NVIDIA users with an RTX 20-series or newer card pay:**
   - about 1.23 GB downloaded once and 1.74 GB on disk, on top of the ASR pack;
   - about 1.7 GB hashed twice per job: once by the worker, and once under lock by each VieNeu native process.
-- **Separation is not covered:** Spleeter still runs on the CPU. It runs inside the worker, which already holds CPU ONNX Runtime and possibly the CUDA 12 pack, so moving it needs its own native process.
+- **Separation runs on the GPU too:** Spleeter separation runs in its own native process, `spleeter_native.py`. That process loads the pack through the same loader (`engine/dubflow/accelerator/onnx_cuda.py`) and runs the unchanged pipeline with CUDA sessions. Any failure separates on the CPU in the worker and records `ACCELERATOR_FALLBACK:`. GPU batches carry the device in their checkpoint identity, so they never mix with CPU batches on resume.
 - **No test needs a GPU.** Hermetic tests cover the manifest, nested package extraction, the CUDA 13 requirements, the native loader (a verified fake `onnxruntime` comes first, sessions get CUDA, and a change, a different manifest or an earlier import is refused), the CPU fallback and the separate GPU identity.
 - **Not proven yet:** real speed, VRAM and out-of-memory behaviour are NOT_RUN until a run on NVIDIA hardware (#323 leaf 4).

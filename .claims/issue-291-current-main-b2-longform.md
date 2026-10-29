@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #291
 Lease-Owner: codex/01a11204/issue-174-continuation
 Lease-Heartbeat: 2026-10-29T06:51:00Z
-Tested-Base-SHA: eebc0be36587165c32f4ce66100d984b856fb7ae
+Tested-Base-SHA: a35553cd40190ce481cd00db13649eafced331cd
 Conflict-Domains: q175-single-continuous-longform-evidence
 Expected-Paths: .claims/issue-291-current-main-b2-longform.md,docs/production/Q175_CONTINUOUS_LONGFORM_EVIDENCE.md
 Required-CI: PR Fast + Integration
@@ -11,7 +11,7 @@ Required-CI: PR Fast + Integration
 Previous long-form evidence is from signed 1.1.6 and is historical for the later #320/#321 changes. This evidence-only leaf does not change product code or qualify all of #175.
 
 ### Source target and base freshness
-Current main is `eebc0be36587165c32f4ce66100d984b856fb7ae`. Signed stable v1.1.10 targets older source SHA `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`, not current main. Use a non-published Windows build from exactly `eebc0be36587165c32f4ce66100d984b856fb7ae`; if that build/host is unavailable, mark NOT_RUN. Record the actual binary/source identity and do not infer it from a version label.
+Current main is `a35553cd40190ce481cd00db13649eafced331cd`. Signed stable v1.1.10 targets older source SHA `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`, not current main. Use a non-published Windows build from exactly `a35553cd40190ce481cd00db13649eafced331cd`; if that build/host is unavailable, mark NOT_RUN. Record the actual binary/source identity and do not infer it from a version label.
 Lead recovery sync: current main eebc0be36587165c32f4ce66100d984b856fb7ae is incorporated by this coordination-only merge commit. The resulting branch HEAD is recorded in the latest PR checkpoint. This does not imply coder STARTED/CODED/TESTED or product acceptance. PR Fast [40867667498](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867667498) and Integration [40867667604](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867667604) passed on that pre-metadata HEAD. This claim now records the incorporated/tested base `eebc0be36587165c32f4ce66100d984b856fb7ae`; the metadata change requires fresh exact-HEAD PR Fast + Integration. The real continuous 2–6 h recording remains NOT_RUN until the existing coder executes it, so this PR is not merge-ready.
 
 ### Acceptance
@@ -27,9 +27,9 @@ Forbidden: product code, tests, scripts, workflows, registry, contracts, lockfil
 
 Coordination status: this is still ASSIGNED. The claim heartbeat above is intentionally not refreshed by the Lead; no coder start, code, test or media run is implied by this metadata repair.
 
-## Live recovery checkpoint — 2026-10-29T15:41Z
-- Current main/base: `eebc0be36587165c32f4ce66100d984b856fb7ae`.
-- This branch is being synchronized with current main after later merges (#338 and #336). The resulting recovery commit changes no product code and preserves the existing Issue lease/branch.
-- Prior claim-only PR Fast/Integration evidence is for the previous HEAD and is stale for merge purposes. Fresh required checks must run on the resulting HEAD against this base.
-- Coder heartbeat remains `2026-10-29T06:51:00Z`; Lead does not refresh it. No product code/test/media evidence is implied by this sync.
-- Product acceptance remains `NOT_RUN`; keep Draft until the task-specific acceptance below is executed and recorded.
+## Live recovery checkpoint — 2026-10-29T17:42Z
+- Authoritative main SHA: `a35553cd40190ce481cd00db13649eafced331cd` (merge #342; includes the zero-byte extension fix from #341).
+- Lead performed a coordination-only branch sync with current main using an expected-head guard. No product code or media evidence changed.
+- Previous claim-only PR Fast/Integration evidence on HEAD `0d097e9bee6d7763f8fb69124e94bcaa99c9d105` is stale for this new HEAD. Exact-head PR Fast + PR Integration must pass before this claim is considered current-base CI-tested.
+- Lease heartbeat remains `2026-10-29T06:51:00Z`; this Lead sync is not coder progress.
+- The continuous 2–6 hour production CPU recording remains `NOT_RUN`. Do not start it without an authorized single continuous source and a build from this exact main SHA.
