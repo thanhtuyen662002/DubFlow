@@ -4,19 +4,30 @@ Lease-Owner: Claude/issue-320-audio-track-storage
 Lease-Heartbeat: 2026-10-29T06:51:00Z
 Tested-Base-SHA: 23c2fa82c55fd799cf9b343aecdc29375f521aaa
 Conflict-Domains: desktop-real-chinese-media-smoke
-Expected-Paths: .claims/issue-271-current-main-gui-revalidation.md,docs/production/CHINESE_DESKTOP_REVIEW_EVIDENCE.md
+Expected-Paths: .claims/issue-271-current-main-gui-revalidation.md,scripts/release/chinese_desktop_review_smoke.py,tests/release/test_chinese_desktop_review_smoke.py,docs/production/CHINESE_DESKTOP_REVIEW_EVIDENCE.md
 Required-CI: PR Fast + Integration
 
 ## Current-main desktop revalidation only
-Existing GUI evidence is from installed 1.1.1, before #320, #321 and #323 leaf 3. Re-run the bounded Chinese→Vietnamese review/revision flow on a non-published Windows build from exact source 23c2fa82c55fd799cf9b343aecdc29375f521aaa. This is not #175 acceptance.
+Existing GUI evidence from installed 1.1.1 is historical. This bounded harness/evidence leaf revalidates the Chinese→Vietnamese review/revision flow after #320, #321 and #323; it does not qualify all of #175.
+
+### Source target and base freshness
+Current main is `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`. Signed stable v1.1.10 targets that exact source SHA. Use it if available; otherwise use a non-published Windows build from exactly that SHA. Record actual binary/source identity.
+The current PR/claim Tested-Base-SHA `23c2fa82c55fd799cf9b343aecdc29375f521aaa` is STALE_BASE. Merge current main into this branch normally (no force-push), then run required CI and desktop commands. Update Tested-Base-SHA only to the base actually incorporated and tested; until then this PR is not merge-ready.
 
 ### Acceptance
-- Use the previously owner-authorized real Chinese local video outside Git; verify no matching subtitle sidecar; record source SHA-256, duration/probe, runtime/model/profile IDs and exact source SHA. No media/model downloads or private paths/assets in Git.
-- Drive the actual WebView/Tauri UI: add/drop source, explicitly select Tiếng Trung, start, inspect review, edit/undo a cue, verify blank text cannot save, save/reprocess a valid edit, wait for completion.
-- Verify Chinese routing/Vietnamese provenance, playable output, SRT/ASS/editable pack, manifest/QC hashes, separate revision folder, byte-identical original validated outputs and correct revision_of link. Record failed-save/retry and UTC timings/status.
-- Run npm test --prefix apps/desktop and npm run build --prefix apps/desktop; also PR Fast + Integration on final PR HEAD/current tested base. Separate CI evidence from real-media GUI evidence.
-- If Windows GUI, authorized media or current-main build is unavailable, mark NOT_RUN with exact missing capability. No fixture substitution, QC weakening, product-code edits or publication.
-- If a product defect appears, stop and report reproduction; do not expand this evidence-only lease.
+- Add a standalone smoke harness accepting an explicit real local Chinese media path and app-owned installed runtime/supervisor paths. The authorized media stays outside Git; do not download media or models.
+- Reject a source with a matching subtitle sidecar. Record source SHA-256, duration/probe, exact source SHA, runtime/model/profile identities, command, start/end UTC and exit status, without recording private absolute paths.
+- Run the production supervisor with explicit Chinese routing and pinned CPU profile. Verify non-empty Chinese transcript, Vietnamese translation provenance, playable output, SRT/ASS/editable artifacts, manifest/QC hashes and source/output linkage.
+- Open the generated result in the actual WebView/Tauri Review flow; edit and undo a cue, verify blank text cannot save, save/reprocess a valid edit, wait for completion, and verify separate revision output, byte-identical original validated outputs and correct revision_of/provenance/QC. Record failed-save/retry and timings.
+- Run `npm test --prefix apps/desktop`, `npm run build --prefix apps/desktop`, unit tests for the new harness, PR Fast and PR Integration on final HEAD/current tested base. Keep CI evidence separate from real-media GUI evidence.
+- If Windows GUI, authorized media or current-main build is unavailable, mark that stage NOT_RUN with the exact missing capability. No fixtures as real-media evidence, no QC weakening, product-code edits or publication. If a product defect appears, stop and report exact reproduction.
 
-Allowed material path: docs/production/CHINESE_DESKTOP_REVIEW_EVIDENCE.md only, plus this claim file.
-Forbidden: apps/desktop/**, engine/**, crates/**, contracts/**, migrations/**, tests/**, scripts/**, workflows/CI, lockfiles, models/manifests, docs/PROJECT_STATE.yaml, signing/secrets, release/publication, unrelated paths.
+Allowed material paths only:
+- `scripts/release/chinese_desktop_review_smoke.py` (new harness)
+- `tests/release/test_chinese_desktop_review_smoke.py` (new validation tests)
+- `docs/production/CHINESE_DESKTOP_REVIEW_EVIDENCE.md` (evidence)
+- this claim file
+
+Forbidden: all other `scripts/**` and `tests/**` paths; `apps/desktop/**`, `engine/**`, `crates/**`, `contracts/**`, `migrations/**`, `.github/workflows/**`, `scripts/ci/**`, existing release workflow/production smoke scripts, lockfiles, model/manifests, `docs/PROJECT_STATE.yaml`, signing/secrets, release/publication, media/model assets and unrelated paths.
+
+Coordination status: this is still ASSIGNED. The claim heartbeat above is intentionally not refreshed by the Lead; no coder start, code, test or real-media GUI run is implied by this metadata repair.
