@@ -333,7 +333,8 @@ class StreamingAudioMixer:
         identity = _hash_json({"source": audio.digest, "source_id": source.source_id, "layout": source.layout,
             "start": source.start.to_dict(), "end": source.end.to_dict(), "segments": identities,
             "failures": [item.to_dict() for item in failures], "input": input_hash, "config": config_hash})
-        root = _plain(self.output_dir / ("stream-" + identity[7:])); root.mkdir(parents=True, exist_ok=True)
+        # A short folder name keeps Windows paths under 260 characters; the document holds the full identity.
+        root = _plain(self.output_dir / ("stream-" + identity[7:23])); root.mkdir(parents=True, exist_ok=True)
         completed = root / "mix_document.json"
         if completed.exists():
             _plain(completed)

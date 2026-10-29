@@ -18,6 +18,7 @@ from typing import Mapping, Sequence
 from engine.dubflow.tts import TtsCheckpoint, TtsError, TtsInput
 from engine.dubflow.tts.adapter import FAST_FIT_MAX_MILLI
 from .export_publication import plain
+from .tts_checkpoints import record_name
 
 
 RECIPE = "vi-safe-condensation-v3-window4000-fast1500-condensed"
@@ -189,7 +190,7 @@ class SpokenTextStore:
         self.warnings: list[str] = []
 
     def _path(self, identifier: str) -> Path:
-        return self.directory / (sha256(identifier.encode("utf-8")).hexdigest() + ".json")
+        return self.directory / record_name(identifier)
 
     def _fields(self, checkpoint: TtsCheckpoint, plan: RewritePlan | None) -> dict:
         segment = self.segments[checkpoint.segment_id]
