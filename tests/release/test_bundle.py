@@ -602,7 +602,7 @@ class VoiceVersionQualificationTests(unittest.TestCase):
             speech = LocalTtsAdapter(DeterministicFixtureEngine(),config=config,voice=voice,provenance=tts_provenance,
                 output_dir=tts_root).synthesize((cue,),input_hash=placement_digest,on_checkpoint=commit)
             tts_artifact = speech.artifacts[0].to_dict()
-            record = tts_root / "checkpoints" / (hashlib.sha256(b"cue-1").hexdigest() + ".json")
+            record = tts_root / "checkpoints" / (hashlib.sha256(b"cue-1").hexdigest()[:24] + ".json")
             spoken_path = root / 'dubbing_spoken_text.json'
             _write_voice_documents(speech, spoken, tts_path, spoken_path, phrases)
             spoken_bytes = spoken_path.read_bytes()

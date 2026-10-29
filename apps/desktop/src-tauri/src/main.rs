@@ -228,19 +228,27 @@ fn default_job_output(source: &Path, job_id: &str) -> Result<PathBuf, String> {
     job_output_in(source.parent().unwrap_or(Path::new(".")), source, job_id)
 }
 
-/// `<base>/DubFlow Output/<stem> - vi/run-<id>`; base is the source folder
+/// Longest video title kept in the output folder name, in characters.
+const OUTPUT_TITLE_CHARS: usize = 40;
+
+/// `<base>/DubFlow Output/<title> - vi/run-<12 hex>`; base is the source folder
 /// or a user-chosen results folder.
+///
+/// Windows paths stop at 260 characters and the work folders nest beneath
+/// this one, so the title is shortened and the run folder is 48 bits of the
+/// job ID's SHA-256: lowercase, never a reserved name, and different for IDs
+/// that differ only in case.
 fn job_output_in(base: &Path, source: &Path, job_id: &str) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
     validate_id(job_id)?;
-    // Encode the complete ID: Windows folds path case and reserves some names.
-    // Chunk at 64 bytes so even a maximum-length ID fits each path component.
-    let mut output = base.join("DubFlow Output")
-        .join(format!("{} - vi", source.file_stem().and_then(|name| name.to_str()).unwrap_or("video")));
-    for (index, chunk) in job_id.as_bytes().chunks(64).enumerate() {
-        let encoded: String = chunk.iter().map(|byte| format!("{byte:02x}")).collect();
-        output = output.join(if index == 0 { format!("run-{encoded}") } else { encoded });
-    }
-    Ok(output)
+    let stem = source.file_stem().and_then(|name| name.to_str()).unwrap_or("video");
+    let title: String = stem.chars().take(OUTPUT_TITLE_CHARS).collect();
+    let title = title.trim_end_matches([' ', '.']);
+    let digest = Sha256::digest(job_id.as_bytes());
+    let run: String = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect();
+    Ok(base.join("DubFlow Output")
+        .join(format!("{} - vi", if title.is_empty() { "video" } else { title }))
+        .join(format!("run-{run}")))
 }
 
 #[tauri::command]
@@ -1607,6 +1615,23 @@ mod tests {
             assert!(output.starts_with(source.parent().unwrap().join("DubFlow Output")));
             assert!(output.components().all(|part| part.as_os_str().to_string_lossy().len() <= 132));
         }
+    }
+
+    #[test]
+    fn long_titles_and_ids_keep_the_output_folder_short() {
+        // The tester's 1.1.10 failure: a long Chinese title and a 128-character run folder.
+        let source = PathBuf::from(r"C:\Users\Admin\Downloads\正片五条人之仁科 罗永浩近五个小时的变态超长对谈 (1).mp4");
+        let output = job_output_in(Path::new(r"C:\Youtube\Video"), &source, &"x".repeat(128)).unwrap();
+        let run = output.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(run.starts_with("run-") && run.len() == 16, "{run}");
+        assert!(output.starts_with(r"C:\Youtube\Video\DubFlow Output\正片五条人之仁科 罗永浩近五个小时的变态超长对谈 (1) - vi"));
+        // The worker needs 135 characters below this folder; Windows allows 259.
+        assert!(output.to_string_lossy().chars().count() + 135 <= 259, "{}", output.display());
+        let long = job_output_in(Path::new(r"C:\x"), &PathBuf::from(format!(r"C:\x\{}.mp4", "长".repeat(90))), "job-1").unwrap();
+        let title = long.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(title, format!("{} - vi", "长".repeat(40)));
+        let padded = job_output_in(Path::new(r"C:\x"), Path::new(r"C:\x\a. . .mp4"), "job-1").unwrap();
+        assert!(padded.starts_with(r"C:\x\DubFlow Output\a - vi"));
     }
 
     #[test]
