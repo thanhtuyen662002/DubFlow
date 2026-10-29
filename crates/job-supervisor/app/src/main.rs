@@ -1388,6 +1388,31 @@ fn committed_qc_summary(store: &DurableStore, spec: &StartSpec) -> Option<Value>
     None
 }
 
+/// "3 đoạn (12 s, 0,4% lời thoại) giữ tiếng gốc: 00:14:02, …" from the worker's
+/// undubbed-speech summary; None when it is absent, malformed or empty.
+fn undubbed_summary(value: Option<&Value>) -> Option<String> {
+    const SHOWN: usize = 5;
+    let value = value?.as_object()?;
+    let phrases = value.get("phrases")?.as_u64()?;
+    let duration = value.get("duration_ms")?.as_u64()?;
+    let speech = value.get("speech_ms")?.as_u64()?;
+    let starts = value.get("starts_ms")?.as_array()?;
+    if phrases == 0 || speech == 0 || starts.is_empty() {
+        return None;
+    }
+    let mut times = Vec::new();
+    for start in starts.iter().take(SHOWN) {
+        let seconds = start.as_u64()? / 1000;
+        times.push(format!("{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60));
+    }
+    let more = if phrases as usize > times.len() { ", …" } else { "" };
+    let tenths = (duration.min(speech) * 1000 + speech / 2) / speech;
+    Some(format!(
+        "Đã xuất video; {phrases} đoạn ({} s, {},{}% lời thoại) giữ tiếng gốc: {}{more}.",
+        (duration + 500) / 1000, tenths / 10, tenths % 10, times.join(", ")
+    ))
+}
+
 fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, String) {
     let unverified = || ("completed_quality_unverified", if spec.enable_dubbing {
         "Đã xuất video; chưa xác minh được mức độ hoàn tất lồng tiếng. Hãy kiểm tra báo cáo chất lượng."
@@ -1429,7 +1454,9 @@ fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, 
                 None => return unverified(),
             };
             if tts_failures > 0 || mix_failures > 0 {
-                let summary = if mix_failures == 0 {
+                let summary = if let Some(undubbed) = undubbed_summary(audio.get("undubbed")) {
+                    undubbed
+                } else if mix_failures == 0 {
                     format!("Đã xuất video; {tts_failures} câu chưa lồng tiếng được.")
                 } else {
                     "Đã xuất video; lồng tiếng chưa đầy đủ.".into()
@@ -2886,6 +2913,11 @@ mod tests {
             (json!({"mode":"dubbed", "tts_failures":0, "mix_failures":0, "mix_warnings":[]}), "completed", "lồng tiếng Việt"),
             (json!({"mode":"dubbed", "tts_failures":22, "mix_failures":0, "mix_warnings":[]}), "completed_partial_dubbing", "22 câu"),
             (json!({"mode":"dubbed", "tts_failures":0, "mix_failures":1, "mix_warnings":[]}), "completed_partial_dubbing", "các đoạn lỗi"),
+            (json!({"mode":"dubbed", "tts_failures":9, "mix_failures":0, "mix_warnings":[], "undubbed":{"phrases":7,
+                "duration_ms":12_400, "speech_ms":3_100_000, "starts_ms":[842_000, 1_870_500, 3_600_000, 3_700_000, 3_800_000, 3_900_000, 4_000_000]}}),
+             "completed_partial_dubbing", "7 đoạn (12 s, 0,4% lời thoại) giữ tiếng gốc: 00:14:02, 00:31:10, 01:00:00, 01:01:40, 01:03:20, …"),
+            (json!({"mode":"dubbed", "tts_failures":2, "mix_failures":0, "mix_warnings":[], "undubbed":{"phrases":"bad"}}),
+             "completed_partial_dubbing", "2 câu"),
             (json!({"mode":"original", "backend":"source-audio"}), "completed_b1_fallback", "lồng tiếng không khả dụng"),
         ];
         for (audio, reason, text) in cases {
