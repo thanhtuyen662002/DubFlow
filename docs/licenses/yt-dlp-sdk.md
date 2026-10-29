@@ -23,3 +23,27 @@ and compatible release; retained releases remain responsible for pinned jobs.
 
 Approved distribution is not proof of provider health. Installed desktop intake,
 browser-session consent and source qualification remain separate acceptance.
+
+## Extensions for TikTok and YouTube (Issue #335, ADR-0040)
+
+The descriptor also pins these exact PyPI wheels, by URL, size and SHA-256. The versions are the ones yt-dlp 2026.08.19 itself pins in its `pin` and `pin-curl-cffi` extras, plus Deno:
+
+| Package | Version | License | Why |
+|---|---|---|---|
+| curl_cffi | 0.16.0 | MIT (bundled libcurl-impersonate: curl and BoringSSL licenses) | Browser impersonation; TikTok refuses plain requests |
+| cffi | 2.1.1 | MIT-0 | curl_cffi's C bridge |
+| certifi | 2026.7.22 | MPL-2.0 (unmodified) | CA bundle for curl_cffi |
+| pycparser | 3.0 | BSD-3-Clause | cffi dependency |
+| yt-dlp-ejs | 0.8.0 | Unlicense AND MIT AND ISC | YouTube challenge scripts |
+| deno | 2.9.8 | MIT | JS runtime that runs those scripts |
+
+**How they are built:**
+- The libraries are extracted unmodified into `runtime/source/ytdlp-lib`, with their `dist-info` license files. Wheel `.data` members are never installed.
+- From the Deno wheel, only its pinned `deno.exe` and its `LICENSE` are extracted, into `runtime/source/deno`.
+
+**How they are verified:** the signed release inventory pins every extracted file. Before each extractor run, the parent hashes every file again and refuses any file that is not in the inventory.
+
+**How they are used:**
+- The isolated extractor process imports the libraries only from that folder.
+- Deno runs only from its verified absolute path.
+- No system JS runtime, remote EJS component or plugin is used.
