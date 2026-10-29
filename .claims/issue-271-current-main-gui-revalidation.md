@@ -11,7 +11,7 @@ Required-CI: PR Fast + Integration
 Existing GUI evidence from installed 1.1.1 is historical. This bounded harness/evidence leaf revalidates the Chinese→Vietnamese review/revision flow after #320, #321 and #323; it does not qualify all of #175.
 
 ### Source target and base freshness
-Current main is `eebc0be36587165c32f4ce66100d984b856fb7ae`. Signed stable v1.1.10 targets that exact source SHA. Use it if available; otherwise use a non-published Windows build from exactly that SHA. Record actual binary/source identity.
+Current main is `eebc0be36587165c32f4ce66100d984b856fb7ae`. Signed stable v1.1.10 targets older source SHA `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`, not current main. Use a non-published Windows build from exactly `eebc0be36587165c32f4ce66100d984b856fb7ae`; if that build/host is unavailable, mark NOT_RUN. Record actual binary/source identity.
 Lead recovery sync: current main eebc0be36587165c32f4ce66100d984b856fb7ae is incorporated by this coordination-only merge commit. The resulting branch HEAD is recorded in the latest PR checkpoint. This does not imply coder STARTED/CODED/TESTED or product acceptance. PR Fast [40867700605](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700605) and Integration [40867700424](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700424) passed on that pre-metadata HEAD. This claim now records the incorporated/tested base `eebc0be36587165c32f4ce66100d984b856fb7ae`; the metadata change requires fresh exact-HEAD PR Fast + Integration. Desktop npm tests/build, harness tests and real GUI/media acceptance remain NOT_RUN until the existing coder executes them, so this PR is not merge-ready.
 
 ### Acceptance
