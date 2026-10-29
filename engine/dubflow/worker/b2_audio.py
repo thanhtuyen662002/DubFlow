@@ -126,6 +126,8 @@ class B2AudioResult:
     background_stem_path: Path | None = None
     member_cue_ids: Mapping[str, tuple[str, ...]] | None = None
     gap_evidence: str | None = None
+    # TTS_ACCELERATOR / ACCELERATOR_FALLBACK notes about where dubbing ran.
+    device_warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.voices:
@@ -456,13 +458,13 @@ def _restore_source_windows(background: Path, source: Path, output: Path,
 def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_version, runtime_id,
                       mappings, windows_by_id, input_hash, source_language, tts_dir,
                       app_root, profile_path, synthesis_cache_dir, render_window_limits=None, allow_all_failed=False,
-                      on_segment=None):
+                      on_segment=None, profile="cpu"):
     """One voice's existing synthesis/checkpoint/cache/rewrite pipeline."""
     try:
         tts_config = TtsConfig(
             sample_rate=pack.sample_rate,
             channels=pack.channels,
-            requested_profile="cpu",
+            requested_profile=profile,
             max_attempts=1,
             max_text_chars=MAX_TTS_TEXT_CHARS,
             max_duration_error_ticks=80,
@@ -484,8 +486,8 @@ def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_ve
             voice.content_hash(),
             voice.voice_id,
             voice.voice_version,
-            "cpu",
-            "cpu",
+            profile,
+            profile,
             tts_config.resource,
         )
         segments = tuple(
@@ -599,6 +601,7 @@ def run_b2_audio(
     voice_by_cue: Mapping[str, str] | None = None,
     speaker_by_cue: Mapping[str, str] | None = None,
     background_path: str | Path | None = None,
+    tts_device: Any = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> B2AudioResult:
     """Execute TTS/AUD-0; optional VieNeu casting keeps per-voice provenance.
@@ -621,13 +624,19 @@ def run_b2_audio(
             raise B2AudioError("MEDIA_DURATION_INVALID", "no-audio dubbing requires a known positive source duration")
     root = Path(work_dir).absolute()
     root.mkdir(parents=True, exist_ok=True)
+    # A verified ONNX Runtime GPU pack (select_tts_device) moves VieNeu to CUDA.
+    accelerator = getattr(tts_device, "runtime", None) if getattr(tts_device, "device", "cpu") == "cuda" else None
+    tts_profile, device_warnings = "cpu", []
     try:
         selection = _read_json(Path(profile_path))
         recipe = _read_json(_child(Path(app_root).absolute(), selection.get("tts_neural_profile", "")))
         if recipe.get("backend") == vieneu.ENGINE_ID:
             pack, voice = vieneu.load_vieneu_voice(app_root, model_root or root / "model-cache", profile_path, voice_id=tts_voice_id)
-            engine = vieneu.VieNeuVietnameseTtsEngine(pack, ffmpeg_path=media.ffmpeg_path)
+            engine = vieneu.VieNeuVietnameseTtsEngine(pack, ffmpeg_path=media.ffmpeg_path, accelerator=accelerator)
             backend_id, producer_version, runtime_id = vieneu.ENGINE_ID, B2_TTS_PRODUCER_VERSION, vieneu.RUNTIME_ID
+            if accelerator is not None:
+                # GPU speech is not byte-identical to CPU speech; it has its own checkpoints and cache.
+                runtime_id, tts_profile = vieneu.GPU_RUNTIME_ID, "gpu"
             resources = TtsResourceProfile(max_threads=2, max_memory_mb=2048, max_batch_items=1)
         elif recipe.get("backend") == ENGINE_ID:
             if tts_voice_id is not None and tts_voice_id != recipe.get("voice_id"):
@@ -736,7 +745,7 @@ def run_b2_audio(
                     close()
             try:
                 pack, voice = vieneu.load_vieneu_voice(app_root, model_root or root / "model-cache", profile_path, voice_id=identifier)
-                engine = vieneu.VieNeuVietnameseTtsEngine(pack, ffmpeg_path=media.ffmpeg_path)
+                engine = vieneu.VieNeuVietnameseTtsEngine(pack, ffmpeg_path=media.ffmpeg_path, accelerator=accelerator)
             except Exception as error:
                 raise B2AudioError(getattr(error, "code", "TTS_BOOTSTRAP_FAILED"), str(error)) from error
         if index == 0:
@@ -752,7 +761,10 @@ def run_b2_audio(
             tts_dir=root / "tts" / identifier if multivoice else root / "tts",
             app_root=app_root, profile_path=profile_path, synthesis_cache_dir=synthesis_cache_dir,
             render_window_limits={item["cue_id"]: render_window_limits[item["cue_id"]] for item in items} if render_window_limits else None,
-            allow_all_failed=True, on_segment=segment_settled if on_progress is not None else None)
+            allow_all_failed=True, on_segment=segment_settled if on_progress is not None else None, profile=tts_profile)
+        device_warnings.extend(warning for warning in getattr(engine, "device_warnings", ()) if warning not in device_warnings)
+        if any(warning.startswith("ACCELERATOR_FALLBACK:") for warning in device_warnings):
+            accelerator = None  # Later voices start on the CPU instead of retrying a failed GPU.
         document_path = root / ("tts_document.json" if index == 0 else f"tts_document.{identifier}.json")
         spoken_path = root / ("dubbing_spoken_text.json" if index == 0 else f"dubbing_spoken_text.{identifier}.json")
         _write_voice_documents(tts_document, spoken_store, document_path, spoken_path, items)
@@ -760,6 +772,9 @@ def run_b2_audio(
         document_paths.append(document_path)
         if spoken_store is not None:
             spoken_paths.append(spoken_path)
+    if tts_profile == "gpu" and not device_warnings:
+        gpu = getattr(tts_device, "gpu", None)
+        device_warnings.append("TTS_ACCELERATOR: cuda on " + (gpu.label() if gpu is not None else "NVIDIA GPU"))
     if on_progress is not None and settled != len(mappings):
         on_progress(len(mappings), len(mappings))
     tts_document, tts_document_path = documents[0], document_paths[0]
@@ -858,7 +873,7 @@ def run_b2_audio(
     return B2AudioResult(source_audio_path, tts_document_path, mix_document_path, tts_document, mix_document, primary_voice, placement_document_path, spoken_text_document_path,
                          tuple(groups), tuple(documents), tuple(document_paths), tuple(spoken_paths), background_stem_path,
                          {item["cue_id"]: tuple(item["member_cue_ids"]) for item in mappings},
-                         placement["gap_evidence"] if placement_document_path is not None else None)
+                         placement["gap_evidence"] if placement_document_path is not None else None, tuple(device_warnings))
 
 
 __all__ = ["B2AudioError", "B2AudioResult", "BASE_TIME", "run_b2_audio", "mix_recipe_identity"]

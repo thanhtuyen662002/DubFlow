@@ -78,7 +78,7 @@ from historical `2.1.0` artifacts. The tiny same-corpus back-ASR diagnostic
 measured 0.48% common-phrase mean CER; this is not human or release approval.
 See `docs/licenses/vieneu-turbo.md` and `docs/production/REAL_TTS_EVIDENCE.md`.
 
-## Optional NVIDIA GPU pack (ASR only)
+## Optional NVIDIA GPU packs
 
 The bundled CTranslate2 4.8.2 wheel is a CUDA build. When the worker finds an
 NVIDIA driver (CUDA 12+, compute capability 6.1+, 2 GB+), it downloads the
@@ -87,3 +87,9 @@ pinned cuBLAS 12 / cuDNN 9 libraries described in
 them, and runs Faster-Whisper on the GPU. Any failure keeps the CPU path above.
 No package is added to the runtime requirements. See ADR-0038 and
 `docs/licenses/nvidia-cuda-runtime.md`.
+
+VieNeu dubbing uses a second pack, `models/manifests/accelerator-nvidia-onnx-cuda13-v1.json`.
+It holds ONNX Runtime 1.30.0 GPU, a CUDA 13 build, with the NVIDIA libraries it needs.
+It is used when the driver supports CUDA 13.0+ and the GPU has compute capability 7.5+ and 4 GB+.
+Only the VieNeu native process loads it, after hashing every file under lock.
+Any failure keeps dubbing on the CPU. See ADR-0039.

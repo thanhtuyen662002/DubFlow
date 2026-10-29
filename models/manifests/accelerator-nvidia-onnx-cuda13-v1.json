@@ -1,0 +1,325 @@
+{
+  "schema_version": 1,
+  "profile_id": "dubflow-nvidia-onnx-cuda13-v1",
+  "description": "Optional ONNX Runtime 1.30.0 GPU (CUDA 13) with NVIDIA cuDNN 9, cuBLAS 13, cuFFT 12 and NVRTC 13 for VieNeu dubbing on an NVIDIA GPU (ADR-0039).",
+  "distribution": "download-on-first-use-when-an-nvidia-driver-is-present",
+  "license": "ONNX Runtime: MIT. NVIDIA libraries: NVIDIA proprietary; both downloaded unmodified from PyPI wheels on the user's machine, see docs/licenses/nvidia-cuda-runtime.md",
+  "pack_dir": "accelerators/nvidia-onnx-cuda13-v1",
+  "requires": {
+    "cuda_driver_version": 13000,
+    "min_compute_capability": [
+      7,
+      5
+    ],
+    "min_total_memory_bytes": 4294967296
+  },
+  "artifacts": [
+    {
+      "id": "cudart-wheel",
+      "path": "accelerators/nvidia-onnx-cuda13-v1/wheels/nvidia_cuda_runtime-13.4.92-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/86/00/d5436004268f049214193659ebc36550b5ef3925c3d13b4cc980e13be6f5/nvidia_cuda_runtime-13.4.92-py3-none-win_amd64.whl",
+      "sha256": "08dca5e4aba480c2fd5b55075c0fa71b84ef9dcf0521f2d58baa14a803a7311c",
+      "size_bytes": 2778543
+    },
+    {
+      "id": "cublas-wheel",
+      "path": "accelerators/nvidia-onnx-cuda13-v1/wheels/nvidia_cublas-13.8.0.4-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/a3/df/f1246959833e2c437db8be3e5b477f66b87f8817821ed40de6c7561c9a36/nvidia_cublas-13.8.0.4-py3-none-win_amd64.whl",
+      "sha256": "8c5494423bb8a46822cb6b0cb95d7fa4be2d7b96a31155dff083839ec8297910",
+      "size_bytes": 423266897
+    },
+    {
+      "id": "cufft-wheel",
+      "path": "accelerators/nvidia-onnx-cuda13-v1/wheels/nvidia_cufft-12.4.0.43-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/7b/cc/be7fe31058127336a66c88414a2ecc6beecf680baf85994a43eaf292b202/nvidia_cufft-12.4.0.43-py3-none-win_amd64.whl",
+      "sha256": "4ff7075f2d0b5f69291f70938d37a86ec632cbe5747184c74ba1f50f17accacc",
+      "size_bytes": 160953139
+    },
+    {
+      "id": "nvrtc-wheel",
+      "path": "accelerators/nvidia-onnx-cuda13-v1/wheels/nvidia_cuda_nvrtc-13.4.92-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/64/5b/aa91896f64444eff1dd7f189f4db05046c7f0ba08c0f531283c1c1aac581/nvidia_cuda_nvrtc-13.4.92-py3-none-win_amd64.whl",
+      "sha256": "6af7ac5372920f6a7a560d0699348560fe44cb52c1d722d6afd3119f8af948c4",
+      "size_bytes": 46972283
+    },
+    {
+      "id": "cudnn-wheel",
+      "path": "accelerators/nvidia-onnx-cuda13-v1/wheels/nvidia_cudnn_cu13-9.27.0.42-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/87/6a/e55ff0ac26a5c6e2b21f41c9d04ad096b4ed6da593fba7e25845c61b0532/nvidia_cudnn_cu13-9.27.0.42-py3-none-win_amd64.whl",
+      "sha256": "7d96f634adafd55c72231eb0500ca77ab109ec8ebff7b33000b76e081bc4558e",
+      "size_bytes": 436469905
+    },
+    {
+      "id": "onnxruntime-gpu-wheel",
+      "path": "accelerators/nvidia-onnx-cuda13-v1/wheels/onnxruntime_gpu-1.30.0-cp312-cp312-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/19/ef/e15db03ea1fce9bc60349add2604df8c39abac10d28d4eef27b621845139/onnxruntime_gpu-1.30.0-cp312-cp312-win_amd64.whl",
+      "sha256": "882da66f936e1f560b155118c5953dc45268cd92893abb8d31a940f4d1effb36",
+      "size_bytes": 160478594
+    }
+  ],
+  "libraries": [
+    {
+      "name": "cudart64_13.dll",
+      "artifact": "cudart-wheel",
+      "member": "nvidia/cu13/bin/x86_64/cudart64_13.dll",
+      "sha256": "d26fd1c2629594759af569a5252f94e4568d4ebeca67dc323834deb141aa278a",
+      "size_bytes": 551024
+    },
+    {
+      "name": "cublasLt64_13.dll",
+      "artifact": "cublas-wheel",
+      "member": "nvidia/cu13/bin/x86_64/cublasLt64_13.dll",
+      "sha256": "cad63434448e7141629e240ea093ad596a7ef6a0f67b468ba9bc1df6e1eeee33",
+      "size_bytes": 493474416
+    },
+    {
+      "name": "cublas64_13.dll",
+      "artifact": "cublas-wheel",
+      "member": "nvidia/cu13/bin/x86_64/cublas64_13.dll",
+      "sha256": "60bbba8868290311e9c1657b2193ddec667744eb555ff843f87acb7c039f9efa",
+      "size_bytes": 54873200
+    },
+    {
+      "name": "cufft64_12.dll",
+      "artifact": "cufft-wheel",
+      "member": "nvidia/cu13/bin/x86_64/cufft64_12.dll",
+      "sha256": "d353fd42da7729709864731f35888aa177793d2350e56557df4c6ebaaf079ace",
+      "size_bytes": 232604272
+    },
+    {
+      "name": "nvrtc-builtins64_134.dll",
+      "artifact": "nvrtc-wheel",
+      "member": "nvidia/cu13/bin/x86_64/nvrtc-builtins64_134.dll",
+      "sha256": "73768e90526e8a43d5eb356f0ffad198468e8c15e95d45a84c6c4b12fb9aa02f",
+      "size_bytes": 7243376
+    },
+    {
+      "name": "nvrtc64_130_0.dll",
+      "artifact": "nvrtc-wheel",
+      "member": "nvidia/cu13/bin/x86_64/nvrtc64_130_0.dll",
+      "sha256": "c92027e5eae58b6f272cafb438bf59b55deb02bd326b183956e84e0a180dbd14",
+      "size_bytes": 106038896
+    },
+    {
+      "name": "cudnn_graph64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_graph64_9.dll",
+      "sha256": "ccc90435b2fd37b5ddd6a9fa0fd053ad8f46c2dc8b0a6256ef0ebea7f3efbace",
+      "size_bytes": 116132464
+    },
+    {
+      "name": "cudnn_ops64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_ops64_9.dll",
+      "sha256": "2bd7f4122eaeccb85538c2a6f7923d7254ad77d7b7149fed0a8139f1e3cf0b07",
+      "size_bytes": 37462128
+    },
+    {
+      "name": "cudnn_cnn64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_cnn64_9.dll",
+      "sha256": "7dd1bcc6d8f00ad635f6a8a2cd076faba21626f3412e13c61a6bece3f88eacb1",
+      "size_bytes": 1533040
+    },
+    {
+      "name": "cudnn_adv64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_adv64_9.dll",
+      "sha256": "041cab1d6439d2558b4a7073a42dd95058d0395463ffb0d37275af11ec0af8d7",
+      "size_bytes": 105226864
+    },
+    {
+      "name": "cudnn_heuristic64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_heuristic64_9.dll",
+      "sha256": "c0439ee74a3dbec8ecf56fecbc6ac2506efcce702453e36119649545d02509c3",
+      "size_bytes": 94795376
+    },
+    {
+      "name": "cudnn_engines_precompiled64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_engines_precompiled64_9.dll",
+      "sha256": "5d9b829228ae18594dafedf718d9612606c8ce6d199aa7151bea53e863baeefe",
+      "size_bytes": 231660656
+    },
+    {
+      "name": "cudnn_engines_runtime_compiled64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_engines_runtime_compiled64_9.dll",
+      "sha256": "8e65eeb0a4a3b7afa48ea3ca71c4b88e355199f85485b6fc0badcc97ebc552ef",
+      "size_bytes": 39266928
+    },
+    {
+      "name": "cudnn_engines_tensor_ir64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_engines_tensor_ir64_9.dll",
+      "sha256": "51afb44ce4b901ccdac1434f9fc9d8d707b690f39ae1e2a6ffca98c5fd9dfa96",
+      "size_bytes": 156272
+    },
+    {
+      "name": "cudnn_ext64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn_ext64_9.dll",
+      "sha256": "a0e0e2e8e8e4678956bbef93fdccc4730bd5edf9b23d38bff49030ebba1940a6",
+      "size_bytes": 130160
+    },
+    {
+      "name": "cudnn64_9.dll",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia/cudnn/bin/cudnn64_9.dll",
+      "sha256": "0016bd73ac9192537ae5af6a3f05814316726dad1d1da44f113f0a9ef00ae34c",
+      "size_bytes": 270448
+    }
+  ],
+  "notices": [
+    {
+      "name": "LICENSE-cudart.txt",
+      "artifact": "cudart-wheel",
+      "member": "nvidia_cuda_runtime-13.4.92.dist-info/licenses/License.txt",
+      "sha256": "ad6f5853fba0ca0d159d0f58d49ae49830c2f8c93f7a92648b9ce90adb4c6ccd",
+      "size_bytes": 59262
+    },
+    {
+      "name": "LICENSE-cublas.txt",
+      "artifact": "cublas-wheel",
+      "member": "nvidia_cublas-13.8.0.4.dist-info/licenses/License.txt",
+      "sha256": "ad6f5853fba0ca0d159d0f58d49ae49830c2f8c93f7a92648b9ce90adb4c6ccd",
+      "size_bytes": 59262
+    },
+    {
+      "name": "LICENSE-cufft.txt",
+      "artifact": "cufft-wheel",
+      "member": "nvidia_cufft-12.4.0.43.dist-info/licenses/License.txt",
+      "sha256": "ad6f5853fba0ca0d159d0f58d49ae49830c2f8c93f7a92648b9ce90adb4c6ccd",
+      "size_bytes": 59262
+    },
+    {
+      "name": "LICENSE-nvrtc.txt",
+      "artifact": "nvrtc-wheel",
+      "member": "nvidia_cuda_nvrtc-13.4.92.dist-info/licenses/License.txt",
+      "sha256": "ad6f5853fba0ca0d159d0f58d49ae49830c2f8c93f7a92648b9ce90adb4c6ccd",
+      "size_bytes": 59262
+    },
+    {
+      "name": "LICENSE-cudnn.txt",
+      "artifact": "cudnn-wheel",
+      "member": "nvidia_cudnn_cu13-9.27.0.42.dist-info/licenses/License.txt",
+      "sha256": "49cf79bdb35734b52fe6203013b3bd759f81e998cd32aa2c65c51db9a88c61d2",
+      "size_bytes": 18174
+    }
+  ],
+  "site": [
+    {
+      "name": "onnxruntime/__init__.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/__init__.py",
+      "sha256": "aa5d395f33d6c3417f7e296cfda89270cb12b36a9f06c884966fafb99d0e04c4",
+      "size_bytes": 21947
+    },
+    {
+      "name": "onnxruntime/LICENSE",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/LICENSE",
+      "sha256": "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674",
+      "size_bytes": 1094
+    },
+    {
+      "name": "onnxruntime/ThirdPartyNotices.txt",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/ThirdPartyNotices.txt",
+      "sha256": "c53a76501ef60db6f865f20599f220761201ac4057683acefdab37d861b86622",
+      "size_bytes": 344457
+    },
+    {
+      "name": "onnxruntime/capi/__init__.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/__init__.py",
+      "sha256": "b91a78a4cb5fa1ac81859804b2216a1420f5dd8e8b528f3615d66c417f17f0b2",
+      "size_bytes": 251
+    },
+    {
+      "name": "onnxruntime/capi/_ld_preload.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/_ld_preload.py",
+      "sha256": "962e9c6d9eb88437d49dd6ade26a6b516ce8c0b6b7450770d2ad84e7ab171701",
+      "size_bytes": 413
+    },
+    {
+      "name": "onnxruntime/capi/_pybind_state.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/_pybind_state.py",
+      "sha256": "9db5299d49dcc01bf9a60240f32ba00d82510384d37c2d206983840f98c3f920",
+      "size_bytes": 1533
+    },
+    {
+      "name": "onnxruntime/capi/build_and_package_info.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/build_and_package_info.py",
+      "sha256": "106cc9d84ff1fc125852f4fb0b6aa28790caaa7bdd88e31034c16153f2031a02",
+      "size_bytes": 81
+    },
+    {
+      "name": "onnxruntime/capi/convert_npz_to_onnx_adapter.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/convert_npz_to_onnx_adapter.py",
+      "sha256": "3744a162bdf4bc141c3abf4ac8577801474472a596f3d29577cd2a4980a0750e",
+      "size_bytes": 1581
+    },
+    {
+      "name": "onnxruntime/capi/onnxruntime.dll",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/onnxruntime.dll",
+      "sha256": "a473c05fb61d5ad61f91b3df8139494af5011e0951213905f9bf3e99ecb53ff4",
+      "size_bytes": 18036536
+    },
+    {
+      "name": "onnxruntime/capi/onnxruntime_collect_build_info.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/onnxruntime_collect_build_info.py",
+      "sha256": "b03f19d92d794074afb8ed63eed82a24a78e44351ab70cd49b3bc2f148fd7003",
+      "size_bytes": 2109
+    },
+    {
+      "name": "onnxruntime/capi/onnxruntime_inference_collection.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/onnxruntime_inference_collection.py",
+      "sha256": "412c602163a3c21ea9874280c1e5ce500feb263fb518de2050151e49c9c28c12",
+      "size_bytes": 86370
+    },
+    {
+      "name": "onnxruntime/capi/onnxruntime_providers_cuda.dll",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/onnxruntime_providers_cuda.dll",
+      "sha256": "c09f4d3827977f202529ab9b2bcd8e477e094d85b6c472f642e7e107f6800d64",
+      "size_bytes": 184764256
+    },
+    {
+      "name": "onnxruntime/capi/onnxruntime_providers_shared.dll",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/onnxruntime_providers_shared.dll",
+      "sha256": "2b07e5dfa05d4428b67c62281efca8284a5cce2f47b0a6b2506321b706d3e2c3",
+      "size_bytes": 21816
+    },
+    {
+      "name": "onnxruntime/capi/onnxruntime_pybind11_state.pyd",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/onnxruntime_pybind11_state.pyd",
+      "sha256": "264137e64e93abf09296e5eb798df3f154ef005e7f49952ece43c8d31cdb1765",
+      "size_bytes": 19244896
+    },
+    {
+      "name": "onnxruntime/capi/onnxruntime_validation.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/onnxruntime_validation.py",
+      "sha256": "a7d02f7973eeefc07e15de303ad0528acbd6de56ae32641ff42c498abb6d7e4f",
+      "size_bytes": 6949
+    },
+    {
+      "name": "onnxruntime/capi/version_info.py",
+      "artifact": "onnxruntime-gpu-wheel",
+      "member": "onnxruntime/capi/version_info.py",
+      "sha256": "5282a23c69899364deb6839d92e950e684d4dfec8f3c81f96f465e493161bedc",
+      "size_bytes": 80
+    }
+  ]
+}

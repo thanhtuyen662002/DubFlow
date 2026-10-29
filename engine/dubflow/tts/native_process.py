@@ -51,6 +51,8 @@ class NativeProcess:
             ready = self._request(request, timeout=min(timeout, 120.0 if entrypoint else 30.0))
             if ready.get("frontend") != frontend:
                 raise TtsBackendError("TTS_NATIVE_PROTOCOL_INVALID", "native frontend identity differs")
+            # Where the child placed its model: "cuda" only after it verified and loaded the GPU runtime.
+            self.device = ready.get("device", "cpu") if ready.get("device") in ("cpu", "cuda") else "cpu"
         except BaseException:
             self.close()
             raise
