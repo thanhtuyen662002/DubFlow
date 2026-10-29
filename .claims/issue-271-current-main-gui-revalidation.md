@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #271
 Lease-Owner: Claude/issue-320-audio-track-storage
 Lease-Heartbeat: 2026-10-29T06:51:00Z
-Tested-Base-SHA: 23c2fa82c55fd799cf9b343aecdc29375f521aaa
+Tested-Base-SHA: 506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26
 Conflict-Domains: desktop-real-chinese-media-smoke
 Expected-Paths: .claims/issue-271-current-main-gui-revalidation.md,scripts/release/chinese_desktop_review_smoke.py,tests/release/test_chinese_desktop_review_smoke.py,docs/production/CHINESE_DESKTOP_REVIEW_EVIDENCE.md
 Required-CI: PR Fast + Integration
@@ -12,7 +12,7 @@ Existing GUI evidence from installed 1.1.1 is historical. This bounded harness/e
 
 ### Source target and base freshness
 Current main is `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`. Signed stable v1.1.10 targets that exact source SHA. Use it if available; otherwise use a non-published Windows build from exactly that SHA. Record actual binary/source identity.
-The current PR/claim Tested-Base-SHA `23c2fa82c55fd799cf9b343aecdc29375f521aaa` is STALE_BASE. Merge current main into this branch normally (no force-push), then run required CI and desktop commands. Update Tested-Base-SHA only to the base actually incorporated and tested; until then this PR is not merge-ready.
+Lead recovery merged current main into this branch in commit `267b4e854120500b8e57f3275010e6159a070ee8`. PR Fast [40867700605](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700605) and Integration [40867700424](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700424) passed on that pre-metadata HEAD. This claim now records the incorporated/tested base `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`; the metadata change requires fresh exact-HEAD PR Fast + Integration. Desktop npm tests/build, harness tests and real GUI/media acceptance remain NOT_RUN until the existing coder executes them, so this PR is not merge-ready.
 
 ### Acceptance
 - Add a standalone smoke harness accepting an explicit real local Chinese media path and app-owned installed runtime/supervisor paths. The authorized media stays outside Git; do not download media or models.
