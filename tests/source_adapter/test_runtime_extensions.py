@@ -28,7 +28,7 @@ def wheel(members: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-LIB = wheel({"fakeimp/__init__.py": b"VERSION = 'recorded'\n", "fakeimp-1.0.dist-info/licenses/LICENSE": b"lib license",
+LIB = wheel({"fakeimp/__init__.py": b"VERSION = 'recorded'\n", "fakeimp/py.typed": b"", "fakeimp-1.0.dist-info/licenses/LICENSE": b"lib license",
              "fakeimp-1.0.data/scripts/never.exe": b"never installed"})
 DENO_EXE = b"recorded deno executable"
 DENO = wheel({"deno-9.9.9.data/scripts/deno.exe": DENO_EXE, "deno-9.9.9.dist-info/licenses/LICENSE": b"deno license"})
@@ -118,6 +118,7 @@ class FactoryTests(unittest.TestCase):
         data = profile_path.read_bytes()
         item.update(sha256=hashlib.sha256(data).hexdigest(), size_bytes=str(len(data)))
         for name, data in {"runtime/source/ytdlp-lib/fakeimp/__init__.py": b"VERSION = 'recorded'\n",
+                           "runtime/source/ytdlp-lib/fakeimp/py.typed": b"",  # Real packages ship empty files.
                            "runtime/source/deno/deno.exe": DENO_EXE, "runtime/source/deno/LICENSE": b"deno license"}.items():
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             (root / name).write_bytes(data)
@@ -131,7 +132,7 @@ class FactoryTests(unittest.TestCase):
             adapter = runtime.provider_from_verified_bundle(root, artifacts=inventory, provider_id="generic")
             transport = adapter._transport._sdk
             self.assertEqual(transport.extensions["deno"], root / "runtime/source/deno/deno.exe")
-            self.assertEqual(len(transport.extensions["files"]), 3)
+            self.assertEqual(len(transport.extensions["files"]), 4)
             transport._verify()
             planted = root / "runtime/source/ytdlp-lib/fakeimp/extra.py"
             planted.write_bytes(b"import os")
