@@ -16,7 +16,8 @@ from .source_adapter import SourceError, SourceErrorCode
 class AuthenticatedYtDlpTransport:
     def __init__(self, *, runtime_root: str | Path, python: str | Path, helper: str | Path,
                  sdk_archive: str | Path, pins: Mapping[str, str], timeout_s: float = 180,
-                 douyin_creator: str | Path | None = None, douyin_signer: str | Path | None = None):
+                 douyin_creator: str | Path | None = None, douyin_signer: str | Path | None = None,
+                 extensions: Mapping | None = None):
         self.root = Path(runtime_root)
         self.python, self.helper, self.sdk_archive = Path(python), Path(helper), Path(sdk_archive)
         self.paths = {"python": self.python, "helper": self.helper, "sdk_archive": self.sdk_archive}
@@ -28,6 +29,8 @@ class AuthenticatedYtDlpTransport:
                     or self.paths["douyin_signer"] != self.helper.parent / "douyin/request_signature.py"):
                 raise ValueError("Douyin modules must belong to the owned helper namespace")
         self.pins = dict(pins)
+        # {"lib", "deno", "files": {bundle path: (sha256, size)}} from the verified inventory (ADR-0040).
+        self.extensions = dict(extensions) if extensions is not None else None
         self.timeout_s = timeout_s
         if not 0 < timeout_s <= 1800 or set(self.pins) != set(self.paths):
             raise ValueError("approved runtime/helper/SDK pins and bounded timeout are required")
@@ -59,8 +62,33 @@ class AuthenticatedYtDlpTransport:
                 after = path.stat()
                 if digest.hexdigest() != pin or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                     raise ValueError("producer mismatch")
+            if self.extensions is not None:
+                self._verify_extensions()
         except Exception as error:
             raise SourceError(SourceErrorCode.UNSUPPORTED, "authenticated extractor runtime verification failed", action="repair_runtime") from error
+
+    def _verify_extensions(self):
+        """Each pinned file unchanged, and no file beside them that the extractor could import or run."""
+        files = self.extensions["files"]
+        expected = {(self.root / name).resolve() for name in files}
+        for folder in (Path(self.extensions["lib"]), Path(self.extensions["deno"]).parent):
+            _reject_links(folder)
+            folder.resolve().relative_to(self.root.resolve())
+            for path in folder.rglob("*"):
+                _reject_links(path)
+                if path.is_file() and path.resolve() not in expected:
+                    raise ValueError("unpinned file beside the extractor extensions")
+        for name, (pin, size) in files.items():
+            path = self.root / name
+            _reject_links(path)
+            if not path.is_file() or path.stat().st_size != size:
+                raise ValueError("extension file changed")
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != pin:
+                raise ValueError("extension file changed")
 
     def inspect_url(self, url: str, *, provider_id: str, headers: Mapping[str, str] | None = None):
         request = {"schema_version": 1, "provider_id": provider_id, "url": url,
@@ -90,7 +118,8 @@ class AuthenticatedYtDlpTransport:
         self._verify()
         payload = json.dumps(request, ensure_ascii=True).encode("utf-8")
         code, stdout, stderr = self.runner.run_with_input(
-            [str(self.python), "-I", "-S", "-B", str(self.helper), str(self.sdk_archive)],
+            [str(self.python), "-I", "-S", "-B", str(self.helper), str(self.sdk_archive),
+             *((str(self.extensions["lib"]), str(self.extensions["deno"])) if self.extensions is not None else ())],
             timeout_s=self.timeout_s, stdin_bytes=payload,
         )
         if code:

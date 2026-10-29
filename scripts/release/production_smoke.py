@@ -338,6 +338,7 @@ def _verify_dubbing_spoken_text(output_dir: Path, manifest: dict, speech: dict, 
     from engine.dubflow.asr import TimeBase, TimePoint
     from engine.dubflow.tts import TtsInput, TtsError
     from engine.dubflow.worker.tts_rewrites import validate_spoken_text_document, _encoded, _unique
+    from engine.dubflow.worker.tts_checkpoints import record_name
     try:
         audio = manifest["audio"]
         metadata = audio["dubbing_spoken_text"]
@@ -375,7 +376,7 @@ def _verify_dubbing_spoken_text(output_dir: Path, manifest: dict, speech: dict, 
             if "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest() != metadata["sha256"]:
                 raise ValueError("editable spoken-text evidence differs")
         for entry in value["entries"]:
-            name = hashlib.sha256(entry["original_input"]["segment_id"].encode()).hexdigest() + ".json"
+            name = record_name(entry["original_input"]["segment_id"])
             with (tts_path.parent / "tts/spoken_text" / name).open("rb") as stream:
                 payload = stream.read(65537)
             expected = {**entry, "record_hash": hashlib.sha256(_encoded(entry)).hexdigest()}
@@ -423,12 +424,13 @@ def _verify_output(ffprobe: Path, output_dir: Path, source_duration_seconds: int
         if not isinstance(tts_artifacts, list) or not tts_artifacts:
             raise SmokeError("packaged TTS has no committed per-cue artifacts")
         tts_root = Path(audio["tts_document"]).parent / "tts"
+        from engine.dubflow.worker.tts_checkpoints import record_name
         checkpoint_identity = None
         for artifact in tts_artifacts:
             path = Path(artifact["path"])
             if path.parent != tts_root or not re.fullmatch(r"tts-[a-f0-9]{32}\.wav", path.name):
                 raise SmokeError("packaged TTS checkpoint audio escapes its private generation")
-            record = tts_root / "checkpoints" / (hashlib.sha256(artifact["segment_id"].encode()).hexdigest() + ".json")
+            record = tts_root / "checkpoints" / record_name(artifact["segment_id"])
             try:
                 with record.open("rb") as stream:
                     payload = stream.read(65537)

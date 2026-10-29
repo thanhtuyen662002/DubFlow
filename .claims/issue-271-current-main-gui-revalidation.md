@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #271
 Lease-Owner: Claude/issue-320-audio-track-storage
 Lease-Heartbeat: 2026-10-29T06:51:00Z
-Tested-Base-SHA: 506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26
+Tested-Base-SHA: eebc0be36587165c32f4ce66100d984b856fb7ae
 Conflict-Domains: desktop-real-chinese-media-smoke
 Expected-Paths: .claims/issue-271-current-main-gui-revalidation.md,scripts/release/chinese_desktop_review_smoke.py,tests/release/test_chinese_desktop_review_smoke.py,docs/production/CHINESE_DESKTOP_REVIEW_EVIDENCE.md
 Required-CI: PR Fast + Integration
@@ -11,8 +11,8 @@ Required-CI: PR Fast + Integration
 Existing GUI evidence from installed 1.1.1 is historical. This bounded harness/evidence leaf revalidates the Chinese→Vietnamese review/revision flow after #320, #321 and #323; it does not qualify all of #175.
 
 ### Source target and base freshness
-Current main is `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`. Signed stable v1.1.10 targets that exact source SHA. Use it if available; otherwise use a non-published Windows build from exactly that SHA. Record actual binary/source identity.
-Lead recovery merged current main into this branch in commit `267b4e854120500b8e57f3275010e6159a070ee8`. PR Fast [40867700605](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700605) and Integration [40867700424](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700424) passed on that pre-metadata HEAD. This claim now records the incorporated/tested base `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`; the metadata change requires fresh exact-HEAD PR Fast + Integration. Desktop npm tests/build, harness tests and real GUI/media acceptance remain NOT_RUN until the existing coder executes them, so this PR is not merge-ready.
+Current main is `eebc0be36587165c32f4ce66100d984b856fb7ae`. Signed stable v1.1.10 targets that exact source SHA. Use it if available; otherwise use a non-published Windows build from exactly that SHA. Record actual binary/source identity.
+Lead recovery sync: current main eebc0be36587165c32f4ce66100d984b856fb7ae is incorporated by this coordination-only merge commit. The resulting branch HEAD is recorded in the latest PR checkpoint. This does not imply coder STARTED/CODED/TESTED or product acceptance. PR Fast [40867700605](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700605) and Integration [40867700424](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867700424) passed on that pre-metadata HEAD. This claim now records the incorporated/tested base `eebc0be36587165c32f4ce66100d984b856fb7ae`; the metadata change requires fresh exact-HEAD PR Fast + Integration. Desktop npm tests/build, harness tests and real GUI/media acceptance remain NOT_RUN until the existing coder executes them, so this PR is not merge-ready.
 
 ### Acceptance
 - Add a standalone smoke harness accepting an explicit real local Chinese media path and app-owned installed runtime/supervisor paths. The authorized media stays outside Git; do not download media or models.
@@ -31,3 +31,10 @@ Allowed material paths only:
 Forbidden: all other `scripts/**` and `tests/**` paths; `apps/desktop/**`, `engine/**`, `crates/**`, `contracts/**`, `migrations/**`, `.github/workflows/**`, `scripts/ci/**`, existing release workflow/production smoke scripts, lockfiles, model/manifests, `docs/PROJECT_STATE.yaml`, signing/secrets, release/publication, media/model assets and unrelated paths.
 
 Coordination status: this is still ASSIGNED. The claim heartbeat above is intentionally not refreshed by the Lead; no coder start, code, test or real-media GUI run is implied by this metadata repair.
+
+## Live recovery checkpoint — 2026-10-29T15:41Z
+- Current main/base: `eebc0be36587165c32f4ce66100d984b856fb7ae`.
+- This branch is being synchronized with current main after later merges (#338 and #336). The resulting recovery commit changes no product code and preserves the existing Issue lease/branch.
+- Prior claim-only PR Fast/Integration evidence is for the previous HEAD and is stale for merge purposes. Fresh required checks must run on the resulting HEAD against this base.
+- Coder heartbeat remains `2026-10-29T06:51:00Z`; Lead does not refresh it. No product code/test/media evidence is implied by this sync.
+- Product acceptance remains `NOT_RUN`; keep Draft until the task-specific acceptance below is executed and recorded.
