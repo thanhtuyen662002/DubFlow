@@ -483,7 +483,7 @@ def _remove_scratch(work_dir: Path, *paths: Path) -> None:
 
 MAX_UNDUBBED_STARTS = 20
 # Notes about how the job ran, not about the quality of its output.
-INFORMATIONAL_WARNINGS = ("ASR_ACCELERATOR:",)
+INFORMATIONAL_WARNINGS = ("ASR_ACCELERATOR:", "TTS_ACCELERATOR:")
 
 
 def _undubbed_summary(cues: Sequence[TextCue], members: Mapping[str, Sequence[str]], failed: Iterable[str]) -> dict[str, Any]:
@@ -791,6 +791,23 @@ def _asr_device(config: WorkerConfig, emitter: Any, warnings: list[str]) -> Any:
         warnings.append(f"ASR_ACCELERATOR: cuda {device.compute_type} on {device.gpu.label()}")
     elif device.reason:
         warnings.append(f"ACCELERATOR_FALLBACK: ASR ran on the CPU: {device.reason}")
+    return device
+
+
+def _tts_device(config: WorkerConfig, emitter: Any, warnings: list[str]) -> Any:
+    """Pick CUDA or the CPU for VieNeu dubbing; any GPU problem becomes a CPU choice and a warning."""
+    from engine.dubflow.accelerator import nvidia
+
+    last = [0.0]
+    def download(_artifact: str, done: int, total: int) -> None:
+        now = time.monotonic()
+        if done < total and now - last[0] < 1.0:
+            return
+        last[0] = now
+        emitter.progress(0.70, f"Đang tải thư viện GPU NVIDIA cho lồng tiếng lần đầu: {done // 1_000_000}/{total // 1_000_000} MB")
+    device = nvidia.select_tts_device(config.app_root, config.model_root, getattr(config, "accelerator", "auto"), progress=download)
+    if device.device == "cpu" and device.reason:
+        warnings.append(f"ACCELERATOR_FALLBACK: dubbing ran on the CPU: {device.reason}")
     return device
 
 
@@ -1495,7 +1512,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         background_path, background_summary = _separate_background_stage(config, source_hash, probe, media,
             work_dir, checkpoint, checkpoint_path, emitter, warnings)
     if config.enable_dubbing:
-        emitter.progress(0.70, "Đang tổng hợp giọng Việt CPU và trộn audio AUD-0")
+        tts_device = _tts_device(config, emitter, warnings)
+        speaking = "GPU" if tts_device.device == "cuda" else "CPU"
+        emitter.progress(0.70, f"Đang tổng hợp giọng Việt bằng {speaking} và trộn audio AUD-0")
         last_report = [0.0]
 
         def dubbing_progress(done: int, total: int) -> None:
@@ -1505,7 +1524,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 return
             last_report[0] = now
             emitter.progress(0.70 + 0.14 * done / total,
-                             f"Đang lồng tiếng Việt: đoạn {done}/{total}" if done < total else "Đang trộn giọng Việt với audio nền",
+                             f"Đang lồng tiếng Việt bằng {speaking}: đoạn {done}/{total}" if done < total else "Đang trộn giọng Việt với audio nền",
                              units_done=done, units_total=total)
         try:
             from engine.dubflow.worker.b2_audio import tts_recipe_identity, mix_recipe_identity
@@ -1523,7 +1542,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                         background_path, background_summary = None, {"mode": "original"}
                 bed_identity = json.dumps({"requested": True, "mode": background_summary["mode"],
                     "input_hash": background_summary.get("input_hash"), "sha256": bed_hash}, sort_keys=True) if getattr(config, "separate_background", False) else ""
-                generation_identity = sha256((translation_input + (overrides_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice) + casting_identity + bed_identity).encode()).hexdigest()
+                generation_identity = sha256((translation_input + (overrides_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice) + casting_identity + bed_identity + ("|tts-cuda" if tts_device.device == "cuda" else "")).encode()).hexdigest()
                 try:
                     return run_b2_audio(
                         media=media,
@@ -1541,6 +1560,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                         synthesis_cache_dir=work_dir / "tts-cache",
                         **({"voice_by_cue": cue_voices, "speaker_by_cue": speaker_result.labels} if cue_voices is not None else {}),
                         **({"background_path": background_path} if background_path is not None else {}),
+                        **({"tts_device": tts_device} if tts_device.device == "cuda" else {}),
                         on_progress=dubbing_progress,
                     )
                 except B2AudioError as error:
@@ -1599,6 +1619,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 warnings.extend(warning for document in tts_documents for warning in document.warnings
                                 if warning.startswith(("TTS_DURATION_REWRITE_APPLIED:", "TTS_SPOKEN_TEXT_CHECKPOINT_INVALID:",
                                                        "TTS_RENDER_WINDOW_WIDENED:", "TTS_FAST_FIT:", "TTS_DURATION_FIT_REFUSED:")))
+            warnings.extend(getattr(b2_audio, "device_warnings", ()))
             warnings.extend(warning for warning in b2_audio.mix_document.warnings
                             if warning.startswith("SEPARATION_SOURCE_RESTORED:"))
             _write_stage(

@@ -116,10 +116,66 @@ def load_vieneu_voice(app_root, model_root, profile_path, *, voice_id=None):
     return pack, voice
 
 
+GPU_RUNTIME_ID = RUNTIME_ID + "+onnxruntime-gpu-1.30.0-cuda13"
+
+
+class _DeviceProcess:
+    """VieNeu's native child on the GPU, replaced once by a CPU child after a GPU failure.
+
+    A content refusal of one cue is not a device failure and is passed on. Any
+    other failure on CUDA (initialization, a CUDA error, out-of-memory, a crash
+    or a timeout) restarts the child on the CPU and retries that request; the
+    rest of the job stays on the CPU.
+    """
+
+    def __init__(self, start, accelerator):
+        self._start = start
+        self.warnings: list[str] = []
+        self.process = None
+        if accelerator is not None:
+            try:
+                self.process = start(accelerator)
+                if getattr(self.process, "device", "cpu") != "cuda":
+                    raise TtsError("TTS_ACCELERATOR_UNAVAILABLE", "the native process did not load the GPU runtime")
+            except Exception as error:  # noqa: BLE001 - the CPU path is always available
+                self._fall_back(error)
+        if self.process is None:
+            self.process = start(None)
+        self.device = getattr(self.process, "device", "cpu")
+
+    def _fall_back(self, error):
+        if self.process is not None:
+            self.process.close()
+        self.process, self.device = None, "cpu"
+        detail = " ".join(f"{getattr(error, 'code', type(error).__name__)}: {error}".replace("\x00", " ").split())[:300]
+        self.warnings.append("ACCELERATOR_FALLBACK: dubbing continued on the CPU after a GPU failure: " + detail)
+
+    def generate(self, text, sid, speed):
+        try:
+            return self.process.generate(text, sid=sid, speed=speed)
+        except TtsError as error:
+            from .native_process import CUE_REJECTION_CODES
+            if self.device != "cuda" or error.code in CUE_REJECTION_CODES:
+                raise
+            self._fall_back(error)
+        self.process = self._start(None)
+        return self.process.generate(text, sid=sid, speed=speed)
+
+    def close(self):
+        if self.process is not None:
+            self.process.close()
+
+
 class VieNeuVietnameseTtsEngine(NeuralVietnameseTtsEngine):
-    def __init__(self, pack: VieNeuVoicePack, *, ffmpeg_path=None):
+    def __init__(self, pack: VieNeuVoicePack, *, ffmpeg_path=None, accelerator=None):
         super().__init__(pack)
         self.ffmpeg_path = ffmpeg_path
+        # The verified ONNX Runtime GPU pack (``select_tts_device``), or None for the CPU.
+        self.accelerator = accelerator
+
+    @property
+    def device_warnings(self) -> tuple[str, ...]:
+        return tuple(getattr(self._tts, "warnings", ()))
 
     def capabilities(self):
         return EngineCapabilities(ENGINE_ID, sample_rates=(48000,), deterministic=False)
@@ -165,9 +221,16 @@ class VieNeuVietnameseTtsEngine(NeuralVietnameseTtsEngine):
                 return EngineHealth(False, "TTS_RUNTIME_VERSION_MISMATCH", "VieNeu runtime differs from its pinned version")
             if self._tts is None:
                 from .native_process import NativeProcess
-                self._tts = NativeProcess(self.pack, entrypoint=Path(__file__).with_name("vieneu_native.py"), frontend=FRONTEND_ID, sample_rate=48000,
-                    initialization={"voice_name": self.pack.voice_name, "ffmpeg_path": str(self.ffmpeg_path) if self.ffmpeg_path else None})
-            process = getattr(self._tts, "process", None)
+
+                def start(accelerator):
+                    initialization = {"voice_name": self.pack.voice_name, "ffmpeg_path": str(self.ffmpeg_path) if self.ffmpeg_path else None}
+                    if accelerator is not None:
+                        initialization["accelerator"] = dict(accelerator)
+                    return NativeProcess(self.pack, entrypoint=Path(__file__).with_name("vieneu_native.py"), frontend=FRONTEND_ID,
+                                         sample_rate=48000, initialization=initialization)
+                self._tts = _DeviceProcess(start, self.accelerator)
+            native = getattr(self._tts, "process", None)
+            process = getattr(native, "process", native)  # The child's Popen, behind the device wrapper.
             if process is not None and process.poll() is not None:
                 return EngineHealth(False, "TTS_NATIVE_EXITED", "native speech process is no longer running")
             return EngineHealth(True)
