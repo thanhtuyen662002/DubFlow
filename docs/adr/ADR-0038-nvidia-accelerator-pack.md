@@ -18,9 +18,12 @@ It lacks only NVIDIA's cuBLAS 12 and cuDNN 9 sub-libraries. Shipping those in th
    - `nvidia-cudnn-cu12` 9.10.2.21, the same cuDNN version as the shipped dispatcher, which is byte-identical.
 
    It also pins every library DubFlow loads from them, by member path, size and SHA-256, plus the two license files. The existing resumable, verified downloader fetches the wheels into the user-owned model root. Only the pinned members are extracted, each atomically and checked against its pin, into `<model root>/accelerators/nvidia-cuda12-v1/bin`. The 1.2 GB of wheels are then deleted.
-3. **This is a code-bearing download.** It is the one place where the model root holds native code. Two checks make it acceptable:
-   - Every library is re-hashed against the signed release's manifest before each job loads it. A mismatch never loads; the pack is restored from freshly verified wheels or the job uses the CPU.
-   - Libraries are preloaded by absolute path in a fixed order, so CTranslate2's by-name loads resolve to exactly these modules and never to anything found on `PATH`.
+3. **This is a code-bearing download.** It is the one place where the model root holds native code. Three checks make it acceptable:
+   - **Hashed at the load boundary.** Before each job loads the pack, each library is opened with read-only sharing, with a reparse point opened as itself rather than followed, and is hashed against the signed release's manifest. All of them stay open until every library has been loaded. Nothing can write, rename or replace the verified bytes between the hash and Windows mapping them.
+   - **A mismatch never loads.** The pack is restored once from freshly verified wheels; otherwise the job uses the CPU.
+   - **Fixed load order by absolute path.** Libraries are preloaded by absolute path in a fixed order, so CTranslate2's by-name loads resolve to exactly these modules and never to anything found on `PATH`.
+
+   Extraction writes each member to a unique, create-only temporary file in the pack folder, so an existing file or link at a predictable name cannot redirect the write. Only after the member's size and hash match is the file renamed over the target; a rename replaces a link itself, not its target. The temporary file is always removed.
 4. **Requirements before downloading.** The GPU is used only when:
    - the driver reports CUDA 12.0 or newer;
    - device 0 has compute capability 6.1 or higher, the int8 GEMM floor;
@@ -32,7 +35,7 @@ It lacks only NVIDIA's cuBLAS 12 and cuDNN 9 sub-libraries. Shipping those in th
 6. **Identity does not change.** The chunk identity, transcript schema and evidence schemas are unchanged. GPU and CPU chunks are interchangeable checkpoints, so a job can resume across devices. The device used is recorded as an `ASR_ACCELERATOR:` warning.
 
 ## Consequences
-- **What NVIDIA users pay:** about 1.3 GB downloaded once and 1.8 GB on disk, plus about 8 s of hashing before each ASR stage.
+- **What NVIDIA users pay:** about 1.3 GB downloaded once and 1.8 GB on disk, plus about 6 s of locked hashing before each ASR stage. A present pack is otherwise accepted by size, and only a mismatch triggers a full verifying pass.
 - **No test needs a GPU:** a fake driver, a fixture pack and fake Whisper models cover the probe, the pins, extraction, tamper refusal, device selection and fallback.
 - **Not proven yet:** real speed, VRAM and out-of-memory behaviour are NOT_RUN until a qualification run on NVIDIA hardware (#323 leaf 4).
 - **Out of scope:** TTS (VieNeu) and separation (Spleeter) stay on the CPU. Moving them needs an `onnxruntime-gpu` runtime variant, which is a separate leaf.

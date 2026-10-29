@@ -9,6 +9,7 @@ is loaded, and otherwise reports why the CPU is used. Nothing here raises past
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
 from dataclasses import dataclass
 import hashlib
@@ -17,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 from typing import Any, Callable, Mapping
 import zipfile
 
@@ -176,23 +178,60 @@ def load_pack(app_root: Path) -> Pack:
                 requires["min_total_memory_bytes"], artifacts, libraries, notices)
 
 
-def _matches(path: Path, item: PackFile) -> bool:
+class PackMismatch(AcceleratorUnavailable):
+    """A library's bytes differ from its pin; ``ensure_pack(verify=True)`` repairs it."""
+
+
+def _open_locked(path: Path) -> Any:
+    """Open for reading so nobody can write, rename or delete the file while held.
+
+    On Windows the handle shares read access only and opens a reparse point
+    itself rather than its target, so a link can never be hashed as the DLL.
+    """
+    if sys.platform != "win32":
+        return open(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), "rb")
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = (ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+                                     ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+    # GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN.
+    handle = kernel32.CreateFileW(str(path), 0x80000000, 0x1, None, 3, 0x00200000 | 0x08000000, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise OSError(ctypes.get_last_error(), f"unable to open {path.name} exclusively for verification")
+    return open(msvcrt.open_osfhandle(handle, os.O_RDONLY), "rb")
+
+
+def _hash_matches(stream: Any, item: PackFile) -> bool:
+    digest, size = hashlib.sha256(), 0
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        size += len(block)
+        if size > item.size_bytes:
+            return False
+        digest.update(block)
+    return size == item.size_bytes and digest.hexdigest() == item.sha256
+
+
+def _matches(path: Path, item: PackFile, *, verify: bool = True) -> bool:
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size != item.size_bytes:
             return False
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(block)
-        return digest.hexdigest() == item.sha256
+        if not verify:
+            return True
+        with _open_locked(path) as stream:
+            return _hash_matches(stream, item)
     except OSError:
         return False
 
 
 def _extract(wheel: Path, item: PackFile, target: Path) -> None:
-    partial = target.with_name(f".{target.name}.partial")
+    # A unique, create-only temporary file: an existing file or link at a
+    # predictable name can never redirect the write outside this folder.
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".partial", dir=target.parent)
+    partial = Path(temporary)
     try:
-        with zipfile.ZipFile(wheel) as archive:
+        with open(descriptor, "wb") as stream, zipfile.ZipFile(wheel) as archive:
             try:
                 info = archive.getinfo(item.member)
             except KeyError as error:
@@ -200,17 +239,18 @@ def _extract(wheel: Path, item: PackFile, target: Path) -> None:
             if info.file_size != item.size_bytes:
                 raise ModelBootstrapError("MODEL_SIZE_INVALID", f"{item.name} differs from its pinned size")
             digest, size = hashlib.sha256(), 0
-            with archive.open(info) as source, partial.open("wb") as stream:
+            with archive.open(info) as source:
                 for block in iter(lambda: source.read(1024 * 1024), b""):
                     size += len(block)
                     if size > item.size_bytes:
                         raise ModelBootstrapError("MODEL_SIZE_INVALID", f"{item.name} exceeds its pinned size")
                     digest.update(block)
                     stream.write(block)
-                stream.flush()
-                os.fsync(stream.fileno())
+            stream.flush()
+            os.fsync(stream.fileno())
         if size != item.size_bytes or digest.hexdigest() != item.sha256:
             raise ModelBootstrapError("MODEL_HASH_MISMATCH", f"{item.name} failed verification")
+        # Renaming replaces a link at the target itself, never what it points to.
         os.replace(partial, target)
     except zipfile.BadZipFile as error:
         raise ModelBootstrapError("MODEL_HASH_MISMATCH", f"{wheel.name} is not a valid archive") from error
@@ -218,13 +258,18 @@ def _extract(wheel: Path, item: PackFile, target: Path) -> None:
         partial.unlink(missing_ok=True)
 
 
-def ensure_pack(pack: Pack, model_root: Path, *, progress: Callable[[str, int, int], None] | None = None) -> Path:
-    """Return the verified library folder, downloading and extracting it once."""
+def ensure_pack(pack: Pack, model_root: Path, *, progress: Callable[[str, int, int], None] | None = None,
+                verify: bool = False) -> Path:
+    """Return the library folder, downloading and extracting it once.
+
+    A present pack is accepted by size; ``activate`` hashes each library at the
+    load boundary. ``verify=True`` hashes everything and repairs mismatches.
+    """
     _reject_link_components(Path(model_root), "model root")
     root = Path(os.path.abspath(model_root)) / pack.pack_dir
     bin_dir = root / "bin"
     files = [(bin_dir, item) for item in pack.libraries] + [(root, item) for item in pack.notices]
-    if all(_matches(folder / item.name, item) for folder, item in files):
+    if all(_matches(folder / item.name, item, verify=verify) for folder, item in files):
         return bin_dir
     ensure_model_profile(pack.profile_path, model_root, progress=progress)
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -240,30 +285,38 @@ def ensure_pack(pack: Pack, model_root: Path, *, progress: Callable[[str, int, i
     return bin_dir
 
 
-def activate(pack: Pack, bin_dir: Path) -> None:
-    """Preload by full path so CTranslate2's by-name loads resolve to the pack.
+def activate(pack: Pack, bin_dir: Path, *, load: Callable[[str], Any] | None = None) -> None:
+    """Hash each library at the load boundary, then preload it by full path.
 
-    ``ensure_pack`` hashed every library moments ago (about 8 s for 1.8 GB);
-    this cheaper recheck refuses a library replaced since then.
+    Every library stays open with read-only sharing from before its hash until
+    after every load, so the verified bytes are the bytes Windows maps; nothing
+    can write, rename or replace them in between. Loading by absolute path in
+    manifest order makes CTranslate2's by-name loads resolve to these modules.
     """
-    for item in pack.libraries:
-        path = bin_dir / item.name
-        try:
-            unchanged = not path.is_symlink() and path.stat().st_size == item.size_bytes
-        except OSError:
-            unchanged = False
-        if not unchanged:
-            raise AcceleratorUnavailable(f"{item.name} no longer matches its pinned size")
-    if sys.platform != "win32":
-        raise AcceleratorUnavailable("CUDA acceleration is Windows-only", silent=True)
-    _LOADED.setdefault("directory", os.add_dll_directory(str(bin_dir)))  # type: ignore[attr-defined]
-    os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
-    for item in pack.libraries:
-        if item.name not in _LOADED:
+    with contextlib.ExitStack() as held:
+        for item in pack.libraries:
+            path = bin_dir / item.name
             try:
-                _LOADED[item.name] = ctypes.WinDLL(str(bin_dir / item.name))  # type: ignore[attr-defined]
+                if path.is_symlink():
+                    raise OSError("library is a link")
+                stream = held.enter_context(_open_locked(path))
+                verified = _hash_matches(stream, item)
             except OSError as error:
-                raise AcceleratorUnavailable(f"{item.name} could not be loaded: {error}") from error
+                raise PackMismatch(f"{item.name} could not be verified: {error}") from error
+            if not verified:
+                raise PackMismatch(f"{item.name} no longer matches its pinned hash")
+        if load is None:
+            if sys.platform != "win32":
+                raise AcceleratorUnavailable("CUDA acceleration is Windows-only", silent=True)
+            _LOADED.setdefault("directory", os.add_dll_directory(str(bin_dir)))  # type: ignore[attr-defined]
+            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+            load = ctypes.WinDLL  # type: ignore[attr-defined]
+        for item in pack.libraries:
+            if item.name not in _LOADED:
+                try:
+                    _LOADED[item.name] = load(str(bin_dir / item.name))
+                except OSError as error:
+                    raise AcceleratorUnavailable(f"{item.name} could not be loaded: {error}") from error
 
 
 def _cuda_compute_types() -> set[str]:
@@ -299,7 +352,12 @@ def select_asr_device(app_root: Path, model_root: Path, preference: str = "auto"
         if gpu.total_memory < pack.min_total_memory:
             raise AcceleratorUnavailable(f"{gpu.total_memory // 1024 ** 2} MB of GPU memory is below {pack.min_total_memory // 1024 ** 2} MB")
         bin_dir = ensure(pack, model_root, progress=progress)
-        activate(pack, bin_dir)
+        try:
+            activate(pack, bin_dir)
+        except PackMismatch:
+            # Restore changed libraries from freshly verified wheels, once.
+            bin_dir = ensure(pack, model_root, progress=progress, verify=True)
+            activate(pack, bin_dir)
         supported = compute_types()
         compute = next((item for item in COMPUTE_PREFERENCE if item in supported), None)
         if compute is None:
@@ -313,5 +371,5 @@ def select_asr_device(app_root: Path, model_root: Path, preference: str = "auto"
         return AsrDevice("cpu", "int8", gpu, f"GPU setup failed: {type(error).__name__}: {error}"[:300])
 
 
-__all__ = ["AcceleratorUnavailable", "AsrDevice", "CPU", "NvidiaDevice", "Pack", "activate", "ensure_pack",
+__all__ = ["AcceleratorUnavailable", "AsrDevice", "CPU", "NvidiaDevice", "Pack", "PackMismatch", "activate", "ensure_pack",
            "load_pack", "probe", "select_asr_device"]

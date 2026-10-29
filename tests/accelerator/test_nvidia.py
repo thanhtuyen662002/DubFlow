@@ -160,6 +160,43 @@ class PackTests(unittest.TestCase):
             download.assert_called_once()
             self.assertEqual((fixture.bin_dir / "second64_1.dll").read_bytes(), b"second library")
 
+    def test_same_size_tamper_is_repaired_only_by_a_verifying_pass(self):
+        with TemporaryDirectory() as directory:
+            fixture = Fixture(Path(directory))
+            nvidia.ensure_pack(fixture.pack, fixture.model_root)
+            (fixture.bin_dir / "second64_1.dll").write_bytes(b"SECOND LIBRARY")  # same 14 bytes
+            with patch.object(nvidia, "ensure_model_profile", side_effect=AssertionError("size-only pass must not download")):
+                nvidia.ensure_pack(fixture.pack, fixture.model_root)
+            with patch.object(nvidia, "ensure_model_profile", side_effect=fixture.place_wheel) as download:
+                nvidia.ensure_pack(fixture.pack, fixture.model_root, verify=True)
+            download.assert_called_once()
+            self.assertEqual((fixture.bin_dir / "second64_1.dll").read_bytes(), b"second library")
+
+    def test_links_at_partial_or_target_names_never_redirect_writes(self):
+        with TemporaryDirectory() as directory:
+            fixture = Fixture(Path(directory))
+            sentinel = Path(directory) / "outside.txt"
+            sentinel.write_bytes(b"must not change")
+            fixture.bin_dir.mkdir(parents=True)
+            try:
+                for name in (".first64_1.dll.partial", "second64_1.dll"):
+                    (fixture.bin_dir / name).symlink_to(sentinel)
+            except OSError as error:  # Windows needs Developer Mode to create links.
+                self.skipTest(f"cannot create symlinks here: {error}")
+            nvidia.ensure_pack(fixture.pack, fixture.model_root)
+            self.assertEqual(sentinel.read_bytes(), b"must not change")
+            for name, data in (("first64_1.dll", b"first library"), ("second64_1.dll", b"second library")):
+                self.assertFalse((fixture.bin_dir / name).is_symlink())
+                self.assertEqual((fixture.bin_dir / name).read_bytes(), data)
+            self.assertEqual(sorted(path.name for path in fixture.bin_dir.glob("*.partial")), [".first64_1.dll.partial"])
+
+    def test_failed_extraction_leaves_no_temporary_file(self):
+        with TemporaryDirectory() as directory:
+            fixture = Fixture(Path(directory), pinned_override={"nvidia/x/bin/first64_1.dll": b"other library"})
+            with self.assertRaises(ModelBootstrapError):
+                nvidia.ensure_pack(fixture.pack, fixture.model_root)
+            self.assertEqual(list(fixture.bin_dir.iterdir()), [])
+
     def test_member_that_differs_from_its_pin_is_never_published(self):
         with TemporaryDirectory() as directory:
             fixture = Fixture(Path(directory), pinned_override={"nvidia/x/bin/second64_1.dll": b"other bytes!!!"})
@@ -189,16 +226,44 @@ class PackTests(unittest.TestCase):
                     with self.assertRaises(ModelBootstrapError):
                         nvidia.load_pack(fixture.app_root)
 
-    def test_activation_refuses_a_library_that_changed_after_extraction(self):
+    def test_activation_hashes_at_the_load_boundary_and_refuses_any_change(self):
         with TemporaryDirectory() as directory:
             fixture = Fixture(Path(directory))
             nvidia.ensure_pack(fixture.pack, fixture.model_root)
-            (fixture.bin_dir / "first64_1.dll").write_bytes(b"replaced with something larger")
-            with self.assertRaisesRegex(nvidia.AcceleratorUnavailable, "first64_1.dll no longer matches"):
-                nvidia.activate(fixture.pack, fixture.bin_dir)
-            (fixture.bin_dir / "first64_1.dll").unlink()
-            with self.assertRaisesRegex(nvidia.AcceleratorUnavailable, "first64_1.dll no longer matches"):
-                nvidia.activate(fixture.pack, fixture.bin_dir)
+            library = fixture.bin_dir / "first64_1.dll"
+            for label, change in (("same size", lambda: library.write_bytes(b"FIRST LIBRARY")),
+                                  ("larger", lambda: library.write_bytes(b"replaced with something larger")),
+                                  ("missing", library.unlink)):
+                with self.subTest(label), patch.dict(nvidia._LOADED, clear=True):
+                    change()
+                    loaded = []
+                    with self.assertRaisesRegex(nvidia.PackMismatch, "first64_1.dll"):
+                        nvidia.activate(fixture.pack, fixture.bin_dir, load=loaded.append)
+                    self.assertEqual(loaded, [])
+                    library.write_bytes(b"first library")
+
+    def test_verified_bytes_stay_locked_until_every_library_is_loaded(self):
+        with TemporaryDirectory() as directory, patch.dict(nvidia._LOADED, clear=True):
+            fixture = Fixture(Path(directory))
+            nvidia.ensure_pack(fixture.pack, fixture.model_root)
+            attempts = []
+            def load(path):
+                for name in ("first64_1.dll", "second64_1.dll"):
+                    target = fixture.bin_dir / name
+                    try:
+                        with open(target, "r+b") as stream:
+                            stream.write(b"X")
+                        attempts.append((name, "written"))
+                    except PermissionError:
+                        attempts.append((name, "refused"))
+                return path
+            nvidia.activate(fixture.pack, fixture.bin_dir, load=load)
+            self.assertEqual(list(nvidia._LOADED), ["first64_1.dll", "second64_1.dll"])
+            if nvidia.sys.platform == "win32":  # share-read handles are a Windows guarantee
+                self.assertEqual(set(attempts), {("first64_1.dll", "refused"), ("second64_1.dll", "refused")})
+                self.assertEqual((fixture.bin_dir / "first64_1.dll").read_bytes(), b"first library")
+            # The handles are released after loading.
+            (fixture.bin_dir / "second64_1.dll").write_bytes(b"second library")
 
 
 class SelectionTests(unittest.TestCase):
@@ -209,15 +274,17 @@ class SelectionTests(unittest.TestCase):
             if probe_error:
                 raise probe_error
             return device or gpu()
-        def ensure(pack, model_root, progress=None):
-            calls.append("ensure")
+        def ensure(pack, model_root, progress=None, verify=False):
+            calls.append("ensure-verify" if verify else "ensure")
             if ensure_error:
                 raise ensure_error
             return Path("bin")
+        errors = list(activate_error) if isinstance(activate_error, list) else [activate_error]
         def activate(pack, bin_dir):
             calls.append("activate")
-            if activate_error:
-                raise activate_error
+            error = errors.pop(0) if errors else None
+            if error:
+                raise error
         return nvidia.select_asr_device(REPO, Path("models"), preference, probe=probe, ensure=ensure, activate=activate,
                                         compute_types=lambda: set(types)), calls
 
@@ -228,6 +295,15 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(nvidia.AsrDevice("cuda", "int8", gpu(name="Tesla T4")).label, "GPU NVIDIA Tesla T4")
         self.assertEqual(calls, ["probe", "ensure", "activate"])
         self.assertEqual(self.select(types=("float32", "float16"))[0].compute_type, "float16")
+
+    def test_changed_library_is_repaired_once_by_a_verifying_pass(self):
+        mismatch = nvidia.PackMismatch("first.dll no longer matches its pinned hash")
+        selected, calls = self.select(activate_error=[mismatch])
+        self.assertEqual(selected.device, "cuda")
+        self.assertEqual(calls, ["probe", "ensure", "activate", "ensure-verify", "activate"])
+        selected, calls = self.select(activate_error=[mismatch, mismatch])
+        self.assertEqual((selected.device, calls[-2:]), ("cpu", ["ensure-verify", "activate"]))
+        self.assertIn("no longer matches", selected.reason)
 
     def test_cpu_preference_never_touches_the_driver(self):
         selected, calls = self.select(preference="cpu")
