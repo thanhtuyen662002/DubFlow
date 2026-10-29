@@ -54,6 +54,16 @@ MAX_POSTROLL_MS = 2000
 MAX_FALLBACK_POSTROLL_MS = 4000
 NEXT_CUE_GUARD_MS = 120
 B2_TTS_PRODUCER_VERSION = "3.5.0"
+# With a separated bed, source minus accompaniment estimates the dialogue. A
+# window may then reach into measured silence, up to MEASURED_POSTROLL_MS,
+# and never past where undubbed speech resumes.
+UNMEASURED_GAP_EVIDENCE = "recognized-source-cue-intervals;silence-not-certified"
+MEASURED_GAP_EVIDENCE = "recognized-source-cue-intervals;dialogue-silence-measured-rms260-frame20ms-tail300ms-onset60ms"
+MEASURED_POSTROLL_MS = 6000
+SILENCE_RMS = 260  # About -42 dBFS.
+SILENCE_FRAME_MS = 20
+SPEECH_TAIL_MS = 300  # The cue's own last syllable may outlast its recognized end.
+SPEECH_ONSET_MS = 60
 
 
 def tts_recipe_identity(app_root: Path, profile_path: Path) -> str:
@@ -115,6 +125,7 @@ class B2AudioResult:
     spoken_text_document_paths: tuple[Path, ...] = ()
     background_stem_path: Path | None = None
     member_cue_ids: Mapping[str, tuple[str, ...]] | None = None
+    gap_evidence: str | None = None
 
     def __post_init__(self) -> None:
         if not self.voices:
@@ -143,6 +154,14 @@ class B2AudioResult:
     @property
     def bed(self) -> str:
         return "spleeter-2stems" if self.background_stem_path is not None else "source"
+
+
+def _mix_input_hash(documents: Sequence[TtsDocument]) -> str:
+    # A resumed document marks reused chunks skipped and warns about each reuse;
+    # neither changes the audio, so neither may select a new mix generation.
+    payload = [{key: value for key, value in document.to_dict().items() if key not in ("chunks", "warnings")}
+               for document in documents]
+    return "sha256:" + sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _input_hash(cues: Sequence[Mapping[str, Any]]) -> str:
@@ -292,6 +311,77 @@ def _dubbing_windows(mappings: Sequence[Mapping[str, Any]], source_end: int, *, 
             "overlaps_source": overlaps, "confidence": item["confidence"]})
         prior_end = max(prior_end, coverage_end)
     return tuple(result)
+
+
+def _speech_resumes_ms(source: Path, background: Path, spans: Sequence[tuple[str, int, int]]) -> dict[str, int]:
+    """Where undubbed speech resumes after each cue, on source minus accompaniment.
+
+    Each span starts at a cue's end. Loud frames within SPEECH_TAIL_MS are the
+    cue's own tail; speech still sounding after that keeps the window at the
+    cue. Otherwise the first SPEECH_ONSET_MS of loud frames marks the resume,
+    and a span silent throughout is wholly usable. Formats that differ give
+    no measurement.
+    """
+    import numpy as np
+    result: dict[str, int] = {}
+    with wave.open(str(source), "rb") as speech, wave.open(str(background), "rb") as bed:
+        shape = (speech.getframerate(), speech.getnchannels(), speech.getsampwidth())
+        if shape != (bed.getframerate(), bed.getnchannels(), bed.getsampwidth()) or shape[2] != 2:
+            return result
+        rate, channels = shape[0], shape[1]
+        size = rate * SILENCE_FRAME_MS // 1000
+        tail, onset = SPEECH_TAIL_MS // SILENCE_FRAME_MS, SPEECH_ONSET_MS // SILENCE_FRAME_MS
+        frames = min(speech.getnframes(), bed.getnframes())
+        for identifier, start_ms, end_ms in spans:
+            first = start_ms * rate // 1000
+            count = (min(frames, end_ms * rate // 1000) - first) // size * size
+            if count <= 0:
+                continue
+            speech.setpos(first)
+            bed.setpos(first)
+            values = [np.frombuffer(reader.readframes(count), dtype="<i2") for reader in (speech, bed)]
+            if any(len(item) != count * channels for item in values):
+                continue
+            residual = (values[0].astype(np.int64) - values[1]).reshape(-1, size * channels)
+            loud = np.sqrt(np.mean(residual * residual, axis=1)) > SILENCE_RMS
+            index = 0
+            while index < len(loud) and loud[index]:
+                index += 1
+            if index > tail:
+                result[identifier] = start_ms
+                continue
+            resume = end_ms
+            for position in range(index, len(loud) - onset + 1):
+                if loud[position:position + onset].all():
+                    resume = start_ms + position * SILENCE_FRAME_MS
+                    break
+            result[identifier] = resume
+    return result
+
+
+def _measured_windows(windows: Sequence[dict[str, Any]], source: Path, background: Path,
+                      source_end: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Bound each phrase's windows by measured dialogue silence after it."""
+    spans = {}
+    for window in windows:
+        end, following = int(window["slot_end"]["ticks"]), window["next_source_start"]
+        limit = min(end + MEASURED_POSTROLL_MS, source_end,
+                    source_end if following is None else int(following["ticks"]) - NEXT_CUE_GUARD_MS)
+        if not window["overlaps_source"] and limit > end:
+            spans[window["cue_id"]] = (end, limit)
+    resumes = _speech_resumes_ms(source, background, [(key, *span) for key, span in spans.items()])
+    limits, measured = {}, []
+    for window in windows:
+        if window["cue_id"] in resumes:
+            end, limit = spans[window["cue_id"]]
+            resume = resumes[window["cue_id"]]
+            # Speech found inside the span keeps the usual guard before it.
+            usable = max(end, resume - NEXT_CUE_GUARD_MS if resume < limit else limit)
+            window = dict(window, render_window_end=TimePoint(
+                min(int(window["render_window_end"]["ticks"]), usable), BASE_TIME).to_dict())
+            limits[window["cue_id"]] = usable
+        measured.append(window)
+    return measured, limits
 
 
 def _media_extent_ms(probe: MediaProbeResult, decoded_end: int) -> int:
@@ -582,16 +672,26 @@ def run_b2_audio(
         render_window_limits = {}
         if backend_id == vieneu.ENGINE_ID:
             windows = _dubbing_windows(mappings, _media_extent_ms(source_probe, source_end_ticks))
+            wider = _dubbing_windows(mappings, _media_extent_ms(source_probe, source_end_ticks), max_postroll_ms=MAX_FALLBACK_POSTROLL_MS)
+            render_window_limits = {item["cue_id"]: TimePoint(int(item["render_window_end"]["ticks"]), BASE_TIME) for item in wider}
+            gap_evidence = UNMEASURED_GAP_EVIDENCE
+            if background_path is not None:
+                try:
+                    windows, measured = _measured_windows(windows, source_audio_path, Path(background_path),
+                                                          _media_extent_ms(source_probe, source_end_ticks))
+                except (OSError, EOFError, wave.Error, ValueError) as error:
+                    raise B2AudioError("SEPARATION_BED_FAILED", f"accompaniment cannot be measured: {error}") from error
+                if measured:
+                    gap_evidence = MEASURED_GAP_EVIDENCE
+                    render_window_limits.update({key: TimePoint(value, BASE_TIME) for key, value in measured.items()})
             members = {item["cue_id"]: item["member_cue_ids"] for item in mappings}
             for window in windows:
                 window["member_cue_ids"] = members[window["cue_id"]]
-            wider = _dubbing_windows(mappings, _media_extent_ms(source_probe, source_end_ticks), max_postroll_ms=MAX_FALLBACK_POSTROLL_MS)
-            render_window_limits = {item["cue_id"]: TimePoint(int(item["render_window_end"]["ticks"]), BASE_TIME) for item in wider}
             placement = {"schema_version": 1, "kind": "dubbing_placement", "recipe": DUBBING_WINDOW_RECIPE,
                 "phrase_recipe": DUBBING_PHRASE_RECIPE, "phrase_input_hash": phrase_hash,
                 "time_base": BASE_TIME.to_dict(), "source_end": TimePoint(_media_extent_ms(source_probe, source_end_ticks), BASE_TIME).to_dict(),
                 "source_audio_sha256": "sha256:" + _digest(source_audio_path), "canonical_cue_input_hash": input_hash,
-                "gap_evidence": "recognized-source-cue-intervals;silence-not-certified", "windows": windows}
+                "gap_evidence": gap_evidence, "windows": windows}
             placement_bytes = (json.dumps(placement, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
             input_hash = "sha256:" + sha256(placement_bytes).hexdigest()
             placement_document_path = root / "dubbing_placement.json"
@@ -718,7 +818,7 @@ def run_b2_audio(
         mix_document = mixer.mix(
             source,
             tuple(segments_for_mix),
-            input_hash="sha256:" + sha256(b"".join(document.to_bytes() for document in documents)).hexdigest(),
+            input_hash=_mix_input_hash(documents),
         )
         if background_stem_path is not None:
             rejected = {failure.segment_id for failure in mix_document.failures} - restored
@@ -730,12 +830,18 @@ def run_b2_audio(
                 _restore_source_windows(background_stem_path, source_audio_path, bed_path,
                     [(item["start_ms"], item["end_ms"]) for item in mappings if item["cue_id"] in restored])
                 mix_document = mixer.mix(replace(source, path=bed_path), tuple(segments_for_mix),
-                    input_hash="sha256:" + sha256(b"".join(document.to_bytes() for document in documents)).hexdigest())
+                    input_hash=_mix_input_hash(documents))
                 if any(failure.segment_id not in restored for failure in mix_document.failures):
                     raise B2AudioError("SEPARATION_BED_FAILED", "TTS inputs changed during source restoration; use the original bed")
             mix_document = replace(mix_document, warnings=mix_document.warnings + tuple(
                 "SEPARATION_SOURCE_RESTORED: " + identifier for item in mappings if item["cue_id"] in restored
                 for identifier in item["member_cue_ids"]))
+            # The mixer keeps a verified snapshot of the restored bed, and a
+            # resumed generation rebuilds it deterministically.
+            try:
+                (root / "mix_bed.wav").unlink(missing_ok=True)
+            except OSError:
+                pass
     except Exception as error:
         if background_path is not None:
             raise B2AudioError("SEPARATION_BED_FAILED", getattr(error, "condition", str(error))) from error
@@ -751,7 +857,8 @@ def run_b2_audio(
         raise B2AudioError("MIX_ARTIFACT_WRITE_FAILED", str(error), retryable=True) from error
     return B2AudioResult(source_audio_path, tts_document_path, mix_document_path, tts_document, mix_document, primary_voice, placement_document_path, spoken_text_document_path,
                          tuple(groups), tuple(documents), tuple(document_paths), tuple(spoken_paths), background_stem_path,
-                         {item["cue_id"]: tuple(item["member_cue_ids"]) for item in mappings})
+                         {item["cue_id"]: tuple(item["member_cue_ids"]) for item in mappings},
+                         placement["gap_evidence"] if placement_document_path is not None else None)
 
 
 __all__ = ["B2AudioError", "B2AudioResult", "BASE_TIME", "run_b2_audio", "mix_recipe_identity"]

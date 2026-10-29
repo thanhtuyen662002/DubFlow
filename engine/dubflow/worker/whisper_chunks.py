@@ -184,9 +184,28 @@ class BoundedTranscript:
     binding: dict[str, Any]
 
 
+def _decode(model: Any, window_path: Path, chunk: AudioChunk, identity: str, language: str | None, validate_cues: Callable) -> dict[str, Any]:
+    segments, info = model.transcribe(str(window_path), language=language, beam_size=5, vad_filter=True, word_timestamps=True)
+    cues = tuple(cue for segment in segments for cue in segment_cues(segment, chunk.window.end.ticks - chunk.window.start.ticks, sample_offset=chunk.window.start.ticks))
+    if not validate_cues(cues):
+        raise ChunkAsrError("ASR_HYPOTHESIS_INVALID", "ASR chunk word evidence does not match source cues")
+    observed = getattr(info, "language", None)
+    if not isinstance(observed, str) or not 1 <= len(observed) <= 16:
+        raise ChunkAsrError("SOURCE_LANGUAGE_UNRESOLVED", "ASR chunk did not report a supported language identity")
+    if language is not None and observed != language:
+        raise ChunkAsrError("SOURCE_LANGUAGE_MISMATCH", "ASR chunk language disagrees with the requested/pinned language")
+    return {"schema_version": 1, "recipe": ASR_RECIPE, "identity": identity, "chunk": _shape(chunk),
+            "decode_language": language, "observed_language": observed,
+            "language_probability": _probability(getattr(info, "language_probability", None)),
+            "cues": [asdict(cue) for cue in cues]}
+
+
 def transcribe_bounded(audio_path: Path, *, total_samples: int, audio_hash: str, language: str | None,
                        model_binding: str, model_factory: Callable, chunks_dir: Path,
-                       write_json: Callable, validate_cues: Callable, on_chunk: Callable | None = None) -> BoundedTranscript:
+                       write_json: Callable, validate_cues: Callable, on_chunk: Callable | None = None,
+                       fallback_factory: Callable | None = None, on_fallback: Callable | None = None) -> BoundedTranscript:
+    """``fallback_factory`` replaces a failing accelerated model once, for the
+    failed chunk and every later one; chunk identity does not depend on it."""
     binding = {"audio": audio_hash, "total_samples": total_samples, "language": language,
                "model_binding": model_binding, "recipe": ASR_RECIPE,
                "core_samples": CORE_SAMPLES, "overlap_samples": OVERLAP_SAMPLES}
@@ -204,24 +223,24 @@ def transcribe_bounded(audio_path: Path, *, total_samples: int, audio_hash: str,
         path = chunks_dir / (chunk.chunk_id + ".json")
         payload = _cached(path, chunk, identity, pinned_language, validate_cues)
         if payload is None:
-            if model is None:
-                model = model_factory()
             window_path = chunks_dir / (chunk.chunk_id + ".wav")
             try:
                 _window_wav(audio_path, window_path, chunk)
-                segments, info = model.transcribe(str(window_path), language=pinned_language, beam_size=5, vad_filter=True, word_timestamps=True)
-                cues = tuple(cue for segment in segments for cue in segment_cues(segment, chunk.window.end.ticks - chunk.window.start.ticks, sample_offset=chunk.window.start.ticks))
-                if not validate_cues(cues):
-                    raise ChunkAsrError("ASR_HYPOTHESIS_INVALID", "ASR chunk word evidence does not match source cues")
-                observed = getattr(info, "language", None)
-                if not isinstance(observed, str) or not 1 <= len(observed) <= 16:
-                    raise ChunkAsrError("SOURCE_LANGUAGE_UNRESOLVED", "ASR chunk did not report a supported language identity")
-                if pinned_language is not None and observed != pinned_language:
-                    raise ChunkAsrError("SOURCE_LANGUAGE_MISMATCH", "ASR chunk language disagrees with the requested/pinned language")
-                payload = {"schema_version": 1, "recipe": ASR_RECIPE, "identity": identity, "chunk": _shape(chunk),
-                           "decode_language": pinned_language, "observed_language": observed,
-                           "language_probability": _probability(getattr(info, "language_probability", None)),
-                           "cues": [asdict(cue) for cue in cues]}
+                while payload is None:
+                    try:
+                        if model is None:
+                            model = model_factory()
+                        payload = _decode(model, window_path, chunk, identity, pinned_language, validate_cues)
+                    except ChunkAsrError:
+                        raise
+                    except Exception as error:
+                        # Device failures (CUDA init, out of memory) are not
+                        # content failures: retry this chunk once on the fallback.
+                        if fallback_factory is None:
+                            raise
+                        model, model_factory, fallback_factory = None, fallback_factory, None
+                        if on_fallback is not None:
+                            on_fallback(chunk.index, error)
                 write_json(path, {"sha256": _digest(payload), "payload": payload})
             finally:
                 window_path.unlink(missing_ok=True)

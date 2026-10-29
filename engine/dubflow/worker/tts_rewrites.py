@@ -20,7 +20,7 @@ from engine.dubflow.tts.adapter import FAST_FIT_MAX_MILLI
 from .export_publication import plain
 
 
-RECIPE = "vi-safe-condensation-v2-window4000-fast1500"
+RECIPE = "vi-safe-condensation-v3-window4000-fast1500-condensed"
 RULE = "first-time-adverb"
 WARNING = "TTS_DURATION_REWRITE_APPLIED: "
 MAX_RECORD_BYTES = 65536
@@ -38,6 +38,36 @@ _RULES = (
     ("very-intensifier", "rất là", "rất"),
     ("indefinite-filler", r"một cái(?= (?:gì đó|cách|kiểu|cảm giác)(?!\w))", "cái"),
 )
+# The condensed tier runs only after every other fit tier failed. Each rule
+# keeps the meaning: a shorter synonym, a redundant classifier or quantifier,
+# an opening interjection, or a subject the same clause just repeated.
+_CONDENSED_RULES = (
+    ("because-short", "bởi vì", "vì"),
+    ("however-short", "tuy nhiên", "nhưng"),
+    ("copula-emphasis", "chính là", "là"),
+    ("really-short", "thật sự", "thật"),
+    ("little-short", "một chút", "chút"),
+    ("maybe-short", "có lẽ là", "có lẽ"),
+    ("ever-short", "đã từng", "từng"),
+    ("everyone-short", "tất cả mọi người", "mọi người"),
+    ("immediately-short", "ngay lập tức", "ngay"),
+    ("thus-short", "như vậy", "vậy"),
+    ("what-short", r"(?<=\w\s)cái gì", "gì"),  # An opening "cái gì" is the subject; keep it.
+    ("if-short", "nếu như", "nếu"),
+    ("like-short", "giống như", "như"),
+    ("still-short", "vẫn còn", "vẫn"),
+    ("again-short", "một lần nữa", "lần nữa"),
+    ("today-short", "ngày hôm nay", "hôm nay"),
+    ("yesterday-short", "ngày hôm qua", "hôm qua"),
+    ("now-short", "vào lúc này", "lúc này"),
+    ("self-short", "bản thân mình", "mình"),
+    ("they-short", "bọn họ", "họ"),
+    ("very-repeat", "rất rất", "rất"),
+)
+_INTERJECTION = re.compile(r"^(?:à|ồ|ơ|ừ|ừm|này|nè|vâng|dạ|chà|ôi)\s*,\s*", re.IGNORECASE)
+_PRONOUNS = "tôi|ta|mình|anh|em|chị|cô|ông|bà|họ|nó|cậu|con|chúng tôi|chúng ta"
+_REPEATED_SUBJECT = re.compile(r"^((?:" + _PRONOUNS + r")\s[^,.!?;]{3,}),\s+(?:" + _PRONOUNS + r")\s(?=\w)", re.IGNORECASE)
+_CONDENSED_NAMES = frozenset(name for name, *_ in _CONDENSED_RULES) | {"opening-interjection", "repeated-subject"}
 _FINAL = re.compile(r"(?<!\w)(?:à|ạ|nhé|nha|đấy|đó|vậy|thế|mà|chứ|cơ|hả|nhỉ)(?=[.!?,;…]*$)")
 _COMPLEMENT_ENDINGS = frozenset((
     "ở tại đến tới từ là như làm nói cái điều người gì nào sao vì không chẳng chưa đừng "
@@ -64,8 +94,12 @@ class RewritePlan:
     rules: tuple[str, ...]
 
 
-def plan_rewrite(text: str) -> RewritePlan | None:
-    """Apply reviewed lexical contractions once; decline names and quotations."""
+def plan_rewrite(text: str, *, condensed: bool = False) -> RewritePlan | None:
+    """Apply reviewed lexical contractions once; decline names and quotations.
+
+    ``condensed`` adds the shorter-synonym, interjection and repeated-subject
+    rules, and yields a plan only when one of them applies.
+    """
     if not isinstance(text, str) or not 1 <= len(text) <= 512:
         return None
     if any(char in _QUOTES or ord(char) < 32 or ord(char) == 127 for char in text):
@@ -74,7 +108,7 @@ def plan_rewrite(text: str) -> RewritePlan | None:
     if any(word.group()[0].isupper() for word in words[1:]):
         return None
     spoken, rules = text, []
-    for name, phrase, replacement in _RULES:
+    for name, phrase, replacement in _RULES + (_CONDENSED_RULES if condensed else ()):
         pattern = re.compile(r"(?<!\w)(?:" + phrase + r")(?!\w)", re.IGNORECASE)
         def contract(match):
             value = replacement
@@ -93,7 +127,18 @@ def plan_rewrite(text: str) -> RewritePlan | None:
         if "final-particle" not in rules:
             rules.append("final-particle")
         spoken = before + spoken[match.end():]
+    if condensed:
+        for name, pattern, replacement in (("opening-interjection", _INTERJECTION, ""),
+                                           ("repeated-subject", _REPEATED_SUBJECT, r"\1, ")):
+            changed = pattern.sub(replacement, spoken, count=1)
+            if changed != spoken and re.search(r"\w", changed):
+                rules.append(name)
+                spoken = changed
+        if not _CONDENSED_NAMES.intersection(rules):
+            return None
     spoken = re.sub(r"\s+([,.!?;:…])", r"\1", " ".join(spoken.split())).lstrip(",; ")
+    if condensed and text[:1].isupper():
+        spoken = spoken[:1].upper() + spoken[1:]  # A dropped opening word keeps the sentence capitalized.
     if not spoken or not re.search(r"\w", spoken) or spoken == text or not rules:
         return None
     return RewritePlan(text, spoken, tuple(rules))
@@ -155,12 +200,7 @@ class SpokenTextStore:
         markers = [warning for warning in checkpoint.artifact.warnings if warning.startswith(WARNING)]
         if not markers:
             return None
-        plan = plan_rewrite(self.segments[checkpoint.segment_id].text)
-        if plan is None:
-            raise ValueError("rewritten waveform has no applicable lexical rule")
-        if markers != [rewrite_warning(checkpoint.segment_id, plan.rules)]:
-            raise ValueError("unrecognized spoken-text rewrite advisory")
-        return plan
+        return _marked_plan(self.segments[checkpoint.segment_id].text, checkpoint.segment_id, markers)
 
     def filter_checkpoints(self, checkpoints: Mapping[str, TtsCheckpoint]) -> dict[str, TtsCheckpoint]:
         result = {}
@@ -215,6 +255,15 @@ def rewrite_warning(identifier: str, rules: tuple[str, ...] = (RULE,)) -> str:
     return WARNING + identifier + "; " + RECIPE + "; rules " + ",".join(rules) + "; original translation retained; review spoken text"
 
 
+def _marked_plan(text: str, identifier: str, markers: list[str]) -> RewritePlan:
+    """The plan whose advisory a waveform carries, from the regular or condensed tier."""
+    for condensed in (False, True):
+        plan = plan_rewrite(text, condensed=condensed)
+        if plan is not None and markers == [rewrite_warning(identifier, plan.rules)]:
+            return plan
+    raise ValueError("rewritten speech carries no recognized spoken-text rewrite advisory")
+
+
 def _fields(segment, artifact_hash, audio_hash, identity, digest, plan, artifact):
     spoken = segment.text if plan is None else plan.spoken_text
     return {"schema_version": 1, "kind": "dubbing_spoken_text", "recipe": RECIPE,
@@ -259,11 +308,7 @@ def validate_spoken_text_document(value: dict, speech_bytes: bytes,
         markers = [warning for warning in artifact["warnings"] if warning.startswith(WARNING)]
         plan = None
         if markers:
-            plan = plan_rewrite(segment.text)
-            if plan is None:
-                raise ValueError("rewritten speech has no applicable rule")
-            if markers != [rewrite_warning(segment.segment_id, plan.rules)]:
-                raise ValueError("unrecognized spoken-text rewrite advisory")
+            plan = _marked_plan(segment.text, segment.segment_id, markers)
         entries.append(_fields(segment, artifact["artifact_hash"], artifact["content_hash"], identity, digest, plan, artifact))
     expected = {"schema_version": 1, "kind": "dubbing_spoken_text_document", "recipe": RECIPE,
                 "recipe_hash": digest, "checkpoint_identity": identity,
@@ -281,6 +326,7 @@ class BoundedDurationRewriteEngine:
         self.engine = engine
         self.store = store
         self.rewritten_requests: set[str] = set()
+        self.condensed_requests: set[str] = set()
         self.render_window_limits = dict(render_window_limits or {})
 
     def capabilities(self):
@@ -301,7 +347,8 @@ class BoundedDurationRewriteEngine:
         plan, warnings = None, ()
         current = request
         limit = self.render_window_limits.get(identifier)
-        for tier in range(4):
+        refused = None
+        for tier in range(5):
             if tier == 1:
                 if limit is None or request.segment.render_window_end is None or limit.ticks <= request.segment.render_window_end.ticks:
                     continue
@@ -317,20 +364,32 @@ class BoundedDurationRewriteEngine:
                 warnings += (rewrite_warning(identifier, plan.rules),)
             elif tier == 3:
                 current = replace(current, config=replace(current.config, max_speed_ratio_milli=FAST_FIT_MAX_MILLI))
+            elif tier == 4:
+                # One condensed rewrite of the original text, still at most 1.5x.
+                candidate = plan_rewrite(request.segment.text, condensed=True)
+                if (candidate is None or request.request_id in self.condensed_requests
+                        or plan is not None and candidate.spoken_text == plan.spoken_text):
+                    break
+                plan = candidate
+                self.condensed_requests.add(request.request_id)
+                current = replace(current, segment=replace(current.segment, text=plan.spoken_text, normalized_text=None))
+                warnings = tuple(item for item in warnings if not item.startswith(WARNING)) + (rewrite_warning(identifier, plan.rules),)
             try:
                 result = self.engine.synthesize(current)
             except TtsError as error:
                 if tier == 0 and error.code != "DURATION_FIT_REQUIRED":
                     raise
-                if error.code != "DURATION_FIT_REQUIRED" or tier == 3:
-                    evidence = f"TTS_DURATION_FIT_REFUSED: {identifier}; " + "; ".join(warnings)
-                    if tier == 3:
-                        evidence += f"; max speed {FAST_FIT_MAX_MILLI}"
-                    self.store.warnings.append(evidence)
-                    raise TtsError(error.code, error.condition + "; " + evidence, retryable=False) from error
+                refused = error
+                if error.code != "DURATION_FIT_REQUIRED":
+                    break
                 continue
-            if tier == 3:
+            if tier >= 3:
                 warnings += (f"TTS_FAST_FIT: {identifier}; speed {result.speed_ratio_milli}",)
             self.store.pending[identifier] = plan
             return replace(result, warnings=result.warnings + warnings,
                            render_window_end=current.segment.render_window_end)
+        evidence = f"TTS_DURATION_FIT_REFUSED: {identifier}; " + "; ".join(warnings)
+        if current.config.max_speed_ratio_milli == FAST_FIT_MAX_MILLI:
+            evidence += f"; max speed {FAST_FIT_MAX_MILLI}"
+        self.store.warnings.append(evidence)
+        raise TtsError(refused.code, refused.condition + "; " + evidence, retryable=False) from refused

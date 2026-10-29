@@ -41,7 +41,7 @@ class ChunkedAsrTests(unittest.TestCase):
         self.assertEqual(cue.evidence["end_sample"], 1_234_567 + 19_201)
         self.assertEqual(cue.evidence["words"][0]["start_sample"], cue.evidence["start_sample"])
 
-    def run_model(self, root, *, language="auto", on_chunk=None, binding="model-v1", empty_first=False, source=None):
+    def source(self, root):
         (root / "asr/faster-whisper-small").mkdir(parents=True, exist_ok=True)
         path = root / "source.wav"
         if not path.exists():
@@ -49,6 +49,10 @@ class ChunkedAsrTests(unittest.TestCase):
                 writer.setparams((1, 2, SAMPLE_RATE, 0, "NONE", "not compressed"))
                 for second in range(250):
                     writer.writeframes(int(second).to_bytes(2, "little", signed=True) * SAMPLE_RATE)
+        return path
+
+    def run_model(self, root, *, language="auto", on_chunk=None, binding="model-v1", empty_first=False, source=None):
+        path = self.source(root)
         calls = []
         instances = []
         class Model:
@@ -66,6 +70,96 @@ class ChunkedAsrTests(unittest.TestCase):
         with patch.dict("sys.modules", {"faster_whisper": SimpleNamespace(WhisperModel=Model)}):
             result = worker._transcribe_with_faster_whisper(path, root, language, on_chunk=on_chunk, model_binding=binding)
         return result, calls, instances
+
+    def run_gpu(self, root, *, fail_construct=False, fail_on_call=None, error=None):
+        """A CUDA model that fails as asked; the CPU model is the normal fake."""
+        path = self.source(root)
+        devices, fallbacks = [], []
+        class Model:
+            def __init__(self, *args, **kwargs):
+                devices.append((kwargs["device"], kwargs["compute_type"]))
+                if kwargs["device"] == "cuda" and fail_construct:
+                    raise RuntimeError("CUDA failed with error no kernel image is available")
+                self.device, self.calls = kwargs["device"], 0
+            def transcribe(self, window_path, **kwargs):
+                self.calls += 1
+                if self.device == "cuda" and self.calls == fail_on_call:
+                    raise error or RuntimeError("CUDA failed with error out of memory")
+                def segments():  # Faster-Whisper decodes lazily, while cues are read.
+                    yield speech()
+                return segments(), SimpleNamespace(language="en", language_probability=.9)
+        device = SimpleNamespace(device="cuda", compute_type="int8_float16")
+        with patch.dict("sys.modules", {"faster_whisper": SimpleNamespace(WhisperModel=Model)}):
+            result = worker._transcribe_with_faster_whisper(path, root, "auto", device=device, model_binding="model-v1",
+                                                            on_fallback=lambda index, error: fallbacks.append((index, str(error))))
+        return result, devices, fallbacks
+
+    def test_gpu_chunks_match_cpu_and_resume_across_devices(self):
+        with TemporaryDirectory() as cpu_dir, TemporaryDirectory() as gpu_dir:
+            expected, _, _ = self.run_model(Path(cpu_dir))
+            result, devices, fallbacks = self.run_gpu(Path(gpu_dir))
+            self.assertEqual(devices, [("cuda", "int8_float16")])
+            self.assertEqual((fallbacks, result.cues), ([], expected.cues))
+            # Chunk identity ignores the device, so a CPU run reuses GPU chunks.
+            replay, calls, instances = self.run_model(Path(gpu_dir))
+            self.assertEqual((calls, instances, replay), ([], [], result))
+
+    def test_cuda_construction_failure_runs_every_chunk_on_cpu(self):
+        with TemporaryDirectory() as directory:
+            expected, _, _ = self.run_model(Path(directory) / "cpu")
+            result, devices, fallbacks = self.run_gpu(Path(directory) / "gpu", fail_construct=True)
+            self.assertEqual(devices, [("cuda", "int8_float16"), ("cpu", "int8")])
+            self.assertEqual([index for index, _ in fallbacks], [0])
+            self.assertIn("no kernel image", fallbacks[0][1])
+            self.assertEqual(result.cues, expected.cues)
+
+    def test_out_of_memory_mid_job_retries_that_chunk_and_continues_on_cpu(self):
+        with TemporaryDirectory() as directory:
+            expected, _, _ = self.run_model(Path(directory) / "cpu")
+            result, devices, fallbacks = self.run_gpu(Path(directory) / "gpu", fail_on_call=2)
+            self.assertEqual(devices, [("cuda", "int8_float16"), ("cpu", "int8")])
+            self.assertEqual([index for index, _ in fallbacks], [1])
+            self.assertEqual(result.cues, expected.cues)
+            self.assertEqual(len(list((Path(directory) / "gpu" / "asr-chunks").rglob("*.json"))), 3)
+
+    def test_content_failures_are_not_retried_on_cpu(self):
+        from engine.dubflow.worker.whisper_chunks import ChunkAsrError
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(worker.ProductionJobError, "SOURCE_LANGUAGE_UNRESOLVED"):
+                self.run_gpu(Path(directory), fail_on_call=1, error=ChunkAsrError("SOURCE_LANGUAGE_UNRESOLVED", "no language"))
+            self.assertFalse(list((Path(directory) / "asr-chunks").rglob("*.json")))
+
+    def test_cpu_failure_after_fallback_still_fails_the_stage(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            class Broken:
+                def __init__(self, *args, **kwargs):
+                    raise RuntimeError(kwargs["device"] + " unavailable")
+            (root / "asr/faster-whisper-small").mkdir(parents=True)
+            with wave.open(str(root / "source.wav"), "wb") as writer:
+                writer.setparams((1, 2, SAMPLE_RATE, 0, "NONE", "not compressed"))
+                writer.writeframes(b"\x01\x00" * SAMPLE_RATE)
+            fallbacks = []
+            with patch.dict("sys.modules", {"faster_whisper": SimpleNamespace(WhisperModel=Broken)}), \
+                 self.assertRaisesRegex(worker.ProductionJobError, "ASR_FAILED: cpu unavailable"):
+                worker._transcribe_with_faster_whisper(root / "source.wav", root, "auto", device=SimpleNamespace(device="cuda", compute_type="float16"),
+                                                       on_fallback=lambda index, error: fallbacks.append(index))
+            self.assertEqual(fallbacks, [0])
+
+    def test_device_choice_is_recorded_as_job_warnings(self):
+        from engine.dubflow.accelerator import nvidia
+        card = nvidia.NvidiaDevice("NVIDIA GeForce RTX 3060", 12 * 1024 ** 3, (8, 6), 12080)
+        config = SimpleNamespace(app_root=Path("app"), model_root=Path("models"), accelerator="auto")
+        cases = ((nvidia.AsrDevice("cuda", "int8_float16", card), ["ASR_ACCELERATOR: cuda int8_float16 on NVIDIA GeForce RTX 3060 (12 GB)"]),
+                 (nvidia.AsrDevice("cpu", "int8", card, "compute capability 5.2 is below 6.1"), ["ACCELERATOR_FALLBACK: ASR ran on the CPU: compute capability 5.2 is below 6.1"]),
+                 (nvidia.AsrDevice("cpu", "int8"), []))
+        for device, expected in cases:
+            with self.subTest(device=device.device, reason=device.reason):
+                warnings = []
+                with patch.object(nvidia, "select_asr_device", return_value=device) as select:
+                    self.assertIs(worker._asr_device(config, SimpleNamespace(progress=lambda *a, **k: None), warnings), device)
+                self.assertEqual(warnings, expected)
+                self.assertEqual(select.call_args.args[2], "auto")
 
     def test_committed_chunk_survives_interruption_and_resume_skips_model_work(self):
         with TemporaryDirectory() as directory:

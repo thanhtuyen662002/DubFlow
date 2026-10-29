@@ -28,8 +28,9 @@ assert.deepEqual(startJobRequest(job(reopened, zhId), "D:/Results"), {
   jobId: zhId, sourcePath: "C:/clips/douyin.mp4", outputDir: null, outputRoot: "D:/Results",
   enableDubbing: true, ttsVoiceId: VOICE, burnIn: true, sourceLanguage: "zh", subtitleBox: false,
   translationEngine: "hachimi", blurRegions: null, blurAuto: false, multiVoice: false, speakerVoices: null,
-  separateBackground: false,
+  separateBackground: false, cpuOnly: false,
 });
+assert.equal(startJobRequest(job(reopened, zhId), null, true).cpuOnly, true, "the app-wide CPU choice reaches start_job");
 const autoRequest = startJobRequest(job(reopened, autoId), null);
 assert.equal(autoRequest.sourceLanguage, "auto", "Auto must never silently become English");
 assert.equal(autoRequest.translationEngine, "argos");

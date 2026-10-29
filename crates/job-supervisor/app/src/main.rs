@@ -39,6 +39,13 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(35);
 const STDERR_LIMIT: usize = 64 * 1024;
 const QC_SUMMARY_LIMIT: u64 = 1024 * 1024;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+/// Set when Windows ends the session (console close, logoff or shutdown).
+/// Workers killed in that window were interrupted, not failing, so their
+/// deaths must not spend the stage retry budget.
+static SESSION_ENDING: AtomicBool = AtomicBool::new(false);
+/// A shutdown can kill the worker a moment before this process receives its
+/// own control event; wait this long before calling an attempt failed.
+const SESSION_END_GRACE: Duration = Duration::from_millis(1500);
 
 type SupervisorResult<T> = Result<T, SupervisorError>;
 
@@ -373,6 +380,8 @@ struct StartSpec {
     speaker_voices: Option<Value>,
     /// Experimental: keep the music/effects, remove the original voices.
     separate_background: bool,
+    /// Run every model on the CPU even when an NVIDIA GPU is present.
+    cpu_only: bool,
 }
 
 impl StartSpec {
@@ -426,6 +435,7 @@ impl StartSpec {
             multi_voice: false,
             speaker_voices: None,
             separate_background: false,
+            cpu_only: false,
         })
     }
     fn with_voice_id(mut self, voice_id: Option<String>) -> SupervisorResult<Self> {
@@ -473,6 +483,10 @@ impl StartSpec {
     }
     fn with_separate_background(mut self, separate_background: bool) -> Self {
         self.separate_background = separate_background;
+        self
+    }
+    fn with_cpu_only(mut self, cpu_only: bool) -> Self {
+        self.cpu_only = cpu_only;
         self
     }
     fn with_blur_auto(mut self, blur_auto: bool) -> Self {
@@ -562,6 +576,9 @@ impl StartSpec {
         }
         if self.separate_background {
             request["separate_background"] = json!(true);
+        }
+        if self.cpu_only {
+            request["accelerator"] = json!("cpu");
         }
         Ok(serde_json::to_string(&request)?)
     }
@@ -699,6 +716,7 @@ enum CliMode {
         multi_voice: bool,
         speaker_voices: Option<String>,
         separate_background: bool,
+        cpu_only: bool,
     },
     Cancel {
         root: Option<PathBuf>,
@@ -720,6 +738,7 @@ fn main() {
 }
 
 fn run() -> SupervisorResult<()> {
+    watch_session_end();
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("source-serve")) {
         return source_server::run(std::env::args_os().skip(2)).map_err(|_| {
             SupervisorError::Invalid("source service stopped; inspect its scoped events".into())
@@ -747,6 +766,7 @@ fn run() -> SupervisorResult<()> {
             multi_voice,
             speaker_voices,
             separate_background,
+            cpu_only,
         } => {
             return run_one_shot(
                 root,
@@ -768,6 +788,7 @@ fn run() -> SupervisorResult<()> {
                 multi_voice,
                 speaker_voices,
                 separate_background,
+                cpu_only,
             );
         }
         CliMode::Cancel {
@@ -862,6 +883,7 @@ where
             let mut multi_voice = false;
             let mut speaker_voices = None;
             let mut separate_background = false;
+            let mut cpu_only = false;
             let mut burn_in_subtitles = true;
             while let Some(arg) = args.next() {
                 match arg.to_string_lossy().as_ref() {
@@ -899,6 +921,7 @@ where
                     "--blur-auto" => blur_auto = true,
                     "--multi-voice" => multi_voice = true,
                     "--separate-background" => separate_background = true,
+                    "--cpu-only" => cpu_only = true,
                     "--speaker-voices" => {
                         speaker_voices = Some(next_arg(&mut args, "--speaker-voices")?)
                     }
@@ -936,6 +959,7 @@ where
                 multi_voice,
                 speaker_voices,
                 separate_background,
+                cpu_only,
             }
         }
         Some("cancel") => {
@@ -1067,6 +1091,7 @@ fn run_one_shot(
     multi_voice: bool,
     speaker_voices: Option<String>,
     separate_background: bool,
+    cpu_only: bool,
 ) -> SupervisorResult<()> {
     let root = match root {
         Some(root) => root,
@@ -1089,7 +1114,7 @@ fn run_one_shot(
     )?.with_voice_id(tts_voice_id)?.with_subtitle_box(subtitle_box)
     .with_translation_engine(translation_engine)?.with_blur_regions(blur_regions)?
     .with_blur_auto(blur_auto).with_multi_voice(multi_voice, speaker_voices)?
-    .with_separate_background(separate_background);
+    .with_separate_background(separate_background).with_cpu_only(cpu_only);
     // Keep the kernel lease through the final status write. A duplicate must
     // not change SQL/status, reconcile artifacts or start another worker.
     let _execution_lease = JobExecutionGuard::acquire(&runtime.db, &spec.job_id)?;
@@ -1097,7 +1122,7 @@ fn run_one_shot(
     // Verify/admit before changing status files or restart state. A conflicting
     // caller has no authority to fail or relabel the original durable job.
     ensure_job(&startup_store, &spec, &runtime)?;
-    startup_store.recover_job_after_restart(&spec.job_id, now_ms())?;
+    startup_store.recover_job_after_restart(&spec.job_id, MAX_ATTEMPTS, now_ms())?;
     let final_status_path = status_path.unwrap_or_else(|| {
         data_root
             .join("control")
@@ -1341,7 +1366,9 @@ fn contract_counter(status: &Value, path: &[&str]) -> u64 {
 /// Missing, modified or legacy reports cannot authorize a full-dub claim.
 fn committed_qc_summary(store: &DurableStore, spec: &StartSpec) -> Option<Value> {
     let expected_path = spec.output_dir.join("qc_report.json");
-    for attempt in (1..=MAX_ATTEMPTS).rev() {
+    // A restart renews the budget, so attempts can exceed MAX_ATTEMPTS.
+    let started = store.stage_history(&spec.job_id, STAGE_ID).map(|history| history.attempt).unwrap_or(MAX_ATTEMPTS);
+    for attempt in (1..=started).rev() {
         let id = format!("{}-{}-qc-report-a{}", spec.job_id, STAGE_ID, attempt);
         let artifact = match store.artifact(&id) {
             Ok(artifact) => artifact,
@@ -1378,7 +1405,50 @@ fn committed_qc_summary(store: &DurableStore, spec: &StartSpec) -> Option<Value>
     None
 }
 
+/// "3 đoạn (12 s, 0,4% lời thoại) giữ tiếng gốc: 00:14:02, …" from the worker's
+/// undubbed-speech summary; None when it is absent, malformed or empty.
+fn undubbed_summary(value: Option<&Value>) -> Option<String> {
+    const SHOWN: usize = 5;
+    let value = value?.as_object()?;
+    let phrases = value.get("phrases")?.as_u64()?;
+    let duration = value.get("duration_ms")?.as_u64()?;
+    let speech = value.get("speech_ms")?.as_u64()?;
+    let starts = value.get("starts_ms")?.as_array()?;
+    if phrases == 0 || speech == 0 || starts.is_empty() {
+        return None;
+    }
+    let mut times = Vec::new();
+    for start in starts.iter().take(SHOWN) {
+        let seconds = start.as_u64()? / 1000;
+        times.push(format!("{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60));
+    }
+    let more = if phrases as usize > times.len() { ", …" } else { "" };
+    let tenths = (duration.min(speech) * 1000 + speech / 2) / speech;
+    Some(format!(
+        "Đã xuất video; {phrases} đoạn ({} s, {},{}% lời thoại) giữ tiếng gốc: {}{more}.",
+        (duration + 500) / 1000, tenths / 10, tenths % 10, times.join(", ")
+    ))
+}
+
+/// Informational worker notes that are not quality advisories.
+const INFORMATIONAL_WARNINGS: [&str; 1] = ["ASR_ACCELERATOR:"];
+
 fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, String) {
+    let (reason, mut message) = quality_summary(store, spec);
+    if reason != "completed_quality_unverified" {
+        let device = committed_qc_summary(store, spec).and_then(|qc| {
+            qc.get("warnings")?.as_array()?.iter().filter_map(Value::as_str)
+                .find_map(|warning| warning.strip_prefix("ASR_ACCELERATOR: cuda "))
+                .and_then(|rest| rest.split_once(" on ")).map(|(_, label)| label.to_owned())
+        });
+        if let Some(label) = device {
+            message.push_str(&format!(" Lời thoại được nhận dạng bằng GPU {label}."));
+        }
+    }
+    (reason, message)
+}
+
+fn quality_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, String) {
     let unverified = || ("completed_quality_unverified", if spec.enable_dubbing {
         "Đã xuất video; chưa xác minh được mức độ hoàn tất lồng tiếng. Hãy kiểm tra báo cáo chất lượng."
     } else {
@@ -1419,7 +1489,9 @@ fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, 
                 None => return unverified(),
             };
             if tts_failures > 0 || mix_failures > 0 {
-                let summary = if mix_failures == 0 {
+                let summary = if let Some(undubbed) = undubbed_summary(audio.get("undubbed")) {
+                    undubbed
+                } else if mix_failures == 0 {
                     format!("Đã xuất video; {tts_failures} câu chưa lồng tiếng được.")
                 } else {
                     "Đã xuất video; lồng tiếng chưa đầy đủ.".into()
@@ -1438,7 +1510,9 @@ fn completion_summary(store: &DurableStore, spec: &StartSpec) -> (&'static str, 
         Some("original") if !spec.enable_dubbing => {}
         _ => return unverified(),
     }
-    if downgraded || !warnings.is_empty()
+    let advisories = warnings.iter().filter_map(Value::as_str)
+        .filter(|warning| !INFORMATIONAL_WARNINGS.iter().any(|prefix| warning.starts_with(prefix))).count();
+    if downgraded || advisories > 0
         || audio.get("mix_warnings").and_then(Value::as_array).map_or(false, |values| !values.is_empty())
     {
         ("completed_with_warnings", "Đã xuất video; có lưu ý trong báo cáo chất lượng. Hãy kiểm tra trước khi sử dụng.".into())
@@ -1954,7 +2028,7 @@ fn execute_job_owned(
 ) -> SupervisorResult<()> {
     let store = DurableStore::open(&runtime.db)?;
     ensure_job(&store, &spec, runtime)?;
-    store.recover_job_after_restart(&spec.job_id, now_ms())?;
+    store.recover_job_after_restart(&spec.job_id, MAX_ATTEMPTS, now_ms())?;
     // A process can die between artifact registration and its final commit.
     // Reconcile those durable rows before deciding whether the job is already
     // complete or starting another worker attempt.
@@ -1996,6 +2070,9 @@ fn execute_job_owned(
         let _ = tx.send(InternalMessage::Output(json!({"event":"completed", "job_id":spec.job_id, "status":"succeeded", "resumed":true})));
         return Ok(());
     }
+    // Recovery may have renewed the budget for this process; the durable row,
+    // not the constant, bounds this run's retries.
+    let max_attempts = store.stage_history(&spec.job_id, STAGE_ID)?.max_attempts;
 
     loop {
         if control.cancelled.load(Ordering::Acquire) {
@@ -2012,6 +2089,10 @@ fn execute_job_owned(
             let _ = tx.send(InternalMessage::Output(
                 json!({"event":"cancelled", "job_id":spec.job_id, "status":"cancelled"}),
             ));
+            return Ok(());
+        }
+        // Never start a replacement worker into a session that is ending.
+        if SESSION_ENDING.load(Ordering::Acquire) {
             return Ok(());
         }
         let attempt = store.start_stage(&spec.job_id, STAGE_ID, now_ms())?;
@@ -2060,9 +2141,12 @@ fn execute_job_owned(
                 condition,
                 retryable,
             }) => {
+                if session_ending_within(SESSION_END_GRACE) {
+                    return Ok(leave_for_restart_recovery(&spec, attempt, &code, &tx));
+                }
                 let reason = format!("{code}: {condition}");
                 store.fail_stage(&spec.job_id, STAGE_ID, &reason, retryable, now_ms())?;
-                if retryable && attempt < MAX_ATTEMPTS {
+                if retryable && attempt < max_attempts {
                     let retry_condition = format!("worker-restart-attempt-{attempt}-{code}");
                     store.retry_stage(&spec.job_id, STAGE_ID, &retry_condition, now_ms())?;
                     let _ = tx.send(InternalMessage::Output(json!({"event":"retrying", "job_id":spec.job_id, "stage_id":STAGE_ID, "attempt":attempt, "next_attempt":attempt.saturating_add(1), "code":code, "condition":condition})));
@@ -2073,6 +2157,9 @@ fn execute_job_owned(
                 return Ok(());
             }
             Err(error) => {
+                if session_ending_within(SESSION_END_GRACE) {
+                    return Ok(leave_for_restart_recovery(&spec, attempt, supervisor_error_code(&error), &tx));
+                }
                 let reason = error.to_string();
                 let retryable = matches!(
                     error,
@@ -2089,7 +2176,7 @@ fn execute_job_owned(
                     _ => "SUPERVISOR_WORKER_ERROR".into(),
                 };
                 let _ = store.fail_stage(&spec.job_id, STAGE_ID, &reason, retryable, now_ms());
-                if retryable && attempt < MAX_ATTEMPTS {
+                if retryable && attempt < max_attempts {
                     let retry_condition = format!("supervisor-restart-attempt-{attempt}-{code}");
                     if store
                         .retry_stage(&spec.job_id, STAGE_ID, &retry_condition, now_ms())
@@ -2109,6 +2196,60 @@ fn execute_job_owned(
                 return Ok(());
             }
         }
+    }
+}
+
+/// Windows is ending the session: record no failure and start no attempt. The
+/// stage stays `running`, so the next supervisor's restart recovery resumes it
+/// from its checkpoints with a renewed budget.
+fn leave_for_restart_recovery(spec: &StartSpec, attempt: u8, code: &str, tx: &Sender<InternalMessage>) {
+    let _ = tx.send(InternalMessage::Output(json!({"event":"interrupted", "job_id":spec.job_id, "stage_id":STAGE_ID, "attempt":attempt, "code":code, "condition":"windows session is ending"})));
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_session_end_event(ctrl_type: u32) -> bool {
+    // CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT. Ctrl+C and
+    // Ctrl+Break keep their default handling.
+    matches!(ctrl_type, 2 | 5 | 6)
+}
+
+#[cfg(windows)]
+fn watch_session_end() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+    }
+
+    unsafe extern "system" fn on_console_event(ctrl_type: u32) -> i32 {
+        if is_session_end_event(ctrl_type) {
+            SESSION_ENDING.store(true, Ordering::Release);
+            1
+        } else {
+            0
+        }
+    }
+
+    // SAFETY: the handler is a static function that only stores an atomic.
+    // Registration failure only loses the shutdown hint; restart recovery
+    // still renews the budget.
+    unsafe {
+        SetConsoleCtrlHandler(Some(on_console_event), 1);
+    }
+}
+
+#[cfg(not(windows))]
+fn watch_session_end() {}
+
+fn session_ending_within(grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        if SESSION_ENDING.load(Ordering::Acquire) {
+            return true;
+        }
+        if cfg!(not(windows)) || Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -2237,6 +2378,9 @@ fn run_worker_attempt(
     }
     if spec.separate_background {
         args["separate_background"] = json!(true);
+    }
+    if spec.cpu_only {
+        args["accelerator"] = json!("cpu");
     }
     let args_json = serde_json::to_string(&args)?;
     let command = Envelope::new(
@@ -2727,7 +2871,7 @@ mod tests {
         let runtime = RuntimePaths { root:root.clone(), app_root:root.join("app"), python:root.join("python.exe"), worker_script:root.join("worker.py"),
             ffmpeg:root.join("ffmpeg.exe"), ffprobe:root.join("ffprobe.exe"), model_root:root.join("models"), db:root.join("state.sqlite") };
         let spec = StartSpec { job_id:"identity-test".into(), source_path:root.join("source.mp4"), output_dir:root.join("output"), source_language:"auto".into(), target_language:"vi".into(),
-            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false };
+            enable_dubbing:true, tts_voice_id:Some("vi-truc-ly-vieneu3-v1".into()), burn_in_subtitles:true, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false, cpu_only:false };
         (root, runtime, spec)
     }
 
@@ -2809,6 +2953,11 @@ mod tests {
             (json!({"mode":"dubbed", "tts_failures":0, "mix_failures":0, "mix_warnings":[]}), "completed", "lồng tiếng Việt"),
             (json!({"mode":"dubbed", "tts_failures":22, "mix_failures":0, "mix_warnings":[]}), "completed_partial_dubbing", "22 câu"),
             (json!({"mode":"dubbed", "tts_failures":0, "mix_failures":1, "mix_warnings":[]}), "completed_partial_dubbing", "các đoạn lỗi"),
+            (json!({"mode":"dubbed", "tts_failures":9, "mix_failures":0, "mix_warnings":[], "undubbed":{"phrases":7,
+                "duration_ms":12_400, "speech_ms":3_100_000, "starts_ms":[842_000, 1_870_500, 3_600_000, 3_700_000, 3_800_000, 3_900_000, 4_000_000]}}),
+             "completed_partial_dubbing", "7 đoạn (12 s, 0,4% lời thoại) giữ tiếng gốc: 00:14:02, 00:31:10, 01:00:00, 01:01:40, 01:03:20, …"),
+            (json!({"mode":"dubbed", "tts_failures":2, "mix_failures":0, "mix_warnings":[], "undubbed":{"phrases":"bad"}}),
+             "completed_partial_dubbing", "2 câu"),
             (json!({"mode":"original", "backend":"source-audio"}), "completed_b1_fallback", "lồng tiếng không khả dụng"),
         ];
         for (audio, reason, text) in cases {
@@ -2886,7 +3035,32 @@ mod tests {
         assert!(!spec.durable_request(&runtime).unwrap().contains("separate_background"));
         let separated: Value = serde_json::from_str(&spec.clone().with_separate_background(true).durable_request(&runtime).unwrap()).unwrap();
         assert_eq!(separated["separate_background"], true);
+        assert!(!spec.durable_request(&runtime).unwrap().contains("accelerator"));
+        let cpu: Value = serde_json::from_str(&spec.clone().with_cpu_only(true).durable_request(&runtime).unwrap()).unwrap();
+        assert_eq!(cpu["accelerator"], "cpu");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn gpu_note_is_informational_and_names_the_device() {
+        let note = "ASR_ACCELERATOR: cuda int8_float16 on NVIDIA GeForce RTX 3060 (12 GB)";
+        let cases = [
+            (json!([note]), false, "completed", "Đã xuất video lồng tiếng Việt. Lời thoại được nhận dạng bằng GPU NVIDIA GeForce RTX 3060 (12 GB)."),
+            (json!([note, "EDITABLE_LINK_FALLBACK: copied"]), true, "completed_with_warnings", "GPU NVIDIA GeForce RTX 3060 (12 GB)."),
+            (json!(["ACCELERATOR_FALLBACK: ASR ran on the CPU: driver too old"]), true, "completed_with_warnings", "có lưu ý"),
+        ];
+        for (warnings, downgrade, reason, text) in cases {
+            let (_root, _, spec) = identity_fixture();
+            let store = DurableStore::open_in_memory().unwrap();
+            let mut qc = test_qc(json!({"mode":"dubbed", "tts_failures":0, "mix_failures":0, "mix_warnings":[]}));
+            qc["warnings"] = warnings;
+            qc["downgrade"] = json!(downgrade);
+            commit_test_qc(&store, &spec, &spec.output_dir.join("qc_report.json"), &serde_json::to_vec(&qc).unwrap());
+            let (actual, message) = completion_summary(&store, &spec);
+            assert_eq!(actual, reason);
+            assert!(message.contains(text), "{message}");
+            assert_eq!(message.contains("GPU"), qc["warnings"].to_string().contains("ASR_ACCELERATOR"));
+        }
     }
 
     #[test]
@@ -2994,6 +3168,50 @@ mod tests {
         assert_eq!(status["progress"]["heartbeat_sequence"], heartbeat);
         assert_eq!(status["resource"]["held"], false);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn job_resumed_after_shutdown_kills_completes_with_verified_quality() {
+        let (root, _, spec) = identity_fixture();
+        let store = DurableStore::open_in_memory().unwrap();
+        store.create_job(&spec.job_id, "file:///source", 1).unwrap();
+        store.create_stage(&spec.job_id, STAGE_ID, STAGE_KIND, MAX_ATTEMPTS).unwrap();
+        store.start_job(&spec.job_id, 2).unwrap();
+        // Windows shutdown: two workers die with EOF, the supervisor retries,
+        // then dies itself while the third attempt is running.
+        for attempt in 1..=MAX_ATTEMPTS {
+            assert_eq!(store.start_stage(&spec.job_id, STAGE_ID, 3).unwrap(), attempt);
+            if attempt < MAX_ATTEMPTS {
+                store.fail_stage(&spec.job_id, STAGE_ID, "WORKER_EOF: killed", true, 4).unwrap();
+                store.retry_stage(&spec.job_id, STAGE_ID, &format!("worker-restart-attempt-{attempt}-WORKER_EOF"), 5).unwrap();
+            }
+        }
+        store.record_checkpoint(&spec.job_id, STAGE_ID, "transcript", None, true, 6).unwrap();
+        // "Bắt đầu xử lý" after reboot: both recovery calls of one run.
+        store.recover_job_after_restart(&spec.job_id, MAX_ATTEMPTS, 7).unwrap();
+        store.recover_job_after_restart(&spec.job_id, MAX_ATTEMPTS, 8).unwrap();
+        assert_eq!(store.start_stage(&spec.job_id, STAGE_ID, 9).unwrap(), MAX_ATTEMPTS + 1);
+        let mut status = default_contract_status();
+        restore_stage_history(&mut status, &spec, &store);
+        assert_eq!(status["retry"]["attempt"], "4");
+        assert_eq!(status["retry"]["max_attempts"], "6");
+        assert_eq!(status["checkpoint_id"], "transcript");
+        let path = spec.output_dir.join("qc_report.json");
+        fs::create_dir_all(&spec.output_dir).unwrap();
+        fs::write(&path, serde_json::to_vec(&test_qc(json!({"mode":"dubbed", "tts_failures":0, "mix_failures":0, "mix_warnings":[]}))).unwrap()).unwrap();
+        let id = format!("{}-{}-qc-report-a4", spec.job_id, STAGE_ID);
+        store.record_artifact_written(&id, &spec.job_id, STAGE_ID, &path, None, true, 10).unwrap();
+        store.commit_artifact(&id, 11).unwrap();
+        store.complete_job(&spec.job_id, 12).unwrap();
+        assert_eq!(completion_summary(&store, &spec).0, "completed", "attempt-4 QC must be found");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_session_end_console_events_stop_retries() {
+        for ctrl_type in [2, 5, 6] { assert!(is_session_end_event(ctrl_type)); }
+        for ctrl_type in [0, 1, 3, 4, 7] { assert!(!is_session_end_event(ctrl_type)); }
+        assert!(!session_ending_within(Duration::ZERO));
     }
 
     #[test]
@@ -3166,7 +3384,7 @@ mod tests {
         let spec = StartSpec {
             job_id:"test".into(), source_path:PathBuf::from("source"), output_dir:PathBuf::from("output"),
             source_language:"auto".into(), target_language:"vi".into(), enable_dubbing:true,
-            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false,
+            burn_in_subtitles:true, tts_voice_id:None, subtitle_box:false, translation_engine:"argos".into(), blur_regions:None, blur_auto:false, multi_voice:false, speaker_voices:None, separate_background:false, cpu_only:false,
         };
         for invalid in ["", "../escape", "Unknown", "a\nb", &"a".repeat(97)] {
             assert!(spec.clone().with_voice_id(Some(invalid.into())).is_err());
