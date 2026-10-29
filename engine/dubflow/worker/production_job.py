@@ -180,6 +180,8 @@ class WorkerConfig:
     multi_voice: bool = False
     speaker_voices: Mapping[str, str] = field(default_factory=dict)
     separate_background: bool = False
+    # "auto" uses a supported NVIDIA GPU when present; "cpu" never probes one.
+    accelerator: str = "auto"
 
     @classmethod
     def from_args(cls, args: Mapping[str, Any]) -> "WorkerConfig":
@@ -217,6 +219,10 @@ class WorkerConfig:
         if translation_engine not in TRANSLATION_ENGINES:
             raise ProductionJobError("COMMAND_INVALID", "translation_engine must be argos or hachimi")
 
+        accelerator = args.get("accelerator", "auto")
+        if not isinstance(accelerator, str) or accelerator not in {"auto", "cpu"}:
+            raise ProductionJobError("COMMAND_INVALID", "accelerator must be auto or cpu")
+
         raw_blur = args.get("blur_regions") or []
         if not isinstance(raw_blur, list) or len(raw_blur) > MAX_BLUR_REGIONS:
             raise ProductionJobError("COMMAND_INVALID", "blur_regions must be a bounded list")
@@ -251,6 +257,7 @@ class WorkerConfig:
             multi_voice=optional_bool("multi_voice", False),
             speaker_voices=dict(speaker_voices),
             separate_background=optional_bool("separate_background", False),
+            accelerator=accelerator,
         )
         if config.target_language != "vi":
             raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the production baseline currently supports Vietnamese output only")
@@ -671,7 +678,27 @@ def _whisper_language(requested: str) -> str | None:
     return "zh" if requested.lower() in {"zh", "zh-cn", "zh-tw"} else requested.lower()
 
 
-def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_language: str, *, chunks_dir: Path | None = None, model_binding: str | None = None, on_chunk: Any = None) -> TranscriptResult:
+def _asr_device(config: WorkerConfig, emitter: Any, warnings: list[str]) -> Any:
+    """Pick CUDA or the CPU for ASR; any GPU problem becomes a CPU choice and a warning."""
+    from engine.dubflow.accelerator import nvidia
+
+    last = [0.0]
+    def download(_artifact: str, done: int, total: int) -> None:
+        now = time.monotonic()
+        if done < total and now - last[0] < 1.0:
+            return
+        last[0] = now
+        emitter.progress(0.18, f"Đang tải thư viện GPU NVIDIA lần đầu: {done // 1_000_000}/{total // 1_000_000} MB")
+    device = nvidia.select_asr_device(config.app_root, config.model_root, getattr(config, "accelerator", "auto"), progress=download)
+    if device.device == "cuda":
+        warnings.append(f"ASR_ACCELERATOR: cuda {device.compute_type} on {device.gpu.label()}")
+    elif device.reason:
+        warnings.append(f"ACCELERATOR_FALLBACK: ASR ran on the CPU: {device.reason}")
+    return device
+
+
+def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_language: str, *, chunks_dir: Path | None = None, model_binding: str | None = None, on_chunk: Any = None,
+                                    device: Any = None, on_fallback: Any = None) -> TranscriptResult:
     from engine.dubflow.worker.whisper_cues import ASR_RECIPE, SAMPLE_RATE, MAX_GAP_SAMPLES
     from engine.dubflow.worker.whisper_chunks import CORE_SAMPLES, OVERLAP_SAMPLES, ChunkAsrError, transcribe_bounded
     try:
@@ -697,11 +724,14 @@ def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_l
                 return _asr_word_evidence_matches(to_cues(aligned), {**base_evidence, "cue_quality": {item.cue_id: item.evidence for item in aligned}})
             except (TypeError, ValueError):
                 return False
+        cpu_model = lambda: WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=max(1, min(8, os.cpu_count() or 1)), local_files_only=True)
+        on_gpu = device is not None and device.device == "cuda"
         bounded = transcribe_bounded(
             audio_path, total_samples=total_samples, audio_hash=audio_hash, language=_whisper_language(source_language),
             model_binding=model_binding or ASR_RECIPE, chunks_dir=chunks_dir or (audio_path.parent / "asr-chunks"),
-            model_factory=lambda: WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=max(1, min(8, os.cpu_count() or 1)), local_files_only=True),
+            model_factory=(lambda: WhisperModel(str(model_path), device="cuda", device_index=0, compute_type=device.compute_type, local_files_only=True)) if on_gpu else cpu_model,
             write_json=_atomic_json, validate_cues=validate, on_chunk=on_chunk,
+            fallback_factory=cpu_model if on_gpu else None, on_fallback=on_fallback,
         )
         cues = to_cues(bounded.cues)
         evidence = {**base_evidence, "schema_version": 2, "cue_quality": {item.cue_id: item.evidence for item in bounded.cues},
@@ -1221,6 +1251,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     from engine.dubflow.worker.whisper_cues import ASR_RECIPE
     transcript_input = "sha256:" + sha256(json.dumps({"source_hash": source_hash, "audio_decode_identity": audio_identity, "requested_language": config.source_language, "sidecar_cues": [cue.to_dict() for cue in sidecar] if sidecar is not None else None, "asr_profile_hash": _sha256(profile_path), "recipe": ASR_RECIPE}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     transcript = None
+    asr_warnings: list[str] = []
     if _stage_ready(checkpoint, "transcript", (transcript_path,)):
         transcript_document = json.loads(transcript_path.read_text(encoding="utf-8"))
         cues = _cues_from_json(transcript_path)
@@ -1232,11 +1263,18 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             transcript = _sidecar_language(sidecar, config, audio_path)
             transcript_source = "sidecar-srt"
         else:
-            emitter.progress(0.18, "Đang nhận dạng lời thoại bằng model CPU")
+            device = _asr_device(config, emitter, asr_warnings)
+            label = [device.label]
+            emitter.progress(0.18, f"Đang nhận dạng lời thoại bằng {label[0]}")
             def asr_checkpoint(done: int, total: int, chunk_id: str, artifact_hash: str) -> None:
-                emitter.progress(0.18 + 0.19 * done / total, "Đang nhận dạng lời thoại", units_done=done, units_total=total)
+                emitter.progress(0.18 + 0.19 * done / total, f"Đang nhận dạng lời thoại bằng {label[0]}", units_done=done, units_total=total)
                 emitter.checkpoint("asr:" + chunk_id, artifact_hash)
-            transcript = _transcribe_with_faster_whisper(audio_path, config.model_root, config.source_language, chunks_dir=work_dir / "asr-chunks", model_binding=transcript_input, on_chunk=asr_checkpoint)
+            def asr_fallback(index: int, error: Exception) -> None:
+                label[0] = "model CPU"
+                detail = " ".join(f"{type(error).__name__}: {error}".replace("\x00", " ").split())[:300]
+                asr_warnings.append(f"ACCELERATOR_FALLBACK: ASR chunk {index} and later chunks ran on the CPU after a GPU failure: {detail}")
+            transcript = _transcribe_with_faster_whisper(audio_path, config.model_root, config.source_language, chunks_dir=work_dir / "asr-chunks", model_binding=transcript_input, on_chunk=asr_checkpoint,
+                                                         device=device, on_fallback=asr_fallback)
             transcript_source = "faster-whisper"
         cues = transcript.cues
         _atomic_json(transcript_path, {"schema_version": 4, "input_hash": transcript_input, "source": transcript_source, "requested_source_language": config.source_language, **transcript.language_metadata(), "asr_evidence": transcript.asr_evidence, "cues": [cue.to_dict() for cue in cues]})
@@ -1244,7 +1282,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     emitter.progress(0.38, "Đã nhận dạng lời thoại", units_done=len(cues), units_total=len(cues))
     emitter.checkpoint("transcript", _sha256(work_dir / "transcript.json"))
 
-    warnings: list[str] = []
+    warnings: list[str] = list(asr_warnings)
     cues, looped = _without_repeat_loops(cues)
     if looped:
         warnings.append(f"ASR_REPETITION_COLLAPSED: {looped} cue(s) had a repeated-token loop removed")
