@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #291
 Lease-Owner: codex/01a11204/issue-174-continuation
 Lease-Heartbeat: 2026-10-29T06:51:00Z
-Tested-Base-SHA: 23c2fa82c55fd799cf9b343aecdc29375f521aaa
+Tested-Base-SHA: 506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26
 Conflict-Domains: q175-single-continuous-longform-evidence
 Expected-Paths: .claims/issue-291-current-main-b2-longform.md,docs/production/Q175_CONTINUOUS_LONGFORM_EVIDENCE.md
 Required-CI: PR Fast + Integration
@@ -12,7 +12,7 @@ Previous long-form evidence is from signed 1.1.6 and is historical for the later
 
 ### Source target and base freshness
 Current main is `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`. Signed stable v1.1.10 targets that exact source SHA. Use that installed signed build if available; otherwise use a non-published build from exactly that SHA. Record the actual binary/source identity and do not infer it from a version label.
-The current PR/claim Tested-Base-SHA `23c2fa82c55fd799cf9b343aecdc29375f521aaa` is STALE_BASE. Merge current main into this branch normally (no force-push), then run required CI. Update Tested-Base-SHA only to the base actually incorporated and tested; until then this PR is not merge-ready.
+Lead recovery merged current main into this branch in commit `d56f7c6af480b61467760a80ec4bec51c3d7135f`. PR Fast [40867667498](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867667498) and Integration [40867667604](https://github.com/thanhtuyen662002/DubFlow/actions/runs/40867667604) passed on that pre-metadata HEAD. This claim now records the incorporated/tested base `506b0ec6ec9bb649a859e7ced2fc0c0487c1cd26`; the metadata change requires fresh exact-HEAD PR Fast + Integration. The real continuous 2–6 h recording remains NOT_RUN until the existing coder executes it, so this PR is not merge-ready.
 
 ### Acceptance
 - Run one authorized/licensed, single continuous 2–6 h recording with production CPU B2. No concatenation, loop, synthetic substitute, media download or committing media/models/private paths.
