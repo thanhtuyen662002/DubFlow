@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="DubFlow">
+  <rect width="256" height="256" rx="56" fill="#4F46E5"/>
+  <path d="M84 52H128C176 52 206 86 206 128S176 204 128 204H100L62 232V74Q62 52 84 52Z" fill="#FFFFFF"/>
+  <rect x="98" y="104" width="18" height="48" rx="9" fill="#4F46E5"/>
+  <rect x="125" y="86" width="18" height="84" rx="9" fill="#4F46E5"/>
+  <rect x="152" y="108" width="18" height="40" rx="9" fill="#F97366"/>
+</svg>
