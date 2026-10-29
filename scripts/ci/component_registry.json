@@ -471,6 +471,26 @@
       ]
     },
     {
+      "id": "accelerator",
+      "roots": [
+        "engine/dubflow/accelerator",
+        "models/manifests/accelerator-nvidia-cuda12-v1.json",
+        "tests/accelerator"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/accelerator",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "discovery",
       "roots": [
         "engine/dubflow/discovery",

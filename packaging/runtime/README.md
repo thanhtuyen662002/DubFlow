@@ -77,3 +77,13 @@ the B1 downgrade. Native mono output is 48 kHz. Producer is `3.0.0`, distinct
 from historical `2.1.0` artifacts. The tiny same-corpus back-ASR diagnostic
 measured 0.48% common-phrase mean CER; this is not human or release approval.
 See `docs/licenses/vieneu-turbo.md` and `docs/production/REAL_TTS_EVIDENCE.md`.
+
+## Optional NVIDIA GPU pack (ASR only)
+
+The bundled CTranslate2 4.8.2 wheel is a CUDA build. When the worker finds an
+NVIDIA driver (CUDA 12+, compute capability 6.1+, 2 GB+), it downloads the
+pinned cuBLAS 12 / cuDNN 9 libraries described in
+`models/manifests/accelerator-nvidia-cuda12-v1.json` once, verifies and loads
+them, and runs Faster-Whisper on the GPU. Any failure keeps the CPU path above.
+No package is added to the runtime requirements. See ADR-0038 and
+`docs/licenses/nvidia-cuda-runtime.md`.
