@@ -641,7 +641,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             )
             bootstrap.assert_called_once()
             self.assertEqual(bootstrap.call_args.kwargs["voice_id"], "vi-truc-ly-vieneu3-v1")
-            backend.assert_called_once_with(pack, ffmpeg_path=HermeticDecodedAudioAdapter.ffmpeg_path)
+            backend.assert_called_once_with(pack, ffmpeg_path=HermeticDecodedAudioAdapter.ffmpeg_path, accelerator=None)
             self.assertEqual(result.tts_document.provenance.backend_id, "vieneu-v3-turbo-onnx-v1")
             self.assertEqual(result.tts_document.provenance.producer_version, "3.5.0")
             self.assertEqual(result.tts_document.schema_version, 2)
@@ -675,6 +675,44 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             self.assertEqual(changed.mix_document.provenance.producer_version, "2.0.2")
             for path, data in old_files.items():
                 self.assertEqual(path.read_bytes(), data)
+
+    def test_gpu_dubbing_has_its_own_identity_and_reports_where_it_ran(self):
+        from engine.dubflow.accelerator.nvidia import NvidiaDevice, TtsDevice
+        from engine.dubflow.tts import vieneu
+        created = []
+        class Engine(DeterministicFixtureEngine):
+            def __init__(self, pack, *, ffmpeg_path=None, accelerator=None):
+                super().__init__()
+                created.append(accelerator)
+                self.device_warnings = (("ACCELERATOR_FALLBACK: dubbing continued on the CPU after a GPU failure: oom",)
+                                        if fallback and accelerator is not None else ())
+        device = TtsDevice("cuda", NvidiaDevice("NVIDIA GeForce RTX 4070", 12 * 1024 ** 3, (8, 9), 13000),
+                           runtime={"manifest": "m.json", "manifest_sha256": "0" * 64, "root": "pack"})
+        cues = (TextCue("a", 0, 1000, "你好", "Xin chào"), TextCue("b", 1500, 2500, "走", "Đi thôi"))
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback), TemporaryDirectory() as directory, patch(
+                    "engine.dubflow.worker.b2_audio.vieneu.load_vieneu_voice",
+                    side_effect=lambda *a, voice_id=None, **kw: (SimpleNamespace(sample_rate=16000, channels=1),
+                                                                 replace(approved_default_voice(), voice_id=voice_id or "vi-a"))), \
+                    patch("engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine", side_effect=Engine):
+                created.clear()
+                root = Path(directory)
+                options = dict(media=HermeticDecodedAudioAdapter(), source_path=root / "source.mp4",
+                    source_probe=SimpleNamespace(has_audio=True, video=VIDEO_STREAM), translated_cues=cues, source_language="zh",
+                    app_root=ROOT, profile_path=ROOT / "models/manifests/production-cpu-v1.json",
+                    voice_by_cue={"a": "vi-a", "b": "vi-b"}, speaker_by_cue={"a": "S1", "b": "S2"})
+                result = run_b2_audio(**options, work_dir=root / "gpu", tts_device=device)
+                provenance = result.tts_document.provenance
+                self.assertEqual((provenance.runtime, provenance.hardware_profile), (vieneu.GPU_RUNTIME_ID, "gpu"))
+                if fallback:
+                    # The first voice fell back; the second starts on the CPU instead of retrying the GPU.
+                    self.assertEqual(created[-1], None)
+                    self.assertTrue(result.device_warnings[0].startswith("ACCELERATOR_FALLBACK:"))
+                else:
+                    self.assertTrue(all(item == device.runtime for item in created))
+                    self.assertEqual(result.device_warnings, ("TTS_ACCELERATOR: cuda on NVIDIA GeForce RTX 4070 (12 GB)",))
+                cpu = run_b2_audio(**options, work_dir=root / "cpu")
+                self.assertEqual((cpu.tts_document.provenance.runtime, cpu.device_warnings), (vieneu.RUNTIME_ID, ()))
 
     def test_unavailable_mixer_recipe_is_a_typed_b1_downgrade(self):
         with patch("engine.dubflow.worker.b2_audio._digest", side_effect=OSError("cannot read mixer")):

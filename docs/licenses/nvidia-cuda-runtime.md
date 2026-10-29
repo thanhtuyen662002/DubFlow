@@ -17,3 +17,16 @@ These libraries are NVIDIA proprietary software, distributed by NVIDIA as the `n
 **How they are used:** only to run CTranslate2/Faster-Whisper ASR on the user's own NVIDIA GPU (ADR-0038).
 
 Before DubFlow itself redistributes these files, for example in an offline installer, NVIDIA's redistribution terms in those license files must be reviewed.
+
+## ONNX Runtime GPU with CUDA 13 (optional dubbing pack)
+
+**What is downloaded:** for VieNeu dubbing on a GPU (ADR-0039), DubFlow downloads `onnxruntime-gpu` 1.30.0 (MIT, Microsoft) and NVIDIA's `nvidia-cuda-runtime` 13.4.92, `nvidia-cublas` 13.8.0.4, `nvidia-cufft` 12.4.0.43, `nvidia-cuda-nvrtc` 13.4.92 and `nvidia-cudnn-cu13` 9.27.0.42 wheels from PyPI, under the same rules as above.
+
+**When:** only on a GPU that the CUDA 13 runtime supports (driver CUDA 13.0+, compute capability 7.5+, 4 GB+).
+
+**How they are stored:**
+- `models/manifests/accelerator-nvidia-onnx-cuda13-v1.json` pins every wheel, library and runtime file.
+- The NVIDIA license files are installed as `LICENSE-cudart.txt`, `LICENSE-cublas.txt`, `LICENSE-cufft.txt`, `LICENSE-nvrtc.txt` and `LICENSE-cudnn.txt`.
+- ONNX Runtime's `LICENSE` and `ThirdPartyNotices.txt` stay in its package folder.
+
+The same redistribution review applies before any of these files ship with DubFlow itself.

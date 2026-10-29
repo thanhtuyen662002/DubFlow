@@ -231,7 +231,7 @@ def main() -> None:
                     raise ValueError("native initialization must be first")
                 _join_windows_job(request)
                 model = NativeModel(request)
-                result = {"frontend": FRONTEND_ID}
+                result = {"frontend": FRONTEND_ID, **getattr(model, "ready", {})}
             else:
                 result = model.generate(request)
             reply = {"schema_version": 1, "sequence": sequence, "ok": True, **result}

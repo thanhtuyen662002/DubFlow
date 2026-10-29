@@ -475,6 +475,9 @@
       "roots": [
         "engine/dubflow/accelerator",
         "models/manifests/accelerator-nvidia-cuda12-v1.json",
+        "models/manifests/accelerator-nvidia-onnx-cuda13-v1.json",
+        "engine/dubflow/tts/vieneu.py",
+        "engine/dubflow/tts/vieneu_native.py",
         "tests/accelerator"
       ],
       "commands": [
