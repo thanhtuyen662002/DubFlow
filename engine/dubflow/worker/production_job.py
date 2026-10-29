@@ -76,7 +76,7 @@ from engine.dubflow.asr import TimeBase, TimePoint
 from engine.dubflow.translation.adapter import SourceSegment, TranslationError, resolve_source_language
 from engine.dubflow.translation.argos_runtime import ArgosRuntime
 from engine.dubflow.translation.hachimi_runtime import ENGINES as TRANSLATION_ENGINES, create_runtime as create_translation_runtime
-from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, run_b2_audio
+from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, MEASURED_GAP_EVIDENCE, run_b2_audio
 from engine.dubflow.worker import export_publication
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
 
@@ -479,6 +479,20 @@ def _remove_scratch(work_dir: Path, *paths: Path) -> None:
                 path.unlink(missing_ok=True)
         except (OSError, export_publication.PublicationError):
             continue
+
+
+MAX_UNDUBBED_STARTS = 20
+
+
+def _undubbed_summary(cues: Sequence[TextCue], members: Mapping[str, Sequence[str]], failed: Iterable[str]) -> dict[str, Any]:
+    """Speech that keeps the source language: phrase count, length, share and starts."""
+    by_id = {cue.cue_id: cue for cue in cues}
+    spans = sorted({(min(by_id[cue].start_ms for cue in group), max(by_id[cue].end_ms for cue in group))
+                    for group in (members.get(identifier, (identifier,)) for identifier in set(failed))
+                    if group and all(cue in by_id for cue in group)})
+    speech = sum(cue.end_ms - cue.start_ms for cue in cues)
+    return {"phrases": len(spans), "duration_ms": sum(end - start for start, end in spans), "speech_ms": speech,
+            "starts_ms": [start for start, _ in spans[:MAX_UNDUBBED_STARTS]]}
 
 
 def _retire_generations(work_dir: Path, keep: Path) -> None:
@@ -1565,13 +1579,18 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                                      for cue in members.get(failure.segment_id, (failure.segment_id,))}),
                 "mix_warnings": list(b2_audio.mix_document.warnings),
                 "bed": "spleeter-2stems" if background_path is not None else "source",
+                "undubbed": _undubbed_summary(translated, members, (*(failure.segment_id for document in tts_documents
+                    for failure in document.failures), *(failure.segment_id for failure in b2_audio.mix_document.failures))),
             }
             if voice_by_cue is not None:
                 audio_metadata["voices"] = list(b2_audio.voices)
             if b2_audio.placement_document_path is not None:
                 audio_metadata["dubbing_placement"] = {"schema_version": 1, "path": str(b2_audio.placement_document_path),
                     "sha256": _sha256(b2_audio.placement_document_path)}
-                warnings.extend(warning for document in tts_documents for warning in document.warnings if warning.startswith("TTS_INTERCUE_GAP_USED:"))
+                measured = getattr(b2_audio, "gap_evidence", None) == MEASURED_GAP_EVIDENCE
+                warnings.extend(warning.replace("an unverified inter-cue gap", "an inter-cue gap measured silent on the separated dialogue")
+                                if measured else warning
+                                for document in tts_documents for warning in document.warnings if warning.startswith("TTS_INTERCUE_GAP_USED:"))
             if b2_audio.spoken_text_document_path is not None:
                 audio_metadata["dubbing_spoken_text"] = {"schema_version": 1,
                     "path": str(b2_audio.spoken_text_document_path), "sha256": _sha256(b2_audio.spoken_text_document_path)}
