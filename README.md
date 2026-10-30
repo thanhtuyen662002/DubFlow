@@ -43,6 +43,12 @@ Với lời thoại nhanh, DubFlow tự gộp các câu liền nhau thành cụm
 
 Bấm **Hoàn tác** (hoặc Ctrl+Z khi không gõ trong ô) để bỏ lần sửa gần nhất. Với video lồng *nhiều giọng*, mỗi câu có nhãn người nói (S1, S2…) và mục **Giọng theo người nói** để đổi giọng cho từng người; bấm **Lưu & xử lý lại** để lồng tiếng lại.
 
+### Thêm mở đầu, kết thúc và nhạc của bạn
+
+Ở video đã hoàn tất, mở **Đóng gói video** bên dưới **Nguồn & quyền**. Nhập mở đầu và/hoặc kết thúc (mỗi phần tối đa 600 ký tự), chọn tốc độ đọc rồi bấm **Tạo video đóng gói**. App dùng giọng đã lồng tiếng để đọc, trên nền khung hình làm mờ và tối cùng phụ đề ở giữa.
+
+Bạn có thể chọn nhạc riêng, chỉnh âm lượng và chọn giữ âm thanh gốc, thay nhạc nền hoặc giữ nền gốc ở mức 25% cùng nhạc mới. Hai cách thay nhạc cần bản giọng Việt riêng; giữ nền gốc nhỏ cần thêm bản nền đã tách. Kết quả là `final_vi_packaged.mp4` cạnh `final_vi.mp4`; video gốc và các bản âm thanh được giữ nguyên. Có thể hủy trong lúc xử lý, hoặc thử lại để dùng lại các phần đã tạo xong.
+
 ### Gợi ý tiêu đề & hashtag khi đăng lại
 Ở video đã xong, điền mục **Nguồn & quyền** để lưu tác giả, nền tảng, link nguồn, quyền sử dụng và ghi chú, rồi bấm **Lưu**. Video tải từ link được điền sẵn link và nền tảng khi chưa có thông tin đã lưu. Thông tin nằm trong `source_credit.json` cạnh video kết quả; link nguồn không tự xác nhận quyền sử dụng.
 
