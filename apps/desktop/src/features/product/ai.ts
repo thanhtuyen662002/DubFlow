@@ -5,8 +5,8 @@ export type ProductInfo = { name: string; price: string; features: string[]; aud
 export type ScriptRequest = { count: number; seconds: number; tone: string };
 export type Photo = { mediaType: "image/jpeg"; data: string };
 
-/** Vietnamese narration runs at about 3.2 syllables (words) per second. */
-export const WORDS_PER_SECOND = 3.2;
+/** VieNeu narrates about 4.5 Vietnamese syllables (words) per second. */
+export const WORDS_PER_SECOND = 4.5;
 export const MAX_SCRIPT_CHARS = 3000;
 
 const INFO_SCHEMA = {

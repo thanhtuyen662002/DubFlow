@@ -104,7 +104,7 @@ class Status:
 
     def __init__(self, path: Path, total: int) -> None:
         self.path = path
-        self.value: dict[str, Any] = {"schema_version": 1, "state": "RUNNING", "done": 0, "total": total, "message": "Đang chuẩn bị giọng đọc…", "videos": []}
+        self.value: dict[str, Any] = {"schema_version": 1, "state": "RUNNING", "done": 0, "total": total, "message": "Đang chuẩn bị giọng đọc (lần đầu cần tải mô hình giọng khoảng 520 MB)…", "videos": []}
         self.write()
 
     def write(self, **changes: Any) -> None:

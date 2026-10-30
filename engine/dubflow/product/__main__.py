@@ -65,14 +65,14 @@ def main(argv: list[str] | None = None) -> int:
         work.mkdir(parents=True, exist_ok=True)
         status = Status(work / "status.json", 0)
         status.write(state="FAILED", message=error.message)
-        print(json.dumps(status.value, ensure_ascii=False))
+        print(json.dumps(status.value))
         return 1
 
     def speaker(status: Status) -> VieNeuSpeaker:
         return VieNeuSpeaker(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status)
 
     result = run(spec, output, speaker=speaker, probe=lambda path: probe_duration_ms(args.ffprobe, path), ffmpeg=args.ffmpeg)
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps(result))
     return 0 if result["state"] == "COMPLETED" else 1
 
 

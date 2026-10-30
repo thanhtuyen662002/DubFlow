@@ -17,6 +17,8 @@ VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"})
 MUSIC_SUFFIXES = frozenset({".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac"})
 MAX_SEGMENT_MS = 5000
 ENCODER = "h264_mf"
+# Sharp text and product detail for short vertical clips; h264_mf defaults far lower.
+VIDEO_BITRATE = "6M"
 # Photos are scaled past the frame so a slow pan has room to move.
 _PAN_SCALE = 1.12
 
@@ -94,7 +96,7 @@ def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, musi
         filters.append(f"[{voice + 1}:a]{stereo},volume={music_volume:.2f}[bed]")
         filters.append("[voice][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[audio]")
     argv += ["-filter_complex", ";".join(filters), "-map", "[video]", "-map", "[audio]", "-t", total,
-             "-c:v", encoder, "-quality", "90", "-pix_fmt", "yuv420p", "-r", str(FPS),
+             "-c:v", encoder, "-b:v", VIDEO_BITRATE, "-pix_fmt", "yuv420p", "-r", str(FPS),
              "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-f", "mp4", str(output)]
     return argv
 
