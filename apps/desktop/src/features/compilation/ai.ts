@@ -9,6 +9,7 @@ const clean = (value: unknown, limit: number): string => typeof value === "strin
     .replace(/[\u0000-\u001f\u007f-\u009f*_`>]/g, " ").replace(/\s+/g, " ").trim()].slice(0, limit).join("") : "";
 const points = (value: unknown): string => Array.isArray(value)
   ? value.filter(v => typeof v === "string").map(v => clean(v, 60)).filter(Boolean).slice(0, 3).join("\n") : "";
+export { clean as cleanEditorialText };
 
 export function normalizeEditorial(value: unknown, items: readonly Pick<ItemForm, "id" | "title">[]): { intro: string; outro: string; items: Map<string, Editorial> } {
   const object = (value ?? {}) as { intro?: unknown; outro?: unknown; items?: unknown };

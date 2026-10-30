@@ -88,9 +88,30 @@ const sourceCredits = new Map<string, SourceCredit>();
 const packages = new Map<string, { started: number; cancelled: boolean }>();
 const compilations = new Map<string, { started: number; cancelled: boolean; total: number }>();
 const shorts = new Map<string, { started: number; cancelled: boolean; items: Array<{ title: string }> }>();
+const reframes = new Map<string, { started: number; cancelled: boolean }>();
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
+    case "reframe_info": return { width: 1080, height: 1920, vertical: true } as T;
+    case "reframe_render": {
+      const request = args.request as { outputPath: string };
+      reframes.set(request.outputPath, { started: Date.now(), cancelled: false });
+      return null as T;
+    }
+    case "reframe_status": {
+      const path = String(args.outputPath), run = reframes.get(path);
+      if (!run) return null as T;
+      const state = run.cancelled ? "CANCELLED" : Date.now() - run.started > 6000 ? "COMPLETED" : "RUNNING";
+      return { schema_version: 1, state,
+        message: state === "COMPLETED" ? "Đã tạo video 16:9." : state === "CANCELLED" ? "Đã hủy đổi khung 16:9." : "Đang tạo video 16:9…",
+        ...(state === "COMPLETED" ? { path: path.replace(/final_vi\.mp4$/i, "final_vi_16x9.mp4"), duration_ms: 30000 } : {}),
+      } as T;
+    }
+    case "reframe_cancel": {
+      const run = reframes.get(String(args.outputPath));
+      if (run) run.cancelled = true;
+      return null as T;
+    }
     case "shorts_render": {
       const request = args.request as { outputPath: string; items: Array<{ title: string }> };
       shorts.set(request.outputPath, { started: Date.now(), cancelled: false, items: request.items });
@@ -203,7 +224,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "translate_terms": return { ok: true, items: (args.terms as string[]).map((term) => `(nghĩa) ${term}`) } as T;
     case "collect_discovery": return previewCollected(String(args.platform)) as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
-    case "video_frame": return await previewFrame(Number(args.position)) as T;
+    case "video_frame": return await previewFrame(Number(args.position), /final_vi\.mp4$/i.test(String(args.sourcePath))) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
     case "save_review": savedOverrides = { ...(args.overrides as Record<string, string>) }; return "D:\Videos\DubFlow Output\preview" as T;
@@ -258,7 +279,7 @@ function previewProductStatus() {
 }
 
 /** A 16:9 stand-in frame with a burned-in Chinese caption near the bottom. */
-async function previewFrame(position: number): Promise<ArrayBuffer> {
+async function previewFrame(position: number, vertical = false): Promise<ArrayBuffer> {
   const canvas = document.createElement("canvas");
   canvas.width = 960;
   canvas.height = 540;
@@ -280,6 +301,13 @@ async function previewFrame(position: number): Promise<ArrayBuffer> {
   const caption = position < 0.5 ? "今天我教大家做一道简单的面条" : "我们明天再来吧";
   context.strokeText(caption, 480, 470);
   context.fillText(caption, 480, 470);
+  if (vertical) {
+    const portrait = document.createElement("canvas");
+    portrait.width = 360; portrait.height = 640;
+    portrait.getContext("2d")!.drawImage(canvas, 328, 0, 304, 540, 0, 0, 360, 640);
+    const blob = await new Promise<Blob | null>(resolve => portrait.toBlob(resolve, "image/jpeg", 0.85));
+    return blob!.arrayBuffer();
+  }
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
   return blob!.arrayBuffer();
 }

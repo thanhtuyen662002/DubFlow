@@ -64,6 +64,25 @@ cạnh `final_vi.mp4`, kèm file tiêu đề/mô tả và dòng nguồn nếu đ
 trong lúc tạo. Tạo lại dùng lại các đoạn đã hoàn tất còn hợp lệ. Với video rất
 dài, AI đọc phụ đề theo từng phần rồi so sánh các đoạn được gợi ý.
 
+### Đổi video dọc sang khung 16:9
+
+Với video dọc đã hoàn tất, mở **Đổi khung 16:9** sau **Cắt Shorts** trong bảng
+bên phải. **Bảng thông tin** giữ clip bên phải, bảng tối bên trái có tiêu đề,
+điểm tùy chọn, tối đa 3 ưu/nhược điểm mỗi loại và tóm tắt. **AI điền bảng** gửi
+tối đa 60 dòng phụ đề tiếng Việt tới nhà cung cấp đã lưu trong **Cài đặt AI**;
+tên nhà cung cấp hiện trước khi gửi. Hãy kiểm tra và sửa nội dung AI trả về.
+
+**Cắt ngang** lấy một dải 16:9 theo chiều rộng video, rồi phóng lên 1920×1080.
+Chỉnh **Vị trí đầu** và **Vị trí cuối**: 0 là trên, 50 là giữa, 100 là dưới;
+vùng cắt di chuyển đều giữa hai vị trí. Khung xem trước đánh dấu vùng cắt ở vị
+trí đầu; tiêu đề tùy chọn hiện trong hộp nhỏ góc trên trái. Cách cắt này có thể
+loại bỏ phụ đề hoặc nội dung nằm ngoài dải đã chọn.
+
+Có thể nhập mốc bắt đầu/kết thúc `mm:ss` (hoặc `mm:ss.mmm`), để trống để dùng hết
+video. Bấm **Tạo video 16:9**; kết quả `final_vi_16x9.mp4` nằm cạnh bản gốc,
+30 fps với âm thanh của chính clip. Bản gốc được giữ nguyên. Có thể **Hủy**,
+**Mở** video hoặc **Mở thư mục** khi hoàn tất; tạo lại dùng lại kết quả còn hợp lệ.
+
 ### Tổng hợp nhiều video đã hoàn tất
 
 Mở **Tổng hợp** sau **Video bán hàng**, chọn 2–30 video đã xong trong hàng đợi rồi dùng ↑ / ↓ để sắp xếp. Nhập chủ đề, chọn **Bảng thông tin** hoặc **Toàn màn hình**; tự viết hoặc bấm **AI viết mở đầu, chuyển cảnh & nhận xét**. AI dùng nhà cung cấp đã lưu trong **Cài đặt AI**, nhận chủ đề và tối đa 60 dòng phụ đề tiếng Việt mỗi phần. Hãy kiểm tra nhận xét, điểm và ưu/nhược điểm; mọi nội dung đều sửa được, kể cả mốc cắt đầu/cuối clip (giây).
