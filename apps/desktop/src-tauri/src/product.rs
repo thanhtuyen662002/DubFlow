@@ -175,6 +175,14 @@ pub fn product_status(output_dir: String) -> Result<Value, String> {
     serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object).ok_or_else(|| fail("Trạng thái không hợp lệ"))
 }
 
+/// Ask a running batch to stop; it ends at the next sentence or video and
+/// keeps the videos already finished.
+#[tauri::command]
+pub fn product_cancel(output_dir: String) -> Result<(), String> {
+    let dir = product_dir(&output_dir)?;
+    fs::write(dir.join(".dubflow-work").join("cancel"), b"").map_err(|error| fail(format!("Không hủy được: {error}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +211,9 @@ mod tests {
         assert_eq!(product_status(run.to_string_lossy().into_owned()).unwrap()["state"], "RUNNING");
         assert!(product_status(base.to_string_lossy().into_owned()).is_err());
         assert!(product_status("relative".to_owned()).is_err());
+        product_cancel(run.to_string_lossy().into_owned()).unwrap();
+        assert!(run.join(".dubflow-work").join("cancel").is_file());
+        assert!(product_cancel(base.to_string_lossy().into_owned()).is_err());
         fs::remove_dir_all(&base).unwrap();
     }
 }

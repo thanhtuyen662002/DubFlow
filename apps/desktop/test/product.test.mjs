@@ -33,6 +33,7 @@ assert.match(buildRequest({ ...base, voiceId: null }), /giọng/);
 
 // Status from the engine.
 assert.equal(parseStatus({ state: "WHAT", message: "" }), null);
+assert.equal(parseStatus({ state: "CANCELLED", message: "Đã hủy. Giữ lại 1 video đã xong.", videos: [] }).state, "CANCELLED");
 assert.deepEqual(parseStatus({ state: "RUNNING", message: "m", done: 1, total: 3, videos: [{ index: 1, ok: true, path: "p" }, { bad: 1 }] }),
   { state: "RUNNING", message: "m", done: 1, total: 3, videos: [{ index: 1, ok: true, path: "p" }] });
 

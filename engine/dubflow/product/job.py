@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 from typing import Any, Callable, Protocol, Sequence
 
 from . import layout, render, script
@@ -14,6 +15,13 @@ MAX_VARIANTS = 5
 MAX_SCRIPT_CHARS = 3000
 MAX_VISUALS = 30
 SPEC_LIMIT = 256 * 1024
+
+
+CANCEL_FILE = "cancel"
+
+
+class Cancelled(Exception):
+    """The desktop asked to stop (``.dubflow-work/cancel`` exists)."""
 
 
 class ProductError(Exception):
@@ -112,12 +120,27 @@ class Status:
         _atomic_text(self.path, json.dumps(self.value, ensure_ascii=False))
 
 
-def run_ffmpeg(argv: list[str], cwd: Path) -> None:
+def run_ffmpeg(argv: list[str], cwd: Path, cancelled: Callable[[], bool] = lambda: False, *, poll_seconds: float = 0.5) -> None:
+    """Run FFmpeg, ending it early when ``cancelled()`` turns true."""
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    result = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                            creationflags=flags, timeout=3600)
-    if result.returncode != 0:
-        detail = " ".join(result.stderr.decode("utf-8", "replace").split())[-300:]
+    # A file, not a pipe: nobody reads a pipe while this waits.
+    log = cwd / "ffmpeg-error.log"
+    with log.open("wb") as errors:
+        process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors, creationflags=flags)
+        deadline = time.monotonic() + 3600
+        while process.poll() is None:
+            if cancelled() or time.monotonic() > deadline:
+                process.kill()
+                process.wait()
+                if cancelled():
+                    raise Cancelled()
+                raise ProductError("Render video quá lâu nên đã dừng")
+            try:
+                process.wait(timeout=poll_seconds)
+            except subprocess.TimeoutExpired:
+                pass
+    if process.returncode != 0:
+        detail = " ".join(log.read_bytes().decode("utf-8", "replace").split())[-300:]
         raise ProductError(f"Render video thất bại: {detail or 'FFmpeg lỗi'}")
 
 
@@ -135,22 +158,38 @@ def probe_duration_ms(ffprobe: Path, path: Path) -> int:
 
 
 def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], probe: Callable[[Path], int],
-        ffmpeg: Path, ffmpeg_runner: Callable[[list[str], Path], None] = run_ffmpeg, encoder: str = render.ENCODER) -> dict[str, Any]:
-    """Render every variant; one variant's failure does not stop the next."""
+        ffmpeg: Path, ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None] = run_ffmpeg,
+        encoder: str = render.ENCODER) -> dict[str, Any]:
+    """Render every variant; one variant's failure does not stop the next.
+
+    A cancel request stops at the next sentence or video and ends a running
+    render; finished videos are kept.
+    """
     work = output_dir / ".dubflow-work"
     work.mkdir(parents=True, exist_ok=True)
     status = Status(work / "status.json", len(spec.variants))
     visuals, cache, videos = [], {}, []
     voice = None
+    partial = None
+
+    def cancelled() -> bool:
+        return (work / CANCEL_FILE).exists()
+
+    def check() -> None:
+        if cancelled():
+            raise Cancelled()
     try:
         for path in spec.visuals:
             visuals.append(render.Visual(path, None if path.suffix.casefold() in render.IMAGE_SUFFIXES else probe(path)))
+        check()
         voice = speaker(status)
         for number, text in enumerate(spec.variants, start=1):
+            check()
             status.write(message=f"Đang đọc kịch bản {number}/{len(spec.variants)}…")
             try:
                 speech = []
                 for sentence in script.sentences(text):
+                    check()
                     if sentence not in cache:
                         try:
                             cache[sentence] = voice.speak(sentence)
@@ -166,14 +205,22 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 final = output_dir / f"video-{number}.mp4"
                 partial = work / f"video-{number}.partial.mp4"
                 ffmpeg_runner(render.ffmpeg_argv(ffmpeg, render.plan(visuals, total_ms), narration, spec.music,
-                                                 spec.music_volume, total_ms, partial, encoder=encoder), work)
+                                                 spec.music_volume, total_ms, partial, encoder=encoder), work, cancelled)
+                check()
                 os.replace(partial, final)
+                partial = None
                 _atomic_text(output_dir / f"script-{number}.txt", text.strip() + "\n")
                 _atomic_text(output_dir / f"captions-{number}.srt", layout.srt_document(captions))
                 videos.append({"index": number, "ok": True, "path": str(final), "duration_ms": total_ms})
             except ProductError as error:
                 videos.append({"index": number, "ok": False, "message": error.message})
             status.write(done=number, videos=videos)
+    except Cancelled:
+        if partial is not None:
+            partial.unlink(missing_ok=True)
+        made = sum(1 for video in videos if video["ok"])
+        status.write(state="CANCELLED", message=f"Đã hủy. Giữ lại {made} video đã xong." if made else "Đã hủy.", videos=videos)
+        return status.value
     except ProductError as error:
         status.write(state="FAILED", message=error.message, videos=videos)
         return status.value

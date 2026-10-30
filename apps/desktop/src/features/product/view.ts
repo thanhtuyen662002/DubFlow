@@ -27,6 +27,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   let scripts: Script[] = [];
   let music: string | null = null;
   let polling = 0;
+  let running = "";
   let pendingKeyAction: (() => void) | null = null;
   const thumbs = new Map<string, string>();
   const keyRow = $("#product-key-row");
@@ -240,13 +241,35 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       if (!status) return;
       $("#product-render-state").textContent = status.message;
       renderResults(status, outputDir);
-      if (status.state !== "RUNNING") {
-        window.clearInterval(polling);
-        polling = 0;
-        $<HTMLButtonElement>("#product-render").disabled = false;
-      }
+      if (status.state !== "RUNNING") finish();
     } catch {
       // The status file is being replaced; the next poll reads it.
+    }
+  }
+
+  function finish(): void {
+    window.clearInterval(polling);
+    polling = 0;
+    running = "";
+    $<HTMLButtonElement>("#product-render").disabled = false;
+    const cancel = $<HTMLButtonElement>("#product-cancel");
+    cancel.hidden = true;
+    cancel.disabled = false;
+    cancel.textContent = "Hủy";
+  }
+
+  async function cancel(): Promise<void> {
+    if (!running) return;
+    const button = $<HTMLButtonElement>("#product-cancel");
+    button.disabled = true;
+    button.textContent = "Đang hủy…";
+    try {
+      await invoke("product_cancel", { outputDir: running });
+      $("#product-render-state").textContent = "Đang dừng; các video đã xong được giữ lại…";
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Hủy";
+      $("#product-render-state").textContent = String(error).slice(0, 300);
     }
   }
 
@@ -267,6 +290,8 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     state.textContent = "Đang khởi động…";
     try {
       const outputDir = await invoke<string>("product_render", { request });
+      running = outputDir;
+      $("#product-cancel").hidden = false;
       window.clearInterval(polling);
       polling = window.setInterval(() => void poll(outputDir), 1500);
     } catch (error) {
@@ -320,6 +345,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     ($("#product-scripts").lastElementChild?.querySelector("textarea") as HTMLTextAreaElement | null)?.focus();
   });
   $("#product-render").addEventListener("click", () => void render());
+  $("#product-cancel").addEventListener("click", () => void cancel());
   $("#product-key-save").addEventListener("click", () => {
     apiKey.set(keyInput.value);
     keyInput.value = "";
