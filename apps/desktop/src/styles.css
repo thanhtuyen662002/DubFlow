@@ -427,6 +427,21 @@ h1, h2, h3, p { margin: 0; }
 /* Video bán hàng */
 .product { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .product[hidden] { display: none; }
+.compilation-fields { display: grid; gap: 16px; padding: 0; border: 0; min-width: 0; }
+.compilation-body { width: 100%; }
+.compilation .product-card { min-width: 0; }
+.compilation .product-form select { width: 100%; min-width: 0; }
+.compilation #compilation-ai { height: auto; min-height: 34px; white-space: normal; text-align: left; }
+.compilation [hidden] { display: none; }
+.compilation .product-form > *, .compilation .product-options > * { min-width: 0; max-width: 100%; }
+.compilation select { max-width: 100%; padding: 7px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); }
+.compilation-list { display: grid; gap: 8px; list-style: none; padding: 0; }
+.compilation-list li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.compilation-list li > span { flex: 1; overflow-wrap: anywhere; }
+.compilation-list label { overflow-wrap: anywhere; }
+.compilation-editor { border-top: 1px solid var(--border); padding-top: 12px; min-width: 0; }
+.compilation-editor h3 { font-size: 14px; }
+.compilation .product-music { flex-wrap: wrap; height: auto; overflow-wrap: anywhere; }
 .product-body { flex: 1; min-height: 0; overflow: auto; padding: 20px 28px 32px; display: grid; gap: 16px; align-content: start; max-width: 980px; }
 .product-card { padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .product-card h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 650; }

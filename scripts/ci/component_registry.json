@@ -554,6 +554,11 @@
       ]
     },
     {
+      "id": "compilation-video",
+      "roots": ["engine/dubflow/compilation", "tests/compilation"],
+      "commands": [["python", "-B", "-m", "unittest", "discover", "-s", "tests/compilation", "-p", "test_*.py"]]
+    },
+    {
       "id": "package-video",
       "roots": [
         "engine/dubflow/package",

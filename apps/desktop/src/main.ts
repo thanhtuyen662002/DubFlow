@@ -12,6 +12,7 @@ import { mountPostSuggestions } from "./features/seo/view.ts";
 import { mountSourceCredit } from "./features/credit/view.ts";
 import { mountPackage } from "./features/package/view.ts";
 import { mountShorts } from "./features/shorts/view.ts";
+import { mountCompilation } from "./features/compilation/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
@@ -838,18 +839,21 @@ void claudeKey.restore();
 const aiSettings = mountAiSettings(claudeKey);
 $("#open-ai-settings").addEventListener("click", () => aiSettings.open());
 const productStudio = mountProductStudio(invoke, claudeKey, { outputRoot, cpuOnly });
-function showView(view: "queue" | "discover" | "product"): void {
+const compilation = mountCompilation(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly });
+function showView(view: "queue" | "discover" | "product" | "compilation"): void {
+  $("#compilation-view").hidden = view !== "compilation";
   $("#discover-view").hidden = view !== "discover";
   $("#product-view").hidden = view !== "product";
   $("#queue-topbar").hidden = view !== "queue";
   $("#queue-content").hidden = view !== "queue";
-  for (const [id, active] of [["#nav-queue", view === "queue"], ["#nav-discover", view === "discover"], ["#nav-product", view === "product"]] as const) {
+  for (const [id, active] of [["#nav-queue", view === "queue"], ["#nav-discover", view === "discover"], ["#nav-product", view === "product"], ["#nav-compilation", view === "compilation"]] as const) {
     $(id).classList.toggle("active", active);
     if (active) $(id).setAttribute("aria-current", "page");
     else $(id).removeAttribute("aria-current");
   }
   if (view === "discover") discovery.show();
   if (view === "product") productStudio.show();
+  if (view === "compilation") compilation.show();
 }
 $("#nav-queue").addEventListener("click", (event) => {
   event.preventDefault();
@@ -862,6 +866,10 @@ $("#nav-discover").addEventListener("click", (event) => {
 $("#nav-product").addEventListener("click", (event) => {
   event.preventDefault();
   showView("product");
+});
+
+$("#nav-compilation").addEventListener("click", (event) => {
+  event.preventDefault(); showView("compilation");
 });
 
 async function startFetch(url: string): Promise<void> {

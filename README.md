@@ -64,6 +64,12 @@ cạnh `final_vi.mp4`, kèm file tiêu đề/mô tả và dòng nguồn nếu đ
 trong lúc tạo. Tạo lại dùng lại các đoạn đã hoàn tất còn hợp lệ. Với video rất
 dài, AI đọc phụ đề theo từng phần rồi so sánh các đoạn được gợi ý.
 
+### Tổng hợp nhiều video đã hoàn tất
+
+Mở **Tổng hợp** sau **Video bán hàng**, chọn 2–30 video đã xong trong hàng đợi rồi dùng ↑ / ↓ để sắp xếp. Nhập chủ đề, chọn **Bảng thông tin** hoặc **Toàn màn hình**; tự viết hoặc bấm **AI viết mở đầu, chuyển cảnh & nhận xét**. AI dùng nhà cung cấp đã lưu trong **Cài đặt AI**, nhận chủ đề và tối đa 60 dòng phụ đề tiếng Việt mỗi phần. Hãy kiểm tra nhận xét, điểm và ưu/nhược điểm; mọi nội dung đều sửa được, kể cả mốc cắt đầu/cuối clip (giây).
+
+Chọn giọng, tốc độ và nhạc tùy ý rồi bấm **Tạo video tổng hợp**. Nhạc chỉ phát dưới lời dẫn; các clip giữ âm thanh đã lồng tiếng. Kết quả 1920×1080 gồm `compilation.mp4`, `chapters.txt` và `description.txt` (chương + nguồn đã lưu), trong `DubFlow Output/Tong hop - <tiêu đề>/run-<id>`. Có thể hủy, mở video/thư mục và **Sao chép mô tả** khi hoàn tất. Một phần bị lỗi sẽ dừng toàn bộ bản tổng hợp và báo rõ phần đó. Xem [ADR-0046](docs/adr/ADR-0046-compilation.md).
+
 ### Gợi ý tiêu đề & hashtag khi đăng lại
 Ở video đã xong, điền mục **Nguồn & quyền** để lưu tác giả, nền tảng, link nguồn, quyền sử dụng và ghi chú, rồi bấm **Lưu**. Video tải từ link được điền sẵn link và nền tảng khi chưa có thông tin đã lưu. Thông tin nằm trong `source_credit.json` cạnh video kết quả; link nguồn không tự xác nhận quyền sử dụng.
 
