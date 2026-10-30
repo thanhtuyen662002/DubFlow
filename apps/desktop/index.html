@@ -339,6 +339,50 @@
               <p id="credit-state" class="hint" role="status" aria-live="polite"></p>
             </form>
 
+            <details id="package-section" class="source-credit" hidden>
+              <summary>Đóng gói video</summary>
+              <form id="package-form" novalidate>
+                <fieldset id="package-fields" class="settings" disabled>
+                  <legend>Đóng gói video</legend>
+                  <label>Mở đầu (câu dẫn của bạn)
+                    <textarea id="package-intro" rows="3" aria-describedby="package-intro-count"></textarea>
+                    <small id="package-intro-count" class="hint">0/600</small>
+                  </label>
+                  <label>Kết thúc (nhận xét, kêu gọi đăng ký)
+                    <textarea id="package-outro" rows="3" aria-describedby="package-outro-count"></textarea>
+                    <small id="package-outro-count" class="hint">0/600</small>
+                  </label>
+                  <div class="result-actions">
+                    <button id="package-music-pick" class="btn" type="button">Chọn nhạc nền…</button>
+                    <span id="package-music-name" class="hint">Chưa chọn nhạc</span>
+                    <button id="package-music-clear" class="link" type="button" hidden>Bỏ</button>
+                  </div>
+                  <label id="package-background-row" hidden>Âm thanh chính
+                    <select id="package-background">
+                      <option value="replace">Thay nhạc nền gốc bằng nhạc của bạn</option>
+                      <option id="package-duck" value="duck" disabled>Giữ nền gốc nhỏ + nhạc của bạn</option>
+                      <option value="keep" selected>Giữ âm thanh gốc</option>
+                    </select>
+                  </label>
+                  <label id="package-volume-row" hidden>Âm lượng nhạc <span id="package-volume-value">15%</span>
+                    <input id="package-volume" type="range" min="0" max="100" value="15" />
+                  </label>
+                  <label>Tốc độ đọc
+                    <select id="package-speed">
+                      <option value="1.0">1.0×</option><option value="1.1">1.1×</option><option value="1.2">1.2×</option>
+                    </select>
+                  </label>
+                  <button class="btn primary block" type="submit">Tạo video đóng gói</button>
+                </fieldset>
+                <button id="package-cancel" class="btn" type="button" hidden>Hủy</button>
+                <p id="package-state" class="hint" role="status" aria-live="polite"></p>
+                <div id="package-results" class="result-actions" hidden>
+                  <button id="package-open" class="btn" type="button">Mở</button>
+                  <button id="package-folder" class="btn" type="button">Mở thư mục</button>
+                </div>
+              </form>
+            </details>
+
             <fieldset id="voice-controls" class="settings" disabled>
               <legend>Tùy chọn xử lý</legend>
               <label class="switch-row">

@@ -10,6 +10,7 @@ import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { mountSourceCredit } from "./features/credit/view.ts";
+import { mountPackage } from "./features/package/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
@@ -70,6 +71,7 @@ const dropZone = $("#drop-zone");
 const queueState = $("#queue-state");
 const inspector = $("#inspector");
 const sourceCredit = mountSourceCredit(invoke);
+const packageVideo = mountPackage(invoke, { cpuOnly });
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const multiVoiceToggle = $<HTMLInputElement>("#multi-voice");
@@ -298,6 +300,7 @@ function timingLabel(job: QueueJob, fraction: number | null): string {
 function renderInspector(job: QueueJob | null): void {
   inspector.hidden = !job;
   sourceCredit.select(job);
+  packageVideo.select(job);
   if (!job) return;
   const { status } = job;
   $("#detail-name").textContent = job.displayName;

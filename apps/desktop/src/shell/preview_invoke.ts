@@ -85,9 +85,28 @@ function fetchStatus(scanId: string) {
 
 let picked = 0;
 const sourceCredits = new Map<string, SourceCredit>();
+const packages = new Map<string, { started: number; cancelled: boolean }>();
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
+    case "package_info": return { has_background_stem: true, voice_id: voices[0].voice_id } as T;
+    case "package_video": {
+      const request = args.request as { outputPath: string };
+      packages.set(request.outputPath, { started: Date.now(), cancelled: false });
+      return null as T;
+    }
+    case "package_status": {
+      const path = String(args.outputPath), run = packages.get(path);
+      if (!run) return null as T;
+      const state = run.cancelled ? "CANCELLED" : Date.now() - run.started > 6000 ? "COMPLETED" : "RUNNING";
+      return { schema_version: 1, state, message: state === "COMPLETED" ? "Đã tạo video đóng gói." : state === "CANCELLED" ? "Đã hủy đóng gói." : "Đang tạo video đóng gói…",
+        ...(state === "COMPLETED" ? { path: path.replace(/final_vi\.mp4$/i, "final_vi_packaged.mp4") } : {}) } as T;
+    }
+    case "package_cancel": {
+      const run = packages.get(String(args.outputPath));
+      if (run) run.cancelled = true;
+      return null as T;
+    }
     case "source_credit_get": return (sourceCredits.has(String(args.outputPath)) ? { ...sourceCredits.get(String(args.outputPath))! } : null) as T;
     case "source_credit_set": {
       const credit = args.credit === null ? null : parseSourceCredit(args.credit);

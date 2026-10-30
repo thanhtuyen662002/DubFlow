@@ -554,6 +554,26 @@
       ]
     },
     {
+      "id": "package-video",
+      "roots": [
+        "engine/dubflow/package",
+        "tests/package"
+      ],
+      "commands": [
+        [
+          "python",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/package",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "seo",
       "roots": [
         "engine/dubflow/seo",
