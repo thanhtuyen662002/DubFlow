@@ -61,6 +61,15 @@ class LayoutTests(unittest.TestCase):
         self.assertIn("Style: Caption,Arial,66,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,4,2,5,", outlined)
         self.assertIn("Style: Title,Arial,60,&H0000D4FF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,2,8,", outlined)
 
+    def test_full_screen_puts_boxed_text_over_the_media(self):
+        captions = [script.Caption(300, 1500, "Giá tốt")]
+        document = layout.ass_document("Nồi chiên", "299.000đ", captions, 2500, template="toan-man-hinh")
+        self.assertNotIn(",Strip,", document)
+        self.assertIn("Title,,0,0,0,,{\\an8\\pos(540,90)}Nồi chiên", document)
+        self.assertIn("Caption,,0,0,0,,{\\an2\\pos(540,1660)}Giá tốt", document)
+        self.assertIn("Style: Caption,Arial,64,&H00FFFFFF,&H000000FF,&H60000000,&H00000000,-1,0,0,0,100,100,0,0,3,14,", document)
+        self.assertEqual((layout.media_height("toan-man-hinh"), layout.media_height("ban-tin")), (1920, 1200))
+
     def test_empty_name_and_price_are_left_out(self):
         document = layout.ass_document(" ", "", [], 1000)
         self.assertNotIn(",Title,", document)
@@ -119,6 +128,13 @@ class RenderTests(unittest.TestCase):
                 self.assertIn("[base][media]overlay=0:0", graph)
         plain = render.ffmpeg_argv(Path("ffmpeg.exe"), segments, Path("n.wav"), None, 0.2, 4000, Path("out.mp4"))
         self.assertIn("[panel]null[base]", plain[plain.index("-filter_complex") + 1])
+
+    def test_full_screen_media_fills_the_frame(self):
+        segments = render.plan([render.Visual(Path("C:/a.jpg")), render.Visual(Path("C:/b.mp4"), 9000)], 8000)
+        graph = render.ffmpeg_argv(Path("ffmpeg.exe"), segments, Path("n.wav"), None, 0.2, 8000, Path("out.mp4"), media_height=1920)
+        graph = graph[graph.index("-filter_complex") + 1]
+        self.assertIn("crop=1080:1920:x=", graph)
+        self.assertIn("scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920", graph)
 
     def test_narration_holds_silence_and_speech(self):
         with TemporaryDirectory() as directory:
@@ -210,6 +226,32 @@ class JobTests(unittest.TestCase):
             self.assertIn(",1,4,2,5,", (root / "out" / ".dubflow-work" / "captions.ass").read_text(encoding="utf-8"))
             with self.assertRaises(job.ProductError):
                 job.load_spec(self.write_spec(root, background=str(root / "spec.json")))
+
+    def test_template_and_speed_are_checked_and_full_screen_skips_the_background(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = job.load_spec(self.write_spec(root))
+            self.assertEqual((spec.template, spec.speed), ("ban-tin", 1.0))
+            for changes in ({"template": "khac"}, {"speed": 0.9}, {"speed": 1.4}, {"speed": True}):
+                with self.subTest(changes=changes), self.assertRaises(job.ProductError):
+                    job.load_spec(self.write_spec(root, **changes))
+            background = root / "nen.png"
+            background.write_bytes(b"png")
+            spec = job.load_spec(self.write_spec(root, template="toan-man-hinh", speed=1.2, background=str(background)))
+            self.assertEqual(spec.speed, 1.2)
+            commands = []
+
+            def ffmpeg(argv, cwd, cancelled):
+                commands.append(argv)
+                Path(argv[-1]).write_bytes(b"mp4")
+
+            def measure(path):
+                raise AssertionError("a full-screen video does not show the background")
+            result = job.run(spec, root / "out", speaker=lambda status: FakeSpeaker(), probe=lambda path: 1000, measure=measure,
+                             ffmpeg=Path("ffmpeg"), ffmpeg_runner=ffmpeg)
+            self.assertEqual(result["state"], "COMPLETED")
+            self.assertFalse(any(str(background) in argv for argv in commands))
+            self.assertIn("crop=1080:1920", commands[0][commands[0].index("-filter_complex") + 1])
 
     def test_an_unreadable_sentence_fails_only_its_variant(self):
         with TemporaryDirectory() as directory:
@@ -313,6 +355,20 @@ class FfmpegRenderTests(unittest.TestCase):
         raw = subprocess.run([FFMPEG, "-v", "error", "-ss", "0.5", "-i", str(video), "-frames:v", "1", "-vf", f"crop=2:2:{x}:{y}",
                               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
         return tuple(raw[:3])
+
+    def test_full_screen_media_reaches_the_bottom(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run([FFMPEG, "-v", "error", "-f", "lavfi", "-i", "color=c=white:s=640x480:d=1", "-frames:v", "1", str(root / "a.png")], check=True)
+            spec_path = root / "spec.json"
+            spec_path.write_text(json.dumps({"schema_version": 1, "name": "", "price": "", "voice_id": "vi-test", "variants": ["Xin chào."],
+                                             "visuals": [str(root / "a.png")], "template": "toan-man-hinh"}), encoding="utf-8")
+            output = root / "DubFlow Output" / "full"
+            result = job.run(job.load_spec(spec_path), output, speaker=lambda status: FakeSpeaker(), probe=lambda path: 1000,
+                             ffmpeg=Path(FFMPEG), encoder="mpeg4")
+            self.assertEqual(result["state"], "COMPLETED", result)
+            colour = self.pixel(output / "video-1.mp4", 20, 1890)
+            self.assertTrue(min(colour) > 180, f"no green panel: {colour}")
 
     def test_both_background_sizes_land_where_they_belong(self):
         with TemporaryDirectory() as directory:

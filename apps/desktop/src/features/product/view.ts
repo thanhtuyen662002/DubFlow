@@ -191,6 +191,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       const written = await writeScripts(key, product, {
         count: Number($<HTMLSelectElement>("#product-count").value),
         seconds: Number($<HTMLSelectElement>("#product-seconds").value),
+        speed: Number($<HTMLSelectElement>("#product-speed").value),
         tone: $<HTMLSelectElement>("#product-tone").value,
       });
       scripts = [...scripts.filter((script) => script.text.trim()), ...written.map((text) => ({ text, use: true }))].slice(-MAX_VARIANTS * 2);
@@ -279,6 +280,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     const visuals = addPaths($<HTMLInputElement>("#product-use-photos").checked ? photos : [], media, MAX_VISUALS + 1);
     const request = buildRequest({
       info: info(), voiceId: voiceSelect.value || null, scripts, visuals, music, background,
+      template: $<HTMLSelectElement>("#product-template").value, speed: Number($<HTMLSelectElement>("#product-speed").value),
       volumePercent: Number($<HTMLInputElement>("#product-volume").value), cpuOnly: settings.cpuOnly(), outputRoot: settings.outputRoot(),
     });
     if (typeof request === "string") {
@@ -337,6 +339,12 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     music = null;
     $("#product-music-name").textContent = "Không có";
     $("#product-music-clear").hidden = true;
+  });
+  // Full-screen media covers the whole frame, so a background would never show.
+  $("#product-template").addEventListener("change", () => {
+    const full = $<HTMLSelectElement>("#product-template").value === "toan-man-hinh";
+    $("#product-background-row").hidden = full;
+    $("#product-background-hint").hidden = full;
   });
   $("#product-background").addEventListener("click", async () => {
     const [picked] = await invoke<string[]>("pick_product_files", { kind: "background" });

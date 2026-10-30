@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 /** What Claude read from the product photos; every field stays editable. */
 export type ProductInfo = { name: string; price: string; features: string[]; audience: string; notes: string };
-export type ScriptRequest = { count: number; seconds: number; tone: string };
+export type ScriptRequest = { count: number; seconds: number; tone: string; speed?: number };
 export type Photo = { mediaType: "image/jpeg"; data: string };
 
 /** VieNeu narrates about 4.5 Vietnamese syllables (words) per second. */
@@ -120,7 +120,8 @@ export async function readProduct(apiKey: string, photos: readonly Photo[]): Pro
 
 /** Write `count` different narration scripts from the (user-checked) product form. */
 export async function writeScripts(apiKey: string, info: ProductInfo, request: ScriptRequest): Promise<string[]> {
-  const words = Math.round(request.seconds * WORDS_PER_SECOND);
+  // A faster voice fits more words in the same time.
+  const words = Math.round(request.seconds * WORDS_PER_SECOND * (request.speed ?? 1));
   const text = `${describeProduct(info)}\n\nHãy viết ${request.count} kịch bản khác nhau, mỗi kịch bản khoảng ${words} chữ (đọc trong khoảng ${request.seconds} giây). Giọng điệu: ${request.tone}.`;
   return normalizeScripts(await structured(apiKey, WRITE_SYSTEM, SCRIPTS_SCHEMA, [{ type: "text", text }]), request.count);
 }

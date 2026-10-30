@@ -85,8 +85,11 @@ def _seconds(milliseconds: int) -> str:
 
 def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, music: Path | None,
                 music_volume: float, total_ms: int, output: Path, *, subtitles: str = "captions.ass",
-                encoder: str = ENCODER, backdrop: Background | None = None) -> list[str]:
-    """The FFmpeg command, run with the folder holding ``subtitles`` as its working directory."""
+                encoder: str = ENCODER, backdrop: Background | None = None, media_height: int = MEDIA_HEIGHT) -> list[str]:
+    """The FFmpeg command, run with the folder holding ``subtitles`` as its working directory.
+
+    The photos and clips fill the top ``media_height`` rows: 1200 for "Bản tin", the whole frame for "Toàn màn hình".
+    """
     argv = [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y"]
     filters = []
     for index, segment in enumerate(segments):
@@ -94,11 +97,11 @@ def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, musi
         if segment.visual.duration_ms is None:
             argv += ["-loop", "1", "-framerate", str(FPS), "-t", seconds, "-i", str(segment.visual.path)]
             travel = f"(iw-{WIDTH})*t/{seconds}" if index % 2 == 0 else f"(iw-{WIDTH})*(1-t/{seconds})"
-            fit = (f"scale={round(WIDTH * _PAN_SCALE)}:{round(MEDIA_HEIGHT * _PAN_SCALE)}:force_original_aspect_ratio=increase,"
-                   f"crop={WIDTH}:{MEDIA_HEIGHT}:x='{travel}':y='(ih-{MEDIA_HEIGHT})/2'")
+            fit = (f"scale={round(WIDTH * _PAN_SCALE)}:{round(media_height * _PAN_SCALE)}:force_original_aspect_ratio=increase,"
+                   f"crop={WIDTH}:{media_height}:x='{travel}':y='(ih-{media_height})/2'")
         else:
             argv += ["-stream_loop", "-1", "-ss", _seconds(segment.offset_ms), "-t", seconds, "-i", str(segment.visual.path)]
-            fit = f"scale={WIDTH}:{MEDIA_HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{MEDIA_HEIGHT}"
+            fit = f"scale={WIDTH}:{media_height}:force_original_aspect_ratio=increase,crop={WIDTH}:{media_height}"
         filters.append(f"[{index}:v]{fit},setsar=1,fps={FPS},format=yuv420p,trim=duration={seconds},setpts=PTS-STARTPTS[v{index}]")
     voice = len(segments)
     argv += ["-i", str(narration)]

@@ -213,9 +213,11 @@ class VieNeuVietnameseTtsEngine(NeuralVietnameseTtsEngine):
             audio = self._tts.generate(request.segment.text, sid=0, speed=speed_milli / 1000)
         return audio, speed_milli
 
-    def natural_speech(self, text):
-        """Speech for ``text`` at its natural pace, for narration with no source timeline (ADR-0041)."""
-        audio = self._tts.generate(text, sid=0, speed=1.0)
+    def natural_speech(self, text, speed=1.0):
+        """Speech for ``text`` at its natural pace, or ``speed`` times faster, for narration with no source timeline (ADR-0041)."""
+        if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not 1.0 <= speed <= 1.5:
+            raise TtsError("TTS_SPEED_INVALID", "narration speed must be within 1.0-1.5")
+        audio = self._tts.generate(text, sid=0, speed=float(speed))
         if audio.sample_rate != self.pack.sample_rate or not audio.samples:
             raise TtsError("TTS_AUDIO_INVALID", "natural speech has invalid waveform metadata")
         return audio
