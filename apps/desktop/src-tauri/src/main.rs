@@ -282,6 +282,30 @@ async fn python_json(args: Vec<std::ffi::OsString>, what: &'static str) -> Resul
         .ok_or_else(|| fail(format!("{what} không trả về dữ liệu")))
 }
 
+/// Write a small diagnostic zip for one job to the Desktop and show it in
+/// Explorer: the job's reports and metadata, never its video or audio.
+#[tauri::command]
+async fn create_report(job_id: String, output_dir: Option<String>) -> Result<String, String> {
+    validate_id(&job_id)?;
+    let root = data_root()?;
+    let mut args: Vec<std::ffi::OsString> = vec!["-m".into(), "engine.dubflow.support.report".into(),
+        "--job-status".into(), status_path(&root, &job_id)?.into_os_string(),
+        "--database".into(), root.join("control").join("jobs.sqlite3").into_os_string()];
+    if let Some(dir) = output_dir.map(PathBuf::from) {
+        // Only a DubFlow results folder: the report reads files inside it.
+        if !dir.is_absolute() || !dir.is_dir() || !dir.components().any(|part| part.as_os_str() == "DubFlow Output") {
+            return Err(fail("Thư mục kết quả không hợp lệ"));
+        }
+        args.extend(["--output-dir".into(), dir.into_os_string()]);
+    }
+    let result = python_json(args, "bộ tạo báo cáo").await?;
+    let path = result.get("path").and_then(Value::as_str)
+        .ok_or_else(|| fail(result.get("message").and_then(Value::as_str).unwrap_or("Không tạo được báo cáo")))?
+        .to_owned();
+    let _ = Command::new("explorer.exe").arg(format!("/select,{}", display_path(Path::new(&path)))).spawn();
+    Ok(path)
+}
+
 fn install_root_or_unsupported() -> Result<PathBuf, String> {
     updater::install_root(&version_root()?).ok_or_else(|| fail("Bản phát triển không hỗ trợ cập nhật tự động"))
 }
@@ -1298,7 +1322,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, open_folder, reveal_download, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app])
+        .invoke_handler(tauri::generate_handler![create_report, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, open_folder, reveal_download, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

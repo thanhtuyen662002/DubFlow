@@ -320,6 +320,7 @@ function renderInspector(job: QueueJob | null): void {
     stages.append(item);
   });
   stages.hidden = status.state === "QUEUED";
+  $("#create-report").hidden = !["FAILED", "COMPLETED"].includes(status.state);
 
   const output = status.state === "COMPLETED" ? job.outputPath : null;
   $("#result-card").hidden = !output;
@@ -583,6 +584,26 @@ cpuOnlyToggle.addEventListener("change", () => {
   } catch {
     cpuOnlyToggle.checked = !cpuOnlyToggle.checked;
     showError("Không lưu được lựa chọn thiết bị xử lý trên máy này.");
+  }
+});
+
+// One click: a small zip of this job's reports (no media) on the Desktop, shown in Explorer.
+$("#create-report").addEventListener("click", async () => {
+  const job = selectedJob();
+  if (!job) return;
+  const button = $<HTMLButtonElement>("#create-report");
+  button.disabled = true;
+  button.textContent = "Đang tạo báo cáo…";
+  try {
+    const path = await invoke<string>("create_report", { jobId: job.id, outputDir: job.outputDir ?? null });
+    button.textContent = "Đã tạo báo cáo trên Desktop";
+    button.title = path;
+  } catch (error) {
+    button.textContent = "Tạo báo cáo lỗi";
+    showError(String(error).slice(0, 400));
+  } finally {
+    button.disabled = false;
+    window.setTimeout(() => { button.textContent = "Tạo báo cáo lỗi"; }, 6000);
   }
 });
 
