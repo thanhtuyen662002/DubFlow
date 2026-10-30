@@ -27,7 +27,7 @@ Identity: Claude/issue-320-audio-track-storage. This is Coder 2's sole active ta
    - scripts/release/chinese_desktop_review_smoke.py
    - tests/release/test_chinese_desktop_review_smoke.py
    - docs/production/CHINESE_DESKTOP_REVIEW_EVIDENCE.md
-2. Add a required --expected-source-sha argument to the existing harness. Validate it as exactly 40 hexadecimal characters. Read the installed release-manifest.json and require its source_sha to be present, valid and exactly equal to the expected SHA. Fail closed for missing argument, malformed expected SHA, missing/malformed manifest SHA, or mismatch. Do this before creating the output directory or invoking any supervisor/job. Never infer source identity from version text.
+2. Add a required --expected-source-sha argument to the existing harness. Validate it as 40 or 64 lowercase hexadecimal characters, matching packaging/release/manifest.py's _SOURCE_SHA contract. Read the installed release-manifest.json and require its source_sha to be present, valid under the same contract and exactly equal to the expected SHA. Fail closed for missing argument, malformed expected SHA, missing/malformed manifest SHA, or mismatch. Do this before creating the output directory or invoking any supervisor/job. Never infer source identity from version text.
 3. Add unit tests for exact match, mismatch, missing expected SHA, malformed expected SHA, missing manifest source_sha and malformed manifest source_sha. Assert every rejection happens before supervisor/job creation and before output creation.
 4. Run and record exact commands, tool versions and outcomes:
    - python -m unittest tests.release.test_chinese_desktop_review_smoke
