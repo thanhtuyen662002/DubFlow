@@ -3,6 +3,7 @@
 // (Python, FFmpeg, the supervisor) uses CREATE_NO_WINDOW.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod ai_keys;
 mod discovery;
 mod product;
 mod source;
@@ -1323,7 +1324,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, open_folder, reveal_download, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app])
+        .invoke_handler(tauri::generate_handler![ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, open_folder, reveal_download, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

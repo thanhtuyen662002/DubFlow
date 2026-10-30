@@ -14,10 +14,10 @@ const $ = <T extends HTMLElement>(selector: string): T => {
 };
 
 export const KEY_HINT = keyHint("claude");
-export const KEY_CLEAR_LABEL = "Xóa khóa khỏi phiên này";
-export const KEY_CLEARED = "Đã xóa khóa API khỏi phiên làm việc này.";
+export const KEY_CLEAR_LABEL = "Xóa khóa đã lưu";
+export const KEY_CLEARED = "Đã xóa khóa API khỏi máy này.";
 
-/** The AI keys, held only in memory for the current app session. */
+/** The AI provider choice and keys (saved through the host when it gives a store). */
 export type SessionKey = AiSession;
 
 export function createSessionKey(): SessionKey {
@@ -175,16 +175,26 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
   }
 
   aiButton.addEventListener("click", () => void runAi());
-  $("#post-key-save").addEventListener("click", () => {
-    apiKey.set(keyInput.value);
+  $("#post-key-save").addEventListener("click", async () => {
+    try {
+      await apiKey.set(keyInput.value);
+    } catch (error) {
+      state.textContent = String(error).slice(0, 200);
+      return;
+    }
     keyInput.value = "";
+    if (!apiKey.read()) return;
     keyRow.hidden = true;
     void runAi();
   });
-  keyClear.addEventListener("click", () => {
-    apiKey.clear();
-    keyInput.value = "";
-    state.textContent = KEY_CLEARED;
+  keyClear.addEventListener("click", async () => {
+    try {
+      await apiKey.clear();
+      keyInput.value = "";
+      state.textContent = KEY_CLEARED;
+    } catch (error) {
+      state.textContent = String(error).slice(0, 200);
+    }
   });
   $("#post-close").addEventListener("click", () => { dialog.hidden = true; request += 1; });
   dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { dialog.hidden = true; request += 1; } });

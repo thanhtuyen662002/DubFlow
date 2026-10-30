@@ -86,6 +86,9 @@ let picked = 0;
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
+    case "ai_key_get": return (previewKeys.get(String(args.provider)) ?? null) as T;
+    case "ai_key_set": previewKeys.set(String(args.provider), String(args.key).trim()); return `…${String(args.key).trim().slice(-4)}` as T;
+    case "ai_key_delete": previewKeys.delete(String(args.provider)); return null as T;
     case "release_info": return { version: "0.1.0", channel: "preview", backend: "mock" } as T;
     case "voice_catalog": return { default_voice_id: voices[0].voice_id, voices } as T;
     case "pick_files": {
@@ -167,6 +170,8 @@ function previewCollected(platform: string): unknown {
 }
 
 /** A product batch of three videos, one every 3 s, that can be cancelled. */
+/** Stand-in for Windows Credential Manager. */
+const previewKeys = new Map<string, string>();
 let productStarted = 0;
 let productCancelled = 0;
 function previewProductStatus() {

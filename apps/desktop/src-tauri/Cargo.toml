@@ -22,6 +22,10 @@ sha2 = "0.10"
 rfd = "0.15.4"
 tauri = { version = "=2.12.0", features = [] }
 
+[target.'cfg(windows)'.dependencies]
+# Already in the lockfile through Tauri; only the Credential Manager API is added.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

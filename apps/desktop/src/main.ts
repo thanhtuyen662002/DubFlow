@@ -8,8 +8,10 @@ import { extractLinks } from "./features/links/extract.ts";
 import { fetchBadge, fetchMessage, shortPath, type FetchStatus } from "./features/links/status.ts";
 import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
-import { createSessionKey, mountPostSuggestions } from "./features/seo/view.ts";
+import { mountPostSuggestions } from "./features/seo/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
+import { createAiSession } from "./features/ai/provider.ts";
+import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import {
   applySourceLanguage, chooseTranslator, effectiveTranslator, FAST_PHRASE_SYLLABLES_PER_SECOND, hachimiAllowed,
@@ -820,8 +822,11 @@ const discovery = mountDiscovery(invoke, startFetch, () => {
     return "argos";
   }
 });
-// One Claude key for the session, shared by posting suggestions and product videos.
-const claudeKey = createSessionKey();
+// One AI choice and saved keys, shared by posting suggestions and product videos.
+const claudeKey = createAiSession(hostKeyStore(invoke));
+void claudeKey.restore();
+const aiSettings = mountAiSettings(claudeKey);
+$("#open-ai-settings").addEventListener("click", () => aiSettings.open());
 const productStudio = mountProductStudio(invoke, claudeKey, { outputRoot, cpuOnly });
 function showView(view: "queue" | "discover" | "product"): void {
   $("#discover-view").hidden = view !== "discover";
