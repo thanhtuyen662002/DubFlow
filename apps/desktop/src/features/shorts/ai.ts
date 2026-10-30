@@ -3,7 +3,7 @@ import { normalizeSegments, type Cue, type Row } from "./model.ts";
 
 const SCHEMA = {
   type: "object", properties: { items: { type: "array", minItems: 1, maxItems: 3, items: {
-    type: "object", properties: { start_ms: { type: "integer" }, end_ms: { type: "integer" }, title: { type: "string", maxLength: 80 } },
+    type: "object", properties: { start_ms: { type: "integer" }, end_ms: { type: "integer" }, title: { type: "string" } },
     required: ["start_ms", "end_ms", "title"], additionalProperties: false,
   } } }, required: ["items"], additionalProperties: false,
 };
