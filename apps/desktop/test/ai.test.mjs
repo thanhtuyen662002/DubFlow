@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { askJson, createAiSession, GEMINI_MODEL, isKeyError, keyHint, setKeyFor, toGeminiSchema } from "../src/features/ai/provider.ts";
+import { askJson, createAiSession, GEMINI_FALLBACK_MODEL, GEMINI_MODEL, isKeyError, keyHint, setKeyFor, toGeminiSchema } from "../src/features/ai/provider.ts";
 
 // One key per provider, in memory only; switching keeps each key.
 const session = createAiSession();
@@ -74,7 +74,7 @@ assert.equal(url, `https://generativelanguage.googleapis.com/v1beta/models/${GEM
 assert.doesNotMatch(url, /key/);
 assert.equal(init.headers["x-goog-api-key"], "gemini-key-not-real");
 const body = JSON.parse(init.body);
-assert.deepEqual(body.systemInstruction, { parts: [{ text: "Hệ thống" }] });
+assert.match(body.systemInstruction.parts[0].text, /^Hệ thống\nLuôn viết tiếng Việt có dấu/);
 assert.deepEqual(body.contents[0].parts, [{ inlineData: { mimeType: "image/jpeg", data: "QUJD" } }, { text: "Đọc ảnh" }]);
 assert.equal(body.generationConfig.responseMimeType, "application/json");
 assert.equal(body.generationConfig.responseSchema.type, "OBJECT");
@@ -87,5 +87,31 @@ await assert.rejects(askJson("gemini", "k", request, reply(200, { promptFeedback
 await assert.rejects(askJson("gemini", "k", request, reply(200, { candidates: [{ finishReason: "MAX_TOKENS", content: { parts: [{ text: "{" }] } }] })), /cắt ngắn/);
 await assert.rejects(askJson("gemini", "k", request, reply(200, { candidates: [{ finishReason: "STOP", content: { parts: [] } }] })), /không trả về/);
 assert.equal(isKeyError(new Error("500 INTERNAL: overloaded")), false);
+// A busy model is retried once, then the larger model answers; waits are injected, not slept.
+const waits = [];
+const busyThenOk = (() => {
+  const urls = [];
+  const send = async (url) => {
+    urls.push(url);
+    if (urls.length < 3) return { ok: false, status: 503, json: async () => ({ error: { status: "UNAVAILABLE", message: "high demand" } }) };
+    return { ok: true, status: 200, json: async () => ({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "{\"x\":\"ok\"}" }] } }] }) };
+  };
+  return { urls, send };
+})();
+assert.deepEqual(await askJson("gemini", "k", request, busyThenOk.send, async (ms) => { waits.push(ms); }), { x: "ok" });
+assert.deepEqual(busyThenOk.urls.map((url) => url.match(/models\/([^:]+)/)[1]), [GEMINI_MODEL, GEMINI_MODEL, GEMINI_FALLBACK_MODEL]);
+assert.deepEqual(waits, [4000, 2000]);
+// Still busy after every attempt: a plain Vietnamese message, after exactly three requests.
+let busyCalls = 0;
+await assert.rejects(askJson("gemini", "k", request, async () => { busyCalls += 1; return { ok: false, status: 503, json: async () => ({ error: { status: "UNAVAILABLE", message: "x" } }) }; }, async () => {}), /quá tải/);
+assert.equal(busyCalls, 3);
+await assert.rejects(askJson("gemini", "k", request, async () => ({ ok: false, status: 429, json: async () => ({ error: { status: "RESOURCE_EXHAUSTED", message: "quota" } }) }), async () => {}), /giới hạn số lần gọi Gemini/);
+// A time-out counts as busy; a bad key is never retried.
+let timeoutCalls = 0;
+await assert.rejects(askJson("gemini", "k", request, async () => { timeoutCalls += 1; throw Object.assign(new Error("aborted"), { name: "TimeoutError" }); }, async () => {}), /quá lâu/);
+assert.equal(timeoutCalls, 3);
+let keyCalls = 0;
+await assert.rejects(askJson("gemini", "bad", request, async () => { keyCalls += 1; return { ok: false, status: 400, json: async () => ({ error: { status: "INVALID_ARGUMENT", message: "API key not valid." } }) }; }, async () => {}), (error) => isKeyError(error));
+assert.equal(keyCalls, 1);
 
 console.log("desktop AI provider tests passed");
