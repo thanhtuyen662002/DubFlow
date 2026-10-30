@@ -12,6 +12,7 @@ from typing import Any, Callable, Protocol, Sequence
 from . import layout, render, script
 
 MAX_VARIANTS = 5
+MIN_SPEED, MAX_SPEED = 1.0, 1.3
 MAX_SCRIPT_CHARS = 3000
 MAX_VISUALS = 30
 SPEC_LIMIT = 256 * 1024
@@ -41,6 +42,9 @@ class Spec:
     music_volume: float
     # The user's image behind the template (render.background decides frame or panel).
     background: Path | None = None
+    template: str = "ban-tin"
+    # VieNeu's tempo for the narration.
+    speed: float = 1.0
 
 
 class Speaker(Protocol):
@@ -92,6 +96,12 @@ def load_spec(path: Path) -> Spec:
     if isinstance(volume, bool) or not isinstance(volume, (int, float)) or not 0 <= volume <= 1:
         raise ProductError("Âm lượng nhạc nền không hợp lệ")
     voice = _string(value.get("voice_id"), "Giọng đọc", 96, required=True)
+    template = value.get("template", "ban-tin")
+    if template not in layout.TEMPLATES:
+        raise ProductError("Mẫu video không hợp lệ")
+    speed = value.get("speed", 1.0)
+    if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not MIN_SPEED <= speed <= MAX_SPEED:
+        raise ProductError("Tốc độ đọc không hợp lệ")
     return Spec(
         name=_string(value.get("name"), "Tên sản phẩm", 120),
         price=_string(value.get("price"), "Giá", 60),
@@ -101,6 +111,8 @@ def load_spec(path: Path) -> Spec:
         music=None if music is None else _file(music, render.MUSIC_SUFFIXES, "nhạc nền"),
         music_volume=float(volume),
         background=None if value.get("background") is None else _file(value["background"], render.IMAGE_SUFFIXES, "ảnh nền"),
+        template=template,
+        speed=float(speed),
     )
 
 
@@ -201,7 +213,8 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
         for path in spec.visuals:
             visuals.append(render.Visual(path, None if path.suffix.casefold() in render.IMAGE_SUFFIXES else probe(path)))
         backdrop = None
-        if spec.background is not None:
+        # Full-screen media leaves nothing of a background visible.
+        if spec.background is not None and spec.template == "ban-tin":
             if measure is None:
                 raise ProductError("Không đọc được ảnh nền")
             backdrop = render.background(spec.background, *measure(spec.background))
@@ -224,12 +237,14 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 narration = work / f"narration-{number}.wav"
                 render.write_narration(narration, [samples for _, samples in speech], voice.sample_rate,
                                        lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS, tail_ms=script.TAIL_MS)
-                _atomic_text(work / "captions.ass", layout.ass_document(spec.name, spec.price, captions, total_ms, outlined=backdrop is not None))
+                _atomic_text(work / "captions.ass", layout.ass_document(spec.name, spec.price, captions, total_ms, outlined=backdrop is not None,
+                                                                             template=spec.template))
                 status.write(message=f"Đang render video {number}/{len(spec.variants)}…")
                 final = output_dir / f"video-{number}.mp4"
                 partial = work / f"video-{number}.partial.mp4"
                 ffmpeg_runner(render.ffmpeg_argv(ffmpeg, render.plan(visuals, total_ms), narration, spec.music,
-                                                 spec.music_volume, total_ms, partial, encoder=encoder, backdrop=backdrop), work, cancelled)
+                                                 spec.music_volume, total_ms, partial, encoder=encoder, backdrop=backdrop,
+                                                 media_height=layout.media_height(spec.template)), work, cancelled)
                 check()
                 os.replace(partial, final)
                 partial = None

@@ -82,6 +82,12 @@ pub struct ProductRequest {
     /// The user's background: 1080×720 for the panel, 1080×1920 for the whole frame.
     #[serde(default)]
     background: Option<String>,
+    /// "ban-tin" or "toan-man-hinh"; Bản tin when absent.
+    #[serde(default)]
+    template: Option<String>,
+    /// Narration speed, 1.0–1.3; 1.0 when absent.
+    #[serde(default)]
+    speed: Option<f64>,
     cpu_only: bool,
     output_root: Option<String>,
 }
@@ -122,6 +128,14 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     if request.visuals.is_empty() || request.visuals.len() > 30 || request.variants.is_empty() || request.variants.len() > 5 {
         return Err(fail("Cần 1–30 ảnh hoặc clip và 1–5 kịch bản"));
     }
+    let template = request.template.unwrap_or_else(|| "ban-tin".to_owned());
+    if !["ban-tin", "toan-man-hinh"].contains(&template.as_str()) {
+        return Err(fail("Mẫu video không hợp lệ"));
+    }
+    let speed = request.speed.unwrap_or(1.0);
+    if !(1.0..=1.3).contains(&speed) {
+        return Err(fail("Tốc độ đọc không hợp lệ"));
+    }
     if !(0.0..=1.0).contains(&request.music_volume) {
         return Err(fail("Âm lượng nhạc nền không hợp lệ"));
     }
@@ -147,6 +161,7 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     let spec = json!({
         "schema_version": 1, "name": request.name, "price": request.price, "voice_id": request.voice_id,
         "variants": request.variants, "visuals": visuals, "music": music, "music_volume": request.music_volume, "background": background,
+        "template": template, "speed": speed,
     });
     let spec_path = work.join("spec.json");
     fs::write(&spec_path, serde_json::to_vec(&spec).map_err(|error| fail(error.to_string()))?)

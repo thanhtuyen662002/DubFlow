@@ -10,6 +10,8 @@ export type ProductRequest = {
   music: string | null;
   musicVolume: number;
   background: string | null;
+  template: Template;
+  speed: number;
   cpuOnly: boolean;
   outputRoot: string | null;
 };
@@ -22,6 +24,9 @@ export type ProductStatus = {
   message: string;
   videos: Array<{ index: number; ok: boolean; path?: string; message?: string; duration_ms?: number }>;
 };
+
+export type Template = "ban-tin" | "toan-man-hinh";
+export const SPEEDS = [1, 1.1, 1.2] as const;
 
 export const MAX_PHOTOS_TO_READ = 8;
 export const MAX_VISUALS = 30;
@@ -61,7 +66,7 @@ export function addPaths(current: readonly string[], added: readonly string[], l
 export function buildRequest(input: {
   info: ProductInfo; voiceId: string | null; scripts: readonly { text: string; use: boolean }[];
   visuals: readonly string[]; music: string | null; volumePercent: number; cpuOnly: boolean; outputRoot: string | null;
-  background?: string | null;
+  background?: string | null; template?: string; speed?: number;
 }): ProductRequest | string {
   const variants = input.scripts.filter((item) => item.use).map((item) => item.text.trim()).filter((text) => /[\p{L}\p{N}]/u.test(text));
   if (!variants.length) return "Hãy chọn ít nhất một kịch bản.";
@@ -73,6 +78,8 @@ export function buildRequest(input: {
   return {
     name: input.info.name, price: input.info.price, voiceId: input.voiceId, variants, visuals: [...input.visuals],
     music: input.music, musicVolume: Math.min(1, Math.max(0, Math.round(input.volumePercent) / 100)), background: input.background ?? null,
+    template: input.template === "toan-man-hinh" ? "toan-man-hinh" : "ban-tin",
+    speed: SPEEDS.find((speed) => speed === input.speed) ?? 1,
     cpuOnly: input.cpuOnly, outputRoot: input.outputRoot,
   };
 }

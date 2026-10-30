@@ -19,7 +19,8 @@ CPU_PROFILE = "models/manifests/production-cpu-v1.json"
 class VieNeuSpeaker:
     """One VieNeu voice at natural pace, on the GPU when its verified pack allows."""
 
-    def __init__(self, app_root: Path, model_root: Path, ffmpeg: Path, voice_id: str, *, cpu_only: bool, status: Status) -> None:
+    def __init__(self, app_root: Path, model_root: Path, ffmpeg: Path, voice_id: str, *, cpu_only: bool, status: Status,
+                 speed: float = 1.0) -> None:
         from engine.dubflow.accelerator import nvidia
         from engine.dubflow.tts import vieneu
 
@@ -39,9 +40,10 @@ class VieNeuSpeaker:
             self.engine.close()
             raise ProductError(f"Không khởi động được giọng đọc: {health.code}")
         self.sample_rate = pack.sample_rate
+        self.speed = speed
 
     def speak(self, text: str):
-        return self.engine.natural_speech(text).samples
+        return self.engine.natural_speech(text, speed=self.speed).samples
 
     def close(self) -> None:
         self.engine.close()
@@ -69,7 +71,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     def speaker(status: Status) -> VieNeuSpeaker:
-        return VieNeuSpeaker(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status)
+        return VieNeuSpeaker(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status,
+                             speed=spec.speed)
 
     result = run(spec, output, speaker=speaker, probe=lambda path: probe_duration_ms(args.ffprobe, path),
                  measure=lambda path: probe_size(args.ffprobe, path), ffmpeg=args.ffmpeg)

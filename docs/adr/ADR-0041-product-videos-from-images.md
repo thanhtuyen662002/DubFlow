@@ -25,6 +25,7 @@ DubFlow already has:
    - photos get a slow pan; clips are cut into segments of at most 5 seconds, in the user's order, repeated as needed;
    - optional background music the user supplies is looped under the voice at a set volume.
    - an optional background image replaces the green: one at least 1.2 times taller than wide (1080×1920) covers the whole frame under the media, any other (1080×720) covers the panel. It is scaled to cover and cropped, and the name and captions then get a dark outline (Issue #358).
+   A second template, "Toàn màn hình", fills the whole frame with the media and puts the name, captions and price on translucent boxes; a background is not used there. Narration may run at 1.0, 1.1 or 1.2 times VieNeu's natural pace, and the script length asked of Claude scales with it (Issue #360).
 4. **Batch.**
    - Each variant becomes `video-<n>.mp4` with its `script-<n>.txt` and `captions-<n>.srt` in `DubFlow Output\Ban hang - <product>\run-<id>`.
    - A status file reports progress to the desktop, and one variant's failure does not stop the others.
@@ -34,4 +35,4 @@ DubFlow already has:
 ## Consequences
 - Script quality depends on Claude and on what is legible in the photos. The editable form and scripts are the safeguard.
 - CPU narration takes about real time; the GPU path is used when available, with the same CPU fallback as dubbing.
-- More templates, voice speed and per-sentence visuals are possible later. They are not part of this change.
+- Per-sentence visuals are possible later. They are not part of this change.
