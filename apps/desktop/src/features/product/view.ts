@@ -387,8 +387,13 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   });
   $("#product-render").addEventListener("click", () => void render());
   $("#product-cancel").addEventListener("click", () => void cancel());
-  $("#product-key-save").addEventListener("click", () => {
-    apiKey.set(keyInput.value);
+  $("#product-key-save").addEventListener("click", async () => {
+    try {
+      await apiKey.set(keyInput.value);
+    } catch (error) {
+      $("#product-read-state").textContent = String(error).slice(0, 200);
+      return;
+    }
     keyInput.value = "";
     if (!apiKey.read()) return;
     keyRow.hidden = true;
@@ -396,10 +401,14 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     pendingKeyAction = null;
     action?.();
   });
-  $("#product-key-clear").addEventListener("click", () => {
-    apiKey.clear();
-    keyInput.value = "";
-    $("#product-read-state").textContent = KEY_CLEARED;
+  $("#product-key-clear").addEventListener("click", async () => {
+    try {
+      await apiKey.clear();
+      keyInput.value = "";
+      $("#product-read-state").textContent = KEY_CLEARED;
+    } catch (error) {
+      $("#product-read-state").textContent = String(error).slice(0, 200);
+    }
   });
   renderPhotos();
   renderScripts();

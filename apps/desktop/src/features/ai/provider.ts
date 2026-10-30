@@ -16,32 +16,90 @@ export function isProvider(value: unknown): value is Provider {
   return value === "claude" || value === "gemini";
 }
 
-/** What the key prompt says: where to get a key, that it lasts one session, what is sent and who bills. */
+export const KEY_STORAGE_NOTE = "Khóa được lưu an toàn trên máy này (Windows Credential Manager) nên lần sau không phải nhập lại; đổi hoặc xóa trong “Cài đặt AI”.";
+
+/** What the key prompt says: where to get a key, where it is kept, what is sent and who bills. */
 export function keyHint(provider: Provider, sent = "phụ đề tiếng Việt của video"): string {
   const { name, console, company } = PROVIDERS[provider];
-  return `Nhập khóa API ${name} của bạn (${console}). Khóa chỉ được giữ trong phiên làm việc này và sẽ mất khi đóng hoặc tải lại app; khi dùng, ${sent} được gửi tới ${company} và tính phí theo tài khoản của bạn.`;
+  return `Nhập khóa API ${name} của bạn (${console}). ${KEY_STORAGE_NOTE} Khi dùng, ${sent} được gửi tới ${company} và tính phí theo tài khoản của bạn.`;
 }
 
-/** The chosen provider and one key per provider, held only in memory for the current app session. */
+/** Where keys are kept between app runs: the host's Credential Manager (ADR-0043). */
+export interface KeyStore {
+  load(provider: Provider): Promise<string | null>;
+  /** Saves the key and returns its masked form ("…abcd"). */
+  save(provider: Provider, key: string): Promise<string>;
+  remove(provider: Provider): Promise<void>;
+  loadProvider(): Provider | null;
+  saveProvider(provider: Provider): void;
+}
+
+/** The chosen provider and one key per provider: saved through `store`, cached in memory while the app runs. */
 export interface AiSession {
   provider(): Provider;
   setProvider(provider: Provider): void;
   /** The current provider's key, or "". */
   read(): string;
-  set(value: string): void;
-  clear(): void;
+  /** Sets (or, when blank, removes) the current provider's key. */
+  set(value: string): Promise<void>;
+  clear(): Promise<void>;
+  /** Loads the saved provider choice and keys. */
+  restore(): Promise<void>;
+  /** A provider's saved key, masked, or null. */
+  saved(provider: Provider): string | null;
 }
 
-export function createAiSession(): AiSession {
+function mask(key: string): string | null {
+  return key ? `…${key.slice(-4)}` : null;
+}
+
+export function createAiSession(store?: KeyStore): AiSession {
   let current: Provider = "claude";
   const keys: Record<Provider, string> = { claude: "", gemini: "" };
+  async function put(provider: Provider, value: string): Promise<void> {
+    const key = value.trim();
+    const previous = keys[provider];
+    keys[provider] = key;
+    try {
+      if (store) await (key ? store.save(provider, key) : store.remove(provider));
+    } catch (error) {
+      keys[provider] = previous;
+      throw error;
+    }
+  }
   return {
     provider: () => current,
-    setProvider: (provider) => { current = provider; },
+    setProvider: (provider) => {
+      current = provider;
+      store?.saveProvider(provider);
+    },
     read: () => keys[current],
-    set: (value) => { keys[current] = value.trim(); },
-    clear: () => { keys[current] = ""; },
+    set: (value) => put(current, value),
+    clear: () => put(current, ""),
+    restore: async () => {
+      if (!store) return;
+      current = store.loadProvider() ?? current;
+      for (const provider of Object.keys(keys) as Provider[]) {
+        try {
+          keys[provider] = (await store.load(provider)) ?? "";
+        } catch {
+          keys[provider] = "";
+        }
+      }
+    },
+    saved: (provider) => mask(keys[provider]),
   };
+}
+
+/** Set a provider's key without changing the current choice. */
+export async function setKeyFor(session: AiSession, provider: Provider, value: string): Promise<void> {
+  const current = session.provider();
+  session.setProvider(provider);
+  try {
+    await session.set(value);
+  } finally {
+    session.setProvider(current);
+  }
 }
 
 /** A rejected or missing key, from either service's error text. */

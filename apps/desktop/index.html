@@ -66,6 +66,7 @@
             <span id="release-channel" class="tag"></span>
           </div>
           <button id="update-check" class="link update-check" type="button">Kiểm tra cập nhật</button>
+          <button id="open-ai-settings" class="link update-check" type="button">Cài đặt AI</button>
         </div>
       </aside>
 
@@ -167,7 +168,7 @@
                 <div class="post-key-actions">
                   <input id="product-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API" />
                   <button id="product-key-save" class="btn primary" type="button">Lưu &amp; tiếp tục</button>
-                  <button id="product-key-clear" class="link" type="button">Xóa khóa khỏi phiên này</button>
+                  <button id="product-key-clear" class="link" type="button">Xóa khóa đã lưu</button>
                 </div>
               </div>
               <div class="product-actions">
@@ -409,6 +410,28 @@
         </section>
       </main>
     </div>
+    <div id="ai-settings-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="ai-settings-title" hidden>
+      <div class="review-panel post-panel ai-settings-panel">
+        <header class="review-head">
+          <div>
+            <h2 id="ai-settings-title">Cài đặt AI</h2>
+            <p class="subtitle">Khóa API dùng cho “Gợi ý đăng bài” và “Video bán hàng”</p>
+          </div>
+          <button id="ai-settings-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <div class="ai-settings-body">
+          <label class="ai-provider">AI mặc định
+            <select id="ai-settings-provider"><option value="claude">Claude (Anthropic)</option><option value="gemini">Gemini (Google)</option></select>
+          </label>
+          <div id="ai-settings-keys" class="ai-settings-keys"></div>
+          <p id="ai-settings-note" class="hint"></p>
+          <p id="ai-settings-state" class="discover-state" role="status"></p>
+        </div>
+      </div>
+    </div>
+
     <div id="post-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="post-title" hidden>
       <div class="review-panel post-panel">
         <header class="review-head">
@@ -425,11 +448,11 @@
           </button>
         </header>
         <div id="post-key-row" class="post-key-row" hidden>
-          <p class="hint">Nhập khóa API Claude của bạn (console.anthropic.com). Khóa chỉ được giữ trong phiên làm việc này và sẽ mất khi đóng hoặc tải lại app; khi dùng, phụ đề tiếng Việt của video được gửi tới Anthropic và tính phí theo tài khoản của bạn.</p>
+          <p class="hint"></p>
           <div class="post-key-actions">
             <input id="post-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API" />
             <button id="post-key-save" class="btn primary" type="button">Lưu &amp; viết</button>
-            <button id="post-key-clear" class="link" type="button">Xóa khóa khỏi phiên này</button>
+            <button id="post-key-clear" class="link" type="button">Xóa khóa đã lưu</button>
           </div>
         </div>
         <p id="post-state" class="discover-state post-state" role="status"></p>

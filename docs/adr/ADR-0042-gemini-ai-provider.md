@@ -1,6 +1,6 @@
 # ADR-0042: Gemini as a second AI provider
 
-Status: Proposed, Issue #362. Extends the session-only Claude key used by posting suggestions and product videos (ADR-0041).
+Status: Proposed, Issue #362. Extends the session-only Claude key used by posting suggestions and product videos (ADR-0041). Key storage is superseded by ADR-0043: keys are now saved in Windows Credential Manager.
 
 ## Context
 The desktop's AI features (posting suggestions; reading product photos and writing scripts) call Claude with the user's own key, from the webview. Some users have a Google Gemini key instead.
