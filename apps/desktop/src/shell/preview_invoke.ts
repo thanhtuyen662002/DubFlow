@@ -86,9 +86,32 @@ function fetchStatus(scanId: string) {
 let picked = 0;
 const sourceCredits = new Map<string, SourceCredit>();
 const packages = new Map<string, { started: number; cancelled: boolean }>();
+const shorts = new Map<string, { started: number; cancelled: boolean; items: Array<{ title: string }> }>();
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
+    case "shorts_render": {
+      const request = args.request as { outputPath: string; items: Array<{ title: string }> };
+      shorts.set(request.outputPath, { started: Date.now(), cancelled: false, items: request.items });
+      return null as T;
+    }
+    case "shorts_status": {
+      const path = String(args.outputPath), run = shorts.get(path);
+      if (!run) return null as T;
+      const state = run.cancelled ? "CANCELLED" : Date.now() - run.started > 6000 ? "COMPLETED" : "RUNNING";
+      const outputs = state === "COMPLETED" ? run.items.map((item, i) => ({
+        path: path.replace(/final_vi\.mp4$/i, `shorts/short-${i + 1}.mp4`),
+        text_path: path.replace(/final_vi\.mp4$/i, `shorts/short-${i + 1}.txt`), title: item.title,
+        text: `${item.title}\nXem bản đầy đủ: Video mẫu trên kênh.\n`,
+      })) : [];
+      return { schema_version: 1, state, done: outputs.length, total: run.items.length, outputs,
+        message: state === "COMPLETED" ? "Đã tạo Shorts." : state === "CANCELLED" ? "Đã hủy cắt Shorts." : "Đang tạo Shorts…" } as T;
+    }
+    case "shorts_cancel": {
+      const run = shorts.get(String(args.outputPath));
+      if (run) run.cancelled = true;
+      return null as T;
+    }
     case "package_info": return { has_background_stem: true, voice_id: voices[0].voice_id } as T;
     case "package_video": {
       const request = args.request as { outputPath: string };

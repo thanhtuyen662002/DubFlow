@@ -11,6 +11,7 @@ import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type Blu
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { mountSourceCredit } from "./features/credit/view.ts";
 import { mountPackage } from "./features/package/view.ts";
+import { mountShorts } from "./features/shorts/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
@@ -301,6 +302,7 @@ function renderInspector(job: QueueJob | null): void {
   inspector.hidden = !job;
   sourceCredit.select(job);
   packageVideo.select(job);
+  shorts.select(job);
   if (!job) return;
   const { status } = job;
   $("#detail-name").textContent = job.displayName;
@@ -831,6 +833,7 @@ const discovery = mountDiscovery(invoke, startFetch, () => {
 });
 // One AI choice and saved keys, shared by posting suggestions and product videos.
 const claudeKey = createAiSession(hostKeyStore(invoke));
+const shorts = mountShorts(invoke, claudeKey);
 void claudeKey.restore();
 const aiSettings = mountAiSettings(claudeKey);
 $("#open-ai-settings").addEventListener("click", () => aiSettings.open());

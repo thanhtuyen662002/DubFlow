@@ -49,6 +49,21 @@ Bấm **Hoàn tác** (hoặc Ctrl+Z khi không gõ trong ô) để bỏ lần s�
 
 Bạn có thể chọn nhạc riêng, chỉnh âm lượng và chọn giữ âm thanh gốc, thay nhạc nền hoặc giữ nền gốc ở mức 25% cùng nhạc mới. Hai cách thay nhạc cần bản giọng Việt riêng; giữ nền gốc nhỏ cần thêm bản nền đã tách. Kết quả là `final_vi_packaged.mp4` cạnh `final_vi.mp4`; video gốc và các bản âm thanh được giữ nguyên. Có thể hủy trong lúc xử lý, hoặc thử lại để dùng lại các phần đã tạo xong.
 
+### Cắt Shorts từ video đã hoàn tất
+
+Mở **Cắt Shorts** sau **Đóng gói video** ở bảng bên phải. Bấm **AI gợi ý đoạn hay**
+để gửi phụ đề tiếng Việt và thời gian tới nhà cung cấp đã lưu trong **Cài đặt AI**
+(tên nhà cung cấp hiện ngay trong mục này), hoặc **Thêm đoạn thủ công** để làm
+ngoại tuyến. Kiểm tra 1–3 đoạn, sửa tiêu đề và thời gian `mm:ss` (có thể thêm
+`.mmm`); mỗi đoạn dài 5–60 giây và các đoạn đã chọn không chồng nhau.
+
+Chọn **Tự động**, **Bản tin** hoặc **Nền mờ**, rồi bấm **Tạo Shorts**. Video dọc
+1080×1920 giữ âm thanh và phụ đề có sẵn của đoạn gốc. Kết quả nằm trong `shorts/`
+cạnh `final_vi.mp4`, kèm file tiêu đề/mô tả và dòng nguồn nếu đã lưu
+`source_credit.json`. Có thể mở từng video, sao chép tiêu đề & mô tả, hoặc hủy
+trong lúc tạo. Tạo lại dùng lại các đoạn đã hoàn tất còn hợp lệ. Với video rất
+dài, AI đọc phụ đề theo từng phần rồi so sánh các đoạn được gợi ý.
+
 ### Gợi ý tiêu đề & hashtag khi đăng lại
 Ở video đã xong, điền mục **Nguồn & quyền** để lưu tác giả, nền tảng, link nguồn, quyền sử dụng và ghi chú, rồi bấm **Lưu**. Video tải từ link được điền sẵn link và nền tảng khi chưa có thông tin đã lưu. Thông tin nằm trong `source_credit.json` cạnh video kết quả; link nguồn không tự xác nhận quyền sử dụng.
 
