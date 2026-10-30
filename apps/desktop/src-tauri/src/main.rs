@@ -284,14 +284,14 @@ async fn python_json(args: Vec<std::ffi::OsString>, what: &'static str) -> Resul
 }
 
 /// Write a small diagnostic zip for one job to the Desktop and show it in
-/// Explorer: the job's reports and metadata, never its video or audio.
+/// Explorer: the job's reports and metadata, never its video or audio, other
+/// jobs (the job database) or local paths (Issue #351).
 #[tauri::command]
 async fn create_report(job_id: String, output_dir: Option<String>) -> Result<String, String> {
     validate_id(&job_id)?;
     let root = data_root()?;
     let mut args: Vec<std::ffi::OsString> = vec!["-m".into(), "engine.dubflow.support.report".into(),
-        "--job-status".into(), status_path(&root, &job_id)?.into_os_string(),
-        "--database".into(), root.join("control").join("jobs.sqlite3").into_os_string()];
+        "--job-status".into(), status_path(&root, &job_id)?.into_os_string()];
     if let Some(dir) = output_dir.map(PathBuf::from) {
         // Only a DubFlow results folder: the report reads files inside it.
         if !dir.is_absolute() || !dir.is_dir() || !dir.components().any(|part| part.as_os_str() == "DubFlow Output") {
