@@ -3,7 +3,8 @@ import {
   addPaths, buildRequest, fileName, formatFeatures, isImage, MAX_PHOTOS_TO_READ, MAX_VARIANTS, MAX_VISUALS,
   parseStatus, readForm, toBase64, type ProductStatus,
 } from "./model.ts";
-import { KEY_CLEARED, KEY_HINT, type SessionKey } from "../seo/view.ts";
+import { KEY_CLEARED, type SessionKey } from "../seo/view.ts";
+import { isKeyError, isProvider, keyHint, PROVIDERS } from "../ai/provider.ts";
 import { parseVoiceCatalog } from "../voices/model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -15,10 +16,12 @@ const $ = <T extends HTMLElement>(selector: string): T => {
   return node;
 };
 
-function apiError(error: unknown): string {
+function apiError(error: unknown, name: string): string {
   const message = String(error);
-  return /401|authentication|api[_ -]?key/i.test(message) ? "Khóa API không hợp lệ. Nhập lại khóa Claude." : `Claude chưa làm được: ${message.slice(0, 200)}`;
+  return isKeyError(message) ? `Khóa API không hợp lệ. Nhập lại khóa ${name}.` : `${name} chưa làm được: ${message.slice(0, 200)}`;
 }
+
+const SENT = "ảnh và thông tin sản phẩm bạn chọn";
 
 /** The "Video bán hàng" page: photos → product facts → scripts → videos (ADR-0041). */
 export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings: { outputRoot(): string | null; cpuOnly(): boolean }): { show(): void } {
@@ -33,7 +36,20 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   const thumbs = new Map<string, string>();
   const keyRow = $("#product-key-row");
   const keyInput = $<HTMLInputElement>("#product-key");
-  keyRow.querySelector(".hint")!.textContent = KEY_HINT;
+  const providerSelect = $<HTMLSelectElement>("#product-provider");
+  function showProvider(): void {
+    const { name, placeholder } = PROVIDERS[apiKey.provider()];
+    providerSelect.value = apiKey.provider();
+    keyRow.querySelector(".hint")!.textContent = keyHint(apiKey.provider(), SENT);
+    keyInput.placeholder = placeholder;
+    keyInput.setAttribute("aria-label", `Khóa API ${name}`);
+  }
+  showProvider();
+  providerSelect.addEventListener("change", () => {
+    if (isProvider(providerSelect.value)) apiKey.setProvider(providerSelect.value);
+    showProvider();
+    if (apiKey.read()) keyRow.hidden = true;
+  });
   const field = (id: string) => $<HTMLInputElement | HTMLTextAreaElement>(id);
   const voiceSelect = $<HTMLSelectElement>("#product-voice");
 
@@ -155,23 +171,25 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     const state = $("#product-read-state");
     const button = $<HTMLButtonElement>("#product-read");
     button.disabled = true;
-    state.textContent = "Claude đang đọc ảnh…";
+    const provider = apiKey.provider();
+    const { name, company } = PROVIDERS[provider];
+    state.textContent = `${name} đang đọc ảnh…`;
     try {
       const sent: Photo[] = [];
       for (const path of photos.slice(0, MAX_PHOTOS_TO_READ)) {
         const bytes = await invoke<ArrayBuffer>("product_image", { path });
         sent.push({ mediaType: "image/jpeg", data: toBase64(new Uint8Array(bytes)) });
       }
-      const product = await readProduct(key, sent);
+      const product = await readProduct(provider, key, sent);
       field("#product-name").value = product.name;
       field("#product-price").value = product.price;
       field("#product-features").value = formatFeatures(product.features);
       field("#product-audience").value = product.audience;
       field("#product-notes").value = product.notes;
-      state.textContent = "Đã điền thông tin từ ảnh (ảnh đã gửi tới Anthropic). Hãy kiểm tra và sửa lại cho đúng.";
+      state.textContent = `Đã điền thông tin từ ảnh (ảnh đã gửi tới ${company}). Hãy kiểm tra và sửa lại cho đúng.`;
     } catch (error) {
-      state.textContent = apiError(error);
-      if (/401|authentication|api[_ -]?key/i.test(String(error))) keyRow.hidden = false;
+      state.textContent = apiError(error, name);
+      if (isKeyError(error)) keyRow.hidden = false;
     } finally {
       button.disabled = !photos.length;
     }
@@ -186,9 +204,11 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     }
     const button = $<HTMLButtonElement>("#product-write");
     button.disabled = true;
-    state.textContent = "Claude đang viết kịch bản…";
+    const provider = apiKey.provider();
+    const { name } = PROVIDERS[provider];
+    state.textContent = `${name} đang viết kịch bản…`;
     try {
-      const written = await writeScripts(key, product, {
+      const written = await writeScripts(provider, key, product, {
         count: Number($<HTMLSelectElement>("#product-count").value),
         seconds: Number($<HTMLSelectElement>("#product-seconds").value),
         speed: Number($<HTMLSelectElement>("#product-speed").value),
@@ -198,8 +218,8 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       renderScripts();
       state.textContent = `Đã viết ${written.length} kịch bản. Hãy đọc lại và sửa trước khi tạo video.`;
     } catch (error) {
-      state.textContent = apiError(error);
-      if (/401|authentication|api[_ -]?key/i.test(String(error))) keyRow.hidden = false;
+      state.textContent = apiError(error, name);
+      if (isKeyError(error)) keyRow.hidden = false;
     } finally {
       button.disabled = false;
     }
@@ -384,5 +404,10 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   renderPhotos();
   renderScripts();
 
-  return { show: () => void loadVoices() };
+  return {
+    show: () => {
+      showProvider();
+      void loadVoices();
+    },
+  };
 }

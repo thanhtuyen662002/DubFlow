@@ -1,4 +1,5 @@
-import { normalizeSuggestion, writeWithClaude, type PostSuggestion } from "./ai.ts";
+import { normalizeSuggestion, writeSuggestion, type PostSuggestion } from "./ai.ts";
+import { createAiSession, isKeyError, isProvider, keyHint, PROVIDERS, type AiSession } from "../ai/provider.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -12,24 +13,15 @@ const $ = <T extends HTMLElement>(selector: string): T => {
   return node;
 };
 
-export const KEY_HINT = "Nhập khóa API Claude của bạn (console.anthropic.com). Khóa chỉ được giữ trong phiên làm việc này và sẽ mất khi đóng hoặc tải lại app; khi dùng, phụ đề tiếng Việt của video được gửi tới Anthropic và tính phí theo tài khoản của bạn.";
+export const KEY_HINT = keyHint("claude");
 export const KEY_CLEAR_LABEL = "Xóa khóa khỏi phiên này";
 export const KEY_CLEARED = "Đã xóa khóa API khỏi phiên làm việc này.";
 
-/** The Claude API key, held only in memory for the current app session. */
-export interface SessionKey {
-  read(): string;
-  set(value: string): void;
-  clear(): void;
-}
+/** The AI keys, held only in memory for the current app session. */
+export type SessionKey = AiSession;
 
 export function createSessionKey(): SessionKey {
-  let key = "";
-  return {
-    read: () => key,
-    set: (value) => { key = value.trim(); },
-    clear: () => { key = ""; },
-  };
+  return createAiSession();
 }
 
 /** Drop a key an earlier version left in persistent WebView storage. */
@@ -57,8 +49,20 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
   const keyRow = $("#post-key-row");
   const keyInput = $<HTMLInputElement>("#post-key");
   const keyClear = $<HTMLButtonElement>("#post-key-clear");
+  const providerSelect = $<HTMLSelectElement>("#post-provider");
   purgeLegacyKey();
-  keyRow.querySelector(".hint")!.textContent = KEY_HINT;
+  function showProvider(): void {
+    providerSelect.value = apiKey.provider();
+    keyRow.querySelector(".hint")!.textContent = keyHint(apiKey.provider());
+    keyInput.placeholder = PROVIDERS[apiKey.provider()].placeholder;
+    keyInput.setAttribute("aria-label", `Khóa API ${PROVIDERS[apiKey.provider()].name}`);
+  }
+  showProvider();
+  providerSelect.addEventListener("change", () => {
+    if (isProvider(providerSelect.value)) apiKey.setProvider(providerSelect.value);
+    showProvider();
+    keyRow.hidden = Boolean(apiKey.read()) || keyRow.hidden;
+  });
   keyClear.textContent = KEY_CLEAR_LABEL;
   let outputPath = "";
   let sourceTitle = "";
@@ -148,21 +152,23 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
     }
     const current = ++request;
     aiButton.disabled = true;
-    state.textContent = "Claude đang viết gợi ý…";
+    const provider = apiKey.provider();
+    const { name, company } = PROVIDERS[provider];
+    state.textContent = `${name} đang viết gợi ý…`;
     try {
       const cues = await invoke<Array<{ text: string }>>("review_cues", { outputPath });
       const subtitles = cues.map((cue) => cue.text).filter((text) => typeof text === "string" && text.trim());
-      const suggestion = await writeWithClaude(key, subtitles, sourceTitle);
+      const suggestion = await writeSuggestion(provider, key, subtitles, sourceTitle);
       if (current !== request) return;
-      render(suggestion, "Gợi ý do Claude viết từ phụ đề tiếng Việt (đã gửi phụ đề tới Anthropic).");
+      render(suggestion, `Gợi ý do ${name} viết từ phụ đề tiếng Việt (đã gửi phụ đề tới ${company}).`);
       state.textContent = "";
     } catch (error) {
       if (current !== request) return;
       const message = String(error);
-      state.textContent = /401|authentication|api[_ -]?key/i.test(message)
-        ? "Khóa API không hợp lệ. Nhập lại khóa Claude."
+      state.textContent = isKeyError(message)
+        ? `Khóa API không hợp lệ. Nhập lại khóa ${name}.`
         : `Không viết được bằng AI: ${message.slice(0, 160)}`;
-      if (/401|authentication|api[_ -]?key/i.test(message)) keyRow.hidden = false;
+      if (isKeyError(message)) keyRow.hidden = false;
     } finally {
       aiButton.disabled = false;
     }
@@ -188,6 +194,7 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
       outputPath = path;
       sourceTitle = displayName.replace(/\.[A-Za-z0-9]{2,4}$/, "");
       keyRow.hidden = true;
+      showProvider();
       dialog.hidden = false;
       void loadOffline();
     },

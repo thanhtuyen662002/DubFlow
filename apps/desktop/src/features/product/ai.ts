@@ -1,6 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { askJson, type Part, type Provider } from "../ai/provider.ts";
 
-/** What Claude read from the product photos; every field stays editable. */
+/** What the AI read from the product photos; every field stays editable. */
 export type ProductInfo = { name: string; price: string; features: string[]; audience: string; notes: string };
 export type ScriptRequest = { count: number; seconds: number; tone: string; speed?: number };
 export type Photo = { mediaType: "image/jpeg"; data: string };
@@ -63,7 +63,7 @@ export function normalizeInfo(value: unknown): ProductInfo {
     ? [...new Set(object.features.map((item) => clean(item, 200)).filter(Boolean))].slice(0, 8)
     : [];
   const info = { name: clean(object.name, 120), price: clean(object.price, 60), features, audience: clean(object.audience, 200), notes: clean(object.notes, 500) };
-  if (!info.name && !features.length) throw new Error("Claude không đọc được thông tin sản phẩm từ ảnh; hãy chọn ảnh rõ hơn hoặc tự nhập.");
+  if (!info.name && !features.length) throw new Error("AI không đọc được thông tin sản phẩm từ ảnh; hãy chọn ảnh rõ hơn hoặc tự nhập.");
   return info;
 }
 
@@ -74,7 +74,7 @@ export function normalizeScripts(value: unknown, count: number): string[] {
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.replace(PICTOGRAPHS, "").replace(/#\S+/g, "").replace(/[*_`>]/g, "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, MAX_SCRIPT_CHARS))
     .filter((item) => /[\p{L}\p{N}]/u.test(item));
-  if (!scripts.length) throw new Error("Claude không trả về kịch bản nào; hãy thử lại.");
+  if (!scripts.length) throw new Error("AI không trả về kịch bản nào; hãy thử lại.");
   return scripts.slice(0, count);
 }
 
@@ -89,39 +89,17 @@ export function describeProduct(info: ProductInfo): string {
   ].filter(Boolean).join("\n");
 }
 
-function client(apiKey: string): Anthropic {
-  // The key belongs to the user of this desktop app and stays on this machine.
-  return new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-}
-
-async function structured(apiKey: string, system: string, schema: Record<string, unknown>, content: Anthropic.Beta.BetaContentBlockParam[]): Promise<unknown> {
-  const response = await client(apiKey).beta.messages.create({
-    model: "claude-opus-5-5",
-    max_tokens: 16000,
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    output_config: { effort: "medium", format: { type: "json_schema", schema } },
-    system,
-    messages: [{ role: "user", content }],
-  });
-  if (response.stop_reason === "refusal") throw new Error("Claude từ chối yêu cầu này.");
-  if (response.stop_reason === "max_tokens") throw new Error("Câu trả lời bị cắt ngắn; hãy thử lại.");
-  return JSON.parse(response.content.map((block) => (block.type === "text" ? block.text : "")).join(""));
-}
-
-/** Read the product facts printed on the photos. The photos are sent to Anthropic. */
-export async function readProduct(apiKey: string, photos: readonly Photo[]): Promise<ProductInfo> {
-  const content: Anthropic.Beta.BetaContentBlockParam[] = photos.map((photo) => ({
-    type: "image", source: { type: "base64", media_type: photo.mediaType, data: photo.data },
-  }));
-  content.push({ type: "text", text: "Đọc thông tin sản phẩm trong các ảnh trên." });
-  return normalizeInfo(await structured(apiKey, READ_SYSTEM, INFO_SCHEMA, content));
+/** Read the product facts printed on the photos. The photos are sent to the provider. */
+export async function readProduct(provider: Provider, apiKey: string, photos: readonly Photo[]): Promise<ProductInfo> {
+  const parts: Part[] = photos.map((photo) => ({ image: { mediaType: photo.mediaType, data: photo.data } }));
+  parts.push({ text: "Đọc thông tin sản phẩm trong các ảnh trên." });
+  return normalizeInfo(await askJson(provider, apiKey, { system: READ_SYSTEM, schema: INFO_SCHEMA, effort: "medium", parts }));
 }
 
 /** Write `count` different narration scripts from the (user-checked) product form. */
-export async function writeScripts(apiKey: string, info: ProductInfo, request: ScriptRequest): Promise<string[]> {
+export async function writeScripts(provider: Provider, apiKey: string, info: ProductInfo, request: ScriptRequest): Promise<string[]> {
   // A faster voice fits more words in the same time.
   const words = Math.round(request.seconds * WORDS_PER_SECOND * (request.speed ?? 1));
   const text = `${describeProduct(info)}\n\nHãy viết ${request.count} kịch bản khác nhau, mỗi kịch bản khoảng ${words} chữ (đọc trong khoảng ${request.seconds} giây). Giọng điệu: ${request.tone}.`;
-  return normalizeScripts(await structured(apiKey, WRITE_SYSTEM, SCRIPTS_SCHEMA, [{ type: "text", text }]), request.count);
+  return normalizeScripts(await askJson(provider, apiKey, { system: WRITE_SYSTEM, schema: SCRIPTS_SCHEMA, effort: "medium", parts: [{ text }] }), request.count);
 }
