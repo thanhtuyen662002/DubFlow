@@ -49,7 +49,7 @@ export function parseOffline(value: unknown): PostSuggestion | null {
 }
 
 /** The posting-suggestions dialog for one finished video. */
-export function mountPostSuggestions(invoke: Invoke): { open(outputPath: string, displayName: string): void } {
+export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = createSessionKey()): { open(outputPath: string, displayName: string): void } {
   const dialog = $("#post-dialog");
   const body = $("#post-body");
   const state = $("#post-state");
@@ -57,7 +57,6 @@ export function mountPostSuggestions(invoke: Invoke): { open(outputPath: string,
   const keyRow = $("#post-key-row");
   const keyInput = $<HTMLInputElement>("#post-key");
   const keyClear = $<HTMLButtonElement>("#post-key-clear");
-  const apiKey = createSessionKey();
   purgeLegacyKey();
   keyRow.querySelector(".hint")!.textContent = KEY_HINT;
   keyClear.textContent = KEY_CLEAR_LABEL;

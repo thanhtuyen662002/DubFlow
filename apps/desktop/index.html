@@ -29,6 +29,10 @@
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             Khám phá
           </a>
+          <a id="nav-product" class="nav-item" href="#">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 8h14l-1.2 11.2a1 1 0 0 1-1 .8H7.2a1 1 0 0 1-1-.8zM9 8V6.5a3 3 0 0 1 6 0V8" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></svg>
+            Video bán hàng
+          </a>
         </nav>
         <div class="sidebar-stats">
           <div class="stat"><span id="stat-running">0</span><small>Đang chạy</small></div>
@@ -140,6 +144,92 @@
               <button id="discover-more" class="btn more-btn" type="button" hidden>Tải thêm</button>
               <p class="hint discover-note">Chỉ tải và xử lý video bạn có quyền sử dụng; tuân thủ điều khoản của từng nền tảng.</p>
             </div>
+          </div>
+        </section>
+
+        <section id="product-view" class="product" hidden>
+          <header class="topbar">
+            <div>
+              <h1>Video bán hàng</h1>
+              <p class="subtitle">Từ ảnh sản phẩm: Claude đọc thông tin và viết kịch bản, DubFlow đọc giọng Việt và tạo video dọc</p>
+            </div>
+          </header>
+          <div class="product-body">
+            <section class="product-card">
+              <div class="product-card-head">
+                <h2><b>1</b> Ảnh sản phẩm</h2>
+                <button id="product-pick" class="btn" type="button">Chọn ảnh…</button>
+              </div>
+              <ul id="product-photos" class="product-thumbs"></ul>
+              <p class="hint">Chọn ảnh bao bì, nhãn hoặc ảnh chụp trang sản phẩm có tên, giá, thông số. Claude đọc tối đa 8 ảnh đầu.</p>
+              <div id="product-key-row" class="product-key-row" hidden>
+                <p class="hint"></p>
+                <div class="post-key-actions">
+                  <input id="product-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API Claude" />
+                  <button id="product-key-save" class="btn primary" type="button">Lưu &amp; tiếp tục</button>
+                  <button id="product-key-clear" class="link" type="button">Xóa khóa khỏi phiên này</button>
+                </div>
+              </div>
+              <div class="product-actions">
+                <button id="product-read" class="btn primary" type="button" disabled>Đọc thông tin bằng AI (Claude)</button>
+                <p id="product-read-state" class="discover-state" role="status"></p>
+              </div>
+            </section>
+            <section class="product-card">
+              <h2><b>2</b> Thông tin sản phẩm</h2>
+              <div class="product-form">
+                <label>Tên sản phẩm<input id="product-name" type="text" maxlength="120" /></label>
+                <label>Giá<input id="product-price" type="text" maxlength="60" placeholder="Ví dụ 299.000đ" /></label>
+                <label class="wide">Điểm nổi bật (mỗi dòng một ý)<textarea id="product-features" rows="4"></textarea></label>
+                <label>Dành cho<input id="product-audience" type="text" maxlength="200" /></label>
+                <label>Thông tin thêm<input id="product-notes" type="text" maxlength="500" /></label>
+              </div>
+              <div class="product-options">
+                <label>Số kịch bản
+                  <select id="product-count"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select>
+                </label>
+                <label>Độ dài
+                  <select id="product-seconds"><option value="20">20 giây</option><option value="30" selected>30 giây</option><option value="45">45 giây</option><option value="60">60 giây</option></select>
+                </label>
+                <label>Giọng điệu
+                  <select id="product-tone"><option>tự nhiên, thân thiện</option><option>hào hứng, chốt đơn nhanh</option><option>chuyên nghiệp, đáng tin cậy</option><option>hài hước, gần gũi</option></select>
+                </label>
+                <button id="product-write" class="btn primary" type="button">Viết kịch bản bằng AI</button>
+              </div>
+              <p id="product-write-state" class="discover-state" role="status"></p>
+            </section>
+            <section class="product-card">
+              <div class="product-card-head">
+                <h2><b>3</b> Kịch bản</h2>
+                <button id="product-add-script" class="link" type="button">+ Tự viết kịch bản</button>
+              </div>
+              <p id="product-scripts-empty" class="hint">Chưa có kịch bản. Bấm “Viết kịch bản bằng AI” hoặc tự viết.</p>
+              <ol id="product-scripts" class="product-scripts"></ol>
+              <p class="hint">Đọc lại và sửa cho đúng sản phẩm trước khi tạo video. Mỗi kịch bản được chọn thành một video.</p>
+            </section>
+            <section class="product-card">
+              <h2><b>4</b> Tạo video</h2>
+              <label class="product-check"><input id="product-use-photos" type="checkbox" checked /> Dùng ảnh sản phẩm ở bước 1 trong video</label>
+              <div class="product-card-head">
+                <span class="hint">Thêm ảnh hoặc clip của bạn/đối tác (theo thứ tự)</span>
+                <button id="product-add-media" class="btn" type="button">Thêm ảnh/clip…</button>
+              </div>
+              <ul id="product-media" class="product-thumbs"></ul>
+              <div class="product-options">
+                <label>Giọng đọc <select id="product-voice"></select></label>
+                <span class="product-music">Nhạc nền: <span id="product-music-name">Không có</span>
+                  <button id="product-music" class="link" type="button">Chọn…</button>
+                  <button id="product-music-clear" class="link" type="button" hidden>Bỏ</button>
+                </span>
+                <label>Âm lượng nhạc <input id="product-volume" type="range" min="0" max="50" value="15" /></label>
+              </div>
+              <div class="product-actions">
+                <button id="product-render" class="btn primary" type="button">Tạo video</button>
+                <p id="product-render-state" class="discover-state" role="status"></p>
+              </div>
+              <ul id="product-results" class="product-results"></ul>
+              <p class="hint">Chỉ dùng ảnh, clip và nhạc bạn có quyền sử dụng. Video lưu trong thư mục “DubFlow Output”.</p>
+            </section>
           </div>
         </section>
 

@@ -533,6 +533,27 @@
       ]
     },
     {
+      "id": "product-video",
+      "roots": [
+        "engine/dubflow/product",
+        "tests/product"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/product",
+          "-t",
+          ".",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },
+    {
       "id": "seo",
       "roots": [
         "engine/dubflow/seo",

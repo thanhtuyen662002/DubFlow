@@ -411,3 +411,40 @@ h1, h2, h3, p { margin: 0; }
 .review-speaker { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .review-speaker select { height: 30px; padding: 0 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
 .speaker-chip { display: inline-block; margin-top: 4px; padding: 0 6px; border-radius: 99px; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: 11px; font-weight: 650; }
+
+/* Video bán hàng */
+.product { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.product[hidden] { display: none; }
+.product-body { flex: 1; min-height: 0; overflow: auto; padding: 20px 28px 32px; display: grid; gap: 16px; align-content: start; max-width: 980px; }
+.product-card { padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.product-card h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 650; }
+.product-card h2 b { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-text); font-size: 12px; }
+.product-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 4px; }
+.product-card-head .hint { margin: 0; }
+.product-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
+.product-thumbs:empty { display: none; }
+.product-thumb { position: relative; width: 92px; height: 92px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+.product-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.product-clip { display: block; padding: 8px; font-size: 11px; line-height: 1.3; word-break: break-all; color: var(--text-2); }
+.product-remove { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border: 0; border-radius: 50%; background: rgba(0, 0, 0, .6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
+.product-key-row { margin-top: 10px; }
+.product-key-row[hidden] { display: none; }
+.product-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.product-actions .discover-state { margin: 0; }
+.product-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 12px; }
+.product-form label, .product-options label { display: grid; gap: 4px; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
+.product-form .wide { grid-column: 1 / -1; }
+.product-form input, .product-form textarea, .product-script textarea { width: 100%; padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px; line-height: 1.45; }
+.product-form textarea, .product-script textarea { resize: vertical; }
+.product-options { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 16px; margin-top: 12px; }
+.product-options select { height: 34px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+.product-music { display: flex; align-items: center; gap: 6px; height: 34px; color: var(--text-2); font-size: 12.5px; }
+.product-check { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; }
+.product-scripts { display: grid; gap: 12px; margin: 10px 0 0; padding: 0; list-style: none; }
+.product-scripts:empty { display: none; }
+.product-script-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; font-weight: 600; font-size: 13px; }
+.product-script-head .hint { margin: 0 auto 0 0; }
+.product-results { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; font-size: 13px; }
+.product-results li { display: flex; align-items: center; gap: 10px; }
+.product-results li.failed { color: var(--err); }
+@media (max-width: 860px) { .product-form { grid-template-columns: 1fr; } .product-body { padding: 16px; } }
