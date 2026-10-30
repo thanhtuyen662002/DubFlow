@@ -408,6 +408,48 @@
               </form>
             </details>
 
+            <details id="reframe-section" class="source-credit" hidden>
+              <summary>Đổi khung 16:9</summary>
+              <form id="reframe-form">
+                <fieldset id="reframe-fields" class="settings">
+                  <label>Chế độ
+                    <select id="reframe-mode">
+                      <option value="bang-thong-tin">Bảng thông tin</option>
+                      <option value="cat-ngang">Cắt ngang</option>
+                    </select>
+                  </label>
+                  <label>Tiêu đề (tùy chọn, tối đa 80 ký tự)<input id="reframe-title" /></label>
+                  <div id="reframe-panel" class="settings">
+                    <label>Điểm (0–10, tùy chọn)<input id="reframe-score" type="number" min="0" max="10" step="1" /></label>
+                    <label>Ưu điểm (mỗi dòng một ý, tối đa 3 ý, ≤60 ký tự/ý)<textarea id="reframe-pros" rows="3"></textarea></label>
+                    <label>Nhược điểm (mỗi dòng một ý, tối đa 3 ý, ≤60 ký tự/ý)<textarea id="reframe-cons" rows="3"></textarea></label>
+                    <label>Tóm tắt (tùy chọn, tối đa 120 ký tự)<input id="reframe-summary" /></label>
+                    <p id="reframe-provider" class="hint"></p>
+                    <button id="reframe-ai" class="btn" type="button">AI điền bảng</button>
+                  </div>
+                  <div id="reframe-crop" class="settings" hidden>
+                    <label>Vị trí đầu: <output id="reframe-focus-start-value">50</output><input id="reframe-focus-start" type="range" min="0" max="100" value="50" /></label>
+                    <label>Vị trí cuối: <output id="reframe-focus-end-value">50</output><input id="reframe-focus-end" type="range" min="0" max="100" value="50" /></label>
+                    <small class="hint">0 = trên, 50 = giữa, 100 = dưới. Vùng cắt di chuyển đều trong đoạn đã chọn.</small>
+                    <div id="reframe-preview" hidden>
+                      <img id="reframe-image" alt="Khung hình video dọc" />
+                      <div id="reframe-band"><span id="reframe-preview-title"></span></div>
+                    </div>
+                    <small id="reframe-preview-state" class="hint" role="status"></small>
+                  </div>
+                  <label>Bắt đầu (mm:ss, tùy chọn)<input id="reframe-start" placeholder="00:00" /></label>
+                  <label>Kết thúc (mm:ss, tùy chọn)<input id="reframe-end" placeholder="Hết video" /></label>
+                  <button class="btn primary block" type="submit">Tạo video 16:9</button>
+                </fieldset>
+                <button id="reframe-cancel" class="btn" type="button" hidden>Hủy</button>
+                <p id="reframe-state" class="hint" role="status" aria-live="polite"></p>
+                <div id="reframe-results" class="button-row" hidden>
+                  <button id="reframe-open" class="btn" type="button">Mở</button>
+                  <button id="reframe-folder" class="btn" type="button">Mở thư mục</button>
+                </div>
+              </form>
+            </details>
+
             <fieldset id="voice-controls" class="settings" disabled>
               <legend>Tùy chọn xử lý</legend>
               <label class="switch-row">

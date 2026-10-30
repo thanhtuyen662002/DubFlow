@@ -579,6 +579,16 @@
       ]
     },
     {
+      "id": "reframe",
+      "roots": [
+        "engine/dubflow/reframe",
+        "tests/reframe"
+      ],
+      "commands": [
+        ["python", "-B", "-m", "unittest", "discover", "-s", "tests/reframe", "-t", ".", "-p", "test_*.py"]
+      ]
+    },
+    {
       "id": "shorts",
       "roots": [
         "engine/dubflow/shorts",

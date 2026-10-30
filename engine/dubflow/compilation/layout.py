@@ -34,7 +34,8 @@ def geometry(width: int, height: int, layout: str) -> Geometry:
 
 def ass_document(title: str, duration_ms: int, *, number: int = 0, panel_width: int = 0,
                  score: int | None = None, pros: Sequence[str] = (), cons: Sequence[str] = (),
-                 captions: Sequence[Caption] = (), card: bool = False, show_score: bool = True) -> str:
+                 captions: Sequence[Caption] = (), card: bool = False, show_score: bool = True,
+                 summary: str = "") -> str:
     end = _time(duration_ms, ass=True)
     events: list[str] = []
 
@@ -54,7 +55,8 @@ def ass_document(title: str, duration_ms: int, *, number: int = 0, panel_width: 
     heading = f"Phần {number}: {title}" if number else title
     if panel_width:
         box(0, 0, panel_width, HEIGHT, PANEL_COLOR)
-        line(_text(f"PHẦN {number}"), 60, 60, 32, color="80DCC4")
+        if number:
+            line(_text(f"PHẦN {number}"), 60, 60, 32, color="80DCC4")
         line(wrap(title, max(22, (panel_width - 120) // 22)), 60, 120, 44)
         if score is not None:
             line(f"{score}/10", 60, 300, 52, color="80DCC4")
@@ -64,9 +66,11 @@ def ass_document(title: str, duration_ms: int, *, number: int = 0, panel_width: 
         y = 435
         for symbol, values, color in (("✓", pros, "80DCC4"), ("✗", cons, "A6ABFF")):
             for value in values:
-                wrapped = textwrap.wrap(f"{symbol} {value}", width=max(24, (panel_width - 120) // 19))
-                line(r"\N".join(_text(part) for part in wrapped), 60, y, 32, color=color)
-                y += 42 * len(wrapped) + 12
+                wrapped = textwrap.wrap(f"{symbol} {value}", width=max(24, (panel_width - 120) // (16 if summary else 19)))
+                line(r"\N".join(_text(part) for part in wrapped), 60, y, 28 if summary else 32, color=color)
+                y += (31 if summary else 42) * len(wrapped) + (8 if summary else 12)
+        if summary:
+            line(wrap(summary, max(24, (panel_width - 120) // 16)), 60, 920, 28)
     elif card:
         line(wrap(heading, 58), WIDTH // 2, 90, 58, align=8)
     else:

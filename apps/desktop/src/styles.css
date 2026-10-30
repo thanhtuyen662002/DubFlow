@@ -496,3 +496,9 @@ h1, h2, h3, p { margin: 0; }
 .review-narrate select { height: 30px; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; }
 .review-narrate .btn { height: 30px; font-size: 12.5px; }
 @media (max-width: 860px) { .review-head { flex-wrap: wrap; } }
+/* Keep the crop rectangle in the same coordinate space as the fitted still. */
+#reframe-preview { position: relative; width: fit-content; max-width: 100%; margin: 8px auto; }
+#reframe-image { display: block; max-width: 100%; max-height: 280px; width: auto; height: auto; }
+#reframe-band { position: absolute; left: 0; right: 0; box-sizing: border-box; border: 2px solid #80dcc4; background: #80dcc426; pointer-events: none; }
+#reframe-preview-title { display: block; margin: 3px; padding: 2px 4px; max-width: 90%; width: fit-content; background: #172a35d9; color: white; font-size: 9px; overflow-wrap: anywhere; }
+#reframe-preview-title:empty { display: none; }
