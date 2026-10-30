@@ -158,6 +158,7 @@ class RedactTests(unittest.TestCase):
             "C:/Users/a/b.json": "<path>/b.json",
             "\\\\server\\share\\dir\\f.txt": "<path>/f.txt",
             "/Users/me/x.txt": "<path>/x.txt",
+            json.dumps({"p": "/tmp/tmpab12/DubFlow Output/run"}): '{"p": "<path>/run"}',
             "lỗi: 'E:\\a b\\c.wav'": "lỗi: '<path>/c.wav'",
         }
         for text, expected in cases.items():
@@ -165,7 +166,8 @@ class RedactTests(unittest.TestCase):
                 self.assertEqual(report.redact(text), expected)
 
     def test_other_text_is_unchanged(self):
-        for text in ("http://example.com/a/b", "tỉ lệ 1:2, lúc 10:30", "editable/timeline.json", "Đã xuất video"):
+        for text in ("http://example.com/a/b", "tỉ lệ 1:2, lúc 10:30", "editable/timeline.json", "Đã xuất video",
+                     "giá 100k / hộp", "2026/10/30", "b2-audio/abc/def/tts_document.json", "/"):
             with self.subTest(text=text):
                 self.assertEqual(report.redact(text), text)
 

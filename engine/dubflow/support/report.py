@@ -29,12 +29,13 @@ MAX_LISTED_FILES = 50_000
 REPORTS = ("job_manifest.json", "qc_report.json", "captions_vi.srt", "editable/timeline.json", "editable/dubbing_placement.json",
            ".dubflow-work/checkpoint.json", ".dubflow-work/transcript.json", ".dubflow-work/translation.json")
 WORK_DOCUMENTS = ("tts_document", "mix_document", "dubbing_placement")
-# An absolute Windows (drive or UNC) or home-directory path, up to its last
+# An absolute Windows (drive or UNC) or POSIX path, up to its last
 # separator; JSON doubles the backslashes. The last component is kept.
 _SEPARATOR = r"(?:\\\\|\\|/)"
+_COMPONENT = r"[^\\/\"'\r\n:*?<>|]+"
 _LOCAL_PATH = re.compile(
-    r"(?:\b[A-Za-z]:" + _SEPARATOR + r"|(?<![\w.])(?:\\\\\\\\|\\\\)[^\\/\"'\r\n]+" + _SEPARATOR + r"|(?<![\w.:])/(?:Users|home)/)"
-    r"(?:[^\\/\"'\r\n:*?<>|]+" + _SEPARATOR + r")*")
+    r"(?:\b[A-Za-z]:" + _SEPARATOR + r"|(?<![\w.])(?:\\\\\\\\|\\\\)[^\\/\"'\r\n]+" + _SEPARATOR
+    + r"|(?<![\w.:/\\])/(?=" + _COMPONENT + r"/))(?:" + _COMPONENT + _SEPARATOR + r")*")
 MEDIA_SUFFIXES = {".mp4", ".mkv", ".mov", ".webm", ".wav", ".pcm", ".mp3", ".m4a", ".aac", ".flac", ".png", ".jpg", ".jpeg",
                   ".onnx", ".bin", ".npz", ".exe", ".dll"}
 
