@@ -463,3 +463,9 @@ h1, h2, h3, p { margin: 0; }
 .ai-key-status.saved { color: var(--accent-text); }
 .ai-key-card .post-key-actions { margin-top: 0; }
 .ai-key-card .hint { margin: 0; }
+
+/* Thuyết minh bằng AI trong màn duyệt */
+.review-narrate { display: flex; align-items: center; gap: 6px; }
+.review-narrate select { height: 30px; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; }
+.review-narrate .btn { height: 30px; font-size: 12.5px; }
+@media (max-width: 860px) { .review-head { flex-wrap: wrap; } }

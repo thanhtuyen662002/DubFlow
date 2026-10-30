@@ -2,12 +2,14 @@ export const REVIEW_HISTORY_LIMIT = 100;
 
 type CueDraft = { cue_id: string; text: string };
 type EditSession = { cueId: string; previousText: string };
+/** One undo step: a typing session on one cue, or a whole batch (an AI rewrite). */
+type HistoryEntry = EditSession | { batch: EditSession[] };
 
 /** In-memory drafts only; each entry restores one cue, never a whole review. */
 export class ReviewDraftHistory {
   private originals = new Map<string, string>();
   private drafts = new Map<string, string>();
-  private history: EditSession[] = [];
+  private history: HistoryEntry[] = [];
   private active: EditSession | null = null;
 
   constructor(cues: readonly CueDraft[] = []) {
@@ -66,12 +68,28 @@ export class ReviewDraftHistory {
     return this.isDirty && [...this.originals.keys()].every((cueId) => this.draftOf(cueId).trim() !== "");
   }
 
+  /** Replace many drafts at once; one undo restores them all. */
+  replaceDrafts(texts: ReadonlyMap<string, string>): void {
+    this.endEdit();
+    const batch: EditSession[] = [];
+    for (const [cueId, text] of texts) {
+      const previousText = this.draftOf(cueId);
+      if (previousText === text) continue;
+      this.drafts.set(cueId, text);
+      batch.push({ cueId, previousText });
+    }
+    if (!batch.length) return;
+    this.history.push({ batch });
+    if (this.history.length > REVIEW_HISTORY_LIMIT) this.history.shift();
+  }
+
   undo(): string | null {
     this.endEdit();
     const previous = this.history.pop();
     if (!previous) return null;
-    this.drafts.set(previous.cueId, previous.previousText);
-    return previous.cueId;
+    const sessions = "batch" in previous ? previous.batch : [previous];
+    for (const session of sessions) this.drafts.set(session.cueId, session.previousText);
+    return sessions[0].cueId;
   }
 
   private remember(session: EditSession): void {

@@ -10,7 +10,8 @@ import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
-import { createAiSession } from "./features/ai/provider.ts";
+import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
+import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
 import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import {
@@ -1158,6 +1159,42 @@ reviewApply.addEventListener("click", async () => {
   }
 });
 $("#open-review").addEventListener("click", () => void openReview());
+
+// "Viết lại kiểu thuyết minh": the AI retells each cue in the narrator's voice,
+// sized to the cue; one undo restores the previous drafts.
+$("#review-narrate").addEventListener("click", async () => {
+  const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === reviewJobId);
+  const button = $<HTMLButtonElement>("#review-narrate");
+  const hint = $("#review-hint");
+  if (!job || reviewSaving || !reviewCues.length) return;
+  const provider = claudeKey.provider();
+  const { name, company } = PROVIDERS[provider];
+  const key = claudeKey.read();
+  if (!key) {
+    hint.textContent = `Chưa có khóa ${name}. Hãy lưu khóa trong “Cài đặt AI” rồi thử lại.`;
+    aiSettings.open();
+    return;
+  }
+  button.disabled = true;
+  hint.textContent = `${name} đang viết lại lời thuyết minh…`;
+  try {
+    const lines = await rewriteAsNarration(provider, key, reviewCues.map((cue) => ({ ...cue, text: draftOf(cue) })),
+      $<HTMLSelectElement>("#review-narrate-style").value as NarrationStyle, {
+        title: job.displayName,
+        onProgress: (done, total) => {
+          if (total > 1 && done < total) hint.textContent = `${name} đang viết lại lời thuyết minh… (phần ${done + 1}/${total})`;
+        },
+      });
+    reviewDrafts.replaceDrafts(lines);
+    reviewOnlyIssues.checked = false;
+    renderReview();
+    hint.textContent = `Đã viết lại ${lines.size} câu (lời thoại đã gửi tới ${company}). Đọc lại và sửa, rồi bấm “Lưu & xử lý lại”; bấm “Hoàn tác” để quay lại bản cũ.`;
+  } catch (error) {
+    hint.textContent = isKeyError(error) ? `Khóa ${name} không hợp lệ; hãy lưu lại trong “Cài đặt AI”.` : `Không viết lại được: ${String(error).slice(0, 200)}`;
+  } finally {
+    button.disabled = false;
+  }
+});
 const postSuggestions = mountPostSuggestions(invoke, claudeKey);
 $("#open-post").addEventListener("click", () => {
   const job = selectedJob();
