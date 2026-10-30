@@ -2459,6 +2459,9 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Worker events normally arrive in milliseconds; a slow shared CI runner can take
+    /// seconds. A generous wait keeps these tests about behaviour, not runner speed.
+    const TEST_WAIT: Duration = Duration::from_secs(60);
     use super::*;
     use std::sync::atomic::Ordering;
 
@@ -2609,7 +2612,7 @@ while True:
     }
 
     fn pump_session(server: &mut Server) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(8);
+        let deadline = Instant::now() + TEST_WAIT;
         loop {
             match server.poll_session() {
                 Ok(Some(value)) => return value,
@@ -2805,7 +2808,7 @@ while True:
             .as_ref()
             .unwrap()
             .events
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(TEST_WAIT)
             .unwrap();
         server.event(wire).unwrap();
     }
@@ -2850,7 +2853,7 @@ while True:
         work
     }
     fn finish_verification(server: &mut Server) -> Result<Value> {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + TEST_WAIT;
         loop {
             if let Some(value) = server.poll_download()? {
                 return Ok(value);
@@ -2899,7 +2902,7 @@ while True:
             .as_ref()
             .unwrap()
             .events
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(TEST_WAIT)
             .unwrap();
         server.event(wire)
     }
@@ -3172,7 +3175,7 @@ while True:
             .as_ref()
             .unwrap()
             .events
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(TEST_WAIT)
             .unwrap();
         let (name, old_packet) = match wire {
             Wire::Message(Envelope {
@@ -3439,7 +3442,7 @@ while True:
                     .as_ref()
                     .unwrap()
                     .events
-                    .recv_timeout(Duration::from_secs(10))
+                    .recv_timeout(TEST_WAIT)
                     .unwrap();
                 let value = server.event(wire).unwrap().unwrap();
                 assert_eq!(value["code"], "NETWORK");
@@ -3522,7 +3525,7 @@ while True:
                 .as_ref()
                 .unwrap()
                 .events
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(TEST_WAIT)
                 .unwrap();
             if mode == "bad-exit" {
                 assert!(server.event(wire).is_err());
@@ -3634,7 +3637,7 @@ while True:
         let verifier = verify_media(path.clone(), 8, hex_digest(b"abcdefgh"));
         let media = verifier
             .result
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(TEST_WAIT)
             .unwrap()
             .unwrap();
         #[cfg(windows)]
