@@ -25,7 +25,8 @@ assert.deepEqual(addPaths(["a", "b"], ["b", "c", "d"], 3), ["a", "b", "c"]);
 
 // The render request, or why it cannot start.
 const base = { info, voiceId: "vi-a", scripts: [{ text: " Một. ", use: true }, { text: "Hai.", use: false }], visuals: ["D:/a.jpg"], music: null, volumePercent: 15, cpuOnly: false, outputRoot: null };
-assert.deepEqual(buildRequest(base), { name: "Nồi", price: "1đ", voiceId: "vi-a", variants: ["Một."], visuals: ["D:/a.jpg"], music: null, musicVolume: 0.15, cpuOnly: false, outputRoot: null });
+assert.deepEqual(buildRequest(base), { name: "Nồi", price: "1đ", voiceId: "vi-a", variants: ["Một."], visuals: ["D:/a.jpg"], music: null, musicVolume: 0.15, background: null, cpuOnly: false, outputRoot: null });
+assert.equal(buildRequest({ ...base, background: "D:/nen.png" }).background, "D:/nen.png");
 assert.match(buildRequest({ ...base, scripts: [{ text: "x", use: false }] }), /ít nhất một kịch bản/);
 assert.match(buildRequest({ ...base, scripts: Array(6).fill({ text: "x", use: true }) }), /tối đa 5/);
 assert.match(buildRequest({ ...base, visuals: [] }), /ảnh hoặc clip/);

@@ -39,6 +39,8 @@ class Spec:
     visuals: tuple[Path, ...]
     music: Path | None
     music_volume: float
+    # The user's image behind the template (render.background decides frame or panel).
+    background: Path | None = None
 
 
 class Speaker(Protocol):
@@ -98,6 +100,7 @@ def load_spec(path: Path) -> Spec:
         visuals=tuple(_file(item, render.IMAGE_SUFFIXES | render.VIDEO_SUFFIXES, "ảnh hoặc clip") for item in visuals),
         music=None if music is None else _file(music, render.MUSIC_SUFFIXES, "nhạc nền"),
         music_volume=float(volume),
+        background=None if value.get("background") is None else _file(value["background"], render.IMAGE_SUFFIXES, "ảnh nền"),
     )
 
 
@@ -157,7 +160,23 @@ def probe_duration_ms(ffprobe: Path, path: Path) -> int:
     return duration
 
 
+def probe_size(ffprobe: Path, path: Path) -> tuple[int, int]:
+    """An image's width and height in pixels."""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    result = subprocess.run([str(ffprobe), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                             "-of", "csv=p=0:s=x", str(path)],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, creationflags=flags, timeout=120)
+    try:
+        width, height = (int(value) for value in result.stdout.strip().split("x")[:2])
+    except ValueError:
+        width = height = 0
+    if result.returncode != 0 or width <= 0 or height <= 0:
+        raise ProductError(f"Không đọc được ảnh nền: {path.name}")
+    return width, height
+
+
 def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], probe: Callable[[Path], int],
+        measure: Callable[[Path], tuple[int, int]] | None = None,
         ffmpeg: Path, ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None] = run_ffmpeg,
         encoder: str = render.ENCODER) -> dict[str, Any]:
     """Render every variant; one variant's failure does not stop the next.
@@ -181,6 +200,11 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
     try:
         for path in spec.visuals:
             visuals.append(render.Visual(path, None if path.suffix.casefold() in render.IMAGE_SUFFIXES else probe(path)))
+        backdrop = None
+        if spec.background is not None:
+            if measure is None:
+                raise ProductError("Không đọc được ảnh nền")
+            backdrop = render.background(spec.background, *measure(spec.background))
         check()
         voice = speaker(status)
         for number, text in enumerate(spec.variants, start=1):
@@ -200,12 +224,12 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 narration = work / f"narration-{number}.wav"
                 render.write_narration(narration, [samples for _, samples in speech], voice.sample_rate,
                                        lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS, tail_ms=script.TAIL_MS)
-                _atomic_text(work / "captions.ass", layout.ass_document(spec.name, spec.price, captions, total_ms))
+                _atomic_text(work / "captions.ass", layout.ass_document(spec.name, spec.price, captions, total_ms, outlined=backdrop is not None))
                 status.write(message=f"Đang render video {number}/{len(spec.variants)}…")
                 final = output_dir / f"video-{number}.mp4"
                 partial = work / f"video-{number}.partial.mp4"
                 ffmpeg_runner(render.ffmpeg_argv(ffmpeg, render.plan(visuals, total_ms), narration, spec.music,
-                                                 spec.music_volume, total_ms, partial, encoder=encoder), work, cancelled)
+                                                 spec.music_volume, total_ms, partial, encoder=encoder, backdrop=backdrop), work, cancelled)
                 check()
                 os.replace(partial, final)
                 partial = None

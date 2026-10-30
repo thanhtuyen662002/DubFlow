@@ -24,6 +24,7 @@ DubFlow already has:
    - a green panel below carries the product name, the captions and the price;
    - photos get a slow pan; clips are cut into segments of at most 5 seconds, in the user's order, repeated as needed;
    - optional background music the user supplies is looped under the voice at a set volume.
+   - an optional background image replaces the green: one at least 1.2 times taller than wide (1080×1920) covers the whole frame under the media, any other (1080×720) covers the panel. It is scaled to cover and cropped, and the name and captions then get a dark outline (Issue #358).
 4. **Batch.**
    - Each variant becomes `video-<n>.mp4` with its `script-<n>.txt` and `captions-<n>.srt` in `DubFlow Output\Ban hang - <product>\run-<id>`.
    - A status file reports progress to the desktop, and one variant's failure does not stop the others.

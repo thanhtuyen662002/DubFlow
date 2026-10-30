@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 import time
 
-from .job import ProductError, Status, load_spec, probe_duration_ms, run
+from .job import ProductError, Status, load_spec, probe_duration_ms, probe_size, run
 
 CPU_PROFILE = "models/manifests/production-cpu-v1.json"
 
@@ -71,7 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     def speaker(status: Status) -> VieNeuSpeaker:
         return VieNeuSpeaker(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status)
 
-    result = run(spec, output, speaker=speaker, probe=lambda path: probe_duration_ms(args.ffprobe, path), ffmpeg=args.ffmpeg)
+    result = run(spec, output, speaker=speaker, probe=lambda path: probe_duration_ms(args.ffprobe, path),
+                 measure=lambda path: probe_size(args.ffprobe, path), ffmpeg=args.ffmpeg)
     print(json.dumps(result))
     return 0 if result["state"] == "COMPLETED" else 1
 

@@ -54,6 +54,13 @@ class LayoutTests(unittest.TestCase):
         self.assertIn("Price,,0,0,0,,{\\an2\\pos(540,1850)}299.000đ", document)
         self.assertIn("Dialogue: 1,0:00:00.30,0:00:01.50,Caption,,0,0,0,,{\\an5\\pos(540,1560)}Giá chỉ (/b1)hôm nay", document)
 
+    def test_a_custom_background_outlines_the_name_and_captions(self):
+        plain = layout.ass_document("Nồi", "", [], 1000)
+        outlined = layout.ass_document("Nồi", "", [], 1000, outlined=True)
+        self.assertIn("Style: Caption,Arial,66,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,0,3,5,", plain)
+        self.assertIn("Style: Caption,Arial,66,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,4,2,5,", outlined)
+        self.assertIn("Style: Title,Arial,60,&H0000D4FF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,2,8,", outlined)
+
     def test_empty_name_and_price_are_left_out(self):
         document = layout.ass_document(" ", "", [], 1000)
         self.assertNotIn(",Title,", document)
@@ -90,6 +97,28 @@ class RenderTests(unittest.TestCase):
         self.assertIn("amix=inputs=2:duration=first", graph)
         self.assertEqual(argv[argv.index("-t", argv.index("-filter_complex")) + 1], "8.000")
         self.assertEqual(argv[-1], "out.mp4")
+
+    def test_tall_backgrounds_fill_the_frame_and_others_the_panel(self):
+        for size, full in (((1080, 1920), True), ((1080, 720), False), ((1000, 1000), False), ((1200, 1600), True), ((720, 1280), True)):
+            with self.subTest(size=size):
+                self.assertEqual(render.background(Path("C:/bg.png"), *size).full_frame, full)
+        with self.assertRaises(ValueError):
+            render.background(Path("C:/bg.png"), 0, 10)
+
+    def test_background_sits_under_the_media_after_the_audio_inputs(self):
+        segments = render.plan([render.Visual(Path("C:/a.jpg"))], 4000)
+        for backdrop, scale, place in ((render.Background(Path("C:/bg.png"), False), "scale=1080:720:", "overlay=0:1200[base]"),
+                                       (render.Background(Path("C:/bg.png"), True), "scale=1080:1920:", "overlay=0:0[base]")):
+            with self.subTest(full=backdrop.full_frame):
+                argv = render.ffmpeg_argv(Path("ffmpeg.exe"), segments, Path("n.wav"), Path("m.mp3"), 0.2, 4000, Path("out.mp4"), backdrop=backdrop)
+                graph = argv[argv.index("-filter_complex") + 1]
+                inputs = [argv[index + 1] for index, value in enumerate(argv) if value == "-i"]
+                self.assertEqual(inputs, [str(Path("C:/a.jpg")), "n.wav", "m.mp3", str(Path("C:/bg.png"))])
+                self.assertIn(f"[3:v]{scale}", graph)
+                self.assertIn(place, graph)
+                self.assertIn("[base][media]overlay=0:0", graph)
+        plain = render.ffmpeg_argv(Path("ffmpeg.exe"), segments, Path("n.wav"), None, 0.2, 4000, Path("out.mp4"))
+        self.assertIn("[panel]null[base]", plain[plain.index("-filter_complex") + 1])
 
     def test_narration_holds_silence_and_speech(self):
         with TemporaryDirectory() as directory:
@@ -161,6 +190,26 @@ class JobTests(unittest.TestCase):
             self.assertEqual(commands[0][1], output / ".dubflow-work")
             status = json.loads((output / ".dubflow-work" / "status.json").read_text(encoding="utf-8"))
             self.assertEqual((status["state"], status["done"], status["total"]), ("COMPLETED", 2, 2))
+
+    def test_a_background_is_measured_once_and_used_for_every_video(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            background = root / "nen.png"
+            background.write_bytes(b"png")
+            spec = job.load_spec(self.write_spec(root, background=str(background)))
+            measured, commands = [], []
+
+            def ffmpeg(argv, cwd, cancelled):
+                commands.append(argv)
+                Path(argv[-1]).write_bytes(b"mp4")
+            result = job.run(spec, root / "out", speaker=lambda status: FakeSpeaker(), probe=lambda path: 1000,
+                             measure=lambda path: measured.append(path) or (1080, 720), ffmpeg=Path("ffmpeg"), ffmpeg_runner=ffmpeg)
+            self.assertEqual(result["state"], "COMPLETED")
+            self.assertEqual(measured, [background])
+            self.assertTrue(all(str(background) in argv for argv in commands))
+            self.assertIn(",1,4,2,5,", (root / "out" / ".dubflow-work" / "captions.ass").read_text(encoding="utf-8"))
+            with self.assertRaises(job.ProductError):
+                job.load_spec(self.write_spec(root, background=str(root / "spec.json")))
 
     def test_an_unreadable_sentence_fails_only_its_variant(self):
         with TemporaryDirectory() as directory:
@@ -259,6 +308,35 @@ class FfmpegRenderTests(unittest.TestCase):
             probe = subprocess.run([FFMPEG, "-i", str(output / "video-1.mp4")], capture_output=True, text=True)
             self.assertIn("1080x1920", probe.stderr)
             self.assertIn("Audio:", probe.stderr)
+
+    def pixel(self, video: Path, x: int, y: int) -> tuple[int, int, int]:
+        raw = subprocess.run([FFMPEG, "-v", "error", "-ss", "0.5", "-i", str(video), "-frames:v", "1", "-vf", f"crop=2:2:{x}:{y}",
+                              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+        return tuple(raw[:3])
+
+    def test_both_background_sizes_land_where_they_belong(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run([FFMPEG, "-v", "error", "-f", "lavfi", "-i", "color=c=white:s=640x480:d=1", "-frames:v", "1", str(root / "a.png")], check=True)
+            # Panel size: plain red. Frame size: green with a blue band in its last 200 rows,
+            # which only shows at the bottom if the image covers the whole frame.
+            subprocess.run([FFMPEG, "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=1080x720:d=1", "-frames:v", "1", str(root / "panel.png")], check=True)
+            subprocess.run([FFMPEG, "-v", "error", "-f", "lavfi", "-i", "color=c=green:s=1080x1920:d=1", "-frames:v", "1",
+                            "-vf", "drawbox=x=0:y=1720:w=1080:h=200:color=blue:t=fill", str(root / "frame.png")], check=True)
+            for name, size, expect in (("panel.png", (1080, 720), lambda r, g, b: r > 180 and g < 80 and b < 80),
+                                       ("frame.png", (1080, 1920), lambda r, g, b: b > 180 and r < 80 and g < 80)):
+                with self.subTest(background=name):
+                    spec_path = root / "spec.json"
+                    spec_path.write_text(json.dumps({"schema_version": 1, "name": "", "price": "", "voice_id": "vi-test", "variants": ["Xin chào."],
+                                                     "visuals": [str(root / "a.png")], "background": str(root / name)}), encoding="utf-8")
+                    output = root / "DubFlow Output" / name
+                    result = job.run(job.load_spec(spec_path), output, speaker=lambda status: FakeSpeaker(), probe=lambda path: 1000,
+                                     measure=lambda path, size=size: size, ffmpeg=Path(FFMPEG), encoder="mpeg4")
+                    self.assertEqual(result["state"], "COMPLETED", result)
+                    colour = self.pixel(output / "video-1.mp4", 20, 1890)
+                    self.assertTrue(expect(*colour), colour)
+                    top = self.pixel(output / "video-1.mp4", 20, 300)
+                    self.assertTrue(min(top) > 180, f"the media stays on top: {top}")
 
 
 if __name__ == "__main__":
