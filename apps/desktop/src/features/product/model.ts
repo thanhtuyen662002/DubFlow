@@ -15,7 +15,7 @@ export type ProductRequest = {
 
 /** `.dubflow-work/status.json`, written by `engine.dubflow.product`. */
 export type ProductStatus = {
-  state: "RUNNING" | "COMPLETED" | "FAILED";
+  state: "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
   done: number;
   total: number;
   message: string;
@@ -77,7 +77,7 @@ export function buildRequest(input: {
 
 export function parseStatus(value: unknown): ProductStatus | null {
   const object = (value ?? {}) as Partial<ProductStatus>;
-  if (!["RUNNING", "COMPLETED", "FAILED"].includes(object.state as string) || typeof object.message !== "string") return null;
+  if (!["RUNNING", "COMPLETED", "FAILED", "CANCELLED"].includes(object.state as string) || typeof object.message !== "string") return null;
   const videos = Array.isArray(object.videos) ? object.videos.filter((video) => video && typeof video.index === "number" && typeof video.ok === "boolean") : [];
   return {
     state: object.state as ProductStatus["state"], message: object.message,

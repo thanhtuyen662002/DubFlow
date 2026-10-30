@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import time
 from tempfile import TemporaryDirectory
 import unittest
 import wave
@@ -143,7 +145,7 @@ class JobTests(unittest.TestCase):
             spec = job.load_spec(self.write_spec(root))
             speaker, commands = FakeSpeaker(), []
 
-            def ffmpeg(argv, cwd):
+            def ffmpeg(argv, cwd, cancelled):
                 commands.append((argv, cwd))
                 Path(argv[-1]).write_bytes(b"mp4")
             output = root / "out"
@@ -165,7 +167,7 @@ class JobTests(unittest.TestCase):
             root = Path(directory)
             spec = job.load_spec(self.write_spec(root))
 
-            def ffmpeg(argv, cwd):
+            def ffmpeg(argv, cwd, cancelled):
                 Path(argv[-1]).write_bytes(b"mp4")
             result = job.run(spec, root / "out", speaker=lambda status: FakeSpeaker(refuse="Mua"), probe=lambda path: 1000,
                              ffmpeg=Path("ffmpeg"), ffmpeg_runner=ffmpeg)
@@ -183,6 +185,60 @@ class JobTests(unittest.TestCase):
                 raise job.ProductError("Không khởi động được giọng đọc: TTS_RUNTIME_MISSING")
             result = job.run(spec, root / "out", speaker=broken, probe=lambda path: 1000, ffmpeg=Path("ffmpeg"))
             self.assertEqual((result["state"], result["message"]), ("FAILED", "Không khởi động được giọng đọc: TTS_RUNTIME_MISSING"))
+
+
+class CancelTests(unittest.TestCase):
+    def test_cancel_keeps_finished_videos_and_stops_the_rest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = job.load_spec(JobTests.write_spec(self, root))
+            output = root / "out"
+            speaker, renders = FakeSpeaker(), []
+
+            def ffmpeg(argv, cwd, cancelled):
+                renders.append(argv[-1])
+                Path(argv[-1]).write_bytes(b"mp4")
+                (cwd / job.CANCEL_FILE).write_bytes(b"")  # The user presses "Hủy" during the first render.
+            result = job.run(spec, output, speaker=lambda status: speaker, probe=lambda path: 1000, ffmpeg=Path("ffmpeg"), ffmpeg_runner=ffmpeg)
+            self.assertEqual((result["state"], result["message"]), ("CANCELLED", "Đã hủy."))
+            self.assertEqual(len(renders), 1)
+            self.assertFalse((output / "video-1.mp4").exists(), "a render finished after the request is discarded")
+            self.assertFalse(list((output / ".dubflow-work").glob("*.partial.mp4")))
+            self.assertTrue(speaker.closed)
+
+    def test_cancel_between_videos_keeps_the_first(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = job.load_spec(JobTests.write_spec(self, root))
+            output = root / "out"
+
+            def ffmpeg(argv, cwd, cancelled):
+                Path(argv[-1]).write_bytes(b"mp4")
+
+            class CancelAfterFirst(FakeSpeaker):
+                def speak(self, text):
+                    if text == "Mua ngay hôm nay.":
+                        (output / ".dubflow-work" / job.CANCEL_FILE).write_bytes(b"")
+                    return super().speak(text)
+            result = job.run(spec, output, speaker=lambda status: CancelAfterFirst(), probe=lambda path: 1000, ffmpeg=Path("ffmpeg"), ffmpeg_runner=ffmpeg)
+            self.assertEqual((result["state"], result["message"]), ("CANCELLED", "Đã hủy. Giữ lại 1 video đã xong."))
+            self.assertTrue((output / "video-1.mp4").is_file())
+            self.assertFalse((output / "video-2.mp4").exists())
+            status = json.loads((output / ".dubflow-work" / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["state"], "CANCELLED")
+
+    def test_a_running_render_is_ended_when_cancelled(self):
+        with TemporaryDirectory() as directory:
+            started = time.monotonic()
+            with self.assertRaises(job.Cancelled):
+                job.run_ffmpeg([sys.executable, "-c", "import time; time.sleep(60)"], Path(directory),
+                               lambda: time.monotonic() - started > 0.5, poll_seconds=0.1)
+            self.assertLess(time.monotonic() - started, 20)
+
+    def test_a_failed_render_reports_ffmpeg_errors(self):
+        with TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(job.ProductError, "bad input"):
+                job.run_ffmpeg([sys.executable, "-c", "import sys; sys.stderr.write('bad input'); sys.exit(1)"], Path(directory))
 
 
 @unittest.skipUnless(FFMPEG, "FFmpeg is not available")

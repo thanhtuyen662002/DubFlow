@@ -133,8 +133,9 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "save_review": savedOverrides = { ...(args.overrides as Record<string, string>) }; return "D:\Videos\DubFlow Output\preview" as T;
     case "pick_product_files": return (args.kind === "music" ? ["D:/Nhac/nen.mp3"] : args.kind === "media" ? ["D:/Clip/doi-tac.mp4"] : ["D:/Anh/hop.jpg", "D:/Anh/nhan.png"]) as T;
     case "product_image": return await previewFrame(String(args.path).length % 3 / 3) as T;
-    case "product_render": productStarted = Date.now(); return "D:/Videos/DubFlow Output/Ban hang - preview/run-000000000000" as T;
+    case "product_render": productStarted = Date.now(); productCancelled = 0; return "D:/Videos/DubFlow Output/Ban hang - preview/run-000000000000" as T;
     case "product_status": return previewProductStatus() as T;
+    case "product_cancel": productCancelled = Date.now(); return null as T;
     default: throw new Error(`preview host does not implement ${command}`);
   }
 }
@@ -165,16 +166,20 @@ function previewCollected(platform: string): unknown {
   }));
 }
 
-/** A 16:9 stand-in frame with a burned-in Chinese caption near the bottom. */
+/** A product batch of three videos, one every 3 s, that can be cancelled. */
 let productStarted = 0;
+let productCancelled = 0;
 function previewProductStatus() {
-  const done = Math.min(3, Math.floor((Date.now() - productStarted) / 3000));
+  const now = productCancelled || Date.now();
+  const done = Math.min(3, Math.floor((now - productStarted) / 3000));
   const videos = Array.from({ length: done }, (_, index) => ({ index: index + 1, ok: true, path: `D:/Videos/DubFlow Output/Ban hang - preview/run-000000000000/video-${index + 1}.mp4`, duration_ms: 31_000 }));
+  if (productCancelled && done < 3) return { schema_version: 1, state: "CANCELLED", done, total: 3, message: done ? `Đã hủy. Giữ lại ${done} video đã xong.` : "Đã hủy.", videos };
   return done < 3
     ? { schema_version: 1, state: "RUNNING", done, total: 3, message: `Đang render video ${done + 1}/3…`, videos }
     : { schema_version: 1, state: "COMPLETED", done, total: 3, message: "Đã tạo 3/3 video", videos };
 }
 
+/** A 16:9 stand-in frame with a burned-in Chinese caption near the bottom. */
 async function previewFrame(position: number): Promise<ArrayBuffer> {
   const canvas = document.createElement("canvas");
   canvas.width = 960;
