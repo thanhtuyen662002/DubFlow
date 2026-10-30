@@ -19,7 +19,7 @@ export const GEMINI_FALLBACK_MODEL = "gemini-3.8-flash";
 const geminiEndpoint = (model: string) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 const KEEP_DIACRITICS = "Luôn viết tiếng Việt có dấu đầy đủ trong mọi trường văn bản.";
 /** One attempt never keeps the user waiting longer than this. */
-export const GEMINI_TIMEOUT_MS = 90_000;
+export const GEMINI_TIMEOUT_MS = 60_000;
 /** Busy (503), rate-limited (429), server errors and time-outs are worth another try. */
 const RETRYABLE = /^(429|500|502|503|504|timeout)\b/;
 
@@ -212,18 +212,50 @@ export function geminiFailure(error: unknown): Error {
  * Bounded retry that changes a condition: the fast model, the same model once more
  * after a pause, then the larger model. Key, refusal and format errors are not retried.
  */
+/** Every string in a JSON answer, joined. */
+function strings(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(strings).join(" ");
+  if (value && typeof value === "object") return Object.values(value).map(strings).join(" ");
+  return "";
+}
+
+/**
+ * Vietnamese written without its diacritics ("Ban co bao gio…"). Real Vietnamese
+ * marks a large share of its letters; an answer of 40+ letters with almost none
+ * marked was written unaccented. The fast model occasionally does this.
+ */
+export function lacksDiacritics(value: unknown): boolean {
+  const text = strings(value);
+  const letters = text.match(/\p{L}/gu)?.length ?? 0;
+  const marked = text.match(/[À-ÃÈ-ÊÌÍÒ-ÕÙÚÝà-ãè-êìíò-õùúýĂăĐđĨĩŨũƠơƯưẠ-ỹ]/gu)?.length ?? 0;
+  return letters >= 40 && marked / letters < 0.03;
+}
+
+/**
+ * Bounded retry that changes a condition: the fast model, the same model once more
+ * after a pause, then the larger model. Key, refusal and format errors are not retried.
+ * An unaccented answer is asked again of the fast model once (it usually answers with
+ * diacritics the second time, in about two seconds) and kept if that fails or repeats.
+ */
 async function askGemini(key: string, request: JsonRequest, send: typeof fetch, wait: (ms: number) => Promise<void>): Promise<unknown> {
   const attempts: Array<[string, number]> = [[GEMINI_MODEL, 0], [GEMINI_MODEL, 4000], [GEMINI_FALLBACK_MODEL, 2000]];
   let last: unknown = null;
-  for (const [model, pause] of attempts) {
-    if (last !== null) await wait(pause);
+  let unaccented: unknown = undefined;
+  for (const [index, [model, pause]] of attempts.entries()) {
+    if (unaccented !== undefined && model !== GEMINI_MODEL) break;
+    if (index > 0) await wait(unaccented !== undefined ? 1000 : pause);
     try {
-      return await askGeminiOnce(key, request, send, model);
+      const value = await askGeminiOnce(key, request, send, model);
+      if (!lacksDiacritics(value) || unaccented !== undefined) return value;
+      unaccented = value;
     } catch (error) {
+      if (unaccented !== undefined) return unaccented;
       if (!RETRYABLE.test(String((error as Error)?.message ?? error))) throw error;
       last = error;
     }
   }
+  if (unaccented !== undefined) return unaccented;
   throw geminiFailure(last);
 }
 
