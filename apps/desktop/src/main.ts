@@ -8,7 +8,8 @@ import { extractLinks } from "./features/links/extract.ts";
 import { fetchBadge, fetchMessage, shortPath, type FetchStatus } from "./features/links/status.ts";
 import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
-import { mountPostSuggestions } from "./features/seo/view.ts";
+import { createSessionKey, mountPostSuggestions } from "./features/seo/view.ts";
+import { mountProductStudio } from "./features/product/view.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import {
   applySourceLanguage, chooseTranslator, effectiveTranslator, FAST_PHRASE_SYLLABLES_PER_SECOND, hachimiAllowed,
@@ -819,17 +820,21 @@ const discovery = mountDiscovery(invoke, startFetch, () => {
     return "argos";
   }
 });
-function showView(view: "queue" | "discover"): void {
-  const discover = view === "discover";
-  $("#discover-view").hidden = !discover;
-  $("#queue-topbar").hidden = discover;
-  $("#queue-content").hidden = discover;
-  for (const [id, active] of [["#nav-queue", !discover], ["#nav-discover", discover]] as const) {
+// One Claude key for the session, shared by posting suggestions and product videos.
+const claudeKey = createSessionKey();
+const productStudio = mountProductStudio(invoke, claudeKey, { outputRoot, cpuOnly });
+function showView(view: "queue" | "discover" | "product"): void {
+  $("#discover-view").hidden = view !== "discover";
+  $("#product-view").hidden = view !== "product";
+  $("#queue-topbar").hidden = view !== "queue";
+  $("#queue-content").hidden = view !== "queue";
+  for (const [id, active] of [["#nav-queue", view === "queue"], ["#nav-discover", view === "discover"], ["#nav-product", view === "product"]] as const) {
     $(id).classList.toggle("active", active);
     if (active) $(id).setAttribute("aria-current", "page");
     else $(id).removeAttribute("aria-current");
   }
-  if (discover) discovery.show();
+  if (view === "discover") discovery.show();
+  if (view === "product") productStudio.show();
 }
 $("#nav-queue").addEventListener("click", (event) => {
   event.preventDefault();
@@ -838,6 +843,10 @@ $("#nav-queue").addEventListener("click", (event) => {
 $("#nav-discover").addEventListener("click", (event) => {
   event.preventDefault();
   showView("discover");
+});
+$("#nav-product").addEventListener("click", (event) => {
+  event.preventDefault();
+  showView("product");
 });
 
 async function startFetch(url: string): Promise<void> {
@@ -1144,7 +1153,7 @@ reviewApply.addEventListener("click", async () => {
   }
 });
 $("#open-review").addEventListener("click", () => void openReview());
-const postSuggestions = mountPostSuggestions(invoke);
+const postSuggestions = mountPostSuggestions(invoke, claudeKey);
 $("#open-post").addEventListener("click", () => {
   const job = selectedJob();
   if (job?.outputPath) postSuggestions.open(job.outputPath, job.displayName);

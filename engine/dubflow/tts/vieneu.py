@@ -213,6 +213,13 @@ class VieNeuVietnameseTtsEngine(NeuralVietnameseTtsEngine):
             audio = self._tts.generate(request.segment.text, sid=0, speed=speed_milli / 1000)
         return audio, speed_milli
 
+    def natural_speech(self, text):
+        """Speech for ``text`` at its natural pace, for narration with no source timeline (ADR-0041)."""
+        audio = self._tts.generate(text, sid=0, speed=1.0)
+        if audio.sample_rate != self.pack.sample_rate or not audio.samples:
+            raise TtsError("TTS_AUDIO_INVALID", "natural speech has invalid waveform metadata")
+        return audio
+
     def healthcheck(self, voice):
         if voice.model_hash != self.pack.model_hash or voice.voice_id != self.pack.voice_id:
             return EngineHealth(False, "VOICE_PACK_ID_MISMATCH", "requested voice differs from the verified VieNeu pack")
