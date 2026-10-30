@@ -106,6 +106,8 @@ export function activeStageIndex(status: JobStatus): number {
   return index;
 }
 
+const LONG_PATH_HINT = "Đường dẫn thư mục kết quả quá dài với Windows. Hãy xóa video khỏi hàng đợi rồi thêm lại; nếu vẫn lỗi, chọn thư mục lưu kết quả ngắn hơn (ví dụ D:\\DubFlow).";
+
 /** Plain-language explanations for failures users can act on. */
 const FAILURE_HINTS: Array<[RegExp, string]> = [
   [/^ASR_EMPTY(?![A-Z_])/, "Không tìm thấy lời thoại trong video (có thể chỉ có nhạc nền hoặc tiếng quá nhỏ)."],
@@ -116,9 +118,19 @@ const FAILURE_HINTS: Array<[RegExp, string]> = [
   [/^EDITABLE_STORAGE_INSUFFICIENT(?![A-Z_])/, "Ổ đĩa không đủ dung lượng trống. Hãy giải phóng dung lượng rồi xử lý lại."],
   [/^QC_DURATION_SHORT(?![A-Z_])/, "Video xuất ra ngắn hơn bản gốc; có thể file gốc bị lỗi. Hãy thử xử lý lại."],
   [/^TRANSLATION_OVERRIDES_INVALID(?![A-Z_])/, "Bản sửa dịch không hợp lệ. Hãy mở “Xem & sửa bản dịch” và lưu lại."],
+  [/^AUDIO_DISK_REQUIRED(?![A-Z_])/, "Ổ đĩa không đủ dung lượng trống. Hãy giải phóng dung lượng rồi xử lý lại."],
+  [/^(MODEL_DOWNLOAD_FAILED|MODEL_SIZE_INVALID|MODEL_HASH_MISMATCH)(?![A-Z_])/, "Không tải được model cần thiết. Hãy kiểm tra kết nối mạng rồi xử lý lại."],
+  // Jobs started before 1.1.11 used folder names too long for Windows.
+  [/WinError 206|filename or extension is too long|\[Errno 2\] No such file or directory: '[^']{200,}/, LONG_PATH_HINT],
+  [/^(MEDIA_PROBE_FAILED|MEDIA_METADATA_INVALID|MEDIA_INPUT_INVALID|MEDIA_INPUT_UNAVAILABLE)(?![A-Z_])/, "Không đọc được file video này. Hãy thử mở video bằng trình phát khác, hoặc tải lại file gốc."],
 ];
 
+// Their condition is already the Vietnamese guidance, with the numbers that matter.
+const SELF_EXPLAINED = /^(STORAGE_INSUFFICIENT|OUTPUT_PATH_TOO_LONG): (.+)$/s;
+
 export function failureHint(message: string): string | null {
+  const explained = SELF_EXPLAINED.exec(message);
+  if (explained) return explained[2];
   for (const [pattern, hint] of FAILURE_HINTS) if (pattern.test(message)) return hint;
   return null;
 }

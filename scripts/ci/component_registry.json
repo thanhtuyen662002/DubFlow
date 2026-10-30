@@ -552,6 +552,26 @@
       ]
     },
     {
+      "id": "support-report",
+      "roots": [
+        "engine/dubflow/support",
+        "tests/support"
+      ],
+      "commands": [
+        [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/support",
+          "-t",
+          ".",
+          "-p",
+          "test_*.py"
+        ]
+      ]
+    },    {
       "id": "source-adapter",
       "roots": [
         "contracts/source",

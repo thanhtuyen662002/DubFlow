@@ -118,6 +118,15 @@ assert.equal(acceptsPolledStatus({ state: "RUNNING" }, { state: "COMPLETED", rea
 assert.equal(acceptsPolledStatus({ state: "QUEUED" }, { state: "QUEUED", reason: "queued" }), true);
 assert.equal(failureHint("ASR_EMPTYISH: x"), null);
 assert.equal(failureHint("SOMETHING_ELSE: x"), null);
+// Codes whose condition is already Vietnamese guidance show it without the code.
+assert.equal(failureHint("STORAGE_INSUFFICIENT: Ổ đĩa chứa thư mục xuất cần khoảng 21 GB trống"), "Ổ đĩa chứa thư mục xuất cần khoảng 21 GB trống");
+assert.match(failureHint("OUTPUT_PATH_TOO_LONG: Đường dẫn thư mục kết quả dài 140 ký tự"), /^Đường dẫn/);
+// The 1.1.10 long-path failures point to the fix.
+assert.match(failureHint("MEDIA_COMMAND_START_FAILED: [WinError 206] The filename or extension is too long"), /quá dài/);
+assert.match(failureHint("ASR_FAILED: [Errno 2] No such file or directory: 'C:\\Youtube\\" + "x".repeat(220) + "'"), /quá dài/);
+assert.equal(failureHint("ASR_FAILED: [Errno 2] No such file or directory: 'C:\\short.wav'"), null);
+assert.match(failureHint("MODEL_DOWNLOAD_FAILED: offline"), /kết nối mạng/);
+assert.match(failureHint("MEDIA_PROBE_FAILED: moov atom not found"), /Không đọc được file video/);
 
 // The host-chosen output folder is pinned once so resumes reuse it.
 const pinQueue = new QueueController(new MemorySnapshotStorage(), clock);
