@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { askJson, createAiSession, GEMINI_FALLBACK_MODEL, GEMINI_MODEL, isKeyError, keyHint, setKeyFor, toGeminiSchema } from "../src/features/ai/provider.ts";
+import { askJson, createAiSession, GEMINI_FALLBACK_MODEL, GEMINI_MODEL, isKeyError, keyHint, lacksDiacritics, setKeyFor, toGeminiSchema } from "../src/features/ai/provider.ts";
 
 // One key per provider, in memory only; switching keeps each key.
 const session = createAiSession();
@@ -113,5 +113,29 @@ assert.equal(timeoutCalls, 3);
 let keyCalls = 0;
 await assert.rejects(askJson("gemini", "bad", request, async () => { keyCalls += 1; return { ok: false, status: 400, json: async () => ({ error: { status: "INVALID_ARGUMENT", message: "API key not valid." } }) }; }, async () => {}), (error) => isKeyError(error));
 assert.equal(keyCalls, 1);
+
+// Unaccented Vietnamese is detected; accented text, short text and English-free JSON shapes are not flagged.
+assert.equal(lacksDiacritics({ scripts: ["Ban co bao gio tu hoi anh ban nay dang lam gi khong. Mot hinh anh rat quen thuoc."] }), true);
+assert.equal(lacksDiacritics({ scripts: ["Bạn có bao giờ tự hỏi anh bạn này đang làm gì không. Một hình ảnh rất quen thuộc."] }), false);
+assert.equal(lacksDiacritics({ title: "OK" }), false);
+const okReply = (text) => ({ ok: true, status: 200, json: async () => ({ candidates: [{ finishReason: "STOP", content: { parts: [{ text }] } }] }) });
+const unaccented = JSON.stringify({ x: "Ban co bao gio tu hoi anh ban nay dang lam gi khong, mot hinh anh quen thuoc" });
+const accented = JSON.stringify({ x: "Bạn có bao giờ tự hỏi anh bạn này đang làm gì không, một hình ảnh quen thuộc" });
+// The fast model answers unaccented: it is asked once more, and the accented answer is used.
+const asked = [];
+const fixedByFallback = await askJson("gemini", "k", request, async (url) => {
+  asked.push(url.match(/models\/([^:]+)/)[1]);
+  return okReply(asked.length === 1 ? unaccented : accented);
+}, async () => {});
+assert.deepEqual(asked, [GEMINI_MODEL, GEMINI_MODEL]);
+assert.match(fixedByFallback.x, /Bạn có/);
+// The second try fails: the unaccented answer is still returned rather than an error.
+let tries = 0;
+const kept = await askJson("gemini", "k", request, async () => {
+  tries += 1;
+  return tries === 1 ? okReply(unaccented) : { ok: false, status: 503, json: async () => ({ error: { status: "UNAVAILABLE", message: "busy" } }) };
+}, async () => {});
+assert.equal(tries, 2);
+assert.match(kept.x, /^Ban co/);
 
 console.log("desktop AI provider tests passed");
