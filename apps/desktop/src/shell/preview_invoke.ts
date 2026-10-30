@@ -1,4 +1,5 @@
 import type { JobStatus } from "../features/job_status/status.ts";
+import { parseSourceCredit, type SourceCredit } from "../features/credit/model.ts";
 
 /**
  * Browser-only stand-in for the Tauri host so the UI can be designed with
@@ -83,9 +84,17 @@ function fetchStatus(scanId: string) {
 }
 
 let picked = 0;
+const sourceCredits = new Map<string, SourceCredit>();
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
+    case "source_credit_get": return (sourceCredits.has(String(args.outputPath)) ? { ...sourceCredits.get(String(args.outputPath))! } : null) as T;
+    case "source_credit_set": {
+      const credit = args.credit === null ? null : parseSourceCredit(args.credit);
+      if (!credit) throw new Error("Thông tin nguồn không hợp lệ.");
+      sourceCredits.set(String(args.outputPath), credit);
+      return null as T;
+    }
     case "ai_key_get": return (previewKeys.get(String(args.provider)) ?? null) as T;
     case "ai_key_set": previewKeys.set(String(args.provider), String(args.key).trim()); return `…${String(args.key).trim().slice(-4)}` as T;
     case "ai_key_delete": previewKeys.delete(String(args.provider)); return null as T;

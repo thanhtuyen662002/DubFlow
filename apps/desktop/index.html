@@ -319,6 +319,26 @@
               <button id="open-post" class="btn block review-btn" type="button">Gợi ý tiêu đề &amp; hashtag</button>
             </section>
 
+            <form id="source-credit" class="source-credit" hidden novalidate>
+              <fieldset id="credit-fields" class="settings" disabled>
+                <legend>Nguồn &amp; quyền</legend>
+                <label>Tác giả<input id="credit-creator" type="text" /></label>
+                <label>Nền tảng<input id="credit-platform" type="text" /></label>
+                <label>Link nguồn<input id="credit-url" type="url" placeholder="https://…" /></label>
+                <label>Quyền sử dụng
+                  <select id="credit-rights">
+                    <option value="own">Video của tôi</option>
+                    <option value="permission">Đã xin phép tác giả</option>
+                    <option value="cc">Giấy phép Creative Commons</option>
+                    <option value="unknown" selected>Chưa rõ</option>
+                  </select>
+                </label>
+                <label>Ghi chú<input id="credit-note" type="text" /></label>
+                <button class="btn block" type="submit">Lưu</button>
+              </fieldset>
+              <p id="credit-state" class="hint" role="status" aria-live="polite"></p>
+            </form>
+
             <fieldset id="voice-controls" class="settings" disabled>
               <legend>Tùy chọn xử lý</legend>
               <label class="switch-row">
@@ -456,6 +476,7 @@
           </div>
         </div>
         <p id="post-state" class="discover-state post-state" role="status"></p>
+        <p id="post-credit-hint" class="hint post-credit-hint" role="status" hidden></p>
         <div id="post-body" class="post-body"></div>
       </div>
     </div>

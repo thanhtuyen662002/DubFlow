@@ -9,6 +9,7 @@ import { fetchBadge, fetchMessage, shortPath, type FetchStatus } from "./feature
 import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
+import { mountSourceCredit } from "./features/credit/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
@@ -68,6 +69,7 @@ const queueList = $("#queue-list");
 const dropZone = $("#drop-zone");
 const queueState = $("#queue-state");
 const inspector = $("#inspector");
+const sourceCredit = mountSourceCredit(invoke);
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const multiVoiceToggle = $<HTMLInputElement>("#multi-voice");
@@ -295,6 +297,7 @@ function timingLabel(job: QueueJob, fraction: number | null): string {
 
 function renderInspector(job: QueueJob | null): void {
   inspector.hidden = !job;
+  sourceCredit.select(job);
   if (!job) return;
   const { status } = job;
   $("#detail-name").textContent = job.displayName;
@@ -1198,7 +1201,7 @@ $("#review-narrate").addEventListener("click", async () => {
 const postSuggestions = mountPostSuggestions(invoke, claudeKey);
 $("#open-post").addEventListener("click", () => {
   const job = selectedJob();
-  if (job?.outputPath) postSuggestions.open(job.outputPath, job.displayName);
+  if (job?.outputPath) postSuggestions.open(job.outputPath, job.displayName, job.originUrl);
 });
 $("#review-close").addEventListener("click", closeReview);
 $("#review-cancel").addEventListener("click", closeReview);

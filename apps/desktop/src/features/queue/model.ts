@@ -394,6 +394,7 @@ export class QueueController {
     // An explicit rerun is a distinct executable job, including its voice.
     const retry = createQueueJob(this.allocateId(), job.sourcePath, this.clock());
     retry.dubbing = { ...job.dubbing };
+    if (job.originUrl) retry.originUrl = job.originUrl;
     retry.status = {
       ...emptyStatus(),
       reason: "manual_retry",

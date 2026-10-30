@@ -183,6 +183,13 @@ h1, h2, h3, p { margin: 0; }
 .result-actions { display: flex; gap: 8px; margin-top: 10px; }
 .result-actions .btn { flex: 1; }
 
+.source-credit { padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+.source-credit fieldset { padding: 0; border: 0; }
+.source-credit label { clear: both; display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; color: var(--text-2); font-size: 12px; }
+.source-credit input, .source-credit select { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 13px; }
+.source-credit input:focus-visible, .source-credit select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.source-credit .hint { overflow-wrap: anywhere; }
+
 .settings { margin: 0; min-width: 0; }
 .settings legend { float: left; width: 100%; margin-bottom: 10px; padding: 0; color: var(--text-3); font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
 .settings:disabled .switch-row, .settings:disabled .voice-picker { opacity: .6; }
@@ -300,6 +307,8 @@ h1, h2, h3, p { margin: 0; }
 .post-panel { width: min(760px, 100%); }
 .post-body { flex: 1; overflow: auto; padding: 4px 20px 20px; }
 .post-state { padding: 8px 20px 0; }
+.post-credit-hint { margin: 10px 20px; color: var(--warn); }
+.post-description { white-space: pre-wrap; overflow-wrap: anywhere; }
 .post-key-row { padding: 12px 20px 0; }
 .post-key-row[hidden] { display: none; }
 .post-key-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }

@@ -44,7 +44,11 @@ Với lời thoại nhanh, DubFlow tự gộp các câu liền nhau thành cụm
 Bấm **Hoàn tác** (hoặc Ctrl+Z khi không gõ trong ô) để bỏ lần sửa gần nhất. Với video lồng *nhiều giọng*, mỗi câu có nhãn người nói (S1, S2…) và mục **Giọng theo người nói** để đổi giọng cho từng người; bấm **Lưu & xử lý lại** để lồng tiếng lại.
 
 ### Gợi ý tiêu đề & hashtag khi đăng lại
-Ở video đã xong, bấm **Gợi ý tiêu đề & hashtag**: app tạo sẵn vài tiêu đề, mô tả ngắn và hashtag tiếng Việt từ phụ đề (không cần mạng), mỗi mục có nút **Sao chép**. Bấm **Viết bằng AI (Claude)** để Claude viết lại hay hơn — cần khóa API Claude của bạn (chỉ giữ trong phiên làm việc, mất khi đóng app; phụ đề tiếng Việt được gửi tới Anthropic và tính phí theo tài khoản của bạn).
+Ở video đã xong, điền mục **Nguồn & quyền** để lưu tác giả, nền tảng, link nguồn, quyền sử dụng và ghi chú, rồi bấm **Lưu**. Video tải từ link được điền sẵn link và nền tảng khi chưa có thông tin đã lưu. Thông tin nằm trong `source_credit.json` cạnh video kết quả; link nguồn không tự xác nhận quyền sử dụng.
+
+Gợi ý đăng bài sẽ thêm dòng nguồn vào mô tả để sao chép cùng nội dung và nhắc nếu quyền sử dụng còn **Chưa rõ**. Thông tin nguồn và ghi chú không được gửi tới AI.
+
+Ở video đã xong, bấm **Gợi ý tiêu đề & hashtag**: app tạo sẵn vài tiêu đề, mô tả ngắn và hashtag tiếng Việt từ phụ đề (không cần mạng), mỗi mục có nút **Sao chép**. Chọn **AI** (Claude hoặc Gemini) rồi bấm **Viết bằng AI** để AI viết lại hay hơn — cần khóa API của bạn, lưu một lần trong **Cài đặt AI** (Windows Credential Manager); phụ đề tiếng Việt được gửi tới nhà cung cấp đó và tính phí theo tài khoản của bạn.
 
 ### Khám phá video (xu hướng, từ khóa, lấy video hàng loạt)
 Bấm **Khám phá** ở thanh bên trái, chọn **Douyin**, **Bilibili** hoặc **Kuaishou**:
