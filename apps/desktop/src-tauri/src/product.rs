@@ -93,7 +93,7 @@ pub struct ProductRequest {
 }
 
 /// A folder name Windows accepts, from the product name.
-fn folder_title(name: &str) -> String {
+pub(super) fn folder_title(name: &str) -> String {
     let cleaned: String = name.chars()
         .map(|character| if character.is_control() || "<>:\"/\\|?*".contains(character) { ' ' } else { character })
         .collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");

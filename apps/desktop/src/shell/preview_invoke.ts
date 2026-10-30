@@ -86,6 +86,7 @@ function fetchStatus(scanId: string) {
 let picked = 0;
 const sourceCredits = new Map<string, SourceCredit>();
 const packages = new Map<string, { started: number; cancelled: boolean }>();
+const compilations = new Map<string, { started: number; cancelled: boolean; total: number }>();
 const shorts = new Map<string, { started: number; cancelled: boolean; items: Array<{ title: string }> }>();
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
@@ -112,6 +113,27 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       if (run) run.cancelled = true;
       return null as T;
     }
+    case "compilation_render": {
+      const request = args.request as { items: { lead: string }[]; intro: string; outro: string };
+      const output = `D:/Videos/DubFlow Output/Tong hop - preview/run-${compilations.size.toString(16).padStart(12, "0")}`;
+      const total = request.items.length + request.items.filter(item => item.lead).length + Number(Boolean(request.intro)) + Number(Boolean(request.outro));
+      compilations.set(output, { started: Date.now(), cancelled: false, total });
+      return output as T;
+    }
+    case "compilation_status": {
+      const output = String(args.outputDir), run = compilations.get(output);
+      if (!run) throw new Error("Không tìm thấy phiên tổng hợp");
+      const done = Math.min(run.total, Math.floor((Date.now() - run.started) / 1000));
+      const state = run.cancelled ? "CANCELLED" : done === run.total ? "COMPLETED" : "RUNNING";
+      return { schema_version: 1, state, done, total: run.total, message: state === "COMPLETED" ? "Đã tạo video tổng hợp." : state === "CANCELLED" ? "Đã hủy tổng hợp." : "Đang tạo video tổng hợp…",
+        path: state === "COMPLETED" ? `${output}/compilation.mp4` : null } as T;
+    }
+    case "compilation_cancel": {
+      const run = compilations.get(String(args.outputDir));
+      if (run) run.cancelled = true;
+      return null as T;
+    }
+    case "compilation_description": return "00:00 Mở đầu\n00:05 Phần 1: Video thứ nhất\n00:30 Phần 2: Video thứ hai\n\nNguồn: Tác giả (Bilibili) – https://example.org/video\n" as T;
     case "package_info": return { has_background_stem: true, voice_id: voices[0].voice_id } as T;
     case "package_video": {
       const request = args.request as { outputPath: string };
