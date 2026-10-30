@@ -75,6 +75,11 @@ const queueState = $("#queue-state");
 const inspector = $("#inspector");
 const sourceCredit = mountSourceCredit(invoke);
 const packageVideo = mountPackage(invoke, { cpuOnly });
+// One AI choice and saved keys, shared by every AI feature. The inspector
+// sections below are used by the first render, so they are mounted up here.
+const claudeKey = createAiSession(hostKeyStore(invoke));
+const shorts = mountShorts(invoke, claudeKey);
+const reframe = mountReframe(invoke, claudeKey);
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const multiVoiceToggle = $<HTMLInputElement>("#multi-voice");
@@ -834,10 +839,6 @@ const discovery = mountDiscovery(invoke, startFetch, () => {
     return "argos";
   }
 });
-// One AI choice and saved keys, shared by posting suggestions and product videos.
-const claudeKey = createAiSession(hostKeyStore(invoke));
-const shorts = mountShorts(invoke, claudeKey);
-const reframe = mountReframe(invoke, claudeKey);
 void claudeKey.restore();
 const aiSettings = mountAiSettings(claudeKey);
 $("#open-ai-settings").addEventListener("click", () => aiSettings.open());
