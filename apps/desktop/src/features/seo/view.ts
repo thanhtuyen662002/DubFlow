@@ -1,5 +1,6 @@
 import { normalizeSuggestion, writeSuggestion, type PostSuggestion } from "./ai.ts";
 import { createAiSession, isKeyError, isProvider, keyHint, PROVIDERS, type AiSession } from "../ai/provider.ts";
+import { appendCredit, emptySourceCredit, sourceCreditForJob, sourceRightsHint, type SourceCredit } from "../credit/model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -41,10 +42,11 @@ export function parseOffline(value: unknown): PostSuggestion | null {
 }
 
 /** The posting-suggestions dialog for one finished video. */
-export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = createSessionKey()): { open(outputPath: string, displayName: string): void } {
+export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = createSessionKey()): { open(outputPath: string, displayName: string, originUrl?: string): void } {
   const dialog = $("#post-dialog");
   const body = $("#post-body");
   const state = $("#post-state");
+  const creditHint = $("#post-credit-hint");
   const aiButton = $<HTMLButtonElement>("#post-ai");
   const keyRow = $("#post-key-row");
   const keyInput = $<HTMLInputElement>("#post-key");
@@ -67,6 +69,8 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
   let outputPath = "";
   let sourceTitle = "";
   let request = 0;
+  let opening = 0;
+  let creditRequest: Promise<SourceCredit> = Promise.resolve(emptySourceCredit());
 
   function copyButton(text: () => string): HTMLButtonElement {
     const button = document.createElement("button");
@@ -97,7 +101,7 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
     return block;
   }
 
-  function render(suggestion: PostSuggestion, source: string): void {
+  function render(suggestion: PostSuggestion, source: string, credit: SourceCredit): void {
     const titles = section("Tiêu đề", () => suggestion.titles.join("\n"));
     const list = document.createElement("ol");
     list.className = "post-titles";
@@ -109,9 +113,11 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
       list.append(item);
     }
     titles.append(list);
-    const description = section("Mô tả", () => suggestion.description);
+    const creditedDescription = appendCredit(suggestion.description, credit);
+    const description = section("Mô tả", () => creditedDescription);
     const paragraph = document.createElement("p");
-    paragraph.textContent = suggestion.description;
+    paragraph.className = "post-description";
+    paragraph.textContent = creditedDescription;
     description.append(paragraph);
     const hashtags = section("Hashtag", () => suggestion.hashtags.join(" "));
     const tags = document.createElement("p");
@@ -129,14 +135,17 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
     state.textContent = "Đang tạo gợi ý…";
     body.replaceChildren();
     try {
-      const value = await invoke<unknown>("post_suggestions", { outputPath, sourceTitle: CJK.test(sourceTitle) ? "" : sourceTitle });
+      const [value, credit] = await Promise.all([
+        invoke<unknown>("post_suggestions", { outputPath, sourceTitle: CJK.test(sourceTitle) ? "" : sourceTitle }),
+        creditRequest,
+      ]);
       if (current !== request) return;
       const suggestion = parseOffline(value);
       if (!suggestion) {
         state.textContent = "Chưa tạo được gợi ý cho video này.";
         return;
       }
-      render(suggestion, "Gợi ý tạo offline từ phụ đề tiếng Việt. Hãy chỉnh lại cho hợp kênh của bạn.");
+      render(suggestion, "Gợi ý tạo offline từ phụ đề tiếng Việt. Hãy chỉnh lại cho hợp kênh của bạn.", credit);
       state.textContent = "";
     } catch (error) {
       if (current === request) state.textContent = String(error).slice(0, 200);
@@ -153,14 +162,18 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
     const current = ++request;
     aiButton.disabled = true;
     const provider = apiKey.provider();
+    const path = outputPath, title = sourceTitle, pendingCredit = creditRequest;
     const { name, company } = PROVIDERS[provider];
     state.textContent = `${name} đang viết gợi ý…`;
     try {
-      const cues = await invoke<Array<{ text: string }>>("review_cues", { outputPath });
-      const subtitles = cues.map((cue) => cue.text).filter((text) => typeof text === "string" && text.trim());
-      const suggestion = await writeSuggestion(provider, key, subtitles, sourceTitle);
+      const credit = await pendingCredit;
       if (current !== request) return;
-      render(suggestion, `Gợi ý do ${name} viết từ phụ đề tiếng Việt (đã gửi phụ đề tới ${company}).`);
+      const cues = await invoke<Array<{ text: string }>>("review_cues", { outputPath: path });
+      if (current !== request) return;
+      const subtitles = cues.map((cue) => cue.text).filter((text) => typeof text === "string" && text.trim());
+      const suggestion = await writeSuggestion(provider, key, subtitles, title);
+      if (current !== request) return;
+      render(suggestion, `Gợi ý do ${name} viết từ phụ đề tiếng Việt (đã gửi phụ đề tới ${company}).`, credit);
       state.textContent = "";
     } catch (error) {
       if (current !== request) return;
@@ -170,7 +183,7 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
         : `Không viết được bằng AI: ${message.slice(0, 160)}`;
       if (isKeyError(message)) keyRow.hidden = false;
     } finally {
-      aiButton.disabled = false;
+      if (current === request) aiButton.disabled = false;
     }
   }
 
@@ -196,16 +209,35 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
       state.textContent = String(error).slice(0, 200);
     }
   });
-  $("#post-close").addEventListener("click", () => { dialog.hidden = true; request += 1; });
-  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { dialog.hidden = true; request += 1; } });
+  $("#post-close").addEventListener("click", () => { dialog.hidden = true; request += 1; opening += 1; });
+  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { dialog.hidden = true; request += 1; opening += 1; } });
 
   return {
-    open(path: string, displayName: string) {
+    open(path: string, displayName: string, originUrl?: string) {
       outputPath = path;
       sourceTitle = displayName.replace(/\.[A-Za-z0-9]{2,4}$/, "");
       keyRow.hidden = true;
       showProvider();
       dialog.hidden = false;
+      aiButton.disabled = false;
+      creditHint.textContent = "";
+      creditHint.hidden = true;
+      const current = ++opening;
+      creditRequest = invoke<unknown>("source_credit_get", { outputPath: path }).then((value) => {
+        const credit = sourceCreditForJob(value, originUrl);
+        if (current === opening) {
+          creditHint.textContent = sourceRightsHint(credit);
+          creditHint.hidden = !creditHint.textContent;
+        }
+        return credit;
+      }).catch(() => {
+        // An unreadable credit file must not hide the suggestions.
+        if (current === opening) {
+          creditHint.textContent = "Không đọc được thông tin nguồn đã lưu; hãy lưu lại mục “Nguồn & quyền”.";
+          creditHint.hidden = false;
+        }
+        return sourceCreditForJob(null, originUrl);
+      });
       void loadOffline();
     },
   };
