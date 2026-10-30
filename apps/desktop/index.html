@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com; media-src 'self' blob:; img-src 'self' blob: https:"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com https://generativelanguage.googleapis.com; media-src 'self' blob:; img-src 'self' blob: https:"
     />
     <title>DubFlow</title>
     <link rel="stylesheet" href="./src/styles.css" />
@@ -151,7 +151,7 @@
           <header class="topbar">
             <div>
               <h1>Video bán hàng</h1>
-              <p class="subtitle">Từ ảnh sản phẩm: Claude đọc thông tin và viết kịch bản, DubFlow đọc giọng Việt và tạo video dọc</p>
+              <p class="subtitle">Từ ảnh sản phẩm: AI (Claude hoặc Gemini) đọc thông tin và viết kịch bản, DubFlow đọc giọng Việt và tạo video dọc</p>
             </div>
           </header>
           <div class="product-body">
@@ -161,17 +161,20 @@
                 <button id="product-pick" class="btn" type="button">Chọn ảnh…</button>
               </div>
               <ul id="product-photos" class="product-thumbs"></ul>
-              <p class="hint">Chọn ảnh bao bì, nhãn hoặc ảnh chụp trang sản phẩm có tên, giá, thông số. Claude đọc tối đa 8 ảnh đầu.</p>
+              <p class="hint">Chọn ảnh bao bì, nhãn hoặc ảnh chụp trang sản phẩm có tên, giá, thông số. AI đọc tối đa 8 ảnh đầu.</p>
               <div id="product-key-row" class="product-key-row" hidden>
                 <p class="hint"></p>
                 <div class="post-key-actions">
-                  <input id="product-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API Claude" />
+                  <input id="product-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API" />
                   <button id="product-key-save" class="btn primary" type="button">Lưu &amp; tiếp tục</button>
                   <button id="product-key-clear" class="link" type="button">Xóa khóa khỏi phiên này</button>
                 </div>
               </div>
               <div class="product-actions">
-                <button id="product-read" class="btn primary" type="button" disabled>Đọc thông tin bằng AI (Claude)</button>
+                <label class="ai-provider">AI
+                  <select id="product-provider"><option value="claude">Claude (Anthropic)</option><option value="gemini">Gemini (Google)</option></select>
+                </label>
+                <button id="product-read" class="btn primary" type="button" disabled>Đọc thông tin bằng AI</button>
                 <p id="product-read-state" class="discover-state" role="status"></p>
               </div>
             </section>
@@ -413,7 +416,10 @@
             <h2 id="post-title">Gợi ý đăng bài</h2>
             <p class="subtitle">Tiêu đề, mô tả và hashtag tiếng Việt cho video đã Việt hóa</p>
           </div>
-          <button id="post-ai" class="btn" type="button">Viết bằng AI (Claude)</button>
+          <label class="ai-provider">AI
+            <select id="post-provider"><option value="claude">Claude (Anthropic)</option><option value="gemini">Gemini (Google)</option></select>
+          </label>
+          <button id="post-ai" class="btn" type="button">Viết bằng AI</button>
           <button id="post-close" class="icon-btn" type="button" aria-label="Đóng">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
@@ -421,7 +427,7 @@
         <div id="post-key-row" class="post-key-row" hidden>
           <p class="hint">Nhập khóa API Claude của bạn (console.anthropic.com). Khóa chỉ được giữ trong phiên làm việc này và sẽ mất khi đóng hoặc tải lại app; khi dùng, phụ đề tiếng Việt của video được gửi tới Anthropic và tính phí theo tài khoản của bạn.</p>
           <div class="post-key-actions">
-            <input id="post-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API Claude" />
+            <input id="post-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API" />
             <button id="post-key-save" class="btn primary" type="button">Lưu &amp; viết</button>
             <button id="post-key-clear" class="link" type="button">Xóa khóa khỏi phiên này</button>
           </div>

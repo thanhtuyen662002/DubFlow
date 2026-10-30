@@ -448,3 +448,7 @@ h1, h2, h3, p { margin: 0; }
 .product-results li { display: flex; align-items: center; gap: 10px; }
 .product-results li.failed { color: var(--err); }
 @media (max-width: 860px) { .product-form { grid-template-columns: 1fr; } .product-body { padding: 16px; } }
+
+/* AI provider choice (Claude or Gemini) */
+.ai-provider { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
+.ai-provider select { height: 30px; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; }
