@@ -383,6 +383,29 @@
               </form>
             </details>
 
+            <details id="shorts-section" class="source-credit" hidden>
+              <summary>Cắt Shorts</summary>
+              <form id="shorts-form">
+                <fieldset id="shorts-fields" class="settings">
+                  <p id="shorts-provider" class="hint"></p>
+                  <button id="shorts-ai" class="btn" type="button">AI gợi ý đoạn hay</button>
+                  <div id="shorts-rows"></div>
+                  <button id="shorts-add" class="btn" type="button">Thêm đoạn thủ công</button>
+                  <label>Bố cục
+                    <select id="shorts-layout">
+                      <option value="auto">Tự động</option>
+                      <option value="ban-tin">Bản tin</option>
+                      <option value="mo-nen">Nền mờ</option>
+                    </select>
+                  </label>
+                  <button class="btn primary block" type="submit">Tạo Shorts</button>
+                </fieldset>
+                <button id="shorts-cancel" class="btn" type="button" hidden>Hủy</button>
+                <p id="shorts-state" class="hint" role="status" aria-live="polite"></p>
+                <div id="shorts-results"></div>
+              </form>
+            </details>
+
             <fieldset id="voice-controls" class="settings" disabled>
               <legend>Tùy chọn xử lý</legend>
               <label class="switch-row">

@@ -574,6 +574,16 @@
       ]
     },
     {
+      "id": "shorts",
+      "roots": [
+        "engine/dubflow/shorts",
+        "tests/shorts"
+      ],
+      "commands": [
+        ["python", "-B", "-m", "unittest", "discover", "-s", "tests/shorts", "-t", ".", "-p", "test_*.py"]
+      ]
+    },
+    {
       "id": "seo",
       "roots": [
         "engine/dubflow/seo",
