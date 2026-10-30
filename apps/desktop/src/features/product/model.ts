@@ -9,6 +9,7 @@ export type ProductRequest = {
   visuals: string[];
   music: string | null;
   musicVolume: number;
+  background: string | null;
   cpuOnly: boolean;
   outputRoot: string | null;
 };
@@ -60,6 +61,7 @@ export function addPaths(current: readonly string[], added: readonly string[], l
 export function buildRequest(input: {
   info: ProductInfo; voiceId: string | null; scripts: readonly { text: string; use: boolean }[];
   visuals: readonly string[]; music: string | null; volumePercent: number; cpuOnly: boolean; outputRoot: string | null;
+  background?: string | null;
 }): ProductRequest | string {
   const variants = input.scripts.filter((item) => item.use).map((item) => item.text.trim()).filter((text) => /[\p{L}\p{N}]/u.test(text));
   if (!variants.length) return "Hãy chọn ít nhất một kịch bản.";
@@ -70,7 +72,7 @@ export function buildRequest(input: {
   if (!input.voiceId) return "Hãy chọn giọng đọc.";
   return {
     name: input.info.name, price: input.info.price, voiceId: input.voiceId, variants, visuals: [...input.visuals],
-    music: input.music, musicVolume: Math.min(1, Math.max(0, Math.round(input.volumePercent) / 100)),
+    music: input.music, musicVolume: Math.min(1, Math.max(0, Math.round(input.volumePercent) / 100)), background: input.background ?? null,
     cpuOnly: input.cpuOnly, outputRoot: input.outputRoot,
   };
 }

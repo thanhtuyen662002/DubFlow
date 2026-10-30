@@ -40,6 +40,7 @@ pub fn pick_product_files(kind: String) -> Result<Vec<String>, String> {
         "images" => dialog.set_title("Chọn ảnh sản phẩm").add_filter("Ảnh", &IMAGE_EXTENSIONS).pick_files(),
         "media" => dialog.set_title("Chọn ảnh hoặc clip").add_filter("Ảnh và clip", &[&IMAGE_EXTENSIONS[..], &CLIP_EXTENSIONS[..]].concat()).pick_files(),
         "music" => dialog.set_title("Chọn nhạc nền").add_filter("Nhạc", &MUSIC_EXTENSIONS).pick_file().map(|file| vec![file]),
+        "background" => dialog.set_title("Chọn ảnh nền").add_filter("Ảnh", &IMAGE_EXTENSIONS).pick_file().map(|file| vec![file]),
         _ => return Err(fail("Loại file không hợp lệ")),
     };
     Ok(files.unwrap_or_default().into_iter().map(|path| path.to_string_lossy().into_owned()).collect())
@@ -78,6 +79,9 @@ pub struct ProductRequest {
     visuals: Vec<String>,
     music: Option<String>,
     music_volume: f64,
+    /// The user's background: 1080×720 for the panel, 1080×1920 for the whole frame.
+    #[serde(default)]
+    background: Option<String>,
     cpu_only: bool,
     output_root: Option<String>,
 }
@@ -125,6 +129,7 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
         .map(|value| local_file(value, &[&IMAGE_EXTENSIONS[..], &CLIP_EXTENSIONS[..]].concat()))
         .collect::<Result<Vec<_>, _>>()?;
     let music = request.music.as_deref().map(|value| local_file(value, &MUSIC_EXTENSIONS)).transpose()?;
+    let background = request.background.as_deref().map(|value| local_file(value, &IMAGE_EXTENSIONS)).transpose()?;
     let base = match request.output_root {
         Some(value) => {
             let base = PathBuf::from(value);
@@ -141,7 +146,7 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     fs::create_dir_all(&work).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
     let spec = json!({
         "schema_version": 1, "name": request.name, "price": request.price, "voice_id": request.voice_id,
-        "variants": request.variants, "visuals": visuals, "music": music, "music_volume": request.music_volume,
+        "variants": request.variants, "visuals": visuals, "music": music, "music_volume": request.music_volume, "background": background,
     });
     let spec_path = work.join("spec.json");
     fs::write(&spec_path, serde_json::to_vec(&spec).map_err(|error| fail(error.to_string()))?)

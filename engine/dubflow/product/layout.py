@@ -17,6 +17,11 @@ _STYLES = (
     "Style: Price,Arial,62,&H00FFFFFF,&H000000FF,&H001C1CD8,&H00000000,-1,0,0,0,100,100,0,0,3,16,0,2,60,60,0,1",
     "Style: Strip,Arial,10,&H0000D4FF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1",
 )
+# On the user's own background, a dark outline keeps the name and captions readable.
+_OUTLINED = {
+    "Title": _STYLES[0].replace(",1,0,2,8,", ",1,3,2,8,"),
+    "Caption": _STYLES[1].replace(",1,0,3,5,", ",1,4,2,5,"),
+}
 
 
 def _time(milliseconds: int, *, ass: bool) -> str:
@@ -34,7 +39,7 @@ def _text(value: str) -> str:
     return " ".join(value.replace("\\", "/").replace("{", "(").replace("}", ")").split())
 
 
-def ass_document(name: str, price: str, captions: Sequence[Caption], duration_ms: int) -> str:
+def ass_document(name: str, price: str, captions: Sequence[Caption], duration_ms: int, *, outlined: bool = False) -> str:
     whole = f"0:00:00.00,{_time(duration_ms, ass=True)}"
     events = [f"Dialogue: 0,{whole},Strip,,0,0,0,,{{\\an7\\pos(0,{MEDIA_HEIGHT})\\p1}}m 0 0 l {WIDTH} 0 {WIDTH} 10 0 10{{\\p0}}"]
     if name.strip():
@@ -49,7 +54,7 @@ def ass_document(name: str, price: str, captions: Sequence[Caption], duration_ms
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {WIDTH}", f"PlayResY: {HEIGHT}", "WrapStyle: 0", "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        *_STYLES, "",
+        *(_OUTLINED.get(style.split(",", 1)[0][len("Style: "):], style) if outlined else style for style in _STYLES), "",
         "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
         *events,
     )) + "\n"

@@ -26,6 +26,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   let media: string[] = [];
   let scripts: Script[] = [];
   let music: string | null = null;
+  let background: string | null = null;
   let polling = 0;
   let running = "";
   let pendingKeyAction: (() => void) | null = null;
@@ -277,7 +278,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     const state = $("#product-render-state");
     const visuals = addPaths($<HTMLInputElement>("#product-use-photos").checked ? photos : [], media, MAX_VISUALS + 1);
     const request = buildRequest({
-      info: info(), voiceId: voiceSelect.value || null, scripts, visuals, music,
+      info: info(), voiceId: voiceSelect.value || null, scripts, visuals, music, background,
       volumePercent: Number($<HTMLInputElement>("#product-volume").value), cpuOnly: settings.cpuOnly(), outputRoot: settings.outputRoot(),
     });
     if (typeof request === "string") {
@@ -336,6 +337,18 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     music = null;
     $("#product-music-name").textContent = "Không có";
     $("#product-music-clear").hidden = true;
+  });
+  $("#product-background").addEventListener("click", async () => {
+    const [picked] = await invoke<string[]>("pick_product_files", { kind: "background" });
+    if (!picked) return;
+    background = picked;
+    $("#product-background-name").textContent = fileName(picked);
+    $("#product-background-clear").hidden = false;
+  });
+  $("#product-background-clear").addEventListener("click", () => {
+    background = null;
+    $("#product-background-name").textContent = "Mặc định (xanh lá)";
+    $("#product-background-clear").hidden = true;
   });
   $("#product-read").addEventListener("click", () => withKey(readPhotos));
   $("#product-write").addEventListener("click", () => withKey(write));

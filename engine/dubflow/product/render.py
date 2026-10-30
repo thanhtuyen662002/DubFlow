@@ -31,6 +31,25 @@ class Visual:
 
 
 @dataclass(frozen=True)
+class Background:
+    """The user's image behind the template: the whole 9:16 frame, or only the panel."""
+
+    path: Path
+    full_frame: bool
+
+
+# Taller than this (height / width) fills the whole frame; anything wider fills the panel.
+FULL_FRAME_RATIO = 1.2
+
+
+def background(path: Path, width: int, height: int) -> Background:
+    """1080×1920-like images cover the frame, 1080×720-like ones the panel below the media."""
+    if width <= 0 or height <= 0:
+        raise ValueError("background has no size")
+    return Background(path, height >= width * FULL_FRAME_RATIO)
+
+
+@dataclass(frozen=True)
 class Segment:
     visual: Visual
     offset_ms: int
@@ -66,7 +85,7 @@ def _seconds(milliseconds: int) -> str:
 
 def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, music: Path | None,
                 music_volume: float, total_ms: int, output: Path, *, subtitles: str = "captions.ass",
-                encoder: str = ENCODER) -> list[str]:
+                encoder: str = ENCODER, backdrop: Background | None = None) -> list[str]:
     """The FFmpeg command, run with the folder holding ``subtitles`` as its working directory."""
     argv = [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y"]
     filters = []
@@ -85,7 +104,16 @@ def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, musi
     argv += ["-i", str(narration)]
     total = _seconds(total_ms)
     filters.append("".join(f"[v{index}]" for index in range(len(segments))) + f"concat=n={len(segments)}:v=1:a=0[media]")
-    filters.append(f"color=c={PANEL_COLOR}:s={WIDTH}x{HEIGHT}:r={FPS}:d={total}[base]")
+    filters.append(f"color=c={PANEL_COLOR}:s={WIDTH}x{HEIGHT}:r={FPS}:d={total}[panel]")
+    if backdrop is None:
+        filters.append("[panel]null[base]")
+    else:
+        # After the narration and the music, so their input numbers stay put.
+        image = voice + (2 if music is not None else 1)
+        height = HEIGHT if backdrop.full_frame else HEIGHT - MEDIA_HEIGHT
+        filters.append(f"[{image}:v]scale={WIDTH}:{height}:force_original_aspect_ratio=increase,crop={WIDTH}:{height},"
+                       f"setsar=1,fps={FPS},format=yuv420p[backdrop]")
+        filters.append(f"[panel][backdrop]overlay=0:{0 if backdrop.full_frame else MEDIA_HEIGHT}[base]")
     filters.append(f"[base][media]overlay=0:0:eof_action=repeat,subtitles={subtitles}[video]")
     stereo = "aformat=sample_rates=48000:channel_layouts=stereo"
     if music is None:
@@ -95,6 +123,8 @@ def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, musi
         filters.append(f"[{voice}:a]{stereo}[voice]")
         filters.append(f"[{voice + 1}:a]{stereo},volume={music_volume:.2f}[bed]")
         filters.append("[voice][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[audio]")
+    if backdrop is not None:
+        argv += ["-loop", "1", "-framerate", str(FPS), "-t", total, "-i", str(backdrop.path)]
     argv += ["-filter_complex", ";".join(filters), "-map", "[video]", "-map", "[audio]", "-t", total,
              "-c:v", encoder, "-b:v", VIDEO_BITRATE, "-pix_fmt", "yuv420p", "-r", str(FPS),
              "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-f", "mp4", str(output)]
