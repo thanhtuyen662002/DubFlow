@@ -20,7 +20,7 @@ from engine.dubflow.media import (
     Rational,
     parse_ffprobe_json,
 )
-from engine.dubflow.media.adapter import MAX_BLUR_REGIONS, audio_origin_samples, blur_filtergraph
+from engine.dubflow.media.adapter import MAX_BLUR_REGIONS, MediaStream, audio_origin_samples, blur_filtergraph, video_bitrate
 
 
 def _probe_document() -> dict[str, object]:
@@ -260,6 +260,16 @@ class MediaCommandTests(unittest.TestCase):
         self.assertNotIn("|", " ".join(render_call))
         self.assertEqual(list(self.root.glob(".*.partial")), [])
 
+    def test_video_bitrate_follows_pixels_per_second_within_bounds(self):
+        stream = lambda width, height, rate: MediaStream(0, "video", "h264", None, None, None, None, width=width, height=height,
+                                                         frame_rate=Rational.parse(rate, "rate") if rate else None)
+        self.assertEqual(video_bitrate(stream(1920, 1080, "30/1")), 7_464_960)
+        self.assertEqual(video_bitrate(stream(1024, 576, "30/1")), 2_123_366)
+        self.assertEqual(video_bitrate(stream(852, 480, "30000/1001")), 1_500_000)
+        self.assertEqual(video_bitrate(stream(3840, 2160, "60/1")), 16_000_000)
+        self.assertEqual(video_bitrate(stream(1280, 720, None)), 3_317_760)
+        self.assertEqual(video_bitrate(None), 8_000_000)
+
     def test_render_retries_once_with_openh264_when_media_foundation_fails(self):
         trusted_root = Path(sys.executable).resolve().parent
 
@@ -280,7 +290,10 @@ class MediaCommandTests(unittest.TestCase):
         encoder = second.index("-c:v")
         self.assertEqual(second[encoder + 1], "libopenh264")
         self.assertIn("yuv420p", second)
-        self.assertEqual([item for item in first if item not in {"h264_mf", "-quality", "90"}][:encoder], list(second[:encoder]))
+        self.assertEqual(first[:encoder], second[:encoder])
+        # Without a probe both encoders target 8 Mbit/s; neither falls back to a few hundred kbit/s.
+        self.assertEqual(first[first.index("-b:v") + 1], "8000000")
+        self.assertEqual(second[second.index("-b:v") + 1], "8000000")
         self.assertEqual(list(self.root.glob(".*.partial")), [])
 
         failing = RecordingRunner(fail=True)

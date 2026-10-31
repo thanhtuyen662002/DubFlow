@@ -52,7 +52,7 @@ _DEFAULT_TIMEOUT_SECONDS = 15 * 60
 _WINDOWS_H264_ENCODER = "h264_mf"
 # Media Foundation is missing on Windows "N" editions and refuses some inputs;
 # the bundled Cisco OpenH264 encoder keeps the same H.264/MP4 contract then.
-_FALLBACK_H264_ENCODER = ("libopenh264", "-b:v", "8M", "-maxrate", "12M", "-bufsize", "16M")
+_FALLBACK_H264_ENCODER = "libopenh264"
 # H.264 4:2:0 needs even dimensions; odd inputs (853x479) are rounded down by
 # at most one pixel instead of failing the whole export.
 _EVEN_DIMENSIONS = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
@@ -390,6 +390,21 @@ def blur_filtergraph(regions: Sequence[BlurRegion]) -> str:
         "[blur_full][blur_mask]alphamerge[blur_top]",
         "[blur_b0][blur_top]overlay",
     ])
+
+
+def video_bitrate(video: MediaStream | None) -> int:
+    """Target H.264 bitrate, in bit/s, for a rendered copy of ``video``.
+
+    Without a target Media Foundation encodes at a few hundred kbit/s (its
+    ``-quality`` applies only in quality rate control), and a 576p drama came
+    out heavily blocked. 0.12 bits per pixel per frame keeps fine detail; the
+    bounds keep small sources sharp and 4K files a sane size.
+    """
+    if video is None or not video.width or not video.height:
+        return 8_000_000
+    rate = video.frame_rate
+    fps = min(120.0, max(1.0, rate.numerator / rate.denominator)) if rate and rate.numerator > 0 else 30.0
+    return round(min(16_000_000, max(1_500_000, 0.12 * video.width * video.height * fps)))
 
 
 def audio_origin_samples(video: MediaStream, sample_rate: int) -> int:
@@ -935,7 +950,8 @@ class FfmpegMediaAdapter:
             else:
                 args.append("-sn")
             encoder_at = len(args)
-            args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-quality", "90", "-pix_fmt", "yuv420p"))
+            bitrate = video_bitrate(source_probe.video if source_probe is not None else None)
+            args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-b:v", str(bitrate), "-pix_fmt", "yuv420p"))
             if audio is not None or preserve_original_audio:
                 args.extend(("-c:a", "aac", "-b:a", "192k"))
             if video_duration is not None:
@@ -955,7 +971,8 @@ class FfmpegMediaAdapter:
             except MediaAdapterError as error:
                 if error.code != "MEDIA_COMMAND_FAILED":
                     raise
-                fallback = [*args[:encoder_at], "-c:v", *_FALLBACK_H264_ENCODER, "-pix_fmt", "yuv420p", *args[encoder_at + 6:]]
+                fallback = [*args[:encoder_at], "-c:v", _FALLBACK_H264_ENCODER, "-b:v", str(bitrate), "-maxrate", str(bitrate * 3 // 2),
+                            "-bufsize", str(bitrate * 2), "-pix_fmt", "yuv420p", *args[encoder_at + 6:]]
                 try:
                     return self._write_atomic(output, tuple(fallback), output_format="mp4", cwd=cwd)
                 except MediaAdapterError:
