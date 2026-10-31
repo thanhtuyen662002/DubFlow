@@ -123,6 +123,7 @@ pub fn package_video(request: PackageRequest) -> Result<(), String> {
     }
     let work = dir.join(".dubflow-work/package");
     fs::create_dir_all(&work).map_err(|_| fail("Không tạo được thư mục đóng gói"))?;
+    let lease = crate::work_lease::take(&work, "Video này đang được đóng gói ở cửa sổ DubFlow khác")?;
     let cancel = work.join("cancel");
     if cancel.exists() { fs::remove_file(cancel).map_err(|_| fail("Không xóa được yêu cầu hủy cũ"))?; }
     let spec = json!({"schema_version": 1, "video": dir.join("final_vi.mp4"), "intro": request.intro,
@@ -160,6 +161,7 @@ pub fn package_video(request: PackageRequest) -> Result<(), String> {
                 if cancelled { "Đã hủy đóng gói." } else { "Bộ đóng gói đã dừng. Hãy thử lại." });
         }
         if let Ok(mut running) = RUNNING.lock() { running.remove(&dir); }
+        drop(lease);
     });
     Ok(())
 }

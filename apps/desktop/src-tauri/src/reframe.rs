@@ -90,6 +90,7 @@ pub fn reframe_render(request: ReframeRequest) -> Result<(), String> {
     if running.contains(&dir) { return Err(fail("Video này đang được đổi khung")); }
     let work = dir.join(".dubflow-work/reframe");
     fs::create_dir_all(&work).map_err(|_| fail("Không tạo được thư mục đổi khung"))?;
+    let lease = crate::work_lease::take(&work, "Video này đang được đổi khung ở cửa sổ DubFlow khác")?;
     let cancel = work.join("cancel");
     if cancel.exists() { fs::remove_file(cancel).map_err(|_| fail("Không xóa được yêu cầu hủy cũ"))?; }
     let spec = json!({"schema_version": 1, "video": dir.join("final_vi.mp4"), "mode": request.mode,
@@ -117,6 +118,7 @@ pub fn reframe_render(request: ReframeRequest) -> Result<(), String> {
         let _ = child.wait();
         finish_status(&work);
         if let Ok(mut running) = RUNNING.lock() { running.remove(&dir); }
+        drop(lease);
     });
     Ok(())
 }

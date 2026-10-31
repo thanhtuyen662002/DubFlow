@@ -76,6 +76,7 @@ pub fn shorts_render(request: ShortsRequest) -> Result<(), String> {
     if running.contains(&dir) { return Err(fail("Video này đang được cắt Shorts")); }
     let work = dir.join(".dubflow-work/shorts");
     fs::create_dir_all(&work).map_err(|_| fail("Không tạo được thư mục Shorts"))?;
+    let lease = crate::work_lease::take(&work, "Video này đang được cắt Shorts ở cửa sổ DubFlow khác")?;
     let cancel = work.join("cancel");
     if cancel.exists() { fs::remove_file(cancel).map_err(|_| fail("Không xóa được yêu cầu hủy cũ"))?; }
     let total = request.items.len();
@@ -107,6 +108,7 @@ pub fn shorts_render(request: ShortsRequest) -> Result<(), String> {
                 if cancelled { "Đã hủy cắt Shorts." } else { "Bộ cắt Shorts đã dừng. Hãy thử lại." }, total);
         }
         if let Ok(mut running) = RUNNING.lock() { running.remove(&dir); }
+        drop(lease);
     });
     Ok(())
 }

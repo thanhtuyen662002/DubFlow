@@ -13,6 +13,7 @@ mod product;
 mod source;
 mod source_credit;
 mod updater;
+mod work_lease;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
