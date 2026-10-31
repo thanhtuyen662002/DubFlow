@@ -56,6 +56,11 @@ _FALLBACK_H264_ENCODER = ("libopenh264", "-b:v", "8M", "-maxrate", "12M", "-bufs
 # H.264 4:2:0 needs even dimensions; odd inputs (853x479) are rounded down by
 # at most one pixel instead of failing the whole export.
 _EVEN_DIMENSIONS = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+# Windows caps a whole command line at 32,767 characters. A long video can carry
+# hundreds of timed blur regions; a graph longer than this is read from a file.
+_INLINE_FILTER_LIMIT = 8_000
+# Up to this many blur regions, per-region blurs are cheaper than one mask (measured at 480p and 1080p).
+_OVERLAY_BLUR_REGIONS = 12
 
 
 class MediaAdapterError(RuntimeError):
@@ -349,20 +354,42 @@ def blur_filtergraph(regions: Sequence[BlurRegion]) -> str:
     between ordinary comma-joined filters inside ``-vf``. Coordinates are kept
     even for 4:2:0 chroma. The shipped LGPL FFmpeg has no ``boxblur``; a
     strong Gaussian blur keeps captions unreadable at any resolution.
+
+    Each region's blur and overlay run on every frame, also while the region
+    is off. Beyond a few regions that dominates the export (a 4.6-hour video
+    with 256 regions would spend about 18 hours here), so many regions instead
+    blur the full-width band holding them once per frame, draw their boxes on
+    one mask while they are on, and show the blur through that mask.
     """
     if not regions or len(regions) > MAX_BLUR_REGIONS:
         raise MediaAdapterError("MEDIA_BLUR_INVALID", f"between 1 and {MAX_BLUR_REGIONS} blur regions are required")
     even = lambda size, fraction: f"trunc({size}*{fraction:.6f}/2)*2"
     blur = "gblur=sigma=40:steps=3"
+    enabled = lambda region: "" if region.start_ms is None else f":enable=between(t\\,{region.start_ms / 1000:.3f}\\,{region.end_ms / 1000:.3f})"
     count = len(regions)
-    parts = ["split=" + str(count + 1) + "[blur_b0]" + "".join(f"[blur_r{index}]" for index in range(count))]
-    for index, region in enumerate(regions):
-        parts.append(f"[blur_r{index}]crop=w={even('iw', region.w)}:h={even('ih', region.h)}:x={even('iw', region.x)}:y={even('ih', region.y)},{blur}[blur_k{index}]")
-    for index, region in enumerate(regions):
-        enable = "" if region.start_ms is None else f":enable=between(t\\,{region.start_ms / 1000:.3f}\\,{region.end_ms / 1000:.3f})"
-        label = "" if index == count - 1 else f"[blur_b{index + 1}]"
-        parts.append(f"[blur_b{index}][blur_k{index}]overlay=x={even('W', region.x)}:y={even('H', region.y)}{enable}{label}")
-    return ";".join(parts)
+    if count <= _OVERLAY_BLUR_REGIONS:
+        parts = ["split=" + str(count + 1) + "[blur_b0]" + "".join(f"[blur_r{index}]" for index in range(count))]
+        for index, region in enumerate(regions):
+            parts.append(f"[blur_r{index}]crop=w={even('iw', region.w)}:h={even('ih', region.h)}:x={even('iw', region.x)}:y={even('ih', region.y)},{blur}[blur_k{index}]")
+        for index, region in enumerate(regions):
+            label = "" if index == count - 1 else f"[blur_b{index + 1}]"
+            parts.append(f"[blur_b{index}][blur_k{index}]overlay=x={even('W', region.x)}:y={even('H', region.y)}{enabled(region)}{label}")
+        return ";".join(parts)
+    top = min(region.y for region in regions)
+    bottom = min(1.0, max(region.y + region.h for region in regions))
+    # Rounded outward, so every region's even-rounded box lies inside the band.
+    band = f"crop=w=iw:h=min(ih\\,{even('ih', bottom)}+2)-{even('ih', top)}:x=0:y={even('ih', top)}"
+    # drawbox reads a zero width or height as the whole frame.
+    boxes = [f"drawbox=x={even('iw', region.x)}:y={even('ih', region.y)}:w=max(2\\,{even('iw', region.w)}):"
+             f"h=max(2\\,{even('ih', region.h)}):color=white:t=fill{enabled(region)}" for region in regions]
+    return ";".join([
+        "split=3[blur_b0][blur_band][blur_canvas]",
+        f"[blur_band]{band},{blur}[blur_soft]",
+        f"[blur_canvas][blur_soft]overlay=x=0:y={even('H', top)},split=2[blur_full][blur_m]",
+        "[blur_m]format=gray,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill," + ",".join(boxes) + "[blur_mask]",
+        "[blur_full][blur_mask]alphamerge[blur_top]",
+        "[blur_b0][blur_top]overlay",
+    ])
 
 
 def audio_origin_samples(video: MediaStream, sample_rate: int) -> int:
@@ -819,6 +846,7 @@ class FfmpegMediaAdapter:
             raise MediaAdapterError("MEDIA_PATH_INVALID", "output_path must not overwrite subtitle_path")
 
         subtitle_staging: Path | None = None
+        filter_staging: Path | None = None
         try:
             args: list[str] = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
             video_filters: list[str] = []
@@ -870,7 +898,25 @@ class FfmpegMediaAdapter:
                 video_filters.insert(position, blur_filtergraph(blur_regions))
 
             video_filters.append(_EVEN_DIMENSIONS)
-            args.extend(("-vf", ",".join(video_filters)))
+            graph = ",".join(video_filters)
+            if len(graph) <= _INLINE_FILTER_LIMIT:
+                args.extend(("-vf", graph))
+            else:
+                # FFmpeg reads an option's value from a file when its name starts with "/".
+                try:
+                    descriptor, staging_name = tempfile.mkstemp(
+                        prefix=".dubflow-filter-", suffix=".txt", dir=os.fspath(output.parent)
+                    )
+                    filter_staging = Path(staging_name)
+                    with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+                        stream.write(graph)
+                except OSError as error:
+                    raise MediaAdapterError(
+                        "MEDIA_FILTER_STAGING_FAILED",
+                        _diagnostic(str(error)),
+                        retryable=True,
+                    ) from error
+                args.extend(("-/vf", os.fspath(filter_staging)))
             if source_probe is not None and audio is None and preserve_original_audio and source_probe.has_audio:
                 rate = source_probe.audio[0].sample_rate
                 origin = audio_origin_samples(source_probe.video, rate)
@@ -917,6 +963,8 @@ class FfmpegMediaAdapter:
         finally:
             if subtitle_staging is not None:
                 subtitle_staging.unlink(missing_ok=True)
+            if filter_staging is not None:
+                filter_staging.unlink(missing_ok=True)
 
     def _prepare_output(self, output_path: str | Path, source: Path, *, overwrite: bool, suffix: str = ".mp4") -> Path:
         try:
