@@ -414,6 +414,13 @@ class BlurRegionTests(unittest.TestCase):
         self.assertIn("[blur_b0][blur_k0]overlay=x=trunc(W*0.080000/2)*2:y=trunc(H*0.895000/2)*2[blur_b1]", graph)
         # The last overlay stays unlabeled so later -vf filters chain onto it.
         self.assertTrue(graph.endswith(":enable=between(t\\,2.000\\,4.500)"))
+        # Many regions share one band blur and one mask instead of a blur and overlay each.
+        many = blur_filtergraph([BlurRegion(0.1, 0.8, 0.8, 0.1, 1000 * index, 1000 * index + 500) for index in range(13)])
+        self.assertEqual(many.count("gblur="), 1)
+        self.assertEqual(many.count("drawbox=") - 1, 13)
+        self.assertIn("[blur_band]crop=w=iw:h=min(ih\\,trunc(ih*0.900000/2)*2+2)-trunc(ih*0.800000/2)*2:x=0:y=trunc(ih*0.800000/2)*2,gblur=", many)
+        self.assertIn("color=white:t=fill:enable=between(t\\,12.000\\,12.500)[blur_mask]", many)
+        self.assertTrue(many.endswith("[blur_full][blur_mask]alphamerge[blur_top];[blur_b0][blur_top]overlay"))
         for regions in ([], [BlurRegion(0, 0, 0.5, 0.5)] * (MAX_BLUR_REGIONS + 1)):
             with self.assertRaisesRegex(MediaAdapterError, "MEDIA_BLUR_INVALID"):
                 blur_filtergraph(regions)
@@ -438,6 +445,27 @@ class BlurRegionTests(unittest.TestCase):
             self.assertTrue(runner.calls[-1][runner.calls[-1].index("-vf") + 1].startswith("split=2"))
             with self.assertRaisesRegex(MediaAdapterError, "MEDIA_BLUR_INVALID"):
                 adapter.render(source, root / "bad.mp4", blur_regions=({"x": 0},), overwrite=True)
+
+    def test_a_graph_too_long_for_the_command_line_is_read_from_a_file(self):
+        # A 4.6-hour video produced 256 timed regions; inline, argv passed 32,767 characters (WinError 206).
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            source.write_bytes(b"video")
+            seen: dict[str, str] = {}
+
+            def runner(argv, timeout):
+                script = Path(argv[argv.index("-/vf") + 1])
+                seen["graph"] = script.read_text(encoding="utf-8")
+                Path(argv[-1]).write_bytes(b"mp4")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+
+            adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+            regions = tuple(BlurRegion(0.1, 0.85, 0.8, 0.1, 60_000 * index, 60_000 * index + 4_321) for index in range(MAX_BLUR_REGIONS))
+            adapter.render(source, root / "out.mp4", blur_regions=regions, overwrite=True)
+            self.assertEqual(seen["graph"], blur_filtergraph(regions) + ",scale=trunc(iw/2)*2:trunc(ih/2)*2")
+            self.assertGreater(len(seen["graph"]), 32_767)
+            self.assertEqual(sorted(path.name for path in root.iterdir()), ["out.mp4", "source.mp4"], "the filter file is removed")
 
 
 @unittest.skipUnless(os.environ.get("DUBFLOW_TEST_FFMPEG"), "set DUBFLOW_TEST_FFMPEG to a real ffmpeg.exe to run")
@@ -468,6 +496,29 @@ class RealFfmpegBlurTests(unittest.TestCase):
             # The top bar lies outside the region and stays sharp.
             self.assertGreater(pixel(after, 160, 28), 200)
             self.assertLess(pixel(after, 160, 42), 40)
+
+    def test_the_most_regions_blur_through_one_mask_read_from_a_file(self):
+        ffmpeg = os.environ["DUBFLOW_TEST_FFMPEG"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "caption.mp4"
+            subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=black:s=320x240:d=3:r=10",
+                            "-vf", "drawbox=x=60:y=200:w=200:h=16:color=white:t=fill,drawbox=x=60:y=20:w=200:h=16:color=white:t=fill",
+                            "-c:v", "mpeg4", "-q:v", "2", "-pix_fmt", "yuv420p", str(source)], check=True)
+            adapter = FfmpegMediaAdapter(ffmpeg, trusted_root=Path(ffmpeg).resolve().parent)
+            # One region covers the bottom bar from 1 s; the others lie after the video ends.
+            later = tuple(BlurRegion(0.1, 0.75, 0.8, 0.2, 10_000 + 10 * index, 10_005 + 10 * index) for index in range(MAX_BLUR_REGIONS - 1))
+            output = adapter.render(source, root / "blurred.mp4", blur_regions=(BlurRegion(0.1, 0.75, 0.8, 0.2, 1000, 3000), *later), overwrite=True)
+            before, after = self.gray(ffmpeg, output, 0.5), self.gray(ffmpeg, output, 2.0)
+            pixel = lambda frame, x, y: frame[y * 320 + x]
+            self.assertGreater(pixel(before, 160, 208), 200)
+            self.assertLess(pixel(before, 160, 222), 40)
+            self.assertLess(pixel(after, 160, 208), 200)
+            self.assertGreater(pixel(after, 160, 222), 40)
+            self.assertGreater(pixel(after, 160, 28), 200)
+            self.assertLess(pixel(after, 160, 42), 40)
+            # Outside the region, beside the bar, the frame is untouched.
+            self.assertLess(pixel(after, 10, 208), 40)
 
     def test_odd_dimensions_render_to_even_h264(self):
         ffmpeg = os.environ["DUBFLOW_TEST_FFMPEG"]
