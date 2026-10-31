@@ -25,6 +25,19 @@ export type QueueViewModel = {
   selected: QueueJob | null;
 };
 
+/** The list filter: everything, work in progress, or finished videos. */
+export type QueueFilter = "all" | "running" | "done";
+
+const RUNNING_STATES: ReadonlySet<JobStatus["state"]> = new Set([
+  "RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST", "WAITING_RESOURCE", "WAITING_EXTERNAL",
+]);
+
+export function matchesQueueFilter(state: JobStatus["state"], filter: QueueFilter): boolean {
+  if (filter === "running") return RUNNING_STATES.has(state);
+  if (filter === "done") return state === "COMPLETED";
+  return true;
+}
+
 function progressLabel(status: JobStatus): string {
   const fraction = progressFraction(status);
   if (fraction === null) return `${BigInt(status.progress.completed_units).toString()} units`;

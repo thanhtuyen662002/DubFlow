@@ -5,541 +5,679 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com https://generativelanguage.googleapis.com; media-src 'self' blob:; img-src 'self' blob: https:"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com https://generativelanguage.googleapis.com; media-src 'self' blob: asset: http://asset.localhost; img-src 'self' blob: https: asset: http://asset.localhost"
     />
     <title>DubFlow</title>
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>
     <div class="app" aria-live="polite">
-      <aside class="sidebar">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 256 256" width="30" height="30"><rect width="256" height="256" rx="56" fill="#4F46E5"/><path d="M84 52H128C176 52 206 86 206 128S176 204 128 204H100L62 232V74Q62 52 84 52Z" fill="#fff"/><rect x="98" y="104" width="18" height="48" rx="9" fill="#4F46E5"/><rect x="125" y="86" width="18" height="84" rx="9" fill="#4F46E5"/><rect x="152" y="108" width="18" height="40" rx="9" fill="#F97366"/></svg>
-          </span>
-          <span class="brand-name">DubFlow</span>
+      <header id="app-header" class="app-header">
+        <div class="header-logo" aria-hidden="true">
+          <svg viewBox="0 0 256 256" width="26" height="26"><rect width="256" height="256" rx="56" fill="#4F46E5"/><path d="M84 52H128C176 52 206 86 206 128S176 204 128 204H100L62 232V74Q62 52 84 52Z" fill="#fff"/><rect x="98" y="104" width="18" height="48" rx="9" fill="#4F46E5"/><rect x="125" y="86" width="18" height="84" rx="9" fill="#4F46E5"/><rect x="152" y="108" width="18" height="40" rx="9" fill="#F97366"/></svg>
         </div>
-        <nav class="nav" aria-label="Điều hướng">
-          <a id="nav-queue" class="nav-item active" href="#" aria-current="page">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>
-            Hàng đợi video
-            <span id="nav-count" class="nav-count">0</span>
+        <div class="header-title">
+          <h1 id="page-title">Hàng đợi</h1>
+          <span id="queue-summary" class="header-meta">Chưa có video</span>
+          <span id="page-meta" class="header-meta" hidden></span>
+        </div>
+        <div class="header-tools">
+          <form id="link-form" class="link-form" autocomplete="off">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linecap="round"/></svg>
+            <input id="link-input" type="text" inputmode="url" placeholder="Dán link Douyin, Bilibili hoặc Kuaishou" title="Có thể dán nhiều link cùng lúc" aria-label="Link video" />
+            <button id="link-submit" class="btn ghost" type="submit">Tải về</button>
+          </form>
+          <button id="add-files" class="btn primary" type="button">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <span class="add-files-label">Thêm từ máy</span>
+          </button>
+        </div>
+        <button id="header-update" class="header-update" type="button" hidden title="Có bản mới; mở Cài đặt để cập nhật">
+          <span class="update-dot" aria-hidden="true"></span><span id="header-update-label">Cập nhật</span>
+        </button>
+        <div class="window-controls">
+          <button id="window-minimize" class="window-btn" type="button" aria-label="Thu nhỏ" title="Thu nhỏ">
+            <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M1 6h10" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+          <button id="window-maximize" class="window-btn" type="button" aria-label="Phóng to" title="Phóng to">
+            <svg class="icon-maximize" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            <svg class="icon-restore" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><rect x="1.5" y="3.5" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 3.5V2.7c0-.7.5-1.2 1.2-1.2h4.6c.7 0 1.2.5 1.2 1.2v4.6c0 .7-.5 1.2-1.2 1.2h-.8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+          <button id="window-close" class="window-btn close" type="button" aria-label="Đóng" title="Đóng">
+            <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="app-body">
+        <nav class="rail" aria-label="Điều hướng">
+          <a id="nav-queue" class="rail-item active" href="#" aria-current="page">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
+            <span>Hàng đợi</span>
+            <span id="nav-count" class="rail-count">0</span>
           </a>
-          <a id="nav-discover" class="nav-item" href="#">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-            Khám phá
+          <a id="nav-discover" class="rail-item" href="#">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM16 16l4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
+            <span>Khám phá</span>
           </a>
-          <a id="nav-product" class="nav-item" href="#">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 8h14l-1.2 11.2a1 1 0 0 1-1 .8H7.2a1 1 0 0 1-1-.8zM9 8V6.5a3 3 0 0 1 6 0V8" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></svg>
-            Video bán hàng
+          <a id="nav-product" class="rail-item" href="#">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M5 8h14l-1.2 11.2a1 1 0 0 1-1 .8H7.2a1 1 0 0 1-1-.8zM9 8V6.5a3 3 0 0 1 6 0V8" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linejoin="round"/></svg>
+            <span>Bán hàng</span>
           </a>
-          <a id="nav-compilation" class="nav-item" href="#"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16M8 3v4M8 10v4M8 17v4" stroke="currentColor" stroke-width="1.8" fill="none"/></svg>Tổng hợp</a>
+          <a id="nav-compilation" class="rail-item" href="#">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 5h7v6H4zM13 5h7v6h-7zM4 13h7v6H4zM13 13h7v6h-7z" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linejoin="round"/></svg>
+            <span>Tổng hợp</span>
+          </a>
+          <span class="rail-spacer"></span>
+          <button id="nav-settings" class="rail-item" type="button" aria-haspopup="dialog">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8M14 4v6M8 14v6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
+            <span>Cài đặt</span>
+          </button>
         </nav>
-        <div class="sidebar-stats">
-          <div class="stat"><span id="stat-running">0</span><small>Đang chạy</small></div>
-          <div class="stat"><span id="stat-done">0</span><small>Hoàn tất</small></div>
-          <div class="stat"><span id="stat-failed">0</span><small>Lỗi</small></div>
-        </div>
-        <div class="output-root">
-          <small>Lưu kết quả vào</small>
-          <span id="output-root-label" title="">Cạnh video gốc</span>
-          <div class="output-root-actions">
-            <button id="choose-output-root" class="link" type="button">Chọn thư mục…</button>
-            <button id="reset-output-root" class="link" type="button" hidden>Cạnh video gốc</button>
-          </div>
-        </div>
-        <label class="output-root device-choice" title="Khi máy có card NVIDIA phù hợp, DubFlow tự dùng GPU để nhận dạng lời thoại nhanh hơn. Thiết bị đang dùng hiện trong trạng thái xử lý.">
-          <small>Thiết bị xử lý</small>
-          <span><input id="cpu-only" type="checkbox" /> Chỉ dùng CPU</span>
-        </label>
-        <div class="sidebar-foot">
-          <div id="update-card" class="update-card" hidden>
-            <strong id="update-title">Có bản mới</strong>
-            <small id="update-detail"></small>
-            <div class="update-actions">
-              <button id="update-install" class="btn primary" type="button">Cập nhật</button>
-              <button id="update-later" class="link" type="button">Để sau</button>
-            </div>
-          </div>
-          <div class="engine"><span class="dot"></span><span>Xử lý cục bộ · CPU</span></div>
-          <div class="version">
-            <button id="release-version" class="link version-link" type="button" title="Các phiên bản đã cài">—</button>
-            <span id="release-channel" class="tag"></span>
-          </div>
-          <button id="update-check" class="link update-check" type="button">Kiểm tra cập nhật</button>
-          <button id="open-ai-settings" class="link update-check" type="button">Cài đặt AI</button>
-        </div>
-      </aside>
 
-      <main class="main">
-        <header id="queue-topbar" class="topbar">
-          <div>
-            <h1>Hàng đợi video</h1>
-            <p id="queue-summary" class="subtitle">Chưa có video</p>
-          </div>
-          <div class="topbar-actions">
-            <form id="link-form" class="link-form" autocomplete="off">
-              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
-              <input id="link-input" type="text" inputmode="url" placeholder="Dán link Bilibili, Douyin… (có thể dán nhiều link)" aria-label="Link video" />
-              <button id="link-submit" class="btn" type="submit">Tải link</button>
-            </form>
-            <button id="clear-queue" class="btn ghost" type="button" hidden>Xóa danh sách</button>
-            <button id="run-all" class="btn" type="button" hidden>Xử lý tất cả</button>
-            <button id="add-files" class="btn primary" type="button">
-              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-              Thêm video
-            </button>
-          </div>
-        </header>
-
-        <section id="discover-view" class="discover" hidden>
-          <header class="topbar">
-            <div>
-              <h1>Khám phá video</h1>
-              <p class="subtitle">Xu hướng, gợi ý từ khóa và lấy video từ Douyin, Bilibili, Kuaishou</p>
-            </div>
-            <div id="platform-tabs" class="platform-tabs" role="tablist" aria-label="Nền tảng"></div>
-          </header>
-          <div class="discover-body">
-            <aside class="trend-panel">
-              <div class="trend-head">
-                <h2>Đang hot</h2>
-                <button id="trends-refresh" class="link" type="button">Làm mới</button>
+        <main class="main">
+          <section id="discover-view" class="discover" hidden>
+            <header class="topbar">
+              <div>
+                <h1>Khám phá video</h1>
+                <p class="subtitle">Xu hướng, gợi ý từ khóa và lấy video từ Douyin, Bilibili, Kuaishou</p>
               </div>
-              <label class="gloss-toggle"><input id="trend-gloss" type="checkbox" /> Dịch nghĩa sang tiếng Việt</label>
-              <ol id="trend-list" class="trend-list"></ol>
-              <p id="trend-state" class="hint"></p>
-            </aside>
-            <div class="discover-main">
-              <form id="discover-form" class="discover-form" autocomplete="off">
-                <select id="discover-kind" aria-label="Kiểu tìm">
-                  <option value="search">Từ khóa</option>
-                  <option value="creator">Trang kênh</option>
-                </select>
-                <div class="suggest-box">
-                  <input id="discover-query" type="text" placeholder="Từ khóa tiếng Trung, ví dụ 仙侠 hoặc 美食" aria-label="Từ khóa" aria-autocomplete="list" aria-controls="suggest-list" />
-                  <ul id="suggest-list" class="suggest-list" role="listbox" hidden></ul>
+              <div id="platform-tabs" class="platform-tabs" role="tablist" aria-label="Nền tảng"></div>
+            </header>
+            <div class="discover-body">
+              <aside class="trend-panel">
+                <div class="trend-head">
+                  <h2>Đang hot</h2>
+                  <button id="trends-refresh" class="link" type="button">Làm mới</button>
                 </div>
-                <button class="btn primary" type="submit">Tìm</button>
-                <button id="discover-popular" class="btn" type="button" hidden>Thịnh hành</button>
-              </form>
-              <div class="topic-row" aria-label="Chủ đề gợi ý">
-                <span class="hint">Chủ đề:</span>
-                <div id="topic-chips" class="topic-chips"></div>
+                <label class="gloss-toggle"><input id="trend-gloss" type="checkbox" /> Dịch nghĩa sang tiếng Việt</label>
+                <ol id="trend-list" class="trend-list"></ol>
+                <p id="trend-state" class="hint"></p>
+              </aside>
+              <div class="discover-main">
+                <form id="discover-form" class="discover-form" autocomplete="off">
+                  <select id="discover-kind" aria-label="Kiểu tìm">
+                    <option value="search">Từ khóa</option>
+                    <option value="creator">Trang kênh</option>
+                  </select>
+                  <div class="suggest-box">
+                    <input id="discover-query" type="text" placeholder="Từ khóa tiếng Trung, ví dụ 仙侠 hoặc 美食" aria-label="Từ khóa" aria-autocomplete="list" aria-controls="suggest-list" />
+                    <ul id="suggest-list" class="suggest-list" role="listbox" hidden></ul>
+                  </div>
+                  <button class="btn primary" type="submit">Tìm</button>
+                  <button id="discover-popular" class="btn" type="button" hidden>Thịnh hành</button>
+                </form>
+                <div class="topic-row" aria-label="Chủ đề gợi ý">
+                  <span class="hint">Chủ đề:</span>
+                  <div id="topic-chips" class="topic-chips"></div>
+                </div>
+                <div id="discover-browser" class="discover-browser" hidden>
+                  <p>Trang đang mở trong cửa sổ <b>Khám phá video</b>. Cuộn trang để tải thêm kết quả rồi bấm <b>Lấy video từ trang</b>.</p>
+                  <p class="hint">Douyin và Kuaishou thường yêu cầu đăng nhập để tìm kiếm hoặc xem danh sách kênh: đăng nhập (quét mã QR bằng app trên điện thoại) ngay trong cửa sổ đó. Phiên đăng nhập được lưu lại cho lần sau.</p>
+                  <div class="discover-browser-actions">
+                    <button id="discover-scroll" class="btn" type="button">Cuộn thêm</button>
+                    <button id="discover-collect" class="btn primary" type="button">Lấy video từ trang</button>
+                  </div>
+                </div>
+                <p id="discover-state" class="discover-state" role="status"></p>
+                <div id="result-bar" class="result-bar" hidden>
+                  <label><input id="select-all" type="checkbox" /> Chọn tất cả</label>
+                  <span id="selected-count" class="hint"></span>
+                  <button id="discover-clear" class="btn ghost" type="button">Xóa kết quả</button>
+                  <button id="discover-add" class="btn primary" type="button" disabled>Thêm vào hàng đợi</button>
+                </div>
+                <ul id="discover-results" class="discover-results"></ul>
+                <button id="discover-more" class="btn more-btn" type="button" hidden>Tải thêm</button>
+                <p class="hint discover-note">Chỉ tải và xử lý video bạn có quyền sử dụng; tuân thủ điều khoản của từng nền tảng.</p>
               </div>
-              <div id="discover-browser" class="discover-browser" hidden>
-                <p>Trang đang mở trong cửa sổ <b>Khám phá video</b>. Cuộn trang để tải thêm kết quả rồi bấm <b>Lấy video từ trang</b>.</p>
-                <p class="hint">Douyin và Kuaishou thường yêu cầu đăng nhập để tìm kiếm hoặc xem danh sách kênh: đăng nhập (quét mã QR bằng app trên điện thoại) ngay trong cửa sổ đó. Phiên đăng nhập được lưu lại cho lần sau.</p>
-                <div class="discover-browser-actions">
-                  <button id="discover-scroll" class="btn" type="button">Cuộn thêm</button>
-                  <button id="discover-collect" class="btn primary" type="button">Lấy video từ trang</button>
+            </div>
+          </section>
+
+          <section id="compilation-view" class="product compilation" hidden></section>
+          <section id="product-view" class="product" hidden>
+            <header class="topbar">
+              <div>
+                <h1>Video bán hàng</h1>
+                <p class="subtitle">Từ ảnh sản phẩm: AI (Claude hoặc Gemini) đọc thông tin và viết kịch bản, DubFlow đọc giọng Việt và tạo video dọc</p>
+              </div>
+            </header>
+            <div class="product-body">
+              <section class="product-card">
+                <div class="product-card-head">
+                  <h2><b>1</b> Ảnh sản phẩm</h2>
+                  <button id="product-pick" class="btn" type="button">Chọn ảnh…</button>
+                </div>
+                <ul id="product-photos" class="product-thumbs"></ul>
+                <p class="hint">Chọn ảnh bao bì, nhãn hoặc ảnh chụp trang sản phẩm có tên, giá, thông số. AI đọc tối đa 8 ảnh đầu.</p>
+                <div id="product-key-row" class="product-key-row" hidden>
+                  <p class="hint"></p>
+                  <div class="post-key-actions">
+                    <input id="product-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API" />
+                    <button id="product-key-save" class="btn primary" type="button">Lưu &amp; tiếp tục</button>
+                    <button id="product-key-clear" class="link" type="button">Xóa khóa đã lưu</button>
+                  </div>
+                </div>
+                <div class="product-actions">
+                  <label class="ai-provider">AI
+                    <select id="product-provider"><option value="claude">Claude (Anthropic)</option><option value="gemini">Gemini (Google)</option></select>
+                  </label>
+                  <button id="product-read" class="btn primary" type="button" disabled>Đọc thông tin bằng AI</button>
+                  <p id="product-read-state" class="discover-state" role="status"></p>
+                </div>
+              </section>
+              <section class="product-card">
+                <h2><b>2</b> Thông tin sản phẩm</h2>
+                <div class="product-form">
+                  <label>Tên sản phẩm<input id="product-name" type="text" maxlength="120" /></label>
+                  <label>Giá<input id="product-price" type="text" maxlength="60" placeholder="Ví dụ 299.000đ" /></label>
+                  <label class="wide">Điểm nổi bật (mỗi dòng một ý)<textarea id="product-features" rows="4"></textarea></label>
+                  <label>Dành cho<input id="product-audience" type="text" maxlength="200" /></label>
+                  <label>Thông tin thêm<input id="product-notes" type="text" maxlength="500" /></label>
+                </div>
+                <div class="product-options">
+                  <label>Số kịch bản
+                    <select id="product-count"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select>
+                  </label>
+                  <label>Độ dài
+                    <select id="product-seconds"><option value="20">20 giây</option><option value="30" selected>30 giây</option><option value="45">45 giây</option><option value="60">60 giây</option></select>
+                  </label>
+                  <label>Giọng điệu
+                    <select id="product-tone"><option>tự nhiên, thân thiện</option><option>hào hứng, chốt đơn nhanh</option><option>chuyên nghiệp, đáng tin cậy</option><option>hài hước, gần gũi</option></select>
+                  </label>
+                  <button id="product-write" class="btn primary" type="button">Viết kịch bản bằng AI</button>
+                </div>
+                <p id="product-write-state" class="discover-state" role="status"></p>
+              </section>
+              <section class="product-card">
+                <div class="product-card-head">
+                  <h2><b>3</b> Kịch bản</h2>
+                  <button id="product-add-script" class="link" type="button">+ Tự viết kịch bản</button>
+                </div>
+                <p id="product-scripts-empty" class="hint">Chưa có kịch bản. Bấm “Viết kịch bản bằng AI” hoặc tự viết.</p>
+                <ol id="product-scripts" class="product-scripts"></ol>
+                <p class="hint">Đọc lại và sửa cho đúng sản phẩm trước khi tạo video. Mỗi kịch bản được chọn thành một video.</p>
+              </section>
+              <section class="product-card">
+                <h2><b>4</b> Tạo video</h2>
+                <label class="product-check"><input id="product-use-photos" type="checkbox" checked /> Dùng ảnh sản phẩm ở bước 1 trong video</label>
+                <div class="product-card-head">
+                  <span class="hint">Thêm ảnh hoặc clip của bạn/đối tác (theo thứ tự)</span>
+                  <button id="product-add-media" class="btn" type="button">Thêm ảnh/clip…</button>
+                </div>
+                <ul id="product-media" class="product-thumbs"></ul>
+                <div class="product-options">
+                  <label>Mẫu video
+                    <select id="product-template"><option value="ban-tin" selected>Bản tin (ảnh trên, nền dưới)</option><option value="toan-man-hinh">Toàn màn hình</option></select>
+                  </label>
+                  <label>Giọng đọc <select id="product-voice"></select></label>
+                  <label>Tốc độ đọc
+                    <select id="product-speed"><option value="1" selected>Bình thường</option><option value="1.1">Hơi nhanh</option><option value="1.2">Nhanh</option></select>
+                  </label>
+                  <span class="product-music">Nhạc nền: <span id="product-music-name">Không có</span>
+                    <button id="product-music" class="link" type="button">Chọn…</button>
+                    <button id="product-music-clear" class="link" type="button" hidden>Bỏ</button>
+                  </span>
+                  <label>Âm lượng nhạc <input id="product-volume" type="range" min="0" max="50" value="15" /></label>
+                  <span id="product-background-row" class="product-music">Nền: <span id="product-background-name">Mặc định (xanh lá)</span>
+                    <button id="product-background" class="link" type="button">Chọn ảnh…</button>
+                    <button id="product-background-clear" class="link" type="button" hidden>Bỏ</button>
+                  </span>
+                </div>
+                <p id="product-background-hint" class="hint">Ảnh nền PNG hoặc JPG: 1080×720 thay phần nền bên dưới, 1080×1920 thay cả khung dọc (ảnh/clip sản phẩm vẫn nằm ở trên). Ảnh khác kích thước được phóng cho vừa rồi cắt bớt, không bị méo.</p>
+                <div class="product-actions">
+                  <button id="product-render" class="btn primary" type="button">Tạo video</button>
+                  <button id="product-cancel" class="btn danger" type="button" hidden>Hủy</button>
+                  <p id="product-render-state" class="discover-state" role="status"></p>
+                </div>
+                <ul id="product-results" class="product-results"></ul>
+                <p class="hint">Chỉ dùng ảnh, clip và nhạc bạn có quyền sử dụng. Video lưu trong thư mục “DubFlow Output”.</p>
+              </section>
+            </div>
+          </section>
+
+          <section id="queue-content" class="queue-screen">
+            <section id="queue-col" class="queue-col" aria-labelledby="queue-col-title">
+              <div class="queue-col-head">
+                <h2 id="queue-col-title">Video</h2>
+                <button id="clear-queue" class="quiet-btn" type="button" hidden>Xóa danh sách</button>
+              </div>
+              <div id="queue-filter" class="seg queue-filter" role="tablist" aria-label="Lọc danh sách">
+                <button type="button" role="tab" data-filter="all" aria-selected="true">Tất cả</button>
+                <button type="button" role="tab" data-filter="running" aria-selected="false">Đang chạy</button>
+                <button type="button" role="tab" data-filter="done" aria-selected="false">Xong</button>
+              </div>
+              <div class="queue-scroll">
+                <ul id="fetch-list" class="queue-list fetch-list" hidden></ul>
+                <ul id="queue-list" class="queue-list" hidden></ul>
+                <p id="queue-empty" class="queue-empty">Chưa có video. Thêm từ máy hoặc dán link ở thanh trên cùng.</p>
+              </div>
+              <div id="queue-col-foot" class="queue-col-foot" hidden>
+                <button id="run-all" class="btn block" type="button" hidden>Bắt đầu video đang chờ</button>
+              </div>
+            </section>
+
+            <section id="player-col" class="player-col" aria-label="Xem video">
+              <div class="player-head">
+                <button id="list-toggle" class="btn ghost list-toggle" type="button" aria-controls="queue-col" aria-expanded="false">
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
+                  Danh sách
+                </button>
+                <h2 id="detail-name" class="player-title"></h2>
+                <div id="player-mode" class="seg player-mode" role="tablist" aria-label="Phiên bản đang xem" hidden>
+                  <button type="button" role="tab" data-mode="output" aria-selected="true">Bản Việt</button>
+                  <button type="button" role="tab" data-mode="source" aria-selected="false">Bản gốc</button>
+                </div>
+                <button id="remove-job" class="icon-btn" type="button" title="Xóa khỏi danh sách" aria-label="Xóa khỏi danh sách" hidden>
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                </button>
+              </div>
+              <p id="queue-state" class="queue-state" role="status"></p>
+              <div class="player-stage">
+                <div id="drop-zone" class="drop-zone">
+                  <div class="drop-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="28" height="28"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                  </div>
+                  <h2>Kéo thả video hoặc thư mục vào đây</h2>
+                  <p>hoặc <button id="add-files-inline" class="link" type="button">chọn file từ máy</button></p>
+                  <p class="formats">MP4 · MKV · MOV · AVI · WEBM · FLV · TS · 3GP · WMV · MPG</p>
+                  <ol class="how">
+                    <li><b>1</b>Thêm video gốc hoặc dán link</li>
+                    <li><b>2</b>Chọn có lồng tiếng Việt hay chỉ phụ đề</li>
+                    <li><b>3</b>Bấm “Bắt đầu” — nhận MP4 + SRT/ASS</li>
+                  </ol>
+                </div>
+                <div id="player-frame" class="player-frame" hidden>
+                  <video id="player-video" preload="metadata" playsinline></video>
+                  <div id="player-placeholder" class="player-placeholder">
+                    <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10 9.5 4.5 2.5-4.5 2.5z" fill="currentColor"/></svg>
+                    <span id="player-placeholder-text">Xem video ngay trong ứng dụng DubFlow</span>
+                  </div>
+                  <div id="player-busy" class="player-overlay" role="status" hidden>
+                    <strong id="busy-title"></strong>
+                    <div class="bar busy-bar"><span id="detail-bar"></span></div>
+                    <span id="detail-message" class="overlay-detail"></span>
+                    <div class="overlay-actions">
+                      <button id="busy-resume" class="btn primary" type="button" hidden>Tiếp tục xử lý</button>
+                      <button id="busy-folder" class="btn" type="button" hidden>Mở thư mục lưu</button>
+                      <button id="busy-cancel" class="btn" type="button" hidden>Hủy xử lý</button>
+                    </div>
+                  </div>
+                  <div id="player-failed" class="player-overlay failed" role="alert" hidden>
+                    <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M12 7.5v5.5M12 16.5v.01" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
+                    <strong id="failed-title">Không xử lý được video này</strong>
+                    <span id="failed-cause" class="overlay-detail"></span>
+                    <div id="failed-actions" class="overlay-actions"></div>
+                    <span id="failed-more" class="failed-more">Vẫn lỗi? <button id="create-report" class="link" type="button" title="Tạo file .zip nhỏ (chỉ báo cáo và thông tin máy, không có video hay âm thanh) trên Desktop để gửi cho người hỗ trợ.">Gửi báo cáo lỗi</button> · <button id="failed-remove" class="link" type="button">Xóa video này</button></span>
+                  </div>
                 </div>
               </div>
-              <p id="discover-state" class="discover-state" role="status"></p>
-              <div id="result-bar" class="result-bar" hidden>
-                <label><input id="select-all" type="checkbox" /> Chọn tất cả</label>
-                <span id="selected-count" class="hint"></span>
-                <button id="discover-clear" class="btn ghost" type="button">Xóa kết quả</button>
-                <button id="discover-add" class="btn primary" type="button" disabled>Thêm vào hàng đợi</button>
+              <div id="player-controls" class="player-controls">
+                <button id="player-play" class="icon-btn" type="button" aria-label="Phát" disabled>
+                  <svg class="icon-play" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor"/></svg>
+                  <svg class="icon-pause" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>
+                </button>
+                <span id="player-time" class="player-time">0:00 / 0:00</span>
+                <span class="spacer"></span>
+                <span id="detail-timing" class="status-timing"></span>
               </div>
-              <ul id="discover-results" class="discover-results"></ul>
-              <button id="discover-more" class="btn more-btn" type="button" hidden>Tải thêm</button>
-              <p class="hint discover-note">Chỉ tải và xử lý video bạn có quyền sử dụng; tuân thủ điều khoản của từng nền tảng.</p>
-            </div>
-          </div>
-        </section>
-
-        <section id="compilation-view" class="product compilation" hidden></section>
-        <section id="product-view" class="product" hidden>
-          <header class="topbar">
-            <div>
-              <h1>Video bán hàng</h1>
-              <p class="subtitle">Từ ảnh sản phẩm: AI (Claude hoặc Gemini) đọc thông tin và viết kịch bản, DubFlow đọc giọng Việt và tạo video dọc</p>
-            </div>
-          </header>
-          <div class="product-body">
-            <section class="product-card">
-              <div class="product-card-head">
-                <h2><b>1</b> Ảnh sản phẩm</h2>
-                <button id="product-pick" class="btn" type="button">Chọn ảnh…</button>
-              </div>
-              <ul id="product-photos" class="product-thumbs"></ul>
-              <p class="hint">Chọn ảnh bao bì, nhãn hoặc ảnh chụp trang sản phẩm có tên, giá, thông số. AI đọc tối đa 8 ảnh đầu.</p>
-              <div id="product-key-row" class="product-key-row" hidden>
-                <p class="hint"></p>
-                <div class="post-key-actions">
-                  <input id="product-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API" />
-                  <button id="product-key-save" class="btn primary" type="button">Lưu &amp; tiếp tục</button>
-                  <button id="product-key-clear" class="link" type="button">Xóa khóa đã lưu</button>
-                </div>
-              </div>
-              <div class="product-actions">
-                <label class="ai-provider">AI
-                  <select id="product-provider"><option value="claude">Claude (Anthropic)</option><option value="gemini">Gemini (Google)</option></select>
-                </label>
-                <button id="product-read" class="btn primary" type="button" disabled>Đọc thông tin bằng AI</button>
-                <p id="product-read-state" class="discover-state" role="status"></p>
-              </div>
-            </section>
-            <section class="product-card">
-              <h2><b>2</b> Thông tin sản phẩm</h2>
-              <div class="product-form">
-                <label>Tên sản phẩm<input id="product-name" type="text" maxlength="120" /></label>
-                <label>Giá<input id="product-price" type="text" maxlength="60" placeholder="Ví dụ 299.000đ" /></label>
-                <label class="wide">Điểm nổi bật (mỗi dòng một ý)<textarea id="product-features" rows="4"></textarea></label>
-                <label>Dành cho<input id="product-audience" type="text" maxlength="200" /></label>
-                <label>Thông tin thêm<input id="product-notes" type="text" maxlength="500" /></label>
-              </div>
-              <div class="product-options">
-                <label>Số kịch bản
-                  <select id="product-count"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select>
-                </label>
-                <label>Độ dài
-                  <select id="product-seconds"><option value="20">20 giây</option><option value="30" selected>30 giây</option><option value="45">45 giây</option><option value="60">60 giây</option></select>
-                </label>
-                <label>Giọng điệu
-                  <select id="product-tone"><option>tự nhiên, thân thiện</option><option>hào hứng, chốt đơn nhanh</option><option>chuyên nghiệp, đáng tin cậy</option><option>hài hước, gần gũi</option></select>
-                </label>
-                <button id="product-write" class="btn primary" type="button">Viết kịch bản bằng AI</button>
-              </div>
-              <p id="product-write-state" class="discover-state" role="status"></p>
-            </section>
-            <section class="product-card">
-              <div class="product-card-head">
-                <h2><b>3</b> Kịch bản</h2>
-                <button id="product-add-script" class="link" type="button">+ Tự viết kịch bản</button>
-              </div>
-              <p id="product-scripts-empty" class="hint">Chưa có kịch bản. Bấm “Viết kịch bản bằng AI” hoặc tự viết.</p>
-              <ol id="product-scripts" class="product-scripts"></ol>
-              <p class="hint">Đọc lại và sửa cho đúng sản phẩm trước khi tạo video. Mỗi kịch bản được chọn thành một video.</p>
-            </section>
-            <section class="product-card">
-              <h2><b>4</b> Tạo video</h2>
-              <label class="product-check"><input id="product-use-photos" type="checkbox" checked /> Dùng ảnh sản phẩm ở bước 1 trong video</label>
-              <div class="product-card-head">
-                <span class="hint">Thêm ảnh hoặc clip của bạn/đối tác (theo thứ tự)</span>
-                <button id="product-add-media" class="btn" type="button">Thêm ảnh/clip…</button>
-              </div>
-              <ul id="product-media" class="product-thumbs"></ul>
-              <div class="product-options">
-                <label>Mẫu video
-                  <select id="product-template"><option value="ban-tin" selected>Bản tin (ảnh trên, nền dưới)</option><option value="toan-man-hinh">Toàn màn hình</option></select>
-                </label>
-                <label>Giọng đọc <select id="product-voice"></select></label>
-                <label>Tốc độ đọc
-                  <select id="product-speed"><option value="1" selected>Bình thường</option><option value="1.1">Hơi nhanh</option><option value="1.2">Nhanh</option></select>
-                </label>
-                <span class="product-music">Nhạc nền: <span id="product-music-name">Không có</span>
-                  <button id="product-music" class="link" type="button">Chọn…</button>
-                  <button id="product-music-clear" class="link" type="button" hidden>Bỏ</button>
-                </span>
-                <label>Âm lượng nhạc <input id="product-volume" type="range" min="0" max="50" value="15" /></label>
-                <span id="product-background-row" class="product-music">Nền: <span id="product-background-name">Mặc định (xanh lá)</span>
-                  <button id="product-background" class="link" type="button">Chọn ảnh…</button>
-                  <button id="product-background-clear" class="link" type="button" hidden>Bỏ</button>
-                </span>
-              </div>
-              <p id="product-background-hint" class="hint">Ảnh nền PNG hoặc JPG: 1080×720 thay phần nền bên dưới, 1080×1920 thay cả khung dọc (ảnh/clip sản phẩm vẫn nằm ở trên). Ảnh khác kích thước được phóng cho vừa rồi cắt bớt, không bị méo.</p>
-              <div class="product-actions">
-                <button id="product-render" class="btn primary" type="button">Tạo video</button>
-                <button id="product-cancel" class="btn danger" type="button" hidden>Hủy</button>
-                <p id="product-render-state" class="discover-state" role="status"></p>
-              </div>
-              <ul id="product-results" class="product-results"></ul>
-              <p class="hint">Chỉ dùng ảnh, clip và nhạc bạn có quyền sử dụng. Video lưu trong thư mục “DubFlow Output”.</p>
-            </section>
-          </div>
-        </section>
-
-        <section id="queue-content" class="content">
-          <div class="queue-area">
-            <div id="drop-zone" class="drop-zone">
-              <div class="drop-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="28" height="28"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-              </div>
-              <h2>Kéo thả video hoặc thư mục vào đây</h2>
-              <p>hoặc <button id="add-files-inline" class="link" type="button">chọn file từ máy</button></p>
-              <p class="formats">MP4 · MKV · MOV · AVI · WEBM · FLV · TS · 3GP · WMV · MPG</p>
-              <ol class="how">
-                <li><b>1</b>Thêm video gốc hoặc dán link</li>
-                <li><b>2</b>Chọn có lồng tiếng Việt hay chỉ phụ đề</li>
-                <li><b>3</b>Bấm “Bắt đầu” — nhận MP4 + SRT/ASS</li>
-              </ol>
-            </div>
-            <ul id="fetch-list" class="queue-list fetch-list" hidden></ul>
-            <ul id="queue-list" class="queue-list" hidden></ul>
-            <p id="queue-state" class="queue-state" role="status"></p>
-          </div>
-
-          <aside id="inspector" class="inspector" hidden>
-            <div class="inspector-head">
-              <div class="file-badge" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="20" height="20"><rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10 9.5 4.5 2.5-4.5 2.5z" fill="currentColor"/></svg>
-              </div>
-              <div class="inspector-title">
-                <h2 id="detail-name"></h2>
-                <p id="detail-path" class="path"></p>
-              </div>
-              <button id="remove-job" class="icon-btn" type="button" title="Xóa khỏi danh sách" aria-label="Xóa khỏi danh sách">
-                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-              </button>
-            </div>
-
-            <div class="status-card">
-              <div class="status-row">
+              <div id="stages-strip" class="stages-strip" hidden>
                 <span id="detail-state" class="badge"></span>
                 <span id="detail-percent" class="percent"></span>
-              </div>
-              <div class="bar"><span id="detail-bar"></span></div>
-              <p id="detail-timing" class="status-timing"></p>
-              <p id="detail-message" class="status-message"></p>
-              <ol id="stage-list" class="stages"></ol>
-              <button id="create-report" class="btn block" type="button" hidden title="Tạo file .zip nhỏ (chỉ báo cáo và thông tin máy, không có video hay âm thanh) trên Desktop để gửi cho người hỗ trợ.">Tạo báo cáo lỗi</button>
-            </div>
-
-            <section id="link-card" class="result-card" hidden>
-              <h3>Tải từ link</h3>
-              <p class="path-label">Video gốc đã tải về</p>
-              <p id="link-media" class="path"></p>
-              <p class="path-label">Kết quả sẽ lưu vào</p>
-              <p id="link-output" class="path"></p>
-              <div class="result-actions">
-                <button id="reveal-download" class="btn" type="button">Mở video gốc</button>
-                <button id="open-link-output" class="btn" type="button">Mở thư mục kết quả</button>
+                <ol id="stage-list" class="stages" aria-label="Tiến trình"></ol>
               </div>
             </section>
 
-            <section id="result-card" class="result-card" hidden>
-              <h3>Kết quả</h3>
-              <p id="result-warning" class="result-warning" hidden></p>
-              <p id="result-path" class="path"></p>
-              <div class="result-actions">
-                <button id="open-output" class="btn primary" type="button">Mở video</button>
-                <button id="reveal-output" class="btn" type="button">Mở thư mục</button>
+            <aside id="inspector" class="inspector" hidden>
+              <div class="tabs" role="tablist" aria-label="Chi tiết video">
+                <button id="tab-result-btn" type="button" role="tab" data-tab="result" aria-controls="tab-result" aria-selected="true">Kết quả</button>
+                <button id="tab-setup-btn" type="button" role="tab" data-tab="setup" aria-controls="tab-setup" aria-selected="false">Thiết lập</button>
+                <button id="tab-more-btn" type="button" role="tab" data-tab="more" aria-controls="tab-more" aria-selected="false">Tạo thêm</button>
               </div>
-              <button id="open-review" class="btn block review-btn" type="button">Xem &amp; sửa bản dịch</button>
-              <button id="open-post" class="btn block review-btn" type="button">Gợi ý tiêu đề &amp; hashtag</button>
-            </section>
 
-            <form id="source-credit" class="source-credit" hidden novalidate>
-              <fieldset id="credit-fields" class="settings" disabled>
-                <legend>Nguồn &amp; quyền</legend>
-                <label>Tác giả<input id="credit-creator" type="text" /></label>
-                <label>Nền tảng<input id="credit-platform" type="text" /></label>
-                <label>Link nguồn<input id="credit-url" type="url" placeholder="https://…" /></label>
-                <label>Quyền sử dụng
-                  <select id="credit-rights">
-                    <option value="own">Video của tôi</option>
-                    <option value="permission">Đã xin phép tác giả</option>
-                    <option value="cc">Giấy phép Creative Commons</option>
-                    <option value="unknown" selected>Chưa rõ</option>
-                  </select>
-                </label>
-                <label>Ghi chú<input id="credit-note" type="text" /></label>
-                <button class="btn block" type="submit">Lưu</button>
-              </fieldset>
-              <p id="credit-state" class="hint" role="status" aria-live="polite"></p>
-            </form>
-
-            <details id="package-section" class="source-credit" hidden>
-              <summary>Đóng gói video</summary>
-              <form id="package-form" novalidate>
-                <fieldset id="package-fields" class="settings" disabled>
-                  <legend>Đóng gói video</legend>
-                  <label>Mở đầu (câu dẫn của bạn)
-                    <textarea id="package-intro" rows="3" aria-describedby="package-intro-count"></textarea>
-                    <small id="package-intro-count" class="hint">0/600</small>
-                  </label>
-                  <label>Kết thúc (nhận xét, kêu gọi đăng ký)
-                    <textarea id="package-outro" rows="3" aria-describedby="package-outro-count"></textarea>
-                    <small id="package-outro-count" class="hint">0/600</small>
-                  </label>
-                  <div class="result-actions">
-                    <button id="package-music-pick" class="btn" type="button">Chọn nhạc nền…</button>
-                    <span id="package-music-name" class="hint">Chưa chọn nhạc</span>
-                    <button id="package-music-clear" class="link" type="button" hidden>Bỏ</button>
-                  </div>
-                  <label id="package-background-row" hidden>Âm thanh chính
-                    <select id="package-background">
-                      <option value="replace">Thay nhạc nền gốc bằng nhạc của bạn</option>
-                      <option id="package-duck" value="duck" disabled>Giữ nền gốc nhỏ + nhạc của bạn</option>
-                      <option value="keep" selected>Giữ âm thanh gốc</option>
-                    </select>
-                  </label>
-                  <label id="package-volume-row" hidden>Âm lượng nhạc <span id="package-volume-value">15%</span>
-                    <input id="package-volume" type="range" min="0" max="100" value="15" />
-                  </label>
-                  <label>Tốc độ đọc
-                    <select id="package-speed">
-                      <option value="1.0">1.0×</option><option value="1.1">1.1×</option><option value="1.2">1.2×</option>
-                    </select>
-                  </label>
-                  <button class="btn primary block" type="submit">Tạo video đóng gói</button>
-                </fieldset>
-                <button id="package-cancel" class="btn" type="button" hidden>Hủy</button>
-                <p id="package-state" class="hint" role="status" aria-live="polite"></p>
-                <div id="package-results" class="result-actions" hidden>
-                  <button id="package-open" class="btn" type="button">Mở</button>
-                  <button id="package-folder" class="btn" type="button">Mở thư mục</button>
-                </div>
-              </form>
-            </details>
-
-            <details id="shorts-section" class="source-credit" hidden>
-              <summary>Cắt Shorts</summary>
-              <form id="shorts-form">
-                <fieldset id="shorts-fields" class="settings">
-                  <p id="shorts-provider" class="hint"></p>
-                  <button id="shorts-ai" class="btn" type="button">AI gợi ý đoạn hay</button>
-                  <div id="shorts-rows"></div>
-                  <button id="shorts-add" class="btn" type="button">Thêm đoạn thủ công</button>
-                  <label>Bố cục
-                    <select id="shorts-layout">
-                      <option value="auto">Tự động</option>
-                      <option value="ban-tin">Bản tin</option>
-                      <option value="mo-nen">Nền mờ</option>
-                    </select>
-                  </label>
-                  <button class="btn primary block" type="submit">Tạo Shorts</button>
-                </fieldset>
-                <button id="shorts-cancel" class="btn" type="button" hidden>Hủy</button>
-                <p id="shorts-state" class="hint" role="status" aria-live="polite"></p>
-                <div id="shorts-results"></div>
-              </form>
-            </details>
-
-            <details id="reframe-section" class="source-credit" hidden>
-              <summary>Đổi khung 16:9</summary>
-              <form id="reframe-form">
-                <fieldset id="reframe-fields" class="settings">
-                  <label>Chế độ
-                    <select id="reframe-mode">
-                      <option value="bang-thong-tin">Bảng thông tin</option>
-                      <option value="cat-ngang">Cắt ngang</option>
-                    </select>
-                  </label>
-                  <label>Tiêu đề (tùy chọn, tối đa 80 ký tự)<input id="reframe-title" /></label>
-                  <div id="reframe-panel" class="settings">
-                    <label>Điểm (0–10, tùy chọn)<input id="reframe-score" type="number" min="0" max="10" step="1" /></label>
-                    <label>Ưu điểm (mỗi dòng một ý, tối đa 3 ý, ≤60 ký tự/ý)<textarea id="reframe-pros" rows="3"></textarea></label>
-                    <label>Nhược điểm (mỗi dòng một ý, tối đa 3 ý, ≤60 ký tự/ý)<textarea id="reframe-cons" rows="3"></textarea></label>
-                    <label>Tóm tắt (tùy chọn, tối đa 120 ký tự)<input id="reframe-summary" /></label>
-                    <p id="reframe-provider" class="hint"></p>
-                    <button id="reframe-ai" class="btn" type="button">AI điền bảng</button>
-                  </div>
-                  <div id="reframe-crop" class="settings" hidden>
-                    <label>Vị trí đầu: <output id="reframe-focus-start-value">50</output><input id="reframe-focus-start" type="range" min="0" max="100" value="50" /></label>
-                    <label>Vị trí cuối: <output id="reframe-focus-end-value">50</output><input id="reframe-focus-end" type="range" min="0" max="100" value="50" /></label>
-                    <small class="hint">0 = trên, 50 = giữa, 100 = dưới. Vùng cắt di chuyển đều trong đoạn đã chọn.</small>
-                    <div id="reframe-preview" hidden>
-                      <img id="reframe-image" alt="Khung hình video dọc" />
-                      <div id="reframe-band"><span id="reframe-preview-title"></span></div>
+              <div id="tab-result" class="tab-panel" role="tabpanel" aria-labelledby="tab-result-btn">
+                <div class="tab-scroll">
+                  <p id="result-pending" class="tab-note"></p>
+                  <section id="result-card" class="result-card" hidden>
+                    <div class="result-head">
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                      <h3 id="result-title">Đã xong</h3>
                     </div>
-                    <small id="reframe-preview-state" class="hint" role="status"></small>
+                    <p id="result-path" class="path"></p>
+                    <div class="result-actions">
+                      <button id="reveal-output" class="btn" type="button">Mở thư mục</button>
+                      <button id="open-output" class="btn" type="button">Mở bằng trình phát</button>
+                    </div>
+                    <p id="result-warning" class="result-warning" hidden></p>
+                    <button id="open-review" class="btn block review-btn" type="button">Xem &amp; sửa bản dịch</button>
+                  </section>
+
+                  <section id="link-card" class="result-card link-card" hidden>
+                    <h3>Tải từ link</h3>
+                    <p class="path-label">Video gốc đã tải về</p>
+                    <p id="link-media" class="path"></p>
+                    <p class="path-label">Kết quả sẽ lưu vào</p>
+                    <p id="link-output" class="path"></p>
+                    <div class="result-actions">
+                      <button id="reveal-download" class="btn" type="button">Mở video gốc</button>
+                      <button id="open-link-output" class="btn" type="button">Mở thư mục kết quả</button>
+                    </div>
+                  </section>
+
+                  <form id="source-credit" class="source-credit" hidden novalidate>
+                    <fieldset id="credit-fields" class="settings" disabled>
+                      <legend>Nguồn &amp; quyền</legend>
+                      <label>Tác giả<input id="credit-creator" type="text" /></label>
+                      <label>Nền tảng<input id="credit-platform" type="text" /></label>
+                      <label>Link nguồn<input id="credit-url" type="url" placeholder="https://…" /></label>
+                      <label>Quyền sử dụng
+                        <select id="credit-rights">
+                          <option value="own">Video của tôi</option>
+                          <option value="permission">Đã xin phép tác giả</option>
+                          <option value="cc">Giấy phép Creative Commons</option>
+                          <option value="unknown" selected>Chưa rõ</option>
+                        </select>
+                      </label>
+                      <label>Ghi chú<input id="credit-note" type="text" /></label>
+                      <button class="btn block" type="submit">Lưu</button>
+                    </fieldset>
+                    <p id="credit-state" class="hint" role="status" aria-live="polite"></p>
+                  </form>
+
+                  <div class="source-info">
+                    <p class="path-label">Video gốc</p>
+                    <p id="detail-path" class="path"></p>
+                    <button id="create-report-done" class="link" type="button" hidden title="Tạo file .zip nhỏ (chỉ báo cáo và thông tin máy, không có video hay âm thanh) trên Desktop để gửi cho người hỗ trợ.">Gửi báo cáo lỗi</button>
                   </div>
-                  <label>Bắt đầu (mm:ss, tùy chọn)<input id="reframe-start" placeholder="00:00" /></label>
-                  <label>Kết thúc (mm:ss, tùy chọn)<input id="reframe-end" placeholder="Hết video" /></label>
-                  <button class="btn primary block" type="submit">Tạo video 16:9</button>
-                </fieldset>
-                <button id="reframe-cancel" class="btn" type="button" hidden>Hủy</button>
-                <p id="reframe-state" class="hint" role="status" aria-live="polite"></p>
-                <div id="reframe-results" class="button-row" hidden>
-                  <button id="reframe-open" class="btn" type="button">Mở</button>
-                  <button id="reframe-folder" class="btn" type="button">Mở thư mục</button>
                 </div>
-              </form>
-            </details>
-
-            <fieldset id="voice-controls" class="settings" disabled>
-              <legend>Tùy chọn xử lý</legend>
-              <label class="switch-row">
-                <span>
-                  <strong>Lồng tiếng Việt</strong>
-                  <small>Tắt = chỉ tạo phụ đề tiếng Việt, giữ audio gốc</small>
-                </span>
-                <input id="enable-dubbing" class="switch" type="checkbox" role="switch" />
-              </label>
-              <label class="select-row">
-                <span>
-                  <strong>Ngôn ngữ gốc</strong>
-                  <small>Chọn cụ thể nếu nhận diện tự động sai (ví dụ video nhiều nhạc)</small>
-                </span>
-                <select id="source-language">
-                  <option value="">Tự động</option>
-                  <option value="zh">Tiếng Trung</option>
-                  <option value="en">Tiếng Anh</option>
-                </select>
-              </label>
-              <label id="translator-row" class="select-row stacked">
-                <span>
-                  <strong>Bộ dịch tiếng Trung</strong>
-                  <small>Argos là mặc định; HachimiMT-60 thường tự nhiên hơn nhưng đang thử nghiệm</small>
-                </span>
-                <select id="translation-engine">
-                  <option value="argos">Argos (mặc định)</option>
-                  <option value="hachimi">HachimiMT-60 (thử nghiệm)</option>
-                </select>
-              </label>
-              <p id="hachimi-warning" class="result-warning" hidden>
-                <strong>Giấy phép chưa xác minh.</strong> HachimiMT-60 (CC-BY-4.0, tác giả ngocdang83) được huấn luyện có dùng dữ liệu chưng cất từ Gemini và một bộ dữ liệu giấy phép GPL-3.0; chưa rõ có được dùng cho mục đích thương mại. Chỉ nên dùng cá nhân/thử nghiệm.
-                Model khoảng 58 MB, tải về ở lần dùng đầu. Văn phong có thể giống truyện (ta/ngươi), hãy xem lại bản dịch. Video tiếng Anh vẫn dịch bằng Argos.
-              </p>
-              <label class="switch-row burn-row">
-                <span>
-                  <strong>Gắn phụ đề vào video</strong>
-                  <small>Tắt = video không có chữ; phụ đề vẫn có trong file SRT/ASS</small>
-                </span>
-                <input id="burn-in" class="switch" type="checkbox" role="switch" checked />
-              </label>
-              <label id="blur-row" class="select-row">
-                <span>
-                  <strong>Làm mờ phụ đề gốc</strong>
-                  <small id="blur-summary">Tắt</small>
-                </span>
-                <select id="blur-mode">
-                  <option value="off">Tắt</option>
-                  <option value="auto">Tự động</option>
-                  <option value="manual">Thủ công</option>
-                </select>
-              </label>
-              <div id="blur-manual-row" class="blur-manual-row" hidden>
-                <button id="blur-edit" class="btn" type="button">Chọn vùng…</button>
               </div>
-              <div id="voice-picker" class="voice-picker" hidden>
-                <div class="filters">
-                  <select id="voice-gender" aria-label="Giới tính"><option value="">Giới tính</option></select>
-                  <select id="voice-accent" aria-label="Vùng giọng"><option value="">Vùng miền</option></select>
-                  <select id="voice-style" aria-label="Phong cách"><option value="">Phong cách</option></select>
+
+              <div id="tab-setup" class="tab-panel" role="tabpanel" aria-labelledby="tab-setup-btn" hidden>
+                <div class="tab-scroll">
+                  <p id="setup-locked" class="tab-note boxed" hidden></p>
+                  <fieldset id="voice-controls" class="settings setup-fields" disabled>
+                    <legend class="visually-hidden">Tùy chọn xử lý</legend>
+                    <h3 class="setup-group">Âm thanh</h3>
+                    <label class="switch-row">
+                      <span>
+                        <strong>Lồng tiếng Việt</strong>
+                        <small>Tắt = chỉ tạo phụ đề tiếng Việt, giữ audio gốc</small>
+                      </span>
+                      <input id="enable-dubbing" class="switch" type="checkbox" role="switch" />
+                    </label>
+                    <div id="voice-picker" class="voice-picker" hidden>
+                      <div class="filters">
+                        <select id="voice-gender" aria-label="Giới tính"><option value="">Giới tính</option></select>
+                        <select id="voice-accent" aria-label="Vùng giọng"><option value="">Vùng miền</option></select>
+                        <select id="voice-style" aria-label="Phong cách"><option value="">Phong cách</option></select>
+                      </div>
+                      <div id="voice-list" class="voice-list" role="radiogroup" aria-label="Giọng lồng tiếng"></div>
+                      <select id="tts-voice" hidden aria-hidden="true"></select>
+                    </div>
+                    <label id="separate-row" class="switch-row multi-voice-row" hidden>
+                      <span>
+                        <strong>Giữ nhạc nền, bỏ giọng gốc</strong>
+                        <small>Tách giọng gốc khỏi nhạc nền rồi lồng tiếng Việt lên nhạc nền; lần đầu tải thêm model khoảng 80 MB</small>
+                      </span>
+                      <input id="separate-background" class="switch" type="checkbox" role="switch" />
+                    </label>
+                    <label id="multi-voice-row" class="switch-row multi-voice-row" hidden>
+                      <span>
+                        <strong>Nhiều giọng theo người nói</strong>
+                        <small>Nhận diện người nói và đổi giọng riêng cho từng người; có thể nhận nhầm, đổi lại trong Xem &amp; sửa bản dịch</small>
+                      </span>
+                      <input id="multi-voice" class="switch" type="checkbox" role="switch" />
+                    </label>
+                    <p id="voice-catalog-status" class="hint"></p>
+
+                    <h3 class="setup-group">Phụ đề</h3>
+                    <label class="switch-row">
+                      <span>
+                        <strong>Gắn phụ đề vào video</strong>
+                        <small>Tắt = video không có chữ; phụ đề vẫn có trong file SRT/ASS</small>
+                      </span>
+                      <input id="burn-in" class="switch" type="checkbox" role="switch" checked />
+                    </label>
+                    <label id="blur-row" class="select-row">
+                      <span>
+                        <strong>Che chữ gốc</strong>
+                        <small id="blur-summary">Tắt</small>
+                      </span>
+                      <select id="blur-mode">
+                        <option value="off">Tắt</option>
+                        <option value="auto">Tự động</option>
+                        <option value="manual">Thủ công</option>
+                      </select>
+                    </label>
+                    <div id="blur-manual-row" class="blur-manual-row" hidden>
+                      <button id="blur-edit" class="btn" type="button">Chọn vùng…</button>
+                    </div>
+
+                    <h3 class="setup-group">Dịch</h3>
+                    <label class="select-row">
+                      <span>
+                        <strong>Ngôn ngữ gốc</strong>
+                        <small>Chọn cụ thể nếu nhận diện tự động sai (ví dụ video nhiều nhạc)</small>
+                      </span>
+                      <select id="source-language">
+                        <option value="">Tự động</option>
+                        <option value="zh">Tiếng Trung</option>
+                        <option value="en">Tiếng Anh</option>
+                      </select>
+                    </label>
+                    <label id="translator-row" class="select-row stacked">
+                      <span>
+                        <strong>Bộ dịch tiếng Trung</strong>
+                        <small>Argos là mặc định; HachimiMT-60 thường tự nhiên hơn nhưng đang thử nghiệm</small>
+                      </span>
+                      <select id="translation-engine">
+                        <option value="argos">Argos (mặc định)</option>
+                        <option value="hachimi">HachimiMT-60 (thử nghiệm)</option>
+                      </select>
+                    </label>
+                    <p id="hachimi-warning" class="result-warning" hidden>
+                      <strong>Giấy phép chưa xác minh.</strong> HachimiMT-60 (CC-BY-4.0, tác giả ngocdang83) được huấn luyện có dùng dữ liệu chưng cất từ Gemini và một bộ dữ liệu giấy phép GPL-3.0; chưa rõ có được dùng cho mục đích thương mại. Chỉ nên dùng cá nhân/thử nghiệm.
+                      Model khoảng 58 MB, tải về ở lần dùng đầu. Văn phong có thể giống truyện (ta/ngươi), hãy xem lại bản dịch. Video tiếng Anh vẫn dịch bằng Argos.
+                    </p>
+                  </fieldset>
                 </div>
-                <div id="voice-list" class="voice-list" role="radiogroup" aria-label="Giọng lồng tiếng"></div>
-                <select id="tts-voice" hidden aria-hidden="true"></select>
+                <div class="actions tab-foot">
+                  <button id="start-processing" class="btn primary block" type="button" disabled>Bắt đầu xử lý</button>
+                  <button id="cancel-processing" class="btn danger block" type="button" disabled hidden>Hủy xử lý</button>
+                  <button id="new-processing-version" class="btn block" type="button" disabled hidden>Xử lý lại với tùy chọn khác</button>
+                  <p id="action-hint" class="hint center"></p>
+                </div>
               </div>
-              <label id="separate-row" class="switch-row multi-voice-row" hidden>
-                <span>
-                  <strong>Giữ nhạc nền, bỏ giọng gốc <em class="tag">thử nghiệm</em></strong>
-                  <small>Tách giọng gốc khỏi nhạc nền rồi lồng tiếng Việt lên nhạc nền; lần đầu tải thêm model khoảng 80 MB</small>
-                </span>
-                <input id="separate-background" class="switch" type="checkbox" role="switch" />
-              </label>
-              <label id="multi-voice-row" class="switch-row multi-voice-row" hidden>
-                <span>
-                  <strong>Nhiều giọng theo người nói <em class="tag">thử nghiệm</em></strong>
-                  <small>Nhận diện người nói và đổi giọng riêng cho từng người; có thể nhận nhầm, đổi lại trong Xem &amp; sửa bản dịch</small>
-                </span>
-                <input id="multi-voice" class="switch" type="checkbox" role="switch" />
-              </label>
-              <p id="voice-catalog-status" class="hint"></p>
-            </fieldset>
 
-            <div class="actions">
-              <button id="start-processing" class="btn primary block" type="button" disabled>Bắt đầu xử lý</button>
-              <button id="cancel-processing" class="btn danger block" type="button" disabled hidden>Hủy xử lý</button>
-              <button id="new-processing-version" class="btn block" type="button" disabled hidden>Xử lý lại với tùy chọn khác</button>
-              <p id="action-hint" class="hint center"></p>
+              <div id="tab-more" class="tab-panel" role="tabpanel" aria-labelledby="tab-more-btn" hidden>
+                <div class="tab-scroll">
+                  <p id="more-empty" class="tab-note">Đóng gói, cắt Shorts, đổi khung 16:9 và gợi ý đăng bài dùng được khi video đã xử lý xong.</p>
+                  <div class="more-list">
+                    <details id="package-section" class="more-item" hidden>
+                      <summary>
+                        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                        <span><b>Đóng gói video</b><small>Thêm lời mở đầu, kết thúc và nhạc</small></span>
+                      </summary>
+                        <form id="package-form" novalidate>
+                          <fieldset id="package-fields" class="settings" disabled>
+                            <legend>Đóng gói video</legend>
+                            <label>Mở đầu (câu dẫn của bạn)
+                              <textarea id="package-intro" rows="3" aria-describedby="package-intro-count"></textarea>
+                              <small id="package-intro-count" class="hint">0/600</small>
+                            </label>
+                            <label>Kết thúc (nhận xét, kêu gọi đăng ký)
+                              <textarea id="package-outro" rows="3" aria-describedby="package-outro-count"></textarea>
+                              <small id="package-outro-count" class="hint">0/600</small>
+                            </label>
+                            <div class="result-actions">
+                              <button id="package-music-pick" class="btn" type="button">Chọn nhạc nền…</button>
+                              <span id="package-music-name" class="hint">Chưa chọn nhạc</span>
+                              <button id="package-music-clear" class="link" type="button" hidden>Bỏ</button>
+                            </div>
+                            <label id="package-background-row" hidden>Âm thanh chính
+                              <select id="package-background">
+                                <option value="replace">Thay nhạc nền gốc bằng nhạc của bạn</option>
+                                <option id="package-duck" value="duck" disabled>Giữ nền gốc nhỏ + nhạc của bạn</option>
+                                <option value="keep" selected>Giữ âm thanh gốc</option>
+                              </select>
+                            </label>
+                            <label id="package-volume-row" hidden>Âm lượng nhạc <span id="package-volume-value">15%</span>
+                              <input id="package-volume" type="range" min="0" max="100" value="15" />
+                            </label>
+                            <label>Tốc độ đọc
+                              <select id="package-speed">
+                                <option value="1.0">1.0×</option><option value="1.1">1.1×</option><option value="1.2">1.2×</option>
+                              </select>
+                            </label>
+                            <button class="btn primary block" type="submit">Tạo video đóng gói</button>
+                          </fieldset>
+                          <button id="package-cancel" class="btn" type="button" hidden>Hủy</button>
+                          <p id="package-state" class="hint" role="status" aria-live="polite"></p>
+                          <div id="package-results" class="result-actions" hidden>
+                            <button id="package-open" class="btn" type="button">Mở</button>
+                            <button id="package-folder" class="btn" type="button">Mở thư mục</button>
+                          </div>
+                        </form>
+                    </details>
+                    <details id="shorts-section" class="more-item" hidden>
+                      <summary>
+                        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M7 3h10v18H7zM10 18h4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                        <span><b>Cắt Shorts</b><small>AI chọn đoạn hay, cắt thành video dọc</small></span>
+                      </summary>
+                        <form id="shorts-form">
+                          <fieldset id="shorts-fields" class="settings">
+                            <p id="shorts-provider" class="hint"></p>
+                            <button id="shorts-ai" class="btn" type="button">AI gợi ý đoạn hay</button>
+                            <div id="shorts-rows"></div>
+                            <button id="shorts-add" class="btn" type="button">Thêm đoạn thủ công</button>
+                            <label>Bố cục
+                              <select id="shorts-layout">
+                                <option value="auto">Tự động</option>
+                                <option value="ban-tin">Bản tin</option>
+                                <option value="mo-nen">Nền mờ</option>
+                              </select>
+                            </label>
+                            <button class="btn primary block" type="submit">Tạo Shorts</button>
+                          </fieldset>
+                          <button id="shorts-cancel" class="btn" type="button" hidden>Hủy</button>
+                          <p id="shorts-state" class="hint" role="status" aria-live="polite"></p>
+                          <div id="shorts-results"></div>
+                        </form>
+                    </details>
+                    <details id="reframe-section" class="more-item" hidden>
+                      <summary>
+                        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3 6h18v12H3zM8 6v12" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                        <span><b>Đổi khung 16:9</b><small>Chuyển video dọc thành ngang</small></span>
+                      </summary>
+                        <form id="reframe-form">
+                          <fieldset id="reframe-fields" class="settings">
+                            <label>Chế độ
+                              <select id="reframe-mode">
+                                <option value="bang-thong-tin">Bảng thông tin</option>
+                                <option value="cat-ngang">Cắt ngang</option>
+                              </select>
+                            </label>
+                            <label>Tiêu đề (tùy chọn, tối đa 80 ký tự)<input id="reframe-title" /></label>
+                            <div id="reframe-panel" class="settings">
+                              <label>Điểm (0–10, tùy chọn)<input id="reframe-score" type="number" min="0" max="10" step="1" /></label>
+                              <label>Ưu điểm (mỗi dòng một ý, tối đa 3 ý, ≤60 ký tự/ý)<textarea id="reframe-pros" rows="3"></textarea></label>
+                              <label>Nhược điểm (mỗi dòng một ý, tối đa 3 ý, ≤60 ký tự/ý)<textarea id="reframe-cons" rows="3"></textarea></label>
+                              <label>Tóm tắt (tùy chọn, tối đa 120 ký tự)<input id="reframe-summary" /></label>
+                              <p id="reframe-provider" class="hint"></p>
+                              <button id="reframe-ai" class="btn" type="button">AI điền bảng</button>
+                            </div>
+                            <div id="reframe-crop" class="settings" hidden>
+                              <label>Vị trí đầu: <output id="reframe-focus-start-value">50</output><input id="reframe-focus-start" type="range" min="0" max="100" value="50" /></label>
+                              <label>Vị trí cuối: <output id="reframe-focus-end-value">50</output><input id="reframe-focus-end" type="range" min="0" max="100" value="50" /></label>
+                              <small class="hint">0 = trên, 50 = giữa, 100 = dưới. Vùng cắt di chuyển đều trong đoạn đã chọn.</small>
+                              <div id="reframe-preview" hidden>
+                                <img id="reframe-image" alt="Khung hình video dọc" />
+                                <div id="reframe-band"><span id="reframe-preview-title"></span></div>
+                              </div>
+                              <small id="reframe-preview-state" class="hint" role="status"></small>
+                            </div>
+                            <label>Bắt đầu (mm:ss, tùy chọn)<input id="reframe-start" placeholder="00:00" /></label>
+                            <label>Kết thúc (mm:ss, tùy chọn)<input id="reframe-end" placeholder="Hết video" /></label>
+                            <button class="btn primary block" type="submit">Tạo video 16:9</button>
+                          </fieldset>
+                          <button id="reframe-cancel" class="btn" type="button" hidden>Hủy</button>
+                          <p id="reframe-state" class="hint" role="status" aria-live="polite"></p>
+                          <div id="reframe-results" class="button-row" hidden>
+                            <button id="reframe-open" class="btn" type="button">Mở</button>
+                            <button id="reframe-folder" class="btn" type="button">Mở thư mục</button>
+                          </div>
+                        </form>
+                    </details>
+                    <button id="open-post" class="more-item more-row" type="button" hidden>
+                      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                      <span><b>Gợi ý đăng bài</b><small>Tiêu đề, mô tả và hashtag bằng AI</small></span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </aside>
+          </section>
+        </main>
+      </div>
+    </div>
+    <div id="settings-dialog" class="review settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+      <div class="review-panel settings-panel">
+        <header class="review-head">
+          <div><h2 id="settings-title">Cài đặt</h2></div>
+          <button id="settings-close" class="icon-btn" type="button" aria-label="Đóng cài đặt">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <dl class="settings-list">
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt><label for="remember-defaults">Ghi nhớ thiết lập lần trước</label></dt>
+              <dd>Video mới tự dùng giọng đọc, phụ đề và cách che chữ của lần dùng gần nhất. Tắt thì video mới dùng thiết lập mặc định.</dd>
             </div>
-          </aside>
-        </section>
-      </main>
+            <input id="remember-defaults" class="switch" type="checkbox" role="switch" checked />
+          </div>
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt>Tài khoản AI</dt>
+              <dd>Khóa Claude hoặc Gemini dùng cho gợi ý đăng bài, cắt Shorts, thuyết minh và video bán hàng.</dd>
+            </div>
+            <button id="open-ai-settings" class="btn" type="button">Quản lý khóa</button>
+          </div>
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt>Thư mục lưu</dt>
+              <dd>Kết quả: <span id="output-root-label" title="">Cạnh video gốc</span></dd>
+              <dd><button id="reset-output-root" class="link" type="button" hidden>Lưu cạnh video gốc</button></dd>
+            </div>
+            <button id="choose-output-root" class="btn" type="button">Đổi thư mục</button>
+          </div>
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt>Cập nhật</dt>
+              <dd id="update-summary">DubFlow tự kiểm tra bản mới mỗi ngày khi mở ứng dụng.</dd>
+              <div id="update-card" class="update-card" hidden>
+                <strong id="update-title">Có bản mới</strong>
+                <small id="update-detail"></small>
+                <div class="update-actions">
+                  <button id="update-install" class="btn primary" type="button">Cập nhật</button>
+                  <button id="update-later" class="link" type="button">Để sau</button>
+                </div>
+              </div>
+            </div>
+            <button id="update-check" class="btn" type="button">Kiểm tra cập nhật</button>
+          </div>
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt><label for="cpu-only">Chỉ dùng CPU</label></dt>
+              <dd>Tắt thì DubFlow tự dùng card đồ họa NVIDIA phù hợp để nhận dạng lời thoại nhanh hơn. Thiết bị đang dùng hiện trong trạng thái xử lý.</dd>
+            </div>
+            <input id="cpu-only" class="switch" type="checkbox" role="switch" />
+          </div>
+        </dl>
+        <footer class="settings-foot">
+          <span>Phiên bản <button id="release-version" class="link version-link" type="button" title="Các phiên bản đã cài">—</button> <span id="release-channel" class="tag"></span> · <button id="installed-versions" class="link" type="button">Các bản đã cài</button></span>
+          <span class="settings-stats">Hàng đợi: <span id="stat-running">0</span> đang chạy · <span id="stat-done">0</span> hoàn tất · <span id="stat-failed">0</span> lỗi</span>
+        </footer>
+      </div>
     </div>
     <div id="ai-settings-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="ai-settings-title" hidden>
       <div class="review-panel post-panel ai-settings-panel">
@@ -595,7 +733,7 @@
       <div class="review-panel blur-panel">
         <header class="review-head">
           <div>
-            <h2 id="blur-title">Làm mờ phụ đề gốc</h2>
+            <h2 id="blur-title">Che chữ gốc</h2>
             <p class="subtitle">Kéo khung hoặc các mép cho phủ kín chữ gốc. Kéo thanh thời gian để kiểm tra ở nhiều cảnh.</p>
           </div>
           <button id="blur-close" class="icon-btn" type="button" aria-label="Đóng">
@@ -605,7 +743,7 @@
         <div class="blur-body">
           <div id="blur-stage" class="blur-stage">
             <img id="blur-frame" alt="Khung hình video" draggable="false" />
-            <div id="blur-rect" class="blur-rect" data-handle="move" role="slider" tabindex="0" aria-label="Vùng làm mờ; dùng phím mũi tên để di chuyển, Shift + mũi tên để đổi kích thước">
+            <div id="blur-rect" class="blur-rect" data-handle="move" role="slider" tabindex="0" aria-label="Vùng che chữ; dùng phím mũi tên để di chuyển, Shift + mũi tên để đổi kích thước">
               <span data-handle="nw"></span><span data-handle="n"></span><span data-handle="ne"></span>
               <span data-handle="w"></span><span data-handle="e"></span>
               <span data-handle="sw"></span><span data-handle="s"></span><span data-handle="se"></span>
@@ -618,7 +756,7 @@
           </label>
         </div>
         <footer class="review-foot">
-          <button id="blur-off" class="btn ghost" type="button">Tắt làm mờ</button>
+          <button id="blur-off" class="btn ghost" type="button">Tắt che chữ</button>
           <button id="blur-all" class="btn" type="button">Áp dụng cho mọi video đang chờ</button>
           <button id="blur-apply" class="btn primary" type="button">Áp dụng cho video này</button>
         </footer>

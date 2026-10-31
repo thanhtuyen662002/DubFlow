@@ -1,5 +1,5 @@
-/** In-app updates: a sidebar card when a newer signed version exists, and a
- * dialog listing installed versions so the user can roll back. */
+/** In-app updates: a settings card (and a header button) when a newer signed
+ * version exists, and a dialog listing installed versions so the user can roll back. */
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 export type UpdateInfo = { version: string; notes: string; sizeBytes: number | null };
@@ -49,7 +49,7 @@ const $ = <T extends HTMLElement>(selector: string): T => {
   return node;
 };
 
-export function mountUpdates(invoke: Invoke): void {
+export function mountUpdates(invoke: Invoke, onAvailable: (version: string | null) => void = () => undefined): void {
   const card = $("#update-card");
   const title = $("#update-title");
   const detail = $("#update-detail");
@@ -70,6 +70,7 @@ export function mountUpdates(invoke: Invoke): void {
     install.disabled = false;
     install.textContent = "Cập nhật";
     card.hidden = false;
+    onAvailable(update.version);
   }
 
   async function runCheck(manual: boolean): Promise<void> {
@@ -121,6 +122,7 @@ export function mountUpdates(invoke: Invoke): void {
   later.addEventListener("click", () => {
     if (pending) storage.set(SKIP_KEY, pending.version);
     card.hidden = true;
+    onAvailable(null);
   });
   check.addEventListener("click", () => void runCheck(true));
 
