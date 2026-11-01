@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { checkDue, parseCheck, parseVersions } from "../src/features/update/view.ts";
+import { CHECK_INTERVAL_MS, FIRST_CHECK_MS, parseCheck, parseVersions } from "../src/features/update/view.ts";
 
 assert.deepEqual(parseCheck({ ok: true, available: true, version: "0.3.0", notes: "n", setup: { size_bytes: 1048576 } }),
   { ok: true, unsupported: false, update: { version: "0.3.0", notes: "n", sizeBytes: 1048576 } });
@@ -15,10 +15,7 @@ assert.equal(versions.current, "0.2.0-rc6");
 assert.equal(versions.versions.length, 1);
 assert.equal(parseVersions({ ok: false }), null);
 
-const now = Date.UTC(2026, 9, 25);
-assert.equal(checkDue(now, null), true);
-assert.equal(checkDue(now, String(now - 60_000)), false);
-assert.equal(checkDue(now, String(now - 25 * 3600_000)), true);
-assert.equal(checkDue(now, String(now + 3600_000)), true);
-assert.equal(checkDue(now, "garbage"), true);
+// Checked shortly after launch, then every 6 hours.
+assert.equal(FIRST_CHECK_MS, 4000);
+assert.equal(CHECK_INTERVAL_MS, 6 * 3600_000);
 console.log("desktop update tests passed");

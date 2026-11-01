@@ -644,6 +644,16 @@
           </div>
           <div class="settings-row">
             <div class="settings-text">
+              <dt>Tài khoản Douyin</dt>
+              <dd id="douyin-account-state">Đang kiểm tra…</dd>
+            </div>
+            <div class="settings-actions">
+              <button id="douyin-login" class="btn" type="button">Đăng nhập</button>
+              <button id="douyin-logout" class="btn" type="button" hidden>Đăng xuất</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-text">
               <dt>Thư mục lưu</dt>
               <dd>Kết quả: <span id="output-root-label" title="">Cạnh video gốc</span></dd>
               <dd><button id="reset-output-root" class="link" type="button" hidden>Lưu cạnh video gốc</button></dd>
@@ -652,8 +662,18 @@
           </div>
           <div class="settings-row">
             <div class="settings-text">
+              <dt>Thư mục lưu video tải về</dt>
+              <dd><span id="download-dir-label" class="settings-path">Videos\DubFlow Downloads</span></dd>
+            </div>
+            <div class="settings-actions">
+              <button id="reset-download-dir" class="btn" type="button" hidden>Mặc định</button>
+              <button id="choose-download-dir" class="btn" type="button">Đổi thư mục</button>
+            </div>
+          </div>
+          <div id="settings-update" class="settings-row">
+            <div class="settings-text">
               <dt>Cập nhật</dt>
-              <dd id="update-summary">DubFlow tự kiểm tra bản mới mỗi ngày khi mở ứng dụng.</dd>
+              <dd id="update-summary">DubFlow tự kiểm tra bản mới khi mở ứng dụng và mỗi 6 giờ.</dd>
               <div id="update-card" class="update-card" hidden>
                 <strong id="update-title">Có bản mới</strong>
                 <small id="update-detail"></small>
@@ -677,6 +697,22 @@
           <span>Phiên bản <button id="release-version" class="link version-link" type="button" title="Các phiên bản đã cài">—</button> <span id="release-channel" class="tag"></span> · <button id="installed-versions" class="link" type="button">Các bản đã cài</button></span>
           <span class="settings-stats">Hàng đợi: <span id="stat-running">0</span> đang chạy · <span id="stat-done">0</span> hoàn tất · <span id="stat-failed">0</span> lỗi</span>
         </footer>
+      </div>
+    </div>
+    <div id="douyin-dialog" class="review douyin-dialog" role="dialog" aria-modal="true" aria-labelledby="douyin-title" hidden>
+      <div class="review-panel douyin-panel">
+        <header class="review-head">
+          <div>
+            <h2 id="douyin-title">Đăng nhập Douyin</h2>
+            <p class="subtitle">Đăng nhập một lần, DubFlow sẽ tự giữ phiên.</p>
+          </div>
+          <button id="douyin-done" class="btn primary" type="button">Xong</button>
+          <button id="douyin-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <p id="douyin-state" class="discover-state douyin-state" role="status"></p>
+        <div id="douyin-view" class="douyin-view"><span>Đang mở douyin.com…</span></div>
       </div>
     </div>
     <div id="ai-settings-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="ai-settings-title" hidden>
