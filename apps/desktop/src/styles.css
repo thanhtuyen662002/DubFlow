@@ -447,6 +447,27 @@ select { color-scheme: dark; }
 .versions-list { margin: 0; padding: 8px 20px; list-style: none; }
 .versions-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .versions-state { padding: 0 20px 16px; }
+.cleanup-panel { width: min(560px, 100%); height: auto; max-height: 100%; }
+.cleanup-body { flex: 1; min-height: 0; padding: 4px 20px 12px; overflow: auto; }
+.cleanup-state { padding: 12px 0 0; color: var(--text-2); }
+.cleanup-state:empty { display: none; }
+.cleanup-list { margin: 0; padding: 0; list-style: none; }
+.cleanup-item { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.cleanup-list li:last-child .cleanup-item { border-bottom: 0; }
+.cleanup-item input { flex: none; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--accent); cursor: inherit; }
+.cleanup-item.disabled { cursor: default; }
+.cleanup-item.disabled .cleanup-text, .cleanup-item.disabled .cleanup-size { opacity: .55; }
+.cleanup-text { flex: 1; min-width: 0; }
+.cleanup-text strong { display: block; font-weight: 600; }
+.cleanup-text small { display: block; margin-top: 2px; color: var(--text-2); font-size: 12.5px; line-height: 1.45; }
+.cleanup-size { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cleanup-result { margin-top: 8px; padding: 10px 12px; border-radius: 8px; background: var(--ok-bg); color: var(--ok); font-size: 13.5px; }
+.cleanup-result p { margin-top: 6px; color: var(--text); }
+.cleanup-result ul { margin: 4px 0 0; padding-left: 18px; color: var(--text-2); overflow-wrap: anywhere; }
+.cleanup-foot { flex: none; }
+.cleanup-total { flex: 1; min-width: 0; overflow: hidden; color: var(--text-2); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.queue-notice { margin: 8px 16px 0; padding: 8px 12px; border-radius: 8px; background: var(--ok-bg); color: var(--ok); font-size: 13px; line-height: 1.45; }
+.queue-notice:empty { display: none; }
 
 /* Blur editor */
 .blur-panel { width: min(980px, 100%); height: auto; max-height: 100%; }
