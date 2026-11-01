@@ -117,7 +117,7 @@ function backgroundItem(label: string, detail: string, checked: boolean, choose:
   return item;
 }
 
-/** The background choices for `template`: the plain one, the library images and "+ Tải ảnh nền…". */
+/** The background choices for `template`: the plain one, the library images and "+ Thêm nền". */
 export function backgroundItems(options: {
   template: Template; library: readonly LibraryBackground[]; chosen: LibraryBackground | null; images: Images;
   choose(id: string | null): void; remove(entry: LibraryBackground): void; add(): void; addId?: string;
@@ -153,7 +153,8 @@ export function backgroundItems(options: {
   if (options.addId) upload.id = options.addId;
   upload.type = "button";
   upload.className = "product-bg product-bg-add";
-  upload.textContent = "+ Tải ảnh nền…";
+  upload.textContent = "+ Thêm nền";
+  upload.title = "Tải ảnh nền từ máy vào kho của DubFlow";
   upload.addEventListener("click", () => options.add());
   add.append(upload);
   items.push(add);
