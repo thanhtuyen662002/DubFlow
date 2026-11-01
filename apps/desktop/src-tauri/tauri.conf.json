@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com https://generativelanguage.googleapis.com; media-src 'self' blob: asset: http://asset.localhost; img-src 'self' blob: https: asset: http://asset.localhost",
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com https://generativelanguage.googleapis.com; media-src 'self' blob: asset: http://asset.localhost https://*.kwaicdn.com https://*.yximgs.com https://*.kwimgs.com https://*.kuaishou.com; img-src 'self' blob: https: asset: http://asset.localhost; frame-src https://player.bilibili.com https://open.douyin.com",
       "assetProtocol": { "enable": true, "scope": [] }
     }
   },

@@ -64,7 +64,7 @@ assert.ok(AFTER_JOB_DELAY_MS > 0 && AFTER_JOB_DELAY_MS < AUTO_CLEAN_DELAY_MS);
 // Silent unless more than 1 GB was freed.
 assert.equal(autoNotice(0.9 * GB), null);
 assert.equal(autoNotice(GB), null);
-assert.equal(autoNotice(2.3 * GB), "Đã tự dọn 2,3 GB tệp tạm");
+assert.equal(autoNotice(2.3 * GB), "Đã tự dọn dẹp, giải phóng 2,3 GB");
 
 // Output folders: finished jobs may be cleaned; every other job's folder is protected.
 assert.equal(parentFolder("C:\\Videos\\DubFlow Output\\Clip - vi\\run-1\\final_vi.mp4"), "C:\\Videos\\DubFlow Output\\Clip - vi\\run-1");
