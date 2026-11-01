@@ -26,6 +26,7 @@ import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { mountEditor } from "./features/edit/view.ts";
+import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
 import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
 import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
@@ -514,6 +515,12 @@ const editor = mountEditor(invoke, {
     // The browser preview has no finished jobs of its own to insert.
     ...(isTauri ? [] : PREVIEW_EDIT_LIBRARY),
   ],
+  revise: async (job, outputDir) => {
+    const revisionId = queue.reviseJob(job.id, outputDir);
+    const revision = queue.getSnapshot().jobs.find((candidate) => candidate.id === revisionId);
+    if (revision) await startJob(revision);
+    return revisionId;
+  },
 });
 /** "Xem" on an edited export starts it as soon as it has loaded. */
 let playWhenLoaded = false;
@@ -994,12 +1001,21 @@ for (const id of ["#create-report", "#create-report-done"]) {
   button.addEventListener("click", () => void createReport(button));
 }
 
+/** The look last applied in Phụ đề, the default for new videos (none: today's look). */
+function rememberedSubtitleStyle(): SubtitleStyle | null {
+  try {
+    return storedStyle(window.localStorage.getItem(STYLE_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
 async function startJob(job: QueueJob): Promise<void> {
   if (!canStart(job)) return;
   startButton.disabled = true;
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    const started = await invoke<{ output_dir: string } | null>("start_job", startJobRequest(job, outputRoot(), cpuOnly()));
+    const started = await invoke<{ output_dir: string } | null>("start_job", startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle()));
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
     if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);

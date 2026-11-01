@@ -652,6 +652,143 @@ fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
 
+// ---------- Phụ đề (Issue #414) ----------
+
+/// The burned-subtitle look a job renders with, beside its outputs; the
+/// worker validates it again (engine/dubflow/subtitle/style.py).
+pub(crate) const SUBTITLE_STYLE_FILE: &str = "subtitle_style.json";
+/// Stock Windows families covering every Vietnamese letter (same list as the worker).
+pub(crate) const SUBTITLE_FONTS: [&str; 12] = ["Arial", "Segoe UI", "Tahoma", "Verdana", "Times New Roman", "Calibri", "Cambria",
+    "Palatino Linotype", "Constantia", "Corbel", "Candara", "Segoe UI Black"];
+const MAX_REVOICE: usize = 10_000;
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SubtitleStyle {
+    font: String,
+    size: f64,
+    primary: String,
+    outline: String,
+    #[serde(rename = "box")]
+    box_color: Option<String>,
+    box_opacity: f64,
+    outline_width: f64,
+    bold: bool,
+    align: String,
+    /// Normalized centre of a dragged subtitle block; both or neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    y: Option<f64>,
+}
+
+fn hex_color(value: &str) -> bool {
+    value.len() == 7 && value.starts_with('#') && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+impl SubtitleStyle {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        let within = |value: f64, low: f64, high: f64| value.is_finite() && (low..=high).contains(&value);
+        let valid = SUBTITLE_FONTS.contains(&self.font.as_str())
+            && within(self.size, 0.6, 2.0) && within(self.box_opacity, 0.0, 1.0) && within(self.outline_width, 0.0, 8.0)
+            && hex_color(&self.primary) && hex_color(&self.outline) && self.box_color.as_deref().is_none_or(hex_color)
+            && ["bottom", "middle", "top"].contains(&self.align.as_str())
+            && self.x.is_some() == self.y.is_some()
+            && [self.x, self.y].iter().flatten().all(|value| within(*value, 0.0, 1.0));
+        if valid { Ok(()) } else { Err(fail("Kiểu phụ đề không hợp lệ")) }
+    }
+}
+
+/// Store a job's subtitle look beside its outputs, where the worker reads it.
+pub(crate) fn write_subtitle_style(dir: &Path, style: &SubtitleStyle) -> Result<(), String> {
+    style.validate()?;
+    let body = serde_json::to_vec_pretty(&json!({"schema_version": 1, "style": style})).map_err(|error| fail(error.to_string()))?;
+    write_atomic(&dir.join(SUBTITLE_STYLE_FILE), &body).map_err(|error| fail(format!("Không lưu được kiểu phụ đề: {error}")))
+}
+
+fn read_subtitle_style(dir: &Path) -> Option<SubtitleStyle> {
+    let path = dir.join(SUBTITLE_STYLE_FILE);
+    fs::metadata(&path).ok().filter(|metadata| metadata.len() <= 64 * 1024)?;
+    let value: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+    (value["schema_version"] == 1).then_some(())?;
+    serde_json::from_value::<SubtitleStyle>(value["style"].clone()).ok().filter(|style| style.validate().is_ok())
+}
+
+/// Caption rectangles the worker detected and blurred (`caption_scan.json`), for the preview's cover.
+fn detected_blur_regions(work: &Path) -> Vec<Value> {
+    let path = work.join("caption_scan.json");
+    let Some(scan) = fs::metadata(&path).ok().filter(|metadata| metadata.len() <= 4 * 1024 * 1024)
+        .and_then(|_| fs::read(&path).ok()).and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()) else { return Vec::new() };
+    scan["regions"].as_array().into_iter().flatten().take(256).filter(|region| {
+        ["x", "y", "w", "h"].iter().all(|key| region[*key].as_f64().is_some_and(|value| (0.0..=1.0).contains(&value)))
+    }).cloned().collect()
+}
+
+/// Everything the Phụ đề mode needs: each line (subtitle text, spoken text,
+/// original), the current look, and what the live preview plays: the clean
+/// source video with the dubbed mix (`editable\final_mix.wav`) and the
+/// rectangles the render covered.
+#[tauri::command]
+pub fn edit_subtitles_load(output_path: String) -> Result<Value, String> {
+    let dir = crate::review_dir(&output_path)?;
+    let cues = crate::review_cues(output_path)?;
+    let manifest = crate::read_json(&dir.join("job_manifest.json"), 16 * 1024 * 1024).unwrap_or_else(|_| json!({}));
+    let source = manifest["source"]["path"].as_str().map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_file()).map(|path| display_path(&path));
+    let mix = dir.join("editable").join("final_mix.wav");
+    Ok(json!({
+        "cues": cues,
+        "style": read_subtitle_style(&dir),
+        "source_path": source,
+        "mix_path": mix.is_file().then(|| display_path(&mix)),
+        "dubbed": manifest["audio"]["mode"] == "dubbed",
+        "blur_regions": detected_blur_regions(&dir.join(".dubflow-work")),
+        "fonts": SUBTITLE_FONTS,
+    }))
+}
+
+/// "Áp dụng" in Phụ đề: a new version of the job in a sibling "(sửa N)"
+/// folder, as "Xem & sửa bản dịch" makes, carrying the edited lines, what
+/// each line's voice speaks, the lines to voice again and the look. The
+/// caller re-runs the job there; cached stages are reused.
+#[tauri::command]
+pub fn edit_subtitles_apply(output_path: String, overrides: std::collections::BTreeMap<String, String>,
+    voice: std::collections::BTreeMap<String, String>, revoice: Vec<String>, subtitle_style: SubtitleStyle) -> Result<String, String> {
+    let dir = crate::review_dir(&output_path)?;
+    subtitle_style.validate()?;
+    crate::check_review_texts(&overrides)?;
+    crate::check_review_texts(&voice)?;
+    let known: std::collections::HashSet<String> = crate::review_cues(output_path)?.into_iter().map(|cue| cue.cue_id).collect();
+    let mut marked = revoice.clone();
+    marked.sort();
+    marked.dedup();
+    if marked.len() > MAX_REVOICE || marked.len() != revoice.len()
+        || !overrides.keys().chain(voice.keys()).chain(marked.iter()).all(|id| known.contains(id)) {
+        return Err(fail("Danh sách câu đọc lại không hợp lệ"));
+    }
+    let revision = crate::Revision { overrides: &overrides, voice: &voice, revoice: &marked, style: Some(&subtitle_style) };
+    Ok(display_path(&crate::create_revision_with(&dir, &revision)?))
+}
+
+/// The editor draft of `original` for its new version: the cuts, inserts and
+/// overlays carry over, with the main video now the new version's final.
+pub(crate) fn carry_draft(original: &Path, target: &Path) {
+    let from = work_dir(original).join("project.json");
+    let Some(mut project) = fs::metadata(&from).ok().filter(|metadata| metadata.len() as usize <= PROJECT_LIMIT)
+        .and_then(|_| fs::read(&from).ok()).and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(|project| check_project(project).is_ok()) else { return };
+    let final_path = display_path(&target.join("final_vi.mp4"));
+    for media in project["media"].as_array_mut().into_iter().flatten() {
+        if media["id"] == "main" {
+            media["path"] = json!(final_path);
+        }
+    }
+    let work = work_dir(target);
+    if let Ok(bytes) = check_project(&project) {
+        let _ = fs::create_dir_all(&work).and_then(|()| write_atomic(&work.join("project.json"), &bytes));
+    }
+}
+
 /// The draft for this video, its facts and its subtitles.
 #[tauri::command]
 pub async fn edit_project_load(output_path: String) -> Result<Value, String> {
@@ -1297,6 +1434,88 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         }
         edit_cancel(path).unwrap();
         assert!(work.join("cancel").is_file());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    fn style(changes: Value) -> Value {
+        let mut value = json!({"font": "Candara", "size": 1.2, "primary": "#FDE047", "outline": "#000000", "box": null,
+            "box_opacity": 0.6, "outline_width": 3, "bold": true, "align": "bottom"});
+        value.as_object_mut().unwrap().extend(changes.as_object().unwrap().clone());
+        value
+    }
+
+    #[test]
+    fn subtitle_styles_are_validated_like_the_worker_does() {
+        let parse = |value: Value| serde_json::from_value::<SubtitleStyle>(value).map_err(|error| error.to_string()).and_then(|style| style.validate());
+        assert!(parse(style(json!({}))).is_ok());
+        assert!(parse(style(json!({"box": "#000000", "x": 0.5, "y": 0.2, "align": "top"}))).is_ok());
+        for changes in [json!({"font": "Impact"}), json!({"font": "Georgia"}), json!({"size": 2.5}), json!({"size": 0.5}),
+                        json!({"primary": "yellow"}), json!({"outline": "#12345"}), json!({"box": "#0000000"}), json!({"box_opacity": -0.1}),
+                        json!({"outline_width": 9}), json!({"align": "left"}), json!({"x": 0.5}), json!({"x": 1.5, "y": 0.5}),
+                        json!({"bold": "yes"}), json!({"extra": 1})] {
+            assert!(parse(style(changes.clone())).is_err(), "{changes}");
+        }
+        assert_eq!(SUBTITLE_FONTS.len(), 12);
+    }
+
+    #[test]
+    fn applying_subtitles_makes_a_new_version_with_texts_voices_style_and_the_draft() {
+        let base = std::env::temp_dir().join(format!("dubflow-edit-subs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join("DubFlow Output/clip - vi");
+        let work = dir.join(".dubflow-work");
+        fs::create_dir_all(work.join("edit")).unwrap();
+        fs::create_dir_all(dir.join("editable")).unwrap();
+        let source = base.join("clip.mp4");
+        for (path, body) in [(dir.join("final_vi.mp4"), "video".to_owned()), (source.clone(), "source".to_owned()),
+                             (dir.join("editable/final_mix.wav"), "mix".to_owned()),
+                             (work.join("edit/exports.json"), "[]".to_owned()), (work.join("edit/status.json"), "{}".to_owned()),
+                             (work.join("caption_scan.json"), json!({"regions": [{"x": 0.1, "y": 0.8, "w": 0.8, "h": 0.1}, {"x": 2}]}).to_string()),
+                             (dir.join("job_manifest.json"), json!({"source": {"path": crate::display_path(&source)}, "audio": {"mode": "dubbed"}}).to_string())] {
+            fs::write(path, body).unwrap();
+        }
+        let cues = ["a", "b"].map(|id| json!({"cue_id": id, "start_ms": 0, "end_ms": 1000, "source_text": "源", "translated_text": "Chào"}));
+        fs::write(work.join("translation.json"), json!({"cues": cues}).to_string()).unwrap();
+        fs::write(work.join("edit/project.json"), json!({"schema_version": 2, "duration": 10.0, "media": [
+            {"id": "main", "path": "old", "title": "", "duration": 10.0, "width": 0, "height": 0, "fps": 30, "hasAudio": true, "kind": "main"}],
+            "segments": [{"id": "s1", "mediaId": "main", "start": 0, "end": 4, "speed": 1, "volume": 1}]}).to_string()).unwrap();
+        let dir = PathBuf::from(crate::display_path(&fs::canonicalize(&dir).unwrap()));
+        let output = crate::display_path(&dir.join("final_vi.mp4"));
+
+        let loaded = edit_subtitles_load(output.clone()).unwrap();
+        assert_eq!(loaded["cues"].as_array().unwrap().len(), 2);
+        assert_eq!(loaded["cues"][0]["voice_text"], "Chào");
+        assert_eq!(loaded["style"], Value::Null);
+        assert_eq!(loaded["source_path"], crate::display_path(&source));
+        assert!(loaded["mix_path"].as_str().unwrap().ends_with("final_mix.wav"));
+        assert_eq!(loaded["dubbed"], true);
+        assert_eq!(loaded["blur_regions"].as_array().unwrap().len(), 1, "an invalid region is dropped");
+
+        let chosen: SubtitleStyle = serde_json::from_value(style(json!({"x": 0.5, "y": 0.3}))).unwrap();
+        let texts = std::collections::BTreeMap::from([("a".to_owned(), "Xin chào".to_owned())]);
+        let voice = std::collections::BTreeMap::from([("a".to_owned(), "Chào".to_owned())]);
+        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec!["nope".into()], chosen.clone()).is_err());
+        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec!["b".into(), "b".into()], chosen.clone()).is_err());
+        let bad: SubtitleStyle = serde_json::from_value(style(json!({"font": "Impact"}))).unwrap();
+        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec![], bad).is_err());
+        assert!(!dir.parent().unwrap().join("clip - vi (sửa 1)").exists(), "a refused apply creates nothing");
+
+        let revision = PathBuf::from(edit_subtitles_apply(output.clone(), texts, voice, vec!["b".into()], chosen.clone()).unwrap());
+        assert_eq!(revision, dir.parent().unwrap().join("clip - vi (sửa 1)"));
+        let overrides: Value = serde_json::from_slice(&fs::read(revision.join("translation_overrides.json")).unwrap()).unwrap();
+        assert_eq!(overrides, json!({"schema_version": 1, "cues": {"a": "Xin chào"}, "voice": {"a": "Chào"}, "revoice": ["b"]}));
+        assert_eq!(read_subtitle_style(&revision), Some(chosen));
+        let draft: Value = serde_json::from_slice(&fs::read(revision.join(".dubflow-work/edit/project.json")).unwrap()).unwrap();
+        assert_eq!(draft["media"][0]["path"], crate::display_path(&revision.join("final_vi.mp4")));
+        assert_eq!(draft["segments"][0]["end"], 4);
+        assert!(!revision.join(".dubflow-work/edit/exports.json").exists() && !revision.join(".dubflow-work/edit/status.json").exists(),
+            "the old version's exports stay with it");
+        assert!(read_subtitle_style(&dir).is_none(), "the original is untouched");
+        // The new version's lines report what their voices speak.
+        fs::write(revision.join("final_vi.mp4"), "video").unwrap();
+        let again = edit_subtitles_load(crate::display_path(&revision.join("final_vi.mp4"))).unwrap();
+        assert_eq!((again["cues"][0]["text"].as_str(), again["cues"][0]["voice_text"].as_str()), (Some("Xin chào"), Some("Chào")));
+        assert_eq!(again["style"]["font"], "Candara");
         fs::remove_dir_all(base).unwrap();
     }
 }

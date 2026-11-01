@@ -65,6 +65,9 @@ const reviewCues = [
   return { cue_id, start_ms, end_ms, source_text, machine_text, dub_failed };
 });
 let savedOverrides: Record<string, string> = {};
+/** Phụ đề "Áp dụng": what each line's voice speaks where it differs from the subtitle, and the look. */
+let savedVoice: Record<string, string> = {};
+let savedSubtitleStyle: unknown = null;
 const linkFetches = new Map<string, { url: string; title: string | null; startedAt: number }>();
 let douyinSession = false;
 
@@ -222,6 +225,26 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
         entry: { path, srt_path: path.replace(/\.mp4$/, ".srt"), created: Math.floor(Date.now() / 1000), duration, quality: request.quality,
           segments: request.segments, media: request.media ?? [], transitions: request.transitions ?? [], overlays: request.overlays ?? [] } });
       return { path } as T;
+    }
+    case "edit_subtitles_load": return {
+      cues: reviewCues.map((cue) => {
+        const text = savedOverrides[cue.cue_id] ?? cue.machine_text;
+        return { ...cue, text, voice_text: savedVoice[cue.cue_id] ?? text, edited: cue.cue_id in savedOverrides };
+      }),
+      style: savedSubtitleStyle,
+      // No asset protocol in a browser: the preview falls back to the final video with its note.
+      source_path: "D:\\Videos\\Douyin\\phim-ngan-tap-1.mp4",
+      mix_path: "D:\\Videos\\DubFlow Output\\preview\\editable\\final_mix.wav",
+      dubbed: true,
+      blur_regions: [{ x: 0.1, y: 0.8, w: 0.8, h: 0.1 }],
+    } as T;
+    case "edit_subtitles_apply": {
+      const style = args.subtitleStyle as { font?: unknown } | null;
+      if (!style || typeof style.font !== "string") throw new Error("Kiểu phụ đề không hợp lệ");
+      savedOverrides = { ...(args.overrides as Record<string, string>) };
+      savedVoice = { ...(args.voice as Record<string, string>) };
+      savedSubtitleStyle = JSON.parse(JSON.stringify(style));
+      return "D:\\Videos\\DubFlow Output\\preview (sửa 1)" as T;
     }
     case "edit_status": return previewEditStatus(String(args.outputPath)) as T;
     case "edit_media_info": return previewMediaInfo(String(args.path)) as T;

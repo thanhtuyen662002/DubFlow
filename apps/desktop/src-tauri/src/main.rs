@@ -475,8 +475,11 @@ struct BlurRegion {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>, separate_background: Option<bool>, cpu_only: Option<bool>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>, separate_background: Option<bool>, cpu_only: Option<bool>, subtitle_style: Option<edit::SubtitleStyle>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
+    if let Some(style) = &subtitle_style {
+        style.validate()?;
+    }
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
     let selected_voice = if enable_dubbing.unwrap_or(false) {
@@ -506,6 +509,13 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
         return Err(fail("output_dir must be an absolute path"));
     }
     fs::create_dir_all(&output).map_err(|error| fail(format!("unable to create output directory: {error}")))?;
+    // The last applied look is the default for new videos. A folder that
+    // already has one (a new version from the editor, a resumed job) keeps it.
+    if let Some(style) = subtitle_style.filter(|_| burn_in != Some(false)) {
+        if !output.join(edit::SUBTITLE_STYLE_FILE).exists() {
+            edit::write_subtitle_style(&output, &style)?;
+        }
+    }
     let model_root = control.join("models");
     let supervisor = supervisor_binary(&root)?;
     let mut command = command_with_no_window(&supervisor);
@@ -825,6 +835,9 @@ struct ReviewCue {
     source_text: String,
     machine_text: String,
     text: String,
+    /// What the line's voice speaks: the subtitle text unless a subtitle edit
+    /// kept the earlier speech (the overrides file's "voice").
+    voice_text: String,
     edited: bool,
     dub_failed: bool,
     /// Detected source speaker ("S1"…) when experimental multi-voice ran.
@@ -881,6 +894,7 @@ fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
         let cue_id = text("cue_id");
         let machine_text = text("translated_text");
         let edited = overrides["cues"][&cue_id].as_str().map(str::to_owned);
+        let subtitle = edited.clone().unwrap_or_else(|| machine_text.clone());
         Ok(ReviewCue {
             start_ms: cue["start_ms"].as_u64().ok_or_else(|| fail("cue has no start"))?,
             end_ms: cue["end_ms"].as_u64().ok_or_else(|| fail("cue has no end"))?,
@@ -888,7 +902,8 @@ fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
             dub_failed: failed.contains(&cue_id),
             speaker: speakers["labels"][&cue_id].as_str().map(str::to_owned),
             edited: edited.is_some(),
-            text: edited.unwrap_or_else(|| machine_text.clone()),
+            voice_text: overrides["voice"][&cue_id].as_str().map_or_else(|| subtitle.clone(), str::to_owned),
+            text: subtitle,
             machine_text,
             cue_id,
         })
@@ -897,7 +912,9 @@ fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
 
 const REVISION_OF_FILE: &str = "revision_of.json";
 /// Work-cache entries every revision rebuilds; copying them would only cost disk.
-const REVISION_SKIP: [&str; 2] = ["b2-audio", "export-pending"];
+/// The editor folder belongs to the old version (its exports and their
+/// status); only its draft carries over, by `edit::carry_draft`.
+const REVISION_SKIP: [&str; 3] = ["b2-audio", "export-pending", "edit"];
 const REVISION_SUFFIX: &str = " (sửa ";
 
 /// "Clip - vi (sửa 2)" -> "Clip - vi", so revisions of revisions stay siblings.
@@ -938,17 +955,46 @@ fn copy_work_cache(from: &Path, to: &Path, skip: &[&str]) -> std::io::Result<()>
     Ok(())
 }
 
+/// What a new version changes: the subtitle texts ("cues"), the text each
+/// voice speaks where it differs from its subtitle, the lines to voice again
+/// and the look (None keeps the original's).
+pub(crate) struct Revision<'a> {
+    pub overrides: &'a std::collections::BTreeMap<String, String>,
+    pub voice: &'a std::collections::BTreeMap<String, String>,
+    pub revoice: &'a [String],
+    pub style: Option<&'a edit::SubtitleStyle>,
+}
+
 /// Prepare a separate folder for a review revision and return it. The original
 /// output folder is only read, so its validated outputs stay as they were.
 fn create_revision(original: &Path, overrides: &std::collections::BTreeMap<String, String>) -> Result<PathBuf, String> {
+    let none = std::collections::BTreeMap::new();
+    create_revision_with(original, &Revision { overrides, voice: &none, revoice: &[], style: None })
+}
+
+fn create_revision_with(original: &Path, revision: &Revision) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
+    let overrides = revision.overrides;
     let partial = create_revision_temp(original).map_err(|error| fail(format!("Không tạo được thư mục bản sửa: {error}")))?;
     let build = || -> Result<(), String> {
         copy_work_cache(&original.join(".dubflow-work"), &partial.join(".dubflow-work"), &REVISION_SKIP)
             .map_err(|error| fail(format!("Không chép được dữ liệu bản dịch: {error}")))?;
-        if !overrides.is_empty() {
-            let body = serde_json::to_vec_pretty(&json!({"schema_version": 1, "cues": overrides})).map_err(|error| fail(error.to_string()))?;
+        if !overrides.is_empty() || !revision.voice.is_empty() || !revision.revoice.is_empty() {
+            let mut document = json!({"schema_version": 1, "cues": overrides});
+            if !revision.voice.is_empty() || !revision.revoice.is_empty() {
+                document["voice"] = json!(revision.voice);
+                document["revoice"] = json!(revision.revoice);
+            }
+            let body = serde_json::to_vec_pretty(&document).map_err(|error| fail(error.to_string()))?;
             fs::write(partial.join(OVERRIDES_FILE), body).map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))?;
+        }
+        match revision.style {
+            Some(style) => edit::write_subtitle_style(&partial, style)?,
+            None if original.join(edit::SUBTITLE_STYLE_FILE).is_file() => {
+                fs::copy(original.join(edit::SUBTITLE_STYLE_FILE), partial.join(edit::SUBTITLE_STYLE_FILE))
+                    .map_err(|error| fail(format!("Không chép được kiểu phụ đề: {error}")))?;
+            }
+            None => {}
         }
         let manifest = fs::read(original.join("job_manifest.json")).ok()
             .map(|bytes| format!("sha256:{:x}", Sha256::digest(bytes)));
@@ -959,9 +1005,12 @@ fn create_revision(original: &Path, overrides: &std::collections::BTreeMap<Strin
             .map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))
     };
     let result = build().and_then(|()| publish_revision(&partial, original));
-    if result.is_err() {
+    match &result {
+        Ok(target) => edit::carry_draft(original, target),
         // Only ever the folder this call created; nothing else is removed.
-        let _ = fs::remove_dir_all(&partial);
+        Err(_) => {
+            let _ = fs::remove_dir_all(&partial);
+        }
     }
     result
 }
@@ -1034,11 +1083,16 @@ fn move_into_reserved(partial: &Path, target: &Path) -> std::io::Result<()> {
 #[tauri::command]
 fn save_review(output_path: String, overrides: std::collections::BTreeMap<String, String>) -> Result<String, String> {
     let dir = review_dir(&output_path)?;
-    if overrides.len() > 10_000 || overrides.iter().any(|(id, text)| id.is_empty() || id.len() > 128
+    check_review_texts(&overrides)?;
+    Ok(display_path(&create_revision(&dir, &overrides)?))
+}
+
+fn check_review_texts(texts: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+    if texts.len() > 10_000 || texts.iter().any(|(id, text)| id.is_empty() || id.len() > 128
         || text.trim().is_empty() || text.chars().count() > 2000) {
         return Err(fail("Câu sửa không hợp lệ: không được để trống hoặc dài quá 2000 ký tự"));
     }
-    Ok(display_path(&create_revision(&dir, &overrides)?))
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -1373,11 +1427,34 @@ fn playable_media(value: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-/// Let the main window's player stream one local video; returns the path to load.
+/// The dubbed mix of a finished job (`<output>\editable\*.wav`), which the
+/// editor's Phụ đề preview plays beside the muted source video. No other
+/// audio file can be streamed.
+fn editable_audio(value: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    let is_wav = |path: &Path| path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("wav"));
+    if !path.is_absolute() || !is_wav(path) {
+        return Err(fail("Chỉ phát được âm thanh lồng tiếng của DubFlow"));
+    }
+    let resolved = path.canonicalize().map_err(|_| fail("Không tìm thấy âm thanh lồng tiếng"))?;
+    let in_editable = resolved.parent().and_then(Path::file_name).is_some_and(|name| name == "editable");
+    let in_output = resolved.ancestors().any(|dir| dir.file_name().is_some_and(|name| name == "DubFlow Output"));
+    if !resolved.is_file() || !is_wav(&resolved) || !in_editable || !in_output {
+        return Err(fail("Chỉ phát được âm thanh lồng tiếng của DubFlow"));
+    }
+    Ok(resolved)
+}
+
+/// Let the main window's player stream one local video (or a job's dubbed
+/// mix, see `editable_audio`); returns the path to load.
 #[tauri::command]
 fn allow_media(app: tauri::AppHandle, path: String) -> Result<String, String> {
     use tauri::Manager;
-    let media = playable_media(&path)?;
+    let media = if Path::new(&path).extension().is_some_and(|extension| extension.eq_ignore_ascii_case("wav")) {
+        editable_audio(&path)?
+    } else {
+        playable_media(&path)?
+    };
     app.asset_protocol_scope().allow_file(&media).map_err(|error| fail(error.to_string()))?;
     let text = media.to_string_lossy();
     Ok(match text.strip_prefix(r"\\?\UNC\") {
@@ -1642,7 +1719,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_media_info])
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_media_info, edit::edit_subtitles_load, edit::edit_subtitles_apply])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
@@ -1695,6 +1772,19 @@ mod tests {
             assert!(has_playable_extension(Path::new(name)), "{name}");
         }
         assert!(!has_playable_extension(Path::new("a.exe")));
+        // Audio: only a finished job's editable mix.
+        let editable = root.join("DubFlow Output/clip - vi/editable");
+        fs::create_dir_all(&editable).unwrap();
+        fs::write(editable.join("final_mix.wav"), "wav").unwrap();
+        fs::write(root.join("DubFlow Output/clip - vi/final_mix.wav"), "wav").unwrap();
+        fs::write(root.join("song.wav"), "wav").unwrap();
+        assert_eq!(editable_audio(&editable.join("final_mix.wav").to_string_lossy()).unwrap(),
+            fs::canonicalize(editable.join("final_mix.wav")).unwrap());
+        assert!(editable_audio(&root.join("DubFlow Output/clip - vi/final_mix.wav").to_string_lossy()).is_err(), "not in editable");
+        assert!(editable_audio(&root.join("song.wav").to_string_lossy()).is_err(), "not a DubFlow output");
+        assert!(editable_audio(&editable.join("missing.wav").to_string_lossy()).is_err());
+        assert!(editable_audio(&root.join("clip.MP4").to_string_lossy()).is_err());
+        assert!(editable_audio("editable/final_mix.wav").is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1757,7 +1847,8 @@ mod tests {
         let files = [("final_vi.mp4", "video"), ("captions_vi.srt", "srt"), ("job_manifest.json", "{}"),
             (".dubflow-work/translation.json", "{\"cues\": []}"), (".dubflow-work/checkpoint.json", "{}"),
             (".dubflow-work/tts-cache/a.wav", "tts"), (".dubflow-work/b2-audio/x/y.wav", "mix"),
-            (".dubflow-work/export-pending/final_vi.mp4", "pending")];
+            (".dubflow-work/export-pending/final_vi.mp4", "pending"), (".dubflow-work/edit/exports.json", "[]"),
+            ("subtitle_style.json", "{\"schema_version\": 1}")];
         for (path, body) in files {
             fs::create_dir_all(original.join(path).parent().unwrap()).unwrap();
             fs::write(original.join(path), body).unwrap();
@@ -1791,6 +1882,8 @@ mod tests {
         assert_eq!(fs::read_to_string(first.join(".dubflow-work/tts-cache/a.wav")).unwrap(), "tts");
         assert!(first.join(".dubflow-work/translation.json").is_file() && first.join(".dubflow-work/checkpoint.json").is_file());
         assert!(!first.join(".dubflow-work/b2-audio").exists() && !first.join(".dubflow-work/export-pending").exists());
+        assert!(!first.join(".dubflow-work/edit").exists(), "no draft to carry, and the old exports stay behind");
+        assert_eq!(fs::read_to_string(first.join("subtitle_style.json")).unwrap(), "{\"schema_version\": 1}", "the look carries over");
         assert!(!first.join("final_vi.mp4").exists(), "the revision renders its own output");
         let stored: Value = serde_json::from_slice(&fs::read(first.join(OVERRIDES_FILE)).unwrap()).unwrap();
         assert_eq!(stored, json!({"schema_version": 1, "cues": {"c1": "Xin chào"}}));

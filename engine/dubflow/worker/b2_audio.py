@@ -458,7 +458,7 @@ def _restore_source_windows(background: Path, source: Path, output: Path,
 def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_version, runtime_id,
                       mappings, windows_by_id, input_hash, source_language, tts_dir,
                       app_root, profile_path, synthesis_cache_dir, render_window_limits=None, allow_all_failed=False,
-                      on_segment=None, profile="cpu"):
+                      on_segment=None, profile="cpu", revoice_cue_ids=frozenset()):
     """One voice's existing synthesis/checkpoint/cache/rewrite pipeline."""
     try:
         tts_config = TtsConfig(
@@ -514,7 +514,10 @@ def _synthesize_voice(*, pack, voice, engine, resources, backend_id, producer_ve
                 "recipe": tts_recipe_identity(Path(app_root), Path(profile_path))},
                 sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             # Inside the rewrite wrapper, so rewritten spoken text is cached too.
-            engine = CachedSynthesisEngine(engine, Path(synthesis_cache_dir), identity=cache_identity)
+            # A phrase speaks several cues; re-voicing any member renews the phrase.
+            fresh = frozenset(item["cue_id"] for item in mappings
+                              if not revoice_cue_ids.isdisjoint(item.get("member_cue_ids", (item["cue_id"],))))
+            engine = CachedSynthesisEngine(engine, Path(synthesis_cache_dir), identity=cache_identity, fresh_segments=fresh)
         spoken_store = None
         reusable = checkpoints.load(segments)
         on_checkpoint = checkpoints.commit
@@ -603,12 +606,14 @@ def run_b2_audio(
     background_path: str | Path | None = None,
     tts_device: Any = None,
     on_progress: Callable[[int, int], None] | None = None,
+    revoice_cue_ids: Iterable[str] = (),
 ) -> B2AudioResult:
     """Execute TTS/AUD-0; optional VieNeu casting keeps per-voice provenance.
 
     A missing voice map retains the flat TTS directory layout. ``on_progress``
     receives (settled phrases, all phrases) across every voice group; the
-    final (total, total) call comes before the mix starts.
+    final (total, total) call comes before the mix starts. ``revoice_cue_ids``
+    bypass the shared synthesis cache, so a reviewed line is spoken anew.
     """
 
     if not translated_cues:
@@ -761,7 +766,8 @@ def run_b2_audio(
             tts_dir=root / "tts" / identifier if multivoice else root / "tts",
             app_root=app_root, profile_path=profile_path, synthesis_cache_dir=synthesis_cache_dir,
             render_window_limits={item["cue_id"]: render_window_limits[item["cue_id"]] for item in items} if render_window_limits else None,
-            allow_all_failed=True, on_segment=segment_settled if on_progress is not None else None, profile=tts_profile)
+            allow_all_failed=True, on_segment=segment_settled if on_progress is not None else None, profile=tts_profile,
+            revoice_cue_ids=frozenset(revoice_cue_ids))
         device_warnings.extend(warning for warning in getattr(engine, "device_warnings", ()) if warning not in device_warnings)
         if any(warning.startswith("ACCELERATOR_FALLBACK:") for warning in device_warnings):
             accelerator = None  # Later voices start on the CPU instead of retrying a failed GPU.

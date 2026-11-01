@@ -73,6 +73,7 @@ from engine.dubflow.media import CANONICAL_TIME_BASE, FfmpegMediaAdapter, MediaA
 from engine.dubflow.media.adapter import AUDIO_DECODE_RECIPE, MAX_BLUR_REGIONS, BlurRegion, audio_origin_samples
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
 from engine.dubflow.asr import TimeBase, TimePoint
+from engine.dubflow.subtitle.style import SubtitleStyle, SubtitleStyleError, ass_event_prefix, ass_style_line, escape_ass_text
 from engine.dubflow.translation.adapter import SourceSegment, TranslationError, resolve_source_language
 from engine.dubflow.translation.argos_runtime import ArgosRuntime
 from engine.dubflow.translation.hachimi_runtime import ENGINES as TRANSLATION_ENGINES, create_runtime as create_translation_runtime
@@ -182,6 +183,9 @@ class WorkerConfig:
     separate_background: bool = False
     # "auto" uses a supported NVIDIA GPU when present; "cpu" never probes one.
     accelerator: str = "auto"
+    # The user's subtitle look; None keeps today's ASS byte for byte. The
+    # desktop passes it as subtitle_style.json beside the outputs instead.
+    subtitle_style: SubtitleStyle | None = None
 
     @classmethod
     def from_args(cls, args: Mapping[str, Any]) -> "WorkerConfig":
@@ -231,6 +235,13 @@ class WorkerConfig:
         except MediaAdapterError as error:
             raise ProductionJobError("COMMAND_INVALID", error.condition) from error
 
+        subtitle_style = None
+        if args.get("subtitle_style") is not None:
+            try:
+                subtitle_style = SubtitleStyle.from_mapping(args["subtitle_style"])
+            except SubtitleStyleError as error:
+                raise ProductionJobError("COMMAND_INVALID", str(error)) from error
+
         config = cls(
             job_id=str(args["job_id"]),
             stage_id=str(args["stage_id"]),
@@ -258,6 +269,7 @@ class WorkerConfig:
             speaker_voices=dict(speaker_voices),
             separate_background=optional_bool("separate_background", False),
             accelerator=accelerator,
+            subtitle_style=subtitle_style,
         )
         if config.target_language != "vi":
             raise ProductionJobError("LANGUAGE_UNSUPPORTED", "the production baseline currently supports Vietnamese output only")
@@ -686,6 +698,72 @@ def _apply_translation_overrides(cues: Sequence[TextCue], output_dir: Path) -> t
     return effective, "sha256:" + sha256(json.dumps(applied, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _review_voice(cues: Sequence[TextCue], output_dir: Path) -> tuple[tuple[TextCue, ...], frozenset[str], str | None]:
+    """What dubbing speaks after a subtitle review, per cue id.
+
+    The overrides file may carry two optional keys beside "cues" (the subtitle
+    text): "voice" maps a cue to the text its voice speaks when that differs
+    from the subtitle (an edited line the user did not ask to re-voice keeps
+    its earlier speech), and "revoice" lists cues to synthesise anew even when
+    their spoken text is unchanged. ``cues`` are the subtitle cues. Returns the
+    cues to dub, the re-voice set and an identity for downstream stages (None
+    when the file has neither key, so earlier reviews keep their identities).
+    """
+    path = output_dir / TRANSLATION_OVERRIDES_FILE
+    if not path.is_file():
+        return tuple(cues), frozenset(), None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        raw_voice = document.get("voice", {})
+        raw_revoice = document.get("revoice", [])
+        if "voice" not in document and "revoice" not in document:
+            return tuple(cues), frozenset(), None
+        if not isinstance(raw_voice, dict) or not isinstance(raw_revoice, list) or len(raw_revoice) > 20_000:
+            raise ValueError("voice must be an object and revoice a bounded list")
+        voice: dict[str, str] = {}
+        for cue_id, text in raw_voice.items():
+            if not isinstance(text, str):
+                raise ValueError("voice texts must be strings")
+            text = " ".join(text.split())
+            if not text or len(text) > _MAX_OVERRIDE_TEXT:
+                raise ValueError(f"voice text for {cue_id} is empty or longer than {_MAX_OVERRIDE_TEXT} characters")
+            voice[cue_id] = text
+        if any(not isinstance(cue_id, str) for cue_id in raw_revoice):
+            raise ValueError("revoice must list cue ids")
+        revoice = frozenset(raw_revoice)
+    except (OSError, ValueError, AttributeError) as error:
+        raise ProductionJobError("TRANSLATION_OVERRIDES_INVALID", f"{path.name}: {error}") from error
+    known = {cue.cue_id for cue in cues}
+    unknown = sorted((set(voice) | revoice) - known)
+    if unknown:
+        raise ProductionJobError("TRANSLATION_OVERRIDES_INVALID",
+                                 f"{path.name} names cues that this transcript does not contain: {', '.join(unknown[:5])}")
+    spoken = tuple(replace(cue, translated_text=voice[cue.cue_id]) if cue.cue_id in voice else cue for cue in cues)
+    identity = {"voice": {cue_id: voice[cue_id] for cue_id in sorted(voice)}, "revoice": sorted(revoice)}
+    return spoken, revoice, "sha256:" + sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+SUBTITLE_STYLE_FILE = "subtitle_style.json"
+
+
+def _subtitle_style(config: WorkerConfig) -> SubtitleStyle | None:
+    """The job's subtitle look: the command's, else subtitle_style.json beside the outputs."""
+    if getattr(config, "subtitle_style", None) is not None:
+        return config.subtitle_style
+    path = config.output_dir / SUBTITLE_STYLE_FILE
+    if not path.is_file():
+        return None
+    try:
+        if path.stat().st_size > 64 * 1024:
+            raise ValueError("file is too large")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("schema_version") != 1 or "style" not in document:
+            raise ValueError("schema_version 1 with a style object is required")
+        return SubtitleStyle.from_mapping(document["style"])
+    except (OSError, ValueError) as error:
+        raise ProductionJobError("SUBTITLE_STYLE_INVALID", f"{path.name}: {error}") from error
+
+
 def _format_timestamp(milliseconds: int, *, ass: bool = False) -> str:
     milliseconds = max(0, int(milliseconds))
     hours, remainder = divmod(milliseconds, 3_600_000)
@@ -704,7 +782,7 @@ ASS_STYLE_BAND = "Style: Band,Arial,48,&H10000000,&H000000FF,&H00000000,&H000000
 ASS_BAND_EVENT = r"Dialogue: 0,0:00:00.00,9:59:59.99,Band,,0,0,0,,{\an7\pos(0,0)\p1}m 0 820 l 1920 820 1920 1064 0 1064{\p0}"
 
 
-def _write_subtitles(output_dir: Path, cues: Sequence[TextCue], *, box: bool = False) -> tuple[Path, Path]:
+def _write_subtitles(output_dir: Path, cues: Sequence[TextCue], *, box: bool = False, style: SubtitleStyle | None = None) -> tuple[Path, Path]:
     srt = output_dir / "captions_vi.srt"
     ass = output_dir / "captions_vi.ass"
     srt_text = "\n\n".join(
@@ -713,8 +791,16 @@ def _write_subtitles(output_dir: Path, cues: Sequence[TextCue], *, box: bool = F
     ) + "\n\n"
     # Without the band the file is byte-identical to earlier releases.
     layer = 1 if box else 0
-    ass_text = """[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n""" + ASS_STYLE_DEFAULT + ("\n" + ASS_STYLE_BAND if box else "") + """\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n""" + (ASS_BAND_EVENT + "\n" if box else "") + "\n".join(
-        f"Dialogue: {layer},{_format_timestamp(cue.start_ms, ass=True)},{_format_timestamp(cue.end_ms, ass=True)},Default,,0,0,0,,{(cue.translated_text or cue.source_text).replace(chr(10), r'\\N')}"
+    if style is None:
+        info, default_style, prefix = "", ASS_STYLE_DEFAULT, ""
+        text_of = lambda cue: (cue.translated_text or cue.source_text).replace(chr(10), r'\\N')
+    else:
+        # A chosen look scales its outline and box padding with the frame, as the
+        # editor's preview does, and keeps reviewed text literal.
+        info, default_style, prefix = "ScaledBorderAndShadow: yes\n", ass_style_line(style), ass_event_prefix(style)
+        text_of = lambda cue: escape_ass_text(cue.translated_text or cue.source_text)
+    ass_text = """[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n""" + info + """[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n""" + default_style + ("\n" + ASS_STYLE_BAND if box else "") + """\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n""" + (ASS_BAND_EVENT + "\n" if box else "") + "\n".join(
+        f"Dialogue: {layer},{_format_timestamp(cue.start_ms, ass=True)},{_format_timestamp(cue.end_ms, ass=True)},Default,,0,0,0,,{prefix}{text_of(cue)}"
         for cue in cues
     ) + "\n"
     try:
@@ -1546,10 +1632,11 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         _atomic_json(translation_path, {"schema_version": 2, "source_language": transcript.source_language, "target_language": "vi", "provenance": translation_provenance, "input_hash": translation_input, "cues": [cue.to_dict() for cue in translated]})
         _write_stage(checkpoint, checkpoint_path, "translation", {"path": str(translation_path), "sha256": _sha256(translation_path)})
     translated, overrides_identity = _apply_translation_overrides(translated, config.output_dir)
+    spoken, revoice, voice_identity = _review_voice(translated, config.output_dir)
     emitter.progress(0.58, "Đã dịch lời thoại", units_done=len(translated), units_total=len(translated))
     emitter.checkpoint("translation", _sha256(work_dir / "translation.json"))
 
-    srt_path, ass_path = _write_subtitles(export_dir, translated, box=getattr(config, "subtitle_box", False))
+    srt_path, ass_path = _write_subtitles(export_dir, translated, box=getattr(config, "subtitle_box", False), style=_subtitle_style(config))
     _write_stage(checkpoint, checkpoint_path, "subtitles", {"srt": str(srt_path), "ass": str(ass_path), "srt_sha256": _sha256(srt_path), "ass_sha256": _sha256(ass_path)})
     emitter.progress(0.66, "Đã tạo subtitle SRT/ASS")
     emitter.checkpoint("subtitles", _sha256(srt_path))
@@ -1593,13 +1680,13 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                         background_path, background_summary = None, {"mode": "original"}
                 bed_identity = json.dumps({"requested": True, "mode": background_summary["mode"],
                     "input_hash": background_summary.get("input_hash"), "sha256": bed_hash}, sort_keys=True) if getattr(config, "separate_background", False) else ""
-                generation_identity = sha256((translation_input + (overrides_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice) + casting_identity + bed_identity + ("|tts-cuda" if tts_device.device == "cuda" else "")).encode()).hexdigest()
+                generation_identity = sha256((translation_input + (overrides_identity or "") + (voice_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice) + casting_identity + bed_identity + ("|tts-cuda" if tts_device.device == "cuda" else "")).encode()).hexdigest()
                 try:
                     return run_b2_audio(
                         media=media,
                         source_path=config.source_path,
                         source_probe=probe,
-                        translated_cues=translated,
+                        translated_cues=spoken,
                         source_language=transcript.source_language,
                         app_root=config.app_root,
                         profile_path=profile_path,
@@ -1609,6 +1696,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                         # Shared by every generation in this output folder, so a reviewed
                         # re-run synthesises only the cues whose request changed.
                         synthesis_cache_dir=work_dir / "tts-cache",
+                        # Marked lines are synthesised anew even when their text is cached.
+                        **({"revoice_cue_ids": revoice} if revoice else {}),
                         **({"voice_by_cue": cue_voices, "speaker_by_cue": speaker_result.labels} if cue_voices is not None else {}),
                         **({"background_path": background_path} if background_path is not None else {}),
                         **({"tts_device": tts_device} if tts_device.device == "cuda" else {}),

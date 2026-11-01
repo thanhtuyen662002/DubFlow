@@ -6,7 +6,9 @@ the adapter at the engine boundary: identical engine requests (same text,
 timing, render window, voice, config and recipe) return the waveform an
 earlier generation already produced and the adapter accepted. The adapter
 still validates, hashes and publishes every artifact as usual, so the cache
-only skips inference. Failures are never cached.
+only skips inference. Failures are never cached. Segments named in
+``fresh_segments`` (a line the user asked to voice again) skip the lookup
+once per request and replace their entry with the new take.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ _FIELDS = ("format", "sample_rate", "channels", "bits_per_sample", "fit_mode", "
 
 
 class CachedSynthesisEngine:
-    def __init__(self, engine, directory: Path, *, identity: str) -> None:
+    def __init__(self, engine, directory: Path, *, identity: str, fresh_segments: frozenset[str] = frozenset()) -> None:
         if not re.fullmatch(r"[a-f0-9]{64}", identity):
             raise ValueError("synthesis cache identity is invalid")
         self.engine = engine
@@ -35,6 +37,9 @@ class CachedSynthesisEngine:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.identity = identity
         self.hits = 0
+        self.fresh_segments = frozenset(fresh_segments)
+        # Keys already synthesised anew in this run; a repeat request reuses them.
+        self._renewed: set[str] = set()
 
     def capabilities(self):
         return self.engine.capabilities()
@@ -93,11 +98,14 @@ class CachedSynthesisEngine:
 
     def synthesize(self, request) -> EngineSynthesis:
         key = self._key(request)
-        cached = self._load(key)
+        renew = request.segment.segment_id in self.fresh_segments and key not in self._renewed
+        cached = None if renew else self._load(key)
         if cached is not None:
             self.hits += 1
             return cached
         synthesis = self.engine.synthesize(request)
+        if renew:
+            self._renewed.add(key)
         try:
             self._store(key, synthesis)
         except OSError:

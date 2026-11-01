@@ -86,5 +86,21 @@ class SynthesisCacheTests(unittest.TestCase):
             self.assertEqual(inner.calls, ["a", "a", "a"])
 
 
+    def test_a_line_marked_for_revoicing_is_synthesised_anew_and_replaces_its_entry(self):
+        cues = (segment("a", 0, 1000, "Xin chào"), segment("b", 1000, 2000, "Cảm ơn"))
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            inner = CountingEngine()
+            run(CachedSynthesisEngine(inner, root / "cache", identity=IDENTITY), cues, root / "g1", input_hash="sha256:" + "1" * 64)
+            fresh = CachedSynthesisEngine(inner, root / "cache", identity=IDENTITY, fresh_segments=frozenset({"b"}))
+            run(fresh, cues, root / "g2", input_hash="sha256:" + "2" * 64)
+            self.assertEqual(inner.calls, ["a", "b", "b"], "the unchanged, unmarked line came from the cache")
+            self.assertEqual(fresh.hits, 1)
+            # The same request again in this run reuses the new take.
+            run(fresh, cues, root / "g3", input_hash="sha256:" + "3" * 64)
+            self.assertEqual(inner.calls, ["a", "b", "b"])
+            self.assertEqual(len(list((root / "cache").glob("*.json"))), 2, "the new take replaced the old entry")
+
+
 if __name__ == "__main__":
     unittest.main()
