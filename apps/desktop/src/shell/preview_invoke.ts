@@ -68,6 +68,13 @@ let savedOverrides: Record<string, string> = {};
 /** Phụ đề "Áp dụng": what each line's voice speaks where it differs from the subtitle, and the look. */
 let savedVoice: Record<string, string> = {};
 let savedSubtitleStyle: unknown = null;
+// Che: a new job's cover.json (edge stretch) and the caption scan's regions:
+// one line at slightly different widths through the video, and a short upper line.
+let savedCover: unknown = { style: { mode: "stretch", direction: "top", strip_px: 4, color: "#000000", block: 24, feather: 0 }, regions: [], disabled_auto: [], fixed: null };
+const previewCaptions = [
+  ...Array.from({ length: 37 }, (_, index) => ({ x: 0.22 + (index % 4) * 0.01, y: 0.84, w: 0.56 - (index % 4) * 0.02, h: 0.085, start_ms: 4000 * index + 1200, end_ms: 4000 * index + 3600 })),
+  ...[52_000, 71_000, 109_000].map((start) => ({ x: 0.3, y: 0.74, w: 0.4, h: 0.07, start_ms: start, end_ms: start + 2500 })),
+].map((region, index) => ({ ...region, index }));
 const linkFetches = new Map<string, { url: string; title: string | null; startedAt: number }>();
 let douyinSession = false;
 
@@ -236,7 +243,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       source_path: "D:\\Videos\\Douyin\\phim-ngan-tap-1.mp4",
       mix_path: "D:\\Videos\\DubFlow Output\\preview\\editable\\final_mix.wav",
       dubbed: true,
-      blur_regions: [{ x: 0.1, y: 0.8, w: 0.8, h: 0.1 }],
+      blur_regions: previewCaptions,
+      cover: savedCover,
     } as T;
     case "edit_subtitles_apply": {
       const style = args.subtitleStyle as { font?: unknown } | null;
@@ -244,6 +252,9 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       savedOverrides = { ...(args.overrides as Record<string, string>) };
       savedVoice = { ...(args.voice as Record<string, string>) };
       savedSubtitleStyle = JSON.parse(JSON.stringify(style));
+      const cover = args.cover as { style?: { mode?: unknown } } | null | undefined;
+      if (cover && cover.style && typeof cover.style.mode !== "string") throw new Error("Kiểu che không hợp lệ");
+      if (cover) savedCover = JSON.parse(JSON.stringify(cover));
       return "D:\\Videos\\DubFlow Output\\preview (sửa 1)" as T;
     }
     case "edit_status": return previewEditStatus(String(args.outputPath)) as T;

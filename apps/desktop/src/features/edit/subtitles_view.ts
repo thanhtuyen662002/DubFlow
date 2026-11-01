@@ -2,21 +2,36 @@
  * The Phụ đề mode of the editor (Issue #414): the line list, the style
  * panel, the live preview over the clean source picture with the dubbed mix,
  * dragging the subtitle block, and "Áp dụng", which makes a new version of
- * the job through the review re-run.
+ * the job through the review re-run. The Che mode (Issue #418) shares the
+ * preview and "Áp dụng": one new version carries both.
  */
 import type { QueueJob } from "../queue/model.ts";
 import type { ConfirmOptions } from "../../shell/confirm.ts";
+import { COVER_STORAGE_KEY, type AutoRegion, type CoverDocument } from "./cover.ts";
 import { formatClock, MAIN, outputToSource, type Edit } from "./model.ts";
 import {
   applyPreset, changeSummary, cleanText, cueAt, cueOutputTime, DEFAULT_STYLE, dragPosition, isColor, normalizeStyle, parseStyle,
-  presetOf, PRESETS, previewMetrics, regionOn, rgba, sameStyle, STYLE_STORAGE_KEY, SUBTITLE_FONTS, subtitleChanges, BOX_SWATCHES,
+  presetOf, PRESETS, previewMetrics, rgba, sameStyle, STYLE_STORAGE_KEY, SUBTITLE_FONTS, subtitleChanges, BOX_SWATCHES,
   OUTLINE_SWATCHES, TEXT_SWATCHES, withoutPosition, type PresetId, type SubtitleCue, type SubtitleStyle,
 } from "./subtitles.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-type Region = { x: number; y: number; w: number; h: number; start_ms?: number; end_ms?: number };
 type LoadResponse = {
-  cues: SubtitleCue[]; style: unknown; source_path: string | null; mix_path: string | null; dubbed: boolean; blur_regions: Region[];
+  cues: SubtitleCue[]; style: unknown; source_path: string | null; mix_path: string | null; dubbed: boolean; blur_regions: AutoRegion[];
+  /** cover.json of this version, if any. */
+  cover?: unknown;
+};
+
+/** What the Che mode lends the shared preview and "Áp dụng". */
+export type CoverHooks = {
+  /** This version's cover and detected caption regions arrived. */
+  loaded(cover: unknown, detected: AutoRegion[]): void;
+  /** Draw the cover at a time of the main video, or clear it (null). */
+  draw(seconds: number | null): void;
+  /** The cover to apply and its footer words, or null when unchanged. */
+  pending(): { document: CoverDocument; summary: string[] } | null;
+  /** "Áp dụng" made a new version with the pending cover. */
+  applied(): void;
 };
 type Rect = { left: number; top: number; width: number; height: number };
 
@@ -44,6 +59,7 @@ export type SubtitleContext = {
   finish: () => Promise<void>;
   /** The footer or a badge changed. */
   changed: () => void;
+  cover: CoverHooks;
 };
 
 export type SubtitleMode = {
@@ -51,16 +67,21 @@ export type SubtitleMode = {
   begin(job: QueueJob, outputPath: string): void;
   /** The session ends. */
   end(): void;
-  enter(): void;
+  /** Show the clean-source preview with the Phụ đề panel, or under the Che panel. */
+  enter(panel?: "subs" | "cover"): void;
   leave(): void;
   readonly active: boolean;
+  /** The preview plays the clean source (not the final video with its burned cover). */
+  readonly clean: boolean;
+  /** Redraw the footer and the preview after a Che change. */
+  refresh(): void;
   /** Draw the line on screen, the covers and keep the dubbed audio in step. */
   frame(): void;
   /** The cut/insert edit changed: line times and cut lines. */
   editChanged(): void;
   /** The volume of the playing main-video segment, heard through the dubbed mix. */
   volume(level: number): void;
-  /** Lines, marks or the look changed and are not applied yet. */
+  /** Lines, marks, the look or the cover changed and are not applied yet. */
   dirty(): boolean;
   /** Revisions made by "Áp dụng" that are still to be offered for editing. */
   readonly pending: Set<string>;
@@ -69,7 +90,7 @@ export type SubtitleMode = {
 const LIST_STEP = 200;
 const SAMPLE = "Phụ đề tiếng Việt mẫu";
 const MIC = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>';
-const FALLBACK_NOTE = "Đang xem trên video đã xuất: phụ đề cũ đã in sẵn trong video nên có thể thấy hai lớp chữ. Video xuất ra sẽ chỉ có phụ đề mới.";
+const FALLBACK_NOTE = "Đang xem trên video đã xuất: phụ đề và lớp che cũ đã in sẵn trong video nên có thể thấy hai lớp. Video xuất ra sẽ chỉ có bản mới.";
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const node = document.querySelector<T>(selector);
@@ -129,6 +150,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   let data: LoadResponse | null = null;
   let loadToken = 0;
   let active = false;
+  let panel: "subs" | "cover" = "subs";
   let pane: "lines" | "style" = "lines";
   const drafts = new Map<string, string>();
   const marked = new Set<string>();
@@ -166,6 +188,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       data = { ...response, cues: [...response.cues].sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms) };
       baseStyle = normalizeStyle(parseStyle(response.style) ?? DEFAULT_STYLE);
       style = baseStyle;
+      context.cover.loaded(response.cover ?? null, response.blur_regions ?? []);
       loading.hidden = true;
       renderList();
       renderStyle();
@@ -292,7 +315,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     const cue = seconds === null ? null : cueAt(cues(), seconds);
     const line = cue ? cleanText(draftOf(cue.cue_id)) : "";
     // On the style tab or while dragging an empty moment shows a sample line to place.
-    const sample = !line && (pane === "style" || !!drag) && !!data;
+    const sample = !line && panel === "subs" && (pane === "style" || !!drag) && !!data;
     block.hidden = !line && !sample;
     block.classList.toggle("sample", sample);
     const shown = line || (sample ? SAMPLE : "");
@@ -309,21 +332,15 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     syncAudio();
   }
 
-  /** The render's caption cover, approximated: blurred rectangles and the dark band. */
+  /**
+   * The render's caption cover: the Che style drawn from the source picture
+   * (over the final video too, whose old cover then shows beneath), and the
+   * dark band under the subtitles.
+   */
   function renderCovers(seconds: number | null): void {
-    if (!swapped || seconds === null || !job) {
-      covers.replaceChildren();
-      return;
-    }
-    const ms = seconds * 1000;
-    const regions = [...(job.blurRegions ?? []), ...(data?.blur_regions ?? [])].filter((region) => regionOn(region, ms));
-    const nodes: HTMLElement[] = regions.map((region) => {
-      const cover = element("span", "subs-cover");
-      Object.assign(cover.style, { left: `${region.x * 100}%`, top: `${region.y * 100}%`, width: `${region.w * 100}%`, height: `${region.h * 100}%` });
-      return cover;
-    });
-    if (job.subtitleBox && job.burnIn !== false) nodes.push(element("span", "subs-band"));
-    covers.replaceChildren(...nodes);
+    context.cover.draw(job && data ? seconds : null);
+    const band = !!job && swapped && seconds !== null && !!job.subtitleBox && job.burnIn !== false;
+    if (band !== !!covers.firstChild) covers.replaceChildren(...(band ? [element("span", "subs-band")] : []));
   }
 
   function markCurrent(cueId: string | null): void {
@@ -631,31 +648,42 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   function pendingChanges() {
     const changes = subtitleChanges(cues(), draftOf, marked);
     const styleDiffers = !sameStyle(style, baseStyle);
-    return { changes, styleDiffers, any: changes.edited > 0 || changes.revoice.length > 0 || styleDiffers };
+    const cover = data ? context.cover.pending() : null;
+    return { changes, styleDiffers, cover, any: changes.edited > 0 || changes.revoice.length > 0 || styleDiffers || !!cover };
+  }
+
+  /** "3 câu sửa · kiểu mới · kiểu che mới", or "Chưa có thay đổi". */
+  function summaryText(short: boolean): string {
+    const { changes, styleDiffers, cover } = pendingChanges();
+    const subtitles = changes.edited || changes.revoice.length || styleDiffers ? changeSummary(changes.edited, changes.revoice.length, styleDiffers, short) : "";
+    const parts = [subtitles, ...(cover?.summary ?? [])].filter(Boolean);
+    return parts.length ? parts.join(" · ") : "Chưa có thay đổi";
   }
 
   function renderFoot(): void {
-    const { changes, styleDiffers, any } = pendingChanges();
+    const { changes, any } = pendingChanges();
     const summary = $("#subs-summary");
-    summary.textContent = changes.empty ? `${changes.empty} câu đang trống` : changeSummary(changes.edited, changes.revoice.length, styleDiffers, true);
-    summary.title = changeSummary(changes.edited, changes.revoice.length, styleDiffers);
+    summary.textContent = changes.empty ? `${changes.empty} câu đang trống` : summaryText(true);
+    summary.title = summaryText(false);
     summary.classList.toggle("warn", changes.empty > 0);
     applyButton.disabled = applying || !data || !any || changes.empty > 0 || changes.tooLong > 0;
     applyButton.textContent = applying ? "Đang áp dụng…" : "Áp dụng";
-    applyButton.title = applyButton.disabled && !applying ? "Sửa câu, đánh dấu đọc lại giọng hoặc đổi kiểu chữ để áp dụng" : "Tạo phiên bản mới với phụ đề này";
+    applyButton.title = applyButton.disabled && !applying
+      ? "Sửa câu, đổi kiểu chữ hoặc đổi cách che chữ gốc để áp dụng" : "Tạo phiên bản mới với các thay đổi này";
     context.changed();
   }
 
   async function apply(): Promise<void> {
     if (!job || !data || applying) return;
-    const { changes, styleDiffers, any } = pendingChanges();
+    const { changes, styleDiffers, cover, any } = pendingChanges();
     if (!any || changes.empty) return;
     const revoiced = changes.revoice.length;
+    const subtitlesChanged = changes.edited > 0 || revoiced > 0 || styleDiffers;
     const confirmed = await host.confirm({
-      title: "Áp dụng phụ đề?",
-      message: `${changeSummary(changes.edited, revoiced, styleDiffers)}. Sẽ tạo phiên bản mới; ${revoiced
+      title: subtitlesChanged ? "Áp dụng thay đổi?" : "Áp dụng cách che chữ?",
+      message: `${summaryText(false).replace(/^./, (letter) => letter.toUpperCase())}. Sẽ tạo phiên bản mới; ${revoiced
         ? "các câu được đánh dấu sẽ đọc lại giọng, các câu khác giữ giọng cũ"
-        : "giọng đọc giữ nguyên"}. Bước nhận dạng và dịch được dùng lại nên thường chỉ mất vài phút. Video hiện tại không bị thay đổi.`,
+        : "giọng đọc giữ nguyên"}. Bước nhận dạng, dịch và dò chữ gốc được dùng lại nên thường chỉ mất vài phút. Video hiện tại không bị thay đổi.`,
       confirmLabel: "Áp dụng",
       cancelLabel: "Xem lại",
     });
@@ -668,20 +696,23 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       const applied = normalizeStyle(style);
       const folder = await invoke<string>("edit_subtitles_apply", {
         outputPath, overrides: changes.overrides, voice: changes.voice, revoice: changes.revoice, subtitleStyle: applied,
+        cover: cover?.document ?? null,
       });
       try {
         window.localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify(applied));
+        if (cover) window.localStorage.setItem(COVER_STORAGE_KEY, JSON.stringify(cover.document.style));
       } catch {
-        // The remembered default is a convenience; the new version has its style.
+        // The remembered defaults are a convenience; the new version has its own.
       }
       const id = await host.revise(source, folder);
       if (id) pending.add(id);
       drafts.clear();
       marked.clear();
       baseStyle = applied;
+      if (cover) context.cover.applied();
       await context.finish();
     } catch (error) {
-      host.showError(`Không áp dụng được phụ đề: ${String(error).slice(0, 200)}`);
+      host.showError(`Không áp dụng được thay đổi: ${String(error).slice(0, 200)}`);
     } finally {
       applying = false;
       renderFoot();
@@ -692,14 +723,21 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   // ---------- Mode ----------
 
   function show(on: boolean): void {
-    section.hidden = !on;
+    section.hidden = !on || panel !== "subs";
     foot.hidden = !on;
     layer.hidden = !on;
+    // Under Che the subtitle only shows where it lands; the regions take the pointer.
+    layer.classList.toggle("passive", panel !== "subs");
   }
 
   return {
     pending,
     get active() { return active; },
+    get clean() { return swapped; },
+    refresh() {
+      renderFoot();
+      frame();
+    },
     begin(next, path) {
       job = next;
       outputPath = path;
@@ -725,8 +763,16 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       marked.clear();
       list.replaceChildren();
     },
-    enter() {
-      if (active) return;
+    enter(next = "subs") {
+      if (active) {
+        panel = next;
+        painted = "";
+        show(true);
+        frame();
+        return;
+      }
+      panel = next;
+      painted = "";
       active = true;
       show(true);
       renderPane();
@@ -745,6 +791,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       swapOut();
       showNote(null);
       covers.replaceChildren();
+      context.cover.draw(null);
     },
     frame,
     editChanged() {

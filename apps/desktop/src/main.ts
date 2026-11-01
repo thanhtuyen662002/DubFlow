@@ -27,6 +27,7 @@ import { mountCompilation } from "./features/compilation/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { mountEditor } from "./features/edit/view.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
+import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
 import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
@@ -121,6 +122,7 @@ hachimiNeedsChinese.hidden = true;
 const translationEngineSelect = $<HTMLSelectElement>("#translation-engine");
 translationEngineSelect.after(hachimiNeedsChinese);
 const blurModeSelect = $<HTMLSelectElement>("#blur-mode");
+const coverStyleSelect = $<HTMLSelectElement>("#cover-style");
 const runAllButton = $<HTMLButtonElement>("#run-all");
 let batchRunning = false;
 let blurJobId: string | null = null;
@@ -258,8 +260,11 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   const blurMode = job?.blurAuto ? "auto" : job?.blurRegions?.length ? "manual" : "off";
   // "Thủ công" stays selected while the user has not drawn a region yet.
   if (blurModeSelect.value !== "manual" || blurMode !== "off" || blurJobId === null) blurModeSelect.value = blurMode;
-  $("#blur-summary").textContent = blurMode === "auto" ? "Tự dò chữ gốc và che khi nó xuất hiện" : describeRegions(job?.blurRegions);
+  const coverStyle = rememberedCoverStyle();
+  $("#blur-summary").textContent = blurMode === "auto" ? `Tự dò chữ gốc, che bằng ${describeCoverStyle(coverStyle)}` : describeRegions(job?.blurRegions);
   $("#blur-manual-row").hidden = blurModeSelect.value !== "manual";
+  $("#cover-style-row").hidden = blurModeSelect.value === "off";
+  coverStyleSelect.value = coverStyle.mode;
   sourceLanguageSelect.value = job?.sourceLanguage ?? "";
   // Hachimi only translates Chinese: English hides the choice, Auto shows Argos and asks for Chinese.
   const engine = job ? effectiveTranslator(job) : "argos";
@@ -1010,12 +1015,22 @@ function rememberedSubtitleStyle(): SubtitleStyle | null {
   }
 }
 
+/** The cover last applied in Che or chosen in Thiết lập, the default for new videos (none: edge stretch). */
+function rememberedCoverStyle(): CoverStyle {
+  try {
+    return storedCoverStyle(window.localStorage.getItem(COVER_STORAGE_KEY));
+  } catch {
+    return storedCoverStyle(null);
+  }
+}
+
 async function startJob(job: QueueJob): Promise<void> {
   if (!canStart(job)) return;
   startButton.disabled = true;
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    const started = await invoke<{ output_dir: string } | null>("start_job", startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle()));
+    const started = await invoke<{ output_dir: string } | null>("start_job",
+      startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle()));
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
     if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);
@@ -2083,6 +2098,15 @@ blurModeSelect.addEventListener("change", () => {
     queue.setBlurAuto(job.id, false);
   }
   rememberDefaults(selectedJob() ?? job);
+});
+coverStyleSelect.addEventListener("change", () => {
+  const style = normalizeCoverStyle({ ...rememberedCoverStyle(), mode: coverStyleSelect.value as CoverMode });
+  try {
+    window.localStorage.setItem(COVER_STORAGE_KEY, JSON.stringify(style));
+  } catch {
+    // Without storage new videos keep edge stretch.
+  }
+  renderVoiceControls(selectedJob());
 });
 $("#blur-close").addEventListener("click", closeBlurEditor);
 $("#blur-apply").addEventListener("click", () => applyBlur([blurDraft], false));

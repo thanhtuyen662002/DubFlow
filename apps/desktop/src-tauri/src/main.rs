@@ -475,9 +475,12 @@ struct BlurRegion {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>, separate_background: Option<bool>, cpu_only: Option<bool>, subtitle_style: Option<edit::SubtitleStyle>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>, separate_background: Option<bool>, cpu_only: Option<bool>, subtitle_style: Option<edit::SubtitleStyle>, cover_style: Option<edit::CoverStyle>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     if let Some(style) = &subtitle_style {
+        style.validate()?;
+    }
+    if let Some(style) = &cover_style {
         style.validate()?;
     }
     let source = absolute_file(&source_path, "source_path")?;
@@ -514,6 +517,13 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     if let Some(style) = subtitle_style.filter(|_| burn_in != Some(false)) {
         if !output.join(edit::SUBTITLE_STYLE_FILE).exists() {
             edit::write_subtitle_style(&output, &style)?;
+        }
+    }
+    // Likewise the last applied cover style (edge stretch unless changed); the
+    // worker only uses it when something is covered.
+    if let Some(style) = cover_style {
+        if !output.join(edit::COVER_FILE).exists() {
+            edit::write_cover(&output, &edit::CoverChoice::with_style(style))?;
         }
     }
     let model_root = control.join("models");
@@ -956,20 +966,21 @@ fn copy_work_cache(from: &Path, to: &Path, skip: &[&str]) -> std::io::Result<()>
 }
 
 /// What a new version changes: the subtitle texts ("cues"), the text each
-/// voice speaks where it differs from its subtitle, the lines to voice again
-/// and the look (None keeps the original's).
+/// voice speaks where it differs from its subtitle, the lines to voice again,
+/// the look and the cover (None keeps the original's).
 pub(crate) struct Revision<'a> {
     pub overrides: &'a std::collections::BTreeMap<String, String>,
     pub voice: &'a std::collections::BTreeMap<String, String>,
     pub revoice: &'a [String],
     pub style: Option<&'a edit::SubtitleStyle>,
+    pub cover: Option<&'a edit::CoverChoice>,
 }
 
 /// Prepare a separate folder for a review revision and return it. The original
 /// output folder is only read, so its validated outputs stay as they were.
 fn create_revision(original: &Path, overrides: &std::collections::BTreeMap<String, String>) -> Result<PathBuf, String> {
     let none = std::collections::BTreeMap::new();
-    create_revision_with(original, &Revision { overrides, voice: &none, revoice: &[], style: None })
+    create_revision_with(original, &Revision { overrides, voice: &none, revoice: &[], style: None, cover: None })
 }
 
 fn create_revision_with(original: &Path, revision: &Revision) -> Result<PathBuf, String> {
@@ -993,6 +1004,14 @@ fn create_revision_with(original: &Path, revision: &Revision) -> Result<PathBuf,
             None if original.join(edit::SUBTITLE_STYLE_FILE).is_file() => {
                 fs::copy(original.join(edit::SUBTITLE_STYLE_FILE), partial.join(edit::SUBTITLE_STYLE_FILE))
                     .map_err(|error| fail(format!("Không chép được kiểu phụ đề: {error}")))?;
+            }
+            None => {}
+        }
+        match revision.cover {
+            Some(cover) => edit::write_cover(&partial, cover)?,
+            None if original.join(edit::COVER_FILE).is_file() => {
+                fs::copy(original.join(edit::COVER_FILE), partial.join(edit::COVER_FILE))
+                    .map_err(|error| fail(format!("Không chép được cách che chữ: {error}")))?;
             }
             None => {}
         }
@@ -1848,7 +1867,7 @@ mod tests {
             (".dubflow-work/translation.json", "{\"cues\": []}"), (".dubflow-work/checkpoint.json", "{}"),
             (".dubflow-work/tts-cache/a.wav", "tts"), (".dubflow-work/b2-audio/x/y.wav", "mix"),
             (".dubflow-work/export-pending/final_vi.mp4", "pending"), (".dubflow-work/edit/exports.json", "[]"),
-            ("subtitle_style.json", "{\"schema_version\": 1}")];
+            ("subtitle_style.json", "{\"schema_version\": 1}"), ("cover.json", "{\"schema_version\": 1, \"regions\": []}")];
         for (path, body) in files {
             fs::create_dir_all(original.join(path).parent().unwrap()).unwrap();
             fs::write(original.join(path), body).unwrap();
@@ -1884,6 +1903,7 @@ mod tests {
         assert!(!first.join(".dubflow-work/b2-audio").exists() && !first.join(".dubflow-work/export-pending").exists());
         assert!(!first.join(".dubflow-work/edit").exists(), "no draft to carry, and the old exports stay behind");
         assert_eq!(fs::read_to_string(first.join("subtitle_style.json")).unwrap(), "{\"schema_version\": 1}", "the look carries over");
+        assert_eq!(fs::read_to_string(first.join("cover.json")).unwrap(), "{\"schema_version\": 1, \"regions\": []}", "so does the cover");
         assert!(!first.join("final_vi.mp4").exists(), "the revision renders its own output");
         let stored: Value = serde_json::from_slice(&fs::read(first.join(OVERRIDES_FILE)).unwrap()).unwrap();
         assert_eq!(stored, json!({"schema_version": 1, "cues": {"c1": "Xin chào"}}));
