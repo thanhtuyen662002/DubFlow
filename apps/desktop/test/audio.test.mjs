@@ -135,9 +135,9 @@ assert.ok(matchesExport(film, { segments: [{ start: 0, end: 100, speed: 1, volum
 const cut = { ...mixed, segments: [{ ...mixed.segments[0], end: 30 }] };
 assert.deepEqual(exportPlan(cut).audio.map((item) => item.at), [12.346]);
 
-// ---------- Draft schema 3, and v2 drafts migrate ----------
+// ---------- Draft schema 3 (now 4), and v2 drafts migrate ----------
 const saved = JSON.parse(JSON.stringify(serializeProject(mixed, 3, "s1")));
-assert.equal(saved.schema_version, 3);
+assert.equal(saved.schema_version, 4);
 assert.equal(saved.main_volume, 0.8);
 assert.deepEqual(saved.audio[1], { id: songId, source: { kind: "file", path: "D:\\Nhạc\\nhạc nền.mp3" }, title: "nhạc nền", duration: 30, at: 41.5, start: 2,
   end: 12, volume: 1.56, fade_in: 1.2, fade_out: 3, duck_db: 10 });

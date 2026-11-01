@@ -1,9 +1,10 @@
 /**
  * Edit mode on the queue screen (Issues #408, #410): the Cắt ghép and Chèn
  * panels, the timeline (segments, joints with transitions, the overlay row,
- * the sound row of Âm thanh, #420), the live preview through the queue player
- * plus one <video> per other media and per overlay, autosave of the draft,
- * the "Xuất video" dialog and the "Bản đã sửa" list in Kết quả.
+ * the sound row of Âm thanh, #420, the text row of Chữ, #422), the live
+ * preview through the queue player plus one <video> per other media and per
+ * overlay, autosave of the draft, the "Xuất video" dialog and the "Bản đã
+ * sửa" list in Kết quả.
  */
 import type { QueueJob } from "../queue/model.ts";
 import type { ConfirmOptions } from "../../shell/confirm.ts";
@@ -21,6 +22,7 @@ import {
 import { mountSubtitles } from "./subtitles_view.ts";
 import { mountCover } from "./cover_view.ts";
 import { mountAudio } from "./audio_view.ts";
+import { mountText } from "./text_view.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
@@ -96,7 +98,7 @@ type Session = {
   recent: Media[];
 };
 
-type Mode = "cut" | "insert" | "subs" | "cover" | "audio";
+type Mode = "cut" | "insert" | "subs" | "cover" | "audio" | "text";
 type Where = "playhead" | "end" | "overlay";
 type LibraryItem = { key: string; path: string; title: string; meta: string; kind: "job" | "file"; duration: number | null };
 type Box = { element: HTMLDivElement; video: HTMLVideoElement; path: string };
@@ -175,6 +177,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const track = $("#tl-track");
   const overlayTrack = $("#tl-overlays");
   const audioTrack = $("#tl-audio");
+  const textTrack = $("#tl-text");
   const timeline = $("#edit-timeline");
   const playhead = $("#tl-playhead");
   const zoom = $<HTMLInputElement>("#tl-zoom");
@@ -499,6 +502,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     renderOverlays(edit, time);
     subs.frame();
     audio.frame(time, session.playing);
+    textMode.frame(time);
   }
 
   function boxFor(overlay: Overlay): Box {
@@ -574,7 +578,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }
   }
 
-  new ResizeObserver(() => { if (session) renderOverlays(current(), session.outputTime); }).observe(frame);
+  new ResizeObserver(() => {
+    if (!session) return;
+    renderOverlays(current(), session.outputTime);
+    // Texts measure their lines: after this layout pass.
+    requestAnimationFrame(() => { if (session) textMode.frame(session.outputTime); });
+  }).observe(frame);
 
   /** Phụ đề and Che jump the playhead to a line or a region. */
   function seekTo(time: number): void {
@@ -630,6 +639,33 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (!session) return;
       session.overlay = null;
       if (mode !== "audio") setMode("audio");
+      else render();
+    },
+    note,
+    redraw: () => { if (session) render(); },
+  });
+  const textMode = mountText({
+    edit: () => current(),
+    base: () => session!.history.current,
+    busy: () => !session || !!session.draft,
+    commit: (next) => commit(next),
+    preview: (next) => {
+      if (!session) return;
+      session.draft = next;
+      renderPanel();
+      renderTimeline();
+      renderEffects();
+    },
+    outputTime: () => session?.outputTime ?? 0,
+    seek: (time) => seekOutput(time),
+    pause: () => { if (session?.playing) pausePlayback(); },
+    pps: () => pps,
+    timeAt: (clientX) => timeAt(clientX),
+    picture: () => pictureRect(),
+    enterMode: () => {
+      if (!session) return;
+      session.overlay = null;
+      if (mode !== "text") setMode("text");
       else render();
     },
     note,
@@ -753,6 +789,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!session || session.draft) return;
     if (mode === "audio") {
       audio.deleteSelected();
+      return;
+    }
+    if (mode === "text") {
+      textMode.deleteSelected();
       return;
     }
     const edit = session.history.current;
@@ -974,7 +1014,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     changesBadge.title = `${history.changes} thay đổi chưa xuất · bản nháp được tự lưu`;
     exportButton.disabled = isUnchanged(edit, facts.duration);
     exportButton.title = exportButton.disabled ? "Chưa có thay đổi để xuất" : "Xuất bản đã chỉnh sửa thành file video mới";
-    const panelMode = mode === "subs" || mode === "cover" || mode === "audio";
+    const panelMode = mode === "subs" || mode === "cover" || mode === "audio" || mode === "text";
     const overlay = panelMode ? undefined : selectedOverlay();
     const segment = selectedSegment();
     const inserted = !!segment && segment.mediaId !== MAIN;
@@ -984,6 +1024,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $("#edit-select-hint").hidden = !(mode === "insert" && !overlay && !inserted);
     $("#edit-cut-notes").hidden = mode !== "cut" || !!overlay;
     audio.render(mode === "audio");
+    textMode.render(mode === "text");
     if (subs.dirty()) {
       changesBadge.hidden = false;
       $("#edit-changes-text").textContent = pending ? `${history.changes} thay đổi · chưa áp dụng` : "Chưa áp dụng";
@@ -1014,7 +1055,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $("#edit-volume-note").hidden = segment.volume <= 1;
     $("#edit-delete-label").textContent = inserted ? "Xóa đoạn chèn" : "Xóa đoạn";
     $<HTMLButtonElement>("#edit-delete").disabled = edit.segments.length <= 1;
-    $<HTMLButtonElement>("#tl-delete").disabled = edit.segments.length <= 1 && !overlay && !(mode === "audio" && audio.selected);
+    $<HTMLButtonElement>("#tl-delete").disabled = edit.segments.length <= 1 && !overlay && !(mode === "audio" && audio.selected)
+      && !(mode === "text" && textMode.selected);
   }
 
   function renderOverlayPanel(edit: Edit, overlay: Overlay): void {
@@ -1219,16 +1261,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       block.append(name, startHandle, endHandle);
       return block;
     }));
-    // Sound row: under the video track; the timeline grows with its rows.
+    // Text and sound rows: under the video track; the timeline grows with its rows.
+    const textHeight = textMode.renderTrack(textTrack, mode === "text", PAD);
     const audioHeight = audio.renderTrack(audioTrack, mode === "audio", PAD);
-    content.classList.toggle("with-audio", audioHeight > 0);
-    const rows = 22 + (edit.overlays.length ? 30 : 0) + 48 + 6 + audioHeight + 16;
-    timeline.style.height = audioHeight ? `${Math.max(TIMELINE_PX, 36 + rows)}px` : "";
+    content.classList.toggle("with-audio", audioHeight > 0 || textHeight > 0);
+    const rows = 22 + (edit.overlays.length ? 30 : 0) + 48 + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + 16;
+    timeline.style.height = audioHeight || textHeight ? `${Math.max(TIMELINE_PX, 36 + rows)}px` : "";
     renderThumbs();
     renderPlayhead();
     const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;
     $("#tl-info").textContent = [`${edit.segments.length} đoạn`, inserts ? `${inserts} đoạn chèn` : "", edit.overlays.length ? `${edit.overlays.length} video chồng` : "",
-      edit.audio.length ? `${edit.audio.length} âm thanh` : "", formatClock(total)].filter(Boolean).join(" · ");
+      edit.audio.length ? `${edit.audio.length} âm thanh` : "", edit.texts.length ? `${edit.texts.length} chữ` : "", formatClock(total)].filter(Boolean).join(" · ");
   }
 
   function render(): void {
@@ -1583,6 +1626,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!session) return;
     if (mode !== "cover") cover.leave();
     if (mode !== "audio") audio.select(null);
+    if (mode !== "text") textMode.select(null);
     if (mode === "subs" || mode === "cover") {
       session.overlay = null;
       subs.enter(mode);
@@ -1599,7 +1643,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   for (const tab of modeTabs) {
     tab.addEventListener("click", () => {
       const next = tab.dataset.mode;
-      setMode(next === "insert" || next === "subs" || next === "cover" || next === "audio" ? next : "cut");
+      setMode(next === "insert" || next === "subs" || next === "cover" || next === "audio" || next === "text" ? next : "cut");
     });
   }
   for (const button of whereButtons) {
@@ -1721,7 +1765,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   document.addEventListener("keydown", (event) => {
     if (!session || screen.hidden || !dialog.hidden || document.querySelector(".confirm-backdrop, .review:not([hidden])")) return;
     const target = event.target;
-    if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
+    if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='plaintext-only']")) return;
     const key = event.key.toLowerCase();
     const ctrl = event.ctrlKey || event.metaKey;
     if (mode === "cover" && !ctrl && !event.altKey && cover.keydown(event)) {
@@ -1751,6 +1795,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       else if (session.overlay) selectOverlay(null);
       else if (mode === "audio" && audio.selected) {
         audio.select(null);
+        render();
+      } else if (mode === "text" && textMode.selected) {
+        textMode.select(null);
         render();
       } else void close(true);
     } else {
@@ -1794,6 +1841,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       cover.begin();
       subs.begin(job, outputPath);
       audio.begin();
+      textMode.begin();
       $("#edit-save-state").textContent = "";
       $("#edit-hint").textContent = "";
       screen.classList.add("editing");
@@ -1832,6 +1880,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     cover.end();
     subs.end();
     audio.end();
+    textMode.end();
     restorePlayer();
     timeline.style.height = "";
     session = null;
@@ -2005,6 +2054,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     extras.textContent = [
       parts.length ? `Gồm ${parts.join(" · ")}, đưa về cùng khung hình và tốc độ khung hình của video chính` : "",
       sounds || level ? `${[sounds, level].filter(Boolean).join(", ")}; trộn và giới hạn để không bị rè` : "",
+      edit.texts.length ? `${edit.texts.length} chữ được vẽ lên hình theo cỡ khung xuất` : "",
     ].filter(Boolean).join(". ");
     extras.hidden = !extras.textContent;
     const bytes = estimateExportBytes(facts.size_bytes, facts.duration, total, facts.width, facts.height, quality);

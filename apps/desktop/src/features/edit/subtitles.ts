@@ -6,13 +6,10 @@
  * 48 px base font and 40/48 px margins, which the preview reproduces.
  */
 import { MAIN, outputStarts, type Edit } from "./model.ts";
+import { EM_SCALE, SUBTITLE_FONTS, type SubtitleFont } from "./fonts.ts";
 
-/** Stock Windows families covering every Vietnamese letter (Georgia, Trebuchet MS, Arial Black, Impact and Bahnschrift do not). */
-export const SUBTITLE_FONTS = [
-  "Arial", "Segoe UI", "Tahoma", "Verdana", "Times New Roman", "Calibri", "Cambria",
-  "Palatino Linotype", "Constantia", "Corbel", "Candara", "Segoe UI Black",
-] as const;
-export type SubtitleFont = typeof SUBTITLE_FONTS[number];
+export { EM_SCALE, SUBTITLE_FONTS, type SubtitleFont };
+
 export type SubtitleAlign = "bottom" | "middle" | "top";
 export type SubtitleStyle = {
   font: SubtitleFont;
@@ -64,15 +61,6 @@ export const PRESETS: ReadonlyArray<{ id: PresetId; label: string; look: Look }>
 export const TEXT_SWATCHES = ["#FFFFFF", "#FDE047", "#7DD3FC", "#86EFAC", "#FCA5A5"] as const;
 export const OUTLINE_SWATCHES = ["#000000", "#FFFFFF", "#1E3A8A", "#7F1D1D"] as const;
 export const BOX_SWATCHES = ["#000000", "#1F2937", "#FFFFFF", "#FDE047"] as const;
-
-/**
- * Font size → CSS em: libass sizes a font so that its Windows ascent plus
- * descent equals the ASS size, while CSS sizes the em square.
- */
-export const EM_SCALE: Readonly<Record<SubtitleFont, number>> = {
-  "Arial": 0.895, "Segoe UI": 0.752, "Tahoma": 0.828, "Verdana": 0.823, "Times New Roman": 0.903, "Calibri": 0.819, "Cambria": 0.853,
-  "Palatino Linotype": 0.741, "Constantia": 0.819, "Corbel": 0.819, "Candara": 0.819, "Segoe UI Black": 0.752,
-};
 
 const HEX = /^#[0-9A-Fa-f]{6}$/;
 const clamp = (value: number, low: number, high: number): number => Math.min(high, Math.max(low, value));
