@@ -294,7 +294,12 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "discover": return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1)) as T;
     case "open_discovery": return `https://example.invalid/${String(args.platform)}` as T;
     case "scroll_discovery": return null as T;
-    case "translate_terms": return { ok: true, items: (args.terms as string[]).map((term) => `(nghĩa) ${term}`) } as T;
+    case "translate_terms": {
+      const terms = args.terms as string[];
+      // Titles take a moment, like the local translator, so "Đang dịch…" shows.
+      if (terms.some((term) => PREVIEW_GLOSS.has(term))) await new Promise((resolve) => setTimeout(resolve, 900));
+      return { ok: true, items: terms.map((term) => PREVIEW_GLOSS.get(term) ?? `(nghĩa) ${term}`) } as T;
+    }
     case "collect_discovery": return previewCollected(String(args.platform)) as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
     // No asset protocol in a browser: the player shows its placeholder.
@@ -322,20 +327,47 @@ function previewDiscover(platform: string, action: string, page: number): unknow
   if (platform !== "bilibili") return { ok: false, code: "UNSUPPORTED", message: "preview" };
   return {
     ok: true, next_page: page < 3 ? page + 1 : null,
-    items: Array.from({ length: 8 }, (_, index) => ({
-      platform, video_id: `BV1preview${page}${index}`, title: `【预览】${PREVIEW_WORDS[index]} 第${page}页 · 精彩片段合集`, author: "UP主示例",
-      author_id: "1", duration_s: 95 + index * 37, plays: 12_000 * (index + 1) * page, likes: null, cover_url: "",
-      page_url: `https://www.bilibili.com/video/BV1preview${page}${index}`,
-    })),
+    items: Array.from({ length: 8 }, (_, index) => {
+      // BV + 10 characters, like real Bilibili ids.
+      const bvid = `BV1Xe4y1${page}${index}7Q`;
+      return {
+        platform, video_id: bvid, title: PREVIEW_TITLES[(index + page - 1) % PREVIEW_TITLES.length][0], author: PREVIEW_AUTHORS[index % PREVIEW_AUTHORS.length],
+        author_id: String(546195 + index), duration_s: 95 + index * 37, plays: 12_000 * (index + 1) * page, likes: null,
+        cover_url: `https://picsum.photos/seed/${bvid}/480/300`, page_url: `https://www.bilibili.com/video/${bvid}`,
+      };
+    }),
   };
 }
 
+/** Result titles as the platforms write them, with what the local translator would give for the cleaned text. */
+const PREVIEW_TITLES: ReadonlyArray<[string, string, string]> = [
+  ["中国少有的R级犯罪片《猎虎贰》 #电影解说 #犯罪", "中国少有的R级犯罪片《猎虎贰》", "Phim tội phạm hiếm có của Trung Quốc: Săn hổ 2"],
+  ["1939年，穷女孩混进上流舞会🔥🔥 @电影小助手", "1939年，穷女孩混进上流舞会", "Năm 1939, cô gái nghèo lẻn vào dạ tiệc thượng lưu"],
+  ["男人抠出一块骨头，鼻子里竟藏着活物😱 #悬疑", "男人抠出一块骨头，鼻子里竟藏着活物", "Người đàn ông rút ra mẩu xương, trong mũi còn có vật sống"],
+  ["难道这就是传说中的完美犯罪吗？", "难道这就是传说中的完美犯罪吗？", "Đây có phải là tội ác hoàn hảo trong truyền thuyết?"],
+  ["仙侠剧名场面合集 太燃了 #仙侠 #古装", "仙侠剧名场面合集 太燃了", "Tổng hợp cảnh kinh điển phim tiên hiệp, quá cháy"],
+  ["农村生活vlog｜奶奶做的手工面条", "农村生活vlog｜奶奶做的手工面条", "Vlog đời sống nông thôn | Mì tự làm của bà"],
+  ["Vlog du lịch Trùng Khánh 4K", "Vlog du lịch Trùng Khánh 4K", "Vlog du lịch Trùng Khánh 4K"],
+  ["萌宠日常：猫咪第一次见到雪❄️ #萌宠", "萌宠日常：猫咪第一次见到雪", "Thú cưng mỗi ngày: mèo lần đầu thấy tuyết"],
+  ["国漫新番 第3集 高能片段", "国漫新番 第3集 高能片段", "Hoạt hình Trung Quốc mới tập 3, đoạn gay cấn"],
+];
+const PREVIEW_GLOSS = new Map(PREVIEW_TITLES.map(([, cleaned, vi]) => [cleaned, vi]));
+const PREVIEW_AUTHORS = ["影视飓风", "小片片说大片", "李子柒", "萌宠研究所"];
+
 function previewCollected(platform: string): unknown {
-  const host = platform === "kuaishou" ? "www.kuaishou.com/short-video" : platform === "douyin" ? "www.douyin.com/video" : "www.bilibili.com/video";
-  return Array.from({ length: 6 }, (_, index) => ({
-    page_url: `https://${host}/7${index}00000000000000`, title: `${PREVIEW_WORDS[index + 2]} · 视频 ${index + 1}`, cover_url: null,
-    author: "示例作者", fetch_url: `https://${host}/7${index}00000000000000`,
-  }));
+  return Array.from({ length: 6 }, (_, index) => {
+    const [title] = PREVIEW_TITLES[(index + 3) % PREVIEW_TITLES.length];
+    if (platform === "kuaishou") {
+      const id = `3x${["k8f2", "9qzm", "tw4e", "c7ua", "h2pn", "r5vd"][index]}${"abcdefghjk".slice(index, index + 4)}`;
+      // Kuaishou pages carry a direct media link on its CDN.
+      return { page_url: `https://www.kuaishou.com/short-video/${id}`, title, author: PREVIEW_AUTHORS[index % PREVIEW_AUTHORS.length],
+        cover_url: `https://picsum.photos/seed/${id}/300/480`, fetch_url: `https://v2.kwaicdn.com/ksc2/preview-${id}.mp4?pkey=preview` };
+    }
+    const host = platform === "douyin" ? "www.douyin.com/video" : "www.bilibili.com/video";
+    const id = platform === "douyin" ? `7431852694117${String(28_610 + index * 7_919).padStart(6, "0")}` : `BV1Kq4y1${index}m7Z`;
+    return { page_url: `https://${host}/${id}`, title, author: PREVIEW_AUTHORS[index % PREVIEW_AUTHORS.length],
+      cover_url: `https://picsum.photos/seed/${id}/${platform === "douyin" ? "300/480" : "480/300"}`, fetch_url: `https://${host}/${id}` };
+  });
 }
 
 /** A product batch of three videos, one every 3 s, that can be cancelled. */

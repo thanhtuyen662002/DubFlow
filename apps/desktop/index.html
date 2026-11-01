@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com https://generativelanguage.googleapis.com; media-src 'self' blob: asset: http://asset.localhost; img-src 'self' blob: https: asset: http://asset.localhost"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com https://generativelanguage.googleapis.com; media-src 'self' blob: asset: http://asset.localhost https://*.kwaicdn.com https://*.yximgs.com https://*.kwimgs.com https://*.kuaishou.com; img-src 'self' blob: https: asset: http://asset.localhost; frame-src https://player.bilibili.com https://open.douyin.com"
     />
     <title>DubFlow</title>
     <link rel="stylesheet" href="./src/styles.css" />
@@ -125,6 +125,10 @@
                   <span id="selected-count" class="hint"></span>
                   <button id="discover-clear" class="btn ghost" type="button">Xóa kết quả</button>
                   <button id="discover-add" class="btn primary" type="button" disabled>Thêm vào hàng đợi</button>
+                </div>
+                <div id="result-tools" class="result-tools" hidden>
+                  <p class="hint">Bấm một lần để chọn · bấm đúp hoặc Enter để xem lớn</p>
+                  <label class="hover-toggle"><input id="discover-hover" class="switch" type="checkbox" role="switch" checked /> Xem trước khi rê chuột</label>
                 </div>
                 <ul id="discover-results" class="discover-results"></ul>
                 <button id="discover-more" class="btn more-btn" type="button" hidden>Tải thêm</button>
@@ -735,6 +739,28 @@
           <button id="cleanup-later" class="btn ghost" type="button">Để sau</button>
           <button id="cleanup-run" class="btn danger-solid" type="button" disabled>Dọn 0 MB</button>
         </footer>
+      </div>
+    </div>
+    <div id="discover-player" class="review discover-player" role="dialog" aria-modal="true" aria-labelledby="pop-title" hidden>
+      <div class="review-panel pop-panel">
+        <div class="pop-body">
+          <div id="pop-stage" class="pop-stage"></div>
+          <div class="pop-meta">
+            <div class="pop-text">
+              <h2 id="pop-title"></h2>
+              <p id="pop-original" class="pop-original" hidden></p>
+              <p id="pop-sub" class="pop-sub"></p>
+            </div>
+            <div class="pop-actions">
+              <button id="pop-toggle" class="btn primary" type="button">Chọn video này</button>
+              <button id="pop-download" class="btn" type="button">Tải về ngay</button>
+            </div>
+          </div>
+          <p id="pop-state" class="discover-state pop-state" role="status"></p>
+        </div>
+        <button id="pop-close" class="icon-btn pop-close" type="button" aria-label="Đóng">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
       </div>
     </div>
     <div id="douyin-dialog" class="review douyin-dialog" role="dialog" aria-modal="true" aria-labelledby="douyin-title" hidden>

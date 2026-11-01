@@ -101,7 +101,7 @@ export function autoCleanEnabled(stored: string | null): boolean {
 
 /** The queue notice after an automatic clean, or null to stay silent. */
 export function autoNotice(freedBytes: number): string | null {
-  return freedBytes > NOTICE_MIN_BYTES ? `Đã tự dọn ${sizeLabel(freedBytes)} tệp tạm` : null;
+  return freedBytes > NOTICE_MIN_BYTES ? `Đã tự dọn dẹp, giải phóng ${sizeLabel(freedBytes)}` : null;
 }
 
 /** The folder holding a file, for Windows or POSIX paths. */

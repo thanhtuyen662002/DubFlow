@@ -1404,6 +1404,7 @@ function showView(view: View): void {
     else $(id).removeAttribute("aria-current");
   }
   if (view === "discover") discovery.show();
+  else discovery.hide();
   if (view === "product") productStudio.show();
   if (view === "compilation") compilation.show();
 }
