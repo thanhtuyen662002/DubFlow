@@ -273,6 +273,7 @@
                   <button type="button" role="tab" data-mode="subs" aria-selected="false" aria-controls="edit-panel">Phụ đề</button>
                   <button type="button" role="tab" data-mode="cover" aria-selected="false" aria-controls="edit-panel" title="Che chữ gốc">Che</button>
                   <button type="button" role="tab" data-mode="audio" aria-selected="false" aria-controls="edit-panel" title="Hiệu ứng âm thanh, âm thanh của bạn và âm lượng gốc">Âm thanh</button>
+                  <button type="button" role="tab" data-mode="text" aria-selected="false" aria-controls="edit-panel" title="Tiêu đề, chú thích, tên kênh trên video">Chữ</button>
                 </div>
                 <button id="list-toggle" class="btn ghost list-toggle view-only" type="button" aria-controls="queue-col" aria-expanded="false">
                   <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
@@ -320,6 +321,7 @@
                   <canvas id="edit-ghost" class="edit-ghost" aria-hidden="true"></canvas>
                   <div id="edit-fade" class="edit-fade" aria-hidden="true"></div>
                   <div id="edit-overlays" class="edit-overlays" aria-label="Video chồng"></div>
+                  <div id="edit-texts" class="edit-texts" aria-label="Chữ trên video"></div>
                   <div id="edit-subs-layer" class="edit-subs-layer" hidden>
                     <canvas id="cover-canvas" class="cover-canvas" aria-hidden="true"></canvas>
                     <div id="subs-covers" class="subs-covers" aria-hidden="true"></div>
@@ -1001,6 +1003,82 @@
                     <ul id="au-ai-list" class="au-ai-list" aria-label="Gợi ý hiệu ứng"></ul>
                   </div>
                 </section>
+                <section id="edit-text" class="edit-text" aria-label="Chữ" hidden>
+                  <div class="tx-add-row">
+                    <button id="tx-add" class="btn primary" type="button">
+                      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" fill="none"/></svg>
+                      Thêm chữ
+                    </button>
+                    <span id="tx-count-all" class="tx-count-all"></span>
+                  </div>
+                  <div class="edit-field">
+                    <span class="edit-label">Mẫu có sẵn</span>
+                    <div id="tx-presets" class="tx-presets" aria-label="Mẫu chữ"></div>
+                  </div>
+                  <section id="tx-selected" class="tx-selected" aria-labelledby="tx-title" hidden>
+                    <h3 id="tx-title" class="edit-segment-title">Chữ</h3>
+                    <textarea id="tx-text" class="tx-input" rows="2" maxlength="300" spellcheck="false" aria-label="Nội dung chữ" aria-describedby="tx-chars"></textarea>
+                    <small id="tx-chars" class="tx-chars"></small>
+                    <div class="edit-times">
+                      <label title="Thời điểm trên video đã sửa">Hiện lúc<input id="tx-at" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                      <label title="Số giây chữ hiện">Dài<input id="tx-duration" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                    </div>
+                    <p id="tx-length" class="edit-length"></p>
+                    <label class="edit-field">
+                      <span class="edit-label">Phông chữ</span>
+                      <select id="tx-font" class="tx-select"></select>
+                    </label>
+                    <label class="edit-field">
+                      <span class="edit-label">Cỡ chữ <output id="tx-size-value">72</output></span>
+                      <input id="tx-size" type="range" min="16" max="240" step="1" value="72" />
+                    </label>
+                    <div class="tx-format">
+                      <div class="seg tx-toggles" role="group" aria-label="Kiểu chữ">
+                        <button id="tx-bold" type="button" aria-pressed="false" title="Đậm" aria-label="Đậm"><b>B</b></button>
+                        <button id="tx-italic" type="button" aria-pressed="false" title="Nghiêng" aria-label="Nghiêng"><i>I</i></button>
+                      </div>
+                      <div id="tx-align" class="seg tx-align" role="radiogroup" aria-label="Căn lề">
+                        <button type="button" role="radio" data-align="left" aria-checked="false" title="Căn trái" aria-label="Căn trái"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 6h16M4 10h10M4 14h16M4 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+                        <button type="button" role="radio" data-align="center" aria-checked="true" title="Căn giữa" aria-label="Căn giữa"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 6h16M7 10h10M4 14h16M7 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+                        <button type="button" role="radio" data-align="right" aria-checked="false" title="Căn phải" aria-label="Căn phải"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 6h16M10 10h10M4 14h16M10 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+                      </div>
+                    </div>
+                    <div class="subs-row"><span>Màu chữ</span><div id="tx-color" class="subs-swatches" role="radiogroup" aria-label="Màu chữ"></div></div>
+                    <div class="subs-row"><span>Màu viền</span><div id="tx-outline" class="subs-swatches" role="radiogroup" aria-label="Màu viền"></div></div>
+                    <label class="edit-field">
+                      <span class="edit-label">Độ dày viền <output id="tx-outline-value">4</output></span>
+                      <input id="tx-outline-width" type="range" min="0" max="12" step="0.5" value="4" />
+                    </label>
+                    <label class="au-duck"><input id="tx-box" type="checkbox" /> Hộp nền</label>
+                    <div id="tx-box-options" class="subs-box-options" hidden>
+                      <div class="subs-row"><span>Màu hộp</span><div id="tx-box-color" class="subs-swatches" role="radiogroup" aria-label="Màu hộp"></div></div>
+                      <label class="edit-field">
+                        <span class="edit-label">Độ đậm hộp <output id="tx-box-opacity-value">60%</output></span>
+                        <input id="tx-box-opacity" type="range" min="0" max="100" step="5" value="60" />
+                      </label>
+                    </div>
+                    <div class="tx-anim">
+                      <label class="edit-field">
+                        <span class="edit-label">Hiệu ứng</span>
+                        <select id="tx-animation" class="tx-select"></select>
+                      </label>
+                      <label id="tx-anim-row" class="edit-field">
+                        <span class="edit-label">Trong <output id="tx-anim-value">0,5 giây</output></span>
+                        <input id="tx-anim" type="range" min="0.1" max="2" step="0.1" value="0.5" />
+                      </label>
+                    </div>
+                    <div class="tx-actions">
+                      <button id="tx-duplicate" class="btn" type="button">Nhân bản</button>
+                      <button id="tx-delete" class="btn danger" type="button" aria-keyshortcuts="Delete">Xóa chữ<kbd>Delete</kbd></button>
+                    </div>
+                    <p class="edit-note">Kéo chữ trên video để đổi chỗ (giữ Alt để không hít vào đường gióng), kéo mép trái/phải để đổi độ rộng, bấm đúp để sửa chữ ngay trên video.</p>
+                  </section>
+                  <div class="edit-field">
+                    <span class="edit-label">Chữ trên video</span>
+                    <ul id="tx-list" class="tx-list" aria-label="Chữ trên video"></ul>
+                    <p id="tx-empty" class="edit-note">Chưa có chữ nào. Bấm Thêm chữ hoặc chọn một mẫu: chữ hiện từ đầu phát.</p>
+                  </div>
+                </section>
                 <p id="edit-select-hint" class="edit-note" hidden>Chọn một đoạn chèn hoặc video chồng trên dòng thời gian để chỉnh.</p>
                 <p id="edit-hint" class="edit-hint" role="status"></p>
                 <div id="edit-cut-notes" class="edit-cut-notes">
@@ -1037,6 +1115,7 @@
                   <div id="tl-ruler" class="tl-ruler"></div>
                   <div id="tl-overlays" class="tl-ovtrack" aria-label="Video chồng" hidden></div>
                   <div id="tl-track" class="tl-track" aria-label="Các đoạn video"></div>
+                  <div id="tl-text" class="tl-txtrack" aria-label="Chữ trên video" hidden></div>
                   <div id="tl-audio" class="tl-autrack" aria-label="Âm thanh thêm" hidden></div>
                   <div id="tl-playhead" class="tl-playhead" aria-hidden="true"><span></span></div>
                 </div>

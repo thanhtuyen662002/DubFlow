@@ -160,10 +160,10 @@ assert.ok(long.changes >= 1);
 // Projects round-trip and reject other renders or bad data.
 const saved = JSON.parse(JSON.stringify(serializeProject(fast, 4, "s3")));
 assert.deepEqual(saved, {
-  schema_version: 3, duration: 100, next_id: 4, changes: 4, selected: "s3",
+  schema_version: 4, duration: 100, next_id: 4, changes: 4, selected: "s3",
   media: [{ id: "main", path: "", title: "", duration: 100, width: 0, height: 0, fps: 30, hasAudio: true, kind: "main" }],
   segments: [{ id: "s1", mediaId: "main", start: 0, end: 40, speed: 1, volume: 1 }, { id: "s3", mediaId: "main", start: 70, end: 100, speed: 1.5, volume: 1 }],
-  transitions: {}, overlays: [], audio: [], main_volume: 1,
+  transitions: {}, overlays: [], audio: [], main_volume: 1, texts: [],
 });
 const parsed = parseProject(saved, 100.2);
 assert.equal(parsed.changes, 4);
@@ -172,7 +172,7 @@ assert.equal(parsed.edit.nextId, 4);
 assert.equal(parsed.edit.duration, 100.2);
 assert.ok(sameSegments(parsed.edit.segments, fast.segments));
 assert.equal(parseProject(saved, 120), null, "a different render");
-assert.equal(parseProject({ ...saved, schema_version: 4 }, 100), null);
+assert.equal(parseProject({ ...saved, schema_version: 5 }, 100), null);
 assert.equal(parseProject({ ...saved, media: undefined }, 100), null, "schema 2 lists its media");
 // A 4a (schema 1) draft migrates: every segment plays the main video.
 const legacy = parseProject({ schema_version: 1, duration: 100, next_id: 4, changes: 2, selected: "s3",
@@ -368,7 +368,7 @@ assert.deepEqual(plan, {
   ],
   transitions: [{ after: 0, type: "dissolve", duration: 1 }, { after: 2, type: "fade", duration: 0.8 }],
   overlays: [{ media: 1, at: 5, start: 0, end: 10, x: 0.62, y: 0.03, w: 0.35, volume: 1 }],
-  audio: [], mainVolume: 1,
+  audio: [], mainVolume: 1, texts: [],
 });
 assert.ok(matchesExport(full, JSON.parse(JSON.stringify(plan))));
 assert.ok(!matchesExport(setOverlayVolume(full, full.overlays[0].id, 0.5), plan));

@@ -7,7 +7,8 @@
 //! joints and overlays; every input is fitted to the main video's frame.
 //! Âm thanh (Issue #420) mixes added sounds (the sound-effect pack or the
 //! user's audio files) over the output's own sound, which has one volume
-//! and may dip under a sound ("ducking"), then limits the sum.
+//! and may dip under a sound ("ducking"), then limits the sum. Chữ (Issue
+//! #422) draws texts over the picture with libass as the last filter.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -182,6 +183,9 @@ pub struct ExportRequest {
     /// "Âm thanh gốc", 0–2.
     #[serde(default = "full_volume")]
     main_volume: f64,
+    /// Texts over the picture (schema 4).
+    #[serde(default)]
+    texts: Vec<TextClip>,
     quality: String,
     folder: String,
     file_name: String,
@@ -457,13 +461,14 @@ fn atempo_chain(speed: f64) -> Vec<String> {
 /// The 4a graph, with the sound ending as `[a]`.
 #[cfg(test)]
 fn filter_script(segments: &[Segment], has_audio: bool, quality: &str) -> String {
-    filter_graph(segments, has_audio, quality, "a")
+    filter_graph(segments, has_audio, quality, "v", "a")
 }
 
 /// The filter graph: each segment trimmed and retimed (video and audio), then
-/// concatenated, the sound ending as `[audio_out]`; "1080p"/"720p" scale the
-/// short side, keeping aspect and even sizes.
-fn filter_graph(segments: &[Segment], has_audio: bool, quality: &str, audio_out: &str) -> String {
+/// concatenated, the picture ending as `[video_out]` and the sound as
+/// `[audio_out]`; "1080p"/"720p" scale the short side, keeping aspect and
+/// even sizes.
+fn filter_graph(segments: &[Segment], has_audio: bool, quality: &str, video_out: &str, audio_out: &str) -> String {
     let mut lines = Vec::new();
     let mut pads = String::new();
     for (index, segment) in segments.iter().enumerate() {
@@ -482,10 +487,10 @@ fn filter_graph(segments: &[Segment], has_audio: bool, quality: &str, audio_out:
         }
     }
     let short = short_side(quality);
-    let video_out = if short.is_some() { "vc" } else { "v" };
-    lines.push(format!("{pads}concat=n={}:v=1:a={}[{video_out}]{}", segments.len(), u8::from(has_audio), if has_audio { format!("[{audio_out}]") } else { String::new() }));
+    let joined = if short.is_some() { "vc" } else { video_out };
+    lines.push(format!("{pads}concat=n={}:v=1:a={}[{joined}]{}", segments.len(), u8::from(has_audio), if has_audio { format!("[{audio_out}]") } else { String::new() }));
     if let Some(short) = short {
-        lines.push(quality_scale("vc", short));
+        lines.push(quality_scale("vc", short, video_out));
     }
     lines.join(";\n")
 }
@@ -494,8 +499,8 @@ fn short_side(quality: &str) -> Option<u32> {
     match quality { "1080p" => Some(1080), "720p" => Some(720), _ => None }
 }
 
-fn quality_scale(input: &str, short: u32) -> String {
-    format!("[{input}]scale=w='if(gte(iw,ih),-2,{short})':h='if(gte(iw,ih),{short},-2)',setsar=1[v]")
+fn quality_scale(input: &str, short: u32, out: &str) -> String {
+    format!("[{input}]scale=w='if(gte(iw,ih),-2,{short})':h='if(gte(iw,ih),{short},-2)',setsar=1[{out}]")
 }
 
 fn even(value: f64) -> u32 {
@@ -516,13 +521,13 @@ fn output_has_audio(edit: &Edit, inputs: &[Input]) -> bool {
 /// with `xfade` + `acrossfade` (the neighbours overlap), then lays overlays
 /// on top and mixes their sound in.
 fn render_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str) -> (String, bool) {
-    video_graph(edit, inputs, frame, quality, "a")
+    video_graph(edit, inputs, frame, quality, "v", "a")
 }
 
-/// `render_script` with the sound ending as `[audio_out]`.
-fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, audio_out: &str) -> (String, bool) {
+/// `render_script` with the picture ending as `[video_out]` and the sound as `[audio_out]`.
+fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, video_out: &str, audio_out: &str) -> (String, bool) {
     if inputs.len() == 1 && edit.transitions.is_empty() && edit.overlays.is_empty() {
-        return (filter_graph(&edit.segments, inputs[0].has_audio, quality, audio_out), inputs[0].has_audio);
+        return (filter_graph(&edit.segments, inputs[0].has_audio, quality, video_out, audio_out), inputs[0].has_audio);
     }
     let has_audio = output_has_audio(edit, inputs);
     let segments = &edit.segments;
@@ -584,7 +589,7 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, audi
     let short = short_side(quality);
     let ov_audio: Vec<usize> = (0..edit.overlays.len())
         .filter(|&index| inputs[edit.overlays[index].media].has_audio && edit.overlays[index].volume > 0.0).collect();
-    let joined_video = if edit.overlays.is_empty() && short.is_none() { "v" } else { "vj" };
+    let joined_video = if edit.overlays.is_empty() && short.is_none() { video_out } else { "vj" };
     let joined_audio = if ov_audio.is_empty() { audio_out } else { "aj" };
     let audio_flag = u8::from(has_audio);
     let mut labels: Vec<(String, String)> = Vec::new();
@@ -615,7 +620,7 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, audi
     for (index, overlay) in edit.overlays.iter().enumerate() {
         let shown = (overlay.end - overlay.start).min(length - overlay.at).max(0.0);
         let (at, until) = (num(overlay.at), num(overlay.at + shown));
-        let out = if index + 1 == edit.overlays.len() && short.is_none() { "v".to_owned() } else { format!("vo{index}") };
+        let out = if index + 1 == edit.overlays.len() && short.is_none() { video_out.to_owned() } else { format!("vo{index}") };
         lines.push(format!("[{}:v]trim=start={}:end={},setpts=PTS-STARTPTS+{at}/TB,scale={}:-2,setsar=1[ov{index}]",
             overlay.media, num(overlay.start), num(overlay.start + shown), even(overlay.w * f64::from(width))));
         lines.push(format!("[{video}][ov{index}]overlay=x={}:y={}:enable='between(t,{at},{until})':eof_action=pass[{out}]",
@@ -636,7 +641,7 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, audi
         lines.push(format!("{pads}amix=inputs={}:duration=first:normalize=0[{audio_out}]", ov_audio.len() + 1));
     }
     if let Some(short) = short {
-        lines.push(quality_scale(&video, short));
+        lines.push(quality_scale(&video, short, video_out));
     }
     (lines.join(";\n"), has_audio)
 }
@@ -681,12 +686,24 @@ fn duck_filter(start: f64, end: f64, db: f64) -> String {
 /// original sound's volume and ducking, the added sounds (trimmed, faded,
 /// set in volume and delayed to their output time) mixed in at their own
 /// levels (`normalize=0`), and a limiter so the sum does not clip. Without
-/// added sounds or a volume change it is `render_script` as before.
-fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix) -> (String, bool) {
-    if mix.sounds.is_empty() && mix.main_volume == 1.0 {
-        return render_script(edit, inputs, frame, quality);
+/// added sounds or a volume change it is `render_script` as before. Chữ
+/// (Issue #422): with a text layer, `texts` (the `subtitles` filter drawing
+/// it) is the last filter of the picture; without texts nothing changes.
+fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, texts: Option<&str>) -> (String, bool) {
+    let video_out = if texts.is_some() { "vt" } else { "v" };
+    let (mut graph, has_audio) = mixed_script(edit, inputs, frame, quality, mix, video_out);
+    if let Some(filter) = texts {
+        graph.push_str(&format!(";\n[{video_out}]{filter}[v]"));
     }
-    let (graph, has_main) = video_graph(edit, inputs, frame, quality, "am");
+    (graph, has_audio)
+}
+
+/// The picture (ending as `[video_out]`) and the mixed sound (`[a]`).
+fn mixed_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, video_out: &str) -> (String, bool) {
+    if mix.sounds.is_empty() && mix.main_volume == 1.0 {
+        return video_graph(edit, inputs, frame, quality, video_out, "a");
+    }
+    let (graph, has_main) = video_graph(edit, inputs, frame, quality, video_out, "am");
     if mix.sounds.is_empty() && !has_main {
         return (graph, false);
     }
@@ -851,6 +868,229 @@ fn append_export(work: &Path, entry: Value) {
 
 fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
+}
+
+// ---------- Chữ (Issue #422) ----------
+
+/// Texts in one export, and their limits (same as the editor's).
+const MAX_TEXTS: usize = 50;
+const MAX_TEXT_CHARS: usize = 300;
+const MIN_TEXT_SHOWN: f64 = 0.05;
+const TEXT_SIZES: (f64, f64) = (16.0, 240.0);
+const MAX_TEXT_OUTLINE: f64 = 12.0;
+const MIN_TEXT_WIDTH: f64 = 0.1;
+const MAX_ANIM: f64 = 2.0;
+const TEXT_ALIGNS: [&str; 3] = ["left", "center", "right"];
+const TEXT_ANIMATIONS: [&str; 5] = ["none", "fade", "pop", "slide-up", "typewriter"];
+/// Slide up starts this far below (a fraction of the frame height), as in the preview.
+const TEXT_SLIDE: f64 = 0.05;
+/// The text layer beside the filter script.
+const TEXTS_FILE: &str = "texts.ass";
+
+/// A text over the picture as the editor sends it: shown from output time
+/// `at` for `duration` seconds, its box centred at `x`, `y` and `w` wide
+/// (fractions of the frame; lines wrap inside it), `size` and
+/// `outline_width` in pixels on a frame whose short side is 1080.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TextClip {
+    text: String,
+    at: f64,
+    duration: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    font: String,
+    size: f64,
+    color: String,
+    outline: String,
+    outline_width: f64,
+    #[serde(rename = "box")]
+    box_color: Option<String>,
+    box_opacity: f64,
+    bold: bool,
+    italic: bool,
+    align: String,
+    animation: String,
+    anim_duration: f64,
+}
+
+/// The texts, checked and fitted to the output: each ends by the end of the
+/// video, and its animation fits it (a fade in and out takes half of it).
+fn validate_texts(texts: &[TextClip], total: f64) -> Result<Vec<TextClip>, String> {
+    if texts.len() > MAX_TEXTS {
+        return Err(fail("Tối đa 50 chữ trên video"));
+    }
+    let within = |value: f64, low: f64, high: f64| value.is_finite() && (low..=high).contains(&value);
+    texts.iter().map(|text| {
+        let words = text.text.trim();
+        let valid = !words.is_empty() && text.text.chars().count() <= MAX_TEXT_CHARS
+            && !text.text.chars().any(|c| c.is_control() && c != '\n')
+            && SUBTITLE_FONTS.contains(&text.font.as_str()) && hex_color(&text.color) && hex_color(&text.outline)
+            && text.box_color.as_deref().is_none_or(hex_color) && TEXT_ALIGNS.contains(&text.align.as_str())
+            && TEXT_ANIMATIONS.contains(&text.animation.as_str())
+            && within(text.at, 0.0, f64::MAX) && text.at < total && within(text.duration, MIN_TEXT_SHOWN - 1e-6, f64::MAX)
+            && within(text.w, MIN_TEXT_WIDTH - 1e-6, 1.0) && within(text.x, 0.0, 1.0) && within(text.y, 0.0, 1.0)
+            && within(text.size, TEXT_SIZES.0, TEXT_SIZES.1) && within(text.outline_width, 0.0, MAX_TEXT_OUTLINE)
+            && within(text.box_opacity, 0.0, 1.0) && within(text.anim_duration, 0.0, MAX_ANIM);
+        if !valid {
+            return Err(fail("Chữ trên video không hợp lệ: cần nội dung tối đa 300 ký tự, phông có sẵn, nằm trong khung hình và thời lượng video"));
+        }
+        let duration = text.duration.min(total - text.at);
+        let room = if text.animation == "fade" { duration / 2.0 } else { duration };
+        Ok(TextClip { duration, anim_duration: text.anim_duration.min(room), ..text.clone() })
+    }).collect()
+}
+
+/// "#RRGGBB" with an opacity as ASS "&HAABBGGRR" (alpha 00 is opaque).
+fn ass_color(hex: &str, alpha: u8) -> String {
+    format!("&H{alpha:02X}{}{}{}", &hex[5..7], &hex[3..5], &hex[1..3]).to_ascii_uppercase()
+}
+
+/// Seconds as an ASS time, to the centisecond.
+fn ass_time(seconds: f64) -> String {
+    let cs = (seconds.max(0.0) * 100.0).round() as u64;
+    format!("{}:{:02}:{:02}.{:02}", cs / 360_000, cs / 6000 % 60, cs / 100 % 60, cs % 100)
+}
+
+/// Typed words are literal: braces never open override blocks and a
+/// backslash never pairs with the next character (a word joiner, which
+/// renders as nothing, follows it); a line break is `\N`.
+fn ass_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\u{2060}"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
+            '\n' => out.push_str("\\N"),
+            '\r' => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// A typewriter's body: every character (with its combining marks) gets a
+/// `\ko` karaoke tag, so it shows (fill from SecondaryColour, which is fully
+/// transparent, to PrimaryColour, outline included) at
+/// `round(index × span / count)` centiseconds, as the preview reveals it.
+fn typewriter_text(text: &str, span: f64) -> String {
+    let mut units: Vec<String> = Vec::new();
+    let mut breaks: Vec<usize> = Vec::new();
+    for c in text.chars() {
+        let after_break = breaks.last() == Some(&units.len());
+        if c == '\n' {
+            breaks.push(units.len());
+        } else if let Some(unit) = units.last_mut().filter(|_| (0x300..=0x36F).contains(&(c as u32)) && !after_break) {
+            unit.push(c);
+        } else {
+            units.push(c.to_string());
+        }
+    }
+    let count = units.len().max(1) as f64;
+    let total = (span * 100.0).round();
+    let at = |index: usize| (index as f64 * total / count).round() as u64;
+    let mut out = String::new();
+    let mut next_break = 0;
+    for (index, unit) in units.iter().enumerate() {
+        while breaks.get(next_break) == Some(&index) {
+            out.push_str("\\N");
+            next_break += 1;
+        }
+        out.push_str(&format!("{{\\ko{}}}{}", at(index + 1) - at(index), ass_text(unit)));
+    }
+    for _ in next_break..breaks.len() {
+        out.push_str("\\N");
+    }
+    out
+}
+
+/// The text layer as an ASS script on the output frame (PlayRes = the
+/// exported size): one style per distinct look, one event per text at its
+/// position (`\an4/5/6` + `\pos` for left, centred and right lines), the
+/// side margins setting where lines wrap, later texts on higher layers.
+/// Animations: fade `\fad` in and out; pop `\fscx\fscy` from 40 % through
+/// 112 % to 100 % with `\t`, fading in; slide up `\move` from 5 % of the
+/// height below, fading in; typewriter `\ko` per character.
+fn texts_ass(texts: &[TextClip], width: u32, height: u32) -> String {
+    let (w, h) = (f64::from(width), f64::from(height));
+    let scale = w.min(h) / 1080.0;
+    let mut styles: Vec<String> = Vec::new();
+    let mut events = Vec::new();
+    for (layer, text) in texts.iter().enumerate() {
+        let size = text.size * scale;
+        let (border, back, padding) = match &text.box_color {
+            Some(color) => (4, ass_color(color, ((1.0 - text.box_opacity) * 255.0).round() as u8),
+                (text.size * 0.2).round().max(2.0) * scale),
+            None => (1, "&H64000000".to_owned(), 0.0),
+        };
+        let look = format!("{},{},{},&HFF000000,{},{back},{},{},0,0,100,100,0,0,{border},{},{},5,0,0,0,1",
+            text.font, num(size), ass_color(&text.color, 0), ass_color(&text.outline, 0), if text.bold { -1 } else { 0 },
+            if text.italic { -1 } else { 0 }, num(text.outline_width * scale), num(padding));
+        let index = styles.iter().position(|known| *known == look).unwrap_or_else(|| {
+            styles.push(look);
+            styles.len() - 1
+        });
+        let (align, px) = match text.align.as_str() {
+            "left" => (4, (text.x - text.w / 2.0) * w),
+            "right" => (6, (text.x + text.w / 2.0) * w),
+            _ => (5, text.x * w),
+        };
+        let py = text.y * h;
+        let margin = ((1.0 - text.w) / 2.0 * w).round().max(0.0) as i64;
+        let span = if text.animation == "none" { 0 } else { (text.anim_duration * 1000.0).round() as u64 };
+        let place = if text.animation == "slide-up" && span > 0 {
+            format!("\\move({},{},{},{},0,{span})", num(px), num(py + TEXT_SLIDE * h), num(px), num(py))
+        } else {
+            format!("\\pos({},{})", num(px), num(py))
+        };
+        let effect = match text.animation.as_str() {
+            _ if span == 0 => String::new(),
+            "fade" => format!("\\fad({span},{span})"),
+            "pop" => {
+                let grow = (span as f64 * 0.6).round() as u64;
+                format!("\\fad({},0)\\fscx40\\fscy40\\t(0,{grow},\\fscx112\\fscy112)\\t({grow},{span},\\fscx100\\fscy100)", (span as f64 * 0.4).round() as u64)
+            }
+            "slide-up" => format!("\\fad({span},0)"),
+            _ => String::new(),
+        };
+        let body = if text.animation == "typewriter" && span > 0 { typewriter_text(&text.text, text.anim_duration) } else { ass_text(&text.text) };
+        events.push(format!("Dialogue: {layer},{},{},T{},,{margin},{margin},0,,{{\\an{align}{place}{effect}}}{body}",
+            ass_time(text.at), ass_time(text.at + text.duration), index + 1));
+    }
+    let mut script = format!("[Script Info]\n; DubFlow: Chữ\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 1\n\
+ScaledBorderAndShadow: yes\nYCbCr Matrix: None\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
+BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
+    for (index, look) in styles.iter().enumerate() {
+        script.push_str(&format!("Style: T{},{look}\n", index + 1));
+    }
+    script.push_str("\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+    for event in events {
+        script.push_str(&event);
+        script.push('\n');
+    }
+    script
+}
+
+/// A file as the `filename` of a filter in a filter-graph script: forward
+/// slashes, then FFmpeg's two escaping levels (the option value: `\ ' :`;
+/// the graph: `\ ' [ ] , ;`), so drive colons, spaces, quotes, brackets
+/// and commas in Windows paths survive.
+fn filter_path(path: &str) -> String {
+    let escape = |text: &str, special: &str| text.chars().fold(String::new(), |mut out, c| {
+        if special.contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+        out
+    });
+    escape(&escape(&path.replace('\\', "/"), "\\':"), "\\'[],;")
+}
+
+/// The filter drawing the text layer at `file`.
+fn subtitles_filter(file: &str) -> String {
+    format!("subtitles=filename={}", filter_path(file))
 }
 
 // ---------- Phụ đề (Issue #414) ----------
@@ -1134,7 +1374,7 @@ pub async fn edit_project_load(output_path: String) -> Result<Value, String> {
     let project = fs::metadata(&project_path).ok().filter(|metadata| metadata.len() as usize <= PROJECT_LIMIT)
         .and_then(|_| fs::read(&project_path).ok())
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .filter(|value| value["schema_version"].as_u64().is_some_and(|schema| (1..=3).contains(&schema)));
+        .filter(|value| value["schema_version"].as_u64().is_some_and(|schema| (1..=4).contains(&schema)));
     // Sounds the draft uses from the user's files may play in the preview again.
     if let Some(project) = &project {
         crate::sfx::allow_files(&draft_sounds(project));
@@ -1175,7 +1415,7 @@ fn check_project(project: &Value) -> Result<Vec<u8>, String> {
     let bytes = serde_json::to_vec(project).map_err(|_| fail("Bản nháp không hợp lệ"))?;
     let segments = project["segments"].as_array().map_or(0, Vec::len);
     let schema = project["schema_version"].as_u64().unwrap_or(0);
-    if bytes.len() > PROJECT_LIMIT || !(1..=3).contains(&schema) || !(1..=MAX_SEGMENTS).contains(&segments) {
+    if bytes.len() > PROJECT_LIMIT || !(1..=4).contains(&schema) || !(1..=MAX_SEGMENTS).contains(&segments) {
         return Err(fail("Bản nháp chỉnh sửa không hợp lệ"));
     }
     Ok(bytes)
@@ -1210,6 +1450,8 @@ struct ExportJob {
     /// The added sounds as requested, and the original sound's volume, for exports.json.
     audio: Vec<SoundClip>,
     main_volume: f64,
+    /// The texts as requested, for exports.json.
+    texts: Vec<TextClip>,
 }
 
 fn stop(running: &Running) {
@@ -1320,7 +1562,8 @@ fn run_export(job: &ExportJob, running: &Running) {
         .map(|(path, _)| display_path(&path));
     append_export(&job.work, json!({"path": display_path(&target), "srt_path": srt, "created": unix_now(),
         "duration": (job.seconds * 1000.0).round() / 1000.0, "quality": job.quality, "segments": job.edit.segments,
-        "media": job.media, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume}));
+        "media": job.media, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume,
+        "texts": job.texts}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
 }
 
@@ -1362,7 +1605,9 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         };
         files.push(index);
     }
-    let mix = validate_mix(&request.audio, &files, &sound_seconds, request.main_volume, output_seconds(&edit.segments, &edit.transitions))?;
+    let total = output_seconds(&edit.segments, &edit.transitions);
+    let mix = validate_mix(&request.audio, &files, &sound_seconds, request.main_volume, total)?;
+    let texts = validate_texts(&request.texts, total)?;
     let folder = target_folder(&request.folder)?;
     let ffmpeg = media_tool("ffmpeg.exe")?;
     let name = base_name(&request.file_name);
@@ -1381,15 +1626,23 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     let script = work.join("filter.txt");
     let streams: Vec<Input> = probes.iter().map(|probe| Input { has_audio: probe.has_audio }).collect();
     let frame = Frame { width: facts.width, height: facts.height, fps: facts.fps.clone() };
-    let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix);
+    let (width, height) = scaled_size(facts.width, facts.height, &request.quality);
+    // Chữ: the text layer is drawn on the exported frame, after any scaling.
+    let layer = if texts.is_empty() {
+        None
+    } else {
+        let file = work.join(TEXTS_FILE);
+        fs::write(&file, texts_ass(&texts, width, height)).map_err(|_| fail("Không ghi được lớp chữ"))?;
+        Some(subtitles_filter(&display_path(&file)))
+    };
+    let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix, layer.as_deref());
     inputs.extend(sound_inputs);
     fs::write(&script, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
-    let (width, height) = scaled_size(facts.width, facts.height, &request.quality);
     let job = ExportJob {
         work: work.clone(), inputs, media: request.media, script, folder, name, target: target.clone(),
         srt: (!request.cues.is_empty()).then(|| format_srt(&request.cues)),
         seconds: output_seconds(&edit.segments, &edit.transitions), has_audio, bitrate: video_bitrate(width, height, &facts.fps),
-        fps: facts.fps, ffmpeg, quality: request.quality, edit, audio: request.audio, main_volume: request.main_volume,
+        fps: facts.fps, ffmpeg, quality: request.quality, edit, audio: request.audio, main_volume: request.main_volume, texts: request.texts,
     };
     write_status(&work, "RUNNING", 0.0, "Đang bắt đầu xuất video…", Some(&target));
     let entry = Arc::new(Running { child: Mutex::new(None), cancelled: AtomicBool::new(false) });
@@ -1465,7 +1718,7 @@ mod tests {
 
     fn request(segments: Vec<Segment>) -> ExportRequest {
         ExportRequest { output_path: "unused".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
-            quality: "source".into(),
+            texts: vec![], quality: "source".into(),
             folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }] }
     }
 
@@ -1778,8 +2031,9 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         edit_project_save(path.clone(), project.clone()).unwrap();
         let saved: Value = serde_json::from_slice(&fs::read(dir.join(".dubflow-work/edit/project.json")).unwrap()).unwrap();
         assert_eq!(saved, project);
-        assert!(edit_project_save(path.clone(), json!({"schema_version": 4, "segments": [{}]})).is_err());
+        assert!(edit_project_save(path.clone(), json!({"schema_version": 5, "segments": [{}]})).is_err());
         assert!(edit_project_save(path.clone(), json!({"schema_version": 3, "segments": [{}], "audio": [], "main_volume": 1})).is_ok(), "4e drafts");
+        assert!(edit_project_save(path.clone(), json!({"schema_version": 4, "segments": [{}], "texts": []})).is_ok(), "4f drafts");
         assert!(edit_project_save(path.clone(), json!({"schema_version": 1, "segments": []})).is_err());
         assert!(edit_project_save(path.clone(), json!({"schema_version": 1, "segments": [{}], "pad": "x".repeat(PROJECT_LIMIT)})).is_err());
         fs::write(dir.join("other.mp4"), b"video").unwrap();
@@ -1947,7 +2201,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     #[test]
     fn mixes_a_sound_effect_with_fades_and_limits_the_sum() {
         let mix = Mix { sounds: vec![Sound { volume: 0.8, fade_in: 0.2, fade_out: 0.5, ..sound(0, 2.5, 0.0, 1.2) }], main_volume: 1.0 };
-        let (script, has_audio) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix);
+        let (script, has_audio) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix, None);
         assert!(has_audio);
         assert_eq!(script, expected(&format!("{MAIN_ONLY};
 [1:a]atrim=start=0:end=1.2,asetpts=PTS-STARTPTS,{{af}},afade=t=in:st=0:d=0.2,afade=t=out:st=0.7:d=0.5,volume=0.8,adelay=2500:all=1[sx0];
@@ -1959,7 +2213,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         // A file that ducks 12 dB, and a louder sound effect cut at the end of the output that ducks 6 dB.
         let mix = Mix { sounds: vec![Sound { duck_db: 12.0, ..sound(0, 4.0, 0.0, 2.0) }, Sound { volume: 1.5, duck_db: 6.0, ..sound(1, 9.5, 0.5, 3.0) }],
             main_volume: 1.0 };
-        let (script, _) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix);
+        let (script, _) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix, None);
         assert_eq!(script, expected(&format!("{MAIN_ONLY};
 [am]volume=volume='1-0.749*clip(min((t-3.9)/0.1,(6.1-t)/0.1),0,1)':eval=frame:enable='between(t,3.9,6.1)',\
 volume=volume='1-0.499*clip(min((t-9.4)/0.1,(10.1-t)/0.1),0,1)':eval=frame:enable='between(t,9.4,10.1)'[amx];
@@ -1976,13 +2230,13 @@ volume=volume='1-0.499*clip(min((t-9.4)/0.1,(10.1-t)/0.1),0,1)':eval=frame:enabl
     fn changes_the_original_volume_and_keeps_plain_edits_as_before() {
         let edit = whole(10.0);
         let quiet = Mix { sounds: vec![], main_volume: 0.5 };
-        assert_eq!(export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &quiet).0, expected(&format!("{MAIN_ONLY};
+        assert_eq!(export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &quiet, None).0, expected(&format!("{MAIN_ONLY};
 [am]volume=0.5,alimiter=limit=0.891:level=0:latency=1[a]")));
         let plain = Mix { sounds: vec![], main_volume: 1.0 };
-        assert_eq!(export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &plain), render_script(&edit, &[Input { has_audio: true }], &frame(), "source"));
+        assert_eq!(export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &plain, None), render_script(&edit, &[Input { has_audio: true }], &frame(), "source"));
         // A silent video gets a sound track only for added sounds.
-        assert!(!export_script(&edit, &[Input { has_audio: false }], &frame(), "source", &quiet).1);
-        let (script, has_audio) = export_script(&edit, &[Input { has_audio: false }], &frame(), "source", &Mix { sounds: vec![sound(0, 0.0, 0.0, 1.0)], main_volume: 0.5 });
+        assert!(!export_script(&edit, &[Input { has_audio: false }], &frame(), "source", &quiet, None).1);
+        let (script, has_audio) = export_script(&edit, &[Input { has_audio: false }], &frame(), "source", &Mix { sounds: vec![sound(0, 0.0, 0.0, 1.0)], main_volume: 0.5 }, None);
         assert!(has_audio);
         assert_eq!(script, expected("\
 [0:v]trim=start=0:end=10,setpts=PTS-STARTPTS[v0];
@@ -2013,5 +2267,112 @@ anullsrc=r=48000:cl=stereo,atrim=duration=10[am];
         let old: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "segments": [], "quality": "source", "folder": "x", "fileName": "a", "cues": []})).unwrap();
         assert!(old.audio.is_empty() && old.main_volume == 1.0, "4a–4d requests");
         assert_eq!(draft_sounds(&json!({"audio": [{"source": {"kind": "sfx", "id": "pop-01"}}, {"source": {"kind": "file", "path": "relative.mp3"}}]})).len(), 0);
+    }
+
+    fn text(words: &str, changes: Value) -> TextClip {
+        let mut value = json!({"text": words, "at": 1.0, "duration": 3.0, "x": 0.5, "y": 0.2, "w": 0.8, "font": "Segoe UI", "size": 90,
+            "color": "#FFFFFF", "outline": "#000000", "outline_width": 3, "box": "#000000", "box_opacity": 0.6, "bold": true, "italic": false,
+            "align": "center", "animation": "fade", "anim_duration": 0.5});
+        value.as_object_mut().unwrap().extend(changes.as_object().unwrap().clone());
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn writes_the_text_layer_as_ass() {
+        let texts = [
+            // A boxed two-line callout fading in and out.
+            text("Xin chào\nPhần 2", json!({})),
+            // A yellow title popping in.
+            text("Quá đỉnh!", json!({"at": 2.5, "duration": 2, "y": 0.6, "w": 0.9, "font": "Arial", "size": 108, "color": "#FDE047",
+                "outline_width": 4.5, "box": null, "animation": "pop"})),
+            // A left-aligned italic channel name sliding up, braces kept literal.
+            text("@Kênh {Vui}", json!({"at": 0, "duration": 10, "x": 0.22, "y": 0.08, "w": 0.38, "font": "Arial", "size": 54, "outline_width": 0,
+                "box": null, "bold": false, "italic": true, "align": "left", "animation": "slide-up", "anim_duration": 0.4})),
+            // Typed out, right-aligned, in the first look (its style is reused).
+            text("Gõ\nchữ", json!({"at": 5, "duration": 2, "w": 0.6, "y": 0.5, "align": "right", "animation": "typewriter"})),
+        ];
+        assert_eq!(texts_ass(&texts, 1280, 720), "\
+[Script Info]
+; DubFlow: Chữ
+ScriptType: v4.00+
+PlayResX: 1280
+PlayResY: 720
+WrapStyle: 1
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, \
+Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: T1,Segoe UI,60,&H00FFFFFF,&HFF000000,&H00000000,&H66000000,-1,0,0,0,100,100,0,0,4,2,12,5,0,0,0,1
+Style: T2,Arial,72,&H0047E0FD,&HFF000000,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+Style: T3,Arial,36,&H00FFFFFF,&HFF000000,&H00000000,&H64000000,0,-1,0,0,100,100,0,0,1,0,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:04.00,T1,,128,128,0,,{\\an5\\pos(640,144)\\fad(500,500)}Xin chào\\NPhần 2
+Dialogue: 1,0:00:02.50,0:00:04.50,T2,,64,64,0,,{\\an5\\pos(640,432)\\fad(200,0)\\fscx40\\fscy40\\t(0,300,\\fscx112\\fscy112)\\t(300,500,\\fscx100\\fscy100)}Quá đỉnh!
+Dialogue: 2,0:00:00.00,0:00:10.00,T3,,397,397,0,,{\\an4\\move(38.4,93.6,38.4,57.6,0,400)\\fad(400,0)}@Kênh \\{Vui\\}
+Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G{\\ko10}õ\\N{\\ko10}c{\\ko10}h{\\ko10}ữ
+");
+        // Sizes follow the short side: a portrait 1080×1920 frame draws at 1080p sizes.
+        let portrait = texts_ass(&texts[..1], 1080, 1920);
+        assert!(portrait.contains("Style: T1,Segoe UI,90,&H00FFFFFF,&HFF000000,&H00000000,&H66000000,-1,0,0,0,100,100,0,0,4,3,18,5,0,0,0,1"));
+        assert!(portrait.contains("Dialogue: 0,0:00:01.00,0:00:04.00,T1,,108,108,0,,{\\an5\\pos(540,384)\\fad(500,500)}"));
+        assert_eq!(ass_text("a\\N{b}\r\nc"), "a\\\u{2060}N\\{b\\}\\Nc", "typed backslashes never form tags");
+        assert_eq!(ass_time(3725.256), "1:02:05.26");
+        assert_eq!(ass_color("#1A2B3C", 0x66), "&H663C2B1A");
+        // Over the whole span, rounded per character; a combining mark stays with its letter.
+        assert_eq!(typewriter_text("a\u{301}b c", 0.25), "{\\ko6}a\u{301}{\\ko7}b{\\ko6} {\\ko6}c");
+        assert_eq!(typewriter_text("\nab\n", 0.1), "\\N{\\ko5}a{\\ko5}b\\N");
+    }
+
+    #[test]
+    fn draws_texts_as_the_last_filter_and_keeps_graphs_without_texts() {
+        let filter = subtitles_filter(r"D:\DubFlow Output\it's [1], a;b\.dubflow-work\edit\texts.ass");
+        assert_eq!(filter, r"subtitles=filename=D\\:/DubFlow Output/it\\\'s \[1\]\, a\;b/.dubflow-work/edit/texts.ass");
+        let plain = Mix { sounds: vec![], main_volume: 1.0 };
+        let input = [Input { has_audio: true }];
+        assert_eq!(export_script(&whole(10.0), &input, &frame(), "source", &plain, Some("subtitles=filename=t.ass")).0, "\
+[0:v]trim=start=0:end=10,setpts=PTS-STARTPTS[v0];
+[0:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS[a0];
+[v0][a0]concat=n=1:v=1:a=1[vt][a];
+[vt]subtitles=filename=t.ass[v]");
+        // After the quality scale and the mix, with overlays and transitions: still the last filter.
+        let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), segment(20.0, 30.0, 1.0, 1.0)],
+            transitions: vec![joint(0, TransitionKind::Fade, 0.8)],
+            overlays: vec![Overlay { media: 0, at: 1.0, start: 0.0, end: 2.0, x: 0.0, y: 0.0, w: 0.5, volume: 0.0 }] };
+        let mix = Mix { sounds: vec![], main_volume: 0.5 };
+        let (with, has_audio) = export_script(&edit, &input, &frame(), "720p", &mix, Some("subtitles=filename=t.ass"));
+        let (without, _) = export_script(&edit, &input, &frame(), "720p", &mix, None);
+        assert!(has_audio);
+        assert_eq!(with, format!("{};\n[vt]subtitles=filename=t.ass[v]", without.replace("setsar=1[v]", "setsar=1[vt]")));
+        assert!(without.ends_with("[am]volume=0.5,alimiter=limit=0.891:level=0:latency=1[a]") && without.contains("setsar=1[v]"));
+        assert_eq!(with.matches("[v]").count(), 1, "one picture output");
+    }
+
+    #[test]
+    fn validates_texts() {
+        let ok = text("Xin chào", json!({}));
+        let fitted = validate_texts(&[text("x", json!({"at": 9.0, "duration": 3.0, "anim_duration": 1.5}))], 10.0).unwrap();
+        assert_eq!((fitted[0].duration, fitted[0].anim_duration), (1.0, 0.5), "cut at the end, a fade takes half");
+        assert!(validate_texts(&vec![ok.clone(); 50], 10.0).is_ok());
+        assert!(validate_texts(&vec![ok.clone(); 51], 10.0).is_err());
+        let bad = [json!({"text": "  "}), json!({"text": "đ".repeat(301)}), json!({"text": "a\u{0}b"}), json!({"text": "a\r\nb"}),
+                   json!({"font": "Impact"}), json!({"color": "white"}), json!({"box": "#00000"}), json!({"align": "justify"}),
+                   json!({"animation": "spin"}), json!({"at": 10.0}), json!({"at": -1.0}), json!({"duration": 0.01}), json!({"w": 0.05}),
+                   json!({"x": 1.2}), json!({"size": 300}), json!({"size": 10}), json!({"outline_width": 13}), json!({"box_opacity": 1.5}),
+                   json!({"anim_duration": 2.5}), json!({"duration": f64::NAN})];
+        for changes in bad {
+            let mut value = serde_json::to_value(&ok).unwrap();
+            value.as_object_mut().unwrap().extend(changes.as_object().unwrap().clone());
+            let parsed = serde_json::from_value::<TextClip>(value);
+            assert!(parsed.map_or(true, |clip| validate_texts(&[clip], 10.0).is_err()), "{changes}");
+        }
+        assert!(validate_texts(&[text(&"đ".repeat(300), json!({}))], 10.0).is_ok());
+        assert!(serde_json::from_value::<TextClip>(json!({"text": "x"})).is_err());
+        let request: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "segments": [], "quality": "source", "folder": "x",
+            "fileName": "a", "cues": [], "texts": [serde_json::to_value(&ok).unwrap()]})).unwrap();
+        assert_eq!(request.texts, vec![ok]);
     }
 }

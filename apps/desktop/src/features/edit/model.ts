@@ -5,10 +5,12 @@
  * and volume; the edited output is the segments back to back. A joint may
  * carry a transition, and overlays play other media over the output. Âm
  * thanh adds sound clips (sound effects or the user's audio files) mixed over
- * the output's own sound, which has one volume for the whole video.
+ * the output's own sound, which has one volume for the whole video. Chữ adds
+ * texts drawn over the picture at output times, burned in by libass.
  * Every operation is pure and returns a new edit, or the same object when
  * nothing changes, so the history can skip no-op steps.
  */
+import { isFont, type SubtitleFont } from "./fonts.ts";
 
 export const MIN_SEGMENT = 0.1;
 export const MIN_SPEED = 0.5;
@@ -31,7 +33,7 @@ export const SPEED_PRESETS: readonly number[] = [0.5, 0.75, 1, 1.25, 1.5, 2];
 export const HISTORY_LIMIT = 200;
 /** A remapped cue piece shorter than this is dropped, unless it is the whole cue. */
 export const MIN_CUE_PIECE = 0.1;
-export const PROJECT_SCHEMA = 3;
+export const PROJECT_SCHEMA = 4;
 /** Added sound clips in one edit. */
 export const MAX_AUDIO = 100;
 /** The shortest sound clip (some clicks last 30 ms). */
@@ -41,6 +43,21 @@ export const MAX_FADE = 3;
 export const MAX_DUCK_DB = 24;
 export const DEFAULT_DUCK_DB = 10;
 export const MAIN = "main";
+/** Chữ: texts in one edit, characters in one text, and their limits. */
+export const MAX_TEXTS = 50;
+export const MAX_TEXT_CHARS = 300;
+export const MIN_TEXT = 0.2;
+export const DEFAULT_TEXT_SECONDS = 3;
+/** Font size in pixels on a frame whose short side is 1080. */
+export const MIN_TEXT_SIZE = 16;
+export const MAX_TEXT_SIZE = 240;
+export const MAX_TEXT_OUTLINE = 12;
+/** Wrapping width as a fraction of the frame width. */
+export const MIN_TEXT_WIDTH = 0.1;
+export const MIN_ANIM = 0.1;
+export const MAX_ANIM = 2;
+export const TEXT_ANIMATIONS = ["none", "fade", "pop", "slide-up", "typewriter"] as const;
+export const TEXT_ALIGNS = ["left", "center", "right"] as const;
 
 export type MediaKind = "main" | "job" | "file";
 export type Media = {
@@ -87,8 +104,28 @@ export type Edit = {
   readonly audio: readonly AudioClip[];
   /** "Âm thanh gốc": the volume of the output's own sound (segments and overlays), 0–2. */
   readonly mainVolume: number;
+  /** Chữ: texts over the picture, later ones drawn on top. */
+  readonly texts: readonly TextClip[];
   readonly nextId: number;
 };
+export type TextAnimation = typeof TEXT_ANIMATIONS[number];
+export type TextAlign = typeof TEXT_ALIGNS[number];
+/**
+ * A text over the picture (Chữ): shown from output time `at` for `duration`
+ * seconds, anchored to output time like sound clips. `x`, `y` are the
+ * normalized centre of its box, `w` the box width (lines wrap inside it),
+ * `size` and `outline_width` pixels on a frame whose short side is 1080,
+ * `box` a colour behind the text or null.
+ */
+export type TextClip = {
+  readonly id: string; readonly text: string; readonly at: number; readonly duration: number;
+  readonly x: number; readonly y: number; readonly w: number;
+  readonly font: SubtitleFont; readonly size: number; readonly color: string; readonly outline: string; readonly outline_width: number;
+  readonly box: string | null; readonly box_opacity: number; readonly bold: boolean; readonly italic: boolean; readonly align: TextAlign;
+  readonly animation: TextAnimation; readonly anim_duration: number;
+};
+/** Everything about a text but its words and times. */
+export type TextLook = Omit<TextClip, "id" | "text" | "at" | "duration">;
 export type Cue = { start_ms: number; end_ms: number; text: string };
 export type SourcePoint = { segment: Segment; index: number; sourceTime: number; outputStart: number };
 export type OverlayPreset = "tl" | "tr" | "bl" | "br" | "center";
@@ -107,7 +144,7 @@ export function createEdit(duration: number, info: Partial<Omit<MediaInfo, "dura
   return {
     duration, media: [mainMedia(duration, info)],
     segments: [{ id: "s1", mediaId: MAIN, start: 0, end: ms(duration), speed: 1, volume: 1 }],
-    transitions: {}, overlays: [], audio: [], mainVolume: 1, nextId: 2,
+    transitions: {}, overlays: [], audio: [], mainVolume: 1, texts: [], nextId: 2,
   };
 }
 
@@ -278,12 +315,12 @@ function attachMedia(edit: Edit, info: MediaInfo): { edit: Edit; id: string } | 
   return { edit: { ...edit, media: [...edit.media, media], nextId: edit.nextId + 1 }, id };
 }
 
-/** The new segment, overlay or sound an operation added, if any. */
+/** The new segment, overlay, sound or text an operation added, if any. */
 export function addedId(before: Edit, after: Edit): string | null {
   const ids = new Set([...before.segments.map((segment) => segment.id), ...before.overlays.map((overlay) => overlay.id),
-    ...before.audio.map((clip) => clip.id)]);
+    ...before.audio.map((clip) => clip.id), ...before.texts.map((text) => text.id)]);
   return after.segments.find((segment) => !ids.has(segment.id))?.id ?? after.overlays.find((overlay) => !ids.has(overlay.id))?.id
-    ?? after.audio.find((clip) => !ids.has(clip.id))?.id ?? null;
+    ?? after.audio.find((clip) => !ids.has(clip.id))?.id ?? after.texts.find((text) => !ids.has(text.id))?.id ?? null;
 }
 
 /**
@@ -561,13 +598,148 @@ export function audioLanes(clips: readonly Pick<AudioClip, "id" | "at" | "start"
   return lanes;
 }
 
+// ---------- Chữ: texts over the picture ----------
+
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
+const isHex = (value: unknown): value is string => typeof value === "string" && HEX_COLOR.test(value);
+
+/** The look "Thêm chữ" starts from. */
+export const DEFAULT_TEXT_LOOK: TextLook = {
+  x: 0.5, y: 0.5, w: 0.8, font: "Arial", size: 72, color: "#FFFFFF", outline: "#000000", outline_width: 4,
+  box: null, box_opacity: 0.6, bold: true, italic: false, align: "center", animation: "none", anim_duration: 0.5,
+};
+
+/**
+ * Words as they render: composed (NFC) so libass and the browser shape
+ * Vietnamese marks alike, CR/LF as one line break, no other control
+ * characters, at most 300 characters.
+ */
+export function cleanTextValue(value: string): string {
+  const text = value.normalize("NFC").replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u2028\u2029]/g, "");
+  return [...text].slice(0, MAX_TEXT_CHARS).join("");
+}
+
+/** Seconds a text shows in the output (cut at the end of the output). */
+export function textLength(text: Pick<TextClip, "at" | "duration">, total: number): number {
+  return Math.max(0, Math.min(text.duration, total - text.at));
+}
+
+/** How long the animation runs as it renders: a fade in and out shares the text's length, the others take at most all of it. */
+export function animSpan(text: Pick<TextClip, "animation" | "anim_duration">, length: number): number {
+  if (text.animation === "none") return 0;
+  return floorMs(Math.max(0, Math.min(text.anim_duration, text.animation === "fade" ? length / 2 : length)));
+}
+
+/** Every value within its limits and steps; the box keeps inside the frame sideways. */
+function fitText(text: TextClip): TextClip {
+  const w = unit(clamp(text.w, MIN_TEXT_WIDTH, 1));
+  return {
+    ...text, w, x: unit(clamp(text.x, w / 2, 1 - w / 2)), y: unit(clamp(text.y, 0, 1)),
+    size: Math.round(clamp(text.size, MIN_TEXT_SIZE, MAX_TEXT_SIZE)),
+    outline_width: Math.round(clamp(text.outline_width, 0, MAX_TEXT_OUTLINE) * 2) / 2,
+    box_opacity: Math.round(clamp(text.box_opacity, 0, 1) * 20) / 20,
+    anim_duration: Math.round(clamp(text.anim_duration, MIN_ANIM, MAX_ANIM) * 10) / 10,
+  };
+}
+
+function changeText(edit: Edit, id: string, change: (text: TextClip) => TextClip): Edit {
+  const index = edit.texts.findIndex((text) => text.id === id);
+  if (index < 0) return edit;
+  const before = edit.texts[index];
+  const after = fitText(change(before));
+  if ((Object.keys(after) as Array<keyof TextClip>).every((key) => after[key] === before[key])) return edit;
+  return { ...edit, texts: [...edit.texts.slice(0, index), after, ...edit.texts.slice(index + 1)] };
+}
+
+/** Output start and length that fit the output: at least 0.2 s, ending by the end of the video. */
+function placeTime(at: number, duration: number, total: number): { at: number; duration: number } {
+  const start = ms(clamp(at, 0, Math.max(0, total - MIN_TEXT)));
+  return { at: start, duration: ms(clamp(duration, MIN_TEXT, Math.max(MIN_TEXT, total - start))) };
+}
+
+/** The valid parts of a look; anything else is left out. */
+function validLook(look: Partial<TextLook>): Partial<TextLook> {
+  const value: Record<string, unknown> = {};
+  for (const key of ["x", "y", "w", "size", "outline_width", "box_opacity", "anim_duration"] as const) {
+    if (finite(look[key])) value[key] = look[key];
+  }
+  if (isFont(look.font)) value.font = look.font;
+  if (isHex(look.color)) value.color = look.color.toUpperCase();
+  if (isHex(look.outline)) value.outline = look.outline.toUpperCase();
+  if (look.box === null) value.box = null;
+  else if (isHex(look.box)) value.box = look.box.toUpperCase();
+  if (typeof look.bold === "boolean") value.bold = look.bold;
+  if (typeof look.italic === "boolean") value.italic = look.italic;
+  if ((TEXT_ALIGNS as readonly unknown[]).includes(look.align)) value.align = look.align;
+  if ((TEXT_ANIMATIONS as readonly unknown[]).includes(look.animation)) value.animation = look.animation;
+  return value as Partial<TextLook>;
+}
+
+/** A text from output time `at` (3 s, or to the end of the video); no-op at 50 texts, for empty words or a video too short. */
+export function addText(edit: Edit, at: number, text = "Chữ của bạn", look: Partial<TextLook> = {}, seconds = DEFAULT_TEXT_SECONDS): Edit {
+  const total = outputDuration(edit);
+  if (edit.texts.length >= MAX_TEXTS || !Number.isFinite(at) || !Number.isFinite(seconds) || total < MIN_TEXT) return edit;
+  const words = cleanTextValue(text);
+  if (!words.trim()) return edit;
+  const clip = fitText({ ...DEFAULT_TEXT_LOOK, ...validLook(look), id: `t${edit.nextId}`, text: words, ...placeTime(at, seconds, total) });
+  return { ...edit, texts: [...edit.texts, clip], nextId: edit.nextId + 1 };
+}
+
+/** New words or look; invalid values are ignored, and empty words keep the old ones. */
+export function setTextProps(edit: Edit, id: string, props: Partial<TextLook> & { text?: string }): Edit {
+  return changeText(edit, id, (text) => {
+    const words = props.text === undefined ? text.text : cleanTextValue(props.text);
+    return { ...text, ...validLook(props), text: words.trim() ? words : text.text };
+  });
+}
+
+/** Output start and length (at least 0.2 s, kept inside the output). */
+export function setTextTime(edit: Edit, id: string, times: { at?: number; duration?: number }): Edit {
+  if (![times.at, times.duration].every((value) => value === undefined || Number.isFinite(value))) return edit;
+  const total = outputDuration(edit);
+  return changeText(edit, id, (text) => ({ ...text, ...placeTime(times.at ?? text.at, times.duration ?? text.duration, total) }));
+}
+
+/** New centre; the box stays inside the frame sideways. */
+export function moveText(edit: Edit, id: string, x: number, y: number): Edit {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return edit;
+  return changeText(edit, id, (text) => ({ ...text, x, y }));
+}
+
+/** New box width (10–100 % of the frame), centred at `x` when given. */
+export function resizeText(edit: Edit, id: string, w: number, x?: number): Edit {
+  if (!Number.isFinite(w) || (x !== undefined && !Number.isFinite(x))) return edit;
+  return changeText(edit, id, (text) => ({ ...text, w, x: x ?? text.x }));
+}
+
+export function removeText(edit: Edit, id: string): Edit {
+  if (!edit.texts.some((text) => text.id === id)) return edit;
+  return { ...edit, texts: edit.texts.filter((text) => text.id !== id) };
+}
+
+/** A copy right after the text when it fits there, else at the same time a little lower. */
+export function duplicateText(edit: Edit, id: string): Edit {
+  const source = edit.texts.find((text) => text.id === id);
+  const total = outputDuration(edit);
+  if (!source || edit.texts.length >= MAX_TEXTS) return edit;
+  const after = source.at + textLength(source, total);
+  const placed = total - after >= MIN_TEXT ? placeTime(after, source.duration, total) : { y: source.y + 0.08 };
+  const copy = fitText({ ...source, id: `t${edit.nextId}`, ...placed });
+  return { ...edit, texts: [...edit.texts, copy], nextId: edit.nextId + 1 };
+}
+
+/** The texts on screen at output time `time`, bottom first. */
+export function textsAt(edit: Edit, time: number, total = outputDuration(edit)): TextClip[] {
+  return edit.texts.filter((text) => time >= text.at && time < text.at + textLength(text, total));
+}
+
 // ---------- Comparing, exporting ----------
 
 /** The whole main video once, at normal speed and volume, nothing added: nothing to export. */
 export function isUnchanged(edit: Edit, duration: number): boolean {
   const [only] = edit.segments;
   return edit.segments.length === 1 && only.mediaId === MAIN && only.start <= 0.001 && only.end >= duration - 0.001
-    && only.speed === 1 && only.volume === 1 && !edit.overlays.length && !edit.audio.length && edit.mainVolume === 1;
+    && only.speed === 1 && only.volume === 1 && !edit.overlays.length && !edit.audio.length && edit.mainVolume === 1 && !edit.texts.length;
 }
 
 export function sameSegments(a: readonly Segment[], b: readonly Pick<Segment, "start" | "end" | "speed" | "volume">[]): boolean {
@@ -585,9 +757,12 @@ export type PlanAudio = {
   source: { kind: "sfx"; id: string } | { kind: "file"; path: string };
   at: number; start: number; end: number; volume: number; fade_in: number; fade_out: number; duck_db: number;
 };
+/** A text as the host draws it: its shown length and animation span already fitted to the output. */
+export type PlanText = Omit<TextClip, "id">;
 /** What the host renders: media 0 is the main video, `media` lists the others by path. */
 export type ExportPlan = {
   media: string[]; segments: PlanSegment[]; transitions: PlanTransition[]; overlays: PlanOverlay[]; audio: PlanAudio[]; mainVolume: number;
+  texts: PlanText[];
 };
 
 export function exportPlan(edit: Edit): ExportPlan {
@@ -609,7 +784,13 @@ export function exportPlan(edit: Edit): ExportPlan {
   const overlays = edit.overlays.filter((overlay) => overlayLength(edit, overlay, total) >= 0.05)
     .map(({ mediaId, at, start, end, x, y, w, volume }) => ({ media: index(mediaId), at, start, end, x, y, w, volume }));
   const audio = edit.audio.filter((clip) => audioLength(clip, total) >= MIN_AUDIO).map(planAudio);
-  return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume };
+  const texts = edit.texts.filter((text) => text.text.trim() && textLength(text, total) >= 0.05).map((text) => planText(text, total));
+  return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume, texts };
+}
+
+function planText({ id: _, ...text }: TextClip, total: number): PlanText {
+  const duration = floorMs(textLength(text, total));
+  return { ...text, duration, anim_duration: text.animation === "none" ? text.anim_duration : animSpan(text, duration) };
 }
 
 function planAudio(clip: AudioClip): PlanAudio {
@@ -619,14 +800,20 @@ function planAudio(clip: AudioClip): PlanAudio {
 
 const near = (a: unknown, b: unknown, tolerance = 0.0005): boolean => typeof a === "number" && typeof b === "number" && Math.abs(a - b) < tolerance;
 
-/** An edit renders the same as an exported one (4a exports list only main segments, 4e adds sounds and the main volume). */
+/** An edit renders the same as an exported one (4a exports list only main segments, 4e adds sounds and the main volume, 4f texts). */
 export function matchesExport(edit: Edit, exported: {
-  media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown; audio?: unknown; main_volume?: unknown;
+  media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown; audio?: unknown; main_volume?: unknown; texts?: unknown;
 }): boolean {
   const plan = exportPlan(edit);
   const list = (value: unknown): Array<Record<string, unknown>> => Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
   const media = Array.isArray(exported.media) ? exported.media : [];
   const segments = list(exported.segments), transitions = list(exported.transitions), overlays = list(exported.overlays), audio = list(exported.audio);
+  const texts = list(exported.texts);
+  const sameText = (other: Record<string, unknown>, text: PlanText): boolean => (Object.keys(text) as Array<keyof PlanText>).every((key) => {
+    const value = text[key];
+    return typeof value === "number" ? near(other[key], value, key === "x" || key === "y" || key === "w" ? 0.0002 : 0.0005) : other[key] === value;
+  });
+  if (texts.length !== plan.texts.length || !plan.texts.every((text, at) => sameText(texts[at], text))) return false;
   const sameSource = (other: unknown, source: PlanAudio["source"]): boolean => {
     const value = (other ?? {}) as Record<string, unknown>;
     return value.kind === source.kind && (source.kind === "sfx" ? value.id === source.id : typeof value.path === "string" && samePath(value.path, source.path));
@@ -774,9 +961,9 @@ function serializeMedia({ id, path, title, duration, width, height, fps, hasAudi
 }
 
 /**
- * The draft: schema 3, with the recently picked files kept in `media` (ids
- * "r…" when no part of the edit uses them), the sound clips in `audio` and
- * the original sound's volume in `main_volume`.
+ * The draft: schema 4, with the recently picked files kept in `media` (ids
+ * "r…" when no part of the edit uses them), the sound clips in `audio`, the
+ * original sound's volume in `main_volume` and the texts in `texts`.
  */
 export function serializeProject(edit: Edit, changes: number, selected: string | null, recent: readonly Media[] = []): Record<string, unknown> {
   const extra = recent.filter((media) => !edit.media.some((used) => samePath(used.path, media.path)))
@@ -792,7 +979,25 @@ export function serializeProject(edit: Edit, changes: number, selected: string |
       at, start, end, volume, fade_in: fadeIn, fade_out: fadeOut, duck_db: duckDb,
     })),
     main_volume: edit.mainVolume,
+    texts: edit.texts.map((text) => ({ ...text })),
   };
+}
+
+function parseText(raw: unknown): TextClip | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const { id, text, at, duration, x, y, w, font, size, color, outline, outline_width, box, box_opacity, bold, italic, align, animation, anim_duration } = value;
+  if (typeof id !== "string" || !/^t\d{1,9}$/.test(id) || typeof text !== "string" || !isFont(font)) return null;
+  if (![at, duration, x, y, w, size, outline_width, box_opacity, anim_duration].every(finite)) return null;
+  if (!isHex(color) || !isHex(outline) || (box !== null && !isHex(box)) || typeof bold !== "boolean" || typeof italic !== "boolean") return null;
+  if (!(TEXT_ALIGNS as readonly unknown[]).includes(align) || !(TEXT_ANIMATIONS as readonly unknown[]).includes(animation)) return null;
+  const words = cleanTextValue(text);
+  if (!words.trim() || (at as number) < 0 || (duration as number) < MIN_TEXT - 1e-6) return null;
+  return fitText({
+    id, text: words, at: at as number, duration: duration as number, x: x as number, y: y as number, w: w as number, font, size: size as number,
+    color: color.toUpperCase(), outline: outline.toUpperCase(), outline_width: outline_width as number, box: box === null ? null : (box as string).toUpperCase(),
+    box_opacity: box_opacity as number, bold, italic, align: align as TextAlign, animation: animation as TextAnimation, anim_duration: anim_duration as number,
+  });
 }
 
 /** A sound effect id from the catalog: lower-case letters, digits and dashes. */
@@ -830,13 +1035,14 @@ function parseMedia(raw: unknown): Media | null {
 /**
  * A saved draft for this video, or null when it is missing, invalid or for
  * another render. Schema-1 drafts (4a) become all-main edits; schema-2
- * drafts (4b–4d) get no sounds and the original sound at 100 %.
+ * drafts (4b–4d) get no sounds and the original sound at 100 %; schema-3
+ * drafts (4e) get no texts.
  */
 export function parseProject(value: unknown, duration: number, info: Partial<Omit<MediaInfo, "duration" | "kind">> = {}): Project | null {
   if (!value || typeof value !== "object") return null;
   const data = value as Record<string, unknown>;
   const schema = data.schema_version;
-  if ((schema !== 1 && schema !== 2 && schema !== 3) || typeof data.duration !== "number" || Math.abs(data.duration - duration) > 0.5) return null;
+  if ((schema !== 1 && schema !== 2 && schema !== 3 && schema !== 4) || typeof data.duration !== "number" || Math.abs(data.duration - duration) > 0.5) return null;
   if (!Array.isArray(data.segments) || !data.segments.length || data.segments.length > MAX_SEGMENTS) return null;
   const main = mainMedia(duration, info);
   const known = new Map<string, Media>([[MAIN, main]]);
@@ -898,7 +1104,7 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
     }
   }
   const audio: AudioClip[] = [];
-  if (schema === 3 && Array.isArray(data.audio)) {
+  if ((schema === 3 || schema === 4) && Array.isArray(data.audio)) {
     for (const raw of (data.audio as unknown[]).slice(0, MAX_AUDIO)) {
       const clip = parseAudio(raw);
       if (!clip || ids.has(clip.id)) continue;
@@ -907,12 +1113,22 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
       audio.push(clip);
     }
   }
-  const mainVolume = schema === 3 && finite(data.main_volume) ? Math.round(clamp(data.main_volume, 0, MAX_VOLUME) * 100) / 100 : 1;
+  const mainVolume = (schema === 3 || schema === 4) && finite(data.main_volume) ? Math.round(clamp(data.main_volume, 0, MAX_VOLUME) * 100) / 100 : 1;
+  const texts: TextClip[] = [];
+  if (schema === 4 && Array.isArray(data.texts)) {
+    for (const raw of (data.texts as unknown[]).slice(0, MAX_TEXTS)) {
+      const text = parseText(raw);
+      if (!text || ids.has(text.id)) continue;
+      ids.add(text.id);
+      count(text.id);
+      texts.push(text);
+    }
+  }
   const nextId = typeof data.next_id === "number" && Number.isInteger(data.next_id) && data.next_id > highest ? data.next_id : highest + 1;
   const changes = typeof data.changes === "number" && Number.isInteger(data.changes) && data.changes >= 0 ? data.changes : 0;
   const selected = typeof data.selected === "string" && segments.some((segment) => segment.id === data.selected) ? data.selected : null;
   const edit = pruneMedia({ duration, media: [main, ...[...known.values()].filter((media) => media.id !== MAIN)], segments, transitions, overlays,
-    audio, mainVolume, nextId });
+    audio, mainVolume, texts, nextId });
   return { edit, changes, selected, recent };
 }
 

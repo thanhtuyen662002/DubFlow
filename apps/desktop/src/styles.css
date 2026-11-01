@@ -653,6 +653,10 @@ select { color-scheme: dark; }
 @container (max-width: 560px) {
   .edit-open { width: 34px; padding: 0; font-size: 0; gap: 0; }
 }
+/* Six editor tools still fit beside "Thoát" from a 900 px window. */
+@container (max-width: 600px) {
+  .edit-modes button { padding: 0 8px; }
+}
 
 .edit-panel { display: flex; grid-column: 2; grid-row: 1; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); }
 .edit-panel-head { display: flex; flex: none; align-items: center; gap: 2px; height: 48px; padding: 0 10px 0 8px; border-bottom: 1px solid var(--line); }
@@ -796,7 +800,7 @@ select { color-scheme: dark; }
 .edit-ov.idle video { visibility: hidden; }
 .edit-ov-handle { position: absolute; right: -7px; bottom: -7px; display: none; width: 14px; height: 14px; border: 2px solid #fff; border-radius: 4px; background: var(--accent); cursor: nwse-resize; }
 .edit-ov.selected .edit-ov-handle { display: block; }
-.queue-screen:not(.editing) :is(.edit-ghost, .edit-fade, .edit-overlays, .edit-alt, .edit-subs-layer) { display: none; }
+.queue-screen:not(.editing) :is(.edit-ghost, .edit-fade, .edit-overlays, .edit-texts, .edit-alt, .edit-subs-layer) { display: none; }
 
 /* Phụ đề: line list, style panel, footer, and the live subtitle over the picture */
 .edit-panel.subs .edit-panel-body { gap: 0; padding: 0; overflow: hidden; }
@@ -1054,3 +1058,67 @@ select { color-scheme: dark; }
 .tl-au.selected .tl-handle { background: var(--accent); }
 .tl-au:hover .tl-handle::after, .tl-au.selected .tl-handle::after { opacity: 1; }
 .tl-au-hint { position: absolute; top: 0; color: var(--text-3); font-size: 11.5px; line-height: 18px; white-space: nowrap; pointer-events: none; }
+
+/* Chữ: adding texts, the selected text, the list, the text row of the timeline and the texts over the picture */
+.edit-text { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.edit-text[hidden], .tx-selected[hidden], #tx-box-options[hidden], #tx-anim-row[hidden], #tx-empty[hidden] { display: none; }
+.tx-add-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tx-add-row .btn { flex: none; gap: 6px; height: 34px; padding: 0 14px 0 10px; }
+.tx-count-all { min-width: 0; overflow: hidden; color: var(--text-3); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tx-presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
+.tx-preset { display: grid; place-items: center; min-width: 0; height: 40px; padding: 4px 3px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: oklch(0.31 0.03 250); cursor: pointer; }
+.tx-preset:hover:not(:disabled) { border-color: var(--line-strong); }
+.tx-preset:disabled { opacity: .45; cursor: not-allowed; }
+.tx-preset-sample { max-width: 100%; overflow: hidden; border-radius: 3px; font-size: 12.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; paint-order: stroke fill; }
+.tx-selected { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
+.tx-selected .edit-segment-title { white-space: normal; }
+.tx-selected .edit-times input { background: var(--surface); }
+.tx-input { box-sizing: border-box; width: 100%; min-height: 56px; max-height: 140px; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px; line-height: 1.45; resize: vertical; }
+.tx-input:focus, .tx-select:focus { border-color: var(--accent); outline: none; }
+.tx-chars { margin-top: -6px; color: var(--text-3); font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums; }
+.tx-select { width: 100%; min-width: 0; height: 34px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 13.5px; }
+.tx-format { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.tx-toggles, .tx-align { flex: none; background: var(--surface); }
+.tx-toggles button, .tx-align button { display: grid; place-items: center; min-width: 34px; padding: 0 8px; }
+.tx-toggles button { font-family: Georgia, serif; font-size: 14px; }
+.tx-toggles button[aria-pressed="true"], .tx-align button[aria-checked="true"] { background: var(--select); color: var(--text); }
+.tx-anim { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px; }
+.tx-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.tx-actions .btn { justify-content: center; gap: 8px; height: 34px; padding: 0 10px; }
+.tx-actions kbd { padding: 0 6px; border: 1px solid color-mix(in oklch, var(--err) 35%, transparent); border-radius: 4px; color: inherit; font: 600 11px/18px inherit; opacity: .8; }
+.tx-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.tx-list:empty { display: none; }
+.tx-item { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 3px 3px 8px; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
+.tx-item:hover { background: var(--raised); }
+.tx-item.selected { border-color: var(--accent); background: var(--select); }
+.tx-item-time { flex: none; color: var(--text-3); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tx-item.on .tx-item-time { color: var(--accent-text); }
+.tx-item-text { flex: 1; min-width: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.tx-item-delete { flex: none; width: 26px; height: 26px; border-radius: 6px; }
+.tl-txtrack { position: relative; margin-top: 6px; }
+.tl-txtrack[hidden] { display: none; }
+.tl-tx { position: absolute; height: 18px; overflow: hidden; border-radius: 5px; background: oklch(0.34 0.07 75); box-shadow: inset 0 0 0 1px oklch(0.50 0.09 75); cursor: grab; }
+.tl-tx.selected { box-shadow: inset 0 0 0 2px var(--accent); }
+.tl-tx-name { position: absolute; top: 0; left: 8px; right: 8px; overflow: hidden; color: var(--text); font-size: 11px; font-weight: 600; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+.tl-tx .tl-handle { width: 7px; }
+.tl-tx .tl-handle::after { left: 2px; height: 8px; margin-top: -4px; }
+.tl-tx:hover .tl-handle { background: oklch(0.60 0.17 278 / .45); }
+.tl-tx.selected .tl-handle { background: var(--accent); }
+.tl-tx:hover .tl-handle::after, .tl-tx.selected .tl-handle::after { opacity: 1; }
+.edit-texts { position: absolute; z-index: 2; overflow: hidden; pointer-events: none; }
+.tx-box { position: absolute; display: flex; box-sizing: border-box; white-space: pre-wrap; overflow-wrap: normal; word-break: normal; }
+.tx-box[hidden] { display: none; }
+.tx-body { box-sizing: border-box; max-width: 100%; min-width: 0; paint-order: stroke fill; outline: none; }
+.tx-hide { visibility: hidden; }
+.edit-texts.interactive .tx-box { pointer-events: auto; cursor: move; touch-action: none; user-select: none; }
+.edit-texts.interactive .tx-box:hover { outline: 1px dashed oklch(1 0 0 / .6); outline-offset: 2px; }
+.edit-texts.interactive .tx-box.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.edit-texts.interactive .tx-box.idle { outline-style: dashed; }
+.tx-box.editing, .tx-box.editing .tx-body { cursor: text; user-select: text; }
+.tx-handle { position: absolute; top: 50%; display: none; width: 10px; height: 26px; margin-top: -13px; border: 2px solid #fff; border-radius: 4px; background: var(--accent); cursor: ew-resize; }
+.tx-handle.w { left: -5px; }
+.tx-handle.e { right: -5px; }
+.edit-texts.interactive .tx-box.selected:not(.editing) .tx-handle { display: block; }
+.tx-guide { position: absolute; background: oklch(0.80 0.10 278 / .9); pointer-events: none; }
+.tx-guide.x { top: 0; bottom: 0; width: 1px; }
+.tx-guide.y { left: 0; right: 0; height: 1px; }

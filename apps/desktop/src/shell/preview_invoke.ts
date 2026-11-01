@@ -164,7 +164,7 @@ type PreviewSegment = { media?: number; start: number; end: number; speed: numbe
 type PreviewExport = {
   path: string; srt_path: string; created: number; duration: number; quality: string; segments: PreviewSegment[];
   media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[];
-  audio?: unknown[]; main_volume?: number;
+  audio?: unknown[]; main_volume?: number; texts?: unknown[];
 };
 
 /** Finished videos the browser preview offers in "Chèn › Từ DubFlow" (it has no real queue jobs to insert). */
@@ -238,7 +238,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "edit_export": {
       const request = args.request as { outputPath: string; folder: string; fileName: string; quality: string; segments: PreviewSegment[];
         media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[];
-        audio?: unknown[]; mainVolume?: number };
+        audio?: unknown[]; mainVolume?: number; texts?: unknown[] };
       if (editRuns.get(request.outputPath) && previewEditStatus(request.outputPath).status?.state === "RUNNING") throw new Error("Video này đang được xuất");
       const taken = new Set((editExports.get(request.outputPath) ?? []).map((entry) => entry.path));
       const stem = request.fileName.replace(/\.mp4$/i, "").trim();
@@ -250,7 +250,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       editRuns.set(request.outputPath, { started: Date.now(), cancelled: false, recorded: false,
         entry: { path, srt_path: path.replace(/\.mp4$/, ".srt"), created: Math.floor(Date.now() / 1000), duration, quality: request.quality,
           segments: request.segments, media: request.media ?? [], transitions: request.transitions ?? [], overlays: request.overlays ?? [],
-          audio: request.audio ?? [], main_volume: request.mainVolume ?? 1 } });
+          audio: request.audio ?? [], main_volume: request.mainVolume ?? 1, texts: request.texts ?? [] } });
       return { path } as T;
     }
     case "edit_subtitles_load": return {
