@@ -239,17 +239,28 @@ fn status_path(root: &Path, job_id: &str) -> Result<PathBuf, String> {
 
 fn default_job_output(source: &Path, job_id: &str) -> Result<PathBuf, String> {
     let media_store = data_root().ok().map(|root| root.join("source-media"));
-    job_output_in(&results_base(source, media_store.as_deref(), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref()), source, job_id)
+    choose_output(None, None, source, job_id, media_store.as_deref(), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref())
 }
 
-/// Results go next to the source, except for a video the link service keeps
-/// in its own deep `source-media` store: those go to `Videos` like link
-/// downloads, so the path stays short and the store holds only sources.
-fn results_base(source: &Path, media_store: Option<&Path>, profile: Option<&Path>) -> PathBuf {
-    let beside = source.parent().unwrap_or(Path::new(".")).to_path_buf();
-    match (media_store, profile) {
-        (Some(store), Some(profile)) if within(source, store) => profile.join("Videos"),
-        _ => beside,
+/// The results folder for a job, from every route `start_job` offers: the
+/// folder the job asked for, a results root the user chose, or next to the
+/// source. Whatever the route, a folder inside the link service's
+/// `source-media` store (deep, and reserved for sources) is replaced by
+/// `<profile>\Videos\DubFlow Output\…`; without a profile that is an error,
+/// never a silent fallback into the store.
+fn choose_output(requested: Option<&str>, results_root: Option<&Path>, source: &Path, job_id: &str,
+                 media_store: Option<&Path>, profile: Option<&Path>) -> Result<PathBuf, String> {
+    let candidate = match (requested, results_root) {
+        (Some(value), _) => PathBuf::from(value),
+        (None, Some(base)) => job_output_in(base, source, job_id)?,
+        (None, None) => job_output_in(source.parent().unwrap_or(Path::new(".")), source, job_id)?,
+    };
+    match media_store {
+        Some(store) if within(&candidate, store) => {
+            let profile = profile.ok_or_else(|| fail("Không xác định được thư mục Videos để lưu kết quả"))?;
+            job_output_in(&profile.join("Videos"), source, job_id)
+        }
+        _ => Ok(candidate),
     }
 }
 
@@ -269,17 +280,6 @@ fn within(path: &Path, root: &Path) -> bool {
         resolved.push(name);
     }
     resolved.starts_with(root)
-}
-
-/// An output folder a job asked for, unless it lies inside the link
-/// service's source store (an older rerun pinned one there): those results
-/// move to the default folder so the path stays short.
-fn requested_output(value: &str, source: &Path, job_id: &str, media_store: Option<&Path>) -> Result<PathBuf, String> {
-    let requested = PathBuf::from(value);
-    match media_store {
-        Some(store) if within(&requested, store) => default_job_output(source, job_id),
-        _ => Ok(requested),
-    }
 }
 
 /// Longest video title kept in the output folder name, in characters.
@@ -539,17 +539,19 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     };
     let control = control_root()?;
     let status = status_path(&control, &job_id)?;
-    let output = match (output_dir, output_root) {
-        (Some(value), _) => requested_output(&value, &source, &job_id, data_root().ok().map(|root| root.join("source-media")).as_deref())?,
+    let results_root = match (&output_dir, output_root) {
         (None, Some(base)) => {
             let base = PathBuf::from(base);
             if !base.is_absolute() || !base.is_dir() {
                 return Err(fail("Thư mục lưu kết quả không tồn tại; hãy chọn lại"));
             }
-            job_output_in(&base, &source, &job_id)?
+            Some(base)
         }
-        (None, None) => default_job_output(&source, &job_id)?,
+        _ => None,
     };
+    let media_store = data_root().ok().map(|root| root.join("source-media"));
+    let profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
+    let output = choose_output(output_dir.as_deref(), results_root.as_deref(), &source, &job_id, media_store.as_deref(), profile.as_deref())?;
     if !output.is_absolute() {
         return Err(fail("output_dir must be an absolute path"));
     }
@@ -1966,16 +1968,33 @@ mod tests {
         fs::write(&cached, "video").unwrap();
         fs::write(&local, "video").unwrap();
         let profile = root.join("profile");
-        assert_eq!(results_base(&cached, Some(&store), Some(&profile)), profile.join("Videos"));
-        assert_eq!(results_base(&local, Some(&store), Some(&profile)), root.join("clips"));
-        assert_eq!(results_base(&cached, None, Some(&profile)), cached.parent().unwrap());
-        // A pinned folder that does not exist yet still counts as inside the store.
+        let videos = profile.join("Videos");
+        let choose = |requested: Option<&Path>, results_root: Option<&Path>, source: &Path, profile: Option<&Path>| {
+            choose_output(requested.map(|path| path.to_str().unwrap()), results_root, source, "job-1", Some(&store), profile)
+        };
+        let outside = |path: &Path| !within(path, &store);
+        // Next to the source: kept for local videos, moved to Videos for cached downloads.
+        assert_eq!(choose(None, None, &local, Some(&profile)).unwrap(), job_output_in(&root.join("clips"), &local, "job-1").unwrap());
+        let moved = choose(None, None, &cached, Some(&profile)).unwrap();
+        assert_eq!(moved, job_output_in(&videos, &cached, "job-1").unwrap());
+        assert!(outside(&moved));
+        // A requested folder that does not exist yet still counts as inside the store.
         let pinned = store.join("ab12").join("link-1").join("cd34").join("DubFlow Output").join("ef56 - vi").join("run-1");
         assert!(within(&pinned, &store));
         assert!(!within(&root.join("out").join("run-1"), &store));
+        let redirected = choose(Some(&pinned), None, &cached, Some(&profile)).unwrap();
+        assert_eq!(redirected, job_output_in(&videos, &cached, "job-1").unwrap());
+        assert!(outside(&redirected));
         let kept = root.join("Videos").join("DubFlow Output").join("x - vi").join("run-2");
-        assert_eq!(requested_output(&kept.to_string_lossy(), &local, "job-1", Some(&store)).unwrap(), kept);
-        assert_ne!(requested_output(&pinned.to_string_lossy(), &cached, "job-1", Some(&store)).unwrap(), pinned);
+        assert_eq!(choose(Some(&kept), None, &local, Some(&profile)).unwrap(), kept);
+        // A chosen results root inside the store is redirected too; one outside is used as is.
+        let rooted = choose(None, Some(&store.join("ab12")), &local, Some(&profile)).unwrap();
+        assert_eq!(rooted, job_output_in(&videos, &local, "job-1").unwrap());
+        assert!(outside(&rooted));
+        assert_eq!(choose(None, Some(&root.join("clips")), &local, Some(&profile)).unwrap(), job_output_in(&root.join("clips"), &local, "job-1").unwrap());
+        // Without a profile a store path is refused, never used.
+        assert!(choose(Some(&pinned), None, &cached, None).is_err());
+        assert!(choose(None, None, &cached, None).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 
