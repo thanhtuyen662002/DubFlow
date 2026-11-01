@@ -90,6 +90,8 @@ type LibraryItem = { key: string; path: string; title: string; meta: string; kin
 type Box = { element: HTMLDivElement; video: HTMLVideoElement; path: string };
 
 const PAD = 12;
+/** A timeline drop this close to a segment edge goes on the edge, not a sliver away. */
+const DROP_SNAP_PX = 12;
 const THUMB_WIDTH = 76;
 const THUMB_PX = 192;
 const POSTER_PX = 160;
@@ -772,7 +774,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     renderSources();
   }
 
-  /** Dropped videos go in one after another at the drop point on the timeline, else at the playhead. */
+  /** A drop point on the timeline, snapped to a segment edge within a few pixels. */
+  function dropTime(clientX: number): number {
+    const edit = session!.history.current;
+    const time = clamp(timeAt(clientX), 0, outputDuration(edit));
+    const edges = [...outputStarts(edit), outputDuration(edit)];
+    const nearest = edges.reduce((best, edge) => Math.abs(edge - time) < Math.abs(best - time) ? edge : best, edges[0]);
+    return Math.abs(nearest - time) * pps <= DROP_SNAP_PX ? nearest : time;
+  }
+
+  /**
+   * Dropped videos go in one after another at the drop point on the timeline;
+   * dropped anywhere else they follow the "Chèn vào đâu" choice.
+   */
   async function dropFiles(paths: string[], point: { x: number; y: number } | null): Promise<void> {
     if (!session || !paths.length) return;
     let videos: string[] = [];
@@ -788,11 +802,16 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }
     const box = scroll.getBoundingClientRect();
     const overTimeline = !!point && point.x >= box.left && point.x <= box.right && point.y >= box.top - 40 && point.y <= box.bottom;
-    let time = overTimeline ? clamp(timeAt(point!.x), 0, outputDuration(session.history.current)) : session.outputTime;
+    const how: Where = overTimeline ? "playhead" : where;
+    let time = overTimeline ? dropTime(point!.x) : session.outputTime;
     for (const path of videos) {
       const info = await mediaInfo(path, "file");
       if (!info || !session) continue;
       remember(info);
+      if (how !== "playhead") {
+        place(info, how);
+        continue;
+      }
       const id = place(info, "playhead", time);
       if (!id) break;
       const edit = session.history.current;
