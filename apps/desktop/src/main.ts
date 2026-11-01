@@ -25,6 +25,7 @@ import { mountShorts } from "./features/shorts/view.ts";
 import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
+import { mountEditor } from "./features/edit/view.ts";
 import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
 import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
@@ -461,9 +462,12 @@ function renderInspector(job: QueueJob | null): void {
     : "Thiết lập đã khóa khi bắt đầu xử lý. Muốn đổi, hãy hủy rồi chạy lại.";
 }
 
-// In-app player: the finished video ("Bản Việt") or the source ("Bản gốc").
-let playerMode: "output" | "source" = "output";
+// In-app player: the finished video ("Bản Việt"), the source ("Bản gốc") or
+// an edited export picked in Kết quả ("Bản sửa").
+let playerMode: "output" | "source" | "edited" = "output";
 let playerJobId: string | null = null;
+/** The edited export shown as "Bản sửa" for the player's job. */
+let playerEditedPath: string | null = null;
 let playerPath: string | null = null;
 let playerRequest = 0;
 let failedActionsKey = "";
@@ -481,8 +485,27 @@ function renderPlayButton(): void {
   playButton.classList.toggle("playing", playing);
   playButton.setAttribute("aria-label", playing ? "Tạm dừng" : "Phát");
   const length = Number.isFinite(playerVideo.duration) ? playerVideo.duration : 0;
-  $("#player-time").textContent = `${duration(playerVideo.currentTime * 1000)} / ${duration(length * 1000)}`;
+  // While editing, the time is on the edited output.
+  $("#player-time").textContent = editor.timeLabel() ?? `${duration(playerVideo.currentTime * 1000)} / ${duration(length * 1000)}`;
 }
+
+// Edit mode (Cắt ghép): the player previews the edit; the panel and timeline replace the list and details.
+const editor = mountEditor(invoke, {
+  video: playerVideo,
+  confirm: confirmDialog,
+  refresh: () => { if (lastModel) render(lastModel); },
+  renderPlayer: renderPlayButton,
+  showError,
+  playExport: (jobId, path) => {
+    if (selectedJob()?.id !== jobId) return;
+    playerMode = "edited";
+    playerEditedPath = path;
+    playWhenLoaded = true;
+    if (lastModel) renderStage(lastModel.view.selected);
+  },
+});
+/** "Xem" on an edited export starts it as soon as it has loaded. */
+let playWhenLoaded = false;
 
 /** Load a local video into the player through the asset protocol. */
 function setPlayerSource(path: string | null, note = PLAYER_NOTE): void {
@@ -512,6 +535,8 @@ function setPlayerSource(path: string | null, note = PLAYER_NOTE): void {
 
 playerVideo.addEventListener("loadeddata", () => {
   $("#player-placeholder").hidden = true;
+  if (playWhenLoaded) void playerVideo.play().catch(() => undefined);
+  playWhenLoaded = false;
   renderPlayButton();
 });
 playerVideo.addEventListener("loadedmetadata", () => {
@@ -528,6 +553,7 @@ playerVideo.addEventListener("error", () => {
 for (const name of ["play", "pause", "ended", "timeupdate", "durationchange"]) playerVideo.addEventListener(name, renderPlayButton);
 const togglePlayback = (): void => {
   if (playButton.disabled) return;
+  if (editor.jobId !== null) return editor.togglePlay();
   if (playerVideo.paused || playerVideo.ended) void playerVideo.play().catch(() => undefined);
   else playerVideo.pause();
 };
@@ -535,7 +561,7 @@ playButton.addEventListener("click", togglePlayback);
 playerVideo.addEventListener("click", togglePlayback);
 for (const button of document.querySelectorAll<HTMLButtonElement>("#player-mode [data-mode]")) {
   button.addEventListener("click", () => {
-    playerMode = button.dataset.mode === "source" ? "source" : "output";
+    playerMode = button.dataset.mode === "source" ? "source" : button.dataset.mode === "edited" && playerEditedPath ? "edited" : "output";
     if (lastModel) renderStage(lastModel.view.selected);
   });
 }
@@ -595,17 +621,24 @@ function renderStage(job: QueueJob | null): void {
     return;
   }
   const { status } = job;
-  if (playerJobId !== job.id) playerMode = "output";
+  if (playerJobId !== job.id) {
+    playerMode = "output";
+    playerEditedPath = null;
+  }
   playerJobId = job.id;
   $("#detail-name").textContent = job.displayName;
   $("#detail-name").title = job.displayName;
   $<HTMLButtonElement>("#remove-job").disabled = isActive(job);
   const done = status.state === "COMPLETED" && !!job.outputPath;
   $("#player-mode").hidden = !done;
+  $("#player-mode-edited").hidden = !playerEditedPath;
   for (const button of document.querySelectorAll<HTMLButtonElement>("#player-mode [data-mode]")) {
     button.setAttribute("aria-selected", String(button.dataset.mode === playerMode));
   }
-  setPlayerSource(done && playerMode === "output" ? job.outputPath : job.sourcePath);
+  // Edit mode always previews the finished video.
+  const editing = editor.jobId === job.id;
+  setPlayerSource(done && (editing || playerMode === "output") ? job.outputPath
+    : done && playerMode === "edited" && playerEditedPath ? playerEditedPath : job.sourcePath);
 
   const fraction = progressFraction(status);
   const stopped = ["FAILED", "BLOCKED_NEEDS_ACTION"].includes(status.state);
@@ -691,6 +724,7 @@ let lastModel: DesktopShellModel | null = null;
 function render(model: DesktopShellModel): void {
   lastModel = model;
   if (selectedFetchId !== null && !fetches.has(selectedFetchId)) selectedFetchId = null;
+  editor.select(selectedFetchId === null ? model.view.selected : null);
   renderQueue(model.view);
   renderInspector(model.view.selected);
   renderStage(model.view.selected);
@@ -2210,7 +2244,8 @@ async function syncMaximized(): Promise<void> {
 }
 $("#window-minimize").addEventListener("click", () => void appWindow?.minimize());
 $("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaximize());
-$("#window-close").addEventListener("click", () => void appWindow?.close());
+// A pending edit autosave is written first.
+$("#window-close").addEventListener("click", () => void editor.flush().finally(() => appWindow?.close()));
 $("#app-header").addEventListener("mousedown", (event) => {
   if (!appWindow || event.button !== 0) return;
   if ((event.target as Element).closest("button, a, input, select, textarea, label, form")) return;
