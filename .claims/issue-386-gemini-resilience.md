@@ -1,14 +1,14 @@
 DUBFLOW_PR_V1
 Issue: #386
 Lease-Owner: Claude/issue-386-gemini-resilience
-Lease-Heartbeat: 2026-10-31T04:45:00Z
-Tested-Base-SHA: ea5287bcfdb417b52a307e405c520846f13076c1
+Lease-Heartbeat: 2026-11-01T17:59:53Z
+Tested-Base-SHA: e6accb3685b34db11139cd0399c788bec3b0b8c7
 Conflict-Domains: desktop-ai-provider,ci-component-registry
 Expected-Paths: .claims/issue-386-gemini-resilience.md,apps/desktop/src/features/ai/provider.ts,apps/desktop/src/features/reframe/ai.ts,apps/desktop/src/features/shorts/ai.ts,apps/desktop/test/ai.test.mjs,scripts/ci/component_registry.json
 Required-CI: PR Fast + PR Integration + desktop-ai-provider
 
 ## Status
-ASSIGNED — Lead-created successor claim on current Main. No coder-authored follow-up implementation or test result is implied.
+Resumed at the owner's request in chat ("xử lý xong các PR"); implementing the bounded retry/fallback leaf.
 
 ## Bounded acceptance
 1. Keep gemini-3.5-flash-lite first, one bounded same-model retry, then gemini-3.8-flash fallback; each attempt has a 90-second timeout.
