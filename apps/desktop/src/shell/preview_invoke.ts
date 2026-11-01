@@ -229,11 +229,26 @@ function previewEditStatus(outputPath: string) {
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
-    case "edit_project_load": return {
-      duration: 154.2, width: 1024, height: 576, fps: 25, size_bytes: 46_000_000, has_audio: true,
-      project: editProjects.get(String(args.outputPath)) ?? null,
-      cues: reviewCues.map(({ cue_id, start_ms, end_ms, machine_text }) => ({ start_ms, end_ms, text: savedOverrides[cue_id] ?? machine_text })),
-    } as T;
+    case "edit_project_load": {
+      const path = String(args.outputPath);
+      const product = /[\\/]video-(\d+)\.mp4$/i.exec(path);
+      if (product) {
+        // A re-made video (Mẫu) is a little longer when its script changed.
+        const run = productRuns.get(path.replace(/[\\/]video-\d+\.mp4$/i, ""));
+        return { duration: run?.durationMs ? run.durationMs / 1000 : 31.4, width: 1080, height: 1920, fps: 30, size_bytes: 9_800_000, has_audio: true,
+          project: editProjects.get(path) ?? null, kind: "product", reviewable: false, variant: Number(product[1]),
+          cues: [{ start_ms: 300, end_ms: 2600, text: "Nồi chiên không dầu 5 lít" }, { start_ms: 2850, end_ms: 6200, text: "chiên giòn mà không cần dầu" }] } as T;
+      }
+      if (/[\\/]compilation\.mp4$/i.test(path)) {
+        return { duration: 202.5, width: 1920, height: 1080, fps: 30, size_bytes: 88_000_000, has_audio: true, project: editProjects.get(path) ?? null,
+          kind: "compilation", reviewable: false, variant: null, cues: [] } as T;
+      }
+      return {
+        duration: 154.2, width: 1024, height: 576, fps: 25, size_bytes: 46_000_000, has_audio: true,
+        project: editProjects.get(path) ?? null, kind: "job", reviewable: true, variant: null,
+        cues: reviewCues.map(({ cue_id, start_ms, end_ms, machine_text }) => ({ start_ms, end_ms, text: savedOverrides[cue_id] ?? machine_text })),
+      } as T;
+    }
     case "edit_project_save": editProjects.set(String(args.outputPath), JSON.parse(JSON.stringify(args.project))); return null as T;
     case "edit_export": {
       const request = args.request as { outputPath: string; folder: string; fileName: string; quality: string; segments: PreviewSegment[];
@@ -346,6 +361,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       if (run) run.cancelled = true;
       return null as T;
     }
+    case "compilation_runs": return previewCompilationRuns() as T;
     case "compilation_description": return "00:00 Mở đầu\n00:05 Phần 1: Video thứ nhất\n00:30 Phần 2: Video thứ hai\n\nNguồn: Tác giả (Bilibili) – https://example.org/video\n" as T;
     case "package_info": return { has_background_stem: true, voice_id: voices[0].voice_id } as T;
     case "package_video": {
@@ -472,9 +488,24 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       if (index >= 0) previewBackgrounds.splice(index, 1);
       return null as T;
     }
-    case "product_render": productStarted = Date.now(); productCancelled = 0; return "D:/Videos/DubFlow Output/Ban hang - preview/run-000000000000" as T;
-    case "product_status": return previewProductStatus() as T;
-    case "product_cancel": productCancelled = Date.now(); return null as T;
+    case "product_render": {
+      const request = args.request as { variants: string[]; reuseAudioFrom?: string; name: string };
+      const dir = `D:\\Videos\\DubFlow Output\\Ban hang - ${request.name || "san pham"}\\run-${productRuns.size.toString(16).padStart(12, "0")}`;
+      const before = request.reuseAudioFrom ? previewSpec(request.reuseAudioFrom) : null;
+      const reused = !!before && before.spec.variants.includes(request.variants[0]);
+      productRuns.set(dir, { started: Date.now(), cancelled: 0, count: request.variants.length, reused, name: request.name,
+        durationMs: reused ? 31_400 : 31_400 + 2_600 * Math.sign(request.variants[0].length - 60), variants: request.variants });
+      return dir as T;
+    }
+    case "product_status": return previewProductStatus(String(args.outputDir)) as T;
+    case "product_cancel": { const run = productRuns.get(String(args.outputDir)); if (run) run.cancelled = Date.now(); return null as T; }
+    case "product_spec": {
+      const path = String(args.outputPath);
+      const run = path.replace(/[\\/]video-\d+\.mp4$/i, "");
+      const variant = Number(/video-(\d+)\.mp4$/i.exec(path)?.[1] ?? 1);
+      return { ...previewSpec(run), variant, run, duration_ms: 31_400, narration: true } as T;
+    }
+    case "product_runs": return previewProductRuns() as T;
     default: throw new Error(`preview host does not implement ${command}`);
   }
 }
@@ -532,19 +563,62 @@ function previewCollected(platform: string): unknown {
   });
 }
 
-/** A product batch of three videos, one every 3 s, that can be cancelled. */
 /** Stand-in for Windows Credential Manager. */
 const previewKeys = new Map<string, string>();
-let productStarted = 0;
-let productCancelled = 0;
-function previewProductStatus() {
-  const now = productCancelled || Date.now();
-  const done = Math.min(3, Math.floor((now - productStarted) / 3000));
-  const videos = Array.from({ length: done }, (_, index) => ({ index: index + 1, ok: true, path: `D:/Videos/DubFlow Output/Ban hang - preview/run-000000000000/video-${index + 1}.mp4`, duration_ms: 31_000 }));
-  if (productCancelled && done < 3) return { schema_version: 1, state: "CANCELLED", done, total: 3, message: done ? `Đã hủy. Giữ lại ${done} video đã xong.` : "Đã hủy.", videos };
-  return done < 3
-    ? { schema_version: 1, state: "RUNNING", done, total: 3, message: `Đang render video ${done + 1}/3…`, videos }
-    : { schema_version: 1, state: "COMPLETED", done, total: 3, message: "Đã tạo 3/3 video", videos };
+/** Product runs: one video every 3 s (1.5 s when the narration is reused), cancellable. */
+type PreviewProductRun = { started: number; cancelled: number; count: number; reused: boolean; name: string; durationMs: number; variants: string[] };
+const PREVIEW_PRODUCT_RUN = "D:\\Videos\\DubFlow Output\\Ban hang - Nồi chiên không dầu 5L\\run-0a1b2c3d4e5f";
+const productRuns = new Map<string, PreviewProductRun>([[PREVIEW_PRODUCT_RUN, {
+  started: 0, cancelled: 0, count: 2, reused: false, name: "Nồi chiên không dầu 5L", durationMs: 31_400,
+  variants: ["Nồi chiên không dầu 5 lít, chiên giòn mà không cần dầu. Hẹn giờ tới 60 phút, dễ rửa. Giá chỉ 299 nghìn, đặt ngay hôm nay!",
+    "Bạn muốn món chiên giòn mà ít dầu mỡ? Nồi chiên 5 lít này là lựa chọn cho cả nhà."],
+}]]);
+function previewProductStatus(dir: string) {
+  const run = productRuns.get(dir);
+  if (!run) return null;
+  const step = run.reused ? 1500 : 3000;
+  const now = run.cancelled || Date.now();
+  const done = Math.min(run.count, Math.floor((now - run.started) / step));
+  const videos = Array.from({ length: done }, (_, index) => ({ index: index + 1, ok: true, path: `${dir}\\video-${index + 1}.mp4`, duration_ms: run.durationMs, reused_voice: run.reused }));
+  if (run.cancelled && done < run.count) return { schema_version: 1, state: "CANCELLED", done, total: run.count, message: done ? `Đã hủy. Giữ lại ${done} video đã xong.` : "Đã hủy.", videos };
+  return done < run.count
+    ? { schema_version: 1, state: "RUNNING", done, total: run.count, message: run.reused ? `Dùng lại giọng đọc cũ, đang render video ${done + 1}/${run.count}…` : `Đang render video ${done + 1}/${run.count}…`, videos }
+    : { schema_version: 1, state: "COMPLETED", done, total: run.count, message: `Đã tạo ${done}/${run.count} video`, videos };
+}
+function previewSpec(dir: string) {
+  const run = productRuns.get(dir) ?? productRuns.get(PREVIEW_PRODUCT_RUN)!;
+  return { spec: { schema_version: 1, name: run.name, price: "299.000đ", voice_id: voices[0].voice_id, variants: run.variants,
+    visuals: ["D:\\Anh\\noi-chien.jpg", "D:\\Clip\\noi-chien-demo.mp4"], music: null, music_volume: 0.15,
+    background: `C:\\Users\\preview\\AppData\\Local\\DubFlow\\backgrounds\\${"b".repeat(64)}.png`, template: "ban-tin", speed: 1,
+    features: ["Dung tích 5 lít", "Hẹn giờ 60 phút", "Lòng nồi chống dính"], focus: { x: 0.3, y: 0.5 } } };
+}
+function previewProductRuns() {
+  return [...productRuns.entries()].reverse().map(([dir, run]) => ({
+    dir, name: run.name, template: "ban-tin", created: Math.floor((run.started || Date.now() - 86_400_000) / 1000), status: previewProductStatus(dir),
+  }));
+}
+/** Earlier compilations in the output folders, and the ones started in the preview. */
+function previewCompilationRuns() {
+  const spec = (title: string) => ({ schema_version: 1, title, layout: "bang-thong-tin", voice_id: voices[0].voice_id, speed: 1.1, music: null, music_volume: 0.15,
+    intro: "Chào mừng các bạn quay lại kênh.", outro: "Cảm ơn đã xem, hẹn gặp lại.",
+    items: PREVIEW_EDIT_LIBRARY.map((item, index) => ({ video: item.outputPath, title: item.title, lead: index ? "" : "Mở màn bằng một đoạn rất cuốn.", score: 8 - index,
+      pros: ["Hình đẹp"], cons: [], start_ms: null, end_ms: null })) });
+  const started = [...compilations.entries()].reverse().map(([dir, run]) => {
+    const done = Math.min(run.total, Math.floor((Date.now() - run.started) / 1000));
+    const state = run.cancelled ? "CANCELLED" : done === run.total ? "COMPLETED" : "RUNNING";
+    return { dir, created: Math.floor(run.started / 1000), spec: spec("Tổng hợp mới"),
+      status: { schema_version: 1, state, done, total: run.total, message: state === "RUNNING" ? "Đang tạo video tổng hợp…" : state === "CANCELLED" ? "Đã hủy tổng hợp." : "Đã tạo video tổng hợp.",
+        path: state === "COMPLETED" ? `${dir}/compilation.mp4` : null },
+      video: state === "COMPLETED" ? `${dir}/compilation.mp4` : null };
+  });
+  const old = "D:\\Videos\\DubFlow Output\\Tong hop - Top 3 phim ngan\\run-00000000a1b2";
+  const failed = "D:\\Videos\\DubFlow Output\\Tong hop - Phim co trang\\run-00000000c3d4";
+  return [...started,
+    { dir: old, created: 1_793_500_000, spec: spec("Top 3 phim ngắn đáng xem tuần này"), video: `${old}\\compilation.mp4`,
+      status: { schema_version: 1, state: "COMPLETED", done: 7, total: 7, message: "Đã tạo video tổng hợp.", path: `${old}\\compilation.mp4`, duration_ms: 202_500 } },
+    { dir: failed, created: 1_793_400_000, spec: spec("Phim cổ trang hay nhất"), video: null,
+      status: { schema_version: 1, state: "FAILED", done: 2, total: 6, message: "Phần 2: Trailer phim cổ trang tập 2: Mốc cắt nằm ngoài thời lượng video", path: null } },
+  ];
 }
 
 /** The preview's background library: one panel-sized image and one that needs cropping. */

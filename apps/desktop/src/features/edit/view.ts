@@ -4,7 +4,8 @@
  * the sound row of Âm thanh, #420, the text row of Chữ, #422), the live
  * preview through the queue player plus one <video> per other media and per
  * overlay, autosave of the draft, the "Xuất video" dialog and the "Bản đã
- * sửa" list in Kết quả.
+ * sửa" list in Kết quả. Issue #426 opens Bán hàng videos (with the Mẫu
+ * mode first) and compilations too; Phụ đề and Che stay with dubbing jobs.
  */
 import type { QueueJob } from "../queue/model.ts";
 import type { ConfirmOptions } from "../../shell/confirm.ts";
@@ -23,10 +24,11 @@ import { mountSubtitles } from "./subtitles_view.ts";
 import { mountCover } from "./cover_view.ts";
 import { mountAudio } from "./audio_view.ts";
 import { mountText } from "./text_view.ts";
+import { mountTemplate } from "./template_view.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
-type LoadResponse = Facts & { project: unknown };
+type LoadResponse = Facts & { project: unknown; kind?: string; reviewable?: boolean };
 type ExportEntry = {
   path: string; srt_path?: string | null; created: number; duration: number; quality?: string;
   media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown;
@@ -38,6 +40,24 @@ type MediaResponse = { path: string; title: string; duration: number; width: num
 
 /** A finished queue video the Chèn panel offers. */
 export type LibraryJob = { id: string; title: string; outputPath: string };
+
+/**
+ * A finished video the editor opens: a queue job's `final_vi.mp4`, a Bán
+ * hàng video or a compilation (Issue #426).
+ */
+export type EditTarget = {
+  /** The queue job's id, else the video's path. */
+  id: string;
+  kind: "job" | "product" | "compilation";
+  outputPath: string;
+  displayName: string;
+  /** The queue job (kind "job"): Phụ đề and Che re-run it. */
+  job?: QueueJob;
+};
+
+export function jobTarget(job: QueueJob): EditTarget {
+  return { id: job.id, kind: "job", outputPath: job.outputPath ?? "", displayName: job.displayName, job };
+}
 
 export type EditorHost = {
   video: HTMLVideoElement;
@@ -60,11 +80,21 @@ export type EditorHost = {
   /** The AI account "Gợi ý AI" uses (Cài đặt AI). */
   ai: AiSession;
   openAiSettings: () => void;
+  /** Mẫu: render on the CPU only (Cài đặt). */
+  cpuOnly: () => boolean;
+  /** Edit mode ended for `target` (to go back to the page it came from). */
+  left: (target: EditTarget) => void;
 };
 
 export type Editor = {
   /** The job whose edit is open, if any. */
   readonly jobId: string | null;
+  /** The video whose edit is open, if any. */
+  readonly target: EditTarget | null;
+  /** Open a Bán hàng video or a compilation (leaving any open edit first); false when it did not open. */
+  openTarget(target: EditTarget): Promise<boolean>;
+  /** Leave edit mode, asking first when `ask` and something is not saved; false when the user stays. */
+  close(ask: boolean): Promise<boolean>;
   /** The selected job, on every render: the Kết quả list follows it and edit mode closes when it changes. */
   select(job: QueueJob | null): void;
   /** Output time / output length while editing, else null. */
@@ -79,7 +109,9 @@ export type Editor = {
 };
 
 type Session = {
-  job: QueueJob;
+  target: EditTarget;
+  /** Phụ đề and Che: a dubbing job with its translation. */
+  reviewable: boolean;
   outputPath: string;
   facts: Facts;
   history: EditHistory;
@@ -98,7 +130,7 @@ type Session = {
   recent: Media[];
 };
 
-type Mode = "cut" | "insert" | "subs" | "cover" | "audio" | "text";
+type Mode = "template" | "cut" | "insert" | "subs" | "cover" | "audio" | "text";
 type Where = "playhead" | "end" | "overlay";
 type LibraryItem = { key: string; path: string; title: string; meta: string; kind: "job" | "file"; duration: number | null };
 type Box = { element: HTMLDivElement; video: HTMLVideoElement; path: string };
@@ -206,6 +238,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   let loop = 0;
   let pps = 1;
   let opening = false;
+  let openTicket = 0;
   let mode: Mode = "cut";
   let where: Where = "playhead";
   let source: "dubflow" | "computer" = "dubflow";
@@ -600,7 +633,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     edit: () => current(),
     outputTime: () => session?.outputTime ?? 0,
     seek: seekTo,
-    job: () => session?.job ?? null,
+    job: () => session?.target.job ?? null,
     changed: () => subs.refresh(),
   });
   const subs = mountSubtitles(invoke, host, {
@@ -670,6 +703,22 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     },
     note,
     redraw: () => { if (session) render(); },
+  });
+
+  const templateMode = mountTemplate(invoke, {
+    draft: () => session ? { edit: session.history.current, changes: session.history.changes, selected: session.selected, recent: session.recent } : null,
+    flush: () => flush(),
+    pause: () => { if (session?.playing) pausePlayback(); },
+    cpuOnly: () => host.cpuOnly(),
+    reopen: async (next) => {
+      if (!session) return;
+      const from = session.target;
+      await close(false, true);
+      mode = "template";
+      const opened = await open({ id: next.outputPath, kind: "product", outputPath: next.outputPath, displayName: next.displayName });
+      if (!opened) leave(from);
+    },
+    changed: () => renderPanel(),
   });
 
   // ---------- Changes, history, autosave ----------
@@ -995,10 +1044,21 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     return Math.max(0.02, (scroll.clientWidth - PAD * 2) / Math.max(total, 0.1));
   }
 
+  /** The modes this video has: Mẫu for Bán hàng videos, Phụ đề and Che for dubbing jobs. */
+  function offered(next: Mode): boolean {
+    if (next === "template") return session?.target.kind === "product";
+    if (next === "subs" || next === "cover") return !!session?.reviewable;
+    return true;
+  }
+
   function renderModes(): void {
-    for (const tab of modeTabs) tab.setAttribute("aria-selected", String(tab.dataset.mode === mode));
+    for (const tab of modeTabs) {
+      tab.setAttribute("aria-selected", String(tab.dataset.mode === mode));
+      tab.hidden = !offered(tab.dataset.mode as Mode);
+    }
     $("#edit-panel").classList.toggle("subs", mode === "subs" || mode === "cover");
     $("#edit-panel").classList.toggle("audio", mode === "audio");
+    $("#edit-panel").classList.toggle("template", mode === "template");
   }
 
   function renderPanel(): void {
@@ -1014,7 +1074,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     changesBadge.title = `${history.changes} thay đổi chưa xuất · bản nháp được tự lưu`;
     exportButton.disabled = isUnchanged(edit, facts.duration);
     exportButton.title = exportButton.disabled ? "Chưa có thay đổi để xuất" : "Xuất bản đã chỉnh sửa thành file video mới";
-    const panelMode = mode === "subs" || mode === "cover" || mode === "audio" || mode === "text";
+    const panelMode = mode === "subs" || mode === "cover" || mode === "audio" || mode === "text" || mode === "template";
     const overlay = panelMode ? undefined : selectedOverlay();
     const segment = selectedSegment();
     const inserted = !!segment && segment.mediaId !== MAIN;
@@ -1025,6 +1085,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $("#edit-cut-notes").hidden = mode !== "cut" || !!overlay;
     audio.render(mode === "audio");
     textMode.render(mode === "text");
+    templateMode.render(mode === "template");
+    if (templateMode.dirty() || templateMode.busy) {
+      changesBadge.hidden = false;
+      $("#edit-changes-text").textContent = templateMode.busy ? "Đang dựng lại theo mẫu" : pending ? `${history.changes} thay đổi · mẫu chưa áp dụng` : "Mẫu chưa áp dụng";
+      changesBadge.title = templateMode.busy ? "Video đang được dựng lại theo mẫu mới" : "Bấm Áp dụng mẫu ở cuối bảng Mẫu để dựng lại video";
+    }
     if (subs.dirty()) {
       changesBadge.hidden = false;
       $("#edit-changes-text").textContent = pending ? `${history.changes} thay đổi · chưa áp dụng` : "Chưa áp dụng";
@@ -1153,7 +1219,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   async function loadLibrary(): Promise<void> {
     if (!session) return;
     const token = ++libraryToken;
-    const jobs = host.library().filter((job) => job.id !== session!.job.id && job.outputPath);
+    const jobs = host.library().filter((job) => job.id !== session!.target.id && job.outputPath);
     const items: LibraryItem[] = [];
     const statuses = await Promise.all(jobs.map((job) => invoke<StatusResponse>("edit_status", { outputPath: job.outputPath }).catch(() => null)));
     if (token !== libraryToken || !session) return;
@@ -1624,6 +1690,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   function setMode(next: Mode): void {
     mode = next;
     if (!session) return;
+    if (!offered(mode)) mode = "cut";
     if (mode !== "cover") cover.leave();
     if (mode !== "audio") audio.select(null);
     if (mode !== "text") textMode.select(null);
@@ -1643,7 +1710,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   for (const tab of modeTabs) {
     tab.addEventListener("click", () => {
       const next = tab.dataset.mode;
-      setMode(next === "insert" || next === "subs" || next === "cover" || next === "audio" || next === "text" ? next : "cut");
+      setMode(next === "insert" || next === "subs" || next === "cover" || next === "audio" || next === "text" || next === "template" ? next : "cut");
     });
   }
   for (const button of whereButtons) {
@@ -1753,13 +1820,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     subs.pending.delete(listJob.id);
     revisionReady.hidden = true;
     mode = "subs";
-    void open(listJob);
+    void open(jobTarget(listJob));
   });
   $("#edit-revision-dismiss").addEventListener("click", () => {
     if (listJob) subs.pending.delete(listJob.id);
     revisionReady.hidden = true;
   });
-  openButton.addEventListener("click", () => { if (listJob) void open(listJob); });
+  openButton.addEventListener("click", () => { if (listJob) void open(jobTarget(listJob)); });
   exportButton.addEventListener("click", openDialog);
 
   document.addEventListener("keydown", (event) => {
@@ -1808,9 +1875,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   // ---------- Entering and leaving ----------
 
-  async function open(job: QueueJob): Promise<void> {
-    if (session || opening || job.status.state !== "COMPLETED" || !job.outputPath) return;
-    const outputPath = job.outputPath;
+  async function open(target: EditTarget): Promise<boolean> {
+    if (session || opening || !target.outputPath || (target.job && target.job.status.state !== "COMPLETED")) return false;
+    const outputPath = target.outputPath;
+    const ticket = ++openTicket;
     opening = true;
     openButton.disabled = true;
     try {
@@ -1818,19 +1886,20 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         invoke<LoadResponse>("edit_project_load", { outputPath }),
         invoke<StatusResponse>("edit_status", { outputPath }).catch(() => null),
       ]);
-      if (listJob?.id !== job.id) return;
-      const info = { path: outputPath, title: job.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
+      // The queue selection moved on while a queue video was opening.
+      if (ticket !== openTicket || (target.kind === "job" && listJob?.id !== target.id)) return false;
+      const info = { path: outputPath, title: target.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
       const project = parseProject(loaded.project, loaded.duration, info);
       const edit = project?.edit ?? createEdit(loaded.duration, info);
       const last = status?.exports.at(-1);
       // Exported in the background after the draft was saved: nothing is pending.
       const changes = last?.segments && matchesExport(edit, last) ? 0 : project?.changes ?? 0;
-      const { project: _, ...facts } = loaded;
+      const { project: _, kind: _kind, reviewable, ...facts } = loaded;
       if (status) listStatus = status;
       const start = video.readyState >= 1 ? sourceToOutput(edit, video.currentTime) ?? 0 : 0;
       if (!video.paused) video.pause();
       session = {
-        job, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
+        target, reviewable: target.kind === "job" && !!target.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
         outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [],
       };
@@ -1839,9 +1908,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       library = [];
       zoom.value = "0";
       cover.begin();
-      subs.begin(job, outputPath);
+      if (session.reviewable && target.job) subs.begin(target.job, outputPath);
       audio.begin();
       textMode.begin();
+      templateMode.begin(target);
+      // A Bán hàng video opens on its template; modes it does not have fall back to Cắt ghép.
+      if (target.kind === "product") mode = "template";
+      if (!offered(mode)) mode = "cut";
       $("#edit-save-state").textContent = "";
       $("#edit-hint").textContent = "";
       screen.classList.add("editing");
@@ -1854,19 +1927,26 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       }
       if (mode === "subs" || mode === "cover") setMode(mode);
       $<HTMLButtonElement>("#edit-exit").focus();
+      return true;
     } catch (error) {
       host.showError(`Không mở được chế độ chỉnh sửa: ${String(error).slice(0, 200)}`);
+      return false;
     } finally {
       opening = false;
       openButton.disabled = false;
     }
   }
 
-  async function close(ask: boolean): Promise<boolean> {
+  /** Leave edit mode; `quiet` keeps the page (the next video opens right after). */
+  async function close(ask: boolean, quiet = false): Promise<boolean> {
     if (!session) return true;
-    if (ask && (unexported() || subs.dirty())) {
-      const leave = await host.confirm(subs.dirty() ? {
-        title: "Thoát chỉnh sửa?", message: "Các câu đã sửa, kiểu chữ và cách che chưa bấm Áp dụng sẽ mất. Cắt ghép vẫn được lưu nháp.",
+    if (ask && (unexported() || subs.dirty() || templateMode.dirty() || templateMode.busy)) {
+      const leave = await host.confirm(templateMode.busy ? {
+        title: "Thoát chỉnh sửa?", message: "Video đang được dựng lại theo mẫu mới. Bản mới vẫn được tạo và có trong Bán hàng › Video đã tạo, nhưng bản nháp chỉnh sửa không được chuyển sang.",
+        confirmLabel: "Thoát", cancelLabel: "Ở lại", danger: true,
+      } : subs.dirty() || templateMode.dirty() ? {
+        title: "Thoát chỉnh sửa?", message: templateMode.dirty() ? "Các thay đổi mẫu chưa bấm Áp dụng mẫu sẽ mất. Cắt ghép vẫn được lưu nháp."
+          : "Các câu đã sửa, kiểu chữ và cách che chưa bấm Áp dụng sẽ mất. Cắt ghép vẫn được lưu nháp.",
         confirmLabel: "Thoát", cancelLabel: "Ở lại", danger: true,
       } : {
         title: "Thoát chỉnh sửa?", message: "Các thay đổi vẫn được lưu nháp; bạn có thể xuất sau.", confirmLabel: "Thoát", cancelLabel: "Ở lại",
@@ -1874,6 +1954,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (!leave) return false;
     }
     if (!session) return true;
+    const leaving = session.target;
     if (session.draft) session.draft = null;
     session.playing = false;
     await flush();
@@ -1881,6 +1962,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     subs.end();
     audio.end();
     textMode.end();
+    templateMode.end();
     restorePlayer();
     timeline.style.height = "";
     session = null;
@@ -1888,10 +1970,24 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     boxDrag = null;
     closePopover();
     dialog.hidden = true;
+    if (!quiet) leave(leaving);
+    return true;
+  }
+
+  /** The screen without edit mode after `leaving` closed. */
+  function leave(leaving: EditTarget): void {
+    if (session) return;
     screen.classList.remove("editing");
+    // Kết quả follows the queue's selection again.
+    if (leaving.kind !== "job") {
+      listStatus = null;
+      pollToken += 1;
+      window.clearTimeout(pollTimer);
+      if (listJob?.status.state === "COMPLETED" && listJob.outputPath) schedulePoll(0);
+    }
     host.refresh();
     renderList();
-    return true;
+    host.left(leaving);
   }
 
   // ---------- Export status, Kết quả list ----------
@@ -1902,8 +1998,14 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     pollTimer = window.setTimeout(() => void poll(token), delay);
   }
 
+  /** Whose renders the status follows: the open video, else the queue's finished selection. */
+  function subject(): { id: string; outputPath: string } | null {
+    if (session) return { id: session.target.id, outputPath: session.outputPath };
+    return listJob?.outputPath ? { id: listJob.id, outputPath: listJob.outputPath } : null;
+  }
+
   async function poll(token: number): Promise<void> {
-    const job = listJob;
+    const job = subject();
     if (!job?.outputPath || token !== pollToken) return;
     const previous = listStatus?.status?.state;
     let response: StatusResponse;
@@ -1913,10 +2015,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (token === pollToken && previous === "RUNNING") schedulePoll(2000);
       return;
     }
-    if (token !== pollToken || listJob?.id !== job.id) return;
+    if (token !== pollToken || subject()?.id !== job.id) return;
     listStatus = response;
     const state = response.status?.state;
-    if (previous === "RUNNING" && state === "COMPLETED" && session?.job.id === job.id && session.exporting) {
+    if (previous === "RUNNING" && state === "COMPLETED" && session?.target.id === job.id && session.exporting) {
       session.history.markExported(session.exporting);
       session.exporting = null;
       renderPanel();
@@ -1935,6 +2037,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   function renderList(): void {
+    // The queue's Kết quả list; another page's video keeps its renders to itself.
+    if (session && session.target.kind !== "job") return;
     const section = $("#edit-exports");
     const job = listJob;
     const done = !!job && job.status.state === "COMPLETED" && !!job.outputPath;
@@ -1977,14 +2081,15 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   function select(job: QueueJob | null): void {
-    if (session && job?.id !== session.job.id) void close(false);
+    if (session && session.target.kind === "job" && job?.id !== session.target.id) void close(false);
     const done = !!job && job.status.state === "COMPLETED" && !!job.outputPath;
     openButton.hidden = !done;
     // A version made by Phụ đề "Áp dụng" is offered for editing once it is ready.
     revisionReady.hidden = !(done && job && subs.pending.has(job.id));
     const same = listJob?.id === job?.id && listJob?.outputPath === job?.outputPath && listJob?.status.state === job?.status.state;
     listJob = job;
-    if (same) return;
+    // Editing another page's video: the status follows that video.
+    if (same || (session && session.target.kind !== "job")) return;
     listStatus = null;
     pollToken += 1;
     window.clearTimeout(pollTimer);
@@ -1993,7 +2098,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   async function cancelExport(): Promise<void> {
-    const job = listJob;
+    const job = subject();
     if (!job?.outputPath) return;
     try {
       await invoke("edit_cancel", { outputPath: job.outputPath });
@@ -2012,7 +2117,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     closePopover();
     const running = listStatus?.status?.state === "RUNNING";
     if (!running) {
-      nameInput.value = defaultExportName(session.job.displayName, (listStatus?.exports ?? []).map((entry) => entry.path));
+      nameInput.value = defaultExportName(session.target.displayName, (listStatus?.exports ?? []).map((entry) => entry.path));
       folder = folderOf(session.outputPath);
       quality = "source";
       dialogDone = null;
@@ -2145,7 +2250,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   });
 
   return {
-    get jobId() { return session?.job.id ?? null; },
+    get jobId() { return session?.target.job?.id ?? null; },
+    get target() { return session?.target ?? null; },
+    openTarget: async (target) => {
+      if (session?.target.outputPath === target.outputPath) return true;
+      const from = session?.target ?? null;
+      if (session && !(await close(true, true))) return false;
+      const opened = await open(target);
+      if (!opened && from) leave(from);
+      return opened;
+    },
+    close: (ask) => close(ask),
     select,
     timeLabel: () => session ? `${formatClock(session.outputTime)} / ${formatClock(outputDuration(current()))}` : null,
     isPlaying: () => session ? session.playing : null,

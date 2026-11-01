@@ -216,3 +216,77 @@ export function dragFocus(focus: Focus, overflow: { x: number; y: number }, dx: 
     y: overflow.y > 0 ? focus.y - dy / overflow.y : focus.y,
   });
 }
+
+/** An earlier run found by `product_runs`. */
+export type ProductRun = { dir: string; name: string; template: string; created: number; status: ProductStatus | null };
+
+export function parseRuns(value: unknown): ProductRun[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => !!item && typeof item === "object" && typeof item.dir === "string" && item.dir)
+    .map((item) => ({
+      dir: item.dir as string, name: typeof item.name === "string" ? item.name : "", template: typeof item.template === "string" ? item.template : "ban-tin",
+      created: Number.isFinite(item.created) ? Number(item.created) : 0, status: parseStatus(item.status),
+    }));
+}
+
+/** "dd/mm hh:mm" of Unix seconds, or "" when unknown. */
+export function shortDate(seconds: number): string {
+  const when = new Date(seconds * 1000);
+  if (!seconds || !Number.isFinite(when.getTime())) return "";
+  const two = (value: number): string => String(value).padStart(2, "0");
+  return `${two(when.getDate())}/${two(when.getMonth() + 1)} ${two(when.getHours())}:${two(when.getMinutes())}`;
+}
+
+/** The finished videos of the runs, newest run first, at most `limit`. */
+export function recentVideos(runs: readonly ProductRun[], limit: number): Array<{ outputPath: string; displayName: string; meta: string }> {
+  const videos: Array<{ outputPath: string; displayName: string; meta: string }> = [];
+  for (const run of runs) {
+    for (const video of run.status?.videos ?? []) {
+      if (!video.ok || !video.path || videos.length >= limit) continue;
+      const seconds = video.duration_ms ? `${Math.round(video.duration_ms / 1000)} giây` : "";
+      videos.push({ outputPath: video.path, displayName: `${run.name || "Video bán hàng"} · video ${video.index}`,
+        meta: [seconds, shortDate(run.created)].filter(Boolean).join(" · ") });
+    }
+  }
+  return videos;
+}
+
+/** What one product video was made from (`product_spec`), as the editor's Mẫu mode edits it. */
+export type ProductSpec = {
+  name: string; price: string; voiceId: string; script: string; visuals: string[]; music: string | null; musicVolume: number;
+  background: string | null; template: Template; speed: number; features: string[]; focus: Focus;
+};
+export type SpecInfo = { spec: ProductSpec; variant: number; run: string; durationMs: number | null; narration: boolean };
+
+export function parseProductSpec(value: unknown): SpecInfo | null {
+  const object = (value ?? {}) as Record<string, unknown>;
+  const raw = (object.spec ?? {}) as Record<string, unknown>;
+  const variant = Number(object.variant);
+  const variants = Array.isArray(raw.variants) ? raw.variants : [];
+  const script = variants[variant - 1];
+  if (!Number.isInteger(variant) || variant < 1 || typeof script !== "string" || typeof object.run !== "string" || !object.run) return null;
+  const text = (item: unknown, limit: number): string => (typeof item === "string" ? item.slice(0, limit) : "");
+  const path = (item: unknown): string | null => (typeof item === "string" && item ? item : null);
+  const number = (item: unknown, fallback: number, low: number, high: number): number =>
+    typeof item === "number" && Number.isFinite(item) ? Math.min(high, Math.max(low, item)) : fallback;
+  const focus = (raw.focus ?? {}) as Partial<Focus>;
+  return {
+    spec: {
+      name: text(raw.name, 120), price: text(raw.price, 60), voiceId: text(raw.voice_id, 96), script,
+      visuals: Array.isArray(raw.visuals) ? raw.visuals.filter((item): item is string => typeof item === "string" && !!item).slice(0, MAX_VISUALS) : [],
+      music: path(raw.music), musicVolume: number(raw.music_volume, 0.15, 0, 1), background: path(raw.background),
+      template: isTemplate(raw.template) ? raw.template : "ban-tin",
+      speed: SPEEDS.find((speed) => speed === raw.speed) ?? 1,
+      features: Array.isArray(raw.features) ? raw.features.filter((item): item is string => typeof item === "string").slice(0, 8) : [],
+      focus: clampFocus({ x: Number(focus.x ?? 0.5), y: Number(focus.y ?? 0.5) }),
+    },
+    variant, run: object.run,
+    durationMs: typeof object.duration_ms === "number" && object.duration_ms > 0 ? object.duration_ms : null,
+    narration: object.narration === true,
+  };
+}
+
+/** Whether a new render can reuse the earlier narration: the same words, voice and speed. */
+export function keepsVoice(before: SpecInfo, after: { script: string; voiceId: string; speed: number }): boolean {
+  return before.narration && before.spec.script.trim() === after.script.trim() && before.spec.voiceId === after.voiceId && before.spec.speed === after.speed;
+}

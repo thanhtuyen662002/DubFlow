@@ -189,9 +189,51 @@ pub fn compilation_description(output_dir: String) -> Result<String, String> {
     fs::read_to_string(path).map_err(|_| fail("Không đọc được mô tả"))
 }
 
+/// Past and running compilations found below the given folders (Issue #426),
+/// newest first: each run's folder, request, status and finished video.
+#[tauri::command]
+pub fn compilation_runs(roots: Vec<String>) -> Vec<Value> {
+    crate::product::find_runs(&roots, "Tong hop - ", 60).into_iter().filter_map(|dir| {
+        let dir = compilation_dir(&display_path(&dir)).ok()?;
+        let work = dir.join(".dubflow-work");
+        let spec = crate::product::read_small_json(&work.join("spec.json"), 256 * 1024).filter(|spec| spec["schema_version"] == 1)?;
+        let video = dir.join("compilation.mp4");
+        Some(json!({"dir": display_path(&dir), "created": crate::product::created_seconds(&dir), "spec": spec,
+            "status": crate::product::read_small_json(&work.join("status.json"), 64 * 1024),
+            "video": video.is_file().then(|| display_path(&video))}))
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_compilation_runs_newest_first() {
+        let base = std::env::temp_dir().join(format!("dubflow-compilation-runs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let older = base.join("DubFlow Output/Tong hop - Cũ/run-000000000001");
+        let newer = base.join("DubFlow Output/Tong hop - Mới/run-000000000002");
+        for (dir, title) in [(&older, "Cũ"), (&newer, "Mới")] {
+            fs::create_dir_all(dir.join(".dubflow-work")).unwrap();
+            fs::write(dir.join(".dubflow-work/spec.json"), json!({"schema_version": 1, "title": title}).to_string()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        write_status(&newer.join(".dubflow-work"), "RUNNING", "Đang chạy", 3).unwrap();
+        fs::write(older.join("compilation.mp4"), b"video").unwrap();
+        // Not a compilation: another kind of run, a run without its request.
+        fs::create_dir_all(base.join("DubFlow Output/Ban hang - x/run-000000000003/.dubflow-work")).unwrap();
+        fs::write(base.join("DubFlow Output/Ban hang - x/run-000000000003/.dubflow-work/spec.json"), b"{}").unwrap();
+        fs::create_dir_all(base.join("DubFlow Output/Tong hop - y/run-000000000004")).unwrap();
+        // Any folder inside DubFlow Output finds it too.
+        let runs = compilation_runs(vec![display_path(&base.join("DubFlow Output").join("job")), "relative".into()]);
+        let found: Vec<_> = runs.iter().filter(|run| run["dir"].as_str().is_some_and(|dir| dir.starts_with(&display_path(&base.canonicalize().unwrap())))).collect();
+        assert_eq!(found.iter().map(|run| run["spec"]["title"].as_str().unwrap()).collect::<Vec<_>>(), ["Mới", "Cũ"]);
+        assert_eq!(found[0]["status"]["state"], "RUNNING");
+        assert!(found[0]["video"].is_null());
+        assert!(found[1]["video"].as_str().unwrap().ends_with("compilation.mp4"));
+        fs::remove_dir_all(base).unwrap();
+    }
 
     fn catalog() -> VoiceCatalog {
         serde_json::from_value::<crate::VoiceManifest>(json!({"schema_version":1,"backend":"test","approved":true,

@@ -25,7 +25,7 @@ import { mountShorts } from "./features/shorts/view.ts";
 import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
-import { mountEditor } from "./features/edit/view.ts";
+import { mountEditor, type EditTarget } from "./features/edit/view.ts";
 import { createSfxLibrary } from "./features/sfx/library.ts";
 import { mountSfxSettings } from "./features/sfx/settings.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
@@ -504,7 +504,10 @@ function renderPlayButton(): void {
 const editor = mountEditor(invoke, {
   video: playerVideo,
   confirm: confirmDialog,
-  refresh: () => { if (lastModel) render(lastModel); },
+  refresh: () => {
+    if (lastModel) render(lastModel);
+    else if (editor.target && editor.target.kind !== "job") renderEditedStage(editor.target);
+  },
   renderPlayer: renderPlayButton,
   showError,
   playExport: (jobId, path) => {
@@ -533,7 +536,47 @@ const editor = mountEditor(invoke, {
   sfx: sfxLibrary,
   ai: claudeKey,
   openAiSettings: () => aiSettings.open(),
+  cpuOnly: () => cpuOnly(),
+  // A Bán hàng video or a compilation goes back to its page.
+  left: (target) => {
+    if (target.kind === "job" || !editOrigin) return;
+    const origin = editOrigin;
+    editOrigin = null;
+    showView(origin);
+  },
 });
+/** The page a Bán hàng video or a compilation was opened from (Issue #426). */
+let editOrigin: View | null = null;
+
+/** Open a Bán hàng video or a compilation in the editor, on the queue screen. */
+async function editVideo(target: EditTarget, origin: View): Promise<void> {
+  const previous = editOrigin;
+  editOrigin = origin;
+  showView("queue", origin);
+  if (await editor.openTarget(target)) return;
+  // Not opened: the edit that stayed open, else the page it came from.
+  editOrigin = previous;
+  if (editor.target) showView("queue", editor.target.kind === "job" ? "queue" : previous ?? "queue");
+  else showView(origin);
+}
+
+/** The middle column while another page's video is being edited. */
+function renderEditedStage(target: EditTarget): void {
+  dropZone.hidden = true;
+  $("#player-frame").hidden = false;
+  $("#player-controls").hidden = false;
+  $("#stages-strip").hidden = true;
+  $("#remove-job").hidden = true;
+  $("#player-busy").hidden = true;
+  $("#player-failed").hidden = true;
+  $("#player-mode").hidden = true;
+  $("#detail-name").textContent = target.displayName;
+  $("#detail-name").title = target.outputPath;
+  playerJobId = null;
+  setPlayerSource(target.outputPath);
+  $("#detail-timing").textContent = "";
+  renderPlayButton();
+}
 /** "Xem" on an edited export starts it as soon as it has loaded. */
 let playWhenLoaded = false;
 
@@ -583,7 +626,7 @@ playerVideo.addEventListener("error", () => {
 for (const name of ["play", "pause", "ended", "timeupdate", "durationchange"]) playerVideo.addEventListener(name, renderPlayButton);
 const togglePlayback = (): void => {
   if (playButton.disabled) return;
-  if (editor.jobId !== null) return editor.togglePlay();
+  if (editor.target !== null) return editor.togglePlay();
   if (playerVideo.paused || playerVideo.ended) void playerVideo.play().catch(() => undefined);
   else playerVideo.pause();
 };
@@ -626,6 +669,11 @@ function actionButton(label: string, className: string, onClick: () => void): HT
 
 /** The middle column: drop zone, the selected job's video, or a download in progress. */
 function renderStage(job: QueueJob | null): void {
+  const edited = editor.target;
+  if (edited && edited.kind !== "job") {
+    renderEditedStage(edited);
+    return;
+  }
   const fetch = selectedFetchId === null ? undefined : fetches.get(selectedFetchId);
   if (selectedFetchId !== null && !fetch) selectedFetchId = null;
   const subject = !!job || !!fetch;
@@ -1462,8 +1510,29 @@ void claudeKey.restore();
 const aiSettings = mountAiSettings(claudeKey);
 $("#open-ai-settings").addEventListener("click", () => aiSettings.open());
 mountSfxSettings(sfxLibrary, showError);
-const productStudio = mountProductStudio(invoke, claudeKey, { outputRoot, cpuOnly });
-const compilation = mountCompilation(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly });
+/** Folders whose "DubFlow Output" may hold earlier Bán hàng and Tổng hợp runs: the chosen one and the queue's. */
+function outputRoots(): string[] {
+  const roots = new Set<string>();
+  const chosen = outputRoot();
+  if (chosen) roots.add(chosen);
+  for (const job of queue.getSnapshot().jobs) {
+    const dir = job.outputDir ?? job.outputPath?.replace(/[\\/][^\\/]*$/, "");
+    if (dir) roots.add(dir);
+  }
+  return [...roots].slice(0, 64);
+}
+async function playableUrl(path: string): Promise<string | null> {
+  const allowed = await invoke<string | null>("allow_media", { path });
+  return allowed ? convertFileSrc(allowed) : null;
+}
+const productStudio = mountProductStudio(invoke, claudeKey, {
+  outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,
+  edit: (video) => void editVideo({ id: video.outputPath, kind: "product", outputPath: video.outputPath, displayName: video.displayName }, "product"),
+});
+const compilation = mountCompilation(invoke, claudeKey, {
+  jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,
+  edit: (video) => void editVideo({ id: video.outputPath, kind: "compilation", outputPath: video.outputPath, displayName: video.displayName }, "compilation"),
+});
 type View = "queue" | "discover" | "product" | "compilation";
 const VIEW_HEADINGS: Record<View, [string, string]> = {
   queue: ["Hàng đợi", ""],
@@ -1471,18 +1540,19 @@ const VIEW_HEADINGS: Record<View, [string, string]> = {
   product: ["Video bán hàng", "Từ mô tả hoặc ảnh"],
   compilation: ["Tổng hợp", "Ghép các video đã xong"],
 };
-function showView(view: View): void {
+/** Show a page; `highlight` is the rail item lit (the page an edited video came from). */
+function showView(view: View, highlight: View = view): void {
   $("#compilation-view").hidden = view !== "compilation";
   $("#discover-view").hidden = view !== "discover";
   $("#product-view").hidden = view !== "product";
   $("#queue-content").hidden = view !== "queue";
-  const [title, meta] = VIEW_HEADINGS[view];
+  const [title, meta] = VIEW_HEADINGS[highlight];
   $("#page-title").textContent = title;
-  $("#queue-summary").hidden = view !== "queue";
-  $("#page-meta").hidden = view === "queue";
+  $("#queue-summary").hidden = highlight !== "queue";
+  $("#page-meta").hidden = highlight === "queue";
   $("#page-meta").textContent = meta;
   if (view !== "queue") setListOpen(false);
-  for (const [id, active] of [["#nav-queue", view === "queue"], ["#nav-discover", view === "discover"], ["#nav-product", view === "product"], ["#nav-compilation", view === "compilation"]] as const) {
+  for (const [id, active] of [["#nav-queue", highlight === "queue"], ["#nav-discover", highlight === "discover"], ["#nav-product", highlight === "product"], ["#nav-compilation", highlight === "compilation"]] as const) {
     $(id).classList.toggle("active", active);
     if (active) $(id).setAttribute("aria-current", "page");
     else $(id).removeAttribute("aria-current");
@@ -1492,22 +1562,25 @@ function showView(view: View): void {
   if (view === "product") productStudio.show();
   if (view === "compilation") compilation.show();
 }
-$("#nav-queue").addEventListener("click", (event) => {
-  event.preventDefault();
-  showView("queue");
-});
-$("#nav-discover").addEventListener("click", (event) => {
-  event.preventDefault();
-  showView("discover");
-});
-$("#nav-product").addEventListener("click", (event) => {
-  event.preventDefault();
-  showView("product");
-});
-
-$("#nav-compilation").addEventListener("click", (event) => {
-  event.preventDefault(); showView("compilation");
-});
+/** Go to a page; editing another page's video ends first (asking when something is not saved). */
+async function navigate(view: View): Promise<void> {
+  const edited = editor.target;
+  if (edited && edited.kind !== "job") {
+    if (editOrigin === view) return;
+    editOrigin = null;
+    if (!(await editor.close(true))) {
+      editOrigin = edited.kind === "product" ? "product" : "compilation";
+      return;
+    }
+  }
+  showView(view);
+}
+for (const [id, view] of [["#nav-queue", "queue"], ["#nav-discover", "discover"], ["#nav-product", "product"], ["#nav-compilation", "compilation"]] as const) {
+  $(id).addEventListener("click", (event) => {
+    event.preventDefault();
+    void navigate(view);
+  });
+}
 
 async function startFetch(url: string, title?: string, authRetried = false): Promise<string> {
   // A Douyin link first gets a session (kept for 20 h); without one it still starts.
@@ -2322,7 +2395,7 @@ if (isTauri) {
   void getCurrentWebview().onDragDropEvent((event: DropEvent) => {
     const overlay = $("#drag-overlay");
     // While editing, dropped videos are inserted into the edit instead of joining the queue.
-    const editing = editor.jobId !== null;
+    const editing = editor.target !== null;
       if (event.payload.type === "enter" || event.payload.type === "over") {
         overlay.hidden = false;
         $("#drag-overlay-text").textContent = editing ? "Thả để chèn vào video đang sửa" : "Thả để thêm video";

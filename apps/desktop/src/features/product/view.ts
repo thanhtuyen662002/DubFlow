@@ -1,11 +1,14 @@
 import { readProduct, WORDS_PER_SECOND, writeScripts, type Photo } from "./ai.ts";
-import { captionChunks, LAYOUT } from "./layout.ts";
+import { LAYOUT } from "./layout.ts";
 import {
-  addMedia, backgroundBox, buildRequest, CENTER, coverOverflow, dragFocus, fileName, focusKey, formatFeatures, isImage, isTemplate,
-  MAX_VARIANTS, MAX_VISUALS, moveItem, parseBackgroundMemory, parseBackgrounds, parseStatus, photosToRead, readForm, TEMPLATES, toBase64,
+  addMedia, buildRequest, CENTER, fileName, focusKey, formatFeatures, isImage, MAX_VARIANTS, MAX_VISUALS, moveItem,
+  parseBackgroundMemory, parseBackgrounds, parseRuns, parseStatus, photosToRead, readForm, recentVideos, TEMPLATES, toBase64,
   videoMedia, type BackgroundMemory, type Focus, type LibraryBackground, type MediaItem, type ProductStatus, type Template,
 } from "./model.ts";
-import { previewLayers, type PreviewLayers, type PreviewState } from "./preview.ts";
+import type { PreviewState } from "./preview.ts";
+import {
+  backgroundFit, backgroundHint, backgroundItems, captionAt, createImages, mountPreviewCard, PREVIEW_SIDE, templateNote, THUMB_SIDE, wireTemplates,
+} from "./look.ts";
 import { KEY_CLEARED, type SessionKey } from "../seo/view.ts";
 import { isKeyError, isProvider, keyHint, PROVIDERS } from "../ai/provider.ts";
 import { parseVoiceCatalog } from "../voices/model.ts";
@@ -13,6 +16,8 @@ import { confirmDialog } from "../../shell/confirm.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Script = { text: string; use: boolean };
+/** A finished product video the editor can open. */
+export type ProductVideo = { outputPath: string; displayName: string };
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const node = document.querySelector<T>(selector);
@@ -26,13 +31,11 @@ function apiError(error: unknown, name: string): string {
 }
 
 const SENT = "văn bản và ảnh sản phẩm bạn đưa vào";
-const MEMORY_KEY = "dubflow.product.backgrounds.v1";
-const THUMB_SIDE = 240;
-const PREVIEW_SIDE = 720;
+export const MEMORY_KEY = "dubflow.product.backgrounds.v1";
 const TICK_MS = 200;
-const CAPTION_PLACEHOLDER = "Phụ đề lời đọc hiện ở đây";
+const RECENT_LIMIT = 12;
 
-function readMemory(): BackgroundMemory {
+export function readMemory(): BackgroundMemory {
   try {
     return parseBackgroundMemory(window.localStorage.getItem(MEMORY_KEY));
   } catch {
@@ -40,7 +43,7 @@ function readMemory(): BackgroundMemory {
   }
 }
 
-function saveMemory(memory: BackgroundMemory): void {
+export function saveMemory(memory: BackgroundMemory): void {
   try {
     window.localStorage.setItem(MEMORY_KEY, JSON.stringify(memory));
   } catch {
@@ -48,8 +51,20 @@ function saveMemory(memory: BackgroundMemory): void {
   }
 }
 
-/** The "Video bán hàng" page: pasted text and/or photos → product facts → scripts → videos (ADR-0041). */
-export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings: { outputRoot(): string | null; cpuOnly(): boolean }): { show(): void } {
+/**
+ * The "Video bán hàng" page: pasted text and/or photos → product facts →
+ * scripts → videos (ADR-0041). Finished videos play in the page and open in
+ * the editor (Issue #426), including those of earlier runs.
+ */
+export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings: {
+  outputRoot(): string | null; cpuOnly(): boolean;
+  /** Folders whose "DubFlow Output" may hold earlier runs. */
+  roots(): string[];
+  /** A URL the in-page player can stream a local video from, or null. */
+  mediaUrl(path: string): Promise<string | null>;
+  /** Open a finished product video in the editor. */
+  edit(video: ProductVideo): void;
+}): { show(): void } {
   let media: MediaItem[] = [];
   let scripts: Script[] = [];
   let music: string | null = null;
@@ -60,17 +75,16 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   let polling = 0;
   let running = "";
   let pendingKeyAction: (() => void) | null = null;
-  const images = new Map<string, Promise<string | null>>();
-  const loaded = new Map<string, string | null>();
+  const images = createImages(invoke);
+  let runs: ReturnType<typeof parseRuns> = [];
+  let runsToken = 0;
   const keyRow = $("#product-key-row");
   const keyInput = $<HTMLInputElement>("#product-key");
   const providerSelect = $<HTMLSelectElement>("#product-provider");
   const source = $<HTMLTextAreaElement>("#product-source");
   const field = (id: string) => $<HTMLInputElement | HTMLTextAreaElement>(id);
   const voiceSelect = $<HTMLSelectElement>("#product-voice");
-  const stage = $("#product-stage");
-  const layers = { base: $("#product-stage-base"), card: $("#product-stage-card"), caption: $("#product-stage-caption") };
-  const shown: PreviewLayers = { base: "", card: "", caption: "" };
+  const player = $<HTMLVideoElement>("#product-player");
   let playStarted = performance.now();
 
   function showProvider(): void {
@@ -87,32 +101,9 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     if (apiKey.read()) keyRow.hidden = true;
   });
 
-  /** A JPEG of a photo (or a clip's frame) as an object URL, at most `side` px; cached. */
-  function imageUrl(path: string, side: number): Promise<string | null> {
-    const key = `${side}|${path}`;
-    let pending = images.get(key);
-    if (!pending) {
-      const request = isImage(path)
-        ? invoke<ArrayBuffer>("product_image", { path, maxSide: side })
-        : invoke<ArrayBuffer>("video_frame", { sourcePath: path, position: 0.1, maxWidth: Math.min(960, side) });
-      pending = request
-        .then((bytes) => URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" })))
-        .catch(() => null)
-        .then((url) => {
-          loaded.set(key, url);
-          return url;
-        });
-      images.set(key, pending);
-    }
-    return pending;
-  }
-
   /** The image now if it is loaded, else null and a preview refresh once it is. */
   function previewImage(path: string): string | null {
-    const key = `${PREVIEW_SIDE}|${path}`;
-    if (loaded.has(key)) return loaded.get(key) ?? null;
-    void imageUrl(path, PREVIEW_SIDE).then(() => updatePreview());
-    return null;
+    return images.now(path, PREVIEW_SIDE, () => updatePreview());
   }
 
   // ---- Photos and clips --------------------------------------------------
@@ -142,7 +133,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       const image = document.createElement("img");
       image.alt = "";
       image.draggable = false;
-      void imageUrl(item.path, THUMB_SIDE).then((url) => {
+      void images.url(item.path, THUMB_SIDE).then((url) => {
         if (url) image.src = url;
       });
       row.append(image);
@@ -353,19 +344,14 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     return memory.focus[focusKey(template, entry.id)] ?? CENTER;
   }
 
+  const templatePicker = wireTemplates($("#product-templates"), (next) => setTemplate(next));
+
   function renderTemplates(): void {
-    for (const button of document.querySelectorAll<HTMLButtonElement>("#product-templates [data-template]")) {
-      button.setAttribute("aria-checked", String(button.dataset.template === template));
-      button.tabIndex = button.dataset.template === template ? 0 : -1;
-    }
+    templatePicker.render(template);
     const meta = TEMPLATES.find((item) => item.id === template)!;
     $("#product-background-block").hidden = !meta.size;
     $("#product-background-size").textContent = meta.size ? `Cỡ đẹp nhất ${meta.size}` : "";
-    $("#product-template-note").textContent = template === "toan-man-hinh"
-      ? "Ảnh hoặc clip phủ kín khung nên mẫu này không dùng ảnh nền."
-      : template === "chi-chu"
-        ? "Không dùng ảnh hay clip: tên, giá và từng điểm nổi bật hiện thành thẻ chữ động, kèm giọng đọc và phụ đề."
-        : "Ảnh hoặc clip ở trên, nền xanh (hoặc ảnh nền của bạn) bên dưới che chữ gốc của clip.";
+    $("#product-template-note").textContent = templateNote(template);
     $("#product-photos-hint").textContent = template === "chi-chu"
       ? "Mẫu “Chỉ chữ” không đưa ảnh hay clip vào video; ảnh vẫn giúp AI đọc thông tin."
       : "Ảnh và clip không bắt buộc. AI đọc tối đa 8 ảnh đầu. Kéo (hoặc bấm ‹ ›) để đổi thứ tự trong video; bỏ chọn “Video” để ảnh chỉ dùng cho AI đọc.";
@@ -378,71 +364,13 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     renderTemplates();
   }
 
-  function backgroundItem(label: string, detail: string, checked: boolean, choose: () => void, swatch: HTMLElement): HTMLLIElement {
-    const item = document.createElement("li");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "product-bg";
-    button.setAttribute("role", "radio");
-    button.setAttribute("aria-checked", String(checked));
-    button.title = detail ? `${label} · ${detail}` : label;
-    button.addEventListener("click", choose);
-    const name = document.createElement("span");
-    name.className = "product-bg-name";
-    name.textContent = label;
-    const size = document.createElement("span");
-    size.className = "product-bg-size";
-    size.textContent = detail;
-    button.append(swatch, name, size);
-    item.append(button);
-    return item;
-  }
-
   function renderBackgrounds(): void {
-    const list = $("#product-backgrounds");
     const chosen = selectedBackground();
-    const plainSwatch = document.createElement("span");
-    plainSwatch.className = "product-bg-swatch";
-    plainSwatch.style.background = template === "chi-chu"
-      ? `linear-gradient(180deg, ${LAYOUT.templates["chi-chu"].gradient.join(", ")})`
-      : LAYOUT.templates["ban-tin"].panel;
-    const items = [backgroundItem(template === "chi-chu" ? "Chuyển màu" : "Xanh lá", "Mặc định", !chosen, () => choose(null), plainSwatch)];
-    for (const entry of library) {
-      const swatch = document.createElement("span");
-      swatch.className = "product-bg-swatch";
-      const image = document.createElement("img");
-      image.alt = "";
-      void imageUrl(entry.path, THUMB_SIDE).then((url) => {
-        if (url) image.src = url;
-      });
-      swatch.append(image);
-      const item = backgroundItem(entry.name || "Ảnh nền", `${entry.width}×${entry.height}`, chosen?.id === entry.id, () => choose(entry.id), swatch);
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "product-remove";
-      remove.textContent = "×";
-      remove.setAttribute("aria-label", `Xóa ảnh nền ${entry.name}`);
-      remove.addEventListener("click", () => void removeBackground(entry));
-      item.append(remove);
-      items.push(item);
-    }
-    const add = document.createElement("li");
-    const upload = document.createElement("button");
-    upload.id = "product-background";
-    upload.type = "button";
-    upload.className = "product-bg product-bg-add";
-    upload.textContent = "+ Tải ảnh nền…";
-    upload.addEventListener("click", () => void addBackground());
-    add.append(upload);
-    items.push(add);
-    list.replaceChildren(...items);
-    const box = chosen ? backgroundBox(template, chosen, LAYOUT.fullFrameRatio) : null;
-    const ideal = box === "panel" ? LAYOUT.templates["ban-tin"].background.panel : LAYOUT.templates["ban-tin"].background.frame;
-    $("#product-background-hint").textContent = !chosen
-      ? "Ảnh tải lên được lưu trong kho của DubFlow để dùng lại lần sau."
-      : chosen.width === ideal[0] && chosen.height === ideal[1]
-        ? `Ảnh vừa khít ${box === "panel" ? "nền dưới" : "cả khung"} ${ideal[0]}×${ideal[1]}.`
-        : `Ảnh ${chosen.width}×${chosen.height} được cắt cho vừa ${box === "panel" ? "nền dưới" : "cả khung"} ${ideal[0]}×${ideal[1]}; kéo ảnh trong khung xem trước để chọn phần giữ lại.`;
+    $("#product-backgrounds").replaceChildren(...backgroundItems({
+      template, library, chosen, images, addId: "product-background",
+      choose, remove: (entry) => void removeBackground(entry), add: () => void addBackground(),
+    }));
+    $("#product-background-hint").textContent = backgroundHint(template, chosen);
     updatePreview();
   }
 
@@ -515,106 +443,124 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     return still ? 0 : (performance.now() - playStarted) % total;
   }
 
-  function captionAt(time: number, total: number): string {
-    const chunks = captionChunks(selectedScript());
-    if (!chunks.length) return CAPTION_PLACEHOLDER;
-    const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    let at = (time / total) * length;
-    for (const chunk of chunks) {
-      at -= chunk.length;
-      if (at < 0) return chunk;
-    }
-    return chunks[chunks.length - 1];
-  }
-
   function previewState(): PreviewState {
     const product = info();
     const total = totalMs();
     const time = playTime(total);
     const first = template === "chi-chu" ? undefined : videoMedia(media)[0];
     const chosen = selectedBackground();
-    const box = chosen ? backgroundBox(template, chosen, LAYOUT.fullFrameRatio) : null;
+    const fit = backgroundFit(template, chosen);
     return {
-      template, name: product.name, price: product.price, features: product.features, caption: captionAt(time, total),
+      template, name: product.name, price: product.price, features: product.features, caption: captionAt(selectedScript(), time, total),
       media: first ? { url: previewImage(first), label: fileName(first) } : null,
-      background: chosen && box ? { url: previewImage(chosen.path), width: chosen.width, height: chosen.height, focus: focusOf(chosen), box } : null,
+      background: chosen && fit ? { url: previewImage(chosen.path), width: chosen.width, height: chosen.height, focus: focusOf(chosen), box: fit.box } : null,
       timeMs: time, totalMs: total,
     };
   }
 
+  const card = mountPreviewCard({
+    preview: $("#product-preview"), stage: $("#product-stage"), base: $("#product-stage-base"), card: $("#product-stage-card"),
+    caption: $("#product-stage-caption"), fill: $("#product-progress-fill"), time: $("#product-progress-time"),
+  }, {
+    visible: () => !$("#product-view").hidden && $("#product-player-wrap").hidden,
+    state: previewState,
+    background: () => {
+      const chosen = selectedBackground();
+      const fit = backgroundFit(template, chosen);
+      return chosen && fit ? { entry: chosen, box: fit.box, focus: focusOf(chosen) } : null;
+    },
+    focus: (focus, save) => {
+      const chosen = selectedBackground();
+      if (!chosen) return;
+      memory.focus[focusKey(template, chosen.id)] = focus;
+      if (save) saveMemory(memory);
+    },
+  });
+
   function updatePreview(): void {
-    if ($("#product-view").hidden) return;
-    const state = previewState();
-    const next = previewLayers(state);
-    for (const key of ["base", "card", "caption"] as const) {
-      if (shown[key] !== next[key]) {
-        layers[key].innerHTML = next[key];
-        shown[key] = next[key];
-      }
-    }
-    $("#product-progress-fill").style.width = `${((state.timeMs / state.totalMs) * 100).toFixed(1)}%`;
-    const seconds = (value: number) => `${Math.floor(value / 60000)}:${String(Math.floor(value / 1000) % 60).padStart(2, "0")}`;
-    $("#product-progress-time").textContent = `${seconds(state.timeMs)} / ${seconds(state.totalMs)}`;
-    $("#product-preview").tabIndex = state.background ? 0 : -1;
-    $("#product-preview").classList.toggle("draggable", !!state.background);
+    card.update();
   }
 
-  function scaleStage(): void {
-    const width = $("#product-preview").clientWidth;
-    if (width) stage.style.transform = `scale(${width / LAYOUT.width})`;
-  }
-  new ResizeObserver(scaleStage).observe($("#product-preview"));
+  // ---- Finished videos: the in-page player and the editor ---------------
 
-  /** Move the chosen background's kept part by (dx, dy) frame pixels; `save` remembers it. */
-  function nudge(start: Focus, dx: number, dy: number, save: boolean): void {
-    const chosen = selectedBackground();
-    const box = chosen ? backgroundBox(template, chosen, LAYOUT.fullFrameRatio) : null;
-    if (!chosen || !box) return;
-    const [width, height] = box === "panel" ? LAYOUT.templates["ban-tin"].background.panel : LAYOUT.templates["ban-tin"].background.frame;
-    const focus = dragFocus(start, coverOverflow(chosen, { width, height }), dx, dy);
-    memory.focus[focusKey(template, chosen.id)] = focus;
-    const image = layers.base.querySelector<HTMLImageElement>(".pv-bg img");
-    if (image) image.style.objectPosition = `${(focus.x * 100).toFixed(2)}% ${(focus.y * 100).toFixed(2)}%`;
-    if (save) {
-      saveMemory(memory);
-      shown.base = "";
-      updatePreview();
-    }
-  }
-
-  const preview = $("#product-preview");
-  preview.addEventListener("pointerdown", (event) => {
-    const chosen = selectedBackground();
-    if (!chosen || event.button !== 0) return;
-    const start = focusOf(chosen);
-    const scale = preview.clientWidth / LAYOUT.width;
-    const [x, y] = [event.clientX, event.clientY];
+  /** Play a finished video where the preview is; "Xem trước mẫu" goes back. */
+  async function play(video: ProductVideo): Promise<void> {
+    $("#product-player-wrap").hidden = false;
+    $("#product-preview-wrap").hidden = true;
+    $("#product-player-title").textContent = video.displayName;
+    $("#product-player-title").title = video.outputPath;
+    $("#product-player-edit").dataset.path = video.outputPath;
+    $("#product-player-edit").dataset.name = video.displayName;
+    $("#product-player-note").hidden = true;
+    player.removeAttribute("src");
     try {
-      preview.setPointerCapture(event.pointerId);
+      const url = await settings.mediaUrl(video.outputPath);
+      if (url) {
+        player.src = url;
+        void player.play().catch(() => undefined);
+      } else {
+        $("#product-player-note").hidden = false;
+      }
     } catch {
-      // Without capture the drag still follows the pointer inside the preview.
+      $("#product-player-note").hidden = false;
     }
-    preview.classList.add("dragging");
-    const moved = (next: PointerEvent) => nudge(start, (next.clientX - x) / scale, (next.clientY - y) / scale, false);
-    const done = (next: PointerEvent) => {
-      preview.removeEventListener("pointermove", moved);
-      preview.removeEventListener("pointerup", done);
-      preview.removeEventListener("pointercancel", done);
-      preview.classList.remove("dragging");
-      nudge(start, (next.clientX - x) / scale, (next.clientY - y) / scale, true);
-    };
-    preview.addEventListener("pointermove", moved);
-    preview.addEventListener("pointerup", done);
-    preview.addEventListener("pointercancel", done);
-  });
-  preview.addEventListener("keydown", (event) => {
-    const chosen = selectedBackground();
-    const step = ({ ArrowLeft: [-40, 0], ArrowRight: [40, 0], ArrowUp: [0, -40], ArrowDown: [0, 40] } as Record<string, [number, number]>)[event.key];
-    if (!chosen || !step) return;
-    event.preventDefault();
-    // The keys move the picture, like dragging it.
-    nudge(focusOf(chosen), step[0], step[1], true);
-  });
+  }
+
+  function closePlayer(): void {
+    player.pause();
+    player.removeAttribute("src");
+    player.load();
+    $("#product-player-wrap").hidden = true;
+    $("#product-preview-wrap").hidden = false;
+    card.reset();
+    card.scale();
+    updatePreview();
+  }
+
+  function videoActions(video: ProductVideo): HTMLElement[] {
+    const watch = document.createElement("button");
+    watch.type = "button";
+    watch.className = "link";
+    watch.textContent = "Xem";
+    watch.addEventListener("click", () => void play(video));
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "link";
+    edit.textContent = "Chỉnh sửa";
+    edit.title = "Mở trong trình chỉnh sửa: cắt ghép, chèn, âm thanh, chữ và đổi mẫu";
+    edit.addEventListener("click", () => settings.edit(video));
+    return [watch, edit];
+  }
+
+  /** Earlier runs' videos found below the output folders, newest first. */
+  async function loadRuns(): Promise<void> {
+    const token = ++runsToken;
+    try {
+      const found = parseRuns(await invoke<unknown>("product_runs", { roots: settings.roots() }));
+      if (token !== runsToken) return;
+      runs = found;
+    } catch {
+      // The list is a convenience; the page works without it.
+    }
+    renderRecent();
+  }
+
+  function renderRecent(): void {
+    const videos = recentVideos(runs, RECENT_LIMIT);
+    $("#product-recent").hidden = !videos.length;
+    $("#product-recent-list").replaceChildren(...videos.map((video) => {
+      const item = document.createElement("li");
+      const label = document.createElement("span");
+      label.className = "product-recent-name";
+      label.textContent = video.displayName;
+      label.title = video.outputPath;
+      const meta = document.createElement("span");
+      meta.className = "hint";
+      meta.textContent = video.meta;
+      item.append(label, meta, ...videoActions(video));
+      return item;
+    }));
+  }
 
   // ---- Render -------------------------------------------------------------
 
@@ -629,12 +575,15 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
         : `Video ${video.index}: ${video.message ?? "lỗi"}`;
       item.append(label);
       if (video.ok && video.path) {
+        const path = video.path;
+        const name = `${info().name || "Video bán hàng"} · video ${video.index}`;
         const open = document.createElement("button");
         open.type = "button";
         open.className = "link";
         open.textContent = "Mở";
-        open.addEventListener("click", () => void invoke("open_path", { path: video.path }).catch(() => undefined));
-        item.append(open);
+        open.title = "Mở bằng trình phát của máy";
+        open.addEventListener("click", () => void invoke("open_path", { path }).catch(() => undefined));
+        item.append(...videoActions({ outputPath: path, displayName: name }), open);
       }
       return item;
     }));
@@ -666,6 +615,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     window.clearInterval(polling);
     polling = 0;
     running = "";
+    void loadRuns();
     $<HTMLButtonElement>("#product-render").disabled = false;
     const cancel = $<HTMLButtonElement>("#product-cancel");
     cancel.hidden = true;
@@ -742,20 +692,6 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   source.addEventListener("input", updateReadButton);
   for (const id of ["#product-name", "#product-price", "#product-features"]) field(id).addEventListener("input", updatePreview);
   for (const id of ["#product-seconds", "#product-speed"]) $(id).addEventListener("change", updatePreview);
-  const templateButtons = [...document.querySelectorAll<HTMLButtonElement>("#product-templates [data-template]")];
-  for (const button of templateButtons) {
-    button.addEventListener("click", () => {
-      if (isTemplate(button.dataset.template)) setTemplate(button.dataset.template);
-    });
-    button.addEventListener("keydown", (event) => {
-      const step = ({ ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as Record<string, number>)[event.key];
-      if (!step) return;
-      event.preventDefault();
-      const next = templateButtons[(templateButtons.indexOf(button) + step + templateButtons.length) % templateButtons.length];
-      if (isTemplate(next.dataset.template)) setTemplate(next.dataset.template);
-      next.focus();
-    });
-  }
   $("#product-music").addEventListener("click", async () => {
     const [picked] = await invoke<string[]>("pick_product_files", { kind: "music" });
     if (!picked) return;
@@ -776,6 +712,11 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     ($("#product-scripts").lastElementChild?.querySelector("textarea") as HTMLTextAreaElement | null)?.focus();
   });
   $("#product-render").addEventListener("click", () => void render());
+  $("#product-player-close").addEventListener("click", closePlayer);
+  $("#product-player-edit").addEventListener("click", () => {
+    const button = $("#product-player-edit");
+    if (button.dataset.path) settings.edit({ outputPath: button.dataset.path, displayName: button.dataset.name ?? fileName(button.dataset.path) });
+  });
   $("#product-cancel").addEventListener("click", () => void cancel());
   $("#product-key-save").addEventListener("click", async () => {
     try {
@@ -813,7 +754,8 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       showProvider();
       void loadVoices();
       if (!libraryLoaded) void loadLibrary();
-      scaleStage();
+      void loadRuns();
+      card.scale();
       updatePreview();
     },
   };

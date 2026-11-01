@@ -231,7 +231,7 @@
                         <p id="product-background-hint" class="hint"></p>
                       </div>
                     </div>
-                    <figure class="product-preview-wrap">
+                    <figure id="product-preview-wrap" class="product-preview-wrap">
                       <div id="product-preview" class="product-preview" role="img" aria-label="Xem trước video theo mẫu đã chọn">
                         <div id="product-stage" class="product-stage">
                           <div id="product-stage-base" class="pv-layer"></div>
@@ -244,6 +244,15 @@
                         <span id="product-progress-time">0:00 / 0:30</span>
                       </div>
                       <figcaption class="hint">Xem trước bố cục, không phải video thật. Có ảnh nền thì kéo ảnh trong khung để chọn phần giữ lại.</figcaption>
+                    </figure>
+                    <figure id="product-player-wrap" class="product-preview-wrap product-player-wrap" hidden>
+                      <figcaption id="product-player-title" class="product-player-title"></figcaption>
+                      <video id="product-player" class="product-player" controls playsinline preload="metadata"></video>
+                      <p id="product-player-note" class="hint" hidden>Không xem được video này trong ứng dụng; hãy bấm “Mở” để xem bằng trình phát của máy.</p>
+                      <div class="product-player-actions">
+                        <button id="product-player-close" class="btn" type="button">Xem trước mẫu</button>
+                        <button id="product-player-edit" class="btn primary" type="button">Chỉnh sửa</button>
+                      </div>
                     </figure>
                   </div>
                 </section>
@@ -266,6 +275,10 @@
                     <p id="product-render-state" class="discover-state" role="status"></p>
                   </div>
                   <ul id="product-results" class="product-results"></ul>
+                  <div id="product-recent" class="product-recent" hidden>
+                    <h3 class="product-label">Video đã tạo</h3>
+                    <ul id="product-recent-list" class="product-results product-recent-list" aria-label="Video bán hàng đã tạo"></ul>
+                  </div>
                   <p class="hint">Chỉ dùng ảnh, clip và nhạc bạn có quyền sử dụng. Video lưu trong thư mục “DubFlow Output”.</p>
                 </section>
               </div>
@@ -301,6 +314,7 @@
                 </button>
                 <span class="spacer edit-only"></span>
                 <div id="edit-modes" class="seg edit-modes edit-only" role="tablist" aria-label="Công cụ chỉnh sửa">
+                  <button type="button" role="tab" data-mode="template" aria-selected="false" aria-controls="edit-panel" title="Đổi mẫu, chữ, nền, giọng và kịch bản của video bán hàng" hidden>Mẫu</button>
                   <button type="button" role="tab" data-mode="cut" aria-selected="true" aria-controls="edit-panel">Cắt ghép</button>
                   <button type="button" role="tab" data-mode="insert" aria-selected="false" aria-controls="edit-panel">Chèn</button>
                   <button type="button" role="tab" data-mode="subs" aria-selected="false" aria-controls="edit-panel">Phụ đề</button>
@@ -739,6 +753,7 @@
                 </button>
               </div>
               <div id="edit-panel-body" class="edit-panel-body">
+                <section id="edit-template" class="edit-template" aria-label="Mẫu video" hidden></section>
                 <section id="edit-sources" class="edit-sources" aria-label="Chèn video">
                   <div class="edit-field">
                     <span class="edit-label">Chèn vào đâu</span>

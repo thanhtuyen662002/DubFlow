@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import {
-  addedId, addOverlay, append, createEdit, defaultExportName, EditHistory, estimateExportBytes, exportPlan, exportSize, formatClock,
+  addAudio, addedId, addOverlay, addText, append, createEdit, defaultExportName, EditHistory, estimateExportBytes, exportPlan, exportSize, formatClock,
   formatSpeed, HISTORY_LIMIT, insertAt, isUnchanged, matchesExport, moveOverlay, outputDuration, outputStarts, outputToSource,
   overlayHeight, overlayLength, overlayPreset, overlayPresetOf, parseClock, parseProject, remapCues, remove, removeOverlay,
-  resizeOverlay, sameEdit, sameSegments, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume,
+  resizeOverlay, retargetEdit, sameEdit, sameSegments, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume,
   sourceToOutput, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
 } from "../src/features/edit/model.ts";
 
@@ -407,5 +407,35 @@ const loose = parseProject({ ...draft, transitions: { s3: { type: "wipe", durati
   overlays: [...draft.overlays, { ...draft.overlays[0], id: "o99", x: 4 }] }, 100);
 assert.deepEqual(loose.edit.transitions, { s1: { type: "fade", duration: 2 } }, "bad transitions are dropped, durations clamped");
 assert.equal(loose.edit.overlays.length, 1, "a bad overlay is dropped");
+
+// Mẫu (Issue #426): the draft moves to a new render of a Bán hàng video.
+{
+  const info = { path: "D:/o/run-1/video-1.mp4", title: "Nồi · video 1", width: 1080, height: 1920, fps: 30, hasAudio: true };
+  const base = split(createEdit(30, info), 10);
+  const same = retargetEdit(base, 30.02, { path: "D:/o/run-2/video-1.mp4" });
+  assert.equal(same.trimmed, 0);
+  assert.equal(same.edit.media[0].path, "D:/o/run-2/video-1.mp4");
+  assert.equal(same.edit.media[0].width, 1080, "what is not given is kept");
+  assert.deepEqual(same.edit.segments.map(segment => [segment.start, segment.end]), [[0, 10], [10, 30.02]]);
+  const longer = retargetEdit(base, 34);
+  assert.equal(longer.trimmed, 0);
+  assert.equal(outputDuration(longer.edit), 34, "a part that reached the end reaches the new end");
+  const shorter = retargetEdit(base, 8);
+  assert.equal(shorter.trimmed, 2, "the first part is cut, the second is past the end");
+  assert.deepEqual(shorter.edit.segments.map(segment => [segment.start, segment.end]), [[0, 8]]);
+  const added = addText(addAudio(base, { source: { kind: "sfx", id: "pop" }, title: "Pop", duration: 1 }, 25), 25);
+  const cut = retargetEdit(added, 20);
+  assert.equal(cut.trimmed, 2, "a sound and a text past the new end go");
+  assert.deepEqual([cut.edit.audio.length, cut.edit.texts.length], [0, 0]);
+  const kept = retargetEdit(added, 28);
+  assert.deepEqual([kept.trimmed, kept.edit.audio.length, kept.edit.texts.length], [0, 1, 1]);
+  const late = trim(createEdit(30, info), "s1", "start", 25);
+  const gone = retargetEdit(late, 12);
+  assert.equal(gone.trimmed, 1);
+  assert.deepEqual(gone.edit.segments.map(segment => [segment.mediaId, segment.start, segment.end]), [["main", 0, 12]], "an empty edit becomes the whole new video");
+  const saved = parseProject(JSON.parse(JSON.stringify(serializeProject(shorter.edit, 3, null))), 8, info);
+  assert.ok(saved, "the carried draft loads for the new video");
+  assert.equal(saved.changes, 3);
+}
 
 console.log("edit tests passed");
