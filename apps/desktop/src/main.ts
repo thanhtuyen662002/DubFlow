@@ -11,7 +11,9 @@ import {
 import { matchesQueueFilter, type QueueFilter } from "./features/queue/view_model.ts";
 import { mountDiscovery } from "./features/discovery/view.ts";
 import { extractLinks } from "./features/links/extract.ts";
-import { fetchBadge, fetchMessage, shortPath, type FetchStatus } from "./features/links/status.ts";
+import { fetchBadge, fetchMessage, isDouyinLink, needsDouyinLogin, shortPath, type FetchStatus } from "./features/links/status.ts";
+import { addSample, fractionDone, progressLine, type Sample } from "./features/fetch/progress.ts";
+import { mountDouyinLogin } from "./features/douyin/view.ts";
 import { mountUpdates } from "./features/update/view.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
@@ -66,7 +68,17 @@ function browserStorage(): SnapshotStorage {
 
 const queue = new QueueController(browserStorage());
 const pollers = new Map<string, number>();
-type FetchEntry = { status: FetchStatus; outputDir: string; timer: number };
+type FetchEntry = {
+  status: FetchStatus; outputDir: string; timer: number;
+  /** Bytes seen at each poll, for speed and time left. */
+  samples: Sample[];
+  /** Already retried once with a fresh Douyin session. */
+  authRetried: boolean;
+  /** Refreshing the Douyin session before that retry. */
+  renewing: boolean;
+  /** Finished; being copied to the download folder. */
+  saving: boolean;
+};
 const fetches = new Map<string, FetchEntry>();
 
 const $ = <T extends HTMLElement>(selector: string): T => {
@@ -604,6 +616,7 @@ function renderStage(job: QueueJob | null): void {
       : stateLabel(status.state, status.reason);
     $("#detail-bar").style.width = `${Math.round((fraction ?? 0) * 100)}%`;
     $("#detail-bar").parentElement!.hidden = fraction === null;
+    $("#detail-bar").parentElement!.classList.remove("indeterminate");
     $("#detail-message").textContent = displayJobStatus(status);
     const resume = $<HTMLButtonElement>("#busy-resume");
     resume.hidden = status.state !== "RECOVERED";
@@ -636,42 +649,40 @@ function renderStage(job: QueueJob | null): void {
 function renderFetchStage(entry: FetchEntry): void {
   const { status } = entry;
   playerJobId = null;
-  $("#detail-name").textContent = linkName(status.url);
-  $("#detail-name").title = status.url;
+  $("#detail-name").textContent = fetchName(status);
+  $("#detail-name").title = `${fetchName(status)}\n${status.url}`;
   $("#player-mode").hidden = true;
   setPlayerSource(null, "Video hiện ở đây khi tải xong");
-  const failed = status.state === "failed";
-  $("#player-busy").hidden = failed;
-  $("#player-failed").hidden = !failed;
-  const message = fetchMessage(status, Date.now());
+  const view = fetchView(entry, Date.now());
+  $("#player-busy").hidden = view.failed;
+  $("#player-failed").hidden = !view.failed;
   const provider = PROVIDER_NAMES[status.provider] ?? status.provider;
-  if (!failed) {
-    const fraction = status.state === "downloading" && status.total_bytes ? status.downloaded_bytes / status.total_bytes : null;
-    $("#busy-title").textContent = `${fetchBadge(status.state)} từ ${provider}` + (fraction === null ? "" : ` · ${Math.floor(fraction * 100)}%`);
-    $("#detail-bar").style.width = `${Math.round((fraction ?? 0) * 100)}%`;
-    $("#detail-bar").parentElement!.hidden = fraction === null;
-    $("#detail-message").textContent = `${message}\nLưu vào ${shortPath(entry.outputDir)}`;
+  if (!view.failed) {
+    $("#busy-title").textContent = entry.saving || entry.renewing ? view.badge : `${view.badge} từ ${provider}`;
+    const bar = $("#detail-bar");
+    const track = bar.parentElement!;
+    track.hidden = !view.bar;
+    track.classList.toggle("indeterminate", view.fraction === null);
+    bar.style.width = view.fraction === null ? "" : `${Math.round(view.fraction * 100)}%`;
+    $("#detail-message").textContent = `${view.message}\nLưu vào ${shortPath(entry.outputDir)}`;
     $("#busy-resume").hidden = true;
     const cancel = $<HTMLButtonElement>("#busy-cancel");
-    // Only a link still waiting can be withdrawn; a running download finishes or fails.
-    cancel.hidden = status.state !== "queued";
+    cancel.hidden = entry.saving || entry.renewing;
     cancel.disabled = false;
-    cancel.textContent = "Bỏ link này";
+    cancel.textContent = "Hủy tải";
     $("#busy-folder").hidden = false;
     failedActionsKey = "";
   } else {
     $("#failed-title").textContent = "Không tải được video này";
-    $("#failed-cause").textContent = message;
+    $("#failed-cause").textContent = view.message;
     $("#failed-more").hidden = true;
-    const key = `fetch:${status.scan_id}:${status.state}`;
+    const key = `fetch:${status.scan_id}:${status.state}:${needsDouyinLogin(status)}`;
     if (failedActionsKey !== key) {
       failedActionsKey = key;
-      const actions = status.provider === "douyin" ? douyinActions(status) : retryAction(status);
-      $("#failed-actions").replaceChildren(...actions.children,
-        actionButton("Bỏ qua", "btn", () => void dismissFetch(status)));
+      $("#failed-actions").replaceChildren(...failedFetchActions(entry));
     }
   }
-  $("#detail-timing").textContent = fetchBadge(status.state);
+  $("#detail-timing").textContent = view.badge;
 }
 
 let lastModel: DesktopShellModel | null = null;
@@ -1010,7 +1021,7 @@ async function cancelSelected(): Promise<void> {
 cancelButton.addEventListener("click", () => void cancelSelected());
 $("#busy-cancel").addEventListener("click", () => {
   const entry = selectedFetchId === null ? undefined : fetches.get(selectedFetchId);
-  if (entry) void dismissFetch(entry.status);
+  if (entry) void cancelFetch(entry.status.scan_id);
   else void cancelSelected();
 });
 $("#busy-folder").addEventListener("click", () => {
@@ -1080,8 +1091,10 @@ $("#reveal-output").addEventListener("click", () => {
 });
 
 // Links: the host downloads through the supervisor's source service; the
-// finished file joins the queue as a local job with its own output folder.
+// finished file is copied to the download folder and joins the queue as a
+// local job with its own output folder.
 const PROVIDER_NAMES: Record<string, string> = { bilibili: "Bilibili", douyin: "Douyin", generic: "Link video" };
+const CLOSE_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 
 function linkName(url: string): string {
   try {
@@ -1093,8 +1106,37 @@ function linkName(url: string): string {
   }
 }
 
+/** The video's title when known (Khám phá), else the link's last part. */
+function fetchName(status: FetchStatus): string {
+  return status.title?.trim() || linkName(status.url);
+}
+
 function openFolder(path: string): void {
   invoke("open_folder", { path }).catch((error) => showError(`Không mở được thư mục: ${String(error).slice(0, 160)}`));
+}
+
+/** What a download row and the player overlay show right now. */
+function fetchView(entry: FetchEntry, now: number, compact = false): { failed: boolean; badge: string; message: string; fraction: number | null; bar: boolean } {
+  const { status } = entry;
+  if (entry.saving) return { failed: false, badge: "Đang lưu video", message: "Đang chép video vào thư mục tải về…", fraction: null, bar: true };
+  if (entry.renewing) return { failed: false, badge: "Đang thử lại", message: "Đang làm mới phiên Douyin rồi tải lại…", fraction: null, bar: true };
+  if (status.state === "downloading") {
+    const line = progressLine(status.downloaded_bytes, status.total_bytes, entry.samples, compact);
+    return { failed: false, badge: fetchBadge(status.state), message: status.detail ? `${status.detail} · ${line}` : line,
+      fraction: fractionDone(status.downloaded_bytes, status.total_bytes), bar: true };
+  }
+  return { failed: status.state === "failed", badge: fetchBadge(status.state), message: fetchMessage(status, now), fraction: null, bar: status.state === "preparing" };
+}
+
+/** A determinate bar, or a sliding one when the size is not known yet. */
+function fetchBar(fraction: number | null): HTMLElement {
+  const bar = progressBar(fraction, "RUNNING");
+  if (fraction === null) {
+    bar.classList.add("indeterminate");
+    bar.firstElementChild!.removeAttribute("style");
+    bar.style.setProperty("--phase", `-${Date.now() % 1400}ms`);
+  }
+  return bar;
 }
 
 function renderFetches(): void {
@@ -1103,35 +1145,35 @@ function renderFetches(): void {
   fetchList.replaceChildren();
   fetchList.hidden = fetches.size === 0 || queueFilter === "done";
   const now = Date.now();
-  for (const { status, outputDir } of fetches.values()) {
-    const failed = status.state === "failed";
+  for (const entry of fetches.values()) {
+    const { status, outputDir } = entry;
+    const view = fetchView(entry, now, true);
     const selected = selectedFetchId === status.scan_id;
-    const item = element("li", `job${failed ? " failed" : ""}${selected ? " selected" : ""}`);
+    const item = element("li", `job${view.failed ? " failed" : ""}${selected ? " selected" : ""}`);
     item.tabIndex = 0;
     if (selected) item.setAttribute("aria-current", "true");
     const main = element("span", "job-main");
     const meta = element("span", "job-meta");
-    meta.append(element("span", `dot ${failed ? "err" : status.state === "queued" ? "" : "run"}`),
-      element("span", `msg${failed ? " err" : ""}`, failed ? "Tải không được" : fetchMessage(status, now)));
-    main.append(element("span", "job-title", linkName(status.url)), meta);
-    if (!failed && status.state !== "queued") {
-      const fraction = status.state === "downloading" && status.total_bytes ? status.downloaded_bytes / status.total_bytes : null;
-      main.append(progressBar(fraction, "RUNNING"));
-    }
+    meta.append(element("span", `dot ${view.failed ? "err" : status.state === "queued" ? "" : "run"}`),
+      element("span", `msg${view.failed ? " err" : ""}`, view.failed ? "Tải không được" : view.message));
+    const title = element("span", "job-title", fetchName(status));
+    main.append(title, meta);
+    if (view.bar) main.append(fetchBar(view.fraction));
     item.append(jobThumb(status.scan_id, LINK_ICON), main);
-    if (failed || status.state === "queued") {
-      const dismiss = element("button", "icon-btn job-dismiss");
-      dismiss.type = "button";
-      dismiss.title = dismiss.ariaLabel = failed ? "Bỏ qua" : "Bỏ link này";
-      dismiss.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
-      dismiss.addEventListener("click", (event) => {
+    if (!entry.saving) {
+      const remove = element("button", "icon-btn job-dismiss");
+      remove.type = "button";
+      remove.title = "Hủy tải";
+      remove.setAttribute("aria-label", "Hủy tải");
+      remove.innerHTML = CLOSE_ICON;
+      remove.addEventListener("click", (event) => {
         event.stopPropagation();
-        void dismissFetch(status);
+        void cancelFetch(status.scan_id);
       });
-      item.append(dismiss);
+      item.append(remove);
     }
     // Where the results of this link will be saved, from the moment it is added.
-    item.title = `${status.url}\nLưu vào ${outputDir}`;
+    item.title = `${fetchName(status)}\n${status.url}\nLưu vào ${outputDir}`;
     const select = () => {
       selectedFetchId = status.scan_id;
       setListOpen(false);
@@ -1151,68 +1193,180 @@ function renderFetches(): void {
   if ((selectedFetchId !== null || stale) && lastModel) render(lastModel);
 }
 
-/** Drop a waiting or failed link from the list. */
-async function dismissFetch(status: FetchStatus): Promise<void> {
-  if (status.state === "queued" && !(await invoke<boolean>("withdraw_fetch", { scanId: status.scan_id }))) return;
-  window.clearInterval(fetches.get(status.scan_id)?.timer);
-  fetches.delete(status.scan_id);
+function scheduleFetchPoll(entry: FetchEntry): void {
+  window.clearTimeout(entry.timer);
+  const active = entry.status.state === "preparing" || entry.status.state === "downloading";
+  entry.timer = window.setTimeout(() => void pollFetch(entry.status.scan_id), active ? 1000 : 1500);
+}
+
+/** Take a row off the list (the host has already let go of it). */
+function removeFetch(scanId: string): void {
+  window.clearTimeout(fetches.get(scanId)?.timer);
+  fetches.delete(scanId);
   renderFetches();
 }
 
+/**
+ * The row's × and the overlay's "Hủy tải": a link being prepared or
+ * downloading asks first; a waiting or failed one goes at once.
+ */
+async function cancelFetch(scanId: string): Promise<void> {
+  const entry = fetches.get(scanId);
+  if (!entry || entry.saving) return;
+  if (["preparing", "downloading"].includes(entry.status.state) && !(await confirmDialog({
+    title: "Hủy tải video này?",
+    message: "Phần đã tải sẽ bị bỏ.",
+    confirmLabel: "Hủy tải",
+    cancelLabel: "Tiếp tục tải",
+    danger: true,
+  }))) return;
+  // Re-read: the download may have finished while the dialog was open.
+  const current = fetches.get(scanId);
+  if (!current || current.saving) return;
+  if (!["failed", "cancelled"].includes(current.status.state)) {
+    try {
+      if (!(await invoke<boolean>("cancel_fetch", { scanId }))) {
+        const latest = await invoke<FetchStatus | null>("fetch_status", { scanId }).catch(() => null);
+        // Finished just now: it joins the queue as usual.
+        if (latest?.state === "done") return;
+      }
+    } catch (error) {
+      showError(`Không hủy được: ${String(error).slice(0, 160)}`);
+      return;
+    }
+  }
+  removeFetch(scanId);
+}
+
 /** Start a failed link again; the new download takes over its place in the player. */
-async function refetch(status: FetchStatus): Promise<void> {
-  const scanId = await startFetch(status.url);
+async function refetch(entry: FetchEntry, authRetried = entry.authRetried): Promise<void> {
+  const { status } = entry;
+  const scanId = await startFetch(status.url, status.title ?? undefined, authRetried);
   const wasSelected = selectedFetchId === status.scan_id;
+  window.clearTimeout(entry.timer);
   fetches.delete(status.scan_id);
   if (wasSelected) selectedFetchId = scanId;
   renderFetches();
 }
 
-/** Fetch a failed link again, as a new row. */
-function retryAction(status: FetchStatus): HTMLElement {
-  const actions = element("div", "fetch-actions");
-  const retry = element("button", "btn primary", "Thử lại");
-  retry.type = "button";
-  retry.addEventListener("click", async () => {
+/** A Douyin link refused for lack of a session: refresh it once and retry by itself. */
+async function retryWithFreshSession(entry: FetchEntry): Promise<void> {
+  entry.authRetried = true;
+  entry.renewing = true;
+  renderFetches();
+  try {
+    await douyin.ensureSession(true);
+    if (fetches.get(entry.status.scan_id) !== entry) return;
+    await refetch(entry, true);
+  } catch {
+    // Shown as failed with "Đăng nhập Douyin".
+    entry.renewing = false;
+    renderFetches();
+  }
+}
+
+function failedFetchActions(entry: FetchEntry): HTMLButtonElement[] {
+  const retry = actionButton("Thử lại", "btn primary", async () => {
     retry.disabled = true;
     try {
-      await refetch(status);
+      await refetch(entry);
     } catch (error) {
       retry.disabled = false;
       showError(String(error).slice(0, 300));
     }
   });
-  actions.append(retry);
-  return actions;
-}
-
-function douyinActions(status: FetchStatus): HTMLElement {
-  const actions = element("div", "fetch-actions");
-  const open = element("button", "btn", "Mở Douyin");
-  open.type = "button";
-  open.addEventListener("click", () => {
-    invoke("open_douyin_login").catch((error) => showError(String(error).slice(0, 200)));
-  });
-  const save = element("button", "btn primary", "Lưu phiên & thử lại");
-  save.type = "button";
-  save.addEventListener("click", async () => {
-    save.disabled = open.disabled = true;
-    save.textContent = "Đang lưu phiên…";
+  const skip = actionButton("Bỏ qua", "btn", () => removeFetch(entry.status.scan_id));
+  if (!needsDouyinLogin(entry.status)) return [retry, skip];
+  retry.className = "btn";
+  const login = actionButton("Đăng nhập Douyin", "btn primary", async () => {
+    login.disabled = true;
     try {
-      await invoke<number>("save_douyin_session");
-      await refetch(status);
+      if (await douyin.open()) await refetch(entry, true);
     } catch (error) {
-      save.disabled = open.disabled = false;
-      save.textContent = "Lưu phiên & thử lại";
       showError(String(error).slice(0, 300));
+    } finally {
+      login.disabled = false;
     }
   });
-  actions.append(open, save);
-  return actions;
+  return [login, retry, skip];
+}
+
+// Download folder: copies of finished link downloads, under their titles.
+const DOWNLOAD_DIR_KEY = "dubflow.downloadDir.v1";
+let defaultDownloadDir = "";
+/** A failed copy is reported once; the job then uses the file in DubFlow's store. */
+let keepErrorShown = false;
+/** The folder the user chose, or null for the default. */
+function downloadDir(): string | null {
+  try {
+    return window.localStorage.getItem(DOWNLOAD_DIR_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+function renderDownloadDir(): void {
+  const chosen = downloadDir();
+  const label = $("#download-dir-label");
+  label.textContent = chosen ?? (defaultDownloadDir || "Videos\\DubFlow Downloads");
+  label.title = chosen ?? defaultDownloadDir;
+  $("#reset-download-dir").hidden = !chosen;
+}
+$("#choose-download-dir").addEventListener("click", async () => {
+  const folder = await invoke<string | null>("pick_folder").catch(() => null);
+  if (!folder) return;
+  try {
+    window.localStorage.setItem(DOWNLOAD_DIR_KEY, folder);
+  } catch {
+    showError("Không lưu được lựa chọn thư mục trên máy này.");
+  }
+  keepErrorShown = false;
+  renderDownloadDir();
+});
+$("#reset-download-dir").addEventListener("click", () => {
+  try {
+    window.localStorage.removeItem(DOWNLOAD_DIR_KEY);
+  } catch {
+    // Nothing stored.
+  }
+  keepErrorShown = false;
+  renderDownloadDir();
+});
+void invoke<string>("default_download_dir").then((dir) => {
+  defaultDownloadDir = dir;
+  renderDownloadDir();
+}).catch(() => undefined);
+renderDownloadDir();
+
+/** Copy a finished download to the download folder and queue it. */
+async function finishFetch(entry: FetchEntry, mediaPath: string): Promise<void> {
+  const { status } = entry;
+  const title = fetchName(status);
+  entry.saving = true;
+  renderFetches();
+  let path = mediaPath;
+  try {
+    path = await invoke<string>("keep_download", { mediaPath, title, folder: downloadDir() });
+  } catch (error) {
+    if (!keepErrorShown) {
+      keepErrorShown = true;
+      showError(`Không chép được video vào thư mục tải về; dùng bản trong kho của DubFlow. ${String(error).slice(0, 160)}`);
+    }
+  }
+  fetches.delete(status.scan_id);
+  try {
+    const linkJob = queue.addLinkJob(path, status.url, title, entry.outputDir);
+    if (linkJob) applyDefaults([linkJob]);
+  } catch (error) {
+    showError(`Không thêm được video vào danh sách: ${String(error).slice(0, 160)}`);
+  }
+  renderFetches();
 }
 
 // Rail navigation between the queue and the other screens.
-const discovery = mountDiscovery(invoke, async (url) => { await startFetch(url); }, () => {
+const douyin = mountDouyinLogin(invoke, (listener) => {
+  if (isTauri) void getCurrentWindow().onMoved(listener).catch(() => undefined);
+});
+const discovery = mountDiscovery(invoke, async (url, title) => { await startFetch(url, title); }, () => {
   try {
     return window.localStorage.getItem("dubflow.hachimiAck.v1") === "1" ? "hachimi" : "argos";
   } catch {
@@ -1268,10 +1422,18 @@ $("#nav-compilation").addEventListener("click", (event) => {
   event.preventDefault(); showView("compilation");
 });
 
-async function startFetch(url: string): Promise<string> {
-  const started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url });
-  const timer = window.setInterval(() => void pollFetch(started.status.scan_id), 1500);
-  fetches.set(started.status.scan_id, { status: started.status, outputDir: started.output_dir, timer });
+async function startFetch(url: string, title?: string, authRetried = false): Promise<string> {
+  // A Douyin link first gets a session (kept for 20 h); without one it still starts.
+  if (isDouyinLink(url)) {
+    const note = "Đang chuẩn bị phiên Douyin…";
+    if (!queueState.textContent) showError(note);
+    await douyin.ensureSession(false).catch(() => undefined);
+    if (queueState.textContent === note) showError("");
+  }
+  const started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url, title: title?.trim() || null });
+  const entry: FetchEntry = { status: started.status, outputDir: started.output_dir, timer: 0, samples: [], authRetried, renewing: false, saving: false };
+  fetches.set(started.status.scan_id, entry);
+  scheduleFetchPoll(entry);
   renderFetches();
   return started.status.scan_id;
 }
@@ -1279,22 +1441,37 @@ async function startFetch(url: string): Promise<string> {
 async function pollFetch(scanId: string): Promise<void> {
   const entry = fetches.get(scanId);
   if (!entry) return;
+  let status: FetchStatus | null;
   try {
-    const status = await invoke<FetchStatus | null>("fetch_status", { scanId });
-    if (!status) return;
-    entry.status = status;
-    if (status.state === "done" && status.media_path) {
-      window.clearInterval(entry.timer);
-      fetches.delete(scanId);
-      const linkJob = queue.addLinkJob(status.media_path, status.url, linkName(status.url), entry.outputDir);
-      if (linkJob) applyDefaults([linkJob]);
-    } else if (status.state === "failed") {
-      window.clearInterval(entry.timer);
-    }
+    status = await invoke<FetchStatus | null>("fetch_status", { scanId });
   } catch (error) {
-    window.clearInterval(entry.timer);
+    if (fetches.get(scanId) !== entry) return;
     entry.status = { ...entry.status, state: "failed", error: String(error).slice(0, 200) };
+    renderFetches();
+    return;
   }
+  // Cancelled or retried while the host answered.
+  if (fetches.get(scanId) !== entry) return;
+  if (!status) {
+    scheduleFetchPoll(entry);
+    return;
+  }
+  entry.status = status;
+  if (status.state === "downloading") entry.samples = addSample(entry.samples, status.downloaded_bytes, Date.now());
+  if (status.state === "done" && status.media_path) {
+    await finishFetch(entry, status.media_path);
+    return;
+  }
+  if (status.state === "cancelled") {
+    removeFetch(scanId);
+    return;
+  }
+  if (status.state === "failed") {
+    if (needsDouyinLogin(status) && !entry.authRetried) void retryWithFreshSession(entry);
+    else renderFetches();
+    return;
+  }
+  scheduleFetchPoll(entry);
   renderFetches();
 }
 
@@ -1903,23 +2080,34 @@ void invoke<ReleaseInfo>("release_info")
     $("#release-version").textContent = "development";
   })
   .finally(() => mountUpdates(invoke, (version) => {
-    // A found update also shows as a compact button in the header.
+    // A found update also shows as a compact button in the header and a dot on Cài đặt.
+    updateVersion = version;
     $("#header-update").hidden = version === null;
     $("#header-update-label").textContent = version ? `Cập nhật ${version}` : "Cập nhật";
+    $("#nav-settings").classList.toggle("has-update", version !== null);
     $("#update-summary").textContent = version
       ? `Đang dùng ${$("#release-version").textContent}, có bản ${version}.`
-      : "DubFlow tự kiểm tra bản mới mỗi ngày khi mở ứng dụng.";
+      : "DubFlow tự kiểm tra bản mới khi mở ứng dụng và mỗi 6 giờ.";
   }));
 $("#installed-versions").addEventListener("click", () => $("#release-version").click());
 
 // Settings dialog, opened from the rail and from the header's update button.
 const settingsDialog = $("#settings-dialog");
 let settingsReturnFocus: HTMLElement | null = null;
+/** The newer version found, while one is waiting to be installed. */
+let updateVersion: string | null = null;
 function openSettings(): void {
   settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   settingsDialog.hidden = false;
   $("#nav-settings").classList.add("active");
   $("#settings-close").focus();
+  void douyin.refreshAccount();
+  // With an update waiting, Settings opens at it.
+  if (updateVersion !== null) {
+    $("#settings-update").scrollIntoView({ block: "nearest" });
+    const install = $<HTMLButtonElement>("#update-install");
+    if (!$("#update-card").hidden && !install.disabled) install.focus();
+  }
 }
 function closeSettings(): void {
   if (settingsDialog.hidden) return;

@@ -7,7 +7,9 @@ export type InstalledVersion = { version: string; channel: string; installedAt: 
 
 const CHECK_KEY = "dubflow.updateCheckedAt.v1";
 const SKIP_KEY = "dubflow.updateSkipped.v1";
-const DAY_MS = 24 * 60 * 60 * 1000;
+/** First background check after launch, then one every 6 hours while the app runs. */
+export const FIRST_CHECK_MS = 4000;
+export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 export function parseCheck(value: unknown): { ok: true; update: UpdateInfo | null; unsupported: boolean } | { ok: false; message: string } {
   const object = (value ?? {}) as Record<string, unknown>;
@@ -26,12 +28,6 @@ export function parseVersions(value: unknown): { current: string | null; version
     return typeof item.version === "string" ? [{ version: item.version, channel: typeof item.channel === "string" ? item.channel : "", installedAt: typeof item.installed_at_utc === "string" ? item.installed_at_utc : "" }] : [];
   });
   return { current: typeof object.current === "string" ? object.current : null, versions };
-}
-
-/** Whether a background check is due (once a day; failures of storage never block a manual check). */
-export function checkDue(now: number, lastChecked: string | null): boolean {
-  const last = Number(lastChecked);
-  return !Number.isFinite(last) || last <= 0 || now - last >= DAY_MS || last > now;
 }
 
 const storage = {
@@ -184,5 +180,7 @@ export function mountUpdates(invoke: Invoke, onAvailable: (version: string | nul
   $("#versions-close").addEventListener("click", () => { dialog.hidden = true; });
   dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") dialog.hidden = true; });
 
-  if (checkDue(Date.now(), storage.get(CHECK_KEY))) window.setTimeout(() => void runCheck(false), 4000);
+  // A check still in flight is never doubled: runCheck returns while busy.
+  window.setTimeout(() => void runCheck(false), FIRST_CHECK_MS);
+  window.setInterval(() => void runCheck(false), CHECK_INTERVAL_MS);
 }

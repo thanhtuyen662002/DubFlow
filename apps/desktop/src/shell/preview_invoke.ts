@@ -65,22 +65,35 @@ const reviewCues = [
   return { cue_id, start_ms, end_ms, source_text, machine_text, dub_failed };
 });
 let savedOverrides: Record<string, string> = {};
-const linkFetches = new Map<string, { url: string; startedAt: number }>();
+const linkFetches = new Map<string, { url: string; title: string | null; startedAt: number }>();
 let douyinSession = false;
 
+/**
+ * A pretend download: 3 s preparing, then ~45 MB over 9 s. Bilibili links
+ * report their size; other links do not, so both bar styles show. Douyin
+ * fails for want of a session until one is "saved".
+ */
 function fetchStatus(scanId: string) {
   const fetch = linkFetches.get(scanId);
   if (!fetch) return null;
   const elapsed = Date.now() - fetch.startedAt;
   const provider = /bilibili|b23\.tv/.test(fetch.url) ? "bilibili" : /douyin/.test(fetch.url) ? "douyin" : "generic";
-  const base = { scan_id: scanId, url: fetch.url, provider, downloaded_bytes: 0, total_bytes: null as number | null, media_path: null as string | null, error: null as string | null };
-  if (provider === "douyin" && !douyinSession) return { ...base, state: elapsed > 3000 ? "failed" : "preparing", error: elapsed > 3000 ? "Douyin cần phiên truy cập: bấm “Mở Douyin”, đợi trang hiện video, rồi bấm “Lưu phiên & thử lại”." : null };
-  if (elapsed < 3000) return { ...base, state: "preparing" };
+  const base = { scan_id: scanId, url: fetch.url, provider, title: fetch.title, detail: null as string | null, queue_position: null, started_at_ms: fetch.startedAt,
+    downloaded_bytes: 0, total_bytes: null as number | null, media_path: null as string | null, error: null as string | null, error_code: null as string | null };
+  if (provider === "douyin" && !douyinSession) {
+    return elapsed > 3000
+      ? { ...base, state: "failed", error_code: "AUTH_REQUIRED", error: "Douyin yêu cầu đăng nhập để tải video này. Bấm “Đăng nhập Douyin”, đăng nhập rồi thử lại." }
+      : { ...base, state: "preparing", detail: "Đang mở trang video…" };
+  }
+  if (elapsed < 3000) return { ...base, state: "preparing", detail: elapsed < 1500 ? "Đang mở trang video…" : "Đang đọc thông tin video…" };
   const total = 47_065_346;
-  const done = Math.min(total, Math.round(total * (elapsed - 3000) / 6000));
-  return done >= total
+  // Uneven pace so the speed and time left move a little.
+  const t = (elapsed - 3000) / 9000;
+  const done = Math.min(total, Math.round(total * (t + Math.sin(t * 9) * 0.02)));
+  const known = provider === "bilibili" ? total : null;
+  return t >= 1
     ? { ...base, state: "done", downloaded_bytes: total, total_bytes: total, media_path: `C:/DubFlow/source-media/${scanId}.mp4` }
-    : { ...base, state: "downloading", downloaded_bytes: done, total_bytes: total };
+    : { ...base, state: "downloading", downloaded_bytes: Math.max(0, done), total_bytes: known };
 }
 
 let picked = 0;
@@ -196,12 +209,23 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "job_status": return status(String(args.jobId)) as T;
     case "open_path": case "reveal_path": console.info(`[preview] ${command}`, args.path); return null as T;
     case "fetch_url": {
-      const scanId = `link-${Date.now().toString(16)}`;
-      linkFetches.set(scanId, { url: String(args.url), startedAt: Date.now() });
-      return { status: fetchStatus(scanId), output_dir: `D:/Videos/DubFlow Output/${scanId}` } as T;
+      const scanId = `link-${Date.now().toString(16)}${Math.random().toString(16).slice(2, 6)}`;
+      const title = typeof args.title === "string" && args.title.trim() ? args.title.trim().slice(0, 200) : null;
+      linkFetches.set(scanId, { url: String(args.url), title, startedAt: Date.now() });
+      return { status: fetchStatus(scanId), output_dir: `D:/Videos/DubFlow Output/${title ?? scanId} - vi/${scanId}` } as T;
     }
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
-    case "open_douyin_login": return null as T;
+    case "withdraw_fetch": case "cancel_fetch": return linkFetches.delete(String(args.scanId)) as T;
+    case "default_download_dir": return "D:/Videos/DubFlow Downloads" as T;
+    case "keep_download": {
+      const name = String(args.title ?? "video").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "").trim().slice(0, 120) || "video";
+      return `${typeof args.folder === "string" && args.folder ? args.folder : "D:/Videos/DubFlow Downloads"}/${name}.mp4` as T;
+    }
+    // A plain check is "ready"; a forced refresh stands for a fresh session.
+    case "ensure_douyin_session": if (args.force) douyinSession = true; return "ready" as T;
+    case "douyin_account": return { logged_in: false } as T;
+    case "douyin_logout": douyinSession = false; return null as T;
+    case "douyin_view_open": case "douyin_view_bounds": case "douyin_view_close": return null as T;
     case "check_update": return { ok: true, available: true, version: "0.3.0", channel: "candidate", notes: "DubFlow 0.3.0", setup: { size_bytes: 325_000_000 } } as T;
     case "download_update": return { ok: true, path: "C:/Users/preview/AppData/Local/DubFlow/updates/DubFlow-0.3.0-windows-x64-setup.exe", version: "0.3.0" } as T;
     case "install_update": case "restart_app": return null as T;

@@ -13,11 +13,11 @@ const $ = <T extends HTMLElement>(selector: string): T => {
 };
 
 /**
- * Wire the "Khám phá" view. `enqueue` downloads one link into the queue;
+ * Wire the "Khám phá" view. `enqueue` downloads one link (with its title) into the queue;
  * `glossEngine` says which translator may gloss keywords ("hachimi" only once
  * the user accepted its licence warning).
  */
-export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise<void>, glossEngine: () => "argos" | "hachimi"): { show(): void } {
+export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: string) => Promise<void>, glossEngine: () => "argos" | "hachimi"): { show(): void } {
   const tabs = $("#platform-tabs");
   const trendList = $("#trend-list");
   const trendState = $("#trend-state");
@@ -369,7 +369,8 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
     const failures: string[] = [];
     for (const video of picks) {
       try {
-        await enqueue(video.fetchUrl);
+        // The title as the card shows it names the download and its job.
+        await enqueue(video.fetchUrl, video.title === "(không có tiêu đề)" ? undefined : video.title);
         added += 1;
         selected.delete(video.pageUrl);
       } catch (error) {

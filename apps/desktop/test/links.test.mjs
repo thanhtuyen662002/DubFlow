@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { MAX_LINKS, extractLinks } from "../src/features/links/extract.ts";
-import { clock, fetchBadge, fetchMessage, shortPath } from "../src/features/links/status.ts";
+import { clock, fetchBadge, fetchMessage, isDouyinLink, needsDouyinLogin, shortPath } from "../src/features/links/status.ts";
 
 // One per line, Windows line ends, duplicates dropped, URL commas preserved.
 const lines = extractLinks("https://www.bilibili.com/video/BV1gKJ86JEuP\r\nhttps://archive.org/a,b.mp4\nhttps://www.bilibili.com/video/BV1gKJ86JEuP\n  http://x.example/scene//1  ");
@@ -47,4 +47,14 @@ assert.equal(fetchMessage({ ...base, state: "downloading", detail: "Mất kết 
 assert.equal(fetchBadge("queued"), "Đang chờ");
 assert.equal(clock(59_999), "0:59");
 assert.equal(shortPath("C:\\Users\\me\\Videos\\DubFlow Output\\BV1B5xkzPEhx - vi\\link-1"), "…\\DubFlow Output\\BV1B5xkzPEhx - vi\\link-1");
+// Douyin links and the failures a fresh session or a login can fix.
+assert.equal(isDouyinLink("https://v.douyin.com/iRNBho6u/"), true);
+assert.equal(isDouyinLink("https://www.iesdouyin.com/share/video/1"), true);
+assert.equal(isDouyinLink("https://evildouyin.com/x"), false);
+assert.equal(isDouyinLink("không phải link"), false);
+const douyinFailed = { ...base, provider: "douyin", state: "failed", error: "x", error_code: "AUTH_REQUIRED" };
+assert.equal(needsDouyinLogin(douyinFailed), true);
+assert.equal(needsDouyinLogin({ ...douyinFailed, error_code: "NETWORK" }), false);
+assert.equal(needsDouyinLogin({ ...douyinFailed, provider: "bilibili" }), false);
+assert.equal(fetchBadge("cancelled"), "Đã hủy");
 console.log("desktop link extraction tests passed");

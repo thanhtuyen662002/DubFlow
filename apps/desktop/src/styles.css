@@ -101,6 +101,8 @@ select { color-scheme: dark; }
 .rail-item span { line-height: 1.3; white-space: nowrap; }
 .rail-item:hover { background: var(--hover); color: var(--text); }
 .rail-item.active { background: var(--select); color: var(--text); }
+/* An update is waiting: a small dot on Cài đặt. */
+.rail-item.has-update::after { content: ""; position: absolute; top: 6px; right: 18px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent-text); box-shadow: 0 0 0 2px var(--canvas); }
 .rail-count { position: absolute; top: 3px; right: 9px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 600; line-height: 17px; text-align: center; font-variant-numeric: tabular-nums; }
 .rail-spacer { flex: 1; }
 .main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; background: var(--canvas); }
@@ -319,6 +321,9 @@ select { color-scheme: dark; }
 .bar > span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .4s ease; }
 .bar.ok > span { background: var(--ok); }
 .bar.err > span { background: var(--err); }
+/* Size unknown or still preparing: a sliding segment. --phase keeps rebuilt rows in step. */
+.bar.indeterminate > span { width: 35%; animation: bar-slide 1.4s ease-in-out infinite; animation-delay: var(--phase, 0s); transition: none; }
+@keyframes bar-slide { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
 .percent { color: var(--text-2); font-size: 12px; font-variant-numeric: tabular-nums; }
 .tag { padding: 1px 6px; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; }
 .tag:empty { display: none; }
@@ -354,6 +359,14 @@ select { color-scheme: dark; }
 .settings-text dd { margin: 2px 0 0; color: var(--text-2); font-size: 13.5px; overflow-wrap: anywhere; }
 #output-root-label { color: var(--text); }
 .settings-row > .btn, .settings-row > .switch { flex: none; }
+.settings-actions { display: flex; flex: none; gap: 8px; }
+.settings-path { display: block; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.douyin-panel { width: min(1040px, 100%); height: min(820px, 100%); }
+.douyin-panel .review-head { flex-wrap: nowrap; }
+.douyin-state:empty { display: none; }
+.douyin-state { flex: none; padding: 8px 20px 0; }
+/* The douyin.com page is placed over this box by the host. */
+.douyin-view { display: grid; flex: 1; min-height: 0; place-items: center; margin: 12px; border-radius: 8px; background: var(--surface); color: var(--text-3); font-size: 13px; }
 .settings-foot { display: flex; flex: none; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; padding: 12px 20px 16px; border-top: 1px solid var(--line); color: var(--text-3); font-size: 12.5px; }
 .settings-foot .link { font-size: 12.5px; }
 .version-link { color: var(--text-2); font-weight: 500; }
@@ -569,15 +582,14 @@ select { color-scheme: dark; }
 
 /* Narrower windows: below 1200 px the list slides over the player. */
 @media (max-width: 1199.98px) {
-  .header-title { flex: 0 1 auto; width: auto; max-width: 240px; }
+  .header-title { flex: 0 1 auto; width: auto; }
+  .header-title .header-meta { display: none; }
   .header-tools { padding: 0 12px; }
   .list-toggle { display: inline-flex; }
   .queue-col { position: absolute; top: 0; bottom: 0; left: 0; z-index: 6; border-right-color: var(--line-strong); box-shadow: 16px 0 48px oklch(0 0 0 / .45); transform: translateX(-100%); visibility: hidden; transition: transform .22s var(--ease), visibility 0s linear .22s; }
   .queue-screen.list-open .queue-col { transform: none; visibility: visible; transition: transform .22s var(--ease); }
 }
 @media (max-width: 1023.98px) {
-  .header-title { max-width: none; }
-  .header-title .header-meta { display: none; }
   .link-form { min-width: 150px; }
   #add-files { padding: 0 12px; }
   .discover-body { grid-template-columns: 210px minmax(0, 1fr); gap: 16px; padding: 16px; }
@@ -587,4 +599,5 @@ select { color-scheme: dark; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .bar.indeterminate > span { width: 100%; opacity: .45; }
 }
