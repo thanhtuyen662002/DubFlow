@@ -1496,16 +1496,18 @@ async function finishFetch(entry: FetchEntry, mediaPath: string): Promise<void> 
 }
 
 // Rail navigation between the queue and the other screens.
-const douyin = mountDouyinLogin(invoke, (listener) => {
+/** Embedded pages follow the app window (their fallback windows are placed in screen pixels). */
+const onWindowMoved = (listener: () => void): void => {
   if (isTauri) void getCurrentWindow().onMoved(listener).catch(() => undefined);
-});
+};
+const douyin = mountDouyinLogin(invoke, onWindowMoved);
 const discovery = mountDiscovery(invoke, async (url, title) => { await startFetch(url, title); }, () => {
   try {
     return window.localStorage.getItem("dubflow.hachimiAck.v1") === "1" ? "hachimi" : "argos";
   } catch {
     return "argos";
   }
-});
+}, onWindowMoved);
 void claudeKey.restore();
 const aiSettings = mountAiSettings(claudeKey);
 $("#open-ai-settings").addEventListener("click", () => aiSettings.open());

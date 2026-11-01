@@ -1,5 +1,6 @@
-//! Video discovery: open a platform's search or creator page in an app-owned
-//! browser window, then read the video links the real page has rendered.
+//! Video discovery: show a platform's search or creator page inside the app
+//! (a child webview over Khám phá's browser panel), then read the video links
+//! the real page has rendered.
 //!
 //! Search and creator lists on Douyin and Kuaishou need browser signatures
 //! that change often. Letting the site's own page fetch them, and only reading
@@ -7,7 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const WINDOW: &str = "discover";
+/// The discovery page: a child webview of the main window.
+pub const VIEW: &str = "discover";
+/// Stands in for `VIEW` when child webviews cannot be created: a frameless
+/// window owned by the main window, kept over the panel.
+pub const FALLBACK_WINDOW: &str = "discover-window";
 const MAX_ITEMS: usize = 300;
 const MAX_TEXT: usize = 200;
 
@@ -79,7 +84,7 @@ pub fn page_url(platform: Platform, kind: &str, query: &str) -> Result<tauri::Ur
     tauri::Url::parse(&text).map_err(|error| error.to_string())
 }
 
-/// Installed before any page script in the discovery window. It copies video
+/// Installed before any page script in the discovery page. It copies video
 /// entries out of the JSON the page itself receives (Douyin `aweme` objects,
 /// Kuaishou `photo` objects), so lists that only render after a signed API
 /// call, or in a virtualised player, can still be collected. Read-only: the
@@ -183,6 +188,13 @@ pub const COLLECT_SCRIPT: &str = r##"(() => {
 })()"##;
 
 pub const SCROLL_SCRIPT: &str = "window.scrollBy({ top: Math.round(window.innerHeight * 2.5), behavior: 'smooth' });";
+pub const BACK_SCRIPT: &str = "history.back();";
+
+/// Whether a link the page wants in a new window may load in the discovery
+/// page instead (web pages only; never a separate window).
+pub fn loads_in_place(url: &tauri::Url) -> bool {
+    matches!(url.scheme(), "https" | "http") && url.host_str().is_some() && url.as_str().len() <= 4096
+}
 
 #[derive(Debug, Deserialize)]
 struct RawItem {
@@ -300,6 +312,16 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].fetch_url, "https://v2.kwaicdn.com/a.mp4?x=1");
         assert_eq!(items[0].page_url, "https://www.kuaishou.com/short-video/3x1");
+    }
+
+    #[test]
+    fn only_web_links_from_new_windows_load_in_the_page() {
+        for good in ["https://www.douyin.com/video/7300000000000000000", "http://passport.kuaishou.com/x"] {
+            assert!(loads_in_place(&tauri::Url::parse(good).unwrap()), "{good}");
+        }
+        for bad in ["javascript:alert(1)", "file:///C:/x", "data:text/html,x", "bytedance://open", "about:blank"] {
+            assert!(!loads_in_place(&tauri::Url::parse(bad).unwrap()), "{bad}");
+        }
     }
 
     #[test]

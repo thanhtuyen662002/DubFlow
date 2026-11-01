@@ -111,15 +111,35 @@
                   <span class="hint">Chủ đề:</span>
                   <div id="topic-chips" class="topic-chips"></div>
                 </div>
-                <div id="discover-browser" class="discover-browser" hidden>
-                  <p>Trang đang mở trong cửa sổ <b>Khám phá video</b>. Cuộn trang để tải thêm kết quả rồi bấm <b>Lấy video từ trang</b>.</p>
-                  <p class="hint">Douyin và Kuaishou thường yêu cầu đăng nhập để tìm kiếm hoặc xem danh sách kênh: đăng nhập (quét mã QR bằng app trên điện thoại) ngay trong cửa sổ đó. Phiên đăng nhập được lưu lại cho lần sau.</p>
-                  <div class="discover-browser-actions">
-                    <button id="discover-scroll" class="btn" type="button">Cuộn thêm</button>
-                    <button id="discover-collect" class="btn primary" type="button">Lấy video từ trang</button>
-                  </div>
-                </div>
                 <p id="discover-state" class="discover-state" role="status"></p>
+                <section id="discover-panel" class="discover-panel" aria-label="Trang khám phá" hidden>
+                  <div class="discover-toolbar">
+                    <div class="discover-toolbar-row">
+                      <button id="discover-back" class="icon-btn" type="button" aria-label="Quay lại trang trước" title="Quay lại trang trước">
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                      </button>
+                      <button id="discover-reload" class="icon-btn" type="button" aria-label="Tải lại trang" title="Tải lại trang">
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.05-4.95M19 4v4h-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                      </button>
+                      <p class="discover-address"><b id="discover-site">Douyin</b><span id="discover-url"></span></p>
+                      <button id="discover-exit" class="btn ghost" type="button">Thoát trang</button>
+                    </div>
+                    <div class="discover-toolbar-row">
+                      <button id="discover-scroll" class="btn" type="button">Cuộn thêm</button>
+                      <button id="discover-collect" class="btn primary" type="button">Thu thập video trên trang</button>
+                      <span class="discover-toolbar-gap"></span>
+                      <button id="discover-show-results" class="btn" type="button">Xem kết quả</button>
+                    </div>
+                  </div>
+                  <div id="discover-page" class="discover-page">
+                    <p>Trang <span id="discover-page-site">Douyin</span> hiện ở đây.</p>
+                    <p class="hint">Cuộn trang để tải thêm video. Nếu trang yêu cầu đăng nhập, quét mã QR bằng app trên điện thoại ngay trong trang; phiên được lưu cho lần sau.</p>
+                  </div>
+                </section>
+                <div id="discover-reopen-bar" class="discover-reopen-bar" hidden>
+                  <p class="hint">Trang <span id="discover-reopen-site">Douyin</span> vẫn đang mở.</p>
+                  <button id="discover-reopen" class="btn" type="button">Mở lại trang</button>
+                </div>
                 <div id="result-bar" class="result-bar" hidden>
                   <label><input id="select-all" type="checkbox" /> Chọn tất cả</label>
                   <span id="selected-count" class="hint"></span>
