@@ -1265,6 +1265,36 @@
           "test_*.py"
         ]
       ]
+    },
+    {
+      "id": "desktop-ai-provider",
+      "roots": [
+        "apps/desktop/src/features/ai/provider.ts",
+        "apps/desktop/src/features/reframe/ai.ts",
+        "apps/desktop/src/features/shorts/ai.ts",
+        "apps/desktop/test/ai.test.mjs"
+      ],
+      "commands": [
+        [
+          "npm",
+          "ci",
+          "--prefix",
+          "apps/desktop"
+        ],
+        [
+          "npm",
+          "test",
+          "--prefix",
+          "apps/desktop"
+        ],
+        [
+          "npm",
+          "run",
+          "build",
+          "--prefix",
+          "apps/desktop"
+        ]
+      ]
     }
   ]
 }

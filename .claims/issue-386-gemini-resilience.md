@@ -1,14 +1,20 @@
 DUBFLOW_PR_V1
 Issue: #386
 Lease-Owner: Claude/issue-386-gemini-resilience
-Lease-Heartbeat: 2026-11-01T17:59:53Z
+Lease-Heartbeat: 2026-11-01T18:13:53Z
 Tested-Base-SHA: e6accb3685b34db11139cd0399c788bec3b0b8c7
 Conflict-Domains: desktop-ai-provider,ci-component-registry
 Expected-Paths: .claims/issue-386-gemini-resilience.md,apps/desktop/src/features/ai/provider.ts,apps/desktop/src/features/reframe/ai.ts,apps/desktop/src/features/shorts/ai.ts,apps/desktop/test/ai.test.mjs,scripts/ci/component_registry.json
 Required-CI: PR Fast + PR Integration + desktop-ai-provider
 
 ## Status
-Resumed at the owner's request in chat ("xử lý xong các PR"); implementing the bounded retry/fallback leaf.
+Resumed at the owner's request in chat ("xử lý xong các PR"). Implementation and tests are in the allowed paths; PR Fast / PR Integration evidence on the final HEAD is still pending.
+
+- Provider: gemini-3.5-flash-lite, one same-model retry, then gemini-3.8-flash; 90 s timeout per attempt (request and answer body).
+- Retried only on 429, 500–599 and time-outs; Retry-After (seconds or HTTP date) and Google RetryInfo `retryDelay` are honoured up to 30 s, a longer request stops with a Vietnamese "try again later" message.
+- Never retried: missing/invalid key or auth, other 4xx, refusals/safety, malformed JSON, empty or cut-off answers, network errors.
+- Registry: one `desktop-ai-provider` entry running `npm ci`, `npm test`, `npm run build` under apps/desktop.
+- Local evidence (Windows, Node 24): `npm ci`/`npm test`/`npm run build` pass in a clean copy of the tracked tree; registry self-tests, `run_integration.py --validate-only`, `validate_governance.py` and tests/ci pass.
 
 ## Bounded acceptance
 1. Keep gemini-3.5-flash-lite first, one bounded same-model retry, then gemini-3.8-flash fallback; each attempt has a 90-second timeout.
