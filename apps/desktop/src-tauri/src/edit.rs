@@ -5,6 +5,9 @@
 //! `status.json` there and finished ones are listed in `exports.json`.
 //! Chèn (Issue #410) adds other videos as segments, transitions at the
 //! joints and overlays; every input is fitted to the main video's frame.
+//! Âm thanh (Issue #420) mixes added sounds (the sound-effect pack or the
+//! user's audio files) over the output's own sound, which has one volume
+//! and may dip under a sound ("ducking"), then limits the sum.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -30,6 +33,15 @@ const MAX_OVERLAYS: usize = 20;
 const MIN_SEGMENT: f64 = 0.1;
 const MIN_TRANSITION: f64 = 0.2;
 const MAX_TRANSITION: f64 = 2.0;
+/// Added sounds in one export, and their limits (same as the editor's).
+const MAX_SOUNDS: usize = 100;
+const MIN_SOUND: f64 = 0.02;
+const MAX_FADE: f64 = 3.0;
+const MAX_DUCK_DB: f64 = 24.0;
+/// Ducking eases in before a sound and out after it over this many seconds.
+const DUCK_RAMP: f64 = 0.1;
+/// The final limiter keeps peaks under -1 dBFS.
+const LIMITER: &str = "alimiter=limit=0.891:level=0:latency=1";
 /// Every part's audio before joining: 48 kHz stereo float.
 const AUDIO_FORMAT: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
 const MAX_CUES: usize = 20_000;
@@ -96,6 +108,54 @@ pub struct Overlay {
     volume: f64,
 }
 
+/// Where an added sound comes from: a sound effect of the pack, or a file.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SoundSource {
+    Sfx { id: String },
+    File { path: String },
+}
+
+/// An added sound as the editor sends it: `[start, end)` of the sound played
+/// from output time `at`, volume 0–2, fades in seconds, and the original
+/// sound lowered by `duck_db` while it plays (0 = not).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SoundClip {
+    source: SoundSource,
+    at: f64,
+    start: f64,
+    end: f64,
+    volume: f64,
+    fade_in: f64,
+    fade_out: f64,
+    duck_db: f64,
+}
+
+/// A validated sound: `input` indexes the audio files, which follow the video inputs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Sound {
+    input: usize,
+    at: f64,
+    start: f64,
+    end: f64,
+    volume: f64,
+    fade_in: f64,
+    fade_out: f64,
+    duck_db: f64,
+}
+
+/// The added sounds and the volume of the output's own sound.
+#[derive(Debug, Clone, PartialEq)]
+struct Mix {
+    sounds: Vec<Sound>,
+    main_volume: f64,
+}
+
+fn full_volume() -> f64 {
+    1.0
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Cue {
@@ -116,6 +176,12 @@ pub struct ExportRequest {
     transitions: Vec<Transition>,
     #[serde(default)]
     overlays: Vec<Overlay>,
+    /// Added sounds (schema 3).
+    #[serde(default)]
+    audio: Vec<SoundClip>,
+    /// "Âm thanh gốc", 0–2.
+    #[serde(default = "full_volume")]
+    main_volume: f64,
     quality: String,
     folder: String,
     file_name: String,
@@ -169,7 +235,7 @@ fn work_dir(dir: &Path) -> PathBuf {
     dir.join(".dubflow-work").join("edit")
 }
 
-fn media_tool(name: &str) -> Result<PathBuf, String> {
+pub(crate) fn media_tool(name: &str) -> Result<PathBuf, String> {
     let path = version_root()?.join("runtime").join("media").join(name);
     if !path.is_file() {
         return Err(fail("Không tìm thấy FFmpeg trong bản cài DubFlow"));
@@ -310,6 +376,33 @@ fn validate(request: &ExportRequest, durations: &[f64]) -> Result<Edit, String> 
     Ok(Edit { segments, transitions, overlays })
 }
 
+/// The added sounds, checked against their files' lengths (`files[i]` is
+/// clip i's audio file, `durations` those files' seconds), clamped to them.
+fn validate_mix(clips: &[SoundClip], files: &[usize], durations: &[f64], main_volume: f64, total: f64) -> Result<Mix, String> {
+    if clips.len() > MAX_SOUNDS || files.len() != clips.len() {
+        return Err(fail("Tối đa 100 âm thanh thêm"));
+    }
+    if !main_volume.is_finite() || !(0.0..=2.0).contains(&main_volume) {
+        return Err(fail("Âm lượng gốc phải từ 0 đến 200%"));
+    }
+    let mut sounds = Vec::with_capacity(clips.len());
+    for (clip, &input) in clips.iter().zip(files) {
+        let numbers = [clip.at, clip.start, clip.end, clip.volume, clip.fade_in, clip.fade_out, clip.duck_db];
+        let Some(&duration) = durations.get(input).filter(|_| numbers.iter().all(|value| value.is_finite())) else {
+            return Err(fail("Âm thanh thêm không hợp lệ"));
+        };
+        let end = clip.end.min(duration);
+        if clip.at < 0.0 || clip.at >= total || clip.start < 0.0 || clip.end > duration + 0.05 || end - clip.start < MIN_SOUND - 1e-6
+            || !(0.0..=2.0).contains(&clip.volume) || !(0.0..=MAX_FADE).contains(&clip.fade_in) || !(0.0..=MAX_FADE).contains(&clip.fade_out)
+            || !(0.0..=MAX_DUCK_DB).contains(&clip.duck_db) {
+            return Err(fail("Âm thanh thêm phải nằm trong video, âm lượng 0–200%, hiện và tắt dần tối đa 3 giây"));
+        }
+        sounds.push(Sound { input, at: clip.at, start: clip.start, end, volume: clip.volume, fade_in: clip.fade_in, fade_out: clip.fade_out,
+            duck_db: clip.duck_db });
+    }
+    Ok(Mix { sounds, main_volume })
+}
+
 /// An existing folder chosen for the export.
 fn target_folder(folder: &str) -> Result<PathBuf, String> {
     let path = Path::new(folder);
@@ -361,9 +454,16 @@ fn atempo_chain(speed: f64) -> Vec<String> {
     chain
 }
 
-/// The filter graph: each segment trimmed and retimed (video and audio), then
-/// concatenated; "1080p"/"720p" scale the short side, keeping aspect and even sizes.
+/// The 4a graph, with the sound ending as `[a]`.
+#[cfg(test)]
 fn filter_script(segments: &[Segment], has_audio: bool, quality: &str) -> String {
+    filter_graph(segments, has_audio, quality, "a")
+}
+
+/// The filter graph: each segment trimmed and retimed (video and audio), then
+/// concatenated, the sound ending as `[audio_out]`; "1080p"/"720p" scale the
+/// short side, keeping aspect and even sizes.
+fn filter_graph(segments: &[Segment], has_audio: bool, quality: &str, audio_out: &str) -> String {
     let mut lines = Vec::new();
     let mut pads = String::new();
     for (index, segment) in segments.iter().enumerate() {
@@ -383,7 +483,7 @@ fn filter_script(segments: &[Segment], has_audio: bool, quality: &str) -> String
     }
     let short = short_side(quality);
     let video_out = if short.is_some() { "vc" } else { "v" };
-    lines.push(format!("{pads}concat=n={}:v=1:a={}[{video_out}]{}", segments.len(), u8::from(has_audio), if has_audio { "[a]" } else { "" }));
+    lines.push(format!("{pads}concat=n={}:v=1:a={}[{video_out}]{}", segments.len(), u8::from(has_audio), if has_audio { format!("[{audio_out}]") } else { String::new() }));
     if let Some(short) = short {
         lines.push(quality_scale("vc", short));
     }
@@ -416,8 +516,13 @@ fn output_has_audio(edit: &Edit, inputs: &[Input]) -> bool {
 /// with `xfade` + `acrossfade` (the neighbours overlap), then lays overlays
 /// on top and mixes their sound in.
 fn render_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str) -> (String, bool) {
+    video_graph(edit, inputs, frame, quality, "a")
+}
+
+/// `render_script` with the sound ending as `[audio_out]`.
+fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, audio_out: &str) -> (String, bool) {
     if inputs.len() == 1 && edit.transitions.is_empty() && edit.overlays.is_empty() {
-        return (filter_script(&edit.segments, inputs[0].has_audio, quality), inputs[0].has_audio);
+        return (filter_graph(&edit.segments, inputs[0].has_audio, quality, audio_out), inputs[0].has_audio);
     }
     let has_audio = output_has_audio(edit, inputs);
     let segments = &edit.segments;
@@ -480,7 +585,7 @@ fn render_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str) ->
     let ov_audio: Vec<usize> = (0..edit.overlays.len())
         .filter(|&index| inputs[edit.overlays[index].media].has_audio && edit.overlays[index].volume > 0.0).collect();
     let joined_video = if edit.overlays.is_empty() && short.is_none() { "v" } else { "vj" };
-    let joined_audio = if ov_audio.is_empty() { "a" } else { "aj" };
+    let joined_audio = if ov_audio.is_empty() { audio_out } else { "aj" };
     let audio_flag = u8::from(has_audio);
     let mut labels: Vec<(String, String)> = Vec::new();
     for (run, &(from, to)) in runs.iter().enumerate() {
@@ -528,12 +633,108 @@ fn render_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str) ->
                 overlay.media, num(overlay.start), num(overlay.start + shown)));
             pads.push_str(&format!("[oa{index}]"));
         }
-        lines.push(format!("{pads}amix=inputs={}:duration=first:normalize=0[a]", ov_audio.len() + 1));
+        lines.push(format!("{pads}amix=inputs={}:duration=first:normalize=0[{audio_out}]", ov_audio.len() + 1));
     }
     if let Some(short) = short {
         lines.push(quality_scale(&video, short));
     }
     (lines.join(";\n"), has_audio)
+}
+
+/// Stretches where the original sound dips: overlapping (or nearly touching)
+/// ducking sounds merge, taking the deepest dip, so the eased edges never
+/// stack.
+fn duck_spans(sounds: &[Sound], total: f64) -> Vec<(f64, f64, f64)> {
+    let mut spans: Vec<(f64, f64, f64)> = sounds.iter().filter(|sound| sound.duck_db > 0.0)
+        .map(|sound| (sound.at, sound.at + (sound.end - sound.start).min(total - sound.at).max(0.0), sound.duck_db))
+        .filter(|(start, end, _)| end > start).collect();
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64, f64)> = Vec::new();
+    for span in spans {
+        match merged.last_mut() {
+            Some(last) if span.0 <= last.1 + 2.0 * DUCK_RAMP => {
+                last.1 = last.1.max(span.1);
+                last.2 = last.2.max(span.2);
+            }
+            _ => merged.push(span),
+        }
+    }
+    merged
+}
+
+/// The original sound at `10^(-db/20)` from `start` to `end`, easing down
+/// over the 0.1 s before and back up over the 0.1 s after.
+fn duck_filter(start: f64, end: f64, db: f64) -> String {
+    let depth = num(1.0 - 10f64.powf(-db / 20.0));
+    let ramp_in = DUCK_RAMP.min(start);
+    let from = start - ramp_in;
+    let until = end + DUCK_RAMP;
+    let shape = if ramp_in > 0.0005 {
+        format!("min((t-{})/{},({}-t)/{})", num(from), num(ramp_in), num(until), num(DUCK_RAMP))
+    } else {
+        format!("({}-t)/{}", num(until), num(DUCK_RAMP))
+    };
+    format!("volume=volume='1-{depth}*clip({shape},0,1)':eval=frame:enable='between(t,{},{})'", num(from), num(until))
+}
+
+/// The export graph: the edit's picture and sound, then (Âm thanh) the
+/// original sound's volume and ducking, the added sounds (trimmed, faded,
+/// set in volume and delayed to their output time) mixed in at their own
+/// levels (`normalize=0`), and a limiter so the sum does not clip. Without
+/// added sounds or a volume change it is `render_script` as before.
+fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix) -> (String, bool) {
+    if mix.sounds.is_empty() && mix.main_volume == 1.0 {
+        return render_script(edit, inputs, frame, quality);
+    }
+    let (graph, has_main) = video_graph(edit, inputs, frame, quality, "am");
+    if mix.sounds.is_empty() && !has_main {
+        return (graph, false);
+    }
+    let total = output_seconds(&edit.segments, &edit.transitions);
+    let mut lines = vec![graph];
+    if !has_main {
+        lines.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={}[am]", num(total)));
+    }
+    let mut main = Vec::new();
+    if mix.main_volume != 1.0 {
+        main.push(format!("volume={}", num(mix.main_volume)));
+    }
+    main.extend(duck_spans(&mix.sounds, total).into_iter().map(|(start, end, db)| duck_filter(start, end, db)));
+    if mix.sounds.is_empty() {
+        main.push(LIMITER.to_owned());
+        lines.push(format!("[am]{}[a]", main.join(",")));
+        return (lines.join(";\n"), true);
+    }
+    let mut pads = if main.is_empty() {
+        "[am]".to_owned()
+    } else {
+        lines.push(format!("[am]{}[amx]", main.join(",")));
+        "[amx]".to_owned()
+    };
+    for (index, sound) in mix.sounds.iter().enumerate() {
+        let shown = (sound.end - sound.start).min(total - sound.at).max(0.0);
+        let mut filters = vec![format!("atrim=start={}:end={}", num(sound.start), num(sound.start + shown)), "asetpts=PTS-STARTPTS".to_owned(),
+            AUDIO_FORMAT.to_owned()];
+        let fade_in = sound.fade_in.min(shown);
+        let fade_out = sound.fade_out.min(shown - fade_in);
+        if fade_in > 0.0 {
+            filters.push(format!("afade=t=in:st=0:d={}", num(fade_in)));
+        }
+        if fade_out > 0.0 {
+            filters.push(format!("afade=t=out:st={}:d={}", num(shown - fade_out), num(fade_out)));
+        }
+        if sound.volume != 1.0 {
+            filters.push(format!("volume={}", num(sound.volume)));
+        }
+        let delay = (sound.at * 1000.0).round() as u64;
+        if delay > 0 {
+            filters.push(format!("adelay={delay}:all=1"));
+        }
+        lines.push(format!("[{}:a]{}[sx{index}]", inputs.len() + sound.input, filters.join(",")));
+        pads.push_str(&format!("[sx{index}]"));
+    }
+    lines.push(format!("{pads}amix=inputs={}:duration=first:normalize=0,{LIMITER}[a]", mix.sounds.len() + 1));
+    (lines.join(";\n"), true)
 }
 
 /// Frame size after scaling, as the filter computes it.
@@ -933,7 +1134,11 @@ pub async fn edit_project_load(output_path: String) -> Result<Value, String> {
     let project = fs::metadata(&project_path).ok().filter(|metadata| metadata.len() as usize <= PROJECT_LIMIT)
         .and_then(|_| fs::read(&project_path).ok())
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .filter(|value| value["schema_version"] == 1 || value["schema_version"] == 2);
+        .filter(|value| value["schema_version"].as_u64().is_some_and(|schema| (1..=3).contains(&schema)));
+    // Sounds the draft uses from the user's files may play in the preview again.
+    if let Some(project) = &project {
+        crate::sfx::allow_files(&draft_sounds(project));
+    }
     let captions = dir.join("captions_vi.srt");
     let cues = fs::metadata(&captions).ok().filter(|metadata| metadata.len() <= SRT_LIMIT)
         .and_then(|_| fs::read(&captions).ok())
@@ -958,11 +1163,19 @@ pub async fn edit_media_info(path: String) -> Result<Value, String> {
         "fps": fps_value(&facts.fps), "has_audio": facts.has_audio, "size_bytes": facts.size}))
 }
 
+/// The user's audio files a draft's sounds play (schema 3 `audio`).
+fn draft_sounds(project: &Value) -> Vec<PathBuf> {
+    project["audio"].as_array().into_iter().flatten().take(MAX_SOUNDS)
+        .filter(|clip| clip["source"]["kind"] == "file")
+        .filter_map(|clip| clip["source"]["path"].as_str().and_then(|path| crate::sfx::audio_file(path).ok()))
+        .collect()
+}
+
 fn check_project(project: &Value) -> Result<Vec<u8>, String> {
     let bytes = serde_json::to_vec(project).map_err(|_| fail("Bản nháp không hợp lệ"))?;
     let segments = project["segments"].as_array().map_or(0, Vec::len);
-    let schema = &project["schema_version"];
-    if bytes.len() > PROJECT_LIMIT || (*schema != 1 && *schema != 2) || !(1..=MAX_SEGMENTS).contains(&segments) {
+    let schema = project["schema_version"].as_u64().unwrap_or(0);
+    if bytes.len() > PROJECT_LIMIT || !(1..=3).contains(&schema) || !(1..=MAX_SEGMENTS).contains(&segments) {
         return Err(fail("Bản nháp chỉnh sửa không hợp lệ"));
     }
     Ok(bytes)
@@ -994,6 +1207,9 @@ struct ExportJob {
     ffmpeg: PathBuf,
     quality: String,
     edit: Edit,
+    /// The added sounds as requested, and the original sound's volume, for exports.json.
+    audio: Vec<SoundClip>,
+    main_volume: f64,
 }
 
 fn stop(running: &Running) {
@@ -1104,7 +1320,7 @@ fn run_export(job: &ExportJob, running: &Running) {
         .map(|(path, _)| display_path(&path));
     append_export(&job.work, json!({"path": display_path(&target), "srt_path": srt, "created": unix_now(),
         "duration": (job.seconds * 1000.0).round() / 1000.0, "quality": job.quality, "segments": job.edit.segments,
-        "media": job.media, "transitions": job.edit.transitions, "overlays": job.edit.overlays}));
+        "media": job.media, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
 }
 
@@ -1124,6 +1340,29 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     }
     let durations: Vec<f64> = probes.iter().map(|probe| probe.duration).collect();
     let edit = validate(&request, &durations)?;
+    // Âm thanh: each sound's file once, after the videos.
+    if request.audio.len() > MAX_SOUNDS {
+        return Err(fail("Tối đa 100 âm thanh thêm"));
+    }
+    let mut sound_inputs: Vec<PathBuf> = Vec::new();
+    let mut sound_seconds: Vec<f64> = Vec::new();
+    let mut files = Vec::with_capacity(request.audio.len());
+    for clip in &request.audio {
+        let file = match &clip.source {
+            SoundSource::Sfx { id } => crate::sfx::sound_file(id)?,
+            SoundSource::File { path } => crate::sfx::audio_file(path)?,
+        };
+        let index = match sound_inputs.iter().position(|known| *known == file) {
+            Some(index) => index,
+            None => {
+                sound_seconds.push(crate::sfx::audio_seconds(&file)?);
+                sound_inputs.push(file);
+                sound_inputs.len() - 1
+            }
+        };
+        files.push(index);
+    }
+    let mix = validate_mix(&request.audio, &files, &sound_seconds, request.main_volume, output_seconds(&edit.segments, &edit.transitions))?;
     let folder = target_folder(&request.folder)?;
     let ffmpeg = media_tool("ffmpeg.exe")?;
     let name = base_name(&request.file_name);
@@ -1142,14 +1381,15 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     let script = work.join("filter.txt");
     let streams: Vec<Input> = probes.iter().map(|probe| Input { has_audio: probe.has_audio }).collect();
     let frame = Frame { width: facts.width, height: facts.height, fps: facts.fps.clone() };
-    let (text, has_audio) = render_script(&edit, &streams, &frame, &request.quality);
+    let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix);
+    inputs.extend(sound_inputs);
     fs::write(&script, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
     let (width, height) = scaled_size(facts.width, facts.height, &request.quality);
     let job = ExportJob {
         work: work.clone(), inputs, media: request.media, script, folder, name, target: target.clone(),
         srt: (!request.cues.is_empty()).then(|| format_srt(&request.cues)),
         seconds: output_seconds(&edit.segments, &edit.transitions), has_audio, bitrate: video_bitrate(width, height, &facts.fps),
-        fps: facts.fps, ffmpeg, quality: request.quality, edit,
+        fps: facts.fps, ffmpeg, quality: request.quality, edit, audio: request.audio, main_volume: request.main_volume,
     };
     write_status(&work, "RUNNING", 0.0, "Đang bắt đầu xuất video…", Some(&target));
     let entry = Arc::new(Running { child: Mutex::new(None), cancelled: AtomicBool::new(false) });
@@ -1224,7 +1464,8 @@ mod tests {
     }
 
     fn request(segments: Vec<Segment>) -> ExportRequest {
-        ExportRequest { output_path: "unused".into(), media: vec![], segments, transitions: vec![], overlays: vec![], quality: "source".into(),
+        ExportRequest { output_path: "unused".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
+            quality: "source".into(),
             folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }] }
     }
 
@@ -1537,7 +1778,8 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         edit_project_save(path.clone(), project.clone()).unwrap();
         let saved: Value = serde_json::from_slice(&fs::read(dir.join(".dubflow-work/edit/project.json")).unwrap()).unwrap();
         assert_eq!(saved, project);
-        assert!(edit_project_save(path.clone(), json!({"schema_version": 3, "segments": [{}]})).is_err());
+        assert!(edit_project_save(path.clone(), json!({"schema_version": 4, "segments": [{}]})).is_err());
+        assert!(edit_project_save(path.clone(), json!({"schema_version": 3, "segments": [{}], "audio": [], "main_volume": 1})).is_ok(), "4e drafts");
         assert!(edit_project_save(path.clone(), json!({"schema_version": 1, "segments": []})).is_err());
         assert!(edit_project_save(path.clone(), json!({"schema_version": 1, "segments": [{}], "pad": "x".repeat(PROJECT_LIMIT)})).is_err());
         fs::write(dir.join("other.mp4"), b"video").unwrap();
@@ -1687,5 +1929,89 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert_eq!(written["schema_version"], 1);
         assert!(read_cover(&dir).is_none(), "the original keeps its cover");
         fs::remove_dir_all(base).unwrap();
+    }
+
+    fn sound(input: usize, at: f64, start: f64, end: f64) -> Sound {
+        Sound { input, at, start, end, volume: 1.0, fade_in: 0.0, fade_out: 0.0, duck_db: 0.0 }
+    }
+
+    fn whole(seconds: f64) -> Edit {
+        Edit { segments: vec![segment(0.0, seconds, 1.0, 1.0)], transitions: vec![], overlays: vec![] }
+    }
+
+    const MAIN_ONLY: &str = "\
+[0:v]trim=start=0:end=10,setpts=PTS-STARTPTS[v0];
+[0:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS[a0];
+[v0][a0]concat=n=1:v=1:a=1[v][am]";
+
+    #[test]
+    fn mixes_a_sound_effect_with_fades_and_limits_the_sum() {
+        let mix = Mix { sounds: vec![Sound { volume: 0.8, fade_in: 0.2, fade_out: 0.5, ..sound(0, 2.5, 0.0, 1.2) }], main_volume: 1.0 };
+        let (script, has_audio) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix);
+        assert!(has_audio);
+        assert_eq!(script, expected(&format!("{MAIN_ONLY};
+[1:a]atrim=start=0:end=1.2,asetpts=PTS-STARTPTS,{{af}},afade=t=in:st=0:d=0.2,afade=t=out:st=0.7:d=0.5,volume=0.8,adelay=2500:all=1[sx0];
+[am][sx0]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.891:level=0:latency=1[a]")));
+    }
+
+    #[test]
+    fn ducks_the_original_sound_under_a_clip() {
+        // A file that ducks 12 dB, and a louder sound effect cut at the end of the output that ducks 6 dB.
+        let mix = Mix { sounds: vec![Sound { duck_db: 12.0, ..sound(0, 4.0, 0.0, 2.0) }, Sound { volume: 1.5, duck_db: 6.0, ..sound(1, 9.5, 0.5, 3.0) }],
+            main_volume: 1.0 };
+        let (script, _) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix);
+        assert_eq!(script, expected(&format!("{MAIN_ONLY};
+[am]volume=volume='1-0.749*clip(min((t-3.9)/0.1,(6.1-t)/0.1),0,1)':eval=frame:enable='between(t,3.9,6.1)',\
+volume=volume='1-0.499*clip(min((t-9.4)/0.1,(10.1-t)/0.1),0,1)':eval=frame:enable='between(t,9.4,10.1)'[amx];
+[1:a]atrim=start=0:end=2,asetpts=PTS-STARTPTS,{{af}},adelay=4000:all=1[sx0];
+[2:a]atrim=start=0.5:end=1,asetpts=PTS-STARTPTS,{{af}},volume=1.5,adelay=9500:all=1[sx1];
+[amx][sx0][sx1]amix=inputs=3:duration=first:normalize=0,alimiter=limit=0.891:level=0:latency=1[a]")));
+        // Overlapping ducks merge and keep the deepest; one at the very start has no ease-in.
+        let close = [Sound { duck_db: 6.0, ..sound(0, 1.0, 0.0, 1.0) }, Sound { duck_db: 12.0, ..sound(0, 2.1, 0.0, 0.9) }];
+        assert_eq!(duck_spans(&close, 10.0), vec![(1.0, 3.0, 12.0)]);
+        assert_eq!(duck_filter(0.0, 1.0, 10.0), "volume=volume='1-0.684*clip((1.1-t)/0.1,0,1)':eval=frame:enable='between(t,0,1.1)'");
+    }
+
+    #[test]
+    fn changes_the_original_volume_and_keeps_plain_edits_as_before() {
+        let edit = whole(10.0);
+        let quiet = Mix { sounds: vec![], main_volume: 0.5 };
+        assert_eq!(export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &quiet).0, expected(&format!("{MAIN_ONLY};
+[am]volume=0.5,alimiter=limit=0.891:level=0:latency=1[a]")));
+        let plain = Mix { sounds: vec![], main_volume: 1.0 };
+        assert_eq!(export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &plain), render_script(&edit, &[Input { has_audio: true }], &frame(), "source"));
+        // A silent video gets a sound track only for added sounds.
+        assert!(!export_script(&edit, &[Input { has_audio: false }], &frame(), "source", &quiet).1);
+        let (script, has_audio) = export_script(&edit, &[Input { has_audio: false }], &frame(), "source", &Mix { sounds: vec![sound(0, 0.0, 0.0, 1.0)], main_volume: 0.5 });
+        assert!(has_audio);
+        assert_eq!(script, expected("\
+[0:v]trim=start=0:end=10,setpts=PTS-STARTPTS[v0];
+[v0]concat=n=1:v=1:a=0[v];
+anullsrc=r=48000:cl=stereo,atrim=duration=10[am];
+[am]volume=0.5[amx];
+[1:a]atrim=start=0:end=1,asetpts=PTS-STARTPTS,{af}[sx0];
+[amx][sx0]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.891:level=0:latency=1[a]"));
+    }
+
+    #[test]
+    fn validates_added_sounds() {
+        let clip = |at: f64, end: f64| SoundClip { source: SoundSource::Sfx { id: "whoosh-01".into() }, at, start: 0.0, end, volume: 1.0, fade_in: 0.0,
+            fade_out: 0.0, duck_db: 0.0 };
+        let mix = validate_mix(&[clip(2.0, 0.64)], &[0], &[0.6], 1.0, 10.0).unwrap();
+        assert_eq!(mix.sounds[0].end, 0.6, "clamped to the file");
+        assert!(validate_mix(&[clip(10.0, 0.5)], &[0], &[0.6], 1.0, 10.0).is_err(), "starts after the output");
+        assert!(validate_mix(&[clip(1.0, 0.7)], &[0], &[0.6], 1.0, 10.0).is_err(), "past the file");
+        assert!(validate_mix(&[SoundClip { fade_in: 3.5, ..clip(1.0, 0.5) }], &[0], &[0.6], 1.0, 10.0).is_err());
+        assert!(validate_mix(&[SoundClip { duck_db: 30.0, ..clip(1.0, 0.5) }], &[0], &[0.6], 1.0, 10.0).is_err());
+        assert!(validate_mix(&[SoundClip { volume: f64::NAN, ..clip(1.0, 0.5) }], &[0], &[0.6], 1.0, 10.0).is_err());
+        assert!(validate_mix(&[], &[], &[], 2.5, 10.0).is_err());
+        let request: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "segments": [{"start": 0, "end": 1, "speed": 1, "volume": 1}],
+            "quality": "source", "folder": "x", "fileName": "a", "cues": [], "mainVolume": 0.8,
+            "audio": [{"source": {"kind": "file", "path": "D:\\a.mp3"}, "at": 0, "start": 0, "end": 1, "volume": 1, "fade_in": 0, "fade_out": 0, "duck_db": 6}]})).unwrap();
+        assert_eq!(request.main_volume, 0.8);
+        assert_eq!(request.audio[0].source, SoundSource::File { path: "D:\\a.mp3".into() });
+        let old: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "segments": [], "quality": "source", "folder": "x", "fileName": "a", "cues": []})).unwrap();
+        assert!(old.audio.is_empty() && old.main_volume == 1.0, "4a–4d requests");
+        assert_eq!(draft_sounds(&json!({"audio": [{"source": {"kind": "sfx", "id": "pop-01"}}, {"source": {"kind": "file", "path": "relative.mp3"}}]})).len(), 0);
     }
 }

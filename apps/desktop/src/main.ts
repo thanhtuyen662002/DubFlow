@@ -26,6 +26,8 @@ import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { mountEditor } from "./features/edit/view.ts";
+import { createSfxLibrary } from "./features/sfx/library.ts";
+import { mountSfxSettings } from "./features/sfx/settings.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
@@ -106,6 +108,8 @@ const packageVideo = mountPackage(invoke, { cpuOnly });
 // One AI choice and saved keys, shared by every AI feature. The inspector
 // sections below are used by the first render, so they are mounted up here.
 const claudeKey = createAiSession(hostKeyStore(invoke));
+// The sound-effect pack and the user's sound folder (editor Âm thanh, Cài đặt).
+const sfxLibrary = createSfxLibrary(invoke);
 const shorts = mountShorts(invoke, claudeKey);
 const reframe = mountReframe(invoke, claudeKey);
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
@@ -526,6 +530,9 @@ const editor = mountEditor(invoke, {
     if (revision) await startJob(revision);
     return revisionId;
   },
+  sfx: sfxLibrary,
+  ai: claudeKey,
+  openAiSettings: () => aiSettings.open(),
 });
 /** "Xem" on an edited export starts it as soon as it has loaded. */
 let playWhenLoaded = false;
@@ -1454,6 +1461,7 @@ const discovery = mountDiscovery(invoke, async (url, title) => { await startFetc
 void claudeKey.restore();
 const aiSettings = mountAiSettings(claudeKey);
 $("#open-ai-settings").addEventListener("click", () => aiSettings.open());
+mountSfxSettings(sfxLibrary, showError);
 const productStudio = mountProductStudio(invoke, claudeKey, { outputRoot, cpuOnly });
 const compilation = mountCompilation(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly });
 type View = "queue" | "discover" | "product" | "compilation";
