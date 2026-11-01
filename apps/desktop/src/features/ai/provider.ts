@@ -19,9 +19,12 @@ export const GEMINI_FALLBACK_MODEL = "gemini-3.8-flash";
 const geminiEndpoint = (model: string) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 const KEEP_DIACRITICS = "Luôn viết tiếng Việt có dấu đầy đủ trong mọi trường văn bản.";
 /** One attempt never keeps the user waiting longer than this. */
-export const GEMINI_TIMEOUT_MS = 60_000;
-/** Busy (503), rate-limited (429), server errors and time-outs are worth another try. */
-const RETRYABLE = /^(429|500|502|503|504|timeout)\b/;
+export const GEMINI_TIMEOUT_MS = 90_000;
+/**
+ * The longest pause DubFlow takes when Google asks it to wait (Retry-After or retryDelay).
+ * A longer request stops the attempts with a "try again later" message instead of retrying early.
+ */
+export const GEMINI_MAX_RETRY_WAIT_MS = 30_000;
 
 export function isProvider(value: unknown): value is Provider {
   return value === "claude" || value === "gemini";
@@ -159,15 +162,63 @@ export function toGeminiSchema(schema: unknown): unknown {
 }
 
 type GeminiReply = {
-  error?: { status?: string; message?: string };
+  error?: { status?: string; message?: string; details?: Array<{ "@type"?: string; retryDelay?: unknown }> };
   promptFeedback?: { blockReason?: string };
   candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
 };
 
+/** One failed Gemini attempt: whether another try may help, and how long Google asked DubFlow to wait first. */
+class GeminiAttemptError extends Error {
+  retryable: boolean;
+  retryAfterMs: number | null;
+  constructor(message: string, retryable: boolean, retryAfterMs: number | null = null) {
+    super(message);
+    this.retryable = retryable;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** Only rate limits (429) and server errors (500–599) are worth another try. */
+const retryableStatus = (status: number): boolean => status === 429 || (status >= 500 && status <= 599);
+const isTimeout = (error: unknown): boolean => ["TimeoutError", "AbortError"].includes((error as Error)?.name);
+
+/**
+ * An HTTP Retry-After value in milliseconds: whole seconds, or an HTTP date (a past date is 0).
+ * Anything else is not a valid hint and gives null.
+ */
+export function parseRetryAfter(value: string | null | undefined, now = Date.now()): number | null {
+  const text = (value ?? "").trim();
+  if (/^\d{1,9}$/.test(text)) return Number(text) * 1000;
+  // IMF-fixdate, RFC 850 and asctime all start with a day name and carry hh:mm:ss.
+  if (!/^[A-Za-z]{3}/.test(text) || !/\d{2}:\d{2}:\d{2}/.test(text)) return null;
+  const date = Date.parse(text);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
+}
+
+/** Google's RetryInfo detail ("retryDelay": "37s" or "1.5s") in milliseconds, or null. */
+export function parseRetryDelay(details: unknown): number | null {
+  if (!Array.isArray(details)) return null;
+  for (const detail of details) {
+    if (!detail || typeof detail !== "object" || !String(detail["@type"] ?? "").endsWith("google.rpc.RetryInfo")) continue;
+    const match = typeof detail.retryDelay === "string" ? /^(\d{1,9}(?:\.\d{1,9})?)s$/.exec(detail.retryDelay.trim()) : null;
+    if (match) return Math.ceil(Number(match[1]) * 1000);
+  }
+  return null;
+}
+
+/** The longest valid wait the failed response asked for (header or Google error details), or null. */
+function retryHint(response: Response, reply: GeminiReply): number | null {
+  const hints = [parseRetryAfter(response.headers?.get?.("retry-after")), parseRetryDelay(reply.error?.details)]
+    .filter((hint): hint is number => hint !== null);
+  return hints.length ? Math.max(...hints) : null;
+}
+
 async function askGeminiOnce(key: string, request: JsonRequest, send: typeof fetch, model: string): Promise<unknown> {
   let response: Response;
+  let reply: GeminiReply;
   try {
     response = await send(geminiEndpoint(model), {
+      // Covers the answer's body too: a stalled download times out like a stalled request.
       signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
       method: "POST",
       // The key travels in a header, never in the URL.
@@ -182,12 +233,19 @@ async function askGeminiOnce(key: string, request: JsonRequest, send: typeof fet
         generationConfig: { responseMimeType: "application/json", responseSchema: toGeminiSchema(request.schema), maxOutputTokens: 16000 },
       }),
     });
+    reply = await response.json().catch((error: unknown) => {
+      if (isTimeout(error)) throw error;
+      return {};
+    }) as GeminiReply;
   } catch (error) {
-    if ((error as Error)?.name === "TimeoutError" || (error as Error)?.name === "AbortError") throw new Error("timeout: Gemini trả lời quá lâu.");
+    if (isTimeout(error)) throw new GeminiAttemptError("timeout: Gemini trả lời quá lâu.", true);
     throw error;
   }
-  const reply = await response.json().catch(() => ({})) as GeminiReply;
-  if (!response.ok) throw new Error(`${response.status} ${reply.error?.status ?? ""}: ${reply.error?.message ?? "Gemini lỗi"}`.slice(0, 300));
+  if (!response.ok) {
+    const message = `${response.status} ${reply.error?.status ?? ""}: ${reply.error?.message ?? "Gemini lỗi"}`.slice(0, 300);
+    const retryable = retryableStatus(response.status);
+    throw new GeminiAttemptError(message, retryable, retryable ? retryHint(response, reply) : null);
+  }
   if (reply.promptFeedback?.blockReason) throw new Error("Gemini từ chối yêu cầu này.");
   const candidate = reply.candidates?.[0];
   if (candidate?.finishReason === "MAX_TOKENS") throw new Error("Câu trả lời bị cắt ngắn; hãy thử lại.");
@@ -196,22 +254,30 @@ async function askGeminiOnce(key: string, request: JsonRequest, send: typeof fet
   }
   const text = (candidate?.content?.parts ?? []).filter((part) => !part.thought).map((part) => part.text ?? "").join("");
   if (!text.trim()) throw new Error("Gemini không trả về nội dung; hãy thử lại.");
-  return JSON.parse(text);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("Gemini trả về dữ liệu sai định dạng JSON; hãy thử lại.");
+  }
 }
 
-/** The user's message for a Gemini failure that retrying did not fix. */
+/** The user's message for a Gemini failure that retrying did not fix: 429, every 500–599 and time-outs. */
 export function geminiFailure(error: unknown): Error {
   const message = String((error as Error)?.message ?? error);
-  if (/^429\b/.test(message)) return new Error("429: Đã vượt giới hạn số lần gọi Gemini mỗi phút; hãy chờ một phút rồi thử lại.");
-  if (/^(500|502|503|504)\b/.test(message)) return new Error(`${message.slice(0, 3)}: Gemini đang quá tải; hãy thử lại sau ít phút.`);
+  if (/^429\b/.test(message)) return new Error("429: Đã vượt giới hạn số lần gọi Gemini; hãy chờ một phút rồi thử lại.");
+  if (/^5\d\d\b/.test(message)) return new Error(`${message.slice(0, 3)}: Gemini đang quá tải hoặc gặp lỗi máy chủ; hãy thử lại sau ít phút.`);
   if (/^timeout\b/.test(message)) return new Error("Gemini trả lời quá lâu; hãy thử lại sau ít phút.");
   return error instanceof Error ? error : new Error(message);
 }
 
-/**
- * Bounded retry that changes a condition: the fast model, the same model once more
- * after a pause, then the larger model. Key, refusal and format errors are not retried.
- */
+/** Google asked for a longer wait than DubFlow takes: stop and say when to try again. */
+export function geminiRetryLater(error: unknown, waitMs: number): Error {
+  const status = /^(429|5\d\d)\b/.exec(String((error as Error)?.message ?? error))?.[1] ?? "429";
+  const minutes = Math.max(1, Math.ceil(waitMs / 60_000));
+  const when = minutes > 60 ? "hơn một giờ" : `khoảng ${minutes} phút`;
+  return new Error(`${status}: Gemini yêu cầu chờ ${when} trước khi gọi lại; hãy thử lại sau.`);
+}
+
 /** Every string in a JSON answer, joined. */
 function strings(value: unknown): string {
   if (typeof value === "string") return value;
@@ -234,24 +300,32 @@ export function lacksDiacritics(value: unknown): boolean {
 
 /**
  * Bounded retry that changes a condition: the fast model, the same model once more
- * after a pause, then the larger model. Key, refusal and format errors are not retried.
+ * after a pause, then the larger model. Only 429, 500–599 and time-outs are retried;
+ * key, other 4xx, refusal and format errors are not. A wait Google asks for
+ * (Retry-After or retryDelay) is honoured up to GEMINI_MAX_RETRY_WAIT_MS; a longer
+ * one stops the attempts with a "try again later" message.
  * An unaccented answer is asked again of the fast model once (it usually answers with
  * diacritics the second time, in about two seconds) and kept if that fails or repeats.
  */
 async function askGemini(key: string, request: JsonRequest, send: typeof fetch, wait: (ms: number) => Promise<void>): Promise<unknown> {
+  if (!key.trim()) throw new Error("Chưa có khóa API Gemini (API key); hãy nhập khóa trong “Cài đặt AI”.");
   const attempts: Array<[string, number]> = [[GEMINI_MODEL, 0], [GEMINI_MODEL, 4000], [GEMINI_FALLBACK_MODEL, 2000]];
-  let last: unknown = null;
+  let last: GeminiAttemptError | null = null;
   let unaccented: unknown = undefined;
   for (const [index, [model, pause]] of attempts.entries()) {
     if (unaccented !== undefined && model !== GEMINI_MODEL) break;
-    if (index > 0) await wait(unaccented !== undefined ? 1000 : pause);
+    if (index > 0) {
+      const asked = last?.retryAfterMs ?? 0;
+      if (asked > GEMINI_MAX_RETRY_WAIT_MS) throw geminiRetryLater(last, asked);
+      await wait(unaccented !== undefined ? 1000 : Math.max(pause, asked));
+    }
     try {
       const value = await askGeminiOnce(key, request, send, model);
       if (!lacksDiacritics(value) || unaccented !== undefined) return value;
       unaccented = value;
     } catch (error) {
       if (unaccented !== undefined) return unaccented;
-      if (!RETRYABLE.test(String((error as Error)?.message ?? error))) throw error;
+      if (!(error instanceof GeminiAttemptError) || !error.retryable) throw error;
       last = error;
     }
   }
