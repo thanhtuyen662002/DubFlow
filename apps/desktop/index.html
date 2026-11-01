@@ -272,6 +272,7 @@
                   <button type="button" role="tab" data-mode="insert" aria-selected="false" aria-controls="edit-panel">Chèn</button>
                   <button type="button" role="tab" data-mode="subs" aria-selected="false" aria-controls="edit-panel">Phụ đề</button>
                   <button type="button" role="tab" data-mode="cover" aria-selected="false" aria-controls="edit-panel" title="Che chữ gốc">Che</button>
+                  <button type="button" role="tab" data-mode="audio" aria-selected="false" aria-controls="edit-panel" title="Hiệu ứng âm thanh, âm thanh của bạn và âm lượng gốc">Âm thanh</button>
                 </div>
                 <button id="list-toggle" class="btn ghost list-toggle view-only" type="button" aria-controls="queue-col" aria-expanded="false">
                   <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
@@ -919,6 +920,87 @@
                     <p class="edit-note">Thời gian vùng che tính theo video gốc. Kiểu che đã áp dụng lần gần nhất được dùng cho video mới.</p>
                   </div>
                 </section>
+                <section id="edit-audio" class="edit-audio" aria-label="Âm thanh" hidden>
+                  <label class="edit-field">
+                    <span class="edit-label">Âm thanh gốc <output id="au-main-value">100%</output></span>
+                    <input id="au-main" type="range" min="0" max="200" step="5" value="100" aria-describedby="au-main-hint" />
+                    <small id="au-main-hint" class="edit-note">Âm lượng của cả video (lời lồng tiếng, nhạc nền, đoạn chèn).</small>
+                    <small id="au-main-note" class="edit-note" hidden>Trên 100% chỉ nghe được sau khi xuất video.</small>
+                  </label>
+                  <section id="au-selected" class="au-selected" aria-labelledby="au-title" hidden>
+                    <h3 id="au-title" class="edit-segment-title">Âm thanh</h3>
+                    <div class="edit-times three">
+                      <label title="Thời điểm trên video đã sửa">Bắt đầu tại<input id="au-at" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                      <label title="Thời điểm trong file âm thanh">Từ<input id="au-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                      <label title="Thời điểm trong file âm thanh">Đến<input id="au-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                    </div>
+                    <p id="au-length" class="edit-length"></p>
+                    <label class="edit-field">
+                      <span class="edit-label">Âm lượng <output id="au-volume-value">100%</output></span>
+                      <input id="au-volume" type="range" min="0" max="200" step="5" value="100" />
+                      <small id="au-volume-note" class="edit-note" hidden>Trên 100% chỉ nghe được sau khi xuất video.</small>
+                    </label>
+                    <div class="au-fades">
+                      <label class="edit-field">
+                        <span class="edit-label">Hiện dần <output id="au-fade-in-value">Tắt</output></span>
+                        <input id="au-fade-in" type="range" min="0" max="3" step="0.1" value="0" />
+                      </label>
+                      <label class="edit-field">
+                        <span class="edit-label">Tắt dần <output id="au-fade-out-value">Tắt</output></span>
+                        <input id="au-fade-out" type="range" min="0" max="3" step="0.1" value="0" />
+                      </label>
+                    </div>
+                    <label class="au-duck"><input id="au-duck" type="checkbox" /> Giảm âm gốc khi phát</label>
+                    <label id="au-duck-row" class="edit-field" hidden>
+                      <span class="edit-label">Giảm âm gốc <output id="au-duck-value">10 dB</output></span>
+                      <input id="au-duck-db" type="range" min="3" max="24" step="1" value="10" />
+                    </label>
+                    <div class="edit-actions">
+                      <button id="au-play" class="btn" type="button">Nghe thử</button>
+                      <button id="au-delete" class="btn danger" type="button" aria-keyshortcuts="Delete">Xóa âm thanh<kbd>Delete</kbd></button>
+                    </div>
+                  </section>
+                  <div id="au-tabs" class="seg edit-source-tabs au-tabs" role="tablist" aria-label="Nguồn âm thanh">
+                    <button id="au-tab-library" type="button" role="tab" data-au-tab="library" aria-selected="true" aria-controls="au-library">Kho DubFlow</button>
+                    <button id="au-tab-mine" type="button" role="tab" data-au-tab="mine" aria-selected="false" aria-controls="au-mine">Của bạn</button>
+                    <button id="au-tab-ai" type="button" role="tab" data-au-tab="ai" aria-selected="false" aria-controls="au-ai">Gợi ý AI</button>
+                  </div>
+                  <input id="au-search" class="au-search" type="search" placeholder="Tìm: vút, đấm, ding, cười, cửa…" aria-label="Tìm âm thanh" autocomplete="off" spellcheck="false" />
+                  <div id="au-library" class="au-pane" role="tabpanel" aria-labelledby="au-tab-library">
+                    <div id="au-pack" class="au-pack" role="status">
+                      <div class="au-pack-row"><span id="au-pack-text"></span><button id="au-pack-get" class="btn" type="button">Tải về</button></div>
+                      <div id="au-pack-progress" class="bar" hidden><span id="au-pack-bar"></span></div>
+                    </div>
+                    <div id="au-cats" class="au-cats" role="radiogroup" aria-label="Nhóm hiệu ứng"></div>
+                    <ul id="au-sounds" class="au-list" aria-label="Hiệu ứng âm thanh"></ul>
+                    <p id="au-sounds-empty" class="edit-note" hidden>Không có hiệu ứng nào khớp.</p>
+                    <p class="edit-note">Âm thanh CC0 từ Kenney (kenney.nl), dùng tự do kể cả thương mại.</p>
+                  </div>
+                  <div id="au-mine" class="au-pane" role="tabpanel" aria-labelledby="au-tab-mine" hidden>
+                    <div class="au-folder">
+                      <span id="au-folder-label" class="settings-path">Chưa chọn thư mục</span>
+                      <button id="au-folder-pick" class="btn" type="button">Chọn thư mục…</button>
+                    </div>
+                    <p id="au-files-note" class="edit-note" role="status"></p>
+                    <ul id="au-files" class="au-list" aria-label="Âm thanh của bạn"></ul>
+                    <button id="au-files-more" class="btn ghost" type="button" hidden>Hiện thêm</button>
+                    <button id="au-pick-files" class="btn insert-pick" type="button">
+                      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" fill="none"/></svg>
+                      Chọn file âm thanh…
+                    </button>
+                    <p class="insert-drop">Hoặc kéo file âm thanh (mp3, wav, ogg, m4a, aac, flac) thả lên dòng thời gian.</p>
+                  </div>
+                  <div id="au-ai" class="au-pane" role="tabpanel" aria-labelledby="au-tab-ai" hidden>
+                    <p id="au-ai-provider" class="edit-note"></p>
+                    <button id="au-ai-run" class="btn primary" type="button">Gợi ý hiệu ứng</button>
+                    <p id="au-ai-state" class="edit-note" role="status"></p>
+                    <div id="au-ai-bulk" class="au-ai-bulk" hidden>
+                      <button id="au-ai-all" class="btn" type="button">Thêm tất cả</button>
+                      <button id="au-ai-none" class="btn ghost" type="button">Bỏ tất cả</button>
+                    </div>
+                    <ul id="au-ai-list" class="au-ai-list" aria-label="Gợi ý hiệu ứng"></ul>
+                  </div>
+                </section>
                 <p id="edit-select-hint" class="edit-note" hidden>Chọn một đoạn chèn hoặc video chồng trên dòng thời gian để chỉnh.</p>
                 <p id="edit-hint" class="edit-hint" role="status"></p>
                 <div id="edit-cut-notes" class="edit-cut-notes">
@@ -955,6 +1037,7 @@
                   <div id="tl-ruler" class="tl-ruler"></div>
                   <div id="tl-overlays" class="tl-ovtrack" aria-label="Video chồng" hidden></div>
                   <div id="tl-track" class="tl-track" aria-label="Các đoạn video"></div>
+                  <div id="tl-audio" class="tl-autrack" aria-label="Âm thanh thêm" hidden></div>
                   <div id="tl-playhead" class="tl-playhead" aria-hidden="true"><span></span></div>
                 </div>
               </div>
@@ -1012,6 +1095,24 @@
             <div class="settings-actions">
               <button id="reset-download-dir" class="btn" type="button" hidden>Mặc định</button>
               <button id="choose-download-dir" class="btn" type="button">Đổi thư mục</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt>Kho hiệu ứng âm thanh</dt>
+              <dd id="sfx-pack-state">Đang kiểm tra…</dd>
+              <dd>Âm thanh CC0 dùng trong chế độ Âm thanh khi chỉnh sửa; chỉ tải một lần.</dd>
+            </div>
+            <button id="sfx-pack-get" class="btn" type="button">Tải về</button>
+          </div>
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt>Thư mục âm thanh của bạn</dt>
+              <dd><span id="audio-folder-label" class="settings-path">Chưa chọn</span></dd>
+            </div>
+            <div class="settings-actions">
+              <button id="reset-audio-folder" class="btn" type="button" hidden>Bỏ chọn</button>
+              <button id="choose-audio-folder" class="btn" type="button">Chọn thư mục</button>
             </div>
           </div>
           <div id="settings-update" class="settings-row">

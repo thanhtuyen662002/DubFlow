@@ -3,7 +3,9 @@
  * [start, end) of one media file (the finished final_vi.mp4 is media "main",
  * inserted clips are other media), in that media's seconds, at its own speed
  * and volume; the edited output is the segments back to back. A joint may
- * carry a transition, and overlays play other media over the output.
+ * carry a transition, and overlays play other media over the output. Âm
+ * thanh adds sound clips (sound effects or the user's audio files) mixed over
+ * the output's own sound, which has one volume for the whole video.
  * Every operation is pure and returns a new edit, or the same object when
  * nothing changes, so the history can skip no-op steps.
  */
@@ -29,7 +31,15 @@ export const SPEED_PRESETS: readonly number[] = [0.5, 0.75, 1, 1.25, 1.5, 2];
 export const HISTORY_LIMIT = 200;
 /** A remapped cue piece shorter than this is dropped, unless it is the whole cue. */
 export const MIN_CUE_PIECE = 0.1;
-export const PROJECT_SCHEMA = 2;
+export const PROJECT_SCHEMA = 3;
+/** Added sound clips in one edit. */
+export const MAX_AUDIO = 100;
+/** The shortest sound clip (some clicks last 30 ms). */
+export const MIN_AUDIO = 0.02;
+export const MAX_FADE = 3;
+/** "Giảm âm gốc khi phát": how far the original sound dips under a clip. */
+export const MAX_DUCK_DB = 24;
+export const DEFAULT_DUCK_DB = 10;
 export const MAIN = "main";
 
 export type MediaKind = "main" | "job" | "file";
@@ -49,6 +59,21 @@ export type Overlay = {
   readonly id: string; readonly mediaId: string; readonly at: number; readonly start: number; readonly end: number;
   readonly x: number; readonly y: number; readonly w: number; readonly volume: number;
 };
+export type AudioSource = { readonly kind: "sfx"; readonly id: string } | { readonly kind: "file"; readonly path: string };
+/**
+ * A sound over the output: `at` is output time, `start`/`end` its own seconds
+ * (`duration` is the whole sound), `volume` 0–2, fades in seconds, and
+ * `duckDb` > 0 lowers the original sound by that much while it plays.
+ * Clips are anchored to output time: they stay put when segments are
+ * inserted, cut or moved, unlike overlays, which ripple with inserts.
+ */
+export type AudioClip = {
+  readonly id: string; readonly source: AudioSource; readonly title: string; readonly duration: number;
+  readonly at: number; readonly start: number; readonly end: number;
+  readonly volume: number; readonly fadeIn: number; readonly fadeOut: number; readonly duckDb: number;
+};
+/** A sound before it joins an edit. */
+export type AudioInfo = { source: AudioSource; title: string; duration: number };
 export type Edit = {
   /** Seconds of the main video. */
   readonly duration: number;
@@ -58,6 +83,10 @@ export type Edit = {
   /** Keyed by the id of the segment before the joint; absent = a cut. */
   readonly transitions: Readonly<Record<string, Transition>>;
   readonly overlays: readonly Overlay[];
+  /** Added sounds, in the order they were added. */
+  readonly audio: readonly AudioClip[];
+  /** "Âm thanh gốc": the volume of the output's own sound (segments and overlays), 0–2. */
+  readonly mainVolume: number;
   readonly nextId: number;
 };
 export type Cue = { start_ms: number; end_ms: number; text: string };
@@ -78,7 +107,7 @@ export function createEdit(duration: number, info: Partial<Omit<MediaInfo, "dura
   return {
     duration, media: [mainMedia(duration, info)],
     segments: [{ id: "s1", mediaId: MAIN, start: 0, end: ms(duration), speed: 1, volume: 1 }],
-    transitions: {}, overlays: [], nextId: 2,
+    transitions: {}, overlays: [], audio: [], mainVolume: 1, nextId: 2,
   };
 }
 
@@ -249,17 +278,19 @@ function attachMedia(edit: Edit, info: MediaInfo): { edit: Edit; id: string } | 
   return { edit: { ...edit, media: [...edit.media, media], nextId: edit.nextId + 1 }, id };
 }
 
-/** The new segment or overlay an operation added, if any. */
+/** The new segment, overlay or sound an operation added, if any. */
 export function addedId(before: Edit, after: Edit): string | null {
-  const ids = new Set([...before.segments.map((segment) => segment.id), ...before.overlays.map((overlay) => overlay.id)]);
-  return after.segments.find((segment) => !ids.has(segment.id))?.id ?? after.overlays.find((overlay) => !ids.has(overlay.id))?.id ?? null;
+  const ids = new Set([...before.segments.map((segment) => segment.id), ...before.overlays.map((overlay) => overlay.id),
+    ...before.audio.map((clip) => clip.id)]);
+  return after.segments.find((segment) => !ids.has(segment.id))?.id ?? after.overlays.find((overlay) => !ids.has(overlay.id))?.id
+    ?? after.audio.find((clip) => !ids.has(clip.id))?.id ?? null;
 }
 
 /**
  * Insert `range` of a media (the whole file by default) at output time `t`:
  * a segment under `t` is split there and the clip goes after its left part
  * (or before/after it within 0.1 s of its edges); everything after ripples,
- * overlays included.
+ * overlays included. Sound clips stay at their output time (see AudioClip).
  */
 export function insertAt(edit: Edit, t: number, info: MediaInfo, range?: { start?: number; end?: number }): Edit {
   if (edit.segments.length >= MAX_SEGMENTS || !Number.isFinite(t)) return edit;
@@ -422,13 +453,121 @@ export function transitionRoom(edit: Edit, index: number): number {
   return Math.min(MAX_TRANSITION, segmentLength(segment) / 2, segmentLength(next) / 2);
 }
 
+// ---------- Âm thanh: sound clips over the output ----------
+
+const fade = (value: number): number => Math.round(clamp(value, 0, MAX_FADE) * 10) / 10;
+
+/** Seconds a sound plays in the output (cut at the end of the output). */
+export function audioLength(clip: Pick<AudioClip, "at" | "start" | "end">, total: number): number {
+  return Math.max(0, Math.min(clip.end - clip.start, total - clip.at));
+}
+
+/** Fades that fit the clip: each within 0–3 s, together no longer than it plays. */
+function fitFades(clip: AudioClip, total: number): AudioClip {
+  const length = audioLength(clip, total);
+  const fadeIn = Math.min(fade(clip.fadeIn), floorMs(length));
+  const fadeOut = Math.min(fade(clip.fadeOut), floorMs(Math.max(0, length - fadeIn)));
+  return fadeIn === clip.fadeIn && fadeOut === clip.fadeOut ? clip : { ...clip, fadeIn, fadeOut };
+}
+
+function changeAudio(edit: Edit, id: string, change: (clip: AudioClip) => AudioClip): Edit {
+  const index = edit.audio.findIndex((clip) => clip.id === id);
+  if (index < 0) return edit;
+  const before = edit.audio[index];
+  const after = fitFades(change(before), outputDuration(edit));
+  if ((Object.keys(after) as Array<keyof AudioClip>).every((key) => after[key] === before[key])) return edit;
+  return { ...edit, audio: [...edit.audio.slice(0, index), after, ...edit.audio.slice(index + 1)] };
+}
+
+/** A whole sound from output time `at` (kept inside the output); no-op at 100 sounds or for one too short. */
+export function addAudio(edit: Edit, info: AudioInfo, at: number): Edit {
+  const total = outputDuration(edit);
+  if (edit.audio.length >= MAX_AUDIO || !Number.isFinite(at) || !(info.duration >= MIN_AUDIO) || total < MIN_AUDIO) return edit;
+  if (info.source.kind === "sfx" ? !info.source.id : !info.source.path) return edit;
+  const clip: AudioClip = {
+    id: `a${edit.nextId}`, source: info.source, title: info.title.slice(0, 300), duration: info.duration,
+    at: ms(clamp(at, 0, total - MIN_AUDIO)), start: 0, end: ms(info.duration), volume: 1, fadeIn: 0, fadeOut: 0, duckDb: 0,
+  };
+  return { ...edit, audio: [...edit.audio, clip], nextId: edit.nextId + 1 };
+}
+
+/** Output start, and the part of its sound a clip plays (at least 20 ms). */
+export function setAudioTime(edit: Edit, id: string, times: { at?: number; start?: number; end?: number }): Edit {
+  if (![times.at, times.start, times.end].every((value) => value === undefined || Number.isFinite(value))) return edit;
+  const total = outputDuration(edit);
+  return changeAudio(edit, id, (clip) => {
+    const start = ms(clamp(times.start ?? clip.start, 0, clip.duration - MIN_AUDIO));
+    const end = ms(clamp(times.end ?? clip.end, start + MIN_AUDIO, clip.duration));
+    const at = ms(clamp(times.at ?? clip.at, 0, Math.max(0, total - MIN_AUDIO)));
+    return { ...clip, at, start, end };
+  });
+}
+
+/** Volume 0–200 %, fades 0–3 s (0.1 s steps) and ducking 0 (off) or 1–24 dB. */
+export function setAudioProps(edit: Edit, id: string, props: { volume?: number; fadeIn?: number; fadeOut?: number; duckDb?: number }): Edit {
+  if (![props.volume, props.fadeIn, props.fadeOut, props.duckDb].every((value) => value === undefined || Number.isFinite(value))) return edit;
+  return changeAudio(edit, id, (clip) => ({
+    ...clip,
+    volume: props.volume === undefined ? clip.volume : Math.round(clamp(props.volume, 0, MAX_VOLUME) * 100) / 100,
+    fadeIn: props.fadeIn === undefined ? clip.fadeIn : fade(props.fadeIn),
+    fadeOut: props.fadeOut === undefined ? clip.fadeOut : fade(props.fadeOut),
+    duckDb: props.duckDb === undefined ? clip.duckDb : Math.round(clamp(props.duckDb, 0, MAX_DUCK_DB)),
+  }));
+}
+
+export function removeAudio(edit: Edit, id: string): Edit {
+  if (!edit.audio.some((clip) => clip.id === id)) return edit;
+  return { ...edit, audio: edit.audio.filter((clip) => clip.id !== id) };
+}
+
+/** "Âm thanh gốc", 0–200 %. */
+export function setMainVolume(edit: Edit, volume: number): Edit {
+  if (!Number.isFinite(volume)) return edit;
+  const value = Math.round(clamp(volume, 0, MAX_VOLUME) * 100) / 100;
+  return value === edit.mainVolume ? edit : { ...edit, mainVolume: value };
+}
+
+/** How loud a clip is at output time `time` (0 outside it), its fades included. */
+export function audioGain(clip: AudioClip, time: number, total: number): number {
+  const length = audioLength(clip, total);
+  const into = time - clip.at;
+  if (into < 0 || into >= length) return 0;
+  let gain = clip.volume;
+  if (clip.fadeIn > 0 && into < clip.fadeIn) gain *= into / clip.fadeIn;
+  if (clip.fadeOut > 0 && length - into < clip.fadeOut) gain *= (length - into) / clip.fadeOut;
+  return gain;
+}
+
+/** The original sound's level at output time `time`: its volume, lowered under ducking clips (the deepest one wins). */
+export function mainLevel(edit: Edit, time: number, total = outputDuration(edit)): number {
+  let duck = 0;
+  for (const clip of edit.audio) {
+    if (clip.duckDb > 0 && time >= clip.at && time < clip.at + audioLength(clip, total)) duck = Math.max(duck, clip.duckDb);
+  }
+  return edit.mainVolume * Math.pow(10, -duck / 20);
+}
+
+/** Rows for the timeline: each clip in the first row where it overlaps nothing. */
+export function audioLanes(clips: readonly Pick<AudioClip, "id" | "at" | "start" | "end">[], total: number): Map<string, number> {
+  const ends: number[] = [];
+  const lanes = new Map<string, number>();
+  for (const clip of [...clips].sort((a, b) => a.at - b.at)) {
+    const end = clip.at + Math.max(audioLength(clip, total), 0.001);
+    let lane = ends.findIndex((last) => last <= clip.at + 1e-6);
+    if (lane < 0) lane = ends.push(end) - 1;
+    else ends[lane] = end;
+    lanes.set(clip.id, lane);
+  }
+  return lanes;
+}
+
 // ---------- Comparing, exporting ----------
 
 /** The whole main video once, at normal speed and volume, nothing added: nothing to export. */
 export function isUnchanged(edit: Edit, duration: number): boolean {
   const [only] = edit.segments;
   return edit.segments.length === 1 && only.mediaId === MAIN && only.start <= 0.001 && only.end >= duration - 0.001
-    && only.speed === 1 && only.volume === 1 && !edit.overlays.length;
+    && only.speed === 1 && only.volume === 1 && !edit.overlays.length && !edit.audio.length && edit.mainVolume === 1;
 }
 
 export function sameSegments(a: readonly Segment[], b: readonly Pick<Segment, "start" | "end" | "speed" | "volume">[]): boolean {
@@ -442,8 +581,14 @@ export function sameSegments(a: readonly Segment[], b: readonly Pick<Segment, "s
 export type PlanSegment = { media: number; start: number; end: number; speed: number; volume: number };
 export type PlanTransition = { after: number; type: TransitionType; duration: number };
 export type PlanOverlay = { media: number; at: number; start: number; end: number; x: number; y: number; w: number; volume: number };
+export type PlanAudio = {
+  source: { kind: "sfx"; id: string } | { kind: "file"; path: string };
+  at: number; start: number; end: number; volume: number; fade_in: number; fade_out: number; duck_db: number;
+};
 /** What the host renders: media 0 is the main video, `media` lists the others by path. */
-export type ExportPlan = { media: string[]; segments: PlanSegment[]; transitions: PlanTransition[]; overlays: PlanOverlay[] };
+export type ExportPlan = {
+  media: string[]; segments: PlanSegment[]; transitions: PlanTransition[]; overlays: PlanOverlay[]; audio: PlanAudio[]; mainVolume: number;
+};
 
 export function exportPlan(edit: Edit): ExportPlan {
   const media: string[] = [];
@@ -463,18 +608,36 @@ export function exportPlan(edit: Edit): ExportPlan {
   const total = outputDuration(edit);
   const overlays = edit.overlays.filter((overlay) => overlayLength(edit, overlay, total) >= 0.05)
     .map(({ mediaId, at, start, end, x, y, w, volume }) => ({ media: index(mediaId), at, start, end, x, y, w, volume }));
-  return { media, segments, transitions, overlays };
+  const audio = edit.audio.filter((clip) => audioLength(clip, total) >= MIN_AUDIO).map(planAudio);
+  return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume };
+}
+
+function planAudio(clip: AudioClip): PlanAudio {
+  const source = clip.source.kind === "sfx" ? { kind: "sfx" as const, id: clip.source.id } : { kind: "file" as const, path: clip.source.path };
+  return { source, at: clip.at, start: clip.start, end: clip.end, volume: clip.volume, fade_in: clip.fadeIn, fade_out: clip.fadeOut, duck_db: clip.duckDb };
 }
 
 const near = (a: unknown, b: unknown, tolerance = 0.0005): boolean => typeof a === "number" && typeof b === "number" && Math.abs(a - b) < tolerance;
 
-/** An edit renders the same as an exported one (4a exports list only main segments). */
-export function matchesExport(edit: Edit, exported: { media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown }): boolean {
+/** An edit renders the same as an exported one (4a exports list only main segments, 4e adds sounds and the main volume). */
+export function matchesExport(edit: Edit, exported: {
+  media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown; audio?: unknown; main_volume?: unknown;
+}): boolean {
   const plan = exportPlan(edit);
   const list = (value: unknown): Array<Record<string, unknown>> => Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
   const media = Array.isArray(exported.media) ? exported.media : [];
-  const segments = list(exported.segments), transitions = list(exported.transitions), overlays = list(exported.overlays);
-  return media.length === plan.media.length && media.every((path, at) => typeof path === "string" && samePath(path, plan.media[at]))
+  const segments = list(exported.segments), transitions = list(exported.transitions), overlays = list(exported.overlays), audio = list(exported.audio);
+  const sameSource = (other: unknown, source: PlanAudio["source"]): boolean => {
+    const value = (other ?? {}) as Record<string, unknown>;
+    return value.kind === source.kind && (source.kind === "sfx" ? value.id === source.id : typeof value.path === "string" && samePath(value.path, source.path));
+  };
+  return (exported.main_volume ?? 1) === plan.mainVolume
+    && audio.length === plan.audio.length && plan.audio.every((clip, at) => {
+      const other = audio[at];
+      return sameSource(other.source, clip.source) && near(other.at, clip.at) && near(other.start, clip.start) && near(other.end, clip.end)
+        && other.volume === clip.volume && near(other.fade_in, clip.fade_in) && near(other.fade_out, clip.fade_out) && other.duck_db === clip.duck_db;
+    })
+    && media.length === plan.media.length && media.every((path, at) => typeof path === "string" && samePath(path, plan.media[at]))
     && segments.length === plan.segments.length && plan.segments.every((segment, at) => {
       const other = segments[at];
       return (other.media ?? 0) === segment.media && near(other.start, segment.start) && near(other.end, segment.end)
@@ -610,7 +773,11 @@ function serializeMedia({ id, path, title, duration, width, height, fps, hasAudi
   return { id, path, title, duration, width, height, fps, hasAudio, kind };
 }
 
-/** The draft: schema 2, with the recently picked files kept in `media` (ids "r…" when no part of the edit uses them). */
+/**
+ * The draft: schema 3, with the recently picked files kept in `media` (ids
+ * "r…" when no part of the edit uses them), the sound clips in `audio` and
+ * the original sound's volume in `main_volume`.
+ */
 export function serializeProject(edit: Edit, changes: number, selected: string | null, recent: readonly Media[] = []): Record<string, unknown> {
   const extra = recent.filter((media) => !edit.media.some((used) => samePath(used.path, media.path)))
     .slice(0, RECENT_LIMIT).map((media, index) => ({ ...media, id: `r${index + 1}` }));
@@ -620,7 +787,31 @@ export function serializeProject(edit: Edit, changes: number, selected: string |
     segments: edit.segments.map(({ id, mediaId, start, end, speed, volume }) => ({ id, mediaId, start, end, speed, volume })),
     transitions: Object.fromEntries(Object.entries(edit.transitions).map(([id, { type, duration }]) => [id, { type, duration }])),
     overlays: edit.overlays.map(({ id, mediaId, at, start, end, x, y, w, volume }) => ({ id, mediaId, at, start, end, x, y, w, volume })),
+    audio: edit.audio.map(({ id, source, title, duration, at, start, end, volume, fadeIn, fadeOut, duckDb }) => ({
+      id, source: source.kind === "sfx" ? { kind: "sfx", id: source.id } : { kind: "file", path: source.path }, title, duration,
+      at, start, end, volume, fade_in: fadeIn, fade_out: fadeOut, duck_db: duckDb,
+    })),
+    main_volume: edit.mainVolume,
   };
+}
+
+/** A sound effect id from the catalog: lower-case letters, digits and dashes. */
+export const SFX_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+function parseAudio(raw: unknown): AudioClip | null {
+  if (!raw || typeof raw !== "object") return null;
+  const { id, source, title, duration, at, start, end, volume, fade_in, fade_out, duck_db } = raw as Record<string, unknown>;
+  if (typeof id !== "string" || !/^a\d{1,9}$/.test(id) || !source || typeof source !== "object") return null;
+  const { kind, id: sfx, path } = source as Record<string, unknown>;
+  const parsed: AudioSource | null = kind === "sfx" && typeof sfx === "string" && SFX_ID.test(sfx) ? { kind: "sfx", id: sfx }
+    : kind === "file" && typeof path === "string" && path && path.length <= 2048 ? { kind: "file", path } : null;
+  if (!parsed || ![duration, at, start, end, volume, fade_in, fade_out, duck_db].every(finite)) return null;
+  const clip: AudioClip = { id, source: parsed, title: typeof title === "string" ? title.slice(0, 300) : "", duration: duration as number,
+    at: at as number, start: start as number, end: Math.min(end as number, duration as number), volume: volume as number,
+    fadeIn: fade_in as number, fadeOut: fade_out as number, duckDb: duck_db as number };
+  if (clip.duration < MIN_AUDIO || clip.at < 0 || clip.start < 0 || clip.end - clip.start < MIN_AUDIO - 1e-6 || clip.volume < 0 || clip.volume > MAX_VOLUME
+    || clip.fadeIn < 0 || clip.fadeIn > MAX_FADE || clip.fadeOut < 0 || clip.fadeOut > MAX_FADE || clip.duckDb < 0 || clip.duckDb > MAX_DUCK_DB) return null;
+  return clip;
 }
 
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -638,18 +829,19 @@ function parseMedia(raw: unknown): Media | null {
 
 /**
  * A saved draft for this video, or null when it is missing, invalid or for
- * another render. Schema-1 drafts (4a) become all-main edits.
+ * another render. Schema-1 drafts (4a) become all-main edits; schema-2
+ * drafts (4b–4d) get no sounds and the original sound at 100 %.
  */
 export function parseProject(value: unknown, duration: number, info: Partial<Omit<MediaInfo, "duration" | "kind">> = {}): Project | null {
   if (!value || typeof value !== "object") return null;
   const data = value as Record<string, unknown>;
   const schema = data.schema_version;
-  if ((schema !== 1 && schema !== 2) || typeof data.duration !== "number" || Math.abs(data.duration - duration) > 0.5) return null;
+  if ((schema !== 1 && schema !== 2 && schema !== 3) || typeof data.duration !== "number" || Math.abs(data.duration - duration) > 0.5) return null;
   if (!Array.isArray(data.segments) || !data.segments.length || data.segments.length > MAX_SEGMENTS) return null;
   const main = mainMedia(duration, info);
   const known = new Map<string, Media>([[MAIN, main]]);
   const recent: Media[] = [];
-  if (schema === 2) {
+  if (schema !== 1) {
     if (!Array.isArray(data.media) || data.media.length > MAX_MEDIA + RECENT_LIMIT) return null;
     for (const raw of data.media as unknown[]) {
       const media = parseMedia(raw);
@@ -680,7 +872,7 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
     segments.push(segment);
   }
   const transitions: Record<string, Transition> = {};
-  if (schema === 2 && data.transitions && typeof data.transitions === "object") {
+  if (schema !== 1 && data.transitions && typeof data.transitions === "object") {
     for (const [id, raw] of Object.entries(data.transitions as Record<string, unknown>)) {
       const { type, duration: length } = (raw ?? {}) as Record<string, unknown>;
       const index = segments.findIndex((segment) => segment.id === id);
@@ -689,7 +881,7 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
     }
   }
   const overlays: Overlay[] = [];
-  if (schema === 2 && Array.isArray(data.overlays)) {
+  if (schema !== 1 && Array.isArray(data.overlays)) {
     for (const raw of (data.overlays as unknown[]).slice(0, MAX_OVERLAYS)) {
       if (!raw || typeof raw !== "object") continue;
       const { id, mediaId, at, start, end, x, y, w, volume } = raw as Record<string, unknown>;
@@ -705,10 +897,22 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
       overlays.push(overlay);
     }
   }
+  const audio: AudioClip[] = [];
+  if (schema === 3 && Array.isArray(data.audio)) {
+    for (const raw of (data.audio as unknown[]).slice(0, MAX_AUDIO)) {
+      const clip = parseAudio(raw);
+      if (!clip || ids.has(clip.id)) continue;
+      ids.add(clip.id);
+      count(clip.id);
+      audio.push(clip);
+    }
+  }
+  const mainVolume = schema === 3 && finite(data.main_volume) ? Math.round(clamp(data.main_volume, 0, MAX_VOLUME) * 100) / 100 : 1;
   const nextId = typeof data.next_id === "number" && Number.isInteger(data.next_id) && data.next_id > highest ? data.next_id : highest + 1;
   const changes = typeof data.changes === "number" && Number.isInteger(data.changes) && data.changes >= 0 ? data.changes : 0;
   const selected = typeof data.selected === "string" && segments.some((segment) => segment.id === data.selected) ? data.selected : null;
-  const edit = pruneMedia({ duration, media: [main, ...[...known.values()].filter((media) => media.id !== MAIN)], segments, transitions, overlays, nextId });
+  const edit = pruneMedia({ duration, media: [main, ...[...known.values()].filter((media) => media.id !== MAIN)], segments, transitions, overlays,
+    audio, mainVolume, nextId });
   return { edit, changes, selected, recent };
 }
 

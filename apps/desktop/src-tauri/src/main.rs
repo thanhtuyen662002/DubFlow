@@ -11,6 +11,7 @@ mod package;
 mod shorts;
 mod reframe;
 mod product;
+mod sfx;
 mod source;
 mod source_credit;
 mod storage;
@@ -1465,12 +1466,16 @@ fn editable_audio(value: &str) -> Result<PathBuf, String> {
 }
 
 /// Let the main window's player stream one local video (or a job's dubbed
-/// mix, see `editable_audio`); returns the path to load.
+/// mix, see `editable_audio`, or a sound the editor's Âm thanh may play, see
+/// `sfx::playable_audio`); returns the path to load.
 #[tauri::command]
 fn allow_media(app: tauri::AppHandle, path: String) -> Result<String, String> {
     use tauri::Manager;
-    let media = if Path::new(&path).extension().is_some_and(|extension| extension.eq_ignore_ascii_case("wav")) {
-        editable_audio(&path)?
+    let extension = Path::new(&path).extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let media = if extension == "wav" {
+        editable_audio(&path).or_else(|error| sfx::playable_audio(&path).map_err(|_| error))?
+    } else if sfx::AUDIO_EXTENSIONS.contains(&extension.as_str()) {
+        sfx::playable_audio(&path)?
     } else {
         playable_media(&path)?
     };
@@ -1738,7 +1743,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_media_info, edit::edit_subtitles_load, edit::edit_subtitles_apply])
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_media_info, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

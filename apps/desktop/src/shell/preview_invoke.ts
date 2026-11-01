@@ -164,6 +164,7 @@ type PreviewSegment = { media?: number; start: number; end: number; speed: numbe
 type PreviewExport = {
   path: string; srt_path: string; created: number; duration: number; quality: string; segments: PreviewSegment[];
   media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[];
+  audio?: unknown[]; main_volume?: number;
 };
 
 /** Finished videos the browser preview offers in "Chèn › Từ DubFlow" (it has no real queue jobs to insert). */
@@ -187,6 +188,23 @@ function previewMediaInfo(path: string) {
     path, title: name.replace(/\.[^.]*$/, ""), duration: /final_vi/i.test(name) ? 60 + hash % 120 : 8 + hash % 50,
     width: portrait ? 1080 : 1280, height: portrait ? 1920 : 720, fps: hash % 2 ? 30 : 25, has_audio: !silent, size_bytes: 9_000_000 + hash % 40_000_000,
   };
+}
+// Âm thanh (Issue #420): the sound-effect pack "downloads" in about three seconds.
+const SFX_PACK_BYTES = 2_194_688;
+let sfxDownloadStarted = 0;
+const PREVIEW_AUDIO_FOLDER = "D:\\Âm thanh\\Hiệu ứng của tôi";
+const PREVIEW_AUDIO_FILES = ["nhac-nen-vui-tuoi.mp3", "tieng-cuoi-khan-gia.wav", "trong-don-dap.m4a", "chuong-bao-thuc.ogg", "nhac-kich-tinh-ngan.mp3"];
+function previewSfxStatus() {
+  const elapsed = sfxDownloadStarted ? Date.now() - sfxDownloadStarted : -1;
+  const installed = elapsed >= 3500;
+  const state = elapsed < 0 || installed ? "idle" : elapsed < 3000 ? "downloading" : "installing";
+  return { installed, version: installed ? "v1" : "", count: installed ? 199 : 0, size_bytes: SFX_PACK_BYTES, state,
+    received: state === "downloading" ? Math.floor(SFX_PACK_BYTES * elapsed / 3000) : installed ? SFX_PACK_BYTES : 0, error: null };
+}
+function previewAudioSeconds(path: string): number {
+  let hash = 0;
+  for (const char of path) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return 1.5 + (hash % 900) / 10;
 }
 const editRuns = new Map<string, { started: number; cancelled: boolean; entry: PreviewExport; recorded: boolean }>();
 const EDIT_EXPORT_MS = 5000;
@@ -219,7 +237,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "edit_project_save": editProjects.set(String(args.outputPath), JSON.parse(JSON.stringify(args.project))); return null as T;
     case "edit_export": {
       const request = args.request as { outputPath: string; folder: string; fileName: string; quality: string; segments: PreviewSegment[];
-        media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[] };
+        media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[];
+        audio?: unknown[]; mainVolume?: number };
       if (editRuns.get(request.outputPath) && previewEditStatus(request.outputPath).status?.state === "RUNNING") throw new Error("Video này đang được xuất");
       const taken = new Set((editExports.get(request.outputPath) ?? []).map((entry) => entry.path));
       const stem = request.fileName.replace(/\.mp4$/i, "").trim();
@@ -230,7 +249,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
         - (request.transitions ?? []).filter((joint) => joint.type === "dissolve").reduce((total, joint) => total + joint.duration, 0);
       editRuns.set(request.outputPath, { started: Date.now(), cancelled: false, recorded: false,
         entry: { path, srt_path: path.replace(/\.mp4$/, ".srt"), created: Math.floor(Date.now() / 1000), duration, quality: request.quality,
-          segments: request.segments, media: request.media ?? [], transitions: request.transitions ?? [], overlays: request.overlays ?? [] } });
+          segments: request.segments, media: request.media ?? [], transitions: request.transitions ?? [], overlays: request.overlays ?? [],
+          audio: request.audio ?? [], main_volume: request.mainVolume ?? 1 } });
       return { path } as T;
     }
     case "edit_subtitles_load": return {
@@ -417,6 +437,18 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
     // No asset protocol in a browser: the player shows its placeholder.
     case "allow_media": return null as T;
+    case "sfx_status": return previewSfxStatus() as T;
+    case "sfx_install": if (!sfxDownloadStarted) sfxDownloadStarted = Date.now(); return previewSfxStatus() as T;
+    case "sfx_path": return (previewSfxStatus().installed ? `C:\\Users\\preview\\AppData\\Local\\DubFlow\\sfx\\v1\\sounds\\${String(args.id)}.ogg` : null) as T;
+    case "pick_audio_folder": return PREVIEW_AUDIO_FOLDER as T;
+    case "user_audio_list": return PREVIEW_AUDIO_FILES.map((name, index) => ({
+      path: `${String(args.folder)}\\${name}`, name, size_bytes: 180_000 + index * 731_000 })) as T;
+    case "audio_info": {
+      const path = String(args.path);
+      return { path, title: (path.split(/[\\/]/).pop() ?? path).replace(/\.[^.]*$/, ""), duration: previewAudioSeconds(path), size_bytes: 900_000 } as T;
+    }
+    case "pick_audio_files": return [`${PREVIEW_AUDIO_FOLDER}\\tieng-vo-tay.mp3`] as T;
+    case "expand_audio_paths": return (args.paths as string[]).filter((path) => /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(path)) as T;
     case "video_frame": return await previewFrame(Number(args.position), /final_vi\.mp4$/i.test(String(args.sourcePath))) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
