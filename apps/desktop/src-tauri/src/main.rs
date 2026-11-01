@@ -247,13 +247,38 @@ fn default_job_output(source: &Path, job_id: &str) -> Result<PathBuf, String> {
 /// downloads, so the path stays short and the store holds only sources.
 fn results_base(source: &Path, media_store: Option<&Path>, profile: Option<&Path>) -> PathBuf {
     let beside = source.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let inside = |store: &Path| {
-        let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        canonical(source).starts_with(canonical(store))
-    };
     match (media_store, profile) {
-        (Some(store), Some(profile)) if inside(store) => profile.join("Videos"),
+        (Some(store), Some(profile)) if within(source, store) => profile.join("Videos"),
         _ => beside,
+    }
+}
+
+/// Whether `path` (which need not exist yet) lies inside `root`, comparing
+/// the canonical form of its nearest existing ancestor.
+fn within(path: &Path, root: &Path) -> bool {
+    let Ok(root) = root.canonicalize() else { return false };
+    let mut existing = path;
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else { return false };
+        rest.push(name.to_os_string());
+        existing = parent;
+    }
+    let Ok(mut resolved) = existing.canonicalize() else { return false };
+    for name in rest.iter().rev() {
+        resolved.push(name);
+    }
+    resolved.starts_with(root)
+}
+
+/// An output folder a job asked for, unless it lies inside the link
+/// service's source store (an older rerun pinned one there): those results
+/// move to the default folder so the path stays short.
+fn requested_output(value: &str, source: &Path, job_id: &str, media_store: Option<&Path>) -> Result<PathBuf, String> {
+    let requested = PathBuf::from(value);
+    match media_store {
+        Some(store) if within(&requested, store) => default_job_output(source, job_id),
+        _ => Ok(requested),
     }
 }
 
@@ -515,7 +540,7 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
     let control = control_root()?;
     let status = status_path(&control, &job_id)?;
     let output = match (output_dir, output_root) {
-        (Some(value), _) => PathBuf::from(value),
+        (Some(value), _) => requested_output(&value, &source, &job_id, data_root().ok().map(|root| root.join("source-media")).as_deref())?,
         (None, Some(base)) => {
             let base = PathBuf::from(base);
             if !base.is_absolute() || !base.is_dir() {
@@ -1944,6 +1969,13 @@ mod tests {
         assert_eq!(results_base(&cached, Some(&store), Some(&profile)), profile.join("Videos"));
         assert_eq!(results_base(&local, Some(&store), Some(&profile)), root.join("clips"));
         assert_eq!(results_base(&cached, None, Some(&profile)), cached.parent().unwrap());
+        // A pinned folder that does not exist yet still counts as inside the store.
+        let pinned = store.join("ab12").join("link-1").join("cd34").join("DubFlow Output").join("ef56 - vi").join("run-1");
+        assert!(within(&pinned, &store));
+        assert!(!within(&root.join("out").join("run-1"), &store));
+        let kept = root.join("Videos").join("DubFlow Output").join("x - vi").join("run-2");
+        assert_eq!(requested_output(&kept.to_string_lossy(), &local, "job-1", Some(&store)).unwrap(), kept);
+        assert_ne!(requested_output(&pinned.to_string_lossy(), &cached, "job-1", Some(&store)).unwrap(), pinned);
         fs::remove_dir_all(&root).unwrap();
     }
 
