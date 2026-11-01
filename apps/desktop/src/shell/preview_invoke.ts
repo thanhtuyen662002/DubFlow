@@ -148,10 +148,36 @@ const packages = new Map<string, { started: number; cancelled: boolean }>();
 const compilations = new Map<string, { started: number; cancelled: boolean; total: number }>();
 const shorts = new Map<string, { started: number; cancelled: boolean; items: Array<{ title: string }> }>();
 const reframes = new Map<string, { started: number; cancelled: boolean }>();
-/** Edit drafts and exports per finished video (Cắt ghép). */
+/** Edit drafts and exports per finished video (Cắt ghép, Chèn). */
 const editProjects = new Map<string, unknown>();
-type PreviewExport = { path: string; srt_path: string; created: number; duration: number; quality: string; segments: Array<{ start: number; end: number; speed: number; volume: number }> };
-const editExports = new Map<string, PreviewExport[]>();
+type PreviewSegment = { media?: number; start: number; end: number; speed: number; volume: number };
+type PreviewExport = {
+  path: string; srt_path: string; created: number; duration: number; quality: string; segments: PreviewSegment[];
+  media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[];
+};
+
+/** Finished videos the browser preview offers in "Chèn › Từ DubFlow" (it has no real queue jobs to insert). */
+export const PREVIEW_EDIT_LIBRARY = [
+  { id: "preview-intro", title: "Mở đầu kênh Phim Hay", outputPath: "D:\\Videos\\DubFlow Output\\Mo dau kenh - vi\\run-1\\final_vi.mp4" },
+  { id: "preview-trailer", title: "Trailer phim cổ trang tập 2", outputPath: "D:\\Videos\\DubFlow Output\\Trailer co trang - vi\\run-1\\final_vi.mp4" },
+];
+const editExports = new Map<string, PreviewExport[]>([[PREVIEW_EDIT_LIBRARY[1].outputPath, [{
+  path: "D:\\Videos\\Trailer co trang (sửa 1).mp4", srt_path: "D:\\Videos\\Trailer co trang (sửa 1).srt", created: 1_790_000_000, duration: 42.5,
+  quality: "source", segments: [{ start: 0, end: 42.5, speed: 1, volume: 1 }],
+}]]]);
+
+/** Facts of a local video for "Chèn": portrait clips and a silent one, so every case can be designed. */
+function previewMediaInfo(path: string) {
+  const name = path.split(/[\\/]/).pop() ?? path;
+  let hash = 0;
+  for (const char of path) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  const portrait = /doc|dọc|douyin|short/i.test(path);
+  const silent = /khong-tieng|im-lang|silent/i.test(path);
+  return {
+    path, title: name.replace(/\.[^.]*$/, ""), duration: /final_vi/i.test(name) ? 60 + hash % 120 : 8 + hash % 50,
+    width: portrait ? 1080 : 1280, height: portrait ? 1920 : 720, fps: hash % 2 ? 30 : 25, has_audio: !silent, size_bytes: 9_000_000 + hash % 40_000_000,
+  };
+}
 const editRuns = new Map<string, { started: number; cancelled: boolean; entry: PreviewExport; recorded: boolean }>();
 const EDIT_EXPORT_MS = 5000;
 
@@ -176,24 +202,29 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
     case "edit_project_load": return {
-      duration: 154.2, width: 1024, height: 576, size_bytes: 46_000_000, has_audio: true,
+      duration: 154.2, width: 1024, height: 576, fps: 25, size_bytes: 46_000_000, has_audio: true,
       project: editProjects.get(String(args.outputPath)) ?? null,
       cues: reviewCues.map(({ cue_id, start_ms, end_ms, machine_text }) => ({ start_ms, end_ms, text: savedOverrides[cue_id] ?? machine_text })),
     } as T;
     case "edit_project_save": editProjects.set(String(args.outputPath), JSON.parse(JSON.stringify(args.project))); return null as T;
     case "edit_export": {
-      const request = args.request as { outputPath: string; folder: string; fileName: string; quality: string; segments: PreviewExport["segments"] };
+      const request = args.request as { outputPath: string; folder: string; fileName: string; quality: string; segments: PreviewSegment[];
+        media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[] };
       if (editRuns.get(request.outputPath) && previewEditStatus(request.outputPath).status?.state === "RUNNING") throw new Error("Video này đang được xuất");
       const taken = new Set((editExports.get(request.outputPath) ?? []).map((entry) => entry.path));
       const stem = request.fileName.replace(/\.mp4$/i, "").trim();
       let path = `${request.folder}/${stem}.mp4`;
       for (let number = 2; taken.has(path); number++) path = `${request.folder}/${stem} (${number}).mp4`;
-      const duration = request.segments.reduce((total, segment) => total + (segment.end - segment.start) / segment.speed, 0);
+      // A dissolve overlaps its neighbours; fade through black keeps the length.
+      const duration = request.segments.reduce((total, segment) => total + (segment.end - segment.start) / segment.speed, 0)
+        - (request.transitions ?? []).filter((joint) => joint.type === "dissolve").reduce((total, joint) => total + joint.duration, 0);
       editRuns.set(request.outputPath, { started: Date.now(), cancelled: false, recorded: false,
-        entry: { path, srt_path: path.replace(/\.mp4$/, ".srt"), created: Math.floor(Date.now() / 1000), duration, quality: request.quality, segments: request.segments } });
+        entry: { path, srt_path: path.replace(/\.mp4$/, ".srt"), created: Math.floor(Date.now() / 1000), duration, quality: request.quality,
+          segments: request.segments, media: request.media ?? [], transitions: request.transitions ?? [], overlays: request.overlays ?? [] } });
       return { path } as T;
     }
     case "edit_status": return previewEditStatus(String(args.outputPath)) as T;
+    case "edit_media_info": return previewMediaInfo(String(args.path)) as T;
     case "edit_cancel": {
       const run = editRuns.get(String(args.outputPath));
       if (run && Date.now() - run.started < EDIT_EXPORT_MS) run.cancelled = true;

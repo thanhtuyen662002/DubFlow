@@ -268,7 +268,8 @@
                 </button>
                 <span class="spacer edit-only"></span>
                 <div id="edit-modes" class="seg edit-modes edit-only" role="tablist" aria-label="Công cụ chỉnh sửa">
-                  <button type="button" role="tab" aria-selected="true" aria-controls="edit-panel">Cắt ghép</button>
+                  <button type="button" role="tab" data-mode="cut" aria-selected="true" aria-controls="edit-panel">Cắt ghép</button>
+                  <button type="button" role="tab" data-mode="insert" aria-selected="false" aria-controls="edit-panel">Chèn</button>
                 </div>
                 <button id="list-toggle" class="btn ghost list-toggle view-only" type="button" aria-controls="queue-col" aria-expanded="false">
                   <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
@@ -306,6 +307,9 @@
                 </div>
                 <div id="player-frame" class="player-frame" hidden>
                   <video id="player-video" preload="metadata" playsinline></video>
+                  <canvas id="edit-ghost" class="edit-ghost" aria-hidden="true"></canvas>
+                  <div id="edit-fade" class="edit-fade" aria-hidden="true"></div>
+                  <div id="edit-overlays" class="edit-overlays" aria-label="Video chồng"></div>
                   <div id="player-placeholder" class="player-placeholder">
                     <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10 9.5 4.5 2.5-4.5 2.5z" fill="currentColor"/></svg>
                     <span id="player-placeholder-text">Xem video ngay trong ứng dụng DubFlow</span>
@@ -647,7 +651,7 @@
               </div>
             </aside>
 
-            <aside id="edit-panel" class="edit-panel edit-only" aria-label="Cắt ghép">
+            <aside id="edit-panel" class="edit-panel edit-only" aria-label="Chỉnh sửa">
               <div class="edit-panel-head">
                 <button id="edit-undo" class="icon-btn" type="button" aria-label="Hoàn tác" title="Hoàn tác (Ctrl+Z)" aria-keyshortcuts="Control+Z">
                   <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
@@ -663,30 +667,94 @@
                   Xuất video
                 </button>
               </div>
-              <div class="edit-panel-body">
-                <h3 id="edit-segment-title" class="edit-segment-title">Đoạn 1</h3>
-                <div class="edit-times">
-                  <label>Bắt đầu<input id="edit-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
-                  <label>Kết thúc<input id="edit-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+              <div id="edit-panel-body" class="edit-panel-body">
+                <section id="edit-sources" class="edit-sources" aria-label="Chèn video">
+                  <div class="edit-field">
+                    <span class="edit-label">Chèn vào đâu</span>
+                    <div id="insert-where" class="seg edit-where" role="radiogroup" aria-label="Vị trí chèn">
+                      <button type="button" role="radio" data-where="playhead" aria-checked="true" title="Chèn tại đầu phát">Tại đầu phát</button>
+                      <button type="button" role="radio" data-where="end" aria-checked="false" title="Thêm vào cuối">Vào cuối</button>
+                      <button type="button" role="radio" data-where="overlay" aria-checked="false" title="Chồng lên video">Chồng lên video</button>
+                    </div>
+                    <small id="insert-where-note" class="edit-note"></small>
+                  </div>
+                  <div id="insert-tabs" class="seg edit-source-tabs" role="tablist" aria-label="Nguồn video">
+                    <button id="insert-tab-dubflow" type="button" role="tab" data-source="dubflow" aria-selected="true" aria-controls="insert-dubflow">Từ DubFlow</button>
+                    <button id="insert-tab-computer" type="button" role="tab" data-source="computer" aria-selected="false" aria-controls="insert-computer">Từ máy tính</button>
+                  </div>
+                  <div id="insert-dubflow" class="insert-pane" role="tabpanel" aria-labelledby="insert-tab-dubflow">
+                    <ul id="insert-library" class="insert-list" aria-label="Video đã làm trong DubFlow"></ul>
+                    <p id="insert-library-empty" class="edit-note" hidden>Chưa có video nào khác làm xong trong danh sách. Video đã xử lý xong và các bản đã sửa của chúng sẽ hiện ở đây.</p>
+                  </div>
+                  <div id="insert-computer" class="insert-pane" role="tabpanel" aria-labelledby="insert-tab-computer" hidden>
+                    <button id="insert-pick" class="btn insert-pick" type="button">
+                      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" fill="none"/></svg>
+                      Chọn video…
+                    </button>
+                    <ul id="insert-recent" class="insert-list" aria-label="Video đã chọn gần đây"></ul>
+                    <p class="insert-drop">Hoặc kéo video từ máy thả thẳng lên dòng thời gian.</p>
+                  </div>
+                </section>
+                <div id="edit-seg-controls" class="edit-seg-controls">
+                  <h3 id="edit-segment-title" class="edit-segment-title">Đoạn 1</h3>
+                  <div class="edit-times">
+                    <label>Bắt đầu<input id="edit-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                    <label>Kết thúc<input id="edit-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                  </div>
+                  <p id="edit-length" class="edit-length"></p>
+                  <div class="edit-field">
+                    <span class="edit-label">Tốc độ</span>
+                    <div id="edit-speeds" class="seg edit-speeds" role="radiogroup" aria-label="Tốc độ đoạn"></div>
+                    <label class="edit-custom">Tùy chỉnh<input id="edit-speed-custom" type="number" min="0.5" max="2" step="0.05" aria-label="Tốc độ tùy chỉnh (0,5 đến 2)" /><span>× (0,5–2)</span></label>
+                  </div>
+                  <label class="edit-field">
+                    <span class="edit-label">Âm lượng đoạn <output id="edit-volume-value">100%</output></span>
+                    <input id="edit-volume" type="range" min="0" max="200" step="5" value="100" />
+                    <small id="edit-volume-note" class="edit-note" hidden>Trên 100% chỉ nghe được sau khi xuất video.</small>
+                  </label>
+                  <div class="edit-actions">
+                    <button id="edit-split" class="btn" type="button" aria-keyshortcuts="S">Tách tại đầu phát<kbd>S</kbd></button>
+                    <button id="edit-delete" class="btn danger" type="button" aria-keyshortcuts="Delete"><span id="edit-delete-label">Xóa đoạn</span><kbd>Delete</kbd></button>
+                  </div>
                 </div>
-                <p id="edit-length" class="edit-length"></p>
-                <div class="edit-field">
-                  <span class="edit-label">Tốc độ</span>
-                  <div id="edit-speeds" class="seg edit-speeds" role="radiogroup" aria-label="Tốc độ đoạn"></div>
-                  <label class="edit-custom">Tùy chỉnh<input id="edit-speed-custom" type="number" min="0.5" max="2" step="0.05" aria-label="Tốc độ tùy chỉnh (0,5 đến 2)" /><span>× (0,5–2)</span></label>
-                </div>
-                <label class="edit-field">
-                  <span class="edit-label">Âm lượng đoạn <output id="edit-volume-value">100%</output></span>
-                  <input id="edit-volume" type="range" min="0" max="200" step="5" value="100" />
-                  <small id="edit-volume-note" class="edit-note" hidden>Trên 100% chỉ nghe được sau khi xuất video.</small>
-                </label>
-                <div class="edit-actions">
-                  <button id="edit-split" class="btn" type="button" aria-keyshortcuts="S">Tách tại đầu phát<kbd>S</kbd></button>
-                  <button id="edit-delete" class="btn danger" type="button" aria-keyshortcuts="Delete">Xóa đoạn<kbd>Delete</kbd></button>
-                </div>
+                <section id="edit-ov-controls" class="edit-ov-controls" aria-labelledby="ov-title" hidden>
+                  <h3 id="ov-title" class="edit-segment-title">Video chồng</h3>
+                  <div class="edit-field">
+                    <span class="edit-label">Vị trí</span>
+                    <div id="ov-presets" class="seg ov-presets" role="radiogroup" aria-label="Vị trí video chồng">
+                      <button type="button" role="radio" data-preset="tl" aria-checked="false" aria-label="Góc trên trái" title="Góc trên trái"><span class="ov-mini tl"></span></button>
+                      <button type="button" role="radio" data-preset="tr" aria-checked="false" aria-label="Góc trên phải" title="Góc trên phải"><span class="ov-mini tr"></span></button>
+                      <button type="button" role="radio" data-preset="bl" aria-checked="false" aria-label="Góc dưới trái" title="Góc dưới trái"><span class="ov-mini bl"></span></button>
+                      <button type="button" role="radio" data-preset="br" aria-checked="false" aria-label="Góc dưới phải" title="Góc dưới phải"><span class="ov-mini br"></span></button>
+                      <button type="button" role="radio" data-preset="center" aria-checked="false" title="Giữa khung hình">Giữa</button>
+                    </div>
+                  </div>
+                  <label class="edit-field">
+                    <span class="edit-label">Kích thước <output id="ov-size-value">35%</output></span>
+                    <input id="ov-size" type="range" min="20" max="100" step="1" value="35" />
+                  </label>
+                  <label class="edit-field">
+                    <span class="edit-label">Âm lượng <output id="ov-volume-value">100%</output></span>
+                    <input id="ov-volume" type="range" min="0" max="200" step="5" value="100" />
+                    <small id="ov-volume-note" class="edit-note" hidden>Trên 100% chỉ nghe được sau khi xuất video.</small>
+                  </label>
+                  <div class="edit-times three">
+                    <label title="Thời điểm trên video đã sửa">Hiện lúc<input id="ov-at" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                    <label title="Bắt đầu trong video chồng">Từ<input id="ov-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                    <label title="Kết thúc trong video chồng">Đến<input id="ov-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                  </div>
+                  <p id="ov-length" class="edit-length"></p>
+                  <div class="edit-actions">
+                    <button id="ov-delete" class="btn danger" type="button" aria-keyshortcuts="Delete">Xóa video chồng<kbd>Delete</kbd></button>
+                  </div>
+                  <p class="edit-note">Kéo khung trên video để đổi chỗ, kéo góc dưới bên phải để đổi cỡ.</p>
+                </section>
+                <p id="edit-select-hint" class="edit-note" hidden>Chọn một đoạn chèn hoặc video chồng trên dòng thời gian để chỉnh.</p>
                 <p id="edit-hint" class="edit-hint" role="status"></p>
-                <p class="edit-note">Phụ đề trong đoạn bị xóa cũng bị bỏ theo, các đoạn sau tự dồn lên. Bắt đầu và kết thúc tính theo video gốc.</p>
-                <p class="edit-note">Thay đổi hiện ngay trên khung video và được tự lưu nháp. Bấm Xuất video để ra file mới, video gốc vẫn giữ nguyên.</p>
+                <div id="edit-cut-notes" class="edit-cut-notes">
+                  <p class="edit-note">Phụ đề trong đoạn bị xóa cũng bị bỏ theo, các đoạn sau tự dồn lên. Bắt đầu và kết thúc tính theo video của đoạn.</p>
+                  <p class="edit-note">Thay đổi hiện ngay trên khung video và được tự lưu nháp. Bấm Xuất video để ra file mới, video gốc vẫn giữ nguyên.</p>
+                </div>
                 <p id="edit-save-state" class="edit-hint warn" role="status"></p>
               </div>
             </aside>
@@ -711,6 +779,7 @@
               <div id="tl-scroll" class="tl-scroll">
                 <div id="tl-content" class="tl-content">
                   <div id="tl-ruler" class="tl-ruler"></div>
+                  <div id="tl-overlays" class="tl-ovtrack" aria-label="Video chồng" hidden></div>
                   <div id="tl-track" class="tl-track" aria-label="Các đoạn video"></div>
                   <div id="tl-playhead" class="tl-playhead" aria-hidden="true"><span></span></div>
                 </div>
@@ -1028,6 +1097,7 @@
                 <button type="button" role="radio" data-quality="720p" aria-checked="false">720p</button>
               </div>
               <small id="export-quality-hint" class="export-hint"></small>
+              <small id="export-extras" class="export-hint" hidden></small>
             </div>
           </fieldset>
           <p class="export-note">Video gốc vẫn được giữ nguyên. Phụ đề SRT được lưu kèm, khớp với video mới.</p>
@@ -1046,7 +1116,20 @@
         </footer>
       </div>
     </div>
-    <div id="drag-overlay" class="drag-overlay" hidden><div>Thả để thêm video</div></div>
+    <div id="drag-overlay" class="drag-overlay" hidden><div id="drag-overlay-text">Thả để thêm video</div></div>
+    <div id="tl-transition" class="tl-pop" role="dialog" aria-labelledby="tl-pop-title" hidden>
+      <div class="tl-pop-head"><strong id="tl-pop-title">Chuyển cảnh</strong><span id="tl-pop-where" class="tl-pop-where"></span></div>
+      <div id="tl-pop-types" class="seg tl-pop-types" role="radiogroup" aria-label="Kiểu chuyển cảnh">
+        <button type="button" role="radio" data-type="none" aria-checked="true">Không</button>
+        <button type="button" role="radio" data-type="fade" aria-checked="false">Mờ qua đen</button>
+        <button type="button" role="radio" data-type="dissolve" aria-checked="false">Hòa trộn</button>
+      </div>
+      <label class="edit-field">
+        <span class="edit-label">Thời lượng <output id="tl-pop-value">0,5 giây</output></span>
+        <input id="tl-pop-duration" type="range" min="0.2" max="2" step="0.1" value="0.5" />
+      </label>
+      <small id="tl-pop-note" class="edit-note" title="Khung xem trước chỉ mô phỏng gần đúng; video xuất ra có chuyển cảnh chính xác.">Xem trước chỉ gần đúng; video xuất ra sẽ chính xác.</small>
+    </div>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

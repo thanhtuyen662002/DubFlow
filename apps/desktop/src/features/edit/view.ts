@@ -1,27 +1,36 @@
 /**
- * Edit mode on the queue screen (Issue #408): the Cắt ghép panel, the
- * timeline, the live preview through the queue player, autosave of the draft,
- * the "Xuất video" dialog and the "Bản đã sửa" list in Kết quả.
+ * Edit mode on the queue screen (Issues #408, #410): the Cắt ghép and Chèn
+ * panels, the timeline (segments, joints with transitions, the overlay row),
+ * the live preview through the queue player plus one <video> per other media
+ * and per overlay, autosave of the draft, the "Xuất video" dialog and the
+ * "Bản đã sửa" list in Kết quả.
  */
 import type { QueueJob } from "../queue/model.ts";
 import type { ConfirmOptions } from "../../shell/confirm.ts";
 import {
-  createEdit, defaultExportName, EditHistory, estimateExportBytes, exportSize, formatClock, formatSpeed, isUnchanged,
-  outputDuration, outputStarts, outputToSource, parseClock, parseProject, remapCues, remove, sameSegments,
-  serializeProject, setSpeed, setVolume, sourceToOutput, SPEED_PRESETS, split, thumbGrid, tickStep, trim, zoomScale,
-  type Cue, type Edit, type Quality, type Segment,
+  addedId, addOverlay, append, createEdit, defaultExportName, EditHistory, estimateExportBytes, exportPlan, exportSize,
+  formatClock, formatSpeed, insertAt, isUnchanged, MAIN, MAX_MEDIA, MAX_OVERLAYS, MAX_SEGMENTS, matchesExport, MIN_SEGMENT,
+  MIN_TRANSITION, mediaOf, moveOverlay, outputDuration, outputStarts, outputToSource, overlayHeight, overlayLength,
+  overlayPreset, overlayPresetOf, parseClock, parseProject, RECENT_LIMIT, remapCues, remove, removeOverlay, resizeOverlay,
+  samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput,
+  SPEED_PRESETS, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
+  type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-type Facts = { duration: number; width: number; height: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
+type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
 type LoadResponse = Facts & { project: unknown };
 type ExportEntry = {
   path: string; srt_path?: string | null; created: number; duration: number; quality?: string;
-  segments?: Array<Pick<Segment, "start" | "end" | "speed" | "volume">>;
+  media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown;
 };
 type ExportState = "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 type ExportStatus = { state: ExportState; percent: number; message: string; output_path: string | null };
 type StatusResponse = { status: ExportStatus | null; exports: ExportEntry[] };
+type MediaResponse = { path: string; title: string; duration: number; width: number; height: number; fps: number; has_audio: boolean };
+
+/** A finished queue video the Chèn panel offers. */
+export type LibraryJob = { id: string; title: string; outputPath: string };
 
 export type EditorHost = {
   video: HTMLVideoElement;
@@ -33,6 +42,10 @@ export type EditorHost = {
   showError: (text: string) => void;
   /** Play a finished export in the in-app player. */
   playExport: (jobId: string, path: string) => void;
+  /** A URL the player can stream a local video from, or null when it cannot. */
+  mediaUrl: (path: string) => Promise<string | null>;
+  /** Finished videos in the queue, for "Từ DubFlow". */
+  library: () => LibraryJob[];
 };
 
 export type Editor = {
@@ -42,9 +55,13 @@ export type Editor = {
   select(job: QueueJob | null): void;
   /** Output time / output length while editing, else null. */
   timeLabel(): string | null;
+  /** Whether the edited output is playing; null outside edit mode. */
+  isPlaying(): boolean | null;
   togglePlay(): void;
   /** Write a pending autosave now. */
   flush(): Promise<void>;
+  /** Files dropped on the window while editing, at a point in client pixels (null when unknown). */
+  drop(paths: string[], point: { x: number; y: number } | null): void;
 };
 
 type Session = {
@@ -55,16 +72,36 @@ type Session = {
   /** An uncommitted change while dragging a handle or a slider. */
   draft: Edit | null;
   selected: string | null;
+  /** The selected overlay; its controls replace the segment's. */
+  overlay: string | null;
   outputTime: number;
   /** Segment being played. */
   index: number;
+  playing: boolean;
   /** The edit last sent to "Xuất video", marked exported when it finishes. */
   exporting: Edit | null;
+  /** Files picked from the computer, kept with the draft. */
+  recent: Media[];
 };
+
+type Mode = "cut" | "insert";
+type Where = "playhead" | "end" | "overlay";
+type LibraryItem = { key: string; path: string; title: string; meta: string; kind: "job" | "file"; duration: number | null };
+type Box = { element: HTMLDivElement; video: HTMLVideoElement; path: string };
 
 const PAD = 12;
 const THUMB_WIDTH = 76;
 const THUMB_PX = 192;
+const POSTER_PX = 160;
+const LIBRARY_LIMIT = 40;
+/** Other-media players kept loaded besides the current and the next one. */
+const ALT_KEEP = 3;
+const WHERE_LABEL: Record<Where, { button: string; action: string; note: string }> = {
+  playhead: { button: "Chèn", action: "Chèn tại đầu phát", note: "Tách đoạn tại đầu phát; các đoạn sau và phụ đề tự dồn ra sau." },
+  end: { button: "Thêm", action: "Thêm vào cuối", note: "Thêm sau đoạn cuối cùng của video." },
+  overlay: { button: "Chồng", action: "Chồng lên video", note: "Hiện thành khung nhỏ trên video từ đầu phát; chỉnh vị trí, cỡ và âm lượng sau khi thêm." },
+};
+const TRANSITION_NAMES: Record<TransitionType, string> = { fade: "Mờ qua đen", dissolve: "Hòa trộn" };
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const node = document.querySelector<T>(selector);
@@ -83,6 +120,10 @@ function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
+function stem(path: string): string {
+  return fileName(path).replace(/\.[^.]*$/, "");
+}
+
 function folderOf(path: string): string {
   return path.replace(/[\\/][^\\/]*$/, "");
 }
@@ -92,11 +133,17 @@ function megabytes(bytes: number): string {
   return bytes >= 1_000_000_000 ? `khoảng ${(bytes / 1_000_000_000).toFixed(1).replace(".", ",")} GB` : `khoảng ${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
 }
 
+/** "0,5 giây" */
+function seconds(value: number): string {
+  return `${String(Math.round(value * 10) / 10).replace(".", ",")} giây`;
+}
+
 const clamp = (value: number, low: number, high: number): number => Math.min(high, Math.max(low, value));
 
 export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const { video } = host;
   const screen = $("#queue-content");
+  const frame = video.parentElement as HTMLElement;
   const openButton = $<HTMLButtonElement>("#edit-open");
   const undoButton = $<HTMLButtonElement>("#edit-undo");
   const redoButton = $<HTMLButtonElement>("#edit-redo");
@@ -111,11 +158,27 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const content = $("#tl-content");
   const ruler = $("#tl-ruler");
   const track = $("#tl-track");
+  const overlayTrack = $("#tl-overlays");
   const playhead = $("#tl-playhead");
   const zoom = $<HTMLInputElement>("#tl-zoom");
   const dialog = $("#export-dialog");
   const nameInput = $<HTMLInputElement>("#export-name");
   const qualityButtons = [...document.querySelectorAll<HTMLButtonElement>("#export-quality [data-quality]")];
+  const modeTabs = [...document.querySelectorAll<HTMLButtonElement>("#edit-modes [data-mode]")];
+  const whereButtons = [...document.querySelectorAll<HTMLButtonElement>("#insert-where [data-where]")];
+  const sourceTabs = [...document.querySelectorAll<HTMLButtonElement>("#insert-tabs [data-source]")];
+  const presetButtons = [...document.querySelectorAll<HTMLButtonElement>("#ov-presets [data-preset]")];
+  const ovSize = $<HTMLInputElement>("#ov-size");
+  const ovVolume = $<HTMLInputElement>("#ov-volume");
+  const ovAt = $<HTMLInputElement>("#ov-at");
+  const ovStart = $<HTMLInputElement>("#ov-start");
+  const ovEnd = $<HTMLInputElement>("#ov-end");
+  const ghost = $<HTMLCanvasElement>("#edit-ghost");
+  const fadeLayer = $("#edit-fade");
+  const overlayLayer = $("#edit-overlays");
+  const pop = $("#tl-transition");
+  const popTypes = [...document.querySelectorAll<HTMLButtonElement>("#tl-pop-types [data-type]")];
+  const popDuration = $<HTMLInputElement>("#tl-pop-duration");
 
   let session: Session | null = null;
   let saveTimer = 0;
@@ -123,12 +186,30 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   let loop = 0;
   let pps = 1;
   let opening = false;
-  // Thumbnails: one frame per grid cell of the open video, fetched lazily.
-  let grid = { step: 1, times: [] as number[] };
-  let thumbsFor = "";
-  const thumbs = new Map<number, string | null>();
-  const wanted: number[] = [];
+  let mode: Mode = "cut";
+  let where: Where = "playhead";
+  let source: "dubflow" | "computer" = "dubflow";
+  // Timeline thumbnails: one frame per grid cell of each media, fetched lazily ("<path>\n<cell>").
+  const grids = new Map<string, { step: number; times: number[]; duration: number }>();
+  const thumbs = new Map<string, string | null>();
+  const wanted: string[] = [];
   let thumbWorkers = 0;
+  let thumbEpoch = 0;
+  // Chèn sources.
+  const infoCache = new Map<string, Promise<MediaInfo | null>>();
+  const posters = new Map<string, string | null>();
+  const posterQueue: string[] = [];
+  let posterWorkers = 0;
+  let library: LibraryItem[] = [];
+  let libraryToken = 0;
+  // Playback across media: the queue player for "main", one <video> per other media, one per overlay.
+  const alts = new Map<string, HTMLVideoElement>();
+  const boxes = new Map<string, Box>();
+  let active: HTMLVideoElement = video;
+  /** Joint whose outgoing frame the ghost holds (dissolve preview), or -1. */
+  let ghostJoint = -1;
+  /** The transition popover's joint (id of the segment before it). */
+  let popFor: string | null = null;
   // Kết quả list and export progress for the selected job.
   let listJob: QueueJob | null = null;
   let listStatus: StatusResponse | null = null;
@@ -144,100 +225,325 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const current = (): Edit => session!.draft ?? session!.history.current;
   const hasSource = (): boolean => !!video.getAttribute("src") && video.readyState >= 1;
   const unexported = (): boolean => !!session && session.history.changes > 0 && !isUnchanged(session.history.current, session.facts.duration);
+  const mediaPath = (media: Media): string => media.id === MAIN ? session?.outputPath ?? media.path : media.path;
 
-  // ---------- Playback: the player plays the edited output ----------
+  // ---------- Players: one per media ----------
 
-  function applySegment(segment: Segment): void {
-    video.playbackRate = segment.speed;
-    // Above 100% is heard only after export.
-    video.volume = Math.min(1, segment.volume);
-    video.muted = segment.volume === 0;
+  function altFor(media: Media): HTMLVideoElement {
+    const key = media.path.toLocaleLowerCase("en");
+    let player = alts.get(key);
+    if (!player) {
+      const created = element("video", "edit-alt");
+      created.preload = "auto";
+      created.playsInline = true;
+      created.addEventListener("click", () => { togglePlay(); });
+      created.addEventListener("loadedmetadata", () => { if (session && active === created) seekOutput(session.outputTime, true); });
+      created.addEventListener("pause", () => externalPause(created));
+      ghost.before(created);
+      alts.set(key, created);
+      void host.mediaUrl(media.path).then((url) => { if (url && alts.get(key) === created) created.src = url; }).catch(() => undefined);
+      player = created;
+    }
+    return player;
   }
 
-  function seekOutput(time: number): void {
+  function playerFor(mediaId: string): HTMLVideoElement {
+    if (mediaId === MAIN || !session) return video;
+    const media = mediaOf(current(), mediaId);
+    return media ? altFor(media) : video;
+  }
+
+  function release(player: HTMLVideoElement): void {
+    player.pause();
+    player.removeAttribute("src");
+    player.load();
+    player.remove();
+  }
+
+  /** Unload other-media players that are not current, next, or among the last few. */
+  function trimAlts(keep: Set<HTMLVideoElement>): void {
+    for (const [key, player] of alts) {
+      if (alts.size <= ALT_KEEP) break;
+      if (keep.has(player)) continue;
+      release(player);
+      alts.delete(key);
+    }
+  }
+
+  function activate(player: HTMLVideoElement): void {
+    if (active === player) return;
+    const previous = active;
+    active = player;
+    if (!previous.paused) previous.pause();
+    for (const alt of alts.values()) alt.classList.toggle("active", alt === player);
+  }
+
+  function applySegment(segment: Segment, player: HTMLVideoElement): void {
+    player.playbackRate = segment.speed;
+    // Above 100% is heard only after export.
+    player.volume = Math.min(1, segment.volume);
+    player.muted = segment.volume === 0;
+  }
+
+  /** Cue the next segment's player when it is another file, so the switch is quick. */
+  function prepareNext(edit: Edit, index: number): void {
+    const next = edit.segments[index + 1];
+    const keep = new Set<HTMLVideoElement>([active]);
+    if (next && next.mediaId !== edit.segments[index].mediaId) {
+      const player = playerFor(next.mediaId);
+      keep.add(player);
+      if (player !== active && player.readyState >= 1 && Math.abs(player.currentTime - next.start) > 0.05) player.currentTime = next.start;
+    }
+    trimAlts(keep);
+  }
+
+  // ---------- Playback: the players play the edited output ----------
+
+  function seekOutput(time: number, keepGhost = false): void {
     if (!session) return;
     const edit = current();
     session.outputTime = clamp(time, 0, outputDuration(edit));
+    if (!keepGhost) ghostJoint = -1;
     const point = outputToSource(edit, session.outputTime);
     if (point) {
       session.index = point.index;
-      applySegment(point.segment);
-      if (hasSource() && Math.abs(video.currentTime - point.sourceTime) > 0.001) video.currentTime = point.sourceTime;
+      const player = playerFor(point.segment.mediaId);
+      activate(player);
+      applySegment(point.segment, player);
+      if (player.readyState >= 1 && Math.abs(player.currentTime - point.sourceTime) > 0.001) player.currentTime = point.sourceTime;
+      if (session.playing && player.paused && player.readyState >= 1) void player.play().catch(() => undefined);
+      prepareNext(edit, point.index);
     }
+    renderEffects();
     renderPlayhead();
     host.renderPlayer();
   }
 
+  function captureGhost(player: HTMLVideoElement, joint: number): void {
+    try {
+      if (!player.videoWidth) return;
+      ghost.width = player.videoWidth;
+      ghost.height = player.videoHeight;
+      ghost.getContext("2d")?.drawImage(player, 0, 0);
+      ghostJoint = joint;
+    } catch {
+      ghostJoint = -1;
+    }
+  }
+
   function tick(): void {
     loop = 0;
-    if (!session || video.paused) return;
+    if (!session || !session.playing) return;
     const edit = current();
     const starts = outputStarts(edit);
-    let index = Math.min(session.index, edit.segments.length - 1);
-    let segment = edit.segments[index];
-    const now = video.currentTime;
-    if (now < segment.start - 0.3 || now > segment.end + 0.3) {
-      // The player moved on its own (or the edit changed): follow the output position.
-      const time = sourceToOutput(edit, now, index);
-      if (time === null) seekOutput(session.outputTime);
-      else session.outputTime = time;
-      index = outputToSource(edit, session.outputTime)?.index ?? index;
-      session.index = index;
-      applySegment(edit.segments[index]);
-    } else if (now >= segment.end - 0.02) {
-      if (index + 1 < edit.segments.length) {
-        index += 1;
-        segment = edit.segments[index];
-        session.index = index;
-        session.outputTime = starts[index];
-        applySegment(segment);
-        // A plain split continues without a seek.
-        if (Math.abs(segment.start - now) > 0.05) video.currentTime = segment.start;
+    const index = Math.min(session.index, edit.segments.length - 1);
+    const segment = edit.segments[index];
+    const player = active;
+    if (player.readyState >= 2) {
+      const now = player.currentTime;
+      // A dissolve hands over before the segment's end.
+      const until = index + 1 < edit.segments.length ? segment.start + (starts[index + 1] - starts[index]) * segment.speed : segment.end;
+      if (now < segment.start - 0.3 || now > segment.end + 0.3) {
+        // The player moved on its own (or the edit changed): back to the output position.
+        seekOutput(session.outputTime, true);
+      } else if (now >= until - 0.02 || player.ended) {
+        if (index + 1 < edit.segments.length) {
+          const next = edit.segments[index + 1];
+          if (transitionAt(edit, index)?.type === "dissolve") captureGhost(player, index);
+          const nextPlayer = playerFor(next.mediaId);
+          if (nextPlayer === player && Math.abs(next.start - now) <= 0.05) {
+            // A plain split continues without a seek.
+            session.index = index + 1;
+            session.outputTime = starts[index + 1];
+            applySegment(next, player);
+            renderEffects();
+          } else {
+            seekOutput(starts[index + 1], true);
+          }
+        } else {
+          session.outputTime = outputDuration(edit);
+          pausePlayback();
+        }
       } else {
-        session.outputTime = outputDuration(edit);
-        video.pause();
+        session.outputTime = starts[index] + Math.max(0, now - segment.start) / segment.speed;
+        renderEffects();
       }
-    } else {
-      session.outputTime = starts[index] + Math.max(0, now - segment.start) / segment.speed;
     }
     renderPlayhead(true);
     host.renderPlayer();
-    if (!video.paused) loop = requestAnimationFrame(tick);
+    if (session.playing) loop = requestAnimationFrame(tick);
+  }
+
+  function startLoop(): void {
+    if (!loop) loop = requestAnimationFrame(tick);
+  }
+
+  function pausePlayback(): void {
+    if (!session) return;
+    session.playing = false;
+    active.pause();
+    for (const box of boxes.values()) box.video.pause();
+    renderEffects();
+    host.renderPlayer();
+  }
+
+  /** Paused from outside (a media key, the end of a file) while it is the playing one. */
+  function externalPause(player: HTMLVideoElement): void {
+    if (session?.playing && player === active && !player.ended && !player.seeking) {
+      const edit = current();
+      if (session.outputTime < outputDuration(edit) - 0.1) pausePlayback();
+    }
   }
 
   video.addEventListener("play", () => {
-    if (session && !loop) loop = requestAnimationFrame(tick);
-  });
-  video.addEventListener("ended", () => {
-    if (!session) return;
-    const edit = current();
-    if (session.index + 1 < edit.segments.length) {
-      seekOutput(outputStarts(edit)[session.index + 1]);
-      void video.play().catch(() => undefined);
+    if (session && !session.playing && active === video) {
+      session.playing = true;
+      startLoop();
+      host.renderPlayer();
     }
   });
+  video.addEventListener("pause", () => externalPause(video));
   video.addEventListener("loadedmetadata", () => {
-    if (session) seekOutput(session.outputTime);
+    if (session && active === video) seekOutput(session.outputTime, true);
   });
 
   function togglePlay(): void {
     if (!session || !hasSource()) return;
-    if (video.paused || video.ended) {
-      if (session.outputTime >= outputDuration(current()) - 0.05) seekOutput(0);
-      else seekOutput(session.outputTime);
-      void video.play().catch(() => undefined);
-    } else {
-      video.pause();
+    if (session.playing) {
+      pausePlayback();
+      return;
     }
+    if (session.outputTime >= outputDuration(current()) - 0.05) session.outputTime = 0;
+    session.playing = true;
+    seekOutput(session.outputTime);
+    if (active.readyState >= 1) void active.play().catch(() => undefined);
+    startLoop();
+    host.renderPlayer();
   }
 
   function restorePlayer(): void {
     if (loop) cancelAnimationFrame(loop);
     loop = 0;
+    activate(video);
+    for (const player of alts.values()) release(player);
+    alts.clear();
+    for (const box of boxes.values()) release(box.video);
+    boxes.clear();
+    overlayLayer.replaceChildren();
+    fadeLayer.style.opacity = "0";
+    ghost.style.opacity = "0";
+    ghostJoint = -1;
     video.playbackRate = 1;
     video.volume = 1;
     video.muted = false;
   }
+
+  // ---------- Transitions and overlays on the player ----------
+
+  /** The video picture inside the player frame (object-fit: contain). */
+  function pictureRect(): { left: number; top: number; width: number; height: number } {
+    const width = frame.clientWidth, height = frame.clientHeight;
+    const sourceWidth = session?.facts.width || video.videoWidth || 16, sourceHeight = session?.facts.height || video.videoHeight || 9;
+    const scale = Math.min(width / sourceWidth, height / sourceHeight);
+    const shownWidth = sourceWidth * scale, shownHeight = sourceHeight * scale;
+    return { left: (width - shownWidth) / 2, top: (height - shownHeight) / 2, width: shownWidth, height: shownHeight };
+  }
+
+  function renderEffects(): void {
+    if (!session) return;
+    const edit = current();
+    const time = session.outputTime;
+    const starts = outputStarts(edit);
+    let black = 0, still = 0;
+    for (let index = 0; index + 1 < edit.segments.length; index++) {
+      const transition = transitionAt(edit, index);
+      if (!transition) continue;
+      const joint = starts[index + 1];
+      if (transition.type === "fade") {
+        const half = transition.duration / 2, distance = Math.abs(time - joint);
+        if (distance < half) black = Math.max(black, 1 - distance / half);
+      } else if (ghostJoint === index && time >= joint && time < joint + transition.duration) {
+        still = 1 - (time - joint) / transition.duration;
+      }
+    }
+    fadeLayer.style.opacity = black.toFixed(3);
+    ghost.style.opacity = still.toFixed(3);
+    renderOverlays(edit, time);
+  }
+
+  function boxFor(overlay: Overlay): Box {
+    let box = boxes.get(overlay.id);
+    if (!box) {
+      const box_ = element("div", "edit-ov");
+      box_.dataset.id = overlay.id;
+      const player = element("video");
+      player.preload = "auto";
+      player.playsInline = true;
+      const handle = element("span", "edit-ov-handle");
+      handle.title = "Kéo để đổi cỡ";
+      box_.append(player, handle);
+      overlayLayer.append(box_);
+      box = { element: box_, video: player, path: "" };
+      boxes.set(overlay.id, box);
+    }
+    return box;
+  }
+
+  function renderOverlays(edit: Edit, time: number): void {
+    if (!session) return;
+    const rect = pictureRect();
+    Object.assign(overlayLayer.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+    const total = outputDuration(edit);
+    const seen = new Set<string>();
+    for (const overlay of edit.overlays) {
+      seen.add(overlay.id);
+      const length = overlayLength(edit, overlay, total);
+      const on = time >= overlay.at && time < overlay.at + length;
+      const selected = session.overlay === overlay.id;
+      const existing = boxes.get(overlay.id);
+      if (!on && !selected) {
+        if (existing) {
+          existing.element.hidden = true;
+          if (!existing.video.paused) existing.video.pause();
+        }
+        continue;
+      }
+      const box = boxFor(overlay);
+      const media = mediaOf(edit, overlay.mediaId);
+      const path = media ? mediaPath(media) : "";
+      if (box.path !== path) {
+        box.path = path;
+        box.video.removeAttribute("src");
+        void host.mediaUrl(path).then((url) => { if (url && box.path === path) box.video.src = url; }).catch(() => undefined);
+      }
+      box.element.hidden = false;
+      box.element.classList.toggle("selected", selected);
+      box.element.classList.toggle("idle", !on);
+      box.element.title = `${media?.title || "Video chồng"} · kéo để đổi chỗ`;
+      Object.assign(box.element.style, {
+        left: `${overlay.x * 100}%`, top: `${overlay.y * 100}%`, width: `${overlay.w * 100}%`, height: `${overlayHeight(edit, overlay) * 100}%`,
+      });
+      const player = box.video;
+      if (on) {
+        const want = overlay.start + (time - overlay.at);
+        player.muted = overlay.volume === 0;
+        player.volume = Math.min(1, overlay.volume);
+        if (player.readyState >= 1 && Math.abs(player.currentTime - want) > (session.playing ? 0.3 : 0.04)) player.currentTime = want;
+        if (session.playing && player.paused && player.readyState >= 2) void player.play().catch(() => undefined);
+        else if (!session.playing && !player.paused) player.pause();
+      } else if (!player.paused) {
+        player.pause();
+      }
+    }
+    for (const [id, box] of boxes) {
+      if (seen.has(id)) continue;
+      release(box.video);
+      box.element.remove();
+      boxes.delete(id);
+    }
+  }
+
+  new ResizeObserver(() => { if (session) renderOverlays(current(), session.outputTime); }).observe(frame);
 
   // ---------- Changes, history, autosave ----------
 
@@ -248,12 +554,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     let time: number | null = null;
     if (point) {
       const index = after.segments.findIndex((segment) => segment.id === point.segment.id);
-      time = sourceToOutput(after, point.sourceTime, index);
+      time = sourceToOutput(after, point.sourceTime, index, point.segment.mediaId);
       if (time === null && index < 0) time = outputStarts(after)[Math.min(point.index, after.segments.length - 1)] ?? 0;
     }
     if (!after.segments.some((segment) => segment.id === session!.selected)) {
       session.selected = outputToSource(after, time ?? session.outputTime)?.segment.id ?? after.segments[0].id;
     }
+    if (session.overlay && !after.overlays.some((overlay) => overlay.id === session!.overlay)) session.overlay = null;
     seekOutput(time ?? session.outputTime);
   }
 
@@ -293,9 +600,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   async function save(): Promise<void> {
     if (!session) return;
-    const { outputPath, history, selected } = session;
+    const { outputPath, history, selected, recent } = session;
     try {
-      await invoke("edit_project_save", { outputPath, project: serializeProject(history.current, history.changes, selected) });
+      await invoke("edit_project_save", { outputPath, project: serializeProject(history.current, history.changes, selected, recent) });
       $("#edit-save-state").textContent = "";
     } catch (error) {
       $("#edit-save-state").textContent = `Chưa lưu được bản nháp: ${String(error).slice(0, 140)}`;
@@ -334,20 +641,32 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       ?? outputToSource(edit, session.outputTime)?.segment;
   }
 
+  function selectedOverlay(): Overlay | undefined {
+    if (!session?.overlay) return undefined;
+    return current().overlays.find((overlay) => overlay.id === session!.overlay);
+  }
+
   function splitAtPlayhead(): void {
     if (!session || session.draft) return;
     const edit = session.history.current;
     const next = split(edit, session.outputTime);
     if (next === edit) {
-      note(edit.segments.length >= 500 ? "Đã đạt tối đa 500 đoạn." : "Đầu phát đang sát mép đoạn; dời đi một chút rồi tách.");
+      note(edit.segments.length >= MAX_SEGMENTS ? "Đã đạt tối đa 500 đoạn." : "Đầu phát đang sát mép đoạn; dời đi một chút rồi tách.");
       return;
     }
+    session.overlay = null;
     commit(next, outputToSource(next, session.outputTime)?.segment.id);
   }
 
   function deleteSelected(): void {
     if (!session || session.draft) return;
     const edit = session.history.current;
+    const overlay = selectedOverlay();
+    if (overlay) {
+      session.overlay = null;
+      commit(removeOverlay(edit, overlay.id));
+      return;
+    }
     const segment = selectedSegment();
     if (!segment) return;
     if (edit.segments.length <= 1) {
@@ -361,8 +680,126 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     commit(next, outputToSource(next, Math.min(time, outputDuration(next) - 0.001))?.segment.id);
   }
 
-  function step(seconds: number): void {
-    if (session) seekOutput(session.outputTime + seconds);
+  function step(seconds_: number): void {
+    if (session) seekOutput(session.outputTime + seconds_);
+  }
+
+  function selectOverlay(id: string | null): void {
+    if (!session) return;
+    session.overlay = id;
+    render();
+  }
+
+  /** Length, frame and sound of a local video, probed once. */
+  function mediaInfo(path: string, kind: MediaInfo["kind"], title?: string): Promise<MediaInfo | null> {
+    const key = path.toLocaleLowerCase("en");
+    let pending = infoCache.get(key);
+    if (!pending) {
+      pending = invoke<MediaResponse>("edit_media_info", { path })
+        .then((info) => ({ path, title: title || info.title || stem(path), duration: info.duration, width: info.width, height: info.height,
+          fps: info.fps, hasAudio: info.has_audio, kind }))
+        .catch((error) => {
+          infoCache.delete(key);
+          host.showError(`Không đọc được video ${fileName(path)}: ${String(error).slice(0, 160)}`);
+          return null;
+        });
+      infoCache.set(key, pending);
+    }
+    return pending.then((info) => info && { ...info, kind, title: title || info.title });
+  }
+
+  /** Why an insert did nothing. */
+  function refusal(edit: Edit, info: MediaInfo, overlay: boolean): string {
+    if (info.duration < MIN_SEGMENT) return "Video này quá ngắn để chèn.";
+    if (overlay && edit.overlays.length >= MAX_OVERLAYS) return "Đã đạt tối đa 20 video chồng.";
+    if (!overlay && edit.segments.length >= MAX_SEGMENTS - 1) return "Đã đạt tối đa 500 đoạn.";
+    if (edit.media.length >= MAX_MEDIA && !edit.media.some((media) => samePath(media.path, info.path))) return "Một bản sửa dùng tối đa 20 video khác nhau.";
+    return "Không chèn được video này.";
+  }
+
+  /** Insert (at `time`, else the playhead), append, or overlay a media; returns the new segment or overlay id. */
+  function place(info: MediaInfo, how: Where, time?: number): string | null {
+    if (!session || session.draft) return null;
+    const edit = session.history.current;
+    const main = mediaOf(edit, MAIN);
+    const media = main && samePath(info.path, session.outputPath) ? { ...info, path: main.path || session.outputPath } : info;
+    const next = how === "overlay" ? addOverlay(edit, media, session.outputTime)
+      : how === "end" ? append(edit, media) : insertAt(edit, time ?? session.outputTime, media);
+    if (next === edit) {
+      note(refusal(edit, media, how === "overlay"));
+      return null;
+    }
+    const id = addedId(edit, next);
+    if (how === "overlay") {
+      session.overlay = id;
+      commit(next);
+    } else {
+      session.overlay = null;
+      commit(next, id ?? undefined);
+      const index = next.segments.findIndex((segment) => segment.id === id);
+      if (index >= 0) seekOutput(outputStarts(next)[index]);
+    }
+    render();
+    const controls = how === "overlay" ? $("#edit-ov-controls") : $("#edit-seg-controls");
+    controls.scrollIntoView({ block: "nearest" });
+    return id;
+  }
+
+  async function placePath(path: string, kind: MediaInfo["kind"], title: string | undefined, how: Where): Promise<void> {
+    const info = await mediaInfo(path, kind, title);
+    if (info && session) place(info, how);
+  }
+
+  function remember(info: MediaInfo): void {
+    if (!session) return;
+    const media: Media = { ...info, id: `r${session.recent.length + 1}`, kind: "file" };
+    session.recent = [media, ...session.recent.filter((item) => !samePath(item.path, info.path))].slice(0, RECENT_LIMIT);
+    scheduleSave();
+  }
+
+  async function pickFiles(): Promise<void> {
+    let paths: string[] = [];
+    try {
+      paths = await invoke<string[]>("pick_files");
+    } catch (error) {
+      host.showError(`Không mở được hộp thoại chọn file: ${String(error).slice(0, 160)}`);
+      return;
+    }
+    for (const path of paths) {
+      const info = await mediaInfo(path, "file");
+      if (info) remember(info);
+    }
+    renderSources();
+  }
+
+  /** Dropped videos go in one after another at the drop point on the timeline, else at the playhead. */
+  async function dropFiles(paths: string[], point: { x: number; y: number } | null): Promise<void> {
+    if (!session || !paths.length) return;
+    let videos: string[] = [];
+    try {
+      videos = await invoke<string[]>("expand_video_paths", { paths });
+    } catch (error) {
+      host.showError(`Không đọc được mục đã thả: ${String(error).slice(0, 160)}`);
+      return;
+    }
+    if (!videos.length) {
+      note("Không tìm thấy video trong mục đã thả.");
+      return;
+    }
+    const box = scroll.getBoundingClientRect();
+    const overTimeline = !!point && point.x >= box.left && point.x <= box.right && point.y >= box.top - 40 && point.y <= box.bottom;
+    let time = overTimeline ? clamp(timeAt(point!.x), 0, outputDuration(session.history.current)) : session.outputTime;
+    for (const path of videos) {
+      const info = await mediaInfo(path, "file");
+      if (!info || !session) continue;
+      remember(info);
+      const id = place(info, "playhead", time);
+      if (!id) break;
+      const edit = session.history.current;
+      const index = edit.segments.findIndex((segment) => segment.id === id);
+      time = outputStarts(edit)[index] + (edit.segments[index].end - edit.segments[index].start) / edit.segments[index].speed;
+    }
+    renderSources();
   }
 
   // ---------- Rendering ----------
@@ -381,10 +818,15 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     return Math.max(0.02, (scroll.clientWidth - PAD * 2) / Math.max(total, 0.1));
   }
 
+  function renderModes(): void {
+    for (const tab of modeTabs) tab.setAttribute("aria-selected", String(tab.dataset.mode === mode));
+  }
+
   function renderPanel(): void {
     if (!session) return;
     const { history, facts } = session;
     const edit = current();
+    renderModes();
     undoButton.disabled = !history.canUndo || !!session.draft;
     redoButton.disabled = !history.canRedo || !!session.draft;
     const pending = unexported();
@@ -393,12 +835,25 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     changesBadge.title = `${history.changes} thay đổi chưa xuất · bản nháp được tự lưu`;
     exportButton.disabled = isUnchanged(edit, facts.duration);
     exportButton.title = exportButton.disabled ? "Chưa có thay đổi để xuất" : "Xuất bản đã chỉnh sửa thành file video mới";
+    const overlay = selectedOverlay();
     const segment = selectedSegment();
+    const inserted = !!segment && segment.mediaId !== MAIN;
+    $("#edit-sources").hidden = mode !== "insert";
+    $("#edit-ov-controls").hidden = !overlay;
+    $("#edit-seg-controls").hidden = !!overlay || (mode === "insert" && !inserted);
+    $("#edit-select-hint").hidden = !(mode === "insert" && !overlay && !inserted);
+    $("#edit-cut-notes").hidden = mode !== "cut" || !!overlay;
+    if (overlay) renderOverlayPanel(edit, overlay);
     if (!segment) return;
     const index = edit.segments.indexOf(segment);
     const start = outputStarts(edit)[index];
     const length = (segment.end - segment.start) / segment.speed;
-    $("#edit-segment-title").textContent = `Đoạn ${index + 1} · ${formatClock(start)} – ${formatClock(start + length)}`;
+    const media = mediaOf(edit, segment.mediaId);
+    const title = $("#edit-segment-title");
+    title.textContent = inserted
+      ? `Đoạn chèn · ${media?.title || "video"} · ${formatClock(start)} – ${formatClock(start + length)}`
+      : `Đoạn ${index + 1} · ${formatClock(start)} – ${formatClock(start + length)}`;
+    title.title = inserted ? media?.path ?? "" : "";
     if (document.activeElement !== startInput) startInput.value = formatClock(segment.start, true);
     if (document.activeElement !== endInput) endInput.value = formatClock(segment.end, true);
     $("#edit-length").textContent = segment.speed === 1
@@ -411,8 +866,118 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (document.activeElement !== volume) volume.value = String(Math.round(segment.volume * 100));
     $("#edit-volume-value").textContent = `${Math.round(segment.volume * 100)}%`;
     $("#edit-volume-note").hidden = segment.volume <= 1;
+    $("#edit-delete-label").textContent = inserted ? "Xóa đoạn chèn" : "Xóa đoạn";
     $<HTMLButtonElement>("#edit-delete").disabled = edit.segments.length <= 1;
-    $<HTMLButtonElement>("#tl-delete").disabled = edit.segments.length <= 1;
+    $<HTMLButtonElement>("#tl-delete").disabled = edit.segments.length <= 1 && !overlay;
+  }
+
+  function renderOverlayPanel(edit: Edit, overlay: Overlay): void {
+    const media = mediaOf(edit, overlay.mediaId);
+    const title = $("#ov-title");
+    title.textContent = `Video chồng · ${media?.title || "video"}`;
+    title.title = media?.path ?? "";
+    const preset = overlayPresetOf(edit, overlay);
+    for (const button of presetButtons) button.setAttribute("aria-checked", String(button.dataset.preset === preset));
+    if (document.activeElement !== ovSize) ovSize.value = String(Math.round(overlay.w * 100));
+    $("#ov-size-value").textContent = `${Math.round(overlay.w * 100)}%`;
+    if (document.activeElement !== ovVolume) ovVolume.value = String(Math.round(overlay.volume * 100));
+    $("#ov-volume-value").textContent = `${Math.round(overlay.volume * 100)}%`;
+    $("#ov-volume-note").hidden = overlay.volume <= 1;
+    if (document.activeElement !== ovAt) ovAt.value = formatClock(overlay.at, true);
+    if (document.activeElement !== ovStart) ovStart.value = formatClock(overlay.start, true);
+    if (document.activeElement !== ovEnd) ovEnd.value = formatClock(overlay.end, true);
+    const shown = overlayLength(edit, overlay);
+    $("#ov-length").textContent = `Hiện ${formatClock(shown, true)} trên video · ${formatClock(overlay.at)} – ${formatClock(overlay.at + shown)}`;
+    $<HTMLButtonElement>("#tl-delete").disabled = false;
+  }
+
+  function renderSources(): void {
+    if (!session) return;
+    for (const button of whereButtons) button.setAttribute("aria-checked", String(button.dataset.where === where));
+    $("#insert-where-note").textContent = WHERE_LABEL[where].note;
+    for (const tab of sourceTabs) tab.setAttribute("aria-selected", String(tab.dataset.source === source));
+    $("#insert-dubflow").hidden = source !== "dubflow";
+    $("#insert-computer").hidden = source !== "computer";
+    if (source === "dubflow") {
+      $("#insert-library").replaceChildren(...library.map(libraryRow));
+      $("#insert-library-empty").hidden = library.length > 0;
+    } else {
+      const recent = session.recent.map((media): LibraryItem => ({
+        key: `file:${media.path}`, path: media.path, title: media.title || stem(media.path), meta: folderOf(media.path), kind: "file", duration: media.duration,
+      }));
+      $("#insert-recent").replaceChildren(...recent.map(libraryRow));
+    }
+  }
+
+  function libraryRow(item: LibraryItem): HTMLLIElement {
+    const row = element("li", "insert-item");
+    const thumb = element("span", "insert-thumb");
+    thumb.dataset.poster = item.path;
+    const badge = element("small", "", item.duration ? formatClock(item.duration) : "");
+    thumb.append(badge);
+    const poster = posters.get(item.path);
+    if (poster) thumb.style.backgroundImage = `url("${poster}")`;
+    else if (poster === undefined) requestPoster(item.path);
+    if (!item.duration) {
+      void mediaInfo(item.path, item.kind).then((info) => {
+        if (info && !badge.textContent) badge.textContent = formatClock(info.duration);
+      });
+    }
+    const text = element("span", "insert-text");
+    text.append(element("strong", "", item.title), element("small", "", item.meta));
+    text.title = item.path;
+    const action = element("button", "btn", WHERE_LABEL[where].button);
+    action.type = "button";
+    action.title = `${WHERE_LABEL[where].action}: ${item.title}`;
+    action.setAttribute("aria-label", `${WHERE_LABEL[where].action}: ${item.title}`);
+    action.addEventListener("click", () => void placePath(item.path, item.kind, item.title, where));
+    row.append(thumb, text, action);
+    return row;
+  }
+
+  function requestPoster(path: string): void {
+    if (posters.has(path) || posterQueue.includes(path)) return;
+    posterQueue.push(path);
+    pumpPosters();
+  }
+
+  function pumpPosters(): void {
+    while (posterWorkers < 2 && posterQueue.length) {
+      const path = posterQueue.shift()!;
+      posterWorkers += 1;
+      void invoke<ArrayBuffer>("video_frame", { sourcePath: path, position: 0.1, maxWidth: POSTER_PX })
+        .then((bytes) => posters.set(path, URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }))))
+        .catch(() => posters.set(path, null))
+        .finally(() => {
+          posterWorkers -= 1;
+          const url = posters.get(path);
+          if (url) {
+            for (const thumb of document.querySelectorAll<HTMLElement>(".insert-thumb")) {
+              if (thumb.dataset.poster === path) thumb.style.backgroundImage = `url("${url}")`;
+            }
+          }
+          pumpPosters();
+        });
+    }
+  }
+
+  /** Finished queue videos other than this one, and every edited export of them. */
+  async function loadLibrary(): Promise<void> {
+    if (!session) return;
+    const token = ++libraryToken;
+    const jobs = host.library().filter((job) => job.id !== session!.job.id && job.outputPath);
+    const items: LibraryItem[] = [];
+    const statuses = await Promise.all(jobs.map((job) => invoke<StatusResponse>("edit_status", { outputPath: job.outputPath }).catch(() => null)));
+    if (token !== libraryToken || !session) return;
+    jobs.forEach((job, index) => {
+      items.push({ key: `job:${job.id}`, path: job.outputPath, title: job.title, meta: "Video đã làm trong DubFlow", kind: "job", duration: null });
+      for (const entry of [...(statuses[index]?.exports ?? [])].reverse()) {
+        items.push({ key: `export:${entry.path}`, path: entry.path, title: stem(entry.path), meta: `Bản sửa của ${job.title}`, kind: "job",
+          duration: entry.duration > 0 ? entry.duration : null });
+      }
+    });
+    library = items.slice(0, LIBRARY_LIMIT);
+    renderSources();
   }
 
   function renderTimeline(): void {
@@ -425,36 +990,45 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const width = Math.max(scroll.clientWidth, Math.ceil(PAD * 2 + total * pps));
     content.style.width = `${width}px`;
     // Ruler.
-    const tick = tickStep(pps);
+    const tick_ = tickStep(pps);
     const ticks: HTMLElement[] = [];
-    for (let time = 0; time <= total + 1e-6 && ticks.length < 2000; time += tick) {
-      const mark = element("span", "tl-tick", formatClock(time, tick < 1));
+    for (let time = 0; time <= total + 1e-6 && ticks.length < 2000; time += tick_) {
+      const mark = element("span", "tl-tick", formatClock(time, tick_ < 1));
       mark.style.left = `${PAD + time * pps}px`;
       ticks.push(mark);
     }
     ruler.replaceChildren(...ticks);
     // Segments.
     const starts = outputStarts(edit);
-    const blocks = edit.segments.map((segment, index) => {
-      const block = element("div", `tl-seg${segment.id === session!.selected ? " selected" : ""}`);
+    let number = 0;
+    const blocks: HTMLElement[] = edit.segments.map((segment, index) => {
+      const inserted = segment.mediaId !== MAIN;
+      if (!inserted) number += 1;
+      const media = mediaOf(edit, segment.mediaId);
+      const block = element("div", `tl-seg${inserted ? " inserted" : ""}${segment.id === session!.selected && !session!.overlay ? " selected" : ""}`);
       block.dataset.id = segment.id;
       const left = PAD + starts[index] * pps;
       const length = (segment.end - segment.start) / segment.speed * pps;
       block.style.left = `${left}px`;
       block.style.width = `${Math.max(2, length)}px`;
-      block.title = `Đoạn ${index + 1}: ${formatClock(segment.start, true)} – ${formatClock(segment.end, true)} trong video gốc`;
+      block.title = inserted
+        ? `Đoạn chèn: ${media?.title ?? ""} ${formatClock(segment.start, true)} – ${formatClock(segment.end, true)}`
+        : `Đoạn ${number}: ${formatClock(segment.start, true)} – ${formatClock(segment.end, true)} trong video gốc`;
       const strip = element("span", "tl-thumbs");
-      for (let x = 0; x < length && strip.childElementCount < 400; x += THUMB_WIDTH) {
-        const source = segment.start + ((x + THUMB_WIDTH / 2) / pps) * segment.speed;
-        const cell = Math.min(grid.times.length - 1, Math.floor(Math.min(source, segment.end) / grid.step));
+      const path = media ? mediaPath(media) : "";
+      const grid = media ? gridFor(path, media.duration) : null;
+      for (let x = 0; grid && x < length && strip.childElementCount < 400; x += THUMB_WIDTH) {
+        const at = segment.start + ((x + THUMB_WIDTH / 2) / pps) * segment.speed;
+        const cell = Math.min(grid.times.length - 1, Math.floor(Math.min(at, segment.end) / grid.step));
         if (cell < 0) break;
         const thumb = element("span", "tl-thumb");
-        thumb.dataset.cell = String(cell);
+        thumb.dataset.key = `${path}\n${cell}`;
         thumb.style.left = `${x}px`;
         strip.append(thumb);
       }
       const label = element("span", "tl-label");
-      if (length >= 34) label.append(element("span", "tl-name", `Đoạn ${index + 1}`));
+      if (inserted && length >= 40) label.append(element("span", "tl-name media", media?.title || "Chèn"));
+      else if (!inserted && length >= 34) label.append(element("span", "tl-name", `Đoạn ${number}`));
       if (segment.speed !== 1 && length >= 24) label.append(element("span", "tl-badge", formatSpeed(segment.speed)));
       if (segment.volume !== 1 && length >= 60) label.append(element("span", "tl-badge", segment.volume === 0 ? "Tắt tiếng" : `${Math.round(segment.volume * 100)}%`));
       const startHandle = element("span", "tl-handle start");
@@ -466,70 +1040,121 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       block.append(strip, label, startHandle, endHandle);
       return block;
     });
+    // Joints: "+" adds a transition, a chip shows one.
+    for (let index = 0; index + 1 < edit.segments.length; index++) {
+      const transition = transitionAt(edit, index);
+      const afterId = edit.segments[index].id;
+      const joint = element("button", `tl-joint${transition ? ` on ${transition.type}` : ""}${popFor === afterId ? " open" : ""}`, transition ? "" : "+");
+      joint.type = "button";
+      joint.dataset.after = afterId;
+      joint.style.left = `${PAD + (starts[index + 1] + (transition?.type === "dissolve" ? transition.duration / 2 : 0)) * pps}px`;
+      const label = transition ? `${TRANSITION_NAMES[transition.type]} ${seconds(transition.duration)}` : "Thêm chuyển cảnh";
+      joint.title = `${label} · bấm để chọn chuyển cảnh`;
+      joint.setAttribute("aria-label", `${label} sau đoạn ${index + 1}`);
+      joint.setAttribute("aria-haspopup", "dialog");
+      blocks.push(joint);
+    }
     track.replaceChildren(...blocks);
+    // Overlay row.
+    overlayTrack.hidden = !edit.overlays.length;
+    content.classList.toggle("with-overlays", edit.overlays.length > 0);
+    overlayTrack.replaceChildren(...edit.overlays.map((overlay) => {
+      const media = mediaOf(edit, overlay.mediaId);
+      const block = element("div", `tl-ov${overlay.id === session!.overlay ? " selected" : ""}`);
+      block.dataset.id = overlay.id;
+      block.style.left = `${PAD + overlay.at * pps}px`;
+      block.style.width = `${Math.max(6, overlayLength(edit, overlay, total) * pps)}px`;
+      block.title = `Video chồng: ${media?.title ?? ""} · ${formatClock(overlay.at, true)} – ${formatClock(overlay.at + overlayLength(edit, overlay, total), true)}`;
+      const name = element("span", "tl-ov-name", media?.title || "Video chồng");
+      const startHandle = element("span", "tl-handle start");
+      startHandle.dataset.edge = "start";
+      const endHandle = element("span", "tl-handle end");
+      endHandle.dataset.edge = "end";
+      block.append(name, startHandle, endHandle);
+      return block;
+    }));
     renderThumbs();
     renderPlayhead();
-    $("#tl-info").textContent = `${edit.segments.length} đoạn · ${formatClock(total)}`;
+    const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;
+    $("#tl-info").textContent = [`${edit.segments.length} đoạn`, inserts ? `${inserts} đoạn chèn` : "", edit.overlays.length ? `${edit.overlays.length} video chồng` : "",
+      formatClock(total)].filter(Boolean).join(" · ");
   }
 
   function render(): void {
     if (!session) return;
     renderPanel();
     renderTimeline();
+    renderEffects();
+    if (!pop.hidden) renderPopover();
     host.renderPlayer();
   }
 
   // ---------- Thumbnails ----------
 
+  function gridFor(path: string, duration: number): { step: number; times: number[]; duration: number } {
+    let grid = grids.get(path);
+    if (!grid) {
+      grid = { ...thumbGrid(duration), duration };
+      grids.set(path, grid);
+    }
+    return grid;
+  }
+
   function renderThumbs(): void {
     if (!session) return;
     const low = scroll.scrollLeft - 300, high = scroll.scrollLeft + scroll.clientWidth + 300;
     for (const thumb of track.querySelectorAll<HTMLElement>(".tl-thumb")) {
-      const cell = Number(thumb.dataset.cell);
-      const url = thumbs.get(cell);
+      const key = thumb.dataset.key!;
+      const url = thumbs.get(key);
       if (url) {
         if (!thumb.style.backgroundImage) thumb.style.backgroundImage = `url("${url}")`;
         continue;
       }
-      if (url === null || wanted.includes(cell)) continue;
+      if (url === null || wanted.includes(key)) continue;
       const block = thumb.closest<HTMLElement>(".tl-seg");
       const x = (block ? parseFloat(block.style.left) : 0) + parseFloat(thumb.style.left);
-      if (x + THUMB_WIDTH >= low && x <= high) wanted.push(cell);
+      if (x + THUMB_WIDTH >= low && x <= high) wanted.push(key);
     }
     pumpThumbs();
   }
 
   function pumpThumbs(): void {
     while (session && thumbWorkers < 2 && wanted.length) {
-      const cell = wanted.shift()!;
-      if (thumbs.has(cell)) continue;
+      const key = wanted.shift()!;
+      if (thumbs.has(key)) continue;
+      const [path, cellText] = key.split("\n");
+      const grid = grids.get(path);
+      const cell = Number(cellText);
+      if (!grid || !(grid.duration > 0)) continue;
       thumbWorkers += 1;
-      const path = session.outputPath;
-      const position = clamp(grid.times[cell] / session.facts.duration, 0, 1);
+      const epoch = thumbEpoch;
+      const position = clamp(grid.times[cell] / grid.duration, 0, 1);
       void invoke<ArrayBuffer>("video_frame", { sourcePath: path, position, maxWidth: THUMB_PX })
         .then((bytes) => {
-          if (thumbsFor !== path) return;
-          thumbs.set(cell, URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" })));
+          if (epoch === thumbEpoch) thumbs.set(key, URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" })));
         })
-        .catch(() => { if (thumbsFor === path) thumbs.set(cell, null); })
+        .catch(() => { if (epoch === thumbEpoch) thumbs.set(key, null); })
         .finally(() => {
           thumbWorkers -= 1;
-          if (session?.outputPath === path) {
-            const url = thumbs.get(cell);
-            if (url) for (const thumb of track.querySelectorAll<HTMLElement>(`.tl-thumb[data-cell="${cell}"]`)) thumb.style.backgroundImage = `url("${url}")`;
+          if (session && epoch === thumbEpoch) {
+            const url = thumbs.get(key);
+            if (url) {
+              for (const thumb of track.querySelectorAll<HTMLElement>(".tl-thumb")) {
+                if (thumb.dataset.key === key) thumb.style.backgroundImage = `url("${url}")`;
+              }
+            }
             pumpThumbs();
           }
         });
     }
   }
 
-  function resetThumbs(path: string, duration: number): void {
-    if (thumbsFor === path) return;
+  function resetThumbs(): void {
     for (const url of thumbs.values()) if (url) URL.revokeObjectURL(url);
     thumbs.clear();
+    grids.clear();
     wanted.length = 0;
-    thumbsFor = path;
-    grid = thumbGrid(duration);
+    thumbEpoch += 1;
   }
 
   let scrollFrame = 0;
@@ -538,6 +1163,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
       renderThumbs();
+      if (!pop.hidden) closePopover();
     });
   });
   new ResizeObserver(() => { if (session) renderTimeline(); }).observe(scroll);
@@ -549,23 +1175,45 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     return (clientX - box.left - PAD) / pps;
   }
 
-  type Drag = { kind: "seek" } | { kind: "trim"; id: string; edge: "start" | "end"; x: number; from: number; base: Edit; moved: boolean }
-    | { kind: "select"; id: string; x: number };
+  type Drag = { kind: "seek" }
+    | { kind: "trim"; id: string; edge: "start" | "end"; x: number; from: number; base: Edit; moved: boolean }
+    | { kind: "select"; id: string; x: number }
+    | { kind: "ov-move"; id: string; x: number; base: Edit; moved: boolean }
+    | { kind: "ov-trim"; id: string; edge: "start" | "end"; x: number; base: Edit; moved: boolean };
   let drag: Drag | null = null;
 
   content.addEventListener("pointerdown", (event) => {
     if (!session || event.button !== 0 || session.draft) return;
     const target = event.target as HTMLElement;
+    const joint = target.closest<HTMLElement>(".tl-joint");
+    if (joint) {
+      event.preventDefault();
+      if (popFor === joint.dataset.after && !pop.hidden) closePopover();
+      else openPopover(joint.dataset.after!, joint);
+      return;
+    }
     const handle = target.closest<HTMLElement>(".tl-handle");
+    const overlayBlock = target.closest<HTMLElement>(".tl-ov");
     const block = target.closest<HTMLElement>(".tl-seg");
     event.preventDefault();
     content.setPointerCapture(event.pointerId);
+    if (overlayBlock) {
+      const id = overlayBlock.dataset.id!;
+      session.overlay = id;
+      const base = session.history.current;
+      drag = handle
+        ? { kind: "ov-trim", id, edge: handle.dataset.edge === "start" ? "start" : "end", x: event.clientX, base, moved: false }
+        : { kind: "ov-move", id, x: event.clientX, base, moved: false };
+      render();
+      return;
+    }
     if (handle && block) {
       const segment = session.history.current.segments.find((candidate) => candidate.id === block.dataset.id);
       if (!segment) return;
       const edge = handle.dataset.edge === "start" ? "start" : "end";
       session.selected = segment.id;
-      if (!video.paused) video.pause();
+      session.overlay = null;
+      if (session.playing) pausePlayback();
       drag = { kind: "trim", id: segment.id, edge, x: event.clientX, from: segment[edge], base: session.history.current, moved: false };
       render();
       return;
@@ -598,6 +1246,27 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       seekOutput(trimming.edge === "start" ? start : start + (moved.end - moved.start) / moved.speed - 0.04);
       renderPanel();
       renderTimeline();
+    } else if (drag.kind === "ov-move" || drag.kind === "ov-trim") {
+      const dragging = drag;
+      if (!dragging.moved && Math.abs(event.clientX - dragging.x) <= 4) return;
+      dragging.moved = true;
+      const overlay = dragging.base.overlays.find((candidate) => candidate.id === dragging.id);
+      if (!overlay) return;
+      const shift = (event.clientX - dragging.x) / pps;
+      let next: Edit;
+      if (dragging.kind === "ov-move") {
+        next = setOverlayTime(dragging.base, dragging.id, { at: overlay.at + shift });
+      } else if (dragging.edge === "end") {
+        next = setOverlayTime(dragging.base, dragging.id, { end: overlay.end + shift });
+      } else {
+        const start = clamp(overlay.start + shift, Math.max(0, overlay.start - overlay.at), overlay.end - MIN_SEGMENT);
+        next = setOverlayTime(dragging.base, dragging.id, { start, at: overlay.at + (start - overlay.start) });
+      }
+      session.draft = next;
+      const moved = next.overlays.find((candidate) => candidate.id === dragging.id)!;
+      seekOutput(dragging.kind === "ov-trim" && dragging.edge === "end" ? moved.at + overlayLength(next, moved) - 0.04 : moved.at);
+      renderPanel();
+      renderTimeline();
     }
   });
 
@@ -605,13 +1274,14 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!session || !drag) return;
     const ended = drag;
     drag = null;
-    if (ended.kind === "trim") {
+    if (ended.kind === "trim" || ended.kind === "ov-move" || ended.kind === "ov-trim") {
       const next = session.draft;
       session.draft = null;
-      if (next && ended.moved) commit(next, ended.id);
+      if (next && ended.moved) commit(next, ended.kind === "trim" ? ended.id : undefined);
       else render();
     } else if (ended.kind === "select") {
       session.selected = ended.id;
+      session.overlay = null;
       const block = track.querySelector<HTMLElement>(`.tl-seg[data-id="${ended.id}"]`);
       if (block) seekOutput(timeAt(ended.x));
       render();
@@ -628,7 +1298,158 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     renderThumbs();
   });
 
+  // ---------- Overlay boxes on the player: drag to move, corner to resize ----------
+
+  type BoxDrag = { id: string; resize: boolean; x: number; y: number; base: Edit; moved: boolean; pointer: number };
+  let boxDrag: BoxDrag | null = null;
+
+  overlayLayer.addEventListener("pointerdown", (event) => {
+    const target = event.target as HTMLElement;
+    const box = target.closest<HTMLElement>(".edit-ov");
+    if (!session || !box || event.button !== 0 || session.draft) return;
+    event.preventDefault();
+    event.stopPropagation();
+    box.setPointerCapture(event.pointerId);
+    session.overlay = box.dataset.id!;
+    boxDrag = { id: box.dataset.id!, resize: !!target.closest(".edit-ov-handle"), x: event.clientX, y: event.clientY, base: session.history.current, moved: false, pointer: event.pointerId };
+    render();
+  });
+  overlayLayer.addEventListener("pointermove", (event) => {
+    if (!session || !boxDrag || event.pointerId !== boxDrag.pointer) return;
+    const dragging = boxDrag;
+    const overlay = dragging.base.overlays.find((candidate) => candidate.id === dragging.id);
+    const rect = overlayLayer.getBoundingClientRect();
+    if (!overlay || rect.width <= 0 || rect.height <= 0) return;
+    const dx = (event.clientX - dragging.x) / rect.width, dy = (event.clientY - dragging.y) / rect.height;
+    if (!dragging.moved && Math.abs(event.clientX - dragging.x) + Math.abs(event.clientY - dragging.y) < 3) return;
+    dragging.moved = true;
+    session.draft = dragging.resize ? resizeOverlay(dragging.base, dragging.id, overlay.w + dx) : moveOverlay(dragging.base, dragging.id, overlay.x + dx, overlay.y + dy);
+    renderEffects();
+    renderPanel();
+  });
+  const endBoxDrag = (event: PointerEvent): void => {
+    if (!session || !boxDrag || event.pointerId !== boxDrag.pointer) return;
+    const ended = boxDrag;
+    boxDrag = null;
+    const next = session.draft;
+    session.draft = null;
+    if (next && ended.moved) commit(next);
+    else render();
+  };
+  overlayLayer.addEventListener("pointerup", endBoxDrag);
+  overlayLayer.addEventListener("pointercancel", endBoxDrag);
+
+  // ---------- Transition popover ----------
+
+  function openPopover(afterId: string, anchor: HTMLElement): void {
+    if (!session) return;
+    popFor = afterId;
+    pop.hidden = false;
+    renderPopover();
+    const box = anchor.getBoundingClientRect();
+    const width = pop.offsetWidth, height = pop.offsetHeight;
+    const left = clamp(box.left + box.width / 2 - width / 2, 8, window.innerWidth - width - 8);
+    const top = box.top - height - 8 >= 8 ? box.top - height - 8 : Math.min(window.innerHeight - height - 8, box.bottom + 8);
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+    for (const chip of track.querySelectorAll<HTMLElement>(".tl-joint")) chip.classList.toggle("open", chip.dataset.after === afterId);
+    (popTypes.find((button) => button.getAttribute("aria-checked") === "true") ?? popTypes[0]).focus();
+  }
+
+  function closePopover(): void {
+    if (pop.hidden) return;
+    pop.hidden = true;
+    const afterId = popFor;
+    popFor = null;
+    for (const chip of track.querySelectorAll<HTMLElement>(".tl-joint")) chip.classList.remove("open");
+    const chip = track.querySelector<HTMLElement>(`.tl-joint[data-after="${afterId}"]`);
+    if (chip && pop.contains(document.activeElement)) chip.focus();
+  }
+
+  function renderPopover(): void {
+    if (!session || !popFor) return;
+    const edit = current();
+    const index = edit.segments.findIndex((segment) => segment.id === popFor);
+    if (index < 0 || index + 1 >= edit.segments.length) {
+      closePopover();
+      return;
+    }
+    const stored = edit.transitions[popFor];
+    const effective = transitionAt(edit, index);
+    const room = transitionRoom(edit, index);
+    const fits = room >= MIN_TRANSITION - 1e-9;
+    const type = effective?.type ?? null;
+    for (const button of popTypes) {
+      button.setAttribute("aria-checked", String((button.dataset.type === "none" && !type) || button.dataset.type === type));
+      button.disabled = button.dataset.type !== "none" && !fits;
+    }
+    const value = effective?.duration ?? stored?.duration ?? 0.5;
+    popDuration.max = String(Math.max(MIN_TRANSITION, Math.floor(room * 10) / 10));
+    popDuration.disabled = !effective;
+    if (document.activeElement !== popDuration) popDuration.value = String(Math.min(value, Number(popDuration.max)));
+    $("#tl-pop-value").textContent = seconds(value);
+    $("#tl-pop-where").textContent = `Giữa đoạn ${index + 1} và ${index + 2} · ${formatClock(outputStarts(edit)[index + 1])}`;
+    $("#tl-pop-note").textContent = fits ? "Xem trước chỉ gần đúng; video xuất ra sẽ chính xác." : "Hai đoạn kề nhau quá ngắn để thêm chuyển cảnh.";
+  }
+
+  for (const button of popTypes) {
+    button.addEventListener("click", () => {
+      if (!session || !popFor || session.draft) return;
+      const type = button.dataset.type === "none" ? null : button.dataset.type as TransitionType;
+      commit(setTransition(session.history.current, popFor, type, Number(popDuration.value) || 0.5));
+    });
+  }
+  popDuration.addEventListener("input", () => {
+    if (!session || !popFor) return;
+    const stored = session.history.current.transitions[popFor];
+    if (!stored) return;
+    session.draft = setTransition(session.history.current, popFor, stored.type, Number(popDuration.value));
+    renderTimeline();
+    renderPopover();
+    renderEffects();
+  });
+  popDuration.addEventListener("change", () => {
+    if (session?.draft) commit(session.draft);
+  });
+  pop.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      event.preventDefault();
+      closePopover();
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (pop.hidden) return;
+    const target = event.target as Element;
+    if (!pop.contains(target) && !target.closest(".tl-joint")) closePopover();
+  }, true);
+
   // ---------- Panel input ----------
+
+  for (const tab of modeTabs) {
+    tab.addEventListener("click", () => {
+      mode = tab.dataset.mode === "insert" ? "insert" : "cut";
+      if (mode === "insert") {
+        renderSources();
+        void loadLibrary();
+      }
+      render();
+    });
+  }
+  for (const button of whereButtons) {
+    button.addEventListener("click", () => {
+      where = button.dataset.where as Where;
+      renderSources();
+    });
+  }
+  for (const tab of sourceTabs) {
+    tab.addEventListener("click", () => {
+      source = tab.dataset.source === "computer" ? "computer" : "dubflow";
+      renderSources();
+      if (source === "dubflow") void loadLibrary();
+    });
+  }
+  $("#insert-pick").addEventListener("click", () => void pickFiles());
 
   for (const speed of SPEED_PRESETS) {
     const button = element("button", "", formatSpeed(speed));
@@ -652,7 +1473,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!session || !segment) return;
     session.draft = setVolume(session.history.current, segment.id, Number(volume.value) / 100);
     const playing = session.draft.segments.find((candidate) => candidate.id === segment.id)!;
-    if (current().segments[session.index]?.id === segment.id) applySegment(playing);
+    if (current().segments[session.index]?.id === segment.id) applySegment(playing, active);
     renderPanel();
   });
   volume.addEventListener("change", () => {
@@ -665,6 +1486,42 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (session && segment && value !== null) commit(trim(session.history.current, segment.id, edge, value));
       else render();
     });
+  }
+  // Overlay controls.
+  for (const button of presetButtons) {
+    button.addEventListener("click", () => {
+      const overlay = selectedOverlay();
+      if (session && overlay) commit(overlayPreset(session.history.current, overlay.id, button.dataset.preset as OverlayPreset));
+    });
+  }
+  ovSize.addEventListener("input", () => {
+    const overlay = selectedOverlay();
+    if (!session || !overlay) return;
+    session.draft = resizeOverlay(session.history.current, overlay.id, Number(ovSize.value) / 100);
+    renderPanel();
+    renderEffects();
+  });
+  ovVolume.addEventListener("input", () => {
+    const overlay = selectedOverlay();
+    if (!session || !overlay) return;
+    session.draft = setOverlayVolume(session.history.current, overlay.id, Number(ovVolume.value) / 100);
+    renderPanel();
+    renderEffects();
+  });
+  for (const input of [ovSize, ovVolume]) {
+    input.addEventListener("change", () => {
+      if (session?.draft) commit(session.draft);
+    });
+  }
+  for (const [input, field] of [[ovAt, "at"], [ovStart, "start"], [ovEnd, "end"]] as const) {
+    input.addEventListener("change", () => {
+      const overlay = selectedOverlay();
+      const value = parseClock(input.value);
+      if (session && overlay && value !== null) commit(setOverlayTime(session.history.current, overlay.id, { [field]: value }));
+      else render();
+    });
+  }
+  for (const input of [startInput, endInput, ovAt, ovStart, ovEnd]) {
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") input.blur();
       if (event.key === "Escape") {
@@ -673,6 +1530,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       }
     });
   }
+  $("#ov-delete").addEventListener("click", deleteSelected);
   $("#edit-split").addEventListener("click", splitAtPlayhead);
   $("#tl-split").addEventListener("click", splitAtPlayhead);
   $("#edit-delete").addEventListener("click", deleteSelected);
@@ -708,7 +1566,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     } else if (key === "arrowleft" || key === "arrowright") {
       step((key === "arrowleft" ? -1 : 1) * (event.shiftKey ? 5 : 1));
     } else if (key === "escape") {
-      void close(true);
+      if (!pop.hidden) closePopover();
+      else if (session.overlay) selectOverlay(null);
+      else void close(true);
     } else {
       handled = false;
     }
@@ -728,20 +1588,24 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         invoke<StatusResponse>("edit_status", { outputPath }).catch(() => null),
       ]);
       if (listJob?.id !== job.id) return;
-      const project = parseProject(loaded.project, loaded.duration);
-      const edit = project?.edit ?? createEdit(loaded.duration);
+      const info = { path: outputPath, title: job.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
+      const project = parseProject(loaded.project, loaded.duration, info);
+      const edit = project?.edit ?? createEdit(loaded.duration, info);
       const last = status?.exports.at(-1);
       // Exported in the background after the draft was saved: nothing is pending.
-      const changes = last?.segments && sameSegments(edit.segments, last.segments) ? 0 : project?.changes ?? 0;
+      const changes = last?.segments && matchesExport(edit, last) ? 0 : project?.changes ?? 0;
       const { project: _, ...facts } = loaded;
       if (status) listStatus = status;
       const start = video.readyState >= 1 ? sourceToOutput(edit, video.currentTime) ?? 0 : 0;
+      if (!video.paused) video.pause();
       session = {
         job, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
-        selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id,
-        outputTime: start, index: 0, exporting: null,
+        selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
+        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [],
       };
-      resetThumbs(outputPath, loaded.duration);
+      resetThumbs();
+      active = video;
+      library = [];
       zoom.value = "0";
       $("#edit-save-state").textContent = "";
       $("#edit-hint").textContent = "";
@@ -749,6 +1613,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       host.refresh();
       seekOutput(start);
       render();
+      if (mode === "insert") {
+        renderSources();
+        void loadLibrary();
+      }
       $<HTMLButtonElement>("#edit-exit").focus();
     } catch (error) {
       host.showError(`Không mở được chế độ chỉnh sửa: ${String(error).slice(0, 200)}`);
@@ -768,10 +1636,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }
     if (!session) return true;
     if (session.draft) session.draft = null;
+    session.playing = false;
     await flush();
     restorePlayer();
     session = null;
     drag = null;
+    boxDrag = null;
+    closePopover();
     dialog.hidden = true;
     screen.classList.remove("editing");
     host.refresh();
@@ -891,7 +1762,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   function openDialog(): void {
     if (!session || exportButton.disabled) return;
-    if (!video.paused) video.pause();
+    if (session.playing) pausePlayback();
+    closePopover();
     const running = listStatus?.status?.state === "RUNNING";
     if (!running) {
       nameInput.value = defaultExportName(session.job.displayName, (listStatus?.exports ?? []).map((entry) => entry.path));
@@ -918,7 +1790,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const done = !running && dialogDone !== null;
     const { facts } = session;
     const edit = current();
-    const seconds = outputDuration(edit);
+    const total = outputDuration(edit);
     $("#export-form").toggleAttribute("disabled", running || done);
     $("#export-folder").textContent = folder;
     $("#export-folder").title = folder;
@@ -928,8 +1800,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $("#export-quality-hint").textContent = facts.width
       ? `${size.width}×${size.height}${quality === "source" ? " · giữ nguyên khung hình" : upscale ? " · phóng lên, file to hơn" : " · nhẹ, đăng nhanh"}`
       : "";
-    const bytes = estimateExportBytes(facts.size_bytes, facts.duration, seconds, facts.width, facts.height, quality);
-    $("#export-info").textContent = [`Dài ${formatClock(seconds)}`, megabytes(bytes)].filter(Boolean).join(" · ");
+    const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;
+    const extras = $("#export-extras");
+    const parts = [inserts ? `${inserts} đoạn chèn` : "", edit.overlays.length ? `${edit.overlays.length} video chồng` : ""].filter(Boolean);
+    extras.textContent = parts.length ? `Gồm ${parts.join(" · ")}, đưa về cùng khung hình và tốc độ khung hình của video chính` : "";
+    extras.hidden = !parts.length;
+    const bytes = estimateExportBytes(facts.size_bytes, facts.duration, total, facts.width, facts.height, quality);
+    $("#export-info").textContent = [`Dài ${formatClock(total)}`, megabytes(bytes)].filter(Boolean).join(" · ");
     const progress = $("#export-progress");
     progress.hidden = !running && !done;
     if (running) {
@@ -964,10 +1841,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     error.hidden = true;
     try {
       await flush();
-      await invoke("edit_export", { request: {
-        outputPath, quality, folder, fileName: nameInput.value.trim(), cues,
-        segments: edit.segments.map(({ start: from, end, speed, volume: level }) => ({ start: from, end, speed, volume: level })),
-      } });
+      await invoke("edit_export", { request: { outputPath, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit) } });
       if (session?.outputPath !== outputPath) return;
       session.exporting = edit;
       dialogWaiting = true;
@@ -1022,7 +1896,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     get jobId() { return session?.job.id ?? null; },
     select,
     timeLabel: () => session ? `${formatClock(session.outputTime)} / ${formatClock(outputDuration(current()))}` : null,
+    isPlaying: () => session ? session.playing : null,
     togglePlay,
     flush,
+    drop: (paths, point) => void dropFiles(paths, point),
   };
 }

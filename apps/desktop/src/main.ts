@@ -3,7 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
-import { previewInvoke } from "./shell/preview_invoke.ts";
+import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import {
   DEFAULTS_KEY, FIRST_RUN_DEFAULTS, LEGACY_DEFAULTS_KEY, readJobDefaults, serializeJobDefaults, type JobDefaults,
@@ -479,7 +479,8 @@ function showPlaceholder(text: string): void {
 }
 
 function renderPlayButton(): void {
-  const playing = !playerVideo.paused && !playerVideo.ended;
+  // While editing, other players may be playing the output (inserted clips).
+  const playing = editor.isPlaying() ?? (!playerVideo.paused && !playerVideo.ended);
   const covered = !$("#player-busy").hidden || !$("#player-failed").hidden;
   playButton.disabled = covered || !playerVideo.getAttribute("src") || playerVideo.readyState < 1;
   playButton.classList.toggle("playing", playing);
@@ -489,7 +490,7 @@ function renderPlayButton(): void {
   $("#player-time").textContent = editor.timeLabel() ?? `${duration(playerVideo.currentTime * 1000)} / ${duration(length * 1000)}`;
 }
 
-// Edit mode (Cắt ghép): the player previews the edit; the panel and timeline replace the list and details.
+// Edit mode (Cắt ghép, Chèn): the player previews the edit; the panel and timeline replace the list and details.
 const editor = mountEditor(invoke, {
   video: playerVideo,
   confirm: confirmDialog,
@@ -503,6 +504,16 @@ const editor = mountEditor(invoke, {
     playWhenLoaded = true;
     if (lastModel) renderStage(lastModel.view.selected);
   },
+  mediaUrl: async (path) => {
+    const allowed = await invoke<string | null>("allow_media", { path });
+    return allowed ? convertFileSrc(allowed) : null;
+  },
+  library: () => [
+    ...queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
+      .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath! })),
+    // The browser preview has no finished jobs of its own to insert.
+    ...(isTauri ? [] : PREVIEW_EDIT_LIBRARY),
+  ],
 });
 /** "Xem" on an edited export starts it as soon as it has loaded. */
 let playWhenLoaded = false;
@@ -2259,16 +2270,25 @@ if (appWindow) {
 
 // Native drag & drop: Tauri intercepts file drops and reports real paths.
 if (isTauri) {
-  type DropEvent = { payload: { type: "enter" | "over" | "drop" | "leave"; paths?: string[] } };
+  type DropEvent = { payload: { type: "enter" | "over" | "drop" | "leave"; paths?: string[]; position?: { x: number; y: number } } };
   void getCurrentWebview().onDragDropEvent((event: DropEvent) => {
     const overlay = $("#drag-overlay");
+    // While editing, dropped videos are inserted into the edit instead of joining the queue.
+    const editing = editor.jobId !== null;
       if (event.payload.type === "enter" || event.payload.type === "over") {
         overlay.hidden = false;
+        $("#drag-overlay-text").textContent = editing ? "Thả để chèn vào video đang sửa" : "Thả để thêm video";
         dropZone.classList.add("hover");
       } else {
         overlay.hidden = true;
         dropZone.classList.remove("hover");
-        if (event.payload.type === "drop") void addDropped(event.payload.paths ?? []);
+        if (event.payload.type !== "drop") return;
+        const paths = event.payload.paths ?? [];
+        const position = event.payload.position;
+        // Tauri reports physical pixels.
+        const point = position ? { x: position.x / window.devicePixelRatio, y: position.y / window.devicePixelRatio } : null;
+        if (editing) editor.drop(paths, point);
+        else void addDropped(paths);
       }
   }).catch(() => undefined);
 }

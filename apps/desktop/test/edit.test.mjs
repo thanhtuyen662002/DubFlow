@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import {
-  createEdit, defaultExportName, EditHistory, estimateExportBytes, exportSize, formatClock, formatSpeed, HISTORY_LIMIT,
-  isUnchanged, outputDuration, outputStarts, outputToSource, parseClock, parseProject, remapCues, remove, sameSegments,
-  serializeProject, setSpeed, setVolume, sourceToOutput, split, thumbGrid, tickStep, trim, zoomScale,
+  addedId, addOverlay, append, createEdit, defaultExportName, EditHistory, estimateExportBytes, exportPlan, exportSize, formatClock,
+  formatSpeed, HISTORY_LIMIT, insertAt, isUnchanged, matchesExport, moveOverlay, outputDuration, outputStarts, outputToSource,
+  overlayHeight, overlayLength, overlayPreset, overlayPresetOf, parseClock, parseProject, remapCues, remove, removeOverlay,
+  resizeOverlay, sameEdit, sameSegments, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume,
+  sourceToOutput, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
 } from "../src/features/edit/model.ts";
 
-const close = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-6, `${message ?? ""} ${actual} != ${expected}`);
+const close = (actual, expected, message, tolerance = 1e-6) => assert.ok(Math.abs(actual - expected) < tolerance, `${message ?? ""} ${actual} != ${expected}`);
 
 // A new edit is the whole video once.
 const base = createEdit(100);
 assert.equal(base.segments.length, 1);
-assert.deepEqual(base.segments[0], { id: "s1", start: 0, end: 100, speed: 1, volume: 1 });
+assert.deepEqual(base.segments[0], { id: "s1", mediaId: "main", start: 0, end: 100, speed: 1, volume: 1 });
 assert.ok(isUnchanged(base, 100));
 close(outputDuration(base), 100);
 
@@ -158,8 +160,10 @@ assert.ok(long.changes >= 1);
 // Projects round-trip and reject other renders or bad data.
 const saved = JSON.parse(JSON.stringify(serializeProject(fast, 4, "s3")));
 assert.deepEqual(saved, {
-  schema_version: 1, duration: 100, next_id: 4, changes: 4, selected: "s3",
-  segments: [{ id: "s1", start: 0, end: 40, speed: 1, volume: 1 }, { id: "s3", start: 70, end: 100, speed: 1.5, volume: 1 }],
+  schema_version: 2, duration: 100, next_id: 4, changes: 4, selected: "s3",
+  media: [{ id: "main", path: "", title: "", duration: 100, width: 0, height: 0, fps: 30, hasAudio: true, kind: "main" }],
+  segments: [{ id: "s1", mediaId: "main", start: 0, end: 40, speed: 1, volume: 1 }, { id: "s3", mediaId: "main", start: 70, end: 100, speed: 1.5, volume: 1 }],
+  transitions: {}, overlays: [],
 });
 const parsed = parseProject(saved, 100.2);
 assert.equal(parsed.changes, 4);
@@ -168,7 +172,17 @@ assert.equal(parsed.edit.nextId, 4);
 assert.equal(parsed.edit.duration, 100.2);
 assert.ok(sameSegments(parsed.edit.segments, fast.segments));
 assert.equal(parseProject(saved, 120), null, "a different render");
-assert.equal(parseProject({ ...saved, schema_version: 2 }, 100), null);
+assert.equal(parseProject({ ...saved, schema_version: 3 }, 100), null);
+assert.equal(parseProject({ ...saved, media: undefined }, 100), null, "schema 2 lists its media");
+// A 4a (schema 1) draft migrates: every segment plays the main video.
+const legacy = parseProject({ schema_version: 1, duration: 100, next_id: 4, changes: 2, selected: "s3",
+  segments: [{ id: "s1", start: 0, end: 40, speed: 1, volume: 1 }, { id: "s3", start: 70, end: 100, speed: 1.5, volume: 1 }] }, 100, { path: "D:\\o\\final_vi.mp4" });
+assert.deepEqual(legacy.edit.segments.map((s) => s.mediaId), ["main", "main"]);
+assert.deepEqual(legacy.edit.media.map((m) => [m.id, m.path]), [["main", "D:\\o\\final_vi.mp4"]]);
+assert.deepEqual(legacy.edit.transitions, {});
+assert.deepEqual(legacy.edit.overlays, []);
+assert.equal(legacy.changes, 2);
+assert.equal(parseProject({ schema_version: 1, duration: 100, segments: [{ id: "s1", start: 0, end: 10, speed: 1, volume: 1, mediaId: "m9" }] }, 100).edit.segments[0].mediaId, "main", "schema 1 ignores media ids");
 assert.equal(parseProject({ ...saved, segments: [] }, 100), null);
 assert.equal(parseProject({ ...saved, segments: [{ ...saved.segments[0], speed: 3 }] }, 100), null);
 assert.equal(parseProject({ ...saved, segments: [saved.segments[0], saved.segments[0]] }, 100), null, "duplicate ids");
@@ -224,5 +238,173 @@ assert.equal(grid.step, 10);
 assert.equal(grid.times[0], 5);
 assert.equal(thumbGrid(20).times.length, 20, "at least a second apart");
 assert.deepEqual(thumbGrid(0).times, []);
+
+// ---------- Chèn (4b): other media, transitions, overlays ----------
+const film = createEdit(100, { path: "D:\\o\\final_vi.mp4", title: "Phim", width: 1920, height: 1080, fps: 25 });
+assert.deepEqual(film.media.map((m) => [m.id, m.kind, m.path]), [["main", "main", "D:\\o\\final_vi.mp4"]]);
+const intro = { path: "D:\\c\\intro.mp4", title: "intro", duration: 10, width: 1280, height: 720, fps: 30, hasAudio: true, kind: "file" };
+const silent = { path: "D:\\c\\cảnh.mov", title: "cảnh", duration: 6, width: 720, height: 1280, fps: 30, hasAudio: false, kind: "job" };
+
+// Insert at the playhead: the segment there splits, the clip goes after its left part, the rest ripples.
+const inserted = insertAt(film, 40, intro);
+assert.deepEqual(inserted.segments.map((s) => [s.id, s.mediaId, s.start, s.end]), [["s1", "main", 0, 40], ["s4", "m2", 0, 10], ["s3", "main", 40, 100]]);
+assert.deepEqual(inserted.media.map((m) => m.id), ["main", "m2"]);
+assert.equal(addedId(film, inserted), "s4");
+close(outputDuration(inserted), 110);
+assert.deepEqual(outputStarts(inserted), [0, 40, 50]);
+point = outputToSource(inserted, 45);
+assert.equal(point.segment.id, "s4");
+close(point.sourceTime, 5);
+close(sourceToOutput(inserted, 45), 55, "main times skip the inserted clip");
+close(sourceToOutput(inserted, 5, -1, "m2"), 45);
+assert.equal(insertAt(film, Number.NaN, intro), film);
+assert.equal(insertAt(film, 10, { ...intro, duration: 0.05 }), film, "too short to insert");
+// Within 0.1 s of a segment edge there is no split; the same file is one media.
+const twiceIn = insertAt(inserted, 50.05, intro, { start: 2, end: 4 });
+assert.deepEqual(twiceIn.segments.map((s) => [s.id, s.mediaId, s.start, s.end]),
+  [["s1", "main", 0, 40], ["s4", "m2", 0, 10], ["s5", "m2", 2, 4], ["s3", "main", 40, 100]]);
+assert.equal(twiceIn.media.length, 2);
+assert.deepEqual(insertAt(inserted, 0, silent).segments.map((s) => s.mediaId), ["m5", "main", "m2", "main"]);
+// Append, and the main video itself inserted again.
+const appended = append(inserted, silent);
+assert.deepEqual(appended.segments.map((s) => [s.mediaId, s.start, s.end]).at(-1), ["m5", 0, 6]);
+close(outputDuration(appended), 116);
+assert.equal(append(film, { ...intro, path: "d:/o/FINAL_VI.mp4", duration: 100 }).segments[1].mediaId, "main");
+// Trim stays within the clip's own length; speed and volume work as on any segment.
+assert.equal(trim(inserted, "s4", "end", 50).segments[1].end, 10);
+assert.equal(trim(inserted, "s4", "start", 9.95).segments[1].start, 9.9);
+close(outputDuration(setSpeed(inserted, "s4", 2)), 105);
+// Removing the clip drops its media.
+assert.deepEqual(remove(inserted, "s4").media.map((m) => m.id), ["main"]);
+// Cues come from the main video only and skip the inserted part.
+assert.deepEqual(remapCues([{ start_ms: 38000, end_ms: 45000, text: "hai" }, { start_ms: 41000, end_ms: 42000, text: "ba" }], inserted), [
+  { start_ms: 38000, end_ms: 40000, text: "hai" },
+  { start_ms: 50000, end_ms: 55000, text: "hai" },
+  { start_ms: 51000, end_ms: 52000, text: "ba" },
+]);
+assert.ok(!isUnchanged(append(film, intro), 100));
+
+// Transitions: a dissolve overlaps its neighbours, fade through black keeps the length.
+const dissolved = setTransition(inserted, "s1", "dissolve", 1);
+assert.deepEqual(dissolved.transitions, { s1: { type: "dissolve", duration: 1 } });
+close(outputDuration(dissolved), 109);
+assert.deepEqual(outputStarts(dissolved), [0, 39, 49]);
+point = outputToSource(dissolved, 39.5);
+assert.equal(point.segment.id, "s4", "the dissolve belongs to the incoming segment");
+close(point.sourceTime, 0.5);
+assert.deepEqual(remapCues([{ start_ms: 45000, end_ms: 46000, text: "x" }], dissolved), [{ start_ms: 54000, end_ms: 55000, text: "x" }], "1 s earlier than without the dissolve");
+const faded = setTransition(dissolved, "s4", "fade", 3);
+assert.deepEqual(faded.transitions.s4, { type: "fade", duration: 2 }, "at most 2 s");
+close(outputDuration(faded), 109);
+assert.equal(setTransition(inserted, "s1", "fade", 0.05).transitions.s1.duration, 0.2, "at least 0.2 s");
+assert.equal(setTransition(inserted, "s3", "fade", 1), inserted, "no joint after the last segment");
+assert.equal(setTransition(inserted, "nope", "fade", 1), inserted);
+assert.equal(setTransition(dissolved, "s1", "dissolve", 1), dissolved);
+assert.deepEqual(setTransition(dissolved, "s1", null).transitions, {});
+assert.equal(setTransition(inserted, "s1", null), inserted);
+// At most half of each neighbour: a 1 s clip allows 0.5 s, a 0.3 s one none.
+assert.deepEqual(transitionAt(trim(dissolved, "s4", "end", 1), 0), { type: "dissolve", duration: 0.5 });
+assert.equal(setTransition(inserted, "s1", "fade", 2).transitions.s1.duration, 2);
+assert.equal(setTransition(trim(inserted, "s4", "end", 1), "s1", "fade", 2).transitions.s1.duration, 0.5);
+const tiny = trim(dissolved, "s4", "end", 0.3);
+assert.equal(transitionAt(tiny, 0), null);
+assert.equal(setTransition(tiny, "s4", "fade", 1), tiny);
+close(transitionRoom(inserted, 0), 2);
+// A split keeps the joint's transition on the right part; removing a segment drops its own.
+const splitDissolve = split(dissolved, 20);
+assert.deepEqual(Object.keys(splitDissolve.transitions), ["s5"]);
+assert.deepEqual(splitDissolve.segments.map((s) => s.id), ["s1", "s5", "s4", "s3"]);
+assert.deepEqual(remove(dissolved, "s1").transitions, {});
+
+// Overlays: placed top right at 35 % of the width, kept inside the frame.
+const covered = addOverlay(film, intro, 20);
+assert.deepEqual(covered.overlays, [{ id: "o3", mediaId: "m2", at: 20, start: 0, end: 10, x: 0.62, y: 0.03, w: 0.35, volume: 1 }]);
+assert.equal(addedId(film, covered), "o3");
+close(overlayHeight(covered, covered.overlays[0]), 0.35);
+assert.ok(!isUnchanged(covered, 100));
+let moved = moveOverlay(covered, "o3", 0.9, -1);
+assert.deepEqual([moved.overlays[0].x, moved.overlays[0].y], [0.65, 0]);
+assert.equal(moveOverlay(covered, "o3", 0.62, 0.03), covered);
+assert.equal(resizeOverlay(covered, "o3", 0.1).overlays[0].w, 0.2);
+moved = resizeOverlay(covered, "o3", 1.5);
+assert.deepEqual([moved.overlays[0].x, moved.overlays[0].y, moved.overlays[0].w], [0, 0, 1]);
+assert.deepEqual(overlayPreset(covered, "o3", "br").overlays[0], { ...covered.overlays[0], x: 0.62, y: 0.62 });
+assert.deepEqual(overlayPreset(covered, "o3", "center").overlays[0], { ...covered.overlays[0], x: 0.325, y: 0.325 });
+assert.equal(overlayPresetOf(covered, covered.overlays[0]), "tr");
+const offPreset = moveOverlay(covered, "o3", 0.4, 0.1);
+assert.equal(overlayPresetOf(offPreset, offPreset.overlays[0]), null);
+// A portrait clip over a landscape video is as wide as fits the height.
+const tallEdit = addOverlay(film, silent, 0);
+assert.equal(tallEdit.overlays[0].w, 0.3164);
+assert.equal(tallEdit.overlays[0].y, 0);
+close(overlayHeight(tallEdit, tallEdit.overlays[0]), 1, "", 0.001);
+// Times: within the clip and the output; an overlay near the end moves back to fit.
+assert.equal(addOverlay(film, intro, 95).overlays[0].at, 90);
+let timed = setOverlayTime(covered, "o3", { at: 500, start: -2, end: 50 });
+assert.deepEqual([timed.overlays[0].at, timed.overlays[0].start, timed.overlays[0].end], [99.9, 0, 10]);
+timed = setOverlayTime(covered, "o3", { start: 9.95 });
+assert.deepEqual([timed.overlays[0].start, timed.overlays[0].end], [9.9, 10]);
+assert.equal(setOverlayTime(covered, "o3", { at: Number.NaN }), covered);
+assert.equal(setOverlayVolume(covered, "o3", 5).overlays[0].volume, 2);
+assert.deepEqual(removeOverlay(covered, "o3").media.map((m) => m.id), ["main"]);
+assert.equal(removeOverlay(covered, "o9"), covered);
+close(overlayLength(covered, { ...covered.overlays[0], at: 95 }), 5);
+// Inserting before an overlay moves it with the video after it.
+assert.equal(insertAt(covered, 10, silent).overlays[0].at, 26);
+assert.equal(insertAt(covered, 30, silent).overlays[0].at, 20);
+// At most 20 overlays.
+let crowded = film;
+for (let i = 0; i < 25; i++) crowded = addOverlay(crowded, intro, i);
+assert.equal(crowded.overlays.length, 20);
+
+// The export plan: media 0 is the main video, other files by path, effective transitions.
+const full = setTransition(addOverlay(append(dissolved, silent), intro, 5), "s3", "fade", 0.8);
+const plan = exportPlan(full);
+assert.deepEqual(plan, {
+  media: ["D:\\c\\intro.mp4", "D:\\c\\cảnh.mov"],
+  segments: [
+    { media: 0, start: 0, end: 40, speed: 1, volume: 1 }, { media: 1, start: 0, end: 10, speed: 1, volume: 1 },
+    { media: 0, start: 40, end: 100, speed: 1, volume: 1 }, { media: 2, start: 0, end: 6, speed: 1, volume: 1 },
+  ],
+  transitions: [{ after: 0, type: "dissolve", duration: 1 }, { after: 2, type: "fade", duration: 0.8 }],
+  overlays: [{ media: 1, at: 5, start: 0, end: 10, x: 0.62, y: 0.03, w: 0.35, volume: 1 }],
+});
+assert.ok(matchesExport(full, JSON.parse(JSON.stringify(plan))));
+assert.ok(!matchesExport(setOverlayVolume(full, full.overlays[0].id, 0.5), plan));
+assert.ok(!matchesExport(setTransition(full, "s3", null), plan));
+assert.ok(matchesExport(halves, { segments: [{ start: 0, end: 40, speed: 1, volume: 1 }, { start: 40, end: 100, speed: 1, volume: 1 }] }), "a 4a export");
+assert.ok(!matchesExport(inserted, { segments: [{ start: 0, end: 40, speed: 1, volume: 1 }, { start: 0, end: 10, speed: 1, volume: 1 }, { start: 40, end: 100, speed: 1, volume: 1 }] }));
+assert.ok(sameEdit(full, JSON.parse(JSON.stringify(full))));
+
+// Undo covers inserts, transitions and overlays.
+const chain = new EditHistory(film);
+chain.push(inserted);
+chain.push(dissolved);
+chain.push(full);
+assert.equal(chain.undo(), dissolved);
+assert.equal(chain.undo(), inserted);
+assert.equal(chain.changes, 1);
+assert.equal(chain.redo(), dissolved);
+
+// Schema 2 round trip, with recently picked files kept.
+const other = { ...intro, id: "m77", path: "D:\\c\\khác.mp4", title: "khác" };
+const draft = JSON.parse(JSON.stringify(serializeProject(full, 3, "s4", [{ ...intro, id: "x" }, other])));
+assert.deepEqual(draft.media.map((m) => [m.id, m.path]), [["main", "D:\\o\\final_vi.mp4"], ["m2", "D:\\c\\intro.mp4"], ["m5", "D:\\c\\cảnh.mov"], ["r1", "D:\\c\\khác.mp4"]]);
+assert.deepEqual(draft.transitions, { s1: { type: "dissolve", duration: 1 }, s3: { type: "fade", duration: 0.8 } });
+const reread = parseProject(draft, 100, { path: "D:\\o\\final_vi.mp4", title: "Phim", width: 1920, height: 1080, fps: 25 });
+assert.ok(sameEdit(reread.edit, full));
+assert.deepEqual(reread.edit.media.map((m) => m.id), ["main", "m2", "m5"]);
+assert.deepEqual(reread.recent.map((m) => m.path), ["D:\\c\\intro.mp4", "D:\\c\\khác.mp4"]);
+assert.equal(reread.selected, "s4");
+assert.equal(reread.edit.nextId, full.nextId);
+assert.equal(parseProject({ ...draft, segments: [{ ...draft.segments[1], mediaId: "m99" }] }, 100), null, "unknown media");
+assert.equal(parseProject({ ...draft, segments: [{ ...draft.segments[1], mediaId: "r1" }] }, 100), null, "a recent file is not part of the edit");
+assert.equal(parseProject({ ...draft, segments: [{ ...draft.segments[1], end: 30 }] }, 100).edit.segments[0].end, 10, "clamped to the clip");
+assert.equal(parseProject({ ...draft, media: [...draft.media, draft.media[1]] }, 100), null, "duplicate media ids");
+assert.equal(parseProject({ ...draft, media: [{ ...draft.media[0], kind: "file" }, ...draft.media.slice(1)] }, 100), null);
+const loose = parseProject({ ...draft, transitions: { s3: { type: "wipe", duration: 1 }, s99: { type: "fade", duration: 1 }, s1: { type: "fade", duration: 9 } },
+  overlays: [...draft.overlays, { ...draft.overlays[0], id: "o99", x: 4 }] }, 100);
+assert.deepEqual(loose.edit.transitions, { s1: { type: "fade", duration: 2 } }, "bad transitions are dropped, durations clamped");
+assert.equal(loose.edit.overlays.length, 1, "a bad overlay is dropped");
 
 console.log("edit tests passed");
