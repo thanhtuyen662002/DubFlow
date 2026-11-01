@@ -439,12 +439,15 @@ class StreamMaterializer:
         if progress is not None and not callable(progress):
             raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "download progress observer is invalid")
         observed = {index: (0, None) for index, candidate in enumerate(inputs) if candidate is not None}
+        observed_lock = threading.Lock()
 
         def observe(index, downloaded, total):
-            observed[index] = (downloaded, total)
-            if progress is not None:
-                progress(sum(value[0] for value in observed.values()),
-                    sum(value[1] for value in observed.values()) if all(value[1] is not None for value in observed.values()) else None)
+            # Streams transfer concurrently; the observer sees one ordered sum.
+            with observed_lock:
+                observed[index] = (downloaded, total)
+                if progress is not None:
+                    progress(sum(value[0] for value in observed.values()),
+                        sum(value[1] for value in observed.values()) if all(value[1] is not None for value in observed.values()) else None)
 
         # Only digests reach disk. IDs/locators can contain provider tokens.
         identity = hashlib.sha256(json.dumps([self.muxer.fingerprint,
@@ -455,6 +458,7 @@ class StreamMaterializer:
         private.mkdir(parents=True, exist_ok=True)
         recovered = False
         paths: list[Path] = []
+        transfers: list[tuple[int, MediaCandidate, Path, Path]] = []
         for index, candidate in enumerate(inputs):
             if candidate is None:
                 continue
@@ -478,13 +482,41 @@ class StreamMaterializer:
                 recovered = True
                 observe(index, record["size_bytes"], record["size_bytes"])
             else:
-                result = self.materializer.download(self._direct(candidate), path, root=private,
-                    resume=resume, cancel=cancel,
-                    **({"progress": lambda downloaded, total, index=index: observe(index, downloaded, total)} if progress is not None else {}))
-                recovered |= result.resumed
-                _write_receipt(receipt, {"schema_version": 1, "producer_version": PRODUCER_VERSION,
-                    "identity_sha256": identity, "size_bytes": result.size_bytes, "sha256": result.sha256})
+                transfers.append((index, candidate, path, receipt))
             paths.append(path)
+
+        def transfer(index: int, candidate: MediaCandidate, path: Path, receipt: Path) -> DownloadResult:
+            result = self.materializer.download(self._direct(candidate), path, root=private,
+                resume=resume, cancel=cancel,
+                **({"progress": lambda downloaded, total, index=index: observe(index, downloaded, total)} if progress is not None else {}))
+            _write_receipt(receipt, {"schema_version": 1, "producer_version": PRODUCER_VERSION,
+                "identity_sha256": identity, "size_bytes": result.size_bytes, "sha256": result.sha256})
+            return result
+
+        if len(transfers) == 1:
+            recovered |= transfer(*transfers[0]).resumed
+        elif transfers:
+            # DASH video and audio are independent objects: fetch them at the
+            # same time. A failed stream does not stop its sibling, whose
+            # completed checkpoint is then reused by the item's retry.
+            outcomes: list[DownloadResult | BaseException] = [RuntimeError("stream transfer did not run")] * len(transfers)
+
+            def run(slot: int) -> None:
+                try:
+                    outcomes[slot] = transfer(*transfers[slot])
+                except BaseException as error:  # Re-raised on the owner thread.
+                    outcomes[slot] = error
+
+            workers = [threading.Thread(target=run, args=(slot,), name=f"dubflow-stream-{slot}", daemon=True)
+                       for slot in range(len(transfers))]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+            recovered |= any(outcome.resumed for outcome in outcomes)  # type: ignore[union-attr]
         video_info = next((info for info in self.muxer.probe(paths[0], cancel=cancel) if info.kind == "video"), None)
         audio_info = next((info for info in self.muxer.probe(paths[-1], cancel=cancel) if info.kind == "audio"), None)
         if video_info is None or audio_info is None:
