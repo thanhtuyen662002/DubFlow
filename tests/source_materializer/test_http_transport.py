@@ -80,7 +80,7 @@ class HttpTransportTests(unittest.TestCase):
                 "from engine.dubflow.download.source_adapter import MediaCandidate",
                 "def progress(done, total):",
                 f"    if done == {stopped_at}: print('COMMITTED', flush=True)",
-                f"MediaMaterializer(chunk_bytes={chunk}).download(MediaCandidate('media',sys.argv[1],'progressive','video/mp4'),Path(sys.argv[2]),progress=progress)",
+                f"MediaMaterializer(chunk_bytes={chunk}, segments=1).download(MediaCandidate('media',sys.argv[1],'progressive','video/mp4'),Path(sys.argv[2]),progress=progress)",
             ))
             process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", code, url, str(destination)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -103,7 +103,8 @@ class HttpTransportTests(unittest.TestCase):
                 self.assertEqual(part.read_bytes(), payload[:stopped_at])
                 self.assertEqual(json.loads(receipt.read_text()), checkpoint)
                 self.assertEqual(destination.read_bytes(), b"previous-good-export")
-                result = MediaMaterializer().download(MediaCandidate("media", url, "progressive", "video/mp4"), destination)
+                # Pinned to the single-connection path; ranged resume has its own suite.
+                result = MediaMaterializer(segments=1).download(MediaCandidate("media", url, "progressive", "video/mp4"), destination)
                 self.assertTrue(result.resumed)
                 self.assertEqual(calls, [(None, None), (f"bytes={committed}-", '"fixture-version-1"')])
                 self.assertEqual(destination.read_bytes(), payload)
