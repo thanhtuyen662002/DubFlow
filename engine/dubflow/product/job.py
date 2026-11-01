@@ -15,6 +15,8 @@ MAX_VARIANTS = 5
 MIN_SPEED, MAX_SPEED = 1.0, 1.3
 MAX_SCRIPT_CHARS = 3000
 MAX_VISUALS = 30
+MAX_FEATURES = 8
+MAX_FEATURE_CHARS = 200
 SPEC_LIMIT = 256 * 1024
 
 
@@ -45,6 +47,10 @@ class Spec:
     template: str = "ban-tin"
     # VieNeu's tempo for the narration.
     speed: float = 1.0
+    # The highlights "Chỉ chữ" shows one card at a time.
+    features: tuple[str, ...] = ()
+    # The part of the background kept when it is cropped to fit (0–1 across, 0–1 down).
+    focus: tuple[float, float] = (0.5, 0.5)
 
 
 class Speaker(Protocol):
@@ -88,17 +94,28 @@ def load_spec(path: Path) -> Spec:
     texts = tuple(_string(item, "Kịch bản", MAX_SCRIPT_CHARS, required=True) for item in variants)
     if any(not script.sentences(text) for text in texts):
         raise ProductError("Có kịch bản không có câu nào để đọc")
-    visuals = value.get("visuals")
-    if type(visuals) is not list or not 1 <= len(visuals) <= MAX_VISUALS:
+    template = value.get("template", "ban-tin")
+    if template not in layout.TEMPLATES:
+        raise ProductError("Mẫu video không hợp lệ")
+    visuals = value.get("visuals", [])
+    # "Chỉ chữ" needs no photos or clips and ignores any it is given.
+    fewest = 0 if template == layout.TEXT_ONLY else 1
+    if type(visuals) is not list or not fewest <= len(visuals) <= MAX_VISUALS:
         raise ProductError(f"Cần từ 1 đến {MAX_VISUALS} ảnh hoặc clip")
+    if template == layout.TEXT_ONLY:
+        visuals = []
+    features = value.get("features", [])
+    if type(features) is not list or len(features) > MAX_FEATURES:
+        raise ProductError("Điểm nổi bật không hợp lệ")
+    focus = value.get("focus", {"x": 0.5, "y": 0.5})
+    if type(focus) is not dict or any(isinstance(focus.get(axis), bool) or not isinstance(focus.get(axis), (int, float))
+                                      or not 0 <= focus[axis] <= 1 for axis in ("x", "y")):
+        raise ProductError("Vị trí ảnh nền không hợp lệ")
     music = value.get("music")
     volume = value.get("music_volume", 0.15)
     if isinstance(volume, bool) or not isinstance(volume, (int, float)) or not 0 <= volume <= 1:
         raise ProductError("Âm lượng nhạc nền không hợp lệ")
     voice = _string(value.get("voice_id"), "Giọng đọc", 96, required=True)
-    template = value.get("template", "ban-tin")
-    if template not in layout.TEMPLATES:
-        raise ProductError("Mẫu video không hợp lệ")
     speed = value.get("speed", 1.0)
     if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not MIN_SPEED <= speed <= MAX_SPEED:
         raise ProductError("Tốc độ đọc không hợp lệ")
@@ -113,6 +130,8 @@ def load_spec(path: Path) -> Spec:
         background=None if value.get("background") is None else _file(value["background"], render.IMAGE_SUFFIXES, "ảnh nền"),
         template=template,
         speed=float(speed),
+        features=tuple(text for text in (" ".join(_string(item, "Điểm nổi bật", MAX_FEATURE_CHARS).split()) for item in features) if text),
+        focus=(float(focus["x"]), float(focus["y"])),
     )
 
 
@@ -213,11 +232,13 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
         for path in spec.visuals:
             visuals.append(render.Visual(path, None if path.suffix.casefold() in render.IMAGE_SUFFIXES else probe(path)))
         backdrop = None
-        # Full-screen media leaves nothing of a background visible.
-        if spec.background is not None and spec.template == "ban-tin":
+        # Full-screen media leaves nothing of a background visible; "Chỉ chữ" always fills the frame.
+        if spec.background is not None and spec.template == layout.TEXT_ONLY:
+            backdrop = render.Background(spec.background, True, spec.focus)
+        elif spec.background is not None and spec.template == "ban-tin":
             if measure is None:
                 raise ProductError("Không đọc được ảnh nền")
-            backdrop = render.background(spec.background, *measure(spec.background))
+            backdrop = render.background(spec.background, *measure(spec.background), spec.focus)
         check()
         voice = speaker(status)
         for number, text in enumerate(spec.variants, start=1):
@@ -238,11 +259,12 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 render.write_narration(narration, [samples for _, samples in speech], voice.sample_rate,
                                        lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS, tail_ms=script.TAIL_MS)
                 _atomic_text(work / "captions.ass", layout.ass_document(spec.name, spec.price, captions, total_ms, outlined=backdrop is not None,
-                                                                             template=spec.template))
+                                                                             template=spec.template, features=spec.features))
                 status.write(message=f"Đang render video {number}/{len(spec.variants)}…")
                 final = output_dir / f"video-{number}.mp4"
                 partial = work / f"video-{number}.partial.mp4"
-                ffmpeg_runner(render.ffmpeg_argv(ffmpeg, render.plan(visuals, total_ms), narration, spec.music,
+                segments = [] if spec.template == layout.TEXT_ONLY else render.plan(visuals, total_ms)
+                ffmpeg_runner(render.ffmpeg_argv(ffmpeg, segments, narration, spec.music,
                                                  spec.music_volume, total_ms, partial, encoder=encoder, backdrop=backdrop,
                                                  media_height=layout.media_height(spec.template)), work, cancelled)
                 check()

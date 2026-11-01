@@ -1,23 +1,30 @@
-//! Product videos from the user's own photos and clips (ADR-0041): pick
-//! files, send downscaled photos to the webview for Claude, and run
-//! `python -m engine.dubflow.product`, which reports through a status file.
+//! Product videos from pasted text and the user's own photos and clips
+//! (ADR-0041): pick files, send downscaled photos to the webview for the AI,
+//! keep a library of backgrounds, and run `python -m engine.dubflow.product`,
+//! which reports through a status file.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use crate::{control_root, display_path, fail, load_voice_catalog, version_root, CREATE_NO_WINDOW};
+use crate::{control_root, data_root, default_download_folder, display_path, fail, load_voice_catalog, version_root, CREATE_NO_WINDOW};
 
 const IMAGE_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "webp", "bmp"];
 const CLIP_EXTENSIONS: [&str; 6] = ["mp4", "mov", "mkv", "webm", "avi", "m4v"];
 const MUSIC_EXTENSIONS: [&str; 6] = ["mp3", "m4a", "aac", "wav", "ogg", "flac"];
 const NAME_CHARS: usize = 40;
+const TEMPLATES: [&str; 3] = ["ban-tin", "toan-man-hinh", "chi-chu"];
+/// "Chỉ chữ": text cards over a background or a gradient, no photos or clips.
+const TEXT_ONLY: &str = "chi-chu";
+const MAX_FEATURES: usize = 8;
+const MAX_FEATURE_CHARS: usize = 200;
 
 fn has_extension(path: &Path, extensions: &[&str]) -> bool {
     path.extension().and_then(|value| value.to_str())
@@ -82,14 +89,26 @@ pub struct ProductRequest {
     /// The user's background: 1080×720 for the panel, 1080×1920 for the whole frame.
     #[serde(default)]
     background: Option<String>,
-    /// "ban-tin" or "toan-man-hinh"; Bản tin when absent.
+    /// "ban-tin", "toan-man-hinh" or "chi-chu"; Bản tin when absent.
     #[serde(default)]
     template: Option<String>,
+    /// The highlights "Chỉ chữ" shows as cards.
+    #[serde(default)]
+    features: Vec<String>,
+    /// The part of the background kept when it is cropped (0–1 across and down); the centre when absent.
+    #[serde(default)]
+    focus: Option<Focus>,
     /// Narration speed, 1.0–1.3; 1.0 when absent.
     #[serde(default)]
     speed: Option<f64>,
     cpu_only: bool,
     output_root: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Focus {
+    x: f64,
+    y: f64,
 }
 
 /// A folder name Windows accepts, from the product name.
@@ -125,12 +144,21 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     if !load_voice_catalog(&root)?.voices.iter().any(|voice| voice.voice_id == request.voice_id) {
         return Err(fail("Giọng đã chọn không có trong phiên bản này"));
     }
-    if request.visuals.is_empty() || request.visuals.len() > 30 || request.variants.is_empty() || request.variants.len() > 5 {
+    let template = request.template.unwrap_or_else(|| "ban-tin".to_owned());
+    if !TEMPLATES.contains(&template.as_str()) {
+        return Err(fail("Mẫu video không hợp lệ"));
+    }
+    // "Chỉ chữ" uses no photos or clips.
+    let visuals = if template == TEXT_ONLY { Vec::new() } else { request.visuals };
+    if (template != TEXT_ONLY && visuals.is_empty()) || visuals.len() > 30 || request.variants.is_empty() || request.variants.len() > 5 {
         return Err(fail("Cần 1–30 ảnh hoặc clip và 1–5 kịch bản"));
     }
-    let template = request.template.unwrap_or_else(|| "ban-tin".to_owned());
-    if !["ban-tin", "toan-man-hinh"].contains(&template.as_str()) {
-        return Err(fail("Mẫu video không hợp lệ"));
+    if request.features.len() > MAX_FEATURES || request.features.iter().any(|item| item.chars().count() > MAX_FEATURE_CHARS) {
+        return Err(fail("Điểm nổi bật không hợp lệ"));
+    }
+    let focus = request.focus.map_or((0.5, 0.5), |focus| (focus.x, focus.y));
+    if ![focus.0, focus.1].iter().all(|value| (0.0..=1.0).contains(value)) {
+        return Err(fail("Vị trí ảnh nền không hợp lệ"));
     }
     let speed = request.speed.unwrap_or(1.0);
     if !(1.0..=1.3).contains(&speed) {
@@ -139,7 +167,7 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     if !(0.0..=1.0).contains(&request.music_volume) {
         return Err(fail("Âm lượng nhạc nền không hợp lệ"));
     }
-    let visuals = request.visuals.iter()
+    let visuals = visuals.iter()
         .map(|value| local_file(value, &[&IMAGE_EXTENSIONS[..], &CLIP_EXTENSIONS[..]].concat()))
         .collect::<Result<Vec<_>, _>>()?;
     let music = request.music.as_deref().map(|value| local_file(value, &MUSIC_EXTENSIONS)).transpose()?;
@@ -152,7 +180,11 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
             }
             base
         }
-        None => visuals[0].parent().ok_or_else(|| fail("Không xác định được thư mục lưu"))?.to_path_buf(),
+        // Next to the first photo or clip; "Chỉ chữ" has none, so the Videos folder.
+        None => match visuals.first() {
+            Some(first) => first.parent().ok_or_else(|| fail("Không xác định được thư mục lưu"))?.to_path_buf(),
+            None => default_download_folder()?.parent().ok_or_else(|| fail("Không xác định được thư mục lưu"))?.to_path_buf(),
+        },
     };
     let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
     let output = product_output(&base, &request.name, &format!("{started}:{}", request.name));
@@ -161,7 +193,7 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     let spec = json!({
         "schema_version": 1, "name": request.name, "price": request.price, "voice_id": request.voice_id,
         "variants": request.variants, "visuals": visuals, "music": music, "music_volume": request.music_volume, "background": background,
-        "template": template, "speed": speed,
+        "template": template, "speed": speed, "features": request.features, "focus": {"x": focus.0, "y": focus.1},
     });
     let spec_path = work.join("spec.json");
     fs::write(&spec_path, serde_json::to_vec(&spec).map_err(|error| fail(error.to_string()))?)
@@ -203,9 +235,183 @@ pub fn product_cancel(output_dir: String) -> Result<(), String> {
     fs::write(dir.join(".dubflow-work").join("cancel"), b"").map_err(|error| fail(format!("Không hủy được: {error}")))
 }
 
+/// One image in the background library, `<data root>\backgrounds\<sha256>.<ext>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LibraryBackground {
+    /// The file's SHA-256: the same image is kept once.
+    id: String,
+    extension: String,
+    /// The file name it was added from.
+    name: String,
+    width: u32,
+    height: u32,
+    /// Filled in when listed.
+    #[serde(default, skip_deserializing)]
+    path: String,
+}
+
+const LIBRARY_INDEX: &str = "index.json";
+const MAX_BACKGROUND_BYTES: u64 = 40 * 1024 * 1024;
+const MAX_BACKGROUNDS: usize = 200;
+static LIBRARY: Mutex<()> = Mutex::new(());
+
+fn library_dir() -> Result<PathBuf, String> {
+    Ok(data_root()?.join("backgrounds"))
+}
+
+fn read_library(dir: &Path) -> Vec<LibraryBackground> {
+    let entries = fs::read(dir.join(LIBRARY_INDEX)).ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| serde_json::from_value::<Vec<LibraryBackground>>(value["items"].clone()).ok())
+        .unwrap_or_default();
+    entries.into_iter()
+        .filter(|entry| background_id(&entry.id).is_ok() && IMAGE_EXTENSIONS.contains(&entry.extension.as_str()))
+        .map(|mut entry| {
+            entry.path = dir.join(format!("{}.{}", entry.id, entry.extension)).to_string_lossy().into_owned();
+            entry
+        })
+        .filter(|entry| Path::new(&entry.path).is_file())
+        .collect()
+}
+
+fn write_library(dir: &Path, entries: &[LibraryBackground]) -> Result<(), String> {
+    let items: Vec<Value> = entries.iter().map(|entry| json!({
+        "id": entry.id, "extension": entry.extension, "name": entry.name, "width": entry.width, "height": entry.height,
+    })).collect();
+    let partial = dir.join(format!("{LIBRARY_INDEX}.partial"));
+    fs::write(&partial, serde_json::to_vec(&json!({"schema_version": 1, "items": items})).map_err(|error| fail(error.to_string()))?)
+        .and_then(|_| fs::rename(&partial, dir.join(LIBRARY_INDEX)))
+        .map_err(|error| fail(format!("Không lưu được kho ảnh nền: {error}")))
+}
+
+fn background_id(value: &str) -> Result<&str, String> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+        Ok(value)
+    } else {
+        Err(fail("Ảnh nền không hợp lệ"))
+    }
+}
+
+/// Copy `source` into the library unless the same image is already there; newest first.
+fn add_to_library(dir: &Path, source: &Path, measure: impl Fn(&Path) -> Result<(u32, u32), String>) -> Result<LibraryBackground, String> {
+    let size = fs::metadata(source).map_err(|_| fail("Không mở được ảnh nền"))?.len();
+    if size > MAX_BACKGROUND_BYTES {
+        return Err(fail("Ảnh nền quá lớn (tối đa 40 MB)"));
+    }
+    let extension = source.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase();
+    if !IMAGE_EXTENSIONS.contains(&extension.as_str()) {
+        return Err(fail("Ảnh nền phải là JPG, PNG, WEBP hoặc BMP"));
+    }
+    let bytes = fs::read(source).map_err(|error| fail(format!("Không đọc được ảnh nền: {error}")))?;
+    let id = format!("{:x}", Sha256::digest(&bytes));
+    fs::create_dir_all(dir).map_err(|error| fail(format!("Không tạo được kho ảnh nền: {error}")))?;
+    let mut entries = read_library(dir);
+    if let Some(known) = entries.iter().find(|entry| entry.id == id) {
+        return Ok(known.clone());
+    }
+    let target = dir.join(format!("{id}.{extension}"));
+    let partial = dir.join(format!("{id}.partial"));
+    fs::write(&partial, &bytes).and_then(|_| fs::rename(&partial, &target))
+        .map_err(|error| fail(format!("Không chép được ảnh nền: {error}")))?;
+    let (width, height) = match measure(&target) {
+        Ok(size) => size,
+        Err(error) => {
+            let _ = fs::remove_file(&target);
+            return Err(error);
+        }
+    };
+    let name: String = source.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default().chars().take(120).collect();
+    let entry = LibraryBackground { id, extension, name, width, height, path: target.to_string_lossy().into_owned() };
+    entries.insert(0, entry.clone());
+    for dropped in entries.drain(MAX_BACKGROUNDS.min(entries.len())..) {
+        let _ = fs::remove_file(&dropped.path);
+    }
+    write_library(dir, &entries)?;
+    Ok(entry)
+}
+
+fn remove_from_library(dir: &Path, id: &str) -> Result<(), String> {
+    let id = background_id(id)?;
+    let mut entries = read_library(dir);
+    let Some(index) = entries.iter().position(|entry| entry.id == id) else { return Ok(()) };
+    let removed = entries.remove(index);
+    write_library(dir, &entries)?;
+    fs::remove_file(&removed.path).or_else(|error| if error.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(error) })
+        .map_err(|error| fail(format!("Không xóa được ảnh nền: {error}")))
+}
+
+/// An image's width and height, from FFprobe.
+fn measure_image(path: &Path) -> Result<(u32, u32), String> {
+    let mut command = Command::new(version_root()?.join("runtime").join("media").join("ffprobe.exe"));
+    command.args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x"]).arg(path)
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().map_err(|error| fail(format!("Không chạy được FFprobe: {error}")))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut parts = text.trim().split('x').map(|value| value.trim().parse::<u32>().ok());
+    match (output.status.success(), parts.next().flatten(), parts.next().flatten()) {
+        (true, Some(width), Some(height)) if width > 0 && height > 0 => Ok((width, height)),
+        _ => Err(fail("Không đọc được ảnh này")),
+    }
+}
+
+/// The saved backgrounds, newest first.
+#[tauri::command]
+pub fn product_backgrounds() -> Result<Vec<LibraryBackground>, String> {
+    let _guard = LIBRARY.lock().map_err(|_| fail("Kho ảnh nền đang bận"))?;
+    Ok(read_library(&library_dir()?))
+}
+
+/// Keep a picked image in the library (once per distinct image) and return it.
+#[tauri::command]
+pub async fn product_background_add(path: String) -> Result<LibraryBackground, String> {
+    let source = local_file(&path, &IMAGE_EXTENSIONS)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = LIBRARY.lock().map_err(|_| fail("Kho ảnh nền đang bận"))?;
+        add_to_library(&library_dir()?, &source, measure_image)
+    }).await.map_err(|error| fail(error.to_string()))?
+}
+
+/// Delete a background from the library.
+#[tauri::command]
+pub fn product_background_delete(id: String) -> Result<(), String> {
+    let _guard = LIBRARY.lock().map_err(|_| fail("Kho ảnh nền đang bận"))?;
+    remove_from_library(&library_dir()?, &id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_library_keeps_each_image_once_newest_first_and_deletes() {
+        let base = std::env::temp_dir().join(format!("dubflow-backgrounds-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let library = base.join("backgrounds");
+        fs::create_dir_all(&base).unwrap();
+        let (first, copy, second) = (base.join("Nền xanh.PNG"), base.join("copy.png"), base.join("nen.jpg"));
+        fs::write(&first, b"first image").unwrap();
+        fs::write(&copy, b"first image").unwrap();
+        fs::write(&second, b"second image").unwrap();
+        let added = add_to_library(&library, &first, |_| Ok((1080, 720))).unwrap();
+        assert_eq!((added.extension.as_str(), added.name.as_str(), added.width, added.height), ("png", "Nền xanh.PNG", 1080, 720));
+        assert_eq!(added.id, format!("{:x}", Sha256::digest(b"first image")));
+        assert!(Path::new(&added.path).ends_with(format!("{}.png", added.id)));
+        assert_eq!(add_to_library(&library, &copy, |_| panic!("a known image is not measured again")).unwrap().id, added.id);
+        let newer = add_to_library(&library, &second, |_| Ok((1080, 1920))).unwrap();
+        assert_eq!(read_library(&library).iter().map(|entry| entry.id.clone()).collect::<Vec<_>>(), [newer.id.clone(), added.id.clone()]);
+        assert!(add_to_library(&library, &base.join("missing.png"), |_| Ok((1, 1))).is_err());
+        fs::write(base.join("broken.png"), b"not an image").unwrap();
+        assert!(add_to_library(&library, &base.join("broken.png"), |_| Err(fail("Không đọc được ảnh này"))).is_err());
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 3, "two images and the index; the broken one is not kept");
+        remove_from_library(&library, &added.id).unwrap();
+        assert!(!Path::new(&added.path).exists());
+        assert_eq!(read_library(&library), vec![newer.clone()]);
+        assert!(remove_from_library(&library, "../index").is_err());
+        remove_from_library(&library, &"0".repeat(64)).unwrap();
+        fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     fn folder_title_is_a_short_windows_name() {
