@@ -1,6 +1,6 @@
 import {
   GLOSS_BATCH, PLATFORMS, TITLE_GLOSS_KEY, TOPICS, bilibiliMid, cleanTitle, parseGlosses, discoveryError, formatCount, formatDuration, loadGlossCache,
-  mergeVideos, needsTitleGloss, parseCollected, parseTrends, parseVideos, previewSource, rememberGloss, saveGlossCache,
+  mergeVideos, needsTitleGloss, pageAddress, parseCollected, parseTrends, parseVideos, previewSource, rememberGloss, saveGlossCache,
   type DiscoveredVideo, type Platform, type PreviewSource, type Trend,
 } from "./model.ts";
 
@@ -77,9 +77,11 @@ function dropPlayer(node: Element | null | undefined): void {
 /**
  * Wire the "Khám phá" view. `enqueue` downloads one link (with its title) into the queue;
  * `glossEngine` says which translator may gloss keywords ("hachimi" only once
- * the user accepted its licence warning).
+ * the user accepted its licence warning); `onWindowMoved` reports moves of the
+ * app window (the discovery page moves with it).
  */
-export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: string) => Promise<void>, glossEngine: () => "argos" | "hachimi"): { show(): void; hide(): void } {
+export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: string) => Promise<void>, glossEngine: () => "argos" | "hachimi",
+  onWindowMoved: (listener: () => void) => void): { show(): void; hide(): void } {
   const tabs = $("#platform-tabs");
   const trendList = $("#trend-list");
   const trendState = $("#trend-state");
@@ -88,7 +90,13 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   const query = $<HTMLInputElement>("#discover-query");
   const suggestList = $("#suggest-list");
   const popular = $<HTMLButtonElement>("#discover-popular");
-  const browser = $("#discover-browser");
+  const main = $("#discover-view .discover-main");
+  const panel = $("#discover-panel");
+  const pageBox = $("#discover-page");
+  const siteLabel = $("#discover-site");
+  const urlLabel = $("#discover-url");
+  const showResults = $<HTMLButtonElement>("#discover-show-results");
+  const reopenBar = $("#discover-reopen-bar");
   const state = $("#discover-state");
   const resultBar = $("#result-bar");
   const selectAll = $<HTMLInputElement>("#select-all");
@@ -303,6 +311,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     resultBar.hidden = videos.length === 0;
     resultTools.hidden = videos.length === 0;
     more.hidden = !(mode?.kind === "api" && nextPage !== null);
+    showResults.textContent = videos.length ? `Xem kết quả (${videos.length})` : "Xem kết quả";
     renderSelection();
   }
 
@@ -576,9 +585,140 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     renderResults();
   }
 
+  // The platform page, shown by the host over `pageBox` while browsing. At most
+  // one exists; it stays loaded while hidden (results shown, another screen,
+  // or something drawn over the panel that the native page would cover).
+  let page: { platform: Platform } | null = null;
+  let browsing = false;
+  let screenShown = false;
+  let opening = 0;
+  let pageShown = false;
+  let lastBounds = "";
+  let urlTimer = 0;
+  // Host calls about the page run in order, so a quick hide/show never lands reversed.
+  let hostChain: Promise<unknown> = Promise.resolve();
+  function host<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+    const run = hostChain.then(() => invoke<T>(command, args));
+    hostChain = run.catch(() => undefined);
+    return run;
+  }
+
+  function pageBounds(): Record<string, number> {
+    const rect = pageBox.getBoundingClientRect();
+    return { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+  }
+
+  /** Something the native page would hide is open: a dialog, the player or the keyword suggestions. */
+  function covered(): boolean {
+    if (!suggestList.hidden || !player.hidden) return true;
+    return [...document.querySelectorAll('[aria-modal="true"]')].some((node) => !node.closest("[hidden]"));
+  }
+
+  function syncPage(): void {
+    if (opening > 0) return;
+    const want = page !== null && browsing && screenShown && !covered() && pageBox.getClientRects().length > 0;
+    if (want === pageShown) {
+      if (want) syncBounds();
+      return;
+    }
+    pageShown = want;
+    window.clearInterval(urlTimer);
+    if (!want) {
+      void host("discovery_view_hide").catch(() => undefined);
+      return;
+    }
+    const bounds = pageBounds();
+    lastBounds = JSON.stringify(bounds);
+    host("discovery_view_show", bounds).catch((error) => {
+      // The page is gone (its fallback window was closed): back to the results.
+      dropPage();
+      state.textContent = String(error).slice(0, 200);
+    });
+    watchAddress();
+  }
+
+  /** Keep the native page over the box; `force` re-places it when the window itself moved. */
+  function syncBounds(force = false): void {
+    if (!pageShown) return;
+    const bounds = pageBounds();
+    const key = JSON.stringify(bounds);
+    if (!force && key === lastBounds) return;
+    lastBounds = key;
+    void host("discovery_view_bounds", bounds).catch(() => undefined);
+  }
+
+  async function readAddress(): Promise<void> {
+    try {
+      const url = await host<string | null>("discovery_view_url");
+      if (!page) return;
+      if (url === null) {
+        dropPage();
+        return;
+      }
+      urlLabel.textContent = pageAddress(url);
+      urlLabel.title = url;
+    } catch {
+      // The address is informational.
+    }
+  }
+
+  function watchAddress(): void {
+    window.clearInterval(urlTimer);
+    void readAddress();
+    urlTimer = window.setInterval(() => void readAddress(), 1500);
+  }
+
+  // Redraws, dialogs and layout changes anywhere may cover or move the panel; bursts are checked once.
+  let checkTimer = 0;
+  const pageObserver = typeof MutationObserver === "undefined" ? null : new MutationObserver(() => {
+    if (checkTimer) return;
+    checkTimer = window.setTimeout(() => {
+      checkTimer = 0;
+      syncPage();
+    }, 30);
+  });
+  const boxObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => syncBounds());
+  function observePage(on: boolean): void {
+    pageObserver?.disconnect();
+    boxObserver?.disconnect();
+    if (!on) return;
+    pageObserver?.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden"] });
+    boxObserver?.observe(pageBox);
+  }
+  window.addEventListener("resize", () => syncBounds());
+  onWindowMoved(() => syncBounds(true));
+
+  function renderPage(): void {
+    const panelOpen = page !== null && browsing;
+    main.classList.toggle("browsing", panelOpen);
+    panel.hidden = !panelOpen;
+    reopenBar.hidden = !(page !== null && !browsing);
+    const name = PLATFORMS.find((entry) => entry.id === page?.platform)?.name ?? info().name;
+    for (const label of [siteLabel, $("#discover-page-site"), $("#discover-reopen-site")]) label.textContent = name;
+    observePage(page !== null && screenShown);
+    syncPage();
+  }
+
+  /** Forget the page on this side (the host has closed it or will). */
+  function dropPage(): void {
+    page = null;
+    browsing = false;
+    pageShown = false;
+    window.clearInterval(urlTimer);
+    urlLabel.textContent = "";
+    urlLabel.title = "";
+    renderPage();
+  }
+
+  function closePage(): void {
+    if (!page) return;
+    dropPage();
+    void host("discovery_view_close").catch(() => undefined);
+  }
+
   async function runApi(next: Exclude<Mode, { kind: "page" } | null>, append: boolean): Promise<void> {
     mode = next;
-    browser.hidden = true;
+    closePage();
     state.textContent = "Đang tải…";
     more.disabled = true;
     try {
@@ -602,15 +742,41 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     }
   }
 
+  /** Open the search or creator page in the panel (navigating the page already there). */
   async function openPage(): Promise<void> {
     mode = { kind: "page" };
+    more.hidden = true;
+    const had = page !== null;
+    page = { platform };
+    browsing = true;
+    opening += 1;
+    urlLabel.textContent = "";
+    state.textContent = "Đang mở trang…";
+    renderPage();
+    // Wait for layout so the box has its final size (frames pause in a hidden window).
+    await new Promise((resolve) => {
+      requestAnimationFrame(resolve);
+      window.setTimeout(resolve, 100);
+    });
     try {
-      await invoke("open_discovery", { platform, kind: kind.value, query: query.value });
-      browser.hidden = false;
-      more.hidden = true;
-      state.textContent = "";
+      const url = await host<string>("open_discovery", { platform, kind: kind.value, query: query.value, ...pageBounds() });
+      if (!page) return;
+      pageShown = true;
+      lastBounds = "";
+      urlLabel.textContent = pageAddress(url);
+      urlLabel.title = url;
+      state.textContent = "Cuộn trang để tải thêm video rồi bấm “Thu thập video trên trang”. Trang đòi đăng nhập thì quét mã QR ngay trong trang.";
+      watchAddress();
     } catch (error) {
+      if (!had) {
+        page = null;
+        browsing = false;
+      }
       state.textContent = String(error).slice(0, 200);
+    } finally {
+      opening -= 1;
+      // Left the screen or opened a dialog meanwhile: hide it again.
+      renderPage();
     }
   }
 
@@ -664,7 +830,8 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     stopPreview();
     platform = next;
     mode = null;
-    browser.hidden = true;
+    // The page belongs to the previous platform.
+    closePage();
     state.textContent = "";
     hideSuggestions();
     resetResults();
@@ -696,22 +863,46 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     if (mode?.kind === "api" && nextPage !== null) void runApi({ ...mode, page: nextPage }, true);
   });
   $("#trends-refresh").addEventListener("click", () => void loadTrends(true));
-  $("#discover-scroll").addEventListener("click", () => {
-    void invoke("scroll_discovery").catch((error) => { state.textContent = String(error).slice(0, 200); });
+  const pageAction = (command: string) => () => {
+    void host(command).catch((error) => { state.textContent = String(error).slice(0, 200); });
+    if (command !== "scroll_discovery") window.setTimeout(() => void readAddress(), 600);
+  };
+  $("#discover-scroll").addEventListener("click", pageAction("scroll_discovery"));
+  $("#discover-back").addEventListener("click", pageAction("discovery_view_back"));
+  $("#discover-reload").addEventListener("click", pageAction("discovery_view_reload"));
+  $("#discover-exit").addEventListener("click", () => {
+    closePage();
+    state.textContent = "";
   });
-  $("#discover-collect").addEventListener("click", async () => {
+  showResults.addEventListener("click", () => {
+    browsing = false;
+    renderPage();
+  });
+  $("#discover-reopen").addEventListener("click", () => {
+    if (!page) return;
+    closePlayer(false);
+    browsing = true;
+    renderPage();
+  });
+  const collect = $<HTMLButtonElement>("#discover-collect");
+  collect.addEventListener("click", async () => {
+    const forPlatform = page?.platform ?? platform;
+    collect.disabled = true;
     state.textContent = "Đang đọc trang…";
     try {
-      const found = parseCollected(await invoke<unknown>("collect_discovery", { platform }));
+      const found = parseCollected(await host<unknown>("collect_discovery", { platform: forPlatform }));
+      if (forPlatform !== platform) return;
       const before = videos.length;
       videos = mergeVideos(videos, found);
       state.textContent = found.length
-        ? `Đã lấy ${videos.length - before} video mới (tổng ${videos.length}). Cuộn thêm rồi lấy tiếp nếu cần.`
+        ? `Đã lấy ${videos.length - before} video mới (tổng ${videos.length}). Cuộn thêm rồi thu thập tiếp, hoặc bấm “Xem kết quả”.`
         : "Chưa thấy video trên trang. Đợi trang tải xong hoặc cuộn xuống rồi thử lại.";
       renderResults();
       void translateTitles();
     } catch (error) {
       state.textContent = String(error).slice(0, 200);
+    } finally {
+      collect.disabled = false;
     }
   });
   selectAll.addEventListener("change", () => {
@@ -818,12 +1009,16 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
         loaded = true;
         void loadTrends();
       }
+      screenShown = true;
+      renderPage();
       query.focus();
     },
-    /** The view is leaving the screen: stop anything playing. */
+    /** The view is leaving the screen: stop anything playing and hide the page (it stays loaded). */
     hide() {
       stopPreview();
       closePlayer(false);
+      screenShown = false;
+      renderPage();
     },
   };
 }

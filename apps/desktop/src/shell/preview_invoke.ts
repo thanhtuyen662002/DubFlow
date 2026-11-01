@@ -77,6 +77,8 @@ const previewCaptions = [
 ].map((region, index) => ({ ...region, index }));
 const linkFetches = new Map<string, { url: string; title: string | null; startedAt: number }>();
 let douyinSession = false;
+/** The discovery page "open" in the panel, or null. */
+let previewDiscoveryUrl: string | null = null;
 
 /**
  * A pretend download: 3 s preparing, then ~45 MB over 9 s. Bilibili links
@@ -441,7 +443,14 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       description: "Thanh linh kiếm này đã ngủ yên suốt 300 năm! Vì sao một đệ tử tu tiên lại đánh thức được linh kiếm?\n#vietsub",
       hashtags: ["#linhkiem", "#tienhiep", "#phimtienhiep", "#vietsub", "#trungquoc"], keywords: [] } as T;
     case "discover": return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1)) as T;
-    case "open_discovery": return `https://example.invalid/${String(args.platform)}` as T;
+    // The page itself is not shown in a browser: the panel's placeholder box stands in for it.
+    case "open_discovery": previewDiscoveryUrl = previewDiscoveryPage(String(args.platform), String(args.kind), String(args.query)); return previewDiscoveryUrl as T;
+    case "discovery_view_url": return previewDiscoveryUrl as T;
+    case "discovery_view_close": previewDiscoveryUrl = null; console.info("[preview] discovery_view_close"); return null as T;
+    case "discovery_view_show": case "discovery_view_bounds": case "discovery_view_hide": case "discovery_view_back": case "discovery_view_reload":
+      if (previewDiscoveryUrl === null && command === "discovery_view_show") throw "Hãy mở trang khám phá trước";
+      console.info(`[preview] ${command}`, args ?? "");
+      return null as T;
     case "scroll_discovery": return null as T;
     case "translate_terms": {
       const terms = args.terms as string[];
@@ -546,6 +555,17 @@ const PREVIEW_TITLES: ReadonlyArray<[string, string, string]> = [
 ];
 const PREVIEW_GLOSS = new Map(PREVIEW_TITLES.map(([, cleaned, vi]) => [cleaned, vi]));
 const PREVIEW_AUTHORS = ["影视飓风", "小片片说大片", "李子柒", "萌宠研究所"];
+
+/** Roughly the address the real host would open (see discovery.rs `page_url`). */
+function previewDiscoveryPage(platform: string, kind: string, query: string): string {
+  const text = query.trim();
+  if (!text) throw "Hãy nhập từ khóa hoặc link kênh hợp lệ";
+  if (kind === "creator") return text;
+  const keyword = encodeURIComponent(text);
+  if (platform === "bilibili") return `https://search.bilibili.com/video?keyword=${keyword}`;
+  if (platform === "kuaishou") return `https://www.kuaishou.com/search/video?searchKey=${keyword}`;
+  return `https://www.douyin.com/search/${keyword}?type=video`;
+}
 
 function previewCollected(platform: string): unknown {
   return Array.from({ length: 6 }, (_, index) => {
