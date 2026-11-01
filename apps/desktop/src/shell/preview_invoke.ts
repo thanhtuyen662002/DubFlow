@@ -96,6 +96,52 @@ function fetchStatus(scanId: string) {
     : { ...base, state: "downloading", downloaded_bytes: Math.max(0, done), total_bytes: known };
 }
 
+/** Pretend disk usage per cleanup category, in bytes. */
+const GB = 1_073_741_824;
+const previewStorage: Record<string, number> = { work: 3.4 * GB, versions: 10.5 * GB, profiles: 0.62 * GB, link_cache: 2.4 * GB };
+/** Every other report shows the link cache as busy, so both states can be designed. */
+let previewLinkBusy = true;
+/** The first clean of old versions finds one in use. */
+let previewVersionInUse = true;
+
+function previewStorageReport() {
+  const downloading = [...linkFetches.keys()].some((scan) => !["done", "failed"].includes(String(fetchStatus(scan)?.state)));
+  previewLinkBusy = !previewLinkBusy;
+  const busy = downloading || previewLinkBusy;
+  return {
+    categories: Object.entries(previewStorage).map(([id, bytes]) => ({
+      id, bytes: id === "link_cache" && busy ? 0 : Math.round(bytes), items: bytes > 0 ? (id === "versions" ? 12 : id === "profiles" ? 9 : 3) : 0,
+      busy: id === "link_cache" && busy,
+    })),
+    total_used: Math.round(3.6 * GB + Object.values(previewStorage).reduce((sum, bytes) => sum + bytes, 0)),
+    install_free_bytes: Math.round(96.2 * GB), output_free_bytes: Math.round(123.1 * GB),
+  };
+}
+
+function previewStorageClean(categories: string[], olderThanDays: unknown) {
+  // The automatic clean only finds older videos' work files.
+  if (typeof olderThanDays === "number") {
+    const freed = Math.min(2.3 * GB, previewStorage.work);
+    previewStorage.work -= freed;
+    return { freed_bytes: Math.round(freed), skipped: [] };
+  }
+  let freed = 0;
+  const skipped: string[] = [];
+  for (const id of categories) {
+    if (id === "link_cache" && previewLinkBusy) { skipped.push("Bộ đệm tải link (đang tải link)"); continue; }
+    if (id === "versions" && previewVersionInUse) {
+      previewVersionInUse = false;
+      freed += 9.6 * GB;
+      previewStorage.versions -= 9.6 * GB;
+      skipped.push("Bản cài 1.1.18");
+      continue;
+    }
+    freed += previewStorage[id] ?? 0;
+    previewStorage[id] = 0;
+  }
+  return { freed_bytes: Math.round(freed), skipped };
+}
+
 let picked = 0;
 const sourceCredits = new Map<string, SourceCredit>();
 const packages = new Map<string, { started: number; cancelled: boolean }>();
@@ -229,6 +275,9 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "check_update": return { ok: true, available: true, version: "0.3.0", channel: "candidate", notes: "DubFlow 0.3.0", setup: { size_bytes: 325_000_000 } } as T;
     case "download_update": return { ok: true, path: "C:/Users/preview/AppData/Local/DubFlow/updates/DubFlow-0.3.0-windows-x64-setup.exe", version: "0.3.0" } as T;
     case "install_update": case "restart_app": return null as T;
+    case "storage_report": await new Promise((resolve) => setTimeout(resolve, 700)); return previewStorageReport() as T;
+    case "storage_clean": await new Promise((resolve) => setTimeout(resolve, 1200)); return previewStorageClean(args.categories as string[], args.olderThanDays) as T;
+    case "storage_free": return Math.round(123.1 * GB) as T;
     case "list_versions": return { ok: true, current: "0.2.0-rc6", versions: [
       { version: "0.2.0-rc6", channel: "candidate", installed_at_utc: "2026-10-25T00:00:00Z" },
       { version: "0.2.0-rc5", channel: "candidate", installed_at_utc: "2026-10-24T00:00:00Z" },

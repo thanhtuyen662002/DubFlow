@@ -49,6 +49,17 @@ export function megabytes(bytes: number): string {
   return viNumber(mb, mb < 10 ? 1 : 0);
 }
 
+/** Gigabytes with one decimal: "14,2". */
+export function gigabytes(bytes: number): string {
+  return viNumber(bytes / 1_073_741_824, 1);
+}
+
+/** A disk size: "14,2 GB" from 1 GB up, "350 MB" below. */
+export function sizeLabel(bytes: number): string {
+  if (!(bytes > 0)) return "0 MB";
+  return bytes >= 1_073_741_824 ? `${gigabytes(bytes)} GB` : `${megabytes(bytes)} MB`;
+}
+
 export function formatSpeed(bytesPerSecond: number): string {
   const mb = bytesPerSecond / 1_048_576;
   return mb >= 0.1 ? `${viNumber(mb, mb < 10 ? 1 : 0)} MB/s` : `${viNumber(bytesPerSecond / 1024)} KB/s`;

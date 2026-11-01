@@ -12,6 +12,7 @@ mod reframe;
 mod product;
 mod source;
 mod source_credit;
+mod storage;
 mod updater;
 mod work_lease;
 
@@ -175,7 +176,9 @@ fn inherit_previous_profile(profile: &Path) {
     }
     let Some(root) = profile.parent() else { return };
     let storage = |dir: &Path| LOCAL_STORAGE.iter().fold(dir.to_path_buf(), |path, part| path.join(part));
+    // Dot-prefixed folders are cleanup leftovers being deleted, never a profile.
     let newest = fs::read_dir(root).into_iter().flatten().flatten()
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
         .map(|entry| storage(&entry.path()))
         .filter_map(|path| fs::metadata(path.join("leveldb")).and_then(|metadata| metadata.modified()).ok().map(|modified| (modified, path)))
         .max_by_key(|(modified, _)| *modified);
@@ -1049,6 +1052,7 @@ fn fetch_url(url: String, title: Option<String>, sources: tauri::State<'_, std::
     let root = version_root()?;
     let supervisor = supervisor_binary(&root)?;
     let status = sources.fetch(url.clone(), title, &supervisor, &root, &control_root()?)?;
+    storage::note_fetch(&status.scan_id);
     let output_dir = source::link_output_dir(&url, status.title.as_deref(), &status.scan_id)?;
     // Exists from the start, so "Mở thư mục" works while the link downloads.
     fs::create_dir_all(&output_dir).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
@@ -1635,7 +1639,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description])
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, storage::storage_report, storage::storage_clean, storage::storage_free])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

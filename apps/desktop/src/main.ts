@@ -15,6 +15,8 @@ import { fetchBadge, fetchMessage, isDouyinLink, needsDouyinLogin, shortPath, ty
 import { addSample, fractionDone, progressLine, type Sample } from "./features/fetch/progress.ts";
 import { mountDouyinLogin } from "./features/douyin/view.ts";
 import { mountUpdates } from "./features/update/view.ts";
+import { mountStorage } from "./features/storage/view.ts";
+import { queueOutputs } from "./features/storage/model.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { mountSourceCredit } from "./features/credit/view.ts";
@@ -1825,6 +1827,16 @@ review.addEventListener("keydown", (event) => {
   }
 });
 
+// Disk usage in Settings, the "Dọn dẹp" dialog and the automatic clean.
+let noticeTimer = 0;
+function showNotice(text: string): void {
+  const notice = $("#queue-notice");
+  notice.textContent = text;
+  window.clearTimeout(noticeTimer);
+  noticeTimer = window.setTimeout(() => { notice.textContent = ""; }, 10_000);
+}
+const storage = mountStorage(invoke, { outputs: () => queueOutputs(queue.getSnapshot().jobs), notice: showNotice });
+
 // Tell the user in the taskbar title when a video finishes while they are away.
 const lastStates = new Map<string, JobStatusState>();
 const baseTitle = document.title;
@@ -1833,6 +1845,7 @@ window.addEventListener("focus", () => { document.title = baseTitle; });
 queue.subscribe((snapshot) => {
   for (const job of snapshot.jobs) {
     const previous = lastStates.get(job.id);
+    if (previous && ACTIVE.includes(previous) && job.status.state === "COMPLETED") storage.jobFinished();
     if (previous && ACTIVE.includes(previous) && (job.status.state === "COMPLETED" || job.status.state === "FAILED") && !document.hasFocus()) {
       document.title = `${job.status.state === "COMPLETED" ? "✓ Xong" : "✕ Lỗi"}: ${job.displayName} — ${baseTitle}`;
     }
@@ -2102,6 +2115,7 @@ function openSettings(): void {
   $("#nav-settings").classList.add("active");
   $("#settings-close").focus();
   void douyin.refreshAccount();
+  storage.refreshSummary();
   // With an update waiting, Settings opens at it.
   if (updateVersion !== null) {
     $("#settings-update").scrollIntoView({ block: "nearest" });
