@@ -582,7 +582,9 @@ const RESERVED_NAMES: [&str; 22] = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", 
 /// control characters removed, no leading or trailing dots and spaces, at
 /// most 120 characters, "video" when nothing is left.
 pub fn safe_file_name(title: &str) -> String {
-    let kept: String = title.chars().filter(|c| !c.is_control() && !FORBIDDEN_NAME_CHARS.contains(c)).collect();
+    // A forbidden character becomes a space so words stay apart; runs collapse.
+    let spaced: String = title.chars().map(|c| if c.is_control() || FORBIDDEN_NAME_CHARS.contains(&c) { ' ' } else { c }).collect();
+    let kept = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
     let edge = |c: char| c == '.' || c.is_whitespace();
     let trimmed: String = kept.trim_matches(edge).chars().take(120).collect();
     let name = trimmed.trim_end_matches(edge);
@@ -757,7 +759,9 @@ mod tests {
     #[test]
     fn download_file_names_are_safe_on_windows() {
         assert_eq!(safe_file_name("Tập 1: Ai là \"người\" thắng?"), "Tập 1 Ai là người thắng");
-        assert_eq!(safe_file_name(" ..a/b\\c|d*e<f>g. . "), "abcdefg");
+        assert_eq!(safe_file_name(" ..a/b\\c|d*e<f>g. . "), "a b c d e f g");
+        assert_eq!(safe_file_name("Phim: thử/chép?"), "Phim thử chép");
+        assert_eq!(safe_file_name("a :: b\tc"), "a b c");
         assert_eq!(safe_file_name("...  "), "video");
         assert_eq!(safe_file_name("\u{7}\t"), "video");
         assert_eq!(safe_file_name(&"长".repeat(150)).chars().count(), 120);
