@@ -272,6 +272,7 @@
                 </button>
               </div>
               <p id="queue-state" class="queue-state" role="status"></p>
+              <p id="queue-notice" class="queue-notice" role="status"></p>
               <div class="player-stage">
                 <div id="drop-zone" class="drop-zone">
                   <div class="drop-icon" aria-hidden="true">
@@ -692,10 +693,47 @@
             </div>
             <input id="cpu-only" class="switch" type="checkbox" role="switch" />
           </div>
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt>Dung lượng</dt>
+              <dd id="storage-summary">Đang tính dung lượng…</dd>
+            </div>
+            <button id="open-cleanup" class="btn" type="button" aria-haspopup="dialog">Dọn dẹp…</button>
+          </div>
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt><label for="auto-clean">Tự dọn dẹp</label></dt>
+              <dd>Tự xóa tệp tạm của video đã xong sau 3 ngày và bản cài cũ; không bao giờ xóa video kết quả.</dd>
+            </div>
+            <input id="auto-clean" class="switch" type="checkbox" role="switch" checked />
+          </div>
         </dl>
         <footer class="settings-foot">
           <span>Phiên bản <button id="release-version" class="link version-link" type="button" title="Các phiên bản đã cài">—</button> <span id="release-channel" class="tag"></span> · <button id="installed-versions" class="link" type="button">Các bản đã cài</button></span>
           <span class="settings-stats">Hàng đợi: <span id="stat-running">0</span> đang chạy · <span id="stat-done">0</span> hoàn tất · <span id="stat-failed">0</span> lỗi</span>
+        </footer>
+      </div>
+    </div>
+    <div id="cleanup-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="cleanup-title" hidden>
+      <div class="review-panel cleanup-panel">
+        <header class="review-head">
+          <div>
+            <h2 id="cleanup-title">Dọn dẹp</h2>
+            <p class="subtitle">Chọn mục muốn xóa. Video kết quả, phụ đề và dự án chỉnh sửa không bao giờ bị xóa.</p>
+          </div>
+          <button id="cleanup-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <div class="cleanup-body">
+          <p id="cleanup-state" class="cleanup-state" role="status"></p>
+          <ul id="cleanup-list" class="cleanup-list"></ul>
+          <div id="cleanup-result" class="cleanup-result" role="status" hidden></div>
+        </div>
+        <footer class="review-foot cleanup-foot">
+          <span id="cleanup-total" class="cleanup-total"></span>
+          <button id="cleanup-later" class="btn ghost" type="button">Để sau</button>
+          <button id="cleanup-run" class="btn danger-solid" type="button" disabled>Dọn 0 MB</button>
         </footer>
       </div>
     </div>
