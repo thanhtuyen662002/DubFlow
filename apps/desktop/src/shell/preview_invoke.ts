@@ -148,9 +148,57 @@ const packages = new Map<string, { started: number; cancelled: boolean }>();
 const compilations = new Map<string, { started: number; cancelled: boolean; total: number }>();
 const shorts = new Map<string, { started: number; cancelled: boolean; items: Array<{ title: string }> }>();
 const reframes = new Map<string, { started: number; cancelled: boolean }>();
+/** Edit drafts and exports per finished video (Cắt ghép). */
+const editProjects = new Map<string, unknown>();
+type PreviewExport = { path: string; srt_path: string; created: number; duration: number; quality: string; segments: Array<{ start: number; end: number; speed: number; volume: number }> };
+const editExports = new Map<string, PreviewExport[]>();
+const editRuns = new Map<string, { started: number; cancelled: boolean; entry: PreviewExport; recorded: boolean }>();
+const EDIT_EXPORT_MS = 5000;
+
+function previewEditStatus(outputPath: string) {
+  const run = editRuns.get(outputPath);
+  const exports = editExports.get(outputPath) ?? [];
+  if (!run) return { status: null, exports };
+  const elapsed = Date.now() - run.started;
+  if (run.cancelled) return { status: { schema_version: 1, state: "CANCELLED", percent: 0, message: "Đã hủy xuất video.", output_path: null }, exports };
+  if (elapsed < EDIT_EXPORT_MS) {
+    const percent = Math.floor(elapsed / EDIT_EXPORT_MS * 100);
+    return { status: { schema_version: 1, state: "RUNNING", percent, message: `Đang xuất video… ${percent}%`, output_path: run.entry.path }, exports };
+  }
+  if (!run.recorded) {
+    run.recorded = true;
+    exports.push(run.entry);
+    editExports.set(outputPath, exports);
+  }
+  return { status: { schema_version: 1, state: "COMPLETED", percent: 100, message: "Đã xuất video.", output_path: run.entry.path }, exports };
+}
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
+    case "edit_project_load": return {
+      duration: 154.2, width: 1024, height: 576, size_bytes: 46_000_000, has_audio: true,
+      project: editProjects.get(String(args.outputPath)) ?? null,
+      cues: reviewCues.map(({ cue_id, start_ms, end_ms, machine_text }) => ({ start_ms, end_ms, text: savedOverrides[cue_id] ?? machine_text })),
+    } as T;
+    case "edit_project_save": editProjects.set(String(args.outputPath), JSON.parse(JSON.stringify(args.project))); return null as T;
+    case "edit_export": {
+      const request = args.request as { outputPath: string; folder: string; fileName: string; quality: string; segments: PreviewExport["segments"] };
+      if (editRuns.get(request.outputPath) && previewEditStatus(request.outputPath).status?.state === "RUNNING") throw new Error("Video này đang được xuất");
+      const taken = new Set((editExports.get(request.outputPath) ?? []).map((entry) => entry.path));
+      const stem = request.fileName.replace(/\.mp4$/i, "").trim();
+      let path = `${request.folder}/${stem}.mp4`;
+      for (let number = 2; taken.has(path); number++) path = `${request.folder}/${stem} (${number}).mp4`;
+      const duration = request.segments.reduce((total, segment) => total + (segment.end - segment.start) / segment.speed, 0);
+      editRuns.set(request.outputPath, { started: Date.now(), cancelled: false, recorded: false,
+        entry: { path, srt_path: path.replace(/\.mp4$/, ".srt"), created: Math.floor(Date.now() / 1000), duration, quality: request.quality, segments: request.segments } });
+      return { path } as T;
+    }
+    case "edit_status": return previewEditStatus(String(args.outputPath)) as T;
+    case "edit_cancel": {
+      const run = editRuns.get(String(args.outputPath));
+      if (run && Date.now() - run.started < EDIT_EXPORT_MS) run.cancelled = true;
+      return null as T;
+    }
     case "reframe_info": return { width: 1080, height: 1920, vertical: true } as T;
     case "reframe_render": {
       const request = args.request as { outputPath: string };
@@ -253,7 +301,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "start_job": running.set(String(args.jobId), { startedAt: Date.now(), dubbing: !!args.enableDubbing, cancelled: false }); return null as T;
     case "cancel_job": { const job = running.get(String(args.jobId)); if (job) job.cancelled = true; return null as T; }
     case "job_status": return status(String(args.jobId)) as T;
-    case "open_path": case "reveal_path": console.info(`[preview] ${command}`, args.path); return null as T;
+    case "open_path": case "reveal_path": case "reveal_download": console.info(`[preview] ${command}`, args.path); return null as T;
     case "fetch_url": {
       const scanId = `link-${Date.now().toString(16)}${Math.random().toString(16).slice(2, 6)}`;
       const title = typeof args.title === "string" && args.title.trim() ? args.title.trim().slice(0, 200) : null;

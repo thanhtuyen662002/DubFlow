@@ -6,6 +6,7 @@
 mod ai_keys;
 mod compilation;
 mod discovery;
+mod edit;
 mod package;
 mod shorts;
 mod reframe;
@@ -1312,10 +1313,11 @@ async fn collect_discovery(app: tauri::AppHandle, platform: String) -> Result<Ve
 }
 
 /// One JPEG frame of a local video at `position` (0–1 of its duration), for
-/// drawing blur regions on. Async: FFprobe/FFmpeg run off the UI thread.
-/// Scaled to at most 960 px wide.
+/// drawing blur regions on and for the editor's timeline thumbnails. Async:
+/// FFprobe/FFmpeg run off the UI thread. Scaled to at most `max_width` px
+/// wide (64–960, default 960).
 #[tauri::command]
-async fn video_frame(source_path: String, position: f64) -> Result<tauri::ipc::Response, String> {
+async fn video_frame(source_path: String, position: f64, max_width: Option<u32>) -> Result<tauri::ipc::Response, String> {
     if !(0.0..=1.0).contains(&position) {
         return Err(fail("Vị trí khung hình phải trong khoảng 0–1"));
     }
@@ -1334,10 +1336,11 @@ async fn video_frame(source_path: String, position: f64) -> Result<tauri::ipc::R
         .unwrap_or(0.0);
     // Stay a little before the end, where a seek can land past the last frame.
     let seconds = (duration * position).min((duration - 0.5).max(0.0));
+    let scale = format!("scale='min({},iw)':-2", max_width.unwrap_or(960).clamp(64, 960));
     let mut command = Command::new(media.join("ffmpeg.exe"));
     command.args(["-nostdin", "-v", "error", "-ss", &format!("{seconds:.3}"), "-i"])
         .arg(&source)
-        .args(["-frames:v", "1", "-vf", "scale='min(960,iw)':-2", "-q:v", "4", "-f", "image2", "-c:v", "mjpeg", "pipe:1"])
+        .args(["-frames:v", "1", "-vf", &scale, "-q:v", "4", "-f", "image2", "-c:v", "mjpeg", "pipe:1"])
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -1639,7 +1642,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, storage::storage_report, storage::storage_clean, storage::storage_free])
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
