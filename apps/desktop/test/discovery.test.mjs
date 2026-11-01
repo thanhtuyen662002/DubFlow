@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  TOPICS, bilibiliMid, cleanTitle, discoveryError, formatCount, formatDuration, loadGlossCache, mergeVideos, needsTitleGloss, parseCollected,
+  TOPICS, bilibiliMid, cleanTitle, discoveryError, formatCount, formatDuration, loadGlossCache, mergeVideos, needsTitleGloss, pageAddress, parseCollected,
   parseGlosses, parseTrends, parseVideos, previewSource, rememberGloss, saveGlossCache,
 } from "../src/features/discovery/model.ts";
 
@@ -45,6 +45,12 @@ assert.equal(bilibiliMid("https://space.bilibili.com/546195/video"), "546195");
 assert.equal(bilibiliMid("https://space.bilibili.com/546195"), "546195");
 assert.equal(bilibiliMid("https://space.bilibili.com.evil/546195"), null);
 assert.equal(bilibiliMid("https://www.bilibili.com/video/BV1"), null);
+
+// The panel toolbar shows the address decoded, without its scheme or a trailing slash, at most 300 characters.
+assert.equal(pageAddress("https://www.douyin.com/search/%E7%BE%8E%E9%A3%9F?type=video"), "www.douyin.com/search/美食?type=video");
+assert.equal(pageAddress("https://a.example/%E7%ZZ"), "a.example/%E7%ZZ");
+assert.equal(pageAddress("https://www.kuaishou.com/"), "www.kuaishou.com");
+assert.equal(pageAddress(`https://a.example/${"x".repeat(400)}`).length, 300);
 
 assert.equal(formatCount(null), "");
 assert.equal(formatCount(9999), "9999");

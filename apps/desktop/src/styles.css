@@ -522,9 +522,23 @@ select { color-scheme: dark; }
 .suggest-list { position: absolute; top: 40px; left: 0; right: 0; z-index: 5; margin: 0; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); box-shadow: var(--shadow-pop); list-style: none; }
 .suggest-list li { padding: 7px 10px; border-radius: 6px; cursor: pointer; }
 .suggest-list li:hover, .suggest-list li[aria-selected="true"] { background: var(--hover); }
-.discover-browser { padding: 12px 14px; border: 1px dashed var(--line-strong); border-radius: 10px; color: var(--text-2); font-size: 13px; }
-.discover-browser-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .discover-state { color: var(--text-2); font-size: 13px; }
+/* Browser panel: the platform page (a native view placed over .discover-page) replaces the results while browsing. */
+.discover-main.browsing { overflow: hidden; }
+.discover-main.browsing > :is(.topic-row, .result-bar, .result-tools, .discover-results, .more-btn, .discover-note) { display: none; }
+.discover-main.browsing > .discover-state:empty { display: none; }
+.discover-panel { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 220px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.discover-toolbar { display: flex; flex: none; flex-direction: column; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.discover-toolbar-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.discover-toolbar-row .btn { flex: none; height: 32px; padding: 0 12px; }
+.discover-toolbar-gap { flex: 1; }
+.discover-address { display: flex; flex: 1; align-items: baseline; gap: 8px; min-width: 0; height: 32px; margin: 0 4px; padding: 0 10px; overflow: hidden; border-radius: 8px; background: var(--canvas); color: var(--text-3); font-size: 12.5px; line-height: 32px; white-space: nowrap; }
+.discover-address b { flex: none; color: var(--text); font-weight: 600; }
+.discover-address span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.discover-page { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 0; margin: 0 6px 6px; padding: 16px; border-radius: 8px; background: var(--canvas); color: var(--text-3); font-size: 13px; text-align: center; }
+.discover-page p { max-width: 420px; margin: 0; }
+.discover-reopen-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 8px 10px 8px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.discover-reopen-bar .hint { margin: 0; }
 .result-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .result-bar label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
 .result-bar .btn.primary { margin-left: auto; }

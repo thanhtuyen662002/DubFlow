@@ -1358,43 +1358,92 @@ async fn translate_terms(terms: Vec<String>, engine: Option<String>) -> Result<V
         .ok_or_else(|| fail("Bộ dịch không trả về dữ liệu"))
 }
 
-/// Open (or navigate) the discovery browser at a search or creator page.
-/// It shares the app's browser profile, so a saved Douyin visit helps here.
+/// Open (or navigate) the discovery page at a search or creator page, shown
+/// over Khám phá's browser panel at `x, y, width, height` (CSS pixels of the
+/// main window). There is one discovery page at a time. It shares the app's
+/// browser profile, so a saved Douyin visit helps here.
 #[tauri::command]
-async fn open_discovery(app: tauri::AppHandle, platform: String, kind: String, query: String) -> Result<String, String> {
-    use tauri::Manager;
+async fn open_discovery(app: tauri::AppHandle, platform: String, kind: String, query: String, x: f64, y: f64, width: f64, height: f64) -> Result<String, String> {
     let platform = discovery::Platform::parse(&platform)?;
     let url = discovery::page_url(platform, &kind, &query)?;
-    if let Some(window) = app.get_webview_window(discovery::WINDOW) {
-        window.navigate(url.clone()).map_err(|error| fail(error.to_string()))?;
-        let _ = window.set_focus();
-        return Ok(url.to_string());
-    }
-    tauri::WebviewWindowBuilder::new(&app, discovery::WINDOW, tauri::WebviewUrl::External(url.clone()))
-        .initialization_script(discovery::CAPTURE_SCRIPT)
-        .title("Khám phá video — cuộn trang để tải thêm, rồi quay lại DubFlow bấm “Lấy video từ trang”")
-        .inner_size(1200.0, 860.0)
-        .build()
-        .map_err(|error| fail(format!("Không mở được cửa sổ khám phá: {error}")))?;
+    let bounds = ViewBounds::new(x, y, width, height)?;
+    open_embedded(&app, DISCOVERY_EMBED, url.clone(), true, bounds)?;
     Ok(url.to_string())
+}
+
+fn discovery_page(app: &tauri::AppHandle) -> Result<EmbeddedView, String> {
+    EmbeddedView::find(app, DISCOVERY_EMBED).ok_or_else(|| fail("Hãy mở trang khám phá trước"))
+}
+
+/// Show the open discovery page again over the panel (back on Khám phá, or
+/// after a dialog that it would have covered closed).
+#[tauri::command]
+async fn discovery_view_show(app: tauri::AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    let bounds = ViewBounds::new(x, y, width, height)?;
+    let view = discovery_page(&app)?;
+    view.place(&app, bounds)?;
+    view.show(false).map_err(|error| fail(error.to_string()))
+}
+
+/// Keep the discovery page over the panel when the window changes.
+#[tauri::command]
+async fn discovery_view_bounds(app: tauri::AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    let bounds = ViewBounds::new(x, y, width, height)?;
+    match EmbeddedView::find(&app, DISCOVERY_EMBED) {
+        Some(view) => view.place(&app, bounds),
+        None => Ok(()),
+    }
+}
+
+/// Hide the discovery page but keep it loaded (leaving Khám phá, showing the results).
+#[tauri::command]
+async fn discovery_view_hide(app: tauri::AppHandle) -> Result<(), String> {
+    match EmbeddedView::find(&app, DISCOVERY_EMBED) {
+        Some(view) => view.hide().map_err(|error| fail(error.to_string())),
+        None => Ok(()),
+    }
+}
+
+#[tauri::command]
+async fn discovery_view_close(app: tauri::AppHandle) -> Result<(), String> {
+    match EmbeddedView::find(&app, DISCOVERY_EMBED) {
+        Some(view) => view.close().map_err(|error| fail(error.to_string())),
+        None => Ok(()),
+    }
+}
+
+#[tauri::command]
+async fn discovery_view_back(app: tauri::AppHandle) -> Result<(), String> {
+    discovery_page(&app)?.webview().eval(discovery::BACK_SCRIPT).map_err(|error| fail(error.to_string()))
+}
+
+#[tauri::command]
+async fn discovery_view_reload(app: tauri::AppHandle) -> Result<(), String> {
+    discovery_page(&app)?.webview().reload().map_err(|error| fail(error.to_string()))
+}
+
+/// The address the discovery page shows now, or None when no page is open.
+#[tauri::command]
+async fn discovery_view_url(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    match EmbeddedView::find(&app, DISCOVERY_EMBED) {
+        Some(view) => view.webview().url().map(|url| Some(url.to_string())).map_err(|error| fail(error.to_string())),
+        None => Ok(None),
+    }
 }
 
 /// Scroll the discovery page so it loads more results.
 #[tauri::command]
-fn scroll_discovery(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    let window = app.get_webview_window(discovery::WINDOW).ok_or_else(|| fail("Hãy mở trang khám phá trước"))?;
-    window.eval(discovery::SCROLL_SCRIPT).map_err(|error| fail(error.to_string()))
+async fn scroll_discovery(app: tauri::AppHandle) -> Result<(), String> {
+    discovery_page(&app)?.webview().eval(discovery::SCROLL_SCRIPT).map_err(|error| fail(error.to_string()))
 }
 
 /// Read the video cards the discovery page currently shows.
 #[tauri::command]
 async fn collect_discovery(app: tauri::AppHandle, platform: String) -> Result<Vec<discovery::DiscoveredVideo>, String> {
-    use tauri::Manager;
     let platform = discovery::Platform::parse(&platform)?;
-    let window = app.get_webview_window(discovery::WINDOW).ok_or_else(|| fail("Hãy mở trang khám phá trước"))?;
+    let view = discovery_page(&app)?;
     let (sender, receiver) = std::sync::mpsc::channel::<String>();
-    window.eval_with_callback(discovery::COLLECT_SCRIPT, move |result| { let _ = sender.send(result); })
+    view.webview().eval_with_callback(discovery::COLLECT_SCRIPT, move |result| { let _ = sender.send(result); })
         .map_err(|error| fail(error.to_string()))?;
     let result = tauri::async_runtime::spawn_blocking(move || receiver.recv_timeout(std::time::Duration::from_secs(10)))
         .await.map_err(|error| fail(error.to_string()))?
@@ -1533,7 +1582,7 @@ fn douyin_saved_at() -> Option<u64> {
     serde_json::from_str::<Value>(&text).ok()?["saved_at_unix"].as_u64()
 }
 
-/// Where the login page goes, in CSS (= logical) pixels of the main window.
+/// Where an embedded page goes, in CSS (= logical) pixels of the main window.
 #[derive(Clone, Copy)]
 struct ViewBounds {
     x: f64,
@@ -1545,95 +1594,182 @@ struct ViewBounds {
 impl ViewBounds {
     fn new(x: f64, y: f64, width: f64, height: f64) -> Result<Self, String> {
         if ![x, y, width, height].iter().all(|value| value.is_finite() && value.abs() < 100_000.0) {
-            return Err(fail("Vị trí khung Douyin không hợp lệ"));
+            return Err(fail("Vị trí khung trang không hợp lệ"));
         }
         Ok(Self { x: x.max(0.0), y: y.max(0.0), width: width.max(1.0), height: height.max(1.0) })
     }
 }
 
-enum DouyinView {
+/// A web page drawn over a box of the main window: a child webview labelled
+/// `child`, or, when child webviews cannot be created, a frameless window
+/// labelled `window` owned by the main window and kept over the box.
+#[derive(Clone, Copy)]
+struct Embed {
+    child: &'static str,
+    window: &'static str,
+    title: &'static str,
+    /// Runs before any page script on every page load.
+    script: Option<&'static str>,
+    /// Links that would open a new window load in the page itself instead.
+    keep_popups: bool,
+}
+
+/// douyin.com inside the "Đăng nhập Douyin" dialog.
+const DOUYIN_EMBED: Embed = Embed { child: DOUYIN_LOGIN, window: DOUYIN_LOGIN_WINDOW, title: "Đăng nhập Douyin", script: None, keep_popups: false };
+/// The search or creator page inside Khám phá's browser panel.
+const DISCOVERY_EMBED: Embed = Embed {
+    child: discovery::VIEW, window: discovery::FALLBACK_WINDOW, title: "Khám phá video",
+    script: Some(discovery::CAPTURE_SCRIPT), keep_popups: true,
+};
+
+enum EmbeddedView {
     Child(tauri::Webview),
     Window(tauri::WebviewWindow),
 }
 
-fn douyin_view(app: &tauri::AppHandle) -> Option<DouyinView> {
-    use tauri::Manager;
-    app.get_webview(DOUYIN_LOGIN).map(DouyinView::Child)
-        .or_else(|| app.get_webview_window(DOUYIN_LOGIN_WINDOW).map(DouyinView::Window))
-}
+impl EmbeddedView {
+    fn find(app: &tauri::AppHandle, embed: Embed) -> Option<Self> {
+        use tauri::Manager;
+        app.get_webview(embed.child).map(Self::Child)
+            .or_else(|| app.get_webview_window(embed.window).map(Self::Window))
+    }
 
-fn place_douyin_view(app: &tauri::AppHandle, view: &DouyinView, bounds: ViewBounds) -> Result<(), String> {
-    use tauri::Manager;
-    let error = |error: tauri::Error| fail(error.to_string());
-    match view {
-        DouyinView::Child(webview) => {
-            webview.set_position(tauri::LogicalPosition::new(bounds.x, bounds.y)).map_err(error)?;
-            webview.set_size(tauri::LogicalSize::new(bounds.width, bounds.height)).map_err(error)
+    /// The page itself, for navigation, scripts and cookies.
+    fn webview(&self) -> &tauri::Webview {
+        match self {
+            Self::Child(webview) => webview,
+            Self::Window(window) => window.as_ref(),
         }
-        DouyinView::Window(window) => {
-            let main = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
-            let origin = main.inner_position().map_err(error)?;
-            let scale = main.scale_factor().map_err(error)?;
-            window.set_position(tauri::PhysicalPosition::new(origin.x + (bounds.x * scale).round() as i32, origin.y + (bounds.y * scale).round() as i32))
-                .map_err(error)?;
-            window.set_size(tauri::LogicalSize::new(bounds.width, bounds.height)).map_err(error)
+    }
+
+    fn place(&self, app: &tauri::AppHandle, bounds: ViewBounds) -> Result<(), String> {
+        use tauri::Manager;
+        let error = |error: tauri::Error| fail(error.to_string());
+        match self {
+            Self::Child(webview) => {
+                webview.set_position(tauri::LogicalPosition::new(bounds.x, bounds.y)).map_err(error)?;
+                webview.set_size(tauri::LogicalSize::new(bounds.width, bounds.height)).map_err(error)
+            }
+            Self::Window(window) => {
+                let main = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
+                let origin = main.inner_position().map_err(error)?;
+                let scale = main.scale_factor().map_err(error)?;
+                window.set_position(tauri::PhysicalPosition::new(origin.x + (bounds.x * scale).round() as i32, origin.y + (bounds.y * scale).round() as i32))
+                    .map_err(error)?;
+                window.set_size(tauri::LogicalSize::new(bounds.width, bounds.height)).map_err(error)
+            }
+        }
+    }
+
+    fn show(&self, focus: bool) -> tauri::Result<()> {
+        match self {
+            Self::Child(webview) => webview.show().and_then(|_| if focus { webview.set_focus() } else { Ok(()) }),
+            Self::Window(window) => window.show().and_then(|_| if focus { window.set_focus() } else { Ok(()) }),
+        }
+    }
+
+    fn hide(&self) -> tauri::Result<()> {
+        match self {
+            Self::Child(webview) => webview.hide(),
+            Self::Window(window) => window.hide(),
+        }
+    }
+
+    fn close(&self) -> tauri::Result<()> {
+        match self {
+            Self::Child(webview) => webview.close(),
+            Self::Window(window) => window.close(),
         }
     }
 }
 
-/// Show douyin.com inside the "Đăng nhập Douyin" dialog at `x, y, width,
-/// height` (CSS pixels of the main window). Async: creating a webview
-/// deadlocks in a sync command on Windows.
-#[tauri::command]
-async fn douyin_view_open(app: tauri::AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+/// A new-window request from `embed`'s page: web links load in the page
+/// itself, anything else is refused. Never a separate window.
+fn keep_popup(app: &tauri::AppHandle, embed: Embed) -> impl Fn(tauri::Url, tauri::webview::NewWindowFeatures) -> tauri::webview::NewWindowResponse<tauri::Wry> + Send + 'static {
+    let app = app.clone();
+    move |url, _features| {
+        if discovery::loads_in_place(&url) {
+            let app = app.clone();
+            // Not from inside the webview's own callback.
+            tauri::async_runtime::spawn(async move {
+                if let Some(view) = EmbeddedView::find(&app, embed) {
+                    let _ = view.webview().navigate(url);
+                }
+            });
+        }
+        tauri::webview::NewWindowResponse::Deny
+    }
+}
+
+/// Show `embed` at `bounds`: move and show it when it exists (navigating it to
+/// `url` when `navigate`), else create it at `url`. Async callers only:
+/// creating a webview deadlocks in a sync command on Windows.
+fn open_embedded(app: &tauri::AppHandle, embed: Embed, url: tauri::Url, navigate: bool, bounds: ViewBounds) -> Result<(), String> {
     use tauri::Manager;
-    let bounds = ViewBounds::new(x, y, width, height)?;
-    if let Some(view) = douyin_view(&app) {
-        place_douyin_view(&app, &view, bounds)?;
-        let _ = match &view {
-            DouyinView::Child(webview) => webview.show().and_then(|_| webview.set_focus()),
-            DouyinView::Window(window) => window.show().and_then(|_| window.set_focus()),
-        };
+    if let Some(view) = EmbeddedView::find(app, embed) {
+        if navigate {
+            view.webview().navigate(url).map_err(|error| fail(error.to_string()))?;
+        }
+        view.place(app, bounds)?;
+        let _ = view.show(true);
         return Ok(());
     }
     let main = app.get_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
-    let child = main.add_child(tauri::webview::WebviewBuilder::new(DOUYIN_LOGIN, tauri::WebviewUrl::External(douyin_home()?)),
-        tauri::LogicalPosition::new(bounds.x, bounds.y), tauri::LogicalSize::new(bounds.width, bounds.height));
-    if child.is_ok() {
+    let mut builder = tauri::webview::WebviewBuilder::new(embed.child, tauri::WebviewUrl::External(url.clone()));
+    if let Some(script) = embed.script {
+        builder = builder.initialization_script(script);
+    }
+    if embed.keep_popups {
+        builder = builder.on_new_window(keep_popup(app, embed));
+    }
+    let child = main.add_child(builder, tauri::LogicalPosition::new(bounds.x, bounds.y), tauri::LogicalSize::new(bounds.width, bounds.height));
+    if let Ok(child) = child {
+        let _ = child.set_focus();
         return Ok(());
     }
     // No child webviews here: a frameless window owned by DubFlow stands in.
     let owner = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
-    let window = tauri::WebviewWindowBuilder::new(&app, DOUYIN_LOGIN_WINDOW, tauri::WebviewUrl::External(douyin_home()?))
-        .title("Đăng nhập Douyin")
+    let mut builder = tauri::WebviewWindowBuilder::new(app, embed.window, tauri::WebviewUrl::External(url))
+        .title(embed.title)
         .decorations(false)
         .resizable(false)
         .skip_taskbar(true)
         .inner_size(bounds.width, bounds.height)
-        .parent(&owner).map_err(|error| fail(error.to_string()))?
-        .build()
-        .map_err(|error| fail(format!("Không mở được trang Douyin: {error}")))?;
-    place_douyin_view(&app, &DouyinView::Window(window), bounds)
+        .parent(&owner).map_err(|error| fail(error.to_string()))?;
+    if let Some(script) = embed.script {
+        builder = builder.initialization_script(script);
+    }
+    if embed.keep_popups {
+        builder = builder.on_new_window(keep_popup(app, embed));
+    }
+    let window = builder.build().map_err(|error| fail(format!("Không mở được trang: {error}")))?;
+    EmbeddedView::Window(window).place(app, bounds)
+}
+
+/// Show douyin.com inside the "Đăng nhập Douyin" dialog at `x, y, width,
+/// height` (CSS pixels of the main window).
+#[tauri::command]
+async fn douyin_view_open(app: tauri::AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    let bounds = ViewBounds::new(x, y, width, height)?;
+    open_embedded(&app, DOUYIN_EMBED, douyin_home()?, false, bounds)
 }
 
 /// Keep the login page over the dialog's box when the window changes.
 #[tauri::command]
 async fn douyin_view_bounds(app: tauri::AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
     let bounds = ViewBounds::new(x, y, width, height)?;
-    match douyin_view(&app) {
-        Some(view) => place_douyin_view(&app, &view, bounds),
+    match EmbeddedView::find(&app, DOUYIN_EMBED) {
+        Some(view) => view.place(&app, bounds),
         None => Ok(()),
     }
 }
 
 #[tauri::command]
 async fn douyin_view_close(app: tauri::AppHandle) -> Result<(), String> {
-    match douyin_view(&app) {
-        Some(DouyinView::Child(webview)) => webview.close(),
-        Some(DouyinView::Window(window)) => window.close(),
+    match EmbeddedView::find(&app, DOUYIN_EMBED) {
+        Some(view) => view.close().map_err(|error| fail(error.to_string())),
         None => Ok(()),
     }
-    .map_err(|error| fail(error.to_string()))
 }
 
 /// douyin.com cookies, read through the login page when it is open, else the
@@ -1641,9 +1777,8 @@ async fn douyin_view_close(app: tauri::AppHandle) -> Result<(), String> {
 fn douyin_cookies(app: &tauri::AppHandle) -> Result<Vec<(String, String)>, String> {
     use tauri::Manager;
     let url = douyin_home()?;
-    let cookies = match douyin_view(app) {
-        Some(DouyinView::Child(webview)) => webview.cookies_for_url(url),
-        Some(DouyinView::Window(window)) => window.cookies_for_url(url),
+    let cookies = match EmbeddedView::find(app, DOUYIN_EMBED) {
+        Some(view) => view.webview().cookies_for_url(url),
         None => app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?.cookies_for_url(url),
     };
     Ok(cookies.map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?
@@ -1759,7 +1894,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_media_info, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths])
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_media_info, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {

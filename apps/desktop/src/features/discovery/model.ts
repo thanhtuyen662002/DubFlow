@@ -102,6 +102,17 @@ export function mergeVideos(current: readonly DiscoveredVideo[], incoming: reado
   return [...current, ...incoming.filter((video) => !seen.has(video.pageUrl) && seen.add(video.pageUrl))];
 }
 
+/** Readable form of a page address for the toolbar: decoded, no scheme or trailing slash, at most 300 characters. */
+export function pageAddress(url: string): string {
+  let text = url;
+  try {
+    text = decodeURI(url);
+  } catch {
+    // Malformed escapes: show the address as it is.
+  }
+  return text.replace(/^https?:\/\//, "").replace(/\/$/, "").replace(/\s+/g, " ").slice(0, 300);
+}
+
 /** Bilibili creator id from a space link, so the API can list it directly. */
 export function bilibiliMid(link: string): string | null {
   const match = /^https:\/\/space\.bilibili\.com\/(\d{1,20})(?:[/?#]|$)/.exec(link.trim());
