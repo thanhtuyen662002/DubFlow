@@ -5,11 +5,16 @@ into a bounded :class:`MediaCandidate`; this module turns a progressive HTTP
 (or local) candidate into an atomically published file while retaining a
 private ``.part`` file after interruption.  The default transport uses only
 Python's standard library so the installed runtime owns the network boundary.
+
+Media CDNs commonly cap a single connection's throughput, so a large object
+with a strong validator is fetched as bounded byte-range segments written at
+their offsets into a pre-sized ``.part``.  Servers without ranges, small
+objects and objects without a strong ETag keep the single-connection path.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from http.client import HTTPException
 import hashlib
@@ -17,9 +22,11 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import tempfile
+import threading
 import time
-from typing import BinaryIO, Callable, Mapping, Protocol
+from typing import Any, BinaryIO, Callable, Mapping, Protocol
 from urllib.parse import urljoin, urlsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -34,6 +41,15 @@ _CHECKPOINT_BYTES = 16 * 1024 * 1024
 _CHECKPOINT_SECONDS = 5.0
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CONTENT_RANGE = re.compile(r"^bytes (\d+)-(\d+)/(\d+|\*)$", re.IGNORECASE)
+DEFAULT_SEGMENTS = 8
+MAX_SEGMENTS = 16
+MIN_SEGMENT_BYTES = 2 * 1024 * 1024
+SEGMENT_THRESHOLD_BYTES = 8 * 1024 * 1024
+_SEGMENT_STALLS = 3  # Consecutive failed attempts that delivered no byte.
+_SEGMENT_FAILURES = 8  # Failed attempts per segment within one round.
+_SEGMENT_BACKOFF_SECONDS = 0.25
+_SEGMENT_JOIN_SECONDS = 10.0
+_RECEIPT_MAX_BYTES = 16 * 1024
 
 
 class DownloadErrorCode(str, Enum):
@@ -285,14 +301,25 @@ class DownloadResult:
 class MediaMaterializer:
     """Materialize progressive/local candidates with atomic publication."""
 
-    def __init__(self, transport: HttpTransport | None = None, *, max_bytes: int = MAX_DOWNLOAD_BYTES, chunk_bytes: int = 1024 * 1024) -> None:
+    def __init__(self, transport: HttpTransport | None = None, *, max_bytes: int = MAX_DOWNLOAD_BYTES, chunk_bytes: int = 1024 * 1024,
+                 segments: int = DEFAULT_SEGMENTS, min_segment_bytes: int = MIN_SEGMENT_BYTES,
+                 segment_threshold_bytes: int = SEGMENT_THRESHOLD_BYTES) -> None:
         if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_DOWNLOAD_BYTES:
             raise ValueError(f"max_bytes must be between 1 and {MAX_DOWNLOAD_BYTES}")
         if type(chunk_bytes) is not int or not 1 <= chunk_bytes <= MAX_CHUNK_BYTES:
             raise ValueError(f"chunk_bytes must be between 1 and {MAX_CHUNK_BYTES}")
+        if type(segments) is not int or not 1 <= segments <= MAX_SEGMENTS:
+            raise ValueError(f"segments must be between 1 and {MAX_SEGMENTS}")
+        if type(min_segment_bytes) is not int or not 1 <= min_segment_bytes <= MAX_DOWNLOAD_BYTES:
+            raise ValueError("min_segment_bytes must be a positive bounded integer")
+        if type(segment_threshold_bytes) is not int or not 1 <= segment_threshold_bytes <= MAX_DOWNLOAD_BYTES:
+            raise ValueError("segment_threshold_bytes must be a positive bounded integer")
         self.transport = transport or UrllibHttpTransport()
         self.max_bytes = max_bytes
         self.chunk_bytes = chunk_bytes
+        self.segments = segments
+        self.min_segment_bytes = min_segment_bytes
+        self.segment_threshold_bytes = segment_threshold_bytes
 
     def probe_access(self, video: MediaCandidate, audio: MediaCandidate | None = None) -> int:
         """Check restored access without modifying retained download state.
@@ -457,9 +484,36 @@ class MediaMaterializer:
 
     def _download_http(self, locator: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None, progress: Callable[[int, int | None], None] | None) -> DownloadResult:
         url = validate_http_url(locator)
-        start = part.stat().st_size if resume and part.exists() else 0
         receipt = part.with_name(part.name + ".resume.json")
         _reject_links(receipt)
+        locator_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        plan, segmented_receipt = self._load_segment_plan(part, receipt, locator_hash, expected_size) if resume else (None, False)
+        allow_segments = self.segments > 1
+        restarts = 0
+        while True:
+            if plan is None:
+                # An unusable segmented receipt describes a pre-sized file
+                # with holes; it is never a contiguous prefix to resume.
+                outcome = self._download_single(url, destination, part, expected_sha256, expected_size,
+                    resume and not segmented_receipt, cancel, progress, allow_segments)
+                if isinstance(outcome, DownloadResult):
+                    return outcome
+                plan = outcome
+            try:
+                return self._download_segmented(url, destination, part, receipt, locator_hash, plan,
+                    expected_sha256, expected_size, cancel, progress)
+            except _SegmentRestart as restart:
+                # The private partial belongs to another object version or
+                # cannot be served by range. Restart once with the fresh
+                # validator, then fall back to the single connection.
+                self._discard_partial(part, receipt)
+                plan, segmented_receipt = None, False
+                restarts += 1
+                allow_segments = allow_segments and restart.segments_allowed and restarts < 2
+
+    def _download_single(self, url: str, destination: Path, part: Path, expected_sha256: str | None, expected_size: int | None, resume: bool, cancel: Callable[[], bool] | None, progress: Callable[[int, int | None], None] | None, allow_segments: bool) -> "DownloadResult | _SegmentPlan":
+        start = part.stat().st_size if resume and part.exists() else 0
+        receipt = part.with_name(part.name + ".resume.json")
         locator_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
         validator = None
         prefix_sha256 = None
@@ -556,6 +610,12 @@ class MediaMaterializer:
                 raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "download exceeds the configured size limit")
             if expected_size is not None and total is not None and total != expected_size:
                 raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "download size does not match the expected size")
+            if allow_segments and not start and status == 200:
+                plan = self._plan_segments(response.headers, total)
+                if plan is not None:
+                    # The checked full response only establishes size and
+                    # validator; every byte is fetched by an exact range.
+                    return plan
             digest = hashlib.sha256()
             resumed = bool(start)
             if start:
@@ -637,6 +697,308 @@ class MediaMaterializer:
             except Exception:
                 pass
 
+    def _plan_segments(self, headers: Mapping[str, str], total: int | None) -> "_SegmentPlan | None":
+        """Layout for a checked full response, or None for the single path."""
+        if total is None or total < max(self.segment_threshold_bytes, 2 * self.min_segment_bytes):
+            return None
+        etag = _strong_etag(_header(headers, "etag"))
+        if etag is None:
+            return None  # Without a strong validator ranges could splice versions.
+        accept = (_header(headers, "accept-ranges") or "bytes").strip().lower()
+        if accept != "bytes":
+            # Absent is allowed: Bilibili's origin gateway omits it although
+            # the CDN serves ranges. Every segment response is verified.
+            return None
+        count = min(self.segments, total // self.min_segment_bytes)
+        if count < 2:
+            return None
+        bounds = [total * index // count for index in range(count + 1)]
+        return _SegmentPlan(total, etag, [_Segment(bounds[index], bounds[index + 1]) for index in range(count)])
+
+    def _load_segment_plan(self, part: Path, receipt: Path, locator_hash: str, expected_size: int | None) -> "tuple[_SegmentPlan | None, bool]":
+        """Return (plan, receipt_was_segmented); only verified bytes count as done."""
+        try:
+            if not receipt.is_file() or receipt.stat().st_size > _RECEIPT_MAX_BYTES:
+                return None, False
+            record = json.loads(receipt.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            return None, False
+        if not isinstance(record, dict) or record.get("schema_version") != 2:
+            return None, False  # Schema 1 receipts remain the single path's.
+        etag = _strong_etag(record.get("etag"))
+        total = record.get("total_bytes")
+        rows = record.get("segments")
+        try:
+            if (record.get("locator_sha256") != locator_hash or etag is None or type(total) is not int
+                    or not 0 < total <= self.max_bytes or (expected_size is not None and total != expected_size)
+                    or not isinstance(rows, list) or not 1 <= len(rows) <= MAX_SEGMENTS
+                    or not part.is_file() or part.stat().st_size != total):
+                return None, True
+            segments: list[_Segment] = []
+            cursor = 0
+            with part.open("rb") as existing:
+                for row in rows:
+                    if (not isinstance(row, list) or len(row) != 4 or any(type(value) is not int for value in row[:3])
+                            or not isinstance(row[3], str)):
+                        return None, True
+                    start, end, done, committed = row
+                    if start != cursor or end <= start or not 0 <= done <= end - start:
+                        return None, True
+                    segment = _Segment(start, end)
+                    if done:
+                        existing.seek(start)
+                        _hash_stream(existing, segment.digest, done, MAX_CHUNK_BYTES)
+                        if segment.digest.hexdigest() == committed:
+                            segment.done = done
+                        else:
+                            # Refetch only the range whose committed bytes
+                            # no longer match their checkpoint.
+                            segment.digest = hashlib.sha256()
+                    segments.append(segment)
+                    cursor = end
+            if cursor != total:
+                return None, True
+        except (OSError, DownloadError):
+            return None, True
+        return _SegmentPlan(total, etag, segments, resumed=any(segment.done for segment in segments)), True
+
+    @staticmethod
+    def _discard_partial(part: Path, receipt: Path) -> None:
+        for path in (receipt, part):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _checkpoint_segments(self, part: Path, receipt: Path, locator_hash: str, plan: "_SegmentPlan") -> int:
+        with plan.lock:
+            rows = [[segment.start, segment.end, segment.done, segment.digest.hexdigest()] for segment in plan.segments]
+        # Bytes counted in the snapshot were written before it was taken.
+        with part.open("r+b") as handle:
+            os.fsync(handle.fileno())
+        _write_receipt(receipt, {"schema_version": 2, "locator_sha256": locator_hash, "etag": plan.etag,
+            "total_bytes": plan.total, "segments": rows})
+        return sum(row[2] for row in rows)
+
+    def _download_segmented(self, url: str, destination: Path, part: Path, receipt: Path, locator_hash: str, plan: "_SegmentPlan",
+                            expected_sha256: str | None, expected_size: int | None,
+                            cancel: Callable[[], bool] | None, progress: Callable[[int, int | None], None] | None) -> DownloadResult:
+        if cancel and cancel():
+            raise DownloadError(DownloadErrorCode.CANCELLED, "download cancelled at a safe boundary")
+        try:
+            if not plan.downloaded():
+                with part.open("wb") as out:
+                    out.truncate(plan.total)  # Pre-size so ranges land at their offsets.
+            self._checkpoint_segments(part, receipt, locator_hash, plan)
+        except OSError as error:
+            raise DownloadError(DownloadErrorCode.NETWORK, "media response could not be written", retryable=True, action="retry") from error
+        if progress is not None:
+            plan.reported = plan.downloaded()
+            progress(plan.reported, plan.total)
+        width = min(self.segments, len(plan.segments))
+        failure: DownloadError | None = None
+        while True:
+            pending = [segment for segment in plan.segments if segment.done < segment.length]
+            if not pending:
+                break
+            if failure is not None:
+                # Bounded fallback: each failed round halves the connections.
+                if width == 1 or failure.code not in {DownloadErrorCode.NETWORK, DownloadErrorCode.RATE_LIMITED}:
+                    raise failure
+                width = max(1, width // 2)
+            failure = self._segment_round(url, part, receipt, locator_hash, plan, pending, min(width, len(pending)), cancel, progress)
+            if failure is None and any(segment.done < segment.length for segment in plan.segments):
+                failure = DownloadError(DownloadErrorCode.NETWORK, "media ranges stopped before completion", retryable=True, action="retry")
+        try:
+            with part.open("r+b") as handle:
+                os.fsync(handle.fileno())
+            if part.stat().st_size != plan.total:
+                raise DownloadError(DownloadErrorCode.RESUME_INVALID, "partial file size changed during ranged download")
+            digest = _file_digest(part, MAX_CHUNK_BYTES)
+        except OSError as error:
+            raise DownloadError(DownloadErrorCode.NETWORK, "media response could not be written", retryable=True, action="retry") from error
+        if progress is not None and plan.reported != plan.total:
+            progress(plan.total, plan.total)
+        if cancel and cancel():
+            raise DownloadError(DownloadErrorCode.CANCELLED, "download cancelled before publication")
+        try:
+            result = self._publish(part, destination, plan.total, digest, expected_sha256, expected_size, plan.resumed)
+        except DownloadError as error:
+            if error.code in {DownloadErrorCode.CHECKSUM_MISMATCH, DownloadErrorCode.SIZE_LIMIT}:
+                # Complete ranges of the wrong object are not resumable.
+                try:
+                    receipt.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
+        try:
+            receipt.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return result
+
+    def _segment_round(self, url: str, part: Path, receipt: Path, locator_hash: str, plan: "_SegmentPlan",
+                       pending: "list[_Segment]", width: int, cancel: Callable[[], bool] | None,
+                       progress: Callable[[int, int | None], None] | None) -> DownloadError | None:
+        """Fetch pending segments with ``width`` threads.
+
+        Returns the first retry-exhausted transfer error (the caller narrows
+        concurrency), raises fatal/restart conditions after every worker has
+        stopped and the checkpoint reflects the bytes they wrote.
+        """
+        queue_ = list(pending)
+        stop = threading.Event()
+        wake = threading.Event()
+        exhausted: list[DownloadError] = []
+        fatal: list[BaseException] = []
+        active: dict[int, HttpResponse] = {}
+
+        def worker() -> None:
+            try:
+                while not stop.is_set():
+                    with plan.lock:
+                        if not queue_:
+                            return
+                        segment = queue_.pop(0)
+                    error = self._fetch_segment(url, part, plan, segment, stop, active)
+                    if error is not None:
+                        with plan.lock:
+                            exhausted.append(error)
+                        return  # Keep healthy connections; the round narrows.
+            except BaseException as error:  # Delivered to the coordinator.
+                with plan.lock:
+                    fatal.append(error)
+                stop.set()
+            finally:
+                wake.set()
+
+        threads = [threading.Thread(target=worker, name=f"dubflow-segment-{index}", daemon=True) for index in range(width)]
+        for thread in threads:
+            thread.start()
+        interrupt: BaseException | None = None
+        checkpoint_bytes = plan.downloaded()
+        checkpoint_time = time.monotonic()
+        try:
+            while any(thread.is_alive() for thread in threads):
+                wake.wait(0.1)
+                wake.clear()
+                if cancel and cancel():
+                    raise DownloadError(DownloadErrorCode.CANCELLED, "download cancelled at a safe boundary")
+                if fatal:
+                    break
+                downloaded = plan.downloaded()
+                if progress is not None and downloaded != plan.reported:
+                    plan.reported = downloaded
+                    progress(downloaded, plan.total)
+                now = time.monotonic()
+                if downloaded - checkpoint_bytes >= _CHECKPOINT_BYTES or now - checkpoint_time >= _CHECKPOINT_SECONDS:
+                    checkpoint_bytes = self._checkpoint_segments(part, receipt, locator_hash, plan)
+                    checkpoint_time = now
+        except BaseException as error:
+            interrupt = error
+        with plan.lock:
+            stop.set()
+            responses = list(active.values())
+        for response in responses:
+            _abort_response(response)
+        deadline = time.monotonic() + _SEGMENT_JOIN_SECONDS
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        try:
+            self._checkpoint_segments(part, receipt, locator_hash, plan)
+        except OSError as error:
+            if interrupt is None and not fatal:
+                interrupt = DownloadError(DownloadErrorCode.NETWORK, "media response could not be written", retryable=True, action="retry")
+                interrupt.__cause__ = error
+        if interrupt is not None:
+            raise interrupt
+        if fatal:
+            raise fatal[0]
+        if progress is not None and plan.downloaded() != plan.reported:
+            plan.reported = plan.downloaded()
+            progress(plan.reported, plan.total)
+        return exhausted[0] if exhausted else None
+
+    def _fetch_segment(self, url: str, part: Path, plan: "_SegmentPlan", segment: "_Segment",
+                       stop: threading.Event, active: dict[int, HttpResponse]) -> DownloadError | None:
+        """Fetch one segment, retrying from its own current offset.
+
+        Returns None when complete or stopped, a retryable error once its
+        bounded attempts are exhausted; raises fatal and restart conditions.
+        """
+        stalls = failures = 0
+        with part.open("r+b", buffering=0) as out:
+            while segment.done < segment.length and not stop.is_set():
+                begin = segment.start + segment.done
+                before = segment.done
+                failure: DownloadError | None = None
+                response: HttpResponse | None = None
+                try:
+                    response = self.transport.open(url, headers={"Accept-Encoding": "identity",
+                        "Range": f"bytes={begin}-{segment.end - 1}", "If-Range": plan.etag})
+                    with plan.lock:
+                        active[id(response)] = response
+                    if stop.is_set():
+                        return None
+                    served_end = _check_segment_response(response, plan, begin, segment.end)
+                    read = getattr(response.body, "read1", None) or response.body.read
+                    out.seek(begin)
+                    while segment.start + segment.done < served_end:
+                        if stop.is_set():
+                            return None
+                        chunk = read(min(self.chunk_bytes, served_end - segment.start - segment.done))
+                        if not chunk:
+                            raise DownloadError(DownloadErrorCode.NETWORK, "media range ended before its declared size", retryable=True, action="retry")
+                        if not isinstance(chunk, (bytes, bytearray)) or len(chunk) > served_end - segment.start - segment.done:
+                            raise DownloadError(DownloadErrorCode.NETWORK, "media transport returned an invalid range chunk", retryable=True)
+                        with plan.lock:
+                            # The coordinator sets stop under this lock, so an
+                            # abandoned reader can never write after a stop.
+                            if stop.is_set():
+                                return None
+                            view = memoryview(chunk)
+                            while view:
+                                written = out.write(view)
+                                if not written:
+                                    raise OSError("partial file write made no progress")
+                                view = view[written:]
+                            segment.done += len(chunk)
+                            segment.digest.update(chunk)
+                except _SegmentRestart:
+                    raise
+                except DownloadError as error:
+                    if error.code == DownloadErrorCode.RATE_LIMITED:
+                        return error  # Narrowing concurrency is the changed condition.
+                    if error.code != DownloadErrorCode.NETWORK:
+                        raise
+                    failure = error
+                except (OSError, ValueError, HTTPException) as error:
+                    if stop.is_set():
+                        return None
+                    failure = DownloadError(DownloadErrorCode.NETWORK, "media range transfer failed", retryable=True, action="retry")
+                    failure.__cause__ = error
+                except Exception:
+                    if stop.is_set():
+                        return None  # A read raced the coordinator's close.
+                    raise
+                finally:
+                    if response is not None:
+                        with plan.lock:
+                            active.pop(id(response), None)
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
+                if failure is None or stop.is_set():
+                    continue
+                failures += 1
+                stalls = 0 if segment.done > before else stalls + 1
+                if stalls >= _SEGMENT_STALLS or failures >= _SEGMENT_FAILURES:
+                    return failure
+                # The retry resumes from this segment's own new offset.
+                stop.wait(min(2.0, _SEGMENT_BACKOFF_SECONDS * (2 ** stalls)))
+        return None
+
     def _publish(self, part: Path, destination: Path, size: int, digest: str, expected_sha256: str | None, expected_size: int | None, resumed: bool) -> DownloadResult:
         if expected_size is not None and size != expected_size:
             raise DownloadError(DownloadErrorCode.SIZE_LIMIT, "download size does not match the expected size")
@@ -648,6 +1010,112 @@ class MediaMaterializer:
         except OSError as error:
             raise DownloadError(DownloadErrorCode.INVALID_DESTINATION, "atomic media publication failed") from error
         return DownloadResult(destination, size, digest, resumed)
+
+
+class _SegmentRestart(Exception):
+    """Internal: discard the ranged partial and restart the object."""
+
+    segments_allowed = True
+
+
+class _ValidatorChanged(_SegmentRestart):
+    """The object's strong validator no longer matches the partial."""
+
+
+class _RangesUnsupported(_SegmentRestart):
+    """The server answered a byte range with something else."""
+
+    segments_allowed = False
+
+
+@dataclass
+class _Segment:
+    start: int
+    end: int  # Exclusive.
+    done: int = 0
+    digest: Any = field(default_factory=hashlib.sha256)  # Over the committed bytes.
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start
+
+
+@dataclass
+class _SegmentPlan:
+    total: int
+    etag: str
+    segments: list[_Segment]
+    resumed: bool = False
+    reported: int = -1
+    lock: Any = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def downloaded(self) -> int:
+        with self.lock:
+            return sum(segment.done for segment in self.segments)
+
+
+def _abort_response(response: HttpResponse) -> None:
+    """Interrupt a read blocked in another thread, best effort.
+
+    Closing an ``http.client`` response waits for the reader's buffer lock,
+    i.e. for the blocked ``recv`` to return (up to the socket timeout).
+    ``shutdown`` wakes a POSIX reader; Windows only wakes a reader waiting in
+    its timeout ``select`` when the handle itself is closed. The reader then
+    fails with an OSError and the owning worker closes the response.
+    """
+    raw = getattr(getattr(response.body, "fp", None), "raw", None)
+    sock = getattr(raw, "_sock", None)
+    if not isinstance(sock, socket.socket):
+        return
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        socket.close(sock.detach())
+    except (OSError, ValueError):
+        pass
+
+
+def _check_segment_response(response: HttpResponse, plan: _SegmentPlan, begin: int, end: int) -> int:
+    """Validate one range response; return the exclusive end it serves."""
+    status = int(response.status)
+    etag = _strong_etag(_header(response.headers, "etag"))
+    if status == 200:
+        # If-Range answers a changed object with the full new body; the same
+        # validator with a full body means the server ignores ranges.
+        if etag == plan.etag:
+            raise _RangesUnsupported("server ignored the byte range")
+        raise _ValidatorChanged("range validator changed")
+    if status == 416:
+        raise _ValidatorChanged("server no longer serves the recorded range")
+    if status in {401, 403}:
+        raise DownloadError(DownloadErrorCode.AUTH_REQUIRED, "media endpoint requires authentication", action="authenticate")
+    if status == 429:
+        raise DownloadError(DownloadErrorCode.RATE_LIMITED, "media endpoint rate limited", retryable=True, action="retry_later")
+    if status >= 500:
+        raise DownloadError(DownloadErrorCode.NETWORK, "media endpoint returned a server error", retryable=True, action="retry")
+    if status != 206:
+        raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, f"media endpoint returned status {status}")
+    if etag != plan.etag:
+        raise _ValidatorChanged("range validator changed or is missing")
+    encoding = _header(response.headers, "content-encoding")
+    if encoding is not None and encoding.lower() != "identity":
+        raise _RangesUnsupported("encoded responses cannot preserve byte ranges")
+    raw = _header(response.headers, "content-range") or ""
+    match = _CONTENT_RANGE.fullmatch(raw) if len(raw) <= 128 else None
+    if match is None or match.group(3) == "*":
+        raise _RangesUnsupported("server returned an invalid content range")
+    if int(match.group(3)) != plan.total:
+        raise _ValidatorChanged("object size changed")
+    first, last = int(match.group(1)), int(match.group(2))
+    # A server may serve a shorter range; the remainder is requested next.
+    if first != begin or not first <= last < end:
+        raise _RangesUnsupported("server returned another byte range")
+    length = _header(response.headers, "content-length")
+    if length is not None and length.strip() != str(last - first + 1):
+        raise _RangesUnsupported("content length contradicts the byte range")
+    return last + 1
 
 
 def _hash_stream(stream: BinaryIO, digest: "hashlib._Hash", size: int, chunk_bytes: int) -> None:
