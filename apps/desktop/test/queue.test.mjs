@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { MemorySnapshotStorage, QueueController, parseQueueSnapshot } from "../src/features/queue/model.ts";
-import { toQueueViewModel } from "../src/features/queue/view_model.ts";
+import { matchesQueueFilter, toQueueViewModel } from "../src/features/queue/view_model.ts";
 import { acceptsPolledStatus, failureHint } from "../src/features/job_status/status.ts";
 
 const clock = () => "2026-09-29T02:30:00.000Z";
@@ -190,5 +190,15 @@ const colliding = new QueueController(new MemorySnapshotStorage(), clock, 100, (
 colliding.addPaths(["one"]);
 assert.throws(() => colliding.addPaths(["two"]), /independent job ID/);
 assert.equal(colliding.getSnapshot().jobs.length, 1);
+
+// The list filter: "Đang chạy" is work in progress, "Xong" only finished videos.
+for (const state of ["RUNNING", "RETRYING", "RECOVERED", "WORKER_LOST", "WAITING_RESOURCE", "WAITING_EXTERNAL"]) {
+  assert.equal(matchesQueueFilter(state, "running"), true, state);
+  assert.equal(matchesQueueFilter(state, "done"), false, state);
+}
+for (const state of ["QUEUED", "COMPLETED", "FAILED", "BLOCKED_NEEDS_ACTION"]) assert.equal(matchesQueueFilter(state, "running"), false, state);
+assert.equal(matchesQueueFilter("COMPLETED", "done"), true);
+assert.equal(matchesQueueFilter("FAILED", "done"), false);
+for (const state of ["QUEUED", "RUNNING", "COMPLETED", "FAILED"]) assert.equal(matchesQueueFilter(state, "all"), true, state);
 
 console.log("desktop queue tests passed");

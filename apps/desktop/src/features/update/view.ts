@@ -1,5 +1,5 @@
-/** In-app updates: a sidebar card when a newer signed version exists, and a
- * dialog listing installed versions so the user can roll back. */
+/** In-app updates: a settings card (and a header button) when a newer signed
+ * version exists, and a dialog listing installed versions so the user can roll back. */
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 export type UpdateInfo = { version: string; notes: string; sizeBytes: number | null };
@@ -7,7 +7,9 @@ export type InstalledVersion = { version: string; channel: string; installedAt: 
 
 const CHECK_KEY = "dubflow.updateCheckedAt.v1";
 const SKIP_KEY = "dubflow.updateSkipped.v1";
-const DAY_MS = 24 * 60 * 60 * 1000;
+/** First background check after launch, then one every 6 hours while the app runs. */
+export const FIRST_CHECK_MS = 4000;
+export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 export function parseCheck(value: unknown): { ok: true; update: UpdateInfo | null; unsupported: boolean } | { ok: false; message: string } {
   const object = (value ?? {}) as Record<string, unknown>;
@@ -28,12 +30,6 @@ export function parseVersions(value: unknown): { current: string | null; version
   return { current: typeof object.current === "string" ? object.current : null, versions };
 }
 
-/** Whether a background check is due (once a day; failures of storage never block a manual check). */
-export function checkDue(now: number, lastChecked: string | null): boolean {
-  const last = Number(lastChecked);
-  return !Number.isFinite(last) || last <= 0 || now - last >= DAY_MS || last > now;
-}
-
 const storage = {
   get(key: string): string | null {
     try { return window.localStorage.getItem(key); } catch { return null; }
@@ -49,7 +45,7 @@ const $ = <T extends HTMLElement>(selector: string): T => {
   return node;
 };
 
-export function mountUpdates(invoke: Invoke): void {
+export function mountUpdates(invoke: Invoke, onAvailable: (version: string | null) => void = () => undefined): void {
   const card = $("#update-card");
   const title = $("#update-title");
   const detail = $("#update-detail");
@@ -70,6 +66,7 @@ export function mountUpdates(invoke: Invoke): void {
     install.disabled = false;
     install.textContent = "Cập nhật";
     card.hidden = false;
+    onAvailable(update.version);
   }
 
   async function runCheck(manual: boolean): Promise<void> {
@@ -121,6 +118,7 @@ export function mountUpdates(invoke: Invoke): void {
   later.addEventListener("click", () => {
     if (pending) storage.set(SKIP_KEY, pending.version);
     card.hidden = true;
+    onAvailable(null);
   });
   check.addEventListener("click", () => void runCheck(true));
 
@@ -182,5 +180,7 @@ export function mountUpdates(invoke: Invoke): void {
   $("#versions-close").addEventListener("click", () => { dialog.hidden = true; });
   dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") dialog.hidden = true; });
 
-  if (checkDue(Date.now(), storage.get(CHECK_KEY))) window.setTimeout(() => void runCheck(false), 4000);
+  // A check still in flight is never doubled: runCheck returns while busy.
+  window.setTimeout(() => void runCheck(false), FIRST_CHECK_MS);
+  window.setInterval(() => void runCheck(false), CHECK_INTERVAL_MS);
 }

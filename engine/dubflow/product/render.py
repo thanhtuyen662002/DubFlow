@@ -10,7 +10,7 @@ import sys
 from typing import Sequence
 import wave
 
-from .layout import FPS, HEIGHT, MEDIA_HEIGHT, PANEL_COLOR, WIDTH
+from .layout import FPS, FULL_FRAME_RATIO, GRADIENT, HEIGHT, MEDIA_HEIGHT, PANEL_COLOR, WIDTH
 
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp"})
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"})
@@ -32,21 +32,21 @@ class Visual:
 
 @dataclass(frozen=True)
 class Background:
-    """The user's image behind the template: the whole 9:16 frame, or only the panel."""
+    """The user's image behind the template: the whole 9:16 frame, or only the panel.
+
+    ``focus`` (0–1 across, 0–1 down) is the part kept when the image is cropped to fit.
+    """
 
     path: Path
     full_frame: bool
+    focus: tuple[float, float] = (0.5, 0.5)
 
 
-# Taller than this (height / width) fills the whole frame; anything wider fills the panel.
-FULL_FRAME_RATIO = 1.2
-
-
-def background(path: Path, width: int, height: int) -> Background:
+def background(path: Path, width: int, height: int, focus: tuple[float, float] = (0.5, 0.5)) -> Background:
     """1080×1920-like images cover the frame, 1080×720-like ones the panel below the media."""
     if width <= 0 or height <= 0:
         raise ValueError("background has no size")
-    return Background(path, height >= width * FULL_FRAME_RATIO)
+    return Background(path, height >= width * FULL_FRAME_RATIO, focus)
 
 
 @dataclass(frozen=True)
@@ -83,12 +83,30 @@ def _seconds(milliseconds: int) -> str:
     return f"{milliseconds / 1000:.3f}"
 
 
+def _gradient(total: str) -> str:
+    """A plain vertical gradient over the frame: a tiny frame of colours, scaled up smoothly."""
+    channels = []
+    for shift, name in ((16, "r"), (8, "g"), (0, "b")):
+        top, bottom = ((colour >> shift) & 0xFF for colour in GRADIENT)
+        channels.append(f"{name}='{top}+({bottom - top})*Y/(H-1)'")
+    return (f"color=c=black:s=2x256:r={FPS}:d={total},format=rgb24,geq={':'.join(channels)},"
+            f"scale={WIDTH}:{HEIGHT}:flags=bicubic,setsar=1,format=yuv420p[panel]")
+
+
+def _cover(width: int, height: int, focus: tuple[float, float]) -> str:
+    """Scale to cover ``width``×``height`` and crop around ``focus``."""
+    across, down = (min(1.0, max(0.0, value)) for value in focus)
+    return (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height}:x='(iw-{width})*{across:.4f}':y='(ih-{height})*{down:.4f}'")
+
+
 def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, music: Path | None,
                 music_volume: float, total_ms: int, output: Path, *, subtitles: str = "captions.ass",
                 encoder: str = ENCODER, backdrop: Background | None = None, media_height: int = MEDIA_HEIGHT) -> list[str]:
     """The FFmpeg command, run with the folder holding ``subtitles`` as its working directory.
 
     The photos and clips fill the top ``media_height`` rows: 1200 for "Bản tin", the whole frame for "Toàn màn hình".
+    "Chỉ chữ" has no segments: its text sits on the background, or on a gradient without one.
     """
     argv = [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y"]
     filters = []
@@ -106,18 +124,23 @@ def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, musi
     voice = len(segments)
     argv += ["-i", str(narration)]
     total = _seconds(total_ms)
-    filters.append("".join(f"[v{index}]" for index in range(len(segments))) + f"concat=n={len(segments)}:v=1:a=0[media]")
-    filters.append(f"color=c={PANEL_COLOR}:s={WIDTH}x{HEIGHT}:r={FPS}:d={total}[panel]")
+    if segments:
+        filters.append("".join(f"[v{index}]" for index in range(len(segments))) + f"concat=n={len(segments)}:v=1:a=0[media]")
+        filters.append(f"color=c={PANEL_COLOR}:s={WIDTH}x{HEIGHT}:r={FPS}:d={total}[panel]")
+    else:
+        filters.append(_gradient(total))
     if backdrop is None:
         filters.append("[panel]null[base]")
     else:
         # After the narration and the music, so their input numbers stay put.
         image = voice + (2 if music is not None else 1)
         height = HEIGHT if backdrop.full_frame else HEIGHT - MEDIA_HEIGHT
-        filters.append(f"[{image}:v]scale={WIDTH}:{height}:force_original_aspect_ratio=increase,crop={WIDTH}:{height},"
-                       f"setsar=1,fps={FPS},format=yuv420p[backdrop]")
+        filters.append(f"[{image}:v]{_cover(WIDTH, height, backdrop.focus)},setsar=1,fps={FPS},format=yuv420p[backdrop]")
         filters.append(f"[panel][backdrop]overlay=0:{0 if backdrop.full_frame else MEDIA_HEIGHT}[base]")
-    filters.append(f"[base][media]overlay=0:0:eof_action=repeat,subtitles={subtitles}[video]")
+    if segments:
+        filters.append(f"[base][media]overlay=0:0:eof_action=repeat,subtitles={subtitles}[video]")
+    else:
+        filters.append(f"[base]subtitles={subtitles}[video]")
     stereo = "aformat=sample_rates=48000:channel_layouts=stereo"
     if music is None:
         filters.append(f"[{voice}:a]{stereo}[audio]")

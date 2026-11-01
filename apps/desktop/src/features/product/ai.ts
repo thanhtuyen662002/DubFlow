@@ -1,6 +1,6 @@
 import { askJson, type Part, type Provider } from "../ai/provider.ts";
 
-/** What the AI read from the product photos; every field stays editable. */
+/** What the AI read from the pasted text and/or photos; every field stays editable. */
 export type ProductInfo = { name: string; price: string; features: string[]; audience: string; notes: string };
 export type ScriptRequest = { count: number; seconds: number; tone: string; speed?: number };
 export type Photo = { mediaType: "image/jpeg"; data: string };
@@ -8,6 +8,8 @@ export type Photo = { mediaType: "image/jpeg"; data: string };
 /** VieNeu narrates about 4.5 Vietnamese syllables (words) per second. */
 export const WORDS_PER_SECOND = 4.5;
 export const MAX_SCRIPT_CHARS = 3000;
+/** Pasted shop text sent to the AI: plenty for a description, specs and a few reviews. */
+export const MAX_SOURCE_CHARS = 12_000;
 
 const INFO_SCHEMA = {
   type: "object",
@@ -29,14 +31,14 @@ const SCRIPTS_SCHEMA = {
   additionalProperties: false,
 };
 
-const READ_SYSTEM = `Bạn đọc ảnh sản phẩm (bao bì, nhãn, tờ thông số, ảnh chụp trang sàn thương mại điện tử) cho người bán hàng Việt Nam.
-Trả về bằng tiếng Việt (dịch nếu ảnh là tiếng Trung hoặc tiếng Anh):
-- name: tên sản phẩm ngắn gọn, có thương hiệu và dung tích/kích thước nếu thấy.
-- price: giá đúng như in trên ảnh (ví dụ 299.000đ); không thấy thì để rỗng.
-- features: tối đa 8 điểm nổi bật ngắn, mỗi điểm một câu.
-- audience: sản phẩm dành cho ai, nếu ảnh cho biết; không thì để rỗng.
-- notes: thông tin khác có ích khi bán (bảo hành, xuất xứ, quà tặng…) nếu thấy.
-Chỉ ghi điều nhìn thấy trong ảnh. Không đoán giá, công dụng hay chứng nhận.`;
+const READ_SYSTEM = `Bạn đọc thông tin sản phẩm cho người bán hàng Việt Nam. Nguồn là văn bản người bán dán vào (mô tả trên trang shop, thông số, đánh giá của khách) và/hoặc ảnh sản phẩm (bao bì, nhãn, tờ thông số, ảnh chụp trang sàn thương mại điện tử).
+Trả về bằng tiếng Việt (dịch nếu nguồn là tiếng Trung hoặc tiếng Anh):
+- name: tên sản phẩm ngắn gọn, có thương hiệu và dung tích/kích thước nếu có.
+- price: giá đúng như ghi trong nguồn (ví dụ 299.000đ); không có thì để rỗng.
+- features: tối đa 8 điểm nổi bật ngắn, mỗi điểm một câu; ưu tiên lợi ích người mua quan tâm.
+- audience: sản phẩm dành cho ai, nếu nguồn cho biết; không thì để rỗng.
+- notes: thông tin khác có ích khi bán (bảo hành, xuất xứ, quà tặng, cảm nhận nổi bật của khách…) nếu có.
+Chỉ ghi điều có trong văn bản hoặc nhìn thấy trong ảnh. Không đoán giá, công dụng hay chứng nhận. Đánh giá của khách là cảm nhận, không phải thông số.`;
 
 const WRITE_SYSTEM = `Bạn viết lời đọc cho video bán hàng ngắn dạng dọc (TikTok, Facebook Reels, YouTube Shorts) bằng tiếng Việt.
 Mỗi kịch bản:
@@ -63,7 +65,7 @@ export function normalizeInfo(value: unknown): ProductInfo {
     ? [...new Set(object.features.map((item) => clean(item, 200)).filter(Boolean))].slice(0, 8)
     : [];
   const info = { name: clean(object.name, 120), price: clean(object.price, 60), features, audience: clean(object.audience, 200), notes: clean(object.notes, 500) };
-  if (!info.name && !features.length) throw new Error("AI không đọc được thông tin sản phẩm từ ảnh; hãy chọn ảnh rõ hơn hoặc tự nhập.");
+  if (!info.name && !features.length) throw new Error("AI không đọc được thông tin sản phẩm; hãy dán thêm mô tả, chọn ảnh rõ hơn hoặc tự nhập.");
   return info;
 }
 
@@ -89,11 +91,19 @@ export function describeProduct(info: ProductInfo): string {
   ].filter(Boolean).join("\n");
 }
 
-/** Read the product facts printed on the photos. The photos are sent to the provider. */
-export async function readProduct(provider: Provider, apiKey: string, photos: readonly Photo[]): Promise<ProductInfo> {
-  const parts: Part[] = photos.map((photo) => ({ image: { mediaType: photo.mediaType, data: photo.data } }));
-  parts.push({ text: "Đọc thông tin sản phẩm trong các ảnh trên." });
-  return normalizeInfo(await askJson(provider, apiKey, { system: READ_SYSTEM, schema: INFO_SCHEMA, effort: "medium", parts }));
+/** What is sent to read a product: the pasted text (trimmed, bounded) and/or the photos. */
+export function readParts(source: { text: string; photos: readonly Photo[] }): Part[] {
+  const text = source.text.replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, MAX_SOURCE_CHARS);
+  if (!text && !source.photos.length) throw new Error("Hãy dán mô tả sản phẩm hoặc thêm ảnh trước.");
+  const parts: Part[] = source.photos.map((photo) => ({ image: { mediaType: photo.mediaType, data: photo.data } }));
+  const where = text && source.photos.length ? "văn bản dưới đây và các ảnh trên" : text ? "văn bản dưới đây" : "các ảnh trên";
+  parts.push({ text: `Đọc thông tin sản phẩm trong ${where}.${text ? `\n\n<van_ban_nguoi_ban>\n${text}\n</van_ban_nguoi_ban>` : ""}` });
+  return parts;
+}
+
+/** Read the product facts from the pasted text and/or photos; both are sent to the provider. */
+export async function readProduct(provider: Provider, apiKey: string, source: { text: string; photos: readonly Photo[] }): Promise<ProductInfo> {
+  return normalizeInfo(await askJson(provider, apiKey, { system: READ_SYSTEM, schema: INFO_SCHEMA, effort: "medium", parts: readParts(source) }));
 }
 
 /** Write `count` different narration scripts from the (user-checked) product form. */

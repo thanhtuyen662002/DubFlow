@@ -1,0 +1,260 @@
+{
+  "width": 1080,
+  "height": 1920,
+  "font": "Arial",
+  "fullFrameRatio": 1.2,
+  "templates": {
+    "ban-tin": {
+      "media": 1200,
+      "panel": "#0E7A3B",
+      "strip": {
+        "y": 1200,
+        "height": 10,
+        "colour": "#FFD400"
+      },
+      "background": {
+        "panel": [
+          1080,
+          720
+        ],
+        "frame": [
+          1080,
+          1920
+        ]
+      },
+      "title": {
+        "x": 540,
+        "y": 1244,
+        "size": 60,
+        "colour": "#FFD400",
+        "bold": true,
+        "align": 8,
+        "wrap": 960,
+        "box": null,
+        "outline": 0,
+        "shadow": {
+          "offset": 2,
+          "opacity": 1.0
+        }
+      },
+      "caption": {
+        "x": 540,
+        "y": 1560,
+        "size": 66,
+        "colour": "#FFFFFF",
+        "bold": true,
+        "align": 5,
+        "wrap": 960,
+        "box": null,
+        "outline": 0,
+        "shadow": {
+          "offset": 3,
+          "opacity": 0.608
+        }
+      },
+      "price": {
+        "x": 540,
+        "y": 1850,
+        "size": 62,
+        "colour": "#FFFFFF",
+        "bold": true,
+        "align": 2,
+        "wrap": 960,
+        "box": {
+          "colour": "#D81C1C",
+          "opacity": 1.0,
+          "pad": 16
+        },
+        "outline": 0,
+        "shadow": null
+      },
+      "outlined": {
+        "title": {
+          "x": 540,
+          "y": 1244,
+          "size": 60,
+          "colour": "#FFD400",
+          "bold": true,
+          "align": 8,
+          "wrap": 960,
+          "box": null,
+          "outline": 3,
+          "shadow": {
+            "offset": 2,
+            "opacity": 1.0
+          }
+        },
+        "caption": {
+          "x": 540,
+          "y": 1560,
+          "size": 66,
+          "colour": "#FFFFFF",
+          "bold": true,
+          "align": 5,
+          "wrap": 960,
+          "box": null,
+          "outline": 4,
+          "shadow": {
+            "offset": 2,
+            "opacity": 0.608
+          }
+        }
+      }
+    },
+    "toan-man-hinh": {
+      "media": 1920,
+      "title": {
+        "x": 540,
+        "y": 90,
+        "size": 56,
+        "colour": "#FFD400",
+        "bold": true,
+        "align": 8,
+        "wrap": 960,
+        "box": {
+          "colour": "#000000",
+          "opacity": 0.624,
+          "pad": 14
+        },
+        "outline": 0,
+        "shadow": null
+      },
+      "caption": {
+        "x": 540,
+        "y": 1660,
+        "size": 64,
+        "colour": "#FFFFFF",
+        "bold": true,
+        "align": 2,
+        "wrap": 960,
+        "box": {
+          "colour": "#000000",
+          "opacity": 0.624,
+          "pad": 14
+        },
+        "outline": 0,
+        "shadow": null
+      },
+      "price": {
+        "x": 540,
+        "y": 1850,
+        "size": 62,
+        "colour": "#FFFFFF",
+        "bold": true,
+        "align": 2,
+        "wrap": 960,
+        "box": {
+          "colour": "#D81C1C",
+          "opacity": 1.0,
+          "pad": 16
+        },
+        "outline": 0,
+        "shadow": null
+      }
+    },
+    "chi-chu": {
+      "media": 0,
+      "gradient": [
+        "#14213D",
+        "#0E7A3B"
+      ],
+      "scrim": 0.373,
+      "background": {
+        "frame": [
+          1080,
+          1920
+        ]
+      },
+      "cardBox": {
+        "x": 90,
+        "y": 560,
+        "width": 900,
+        "height": 560,
+        "radius": 36,
+        "opacity": 0.686,
+        "bar": {
+          "x": 36,
+          "y": 64,
+          "width": 12,
+          "height": 432,
+          "colour": "#FFD400"
+        }
+      },
+      "minCardMs": 1800,
+      "slide": {
+        "px": 60,
+        "ms": 300
+      },
+      "title": {
+        "x": 540,
+        "y": 230,
+        "size": 64,
+        "colour": "#FFD400",
+        "bold": true,
+        "align": 8,
+        "wrap": 960,
+        "box": null,
+        "outline": 3,
+        "shadow": {
+          "offset": 2,
+          "opacity": 1.0
+        }
+      },
+      "card": {
+        "x": 540,
+        "y": 840,
+        "size": 76,
+        "colour": "#FFFFFF",
+        "bold": true,
+        "align": 5,
+        "wrap": 780,
+        "box": null,
+        "outline": 0,
+        "shadow": null
+      },
+      "counter": {
+        "x": 162,
+        "y": 612,
+        "size": 36,
+        "colour": "#FFD400",
+        "bold": true,
+        "align": 7,
+        "wrap": 960,
+        "box": null,
+        "outline": 0,
+        "shadow": null
+      },
+      "price": {
+        "x": 540,
+        "y": 1300,
+        "size": 72,
+        "colour": "#FFFFFF",
+        "bold": true,
+        "align": 5,
+        "wrap": 960,
+        "box": {
+          "colour": "#D81C1C",
+          "opacity": 1.0,
+          "pad": 18
+        },
+        "outline": 0,
+        "shadow": null
+      },
+      "caption": {
+        "x": 540,
+        "y": 1580,
+        "size": 60,
+        "colour": "#FFFFFF",
+        "bold": true,
+        "align": 5,
+        "wrap": 960,
+        "box": null,
+        "outline": 4,
+        "shadow": {
+          "offset": 2,
+          "opacity": 0.608
+        }
+      }
+    }
+  }
+}

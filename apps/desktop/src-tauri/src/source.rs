@@ -23,7 +23,9 @@ pub struct FetchStatus {
     pub scan_id: String,
     pub url: String,
     pub provider: String,
-    /// queued | preparing | downloading | done | failed
+    /// The video's title when the caller knows it (Khám phá).
+    pub title: Option<String>,
+    /// queued | preparing | downloading | done | failed | cancelled
     pub state: String,
     /// What a preparing link is doing right now, for the user.
     pub detail: Option<String>,
@@ -35,6 +37,8 @@ pub struct FetchStatus {
     pub total_bytes: Option<u64>,
     pub media_path: Option<String>,
     pub error: Option<String>,
+    /// The service's failure code, e.g. AUTH_REQUIRED.
+    pub error_code: Option<String>,
 }
 
 struct Service {
@@ -54,6 +58,9 @@ pub struct Sources {
     session: Mutex<Option<Value>>,
     /// Automatic resumes per link after a dropped connection.
     resumes: Mutex<HashMap<String, Resumes>>,
+    /// A cancelled running link whose stop request is not answered yet; a
+    /// rejection naming no scan belongs to it, not to the next link.
+    cancelling: Mutex<Option<String>>,
 }
 
 /// The service allows two retries in a row that bring no new bytes; each
@@ -83,7 +90,27 @@ fn now_ms() -> u64 {
 }
 
 fn finished(state: &str) -> bool {
-    state == "done" || state == "failed"
+    matches!(state, "done" | "failed" | "cancelled")
+}
+
+/// What asks the service to stop a running link: preparation and download
+/// are cancelled by different requests.
+fn stop_command(state: &str) -> Option<&'static str> {
+    match state {
+        "preparing" => Some("cancel"),
+        "downloading" => Some("cancel_download"),
+        _ => None,
+    }
+}
+
+/// Longest title kept for a link, in characters.
+const MAX_TITLE_CHARS: usize = 200;
+
+fn clean_title(title: Option<String>) -> Option<String> {
+    let title: String = title?.chars().filter(|c| !c.is_control()).collect();
+    let title: String = title.trim().chars().take(MAX_TITLE_CHARS).collect();
+    let title = title.trim_end();
+    (!title.is_empty()).then(|| title.to_owned())
 }
 
 /// Cookies yt-dlp's Douyin extractor needs first; the service accepts one
@@ -93,6 +120,13 @@ pub const DOUYIN_PRIORITY: [&str; 12] = ["s_v_web_id", "ttwid", "msToken", "__ac
 const MAX_COOKIE_HEADER: usize = 2000;
 /// The protected session store keeps a session for at most 24 hours.
 pub const SESSION_SECONDS: u64 = 23 * 60 * 60;
+/// A session this app saved is reused this long before it is refreshed.
+pub const SESSION_REUSE_SECONDS: u64 = 20 * 60 * 60;
+
+/// Whether a session saved at `saved_at` (Unix seconds) can still be used.
+pub fn session_fresh(saved_at: u64, now: u64) -> bool {
+    saved_at <= now && now - saved_at < SESSION_REUSE_SECONDS
+}
 
 fn cookie_safe(value: &str) -> bool {
     !value.is_empty() && value.len() <= 1024
@@ -148,7 +182,7 @@ fn scan_id(url: &str) -> String {
 
 fn human_error(code: &str, provider: &str) -> String {
     match code {
-        "AUTH_REQUIRED" | "PRIVATE" if provider == "douyin" => "Douyin cần phiên truy cập: bấm “Mở Douyin”, đợi trang hiện video, rồi bấm “Lưu phiên & thử lại”.".into(),
+        "AUTH_REQUIRED" | "PRIVATE" if provider == "douyin" => "Douyin yêu cầu đăng nhập để tải video này. Bấm “Đăng nhập Douyin”, đăng nhập rồi thử lại.".into(),
         "AUTH_REQUIRED" | "PRIVATE" => "Video yêu cầu đăng nhập hoặc là video riêng tư.".into(),
         "RATE_LIMITED" => "Trang nguồn đang giới hạn truy cập. Hãy thử lại sau ít phút.".into(),
         "NOT_FOUND" => "Không tìm thấy video (có thể đã bị xóa).".into(),
@@ -243,6 +277,15 @@ impl Sources {
             }
             return;
         }
+        // The answer to a stop request, or a rejection of it, ends the wait.
+        let stopped = self.cancelling.lock().ok().and_then(|mut cancelling| match event["scan_id"].as_str() {
+            Some(scan) if cancelling.as_deref() == Some(scan) => cancelling.take(),
+            None if event["event"] == "source_error" => cancelling.take(),
+            _ => None,
+        });
+        if stopped.is_some() && event["scan_id"].is_null() {
+            return;
+        }
         let current = self.queue.lock().ok().and_then(|queue| queue.current.clone())
             .filter(|scan| self.status(scan).is_some_and(|s| s.state == "preparing"
                 || s.detail.as_deref().is_some_and(|d| d.starts_with("Mất kết nối"))));
@@ -251,6 +294,10 @@ impl Sources {
         let Some(scan) = event["scan_id"].as_str().map(str::to_owned)
             .or_else(|| if event["event"] == "source_error" { current } else { None }) else { return };
         let scan = scan.as_str();
+        // A cancelled link is gone for the user; late events change nothing.
+        if self.status(scan).is_none_or(|s| s.state == "cancelled") {
+            return;
+        }
         match event["event"].as_str().unwrap_or_default() {
             "source_preparing" => {
                 self.update(scan, |s| s.detail = Some("Đang mở trang video…".into()));
@@ -306,6 +353,9 @@ impl Sources {
                 let code = event["code"].as_str().unwrap_or("SOURCE_FAILED").to_owned();
                 let provider = self.status(scan).map(|s| s.provider).unwrap_or_default();
                 self.fail_link(scan, human_error(&code, &provider));
+                self.update(scan, |s| if s.state == "failed" && s.error_code.is_none() {
+                    s.error_code = Some(code.chars().take(64).collect());
+                });
             }
             _ => {}
         }
@@ -345,6 +395,10 @@ impl Sources {
             // Give the source a moment before asking it again, longer when
             // the last resume brought nothing.
             thread::sleep(std::time::Duration::from_secs(if in_a_row > 1 { 30 } else { 5 }));
+            // Cancelled (or otherwise ended) while waiting.
+            if this.status(&scan).is_none_or(|s| finished(&s.state)) {
+                return;
+            }
             if let Err(error) = this.send(json!({"command":"retry_download", "scan_id":scan, "identity_key":identity})) {
                 this.fail_link(&scan, error);
                 this.pump();
@@ -391,7 +445,7 @@ impl Sources {
     }
 
     /// Queue a link; it starts once every earlier link has finished.
-    pub fn fetch(self: &Arc<Self>, url: String, supervisor: &Path, root: &Path, data: &Path) -> Result<FetchStatus, String> {
+    pub fn fetch(self: &Arc<Self>, url: String, title: Option<String>, supervisor: &Path, root: &Path, data: &Path) -> Result<FetchStatus, String> {
         let provider = provider_for(&url)?;
         self.ensure_started(supervisor, root, data)?;
         let scan = scan_id(&url);
@@ -404,9 +458,9 @@ impl Sources {
             }
             let mut queue = self.queue.lock().map_err(|_| fail("link queue lock poisoned"))?;
             queue.waiting.push_back(scan.clone());
-            fetches.insert(scan.clone(), FetchStatus { scan_id: scan.clone(), url, provider: provider.into(), state: "queued".into(),
-                detail: None, queue_position: Some(queue.waiting.len()), started_at_ms: None,
-                downloaded_bytes: 0, total_bytes: None, media_path: None, error: None });
+            fetches.insert(scan.clone(), FetchStatus { scan_id: scan.clone(), url, provider: provider.into(), title: clean_title(title),
+                state: "queued".into(), detail: None, queue_position: Some(queue.waiting.len()), started_at_ms: None,
+                downloaded_bytes: 0, total_bytes: None, media_path: None, error: None, error_code: None });
         }
         self.pump();
         self.status(&scan).ok_or_else(|| fail("fetch disappeared"))
@@ -423,6 +477,38 @@ impl Sources {
                 status.queue_position = Some(place + 1);
             }
         }
+        true
+    }
+
+    /// Cancel a link that has not finished. A waiting link is withdrawn; the
+    /// running one is marked cancelled at once, the service is asked to stop
+    /// it (without waiting for its answer) and the next link starts.
+    pub fn cancel(self: &Arc<Self>, scan: &str) -> bool {
+        if self.withdraw(scan) {
+            return true;
+        }
+        let command = {
+            let (Ok(mut fetches), Ok(queue)) = (self.fetches.lock(), self.queue.lock()) else { return false };
+            let Some(status) = fetches.get_mut(scan) else { return false };
+            if finished(&status.state) {
+                return false;
+            }
+            let command = if queue.current.as_deref() == Some(scan) { stop_command(&status.state) } else { None };
+            status.state = "cancelled".into();
+            status.detail = None;
+            status.queue_position = None;
+            command
+        };
+        if let Ok(mut resumes) = self.resumes.lock() {
+            resumes.remove(scan);
+        }
+        if let Some(command) = command {
+            if let Ok(mut cancelling) = self.cancelling.lock() {
+                *cancelling = Some(scan.to_owned());
+            }
+            let _ = self.send(json!({"command":command, "scan_id":scan}));
+        }
+        self.pump();
         true
     }
 
@@ -463,14 +549,58 @@ impl Sources {
     }
 }
 
-/// `Videos\DubFlow Output\<name> - vi\<scan>` so finished link jobs are easy to find.
-pub fn link_output_dir(url: &str, scan: &str) -> Result<PathBuf, String> {
+/// `Videos\DubFlow Output\<name> - vi\<scan>` so finished link jobs are easy
+/// to find; the name is the video's title when known, else the link's tail.
+pub fn link_output_dir(url: &str, title: Option<&str>, scan: &str) -> Result<PathBuf, String> {
     let profile = std::env::var_os("USERPROFILE").ok_or_else(|| fail("USERPROFILE is unavailable"))?;
+    Ok(PathBuf::from(profile).join("Videos").join("DubFlow Output").join(format!("{} - vi", link_folder_name(url, title))).join(scan))
+}
+
+fn link_folder_name(url: &str, title: Option<&str>) -> String {
     let tail = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/').rsplit('/').next().unwrap_or("video");
     let stem = tail.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(tail);
-    let name: String = stem.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).take(60).collect();
-    let name = if name.trim_matches('-').is_empty() { "video".to_owned() } else { name };
-    Ok(PathBuf::from(profile).join("Videos").join("DubFlow Output").join(format!("{name} - vi")).join(scan))
+    let source = title.map(str::trim).filter(|title| !title.is_empty()).unwrap_or(stem);
+    // Letters and digits of any script stay; anything else (spaces too) becomes one `-`.
+    let mut name = String::new();
+    for c in source.chars() {
+        let c = if c.is_alphanumeric() || c == '_' { c } else { '-' };
+        if c != '-' || !name.ends_with('-') {
+            name.push(c);
+        }
+    }
+    let name: String = name.trim_matches('-').chars().take(60).collect();
+    let name = name.trim_end_matches('-');
+    if name.is_empty() { "video".to_owned() } else { name.to_owned() }
+}
+
+/// Characters Windows refuses in a file name.
+const FORBIDDEN_NAME_CHARS: [char; 9] = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+const RESERVED_NAMES: [&str; 22] = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"];
+
+/// A video title as a Windows file name (without extension): forbidden and
+/// control characters removed, no leading or trailing dots and spaces, at
+/// most 120 characters, "video" when nothing is left.
+pub fn safe_file_name(title: &str) -> String {
+    // A forbidden character becomes a space so words stay apart; runs collapse.
+    let spaced: String = title.chars().map(|c| if c.is_control() || FORBIDDEN_NAME_CHARS.contains(&c) { ' ' } else { c }).collect();
+    let kept = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    let edge = |c: char| c == '.' || c.is_whitespace();
+    let trimmed: String = kept.trim_matches(edge).chars().take(120).collect();
+    let name = trimmed.trim_end_matches(edge);
+    if name.is_empty() {
+        "video".to_owned()
+    } else if RESERVED_NAMES.iter().any(|reserved| name.split('.').next().is_some_and(|stem| stem.trim_end().eq_ignore_ascii_case(reserved))) {
+        format!("{name}_")
+    } else {
+        name.to_owned()
+    }
+}
+
+/// `<name>.<ext>`, then `<name> (2).<ext>`, `<name> (3).<ext>`…
+pub fn numbered_file_name(name: &str, extension: &str, number: u32) -> String {
+    let suffix = if number > 1 { format!(" ({number})") } else { String::new() };
+    if extension.is_empty() { format!("{name}{suffix}") } else { format!("{name}{suffix}.{extension}") }
 }
 
 #[cfg(test)]
@@ -498,7 +628,7 @@ mod tests {
         let root = PathBuf::from(root);
         let sources = Arc::new(Sources::default());
         let url = std::env::var("DUBFLOW_DEV_URL").unwrap_or_else(|_| "https://archive.org/download/ElephantsDream/ed_1024_512kb.mp4".into());
-        let started = sources.fetch(url, &root.join("app/bin/dubflow-supervisor.exe"), &root, Path::new(&data)).unwrap();
+        let started = sources.fetch(url, None, &root.join("app/bin/dubflow-supervisor.exe"), &root, Path::new(&data)).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
         let status = loop {
             let status = sources.status(&started.scan_id).unwrap();
@@ -543,8 +673,103 @@ mod tests {
 
     fn queued(sources: &Sources, scan: &str, state: &str) {
         sources.fetches.lock().unwrap().insert(scan.into(), FetchStatus { scan_id: scan.into(), url: format!("https://www.bilibili.com/video/{scan}/"),
-            provider: "bilibili".into(), state: state.into(), detail: None, queue_position: None, started_at_ms: None,
-            downloaded_bytes: 0, total_bytes: None, media_path: None, error: None });
+            provider: "bilibili".into(), title: None, state: state.into(), detail: None, queue_position: None, started_at_ms: None,
+            downloaded_bytes: 0, total_bytes: None, media_path: None, error: None, error_code: None });
+    }
+
+    #[test]
+    fn cancelling_a_waiting_link_withdraws_it() {
+        let sources = Arc::new(Sources::default());
+        for scan in ["a", "b"] {
+            queued(&sources, scan, "queued");
+            sources.queue.lock().unwrap().waiting.push_back(scan.into());
+        }
+        assert!(sources.cancel("a"));
+        assert!(sources.status("a").is_none());
+        assert_eq!(sources.status("b").unwrap().queue_position, Some(1));
+        assert!(!sources.cancel("a"));
+    }
+
+    #[test]
+    fn a_running_link_is_stopped_with_the_request_for_its_step() {
+        assert_eq!(stop_command("preparing"), Some("cancel"));
+        assert_eq!(stop_command("downloading"), Some("cancel_download"));
+        for state in ["queued", "done", "failed", "cancelled"] {
+            assert_eq!(stop_command(state), None);
+        }
+    }
+
+    #[test]
+    fn a_cancelled_link_frees_the_queue_and_ignores_late_events() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "running", "downloading");
+        queued(&sources, "next", "queued");
+        {
+            let mut queue = sources.queue.lock().unwrap();
+            queue.current = Some("running".into());
+            queue.waiting.push_back("next".into());
+        }
+        sources.resumes.lock().unwrap().insert("running".into(), Resumes::default());
+        assert!(sources.cancel("running"));
+        assert_eq!(sources.status("running").unwrap().state, "cancelled");
+        assert!(!sources.resumes.lock().unwrap().contains_key("running"));
+        assert_eq!(sources.cancelling.lock().unwrap().as_deref(), Some("running"));
+        // The next link left the queue at once (and fails to start without a service).
+        assert!(sources.queue.lock().unwrap().waiting.is_empty());
+        assert!(sources.status("next").unwrap().started_at_ms.is_some());
+        // Late events for the cancelled link change nothing.
+        sources.on_event(&json!({"event":"source_downloaded", "scan_id":"running", "media_path":"x.mp4", "size_bytes":1}));
+        sources.on_event(&json!({"event":"source_download_cancelled", "scan_id":"running"}));
+        assert_eq!(sources.status("running").unwrap().state, "cancelled");
+        assert_eq!(*sources.cancelling.lock().unwrap(), None);
+        assert!(!sources.cancel("running"), "a cancelled link stays cancelled");
+        // A rejected stop request names no scan; it never fails the link now running.
+        queued(&sources, "third", "preparing");
+        sources.queue.lock().unwrap().current = Some("third".into());
+        *sources.cancelling.lock().unwrap() = Some("running".into());
+        sources.on_event(&json!({"event":"source_error", "code":"SOURCE_REQUEST_REJECTED"}));
+        assert_eq!(sources.status("third").unwrap().state, "preparing");
+    }
+
+    #[test]
+    fn a_failed_link_keeps_the_service_code() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "d", "preparing");
+        sources.on_event(&json!({"event":"source_error", "scan_id":"d", "code":"AUTH_REQUIRED"}));
+        let status = sources.status("d").unwrap();
+        assert_eq!((status.state.as_str(), status.error_code.as_deref()), ("failed", Some("AUTH_REQUIRED")));
+    }
+
+    #[test]
+    fn titles_are_trimmed_and_bounded() {
+        assert_eq!(clean_title(Some("  Phim hay \n".into())), Some("Phim hay".into()));
+        assert_eq!(clean_title(Some("   ".into())), None);
+        assert_eq!(clean_title(None), None);
+        assert_eq!(clean_title(Some("长".repeat(300))).unwrap().chars().count(), 200);
+    }
+
+    #[test]
+    fn saved_sessions_are_reused_for_twenty_hours() {
+        let now = 1_000_000;
+        assert!(session_fresh(now - 60, now));
+        assert!(!session_fresh(now - SESSION_REUSE_SECONDS, now));
+        assert!(!session_fresh(now + 60, now), "a save time in the future is not trusted");
+    }
+
+    #[test]
+    fn download_file_names_are_safe_on_windows() {
+        assert_eq!(safe_file_name("Tập 1: Ai là \"người\" thắng?"), "Tập 1 Ai là người thắng");
+        assert_eq!(safe_file_name(" ..a/b\\c|d*e<f>g. . "), "a b c d e f g");
+        assert_eq!(safe_file_name("Phim: thử/chép?"), "Phim thử chép");
+        assert_eq!(safe_file_name("a :: b\tc"), "a b c");
+        assert_eq!(safe_file_name("...  "), "video");
+        assert_eq!(safe_file_name("\u{7}\t"), "video");
+        assert_eq!(safe_file_name(&"长".repeat(150)).chars().count(), 120);
+        assert_eq!(safe_file_name(&format!("{}. x", "a".repeat(119))), "a".repeat(119));
+        assert_eq!(safe_file_name("con"), "con_");
+        assert_eq!(safe_file_name("仙侠名场面 #仙侠"), "仙侠名场面 #仙侠");
+        assert_eq!(numbered_file_name("Clip", "mp4", 1), "Clip.mp4");
+        assert_eq!(numbered_file_name("Clip", "mp4", 3), "Clip (3).mp4");
     }
 
     #[test]
@@ -627,10 +852,14 @@ mod tests {
 
     #[test]
     fn link_output_lives_under_dubflow_output_with_a_safe_name() {
-        let dir = link_output_dir("https://archive.org/download/ElephantsDream/ed_1024_512kb.mp4?x=1", "link-1").unwrap();
+        let dir = link_output_dir("https://archive.org/download/ElephantsDream/ed_1024_512kb.mp4?x=1", None, "link-1").unwrap();
         assert!(dir.ends_with(Path::new("DubFlow Output").join("ed_1024_512kb - vi").join("link-1")));
-        let odd = link_output_dir("https://www.bilibili.com/video/", "link-2").unwrap();
+        let odd = link_output_dir("https://www.bilibili.com/video/", None, "link-2").unwrap();
         assert!(odd.to_string_lossy().contains("video - vi"));
-        assert!(!link_output_dir("https://x.test/..%2f..", "s").unwrap().to_string_lossy().contains(".."));
+        assert!(!link_output_dir("https://x.test/..%2f..", None, "s").unwrap().to_string_lossy().contains(".."));
+        let titled = link_output_dir("https://v.douyin.com/abc/", Some("  Tiên hiệp: Linh kiếm  thức tỉnh! "), "link-3").unwrap();
+        assert!(titled.ends_with(Path::new("DubFlow Output").join("Tiên-hiệp-Linh-kiếm-thức-tỉnh - vi").join("link-3")));
+        assert_eq!(link_folder_name("https://x.test/a", Some(&"长".repeat(80))), "长".repeat(60));
+        assert_eq!(link_folder_name("https://x.test/clip.mp4", Some(" ?! ")), "video");
     }
 }

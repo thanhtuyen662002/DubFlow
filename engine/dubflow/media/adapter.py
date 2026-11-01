@@ -52,7 +52,7 @@ _DEFAULT_TIMEOUT_SECONDS = 15 * 60
 _WINDOWS_H264_ENCODER = "h264_mf"
 # Media Foundation is missing on Windows "N" editions and refuses some inputs;
 # the bundled Cisco OpenH264 encoder keeps the same H.264/MP4 contract then.
-_FALLBACK_H264_ENCODER = ("libopenh264", "-b:v", "8M", "-maxrate", "12M", "-bufsize", "16M")
+_FALLBACK_H264_ENCODER = "libopenh264"
 # H.264 4:2:0 needs even dimensions; odd inputs (853x479) are rounded down by
 # at most one pixel instead of failing the whole export.
 _EVEN_DIMENSIONS = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
@@ -390,6 +390,266 @@ def blur_filtergraph(regions: Sequence[BlurRegion]) -> str:
         "[blur_full][blur_mask]alphamerge[blur_top]",
         "[blur_b0][blur_top]overlay",
     ])
+
+
+COVER_MODES = ("stretch", "blur", "color", "mosaic")
+COVER_DIRECTIONS = ("top", "bottom", "both")
+# Distinct rectangles that get a chain of their own; more are merged into
+# shared rectangles, so the per-frame cost stays bounded for any region count.
+_COVER_CHAINS = 12
+# Timed windows per ``enable`` expression; a group with more gets one overlay
+# (or drawbox) per chunk, all fed by the same cover picture.
+_ENABLE_TERMS = 48
+_HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+@dataclass(frozen=True)
+class CoverStyle:
+    """How source captions are hidden; absent keeps the Gaussian blur.
+
+    * ``stretch``: a ``strip_px`` row strip (on the 1080-line scale) right
+      above (``top``), below (``bottom``) or on both sides of the region is
+      stretched over it, so the scene seems to run on in streaks;
+    * ``blur``: today's Gaussian blur;
+    * ``color``: a solid ``color`` box;
+    * ``mosaic``: square blocks of ``block`` px (on the 1080-line scale).
+
+    ``feather`` (px on the 1080-line scale) fades the cover's edges into the
+    picture for stretch and mosaic.
+    """
+
+    mode: str = "blur"
+    direction: str = "top"
+    strip_px: int = 4
+    color: str = "#000000"
+    block: int = 24
+    feather: int = 0
+
+    def __post_init__(self) -> None:
+        def bounded(value: Any, low: int, high: int) -> bool:
+            return type(value) is int and low <= value <= high
+
+        if self.mode not in COVER_MODES or self.direction not in COVER_DIRECTIONS:
+            raise MediaAdapterError("MEDIA_COVER_INVALID", "cover mode must be stretch, blur, color or mosaic; direction top, bottom or both")
+        if not bounded(self.strip_px, 2, 12) or not bounded(self.block, 8, 64) or not bounded(self.feather, 0, 8):
+            raise MediaAdapterError("MEDIA_COVER_INVALID", "cover strip_px must be 2-12, block 8-64 and feather 0-8")
+        if not isinstance(self.color, str) or not _HEX_COLOR.match(self.color):
+            raise MediaAdapterError("MEDIA_COVER_INVALID", "cover color must be #RRGGBB")
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "CoverStyle":
+        known = {"mode", "direction", "strip_px", "color", "block", "feather"}
+        if not isinstance(value, Mapping) or "mode" not in value or not set(value) <= known:
+            raise MediaAdapterError("MEDIA_COVER_INVALID", "cover style needs a mode and only direction, strip_px, color, block and feather")
+        return cls(**{key: value[key] for key in known if key in value})
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"mode": self.mode, "direction": self.direction, "strip_px": self.strip_px, "color": self.color.upper(),
+                "block": self.block, "feather": self.feather}
+
+
+def _even(size: str, fraction: float) -> str:
+    return f"trunc({size}*{fraction:.6f}/2)*2"
+
+
+def _size(size: str, fraction: float) -> str:
+    """An even length of at least 2 px (scale reads 0 as "keep the aspect ratio")."""
+    return f"max(2\\,{_even(size, fraction)})"
+
+
+def _cover_groups(regions: Sequence[BlurRegion]) -> list[list[Any]]:
+    """Regions sharing one rectangle, as ``[x0, y0, x1, y1, windows]`` in first-seen order.
+
+    ``windows`` holds sorted, coalesced ``(start_ms, end_ms)`` pairs, or is
+    None when the rectangle is covered for the whole video.
+    """
+    groups: dict[tuple[float, float, float, float], list[Any]] = {}
+    for region in regions:
+        key = (region.x, region.y, region.w, region.h)
+        group = groups.setdefault(key, [region.x, region.y, region.x + region.w, region.y + region.h, []])
+        if region.start_ms is None:
+            group[4] = None
+        elif group[4] is not None:
+            group[4].append((region.start_ms, region.end_ms))
+    result = list(groups.values())
+    for group in result:
+        group[4] = _coalesce(group[4])
+    return result
+
+
+def _coalesce(windows: list[tuple[int, int]] | None) -> list[tuple[int, int]] | None:
+    if windows is None:
+        return None
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(windows):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _union(a: list[Any], b: list[Any]) -> list[Any]:
+    windows = None if a[4] is None or b[4] is None else _coalesce(a[4] + b[4])
+    return [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]), windows]
+
+
+def _merge_groups(groups: list[list[Any]], limit: int) -> list[list[Any]]:
+    """At most ``limit`` rectangles: first rows of the same caption line, then nearest neighbours.
+
+    Auto-detected captions are one band at slightly different widths; one
+    rectangle covering them all keeps a single chain per line.
+    """
+    rows: list[list[Any]] = []
+    for group in sorted(groups, key=lambda group: (group[1] + group[3], group[0])):
+        height = group[3] - group[1]
+        for row in rows:
+            overlap = min(row[3], group[3]) - max(row[1], group[1])
+            if overlap >= 0.5 * min(height, row[3] - row[1]):
+                row[:] = _union(row, group)
+                break
+        else:
+            rows.append(list(group))
+    rows.sort(key=lambda row: (row[1] + row[3], row[0]))
+    area = lambda group: (group[2] - group[0]) * (group[3] - group[1])
+    while len(rows) > limit:
+        # The neighbouring pair (top to bottom) whose shared rectangle adds the least area.
+        index = min(range(len(rows) - 1), key=lambda i: area(_union(rows[i], rows[i + 1])) - area(rows[i]) - area(rows[i + 1]))
+        rows[index:index + 2] = [_union(rows[index], rows[index + 1])]
+    return rows
+
+
+def _enables(windows: list[tuple[int, int]] | None) -> list[str]:
+    """``enable`` option suffixes for a group: one per chunk of windows, or one empty for always."""
+    if windows is None:
+        return [""]
+    terms = [f"between(t\\,{start / 1000:.3f}\\,{end / 1000:.3f})" for start, end in windows]
+    return [":enable=" + "+".join(terms[index:index + _ENABLE_TERMS]) for index in range(0, len(terms), _ENABLE_TERMS)]
+
+
+def _strip_crop(x: float, w: float, y0: float, y1: float, strip: float, side: str) -> str:
+    """Crop of the strip just outside a rectangle's ``side``, falling back to the other side at the frame edge."""
+    if side == "top" and y0 < strip and y1 + strip <= 1:
+        side = "bottom"
+    elif side == "bottom" and y1 + strip > 1 and y0 >= strip:
+        side = "top"
+    height = f"max(2\\,{_even('ih', strip)})"
+    y = f"max(0\\,{_even('ih', y0)}-oh)" if side == "top" else f"min(ih-oh\\,{_even('ih', y1)})"
+    return f"crop=w={_size('iw', w)}:h={height}:x={_even('iw', x)}:y={y}"
+
+
+def _feathered(label: str, height: float, feather: int) -> list[str]:
+    """Fade a cover picture's edges: an inset white box on black, blurred, becomes its alpha."""
+    if not feather:
+        return []
+    # The picture is ``height`` of the frame tall, so this is ``feather`` px on the 1080-line scale.
+    inset = f"trunc(ih*{feather / (1080 * height):.6f})"
+    return [
+        f"[{label}]format=yuva420p,split=2[{label}a][{label}m]",
+        f"[{label}m]format=gray,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill,"
+        f"drawbox=x={inset}:y={inset}:w=max(2\\,iw-2*{inset}):h=max(2\\,ih-2*{inset}):color=white:t=fill,"
+        # drawbox paints video-range grey (16-235); alpha needs the full 0-255.
+        f"lut=c0=clip((val-16)*255/219\\,0\\,255),gblur=sigma={feather / 2:g}[{label}k]",
+        f"[{label}a][{label}k]alphamerge[{label}f]",
+    ]
+
+
+def cover_filtergraph(regions: Sequence[BlurRegion], style: CoverStyle | None = None) -> str:
+    """FFmpeg filtergraph fragment that hides each region in the chosen style.
+
+    Without a style, or with ``blur``, this is exactly
+    :func:`blur_filtergraph`. Like it, the fragment takes one unlabeled input
+    and ends unlabeled, with even coordinates for 4:2:0 chroma.
+
+    Regions that share a rectangle share one chain whose ``enable`` sums
+    their time windows; beyond ``_COVER_CHAINS`` rectangles, rows of the same
+    caption line and then the nearest neighbours are merged into shared
+    rectangles. Each chain reads the picture the chains before it already
+    covered, top to bottom (bottom to top for strips from below), so a
+    region's strip never repeats a caption covered just above it.
+    """
+    if style is None or style.mode == "blur":
+        return blur_filtergraph(regions)
+    if not isinstance(style, CoverStyle):
+        raise MediaAdapterError("MEDIA_COVER_INVALID", "cover style must be a CoverStyle")
+    if not regions or len(regions) > MAX_BLUR_REGIONS:
+        raise MediaAdapterError("MEDIA_BLUR_INVALID", f"between 1 and {MAX_BLUR_REGIONS} blur regions are required")
+    groups = _cover_groups(regions)
+    if style.mode == "color":
+        # drawbox costs nothing while off, so every rectangle keeps its own box.
+        color = "0x" + style.color[1:].upper()
+        return ",".join(
+            f"drawbox=x={_even('iw', x0)}:y={_even('ih', y0)}:w=max(2\\,{_even('iw', x1 - x0)}):h=max(2\\,{_even('ih', y1 - y0)}):"
+            f"color={color}:t=fill{enable}"
+            for x0, y0, x1, y1, windows in groups for enable in _enables(windows))
+    if len(groups) > _COVER_CHAINS:
+        groups = _merge_groups(groups, _COVER_CHAINS)
+    if style.mode == "stretch" and style.direction == "bottom":
+        groups.sort(key=lambda group: -group[3])
+    elif style.mode == "stretch":
+        groups.sort(key=lambda group: group[1])
+    strip = style.strip_px / 1080
+    parts: list[str] = []
+    last = len(groups) - 1
+    for index, (x0, y0, x1, y1, windows) in enumerate(groups):
+        w, h = x1 - x0, y1 - y0
+        name = f"cv{index}"
+        source = "" if index == 0 else f"[{name}]"
+        size = f"w={_size('rw', w)}:h={_size('rh', h)}"
+        if style.mode == "mosaic":
+            # Blocks across the height, the same count at any resolution; square blocks across the width.
+            rows = max(1, round(h * 1080 / style.block))
+            parts += [
+                f"{source}split=3[{name}m][{name}s][{name}r]",
+                f"[{name}s]crop=w={_size('iw', w)}:h={_size('ih', h)}:x={_even('iw', x0)}:y={_even('ih', y0)},"
+                f"scale=w=max(1\\,round(iw*{rows}/ih)):h={rows}:flags=area[{name}d]",
+                f"[{name}d][{name}r]scale={size}:flags=neighbor[{name}p]",
+            ]
+        elif style.direction == "both":
+            half = h / 2
+            parts += [
+                f"{source}split=5[{name}m][{name}s][{name}t][{name}r][{name}q]",
+                f"[{name}s]{_strip_crop(x0, w, y0, y1, strip, 'top')}[{name}c]",
+                f"[{name}t]{_strip_crop(x0, w, y0, y1, strip, 'bottom')}[{name}e]",
+                f"[{name}c][{name}r]scale=w={_size('rw', w)}:h={_size('rh', half)}:flags=bilinear[{name}u]",
+                f"[{name}e][{name}q]scale=w={_size('rw', w)}:h=max(2\\,{_even('rh', h)}-{_even('rh', half)}):flags=bilinear[{name}l]",
+                f"[{name}u][{name}l]vstack[{name}p]",
+            ]
+        else:
+            parts += [
+                f"{source}split=3[{name}m][{name}s][{name}r]",
+                f"[{name}s]{_strip_crop(x0, w, y0, y1, strip, style.direction)}[{name}c]",
+                f"[{name}c][{name}r]scale={size}:flags=bilinear[{name}p]",
+            ]
+        feather = _feathered(f"{name}p", h, style.feather)
+        parts += feather
+        picture = f"{name}pf" if feather else f"{name}p"
+        enables = _enables(windows)
+        if len(enables) > 1:
+            parts.append(f"[{picture}]split={len(enables)}" + "".join(f"[{name}p{chunk}]" for chunk in range(len(enables))))
+        base = f"{name}m"
+        for chunk, enable in enumerate(enables):
+            top = picture if len(enables) == 1 else f"{name}p{chunk}"
+            final = chunk == len(enables) - 1
+            label = ("" if index == last else f"[cv{index + 1}]") if final else f"[{name}m{chunk + 1}]"
+            parts.append(f"[{base}][{top}]overlay=x={_even('W', x0)}:y={_even('H', y0)}{enable}{label}")
+            base = f"{name}m{chunk + 1}"
+    return ";".join(parts)
+
+
+def video_bitrate(video: MediaStream | None) -> int:
+    """Target H.264 bitrate, in bit/s, for a rendered copy of ``video``.
+
+    Without a target Media Foundation encodes at a few hundred kbit/s (its
+    ``-quality`` applies only in quality rate control), and a 576p drama came
+    out heavily blocked. 0.12 bits per pixel per frame keeps fine detail; the
+    bounds keep small sources sharp and 4K files a sane size.
+    """
+    if video is None or not video.width or not video.height:
+        return 8_000_000
+    rate = video.frame_rate
+    fps = min(120.0, max(1.0, rate.numerator / rate.denominator)) if rate and rate.numerator > 0 else 30.0
+    return round(min(16_000_000, max(1_500_000, 0.12 * video.width * video.height * fps)))
 
 
 def audio_origin_samples(video: MediaStream, sample_rate: int) -> int:
@@ -828,11 +1088,14 @@ class FfmpegMediaAdapter:
         preserve_original_audio: bool = True,
         burn_in_subtitles: bool = False,
         blur_regions: Sequence[BlurRegion] = (),
+        cover_style: CoverStyle | None = None,
         overwrite: bool = False,
     ) -> Path:
         source = _validate_input_file(source_path, "source_path")
         if not all(isinstance(region, BlurRegion) for region in blur_regions):
             raise MediaAdapterError("MEDIA_BLUR_INVALID", "blur_regions must contain BlurRegion values")
+        if cover_style is not None and not isinstance(cover_style, CoverStyle):
+            raise MediaAdapterError("MEDIA_COVER_INVALID", "cover_style must be a CoverStyle")
         subtitle = _validate_input_file(subtitle_path, "subtitle_path") if subtitle_path is not None else None
         audio = _validate_input_file(audio_path, "audio_path") if audio_path is not None else None
         if video_duration is not None and (not isinstance(video_duration, MediaTimeline) or video_duration.duration_ticks <= 0):
@@ -893,9 +1156,9 @@ class FfmpegMediaAdapter:
                     ) from error
                 video_filters.append(f"subtitles={subtitle_staging.name}")
             if blur_regions:
-                # Blur the source captions before drawing the Vietnamese ones on top.
+                # Cover the source captions before drawing the Vietnamese ones on top.
                 position = 1 if source_probe is not None else 0
-                video_filters.insert(position, blur_filtergraph(blur_regions))
+                video_filters.insert(position, cover_filtergraph(blur_regions, cover_style))
 
             video_filters.append(_EVEN_DIMENSIONS)
             graph = ",".join(video_filters)
@@ -935,7 +1198,8 @@ class FfmpegMediaAdapter:
             else:
                 args.append("-sn")
             encoder_at = len(args)
-            args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-quality", "90", "-pix_fmt", "yuv420p"))
+            bitrate = video_bitrate(source_probe.video if source_probe is not None else None)
+            args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-b:v", str(bitrate), "-pix_fmt", "yuv420p"))
             if audio is not None or preserve_original_audio:
                 args.extend(("-c:a", "aac", "-b:a", "192k"))
             if video_duration is not None:
@@ -955,7 +1219,8 @@ class FfmpegMediaAdapter:
             except MediaAdapterError as error:
                 if error.code != "MEDIA_COMMAND_FAILED":
                     raise
-                fallback = [*args[:encoder_at], "-c:v", *_FALLBACK_H264_ENCODER, "-pix_fmt", "yuv420p", *args[encoder_at + 6:]]
+                fallback = [*args[:encoder_at], "-c:v", _FALLBACK_H264_ENCODER, "-b:v", str(bitrate), "-maxrate", str(bitrate * 3 // 2),
+                            "-bufsize", str(bitrate * 2), "-pix_fmt", "yuv420p", *args[encoder_at + 6:]]
                 try:
                     return self._write_atomic(output, tuple(fallback), output_format="mp4", cwd=cwd)
                 except MediaAdapterError:
@@ -1052,6 +1317,9 @@ class FfmpegMediaAdapter:
 
 __all__ = [
     "BlurRegion",
+    "COVER_DIRECTIONS",
+    "COVER_MODES",
+    "CoverStyle",
     "FfmpegMediaAdapter",
     "MediaAdapterError",
     "MediaProbe",
@@ -1060,6 +1328,7 @@ __all__ = [
     "Rational",
     "CANONICAL_TIME_BASE",
     "blur_filtergraph",
+    "cover_filtergraph",
     "parse_ffprobe_json",
     "rescale_ticks",
 ]

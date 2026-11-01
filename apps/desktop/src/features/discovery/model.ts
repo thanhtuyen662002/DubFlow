@@ -122,6 +122,119 @@ export function formatDuration(seconds: number | null): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+/** How a result can be watched inside the app: an official embed player or the media file itself. */
+export type PreviewSource = { kind: "iframe"; src: string; vertical: boolean } | { kind: "video"; src: string; vertical: boolean };
+
+const BILIBILI_HOSTS = new Set(["www.bilibili.com", "bilibili.com", "m.bilibili.com"]);
+const DOUYIN_HOSTS = new Set(["www.douyin.com", "douyin.com"]);
+/** Media hosts the CSP `media-src` allows (subdomains only). */
+const KUAISHOU_MEDIA = ["kwaicdn.com", "yximgs.com", "kwimgs.com", "kuaishou.com"];
+
+const parseHttps = (value: string): URL | null => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.port ? url : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Where to play a result. Bilibili and Douyin go through their official embed
+ * players; Kuaishou plays the direct media URL collected from its page. Douyin's
+ * player has no documented mute flag, so it is never used for a muted preview.
+ */
+export function previewSource(video: Pick<DiscoveredVideo, "pageUrl" | "fetchUrl">, options: { muted: boolean }): PreviewSource | null {
+  const page = parseHttps(video.pageUrl);
+  if (page && BILIBILI_HOSTS.has(page.hostname)) {
+    const match = /^\/video\/(BV[0-9A-Za-z]{10})\/?$/.exec(page.pathname);
+    if (!match) return null;
+    const muted = options.muted ? 1 : 0;
+    return { kind: "iframe", vertical: false,
+      src: `https://player.bilibili.com/player.html?bvid=${match[1]}&autoplay=1&muted=${muted}&danmaku=0&high_quality=0&as_wide=1&page=1` };
+  }
+  if (page && DOUYIN_HOSTS.has(page.hostname)) {
+    const match = /^\/video\/(\d{8,24})\/?$/.exec(page.pathname);
+    if (!match || options.muted) return null;
+    return { kind: "iframe", vertical: true, src: `https://open.douyin.com/player/video?vid=${match[1]}&autoplay=1` };
+  }
+  if (video.fetchUrl !== video.pageUrl && video.fetchUrl.length <= 2048) {
+    const media = parseHttps(video.fetchUrl);
+    if (media && KUAISHOU_MEDIA.some((domain) => media.hostname.endsWith(`.${domain}`))) {
+      return { kind: "video", vertical: true, src: media.href };
+    }
+  }
+  return null;
+}
+
+/** Longest text the term translator accepts per item. */
+export const GLOSS_TERM_LIMIT = 80;
+/** Titles per `translate_terms` call. */
+export const GLOSS_BATCH = 60;
+export const TITLE_GLOSS_KEY = "dubflow.titleGloss.v1";
+export const TITLE_GLOSS_MAX = 800;
+
+/**
+ * A title reduced to what is worth translating: no hashtags, mentions or
+ * emoji, single spaces, at most 80 characters cut at a word boundary when
+ * there is one.
+ */
+export function cleanTitle(title: string): string {
+  const cleaned = title
+    .replace(/[#＃][^\s#＃]+/gu, " ")
+    .replace(/[@＠][^\s@＠]+/gu, " ")
+    .replace(/[\p{Extended_Pictographic}\p{Regional_Indicator}\u{1F3FB}-\u{1F3FF}‍︎️⃣]/gu, "")
+    .replace(/[\p{Cc}\p{Cf}]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const chars = Array.from(cleaned);
+  if (chars.length <= GLOSS_TERM_LIMIT) return cleaned;
+  const cut = chars.slice(0, GLOSS_TERM_LIMIT).join("");
+  const space = cut.lastIndexOf(" ");
+  return (space >= GLOSS_TERM_LIMIT / 2 ? cut.slice(0, space) : cut).trim();
+}
+
+/** Whether a cleaned title still needs translating: it has letters and most are not Latin (Vietnamese included). */
+export function needsTitleGloss(cleaned: string): boolean {
+  const letters = cleaned.match(/\p{L}/gu)?.length ?? 0;
+  const latin = cleaned.match(/\p{Script=Latin}/gu)?.length ?? 0;
+  return letters > 0 && latin / letters < 0.5;
+}
+
+/** Record a gloss as most recently used, dropping the oldest entries past `max`. */
+export function rememberGloss(cache: Map<string, string>, original: string, gloss: string, max = TITLE_GLOSS_MAX): void {
+  cache.delete(original);
+  cache.set(original, gloss);
+  for (const key of cache.keys()) {
+    if (cache.size <= max) break;
+    cache.delete(key);
+  }
+}
+
+/** Read a stored cache (a JSON list of [original, gloss] pairs, oldest first); anything malformed is dropped. */
+export function loadGlossCache(raw: string | null, max = TITLE_GLOSS_MAX): Map<string, string> {
+  const cache = new Map<string, string>();
+  let value: unknown = null;
+  try {
+    value = raw ? JSON.parse(raw) : null;
+  } catch {
+    return cache;
+  }
+  if (!Array.isArray(value)) return cache;
+  for (const entry of value) {
+    if (Array.isArray(entry) && entry.length === 2 && typeof entry[0] === "string" && typeof entry[1] === "string"
+      && entry[0] && entry[1] && entry[0].length <= 400 && entry[1].length <= 200) {
+      rememberGloss(cache, entry[0], entry[1], max);
+    }
+  }
+  return cache;
+}
+
+/** Serialise the non-empty glosses, newest last, at most `max`. */
+export function saveGlossCache(cache: ReadonlyMap<string, string>, max = TITLE_GLOSS_MAX): string {
+  return JSON.stringify([...cache].filter(([, gloss]) => gloss).slice(-max));
+}
+
 /** Vietnamese explanation for an adapter failure code. */
 export function discoveryError(code: string, platform: Platform): string {
   switch (code) {

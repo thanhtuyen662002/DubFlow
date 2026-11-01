@@ -1,6 +1,7 @@
 import {
-  PLATFORMS, TOPICS, bilibiliMid, parseGlosses, discoveryError, formatCount, formatDuration, mergeVideos, parseCollected, parseTrends, parseVideos,
-  type DiscoveredVideo, type Platform, type Trend,
+  GLOSS_BATCH, PLATFORMS, TITLE_GLOSS_KEY, TOPICS, bilibiliMid, cleanTitle, parseGlosses, discoveryError, formatCount, formatDuration, loadGlossCache,
+  mergeVideos, needsTitleGloss, parseCollected, parseTrends, parseVideos, previewSource, rememberGloss, saveGlossCache,
+  type DiscoveredVideo, type Platform, type PreviewSource, type Trend,
 } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -12,12 +13,73 @@ const $ = <T extends HTMLElement>(selector: string): T => {
   return node;
 };
 
+const NO_TITLE = "(không có tiêu đề)";
+const HOVER_KEY = "dubflow.discoverHover.v1";
+const HOVER_DELAY_MS = 450;
+const ADDED_NOTE = " Xem tiến độ ở Hàng đợi video.";
+
+const readStorage = (key: string): string | null => {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+const writeStorage = (key: string, value: string): void => {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Storage is optional: the setting or cache then lasts this session only.
+  }
+};
+
+/** One rendered result card. */
+type Card = { video: DiscoveredVideo; card: HTMLLIElement; thumb: HTMLElement; check: HTMLInputElement; paintTitle(): void };
+
 /**
- * Wire the "Khám phá" view. `enqueue` downloads one link into the queue;
+ * The element that plays a source. Embeds are sandboxed without top
+ * navigation or popups, so a click inside a player never leaves the app.
+ */
+function playerElement(source: PreviewSource, muted: boolean): HTMLIFrameElement | HTMLVideoElement {
+  if (source.kind === "iframe") {
+    const frame = document.createElement("iframe");
+    frame.allow = "autoplay; fullscreen; encrypted-media; picture-in-picture";
+    frame.allowFullscreen = true;
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-presentation");
+    frame.title = muted ? "Xem trước video" : "Trình phát video";
+    frame.src = source.src;
+    return frame;
+  }
+  const video = document.createElement("video");
+  video.muted = muted;
+  video.defaultMuted = muted;
+  video.autoplay = true;
+  video.playsInline = true;
+  video.preload = "auto";
+  video.loop = muted;
+  video.controls = !muted;
+  video.src = source.src;
+  void video.play().catch(() => undefined);
+  return video;
+}
+
+/** Stop a player's sound and network, then take it off the page. */
+function dropPlayer(node: Element | null | undefined): void {
+  if (!node) return;
+  for (const video of node instanceof HTMLVideoElement ? [node] : node.querySelectorAll("video")) {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
+  node.remove();
+}
+
+/**
+ * Wire the "Khám phá" view. `enqueue` downloads one link (with its title) into the queue;
  * `glossEngine` says which translator may gloss keywords ("hachimi" only once
  * the user accepted its licence warning).
  */
-export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise<void>, glossEngine: () => "argos" | "hachimi"): { show(): void } {
+export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: string) => Promise<void>, glossEngine: () => "argos" | "hachimi"): { show(): void; hide(): void } {
   const tabs = $("#platform-tabs");
   const trendList = $("#trend-list");
   const trendState = $("#trend-state");
@@ -48,6 +110,35 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
   const glosses = new Map<string, string>();
   let shownTrends: Trend[] = [];
   let glossRequest = 0;
+
+  const resultTools = $("#result-tools");
+  const hoverToggle = $<HTMLInputElement>("#discover-hover");
+  const scroller = results.closest<HTMLElement>(".discover-main") ?? results;
+  const player = $("#discover-player");
+  const stage = $("#pop-stage");
+  const playerTitle = $("#pop-title");
+  const playerOriginal = $("#pop-original");
+  const playerSub = $("#pop-sub");
+  const playerToggle = $<HTMLButtonElement>("#pop-toggle");
+  const playerDownload = $<HTMLButtonElement>("#pop-download");
+  const playerState = $("#pop-state");
+
+  const cards = new Map<string, Card>();
+  // Vietnamese titles by original title, most recently used last.
+  const titleGloss = loadGlossCache(readStorage(TITLE_GLOSS_KEY));
+  const titlePending = new Set<string>();
+  const titleFailed = new Set<string>();
+  let titleBusy = false;
+  let titleAgain = false;
+
+  // Hover preview: at most one, inside the card under the pointer.
+  let hoverCard: Card | null = null;
+  let hoverTimer = 0;
+  let hoverArmed = false;
+  let preview: { entry: Card; layer: HTMLElement } | null = null;
+  const reducedMotion = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  let clickMemory: { url: string; was: boolean } | null = null;
+  let playing: { video: DiscoveredVideo } | null = null;
 
   const info = () => PLATFORMS.find((entry) => entry.id === platform)!;
 
@@ -148,10 +239,18 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
     }
   }
 
+  const viTitle = (video: DiscoveredVideo): string => (glossToggle.checked ? titleGloss.get(video.title) ?? "" : "");
+  /** The title a download is named after: the Vietnamese one when the card shows it. */
+  const downloadTitle = (video: DiscoveredVideo): string | undefined => viTitle(video) || (video.title === NO_TITLE ? undefined : video.title);
+
   function renderResults(): void {
+    stopPreview();
+    hoverCard = null;
+    cards.clear();
     results.replaceChildren(...videos.map((video) => {
       const card = document.createElement("li");
       card.className = selected.has(video.pageUrl) ? "video-card selected" : "video-card";
+      card.tabIndex = 0;
       const thumb = document.createElement("div");
       thumb.className = "thumb";
       if (video.cover) {
@@ -171,34 +270,294 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
       const check = document.createElement("input");
       check.type = "checkbox";
       check.checked = selected.has(video.pageUrl);
-      check.setAttribute("aria-label", `Chọn ${video.title}`);
       const meta = document.createElement("div");
       meta.className = "meta";
       const title = document.createElement("span");
       title.className = "title";
-      title.textContent = video.title;
-      title.title = video.title;
+      const original = document.createElement("span");
+      original.className = "orig";
       const sub = document.createElement("span");
       sub.className = "sub";
       sub.textContent = [video.author, video.plays !== null ? `${formatCount(video.plays)} lượt xem` : ""].filter(Boolean).join(" · ");
-      meta.append(title, sub);
+      meta.append(title, original, sub);
       card.append(thumb, check, meta);
-      const toggle = () => {
-        if (selected.has(video.pageUrl)) selected.delete(video.pageUrl);
-        else selected.add(video.pageUrl);
-        renderSelection();
-        card.classList.toggle("selected", selected.has(video.pageUrl));
-        check.checked = selected.has(video.pageUrl);
+      const entry: Card = {
+        video, card, thumb, check,
+        paintTitle() {
+          const vi = viTitle(video);
+          const pending = !vi && glossToggle.checked && titlePending.has(video.title);
+          title.textContent = vi || video.title;
+          title.title = vi ? `${vi}\n${video.title}` : video.title;
+          original.textContent = vi ? video.title : pending ? "Đang dịch…" : "";
+          original.title = vi ? video.title : "";
+          original.classList.toggle("pending", pending);
+          original.hidden = !vi && !pending;
+          check.setAttribute("aria-label", `Chọn ${vi || video.title}`);
+        },
       };
-      card.addEventListener("click", (event) => {
-        if (event.target !== check) toggle();
-      });
-      check.addEventListener("change", toggle);
+      entry.paintTitle();
+      cards.set(video.pageUrl, entry);
+      wireCard(entry);
       return card;
     }));
     resultBar.hidden = videos.length === 0;
+    resultTools.hidden = videos.length === 0;
     more.hidden = !(mode?.kind === "api" && nextPage !== null);
     renderSelection();
+  }
+
+  function setSelected(video: DiscoveredVideo, on: boolean): void {
+    if (on) selected.add(video.pageUrl);
+    else selected.delete(video.pageUrl);
+    const entry = cards.get(video.pageUrl);
+    if (entry) {
+      entry.card.classList.toggle("selected", on);
+      entry.check.checked = on;
+    }
+    renderSelection();
+    if (playing?.video.pageUrl === video.pageUrl) paintPlayer();
+  }
+
+  function wireCard(entry: Card): void {
+    const { video, card, check } = entry;
+    const url = video.pageUrl;
+    card.addEventListener("click", (event) => {
+      // The second click of a double-click belongs to the player, not the selection.
+      if (event.target === check || event.detail > 1) return;
+      clickMemory = { url, was: selected.has(url) };
+      setSelected(video, !selected.has(url));
+    });
+    card.addEventListener("dblclick", (event) => {
+      if (event.target === check) return;
+      // The first click of the pair toggled the card: put it back as it was.
+      if (clickMemory?.url === url) setSelected(video, clickMemory.was);
+      clickMemory = null;
+      openPlayer(video);
+    });
+    card.addEventListener("keydown", (event) => {
+      if (event.target !== card) return;
+      if (event.key === "Enter") {
+        event.preventDefault();
+        openPlayer(video);
+      } else if (event.key === " ") {
+        event.preventDefault();
+        setSelected(video, !selected.has(url));
+      }
+    });
+    check.addEventListener("change", () => setSelected(video, check.checked));
+    // Pointer only: focusing a card with the keyboard never plays anything.
+    card.addEventListener("pointerenter", (event) => {
+      if (event.pointerType === "touch") return;
+      hoverCard = entry;
+      armHover(entry);
+    });
+    card.addEventListener("pointermove", (event) => {
+      if (event.pointerType === "touch") return;
+      hoverCard = entry;
+      if (!hoverArmed && preview?.entry !== entry) armHover(entry);
+    });
+    card.addEventListener("pointerleave", () => {
+      // A pending preview for this card no longer fires once another card is hovered.
+      if (hoverCard === entry) hoverCard = null;
+      if (preview?.entry === entry) dropPreview();
+    });
+  }
+
+  const hoverAllowed = (): boolean => hoverToggle.checked && !reducedMotion?.matches && player.hidden && !document.hidden;
+
+  function armHover(entry: Card): void {
+    window.clearTimeout(hoverTimer);
+    hoverArmed = false;
+    if (!hoverAllowed() || preview?.entry === entry || !previewSource(entry.video, { muted: true })) return;
+    hoverArmed = true;
+    hoverTimer = window.setTimeout(() => {
+      hoverArmed = false;
+      if (hoverCard === entry && entry.card.isConnected && hoverAllowed()) startPreview(entry);
+    }, HOVER_DELAY_MS);
+  }
+
+  function startPreview(entry: Card): void {
+    const source = previewSource(entry.video, { muted: true });
+    if (!source) return;
+    stopPreview();
+    const layer = document.createElement("div");
+    layer.className = "card-preview loading";
+    const media = playerElement(source, true);
+    const loaded = () => layer.classList.remove("loading");
+    media.addEventListener(media instanceof HTMLVideoElement ? "playing" : "load", loaded, { once: true });
+    // Clicks and double-clicks land on this shield, never inside the player.
+    const shield = document.createElement("div");
+    shield.className = "card-preview-shield";
+    const chip = document.createElement("span");
+    chip.className = "card-preview-chip";
+    chip.textContent = "Xem trước";
+    const shimmer = document.createElement("span");
+    shimmer.className = "card-preview-shimmer";
+    if (media instanceof HTMLVideoElement) {
+      media.addEventListener("error", () => {
+        layer.classList.replace("loading", "failed");
+        chip.textContent = "Không phát được";
+      }, { once: true });
+    }
+    layer.append(media, shield, chip, shimmer);
+    entry.thumb.append(layer);
+    preview = { entry, layer };
+  }
+
+  /** Stop the preview and any pending one. */
+  function stopPreview(): void {
+    window.clearTimeout(hoverTimer);
+    hoverArmed = false;
+    dropPreview();
+  }
+
+  function dropPreview(): void {
+    if (!preview) return;
+    dropPlayer(preview.layer);
+    preview = null;
+  }
+
+  function paintTitles(): void {
+    for (const entry of cards.values()) entry.paintTitle();
+    if (playing) paintPlayer();
+  }
+
+  function saveTitles(): void {
+    writeStorage(TITLE_GLOSS_KEY, saveGlossCache(titleGloss));
+  }
+
+  /**
+   * Translate the listed titles that are not cached yet, at most 60 per call.
+   * A failure keeps the original titles without a message.
+   */
+  async function translateTitles(): Promise<void> {
+    if (!glossToggle.checked) return;
+    if (titleBusy) {
+      titleAgain = true;
+      return;
+    }
+    titleBusy = true;
+    try {
+      do {
+        titleAgain = false;
+        let touched = false;
+        // Cleaned text to translate, with the titles it stands for.
+        const wanted = new Map<string, string[]>();
+        for (const video of videos) {
+          const original = video.title;
+          if (original === NO_TITLE || titlePending.has(original) || titleFailed.has(original)) continue;
+          const known = titleGloss.get(original);
+          if (known !== undefined) {
+            rememberGloss(titleGloss, original, known);
+            touched = true;
+            continue;
+          }
+          const cleaned = cleanTitle(original);
+          if (!needsTitleGloss(cleaned)) continue;
+          const titles = wanted.get(cleaned) ?? [];
+          if (!titles.includes(original)) titles.push(original);
+          wanted.set(cleaned, titles);
+        }
+        if (touched) saveTitles();
+        const terms = [...wanted.keys()];
+        for (let start = 0; start < terms.length; start += GLOSS_BATCH) {
+          if (!glossToggle.checked) return;
+          const batch = terms.slice(start, start + GLOSS_BATCH);
+          const originals = batch.flatMap((term) => wanted.get(term) ?? []);
+          for (const original of originals) titlePending.add(original);
+          paintTitles();
+          let glossed: Map<string, string> | null = null;
+          try {
+            glossed = parseGlosses(await invoke<unknown>("translate_terms", { terms: batch, engine: glossEngine() }), batch);
+          } catch {
+            glossed = null;
+          }
+          for (const original of originals) titlePending.delete(original);
+          if (!glossed) {
+            // No translator, or it failed: the rest keep their originals this session.
+            for (const term of terms.slice(start)) for (const original of wanted.get(term) ?? []) titleFailed.add(original);
+            paintTitles();
+            break;
+          }
+          for (const term of batch) {
+            const gloss = glossed.get(term) ?? "";
+            for (const original of wanted.get(term) ?? []) {
+              if (gloss && gloss !== term) rememberGloss(titleGloss, original, gloss);
+              else titleFailed.add(original);
+            }
+          }
+          saveTitles();
+          paintTitles();
+        }
+      } while (titleAgain && glossToggle.checked);
+    } finally {
+      titleBusy = false;
+    }
+  }
+
+  function openPlayer(video: DiscoveredVideo): void {
+    stopPreview();
+    hoverCard = null;
+    playing = { video };
+    playerState.textContent = "";
+    playerDownload.disabled = false;
+    dropPlayer(stage.firstElementChild);
+    stage.replaceChildren();
+    const source = previewSource(video, { muted: false });
+    stage.className = source?.vertical ? "pop-stage vertical" : "pop-stage";
+    if (source) {
+      const frame = document.createElement("div");
+      frame.className = "pop-frame";
+      const media = playerElement(source, false);
+      if (media instanceof HTMLVideoElement) {
+        media.addEventListener("loadedmetadata", () => {
+          stage.classList.toggle("vertical", media.videoHeight > media.videoWidth);
+        }, { once: true });
+      }
+      frame.append(media);
+      stage.append(frame);
+    } else {
+      stage.classList.add("empty");
+      if (video.cover) {
+        const image = document.createElement("img");
+        image.src = video.cover;
+        image.alt = "";
+        image.referrerPolicy = "no-referrer";
+        stage.append(image);
+      }
+      const note = document.createElement("p");
+      note.className = "pop-note";
+      note.textContent = "Không xem trước được video này trong ứng dụng.";
+      stage.append(note);
+    }
+    paintPlayer();
+    player.hidden = false;
+    playerToggle.focus();
+  }
+
+  function paintPlayer(): void {
+    if (!playing) return;
+    const { video } = playing;
+    const vi = viTitle(video);
+    playerTitle.textContent = vi || video.title;
+    playerOriginal.textContent = vi ? video.title : "";
+    playerOriginal.hidden = !vi;
+    playerSub.textContent = [video.author, formatDuration(video.durationS), video.plays !== null ? `${formatCount(video.plays)} lượt xem` : ""]
+      .filter(Boolean).join(" · ");
+    const picked = selected.has(video.pageUrl);
+    playerToggle.textContent = picked ? "Bỏ chọn" : "Chọn video này";
+    playerToggle.className = picked ? "btn" : "btn primary";
+  }
+
+  function closePlayer(restoreFocus = true): void {
+    if (!playing) return;
+    const url = playing.video.pageUrl;
+    playing = null;
+    dropPlayer(stage.firstElementChild);
+    stage.replaceChildren();
+    player.hidden = true;
+    const card = cards.get(url)?.card;
+    if (restoreFocus && card?.isConnected) card.focus();
   }
 
   function renderSelection(): void {
@@ -210,6 +569,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
   }
 
   function resetResults(): void {
+    closePlayer(false);
     videos = [];
     selected.clear();
     nextPage = null;
@@ -234,6 +594,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
       nextPage = result.nextPage;
       state.textContent = videos.length ? "" : "Không tìm thấy video.";
       renderResults();
+      void translateTitles();
     } catch (error) {
       state.textContent = `Không tải được: ${String(error).slice(0, 160)}`;
     } finally {
@@ -300,6 +661,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
 
   function switchPlatform(next: Platform): void {
     if (next === platform) return;
+    stopPreview();
     platform = next;
     mode = null;
     browser.hidden = true;
@@ -347,6 +709,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
         ? `Đã lấy ${videos.length - before} video mới (tổng ${videos.length}). Cuộn thêm rồi lấy tiếp nếu cần.`
         : "Chưa thấy video trên trang. Đợi trang tải xong hoặc cuộn xuống rồi thử lại.";
       renderResults();
+      void translateTitles();
     } catch (error) {
       state.textContent = String(error).slice(0, 200);
     }
@@ -369,20 +732,69 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
     const failures: string[] = [];
     for (const video of picks) {
       try {
-        await enqueue(video.fetchUrl);
+        // The title as the card shows it names the download and its job.
+        await enqueue(video.fetchUrl, downloadTitle(video));
         added += 1;
         selected.delete(video.pageUrl);
       } catch (error) {
         failures.push(String(error).slice(0, 120));
       }
     }
-    state.textContent = `Đã đưa ${added} video vào hàng đợi tải.` + (failures.length ? ` ${failures.length} video lỗi: ${failures[0]}` : " Xem tiến độ ở Hàng đợi video.");
+    state.textContent = `Đã đưa ${added} video vào hàng đợi tải.` + (failures.length ? ` ${failures.length} video lỗi: ${failures[0]}` : ADDED_NOTE);
     renderResults();
   });
 
   glossToggle.addEventListener("change", () => {
     renderTrends(shownTrends);
     void loadGlosses(shownTrends);
+    if (glossToggle.checked) titleFailed.clear();
+    paintTitles();
+    void translateTitles();
+  });
+
+  hoverToggle.checked = readStorage(HOVER_KEY) !== "0";
+  hoverToggle.addEventListener("change", () => {
+    writeStorage(HOVER_KEY, hoverToggle.checked ? "1" : "0");
+    if (!hoverToggle.checked) stopPreview();
+  });
+  scroller.addEventListener("scroll", stopPreview, { passive: true });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopPreview();
+  });
+  reducedMotion?.addEventListener("change", () => {
+    if (reducedMotion.matches) stopPreview();
+  });
+
+  playerToggle.addEventListener("click", () => {
+    if (playing) setSelected(playing.video, !selected.has(playing.video.pageUrl));
+  });
+  playerDownload.addEventListener("click", async () => {
+    if (!playing) return;
+    const { video } = playing;
+    playerDownload.disabled = true;
+    playerState.textContent = "Đang thêm vào hàng đợi…";
+    try {
+      await enqueue(video.fetchUrl, downloadTitle(video));
+    } catch (error) {
+      if (playing?.video === video) {
+        playerState.textContent = `Không thêm được: ${String(error).slice(0, 160)}`;
+        playerDownload.disabled = false;
+      }
+      return;
+    }
+    setSelected(video, false);
+    if (playing?.video === video) closePlayer();
+    state.textContent = `Đã đưa 1 video vào hàng đợi tải.${ADDED_NOTE}`;
+  });
+  $("#pop-close").addEventListener("click", () => closePlayer());
+  player.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      closePlayer();
+    }
+  });
+  player.addEventListener("mousedown", (event) => {
+    if (event.target === player) closePlayer();
   });
   $("#topic-chips").replaceChildren(...TOPICS.map((topic) => {
     const chip = document.createElement("button");
@@ -407,6 +819,11 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string) => Promise
         void loadTrends();
       }
       query.focus();
+    },
+    /** The view is leaving the screen: stop anything playing. */
+    hide() {
+      stopPreview();
+      closePlayer(false);
     },
   };
 }

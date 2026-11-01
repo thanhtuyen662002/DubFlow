@@ -75,6 +75,11 @@ def sentences(script: str) -> list[str]:
     return spoken
 
 
+def caption_chunks(sentence: str) -> list[str]:
+    """The captions one spoken sentence is shown as, in order."""
+    return _bounded(sentence, MAX_CAPTION_CHARS)
+
+
 def captions(spoken: list[tuple[str, int]]) -> tuple[list[Caption], int]:
     """Captions for sentences spoken one after another, and the total length.
 
@@ -84,7 +89,7 @@ def captions(spoken: list[tuple[str, int]]) -> tuple[list[Caption], int]:
     result: list[Caption] = []
     cursor = LEAD_MS
     for text, duration_ms in spoken:
-        chunks = _bounded(text, MAX_CAPTION_CHARS)
+        chunks = caption_chunks(text)
         total = sum(len(chunk) for chunk in chunks)
         start, used = cursor, 0
         for chunk in chunks:

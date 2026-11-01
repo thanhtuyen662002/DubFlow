@@ -65,22 +65,91 @@ const reviewCues = [
   return { cue_id, start_ms, end_ms, source_text, machine_text, dub_failed };
 });
 let savedOverrides: Record<string, string> = {};
-const linkFetches = new Map<string, { url: string; startedAt: number }>();
+/** Phụ đề "Áp dụng": what each line's voice speaks where it differs from the subtitle, and the look. */
+let savedVoice: Record<string, string> = {};
+let savedSubtitleStyle: unknown = null;
+// Che: a new job's cover.json (edge stretch) and the caption scan's regions:
+// one line at slightly different widths through the video, and a short upper line.
+let savedCover: unknown = { style: { mode: "stretch", direction: "top", strip_px: 4, color: "#000000", block: 24, feather: 0 }, regions: [], disabled_auto: [], fixed: null };
+const previewCaptions = [
+  ...Array.from({ length: 37 }, (_, index) => ({ x: 0.22 + (index % 4) * 0.01, y: 0.84, w: 0.56 - (index % 4) * 0.02, h: 0.085, start_ms: 4000 * index + 1200, end_ms: 4000 * index + 3600 })),
+  ...[52_000, 71_000, 109_000].map((start) => ({ x: 0.3, y: 0.74, w: 0.4, h: 0.07, start_ms: start, end_ms: start + 2500 })),
+].map((region, index) => ({ ...region, index }));
+const linkFetches = new Map<string, { url: string; title: string | null; startedAt: number }>();
 let douyinSession = false;
 
+/**
+ * A pretend download: 3 s preparing, then ~45 MB over 9 s. Bilibili links
+ * report their size; other links do not, so both bar styles show. Douyin
+ * fails for want of a session until one is "saved".
+ */
 function fetchStatus(scanId: string) {
   const fetch = linkFetches.get(scanId);
   if (!fetch) return null;
   const elapsed = Date.now() - fetch.startedAt;
   const provider = /bilibili|b23\.tv/.test(fetch.url) ? "bilibili" : /douyin/.test(fetch.url) ? "douyin" : "generic";
-  const base = { scan_id: scanId, url: fetch.url, provider, downloaded_bytes: 0, total_bytes: null as number | null, media_path: null as string | null, error: null as string | null };
-  if (provider === "douyin" && !douyinSession) return { ...base, state: elapsed > 3000 ? "failed" : "preparing", error: elapsed > 3000 ? "Douyin cần phiên truy cập: bấm “Mở Douyin”, đợi trang hiện video, rồi bấm “Lưu phiên & thử lại”." : null };
-  if (elapsed < 3000) return { ...base, state: "preparing" };
+  const base = { scan_id: scanId, url: fetch.url, provider, title: fetch.title, detail: null as string | null, queue_position: null, started_at_ms: fetch.startedAt,
+    downloaded_bytes: 0, total_bytes: null as number | null, media_path: null as string | null, error: null as string | null, error_code: null as string | null };
+  if (provider === "douyin" && !douyinSession) {
+    return elapsed > 3000
+      ? { ...base, state: "failed", error_code: "AUTH_REQUIRED", error: "Douyin yêu cầu đăng nhập để tải video này. Bấm “Đăng nhập Douyin”, đăng nhập rồi thử lại." }
+      : { ...base, state: "preparing", detail: "Đang mở trang video…" };
+  }
+  if (elapsed < 3000) return { ...base, state: "preparing", detail: elapsed < 1500 ? "Đang mở trang video…" : "Đang đọc thông tin video…" };
   const total = 47_065_346;
-  const done = Math.min(total, Math.round(total * (elapsed - 3000) / 6000));
-  return done >= total
+  // Uneven pace so the speed and time left move a little.
+  const t = (elapsed - 3000) / 9000;
+  const done = Math.min(total, Math.round(total * (t + Math.sin(t * 9) * 0.02)));
+  const known = provider === "bilibili" ? total : null;
+  return t >= 1
     ? { ...base, state: "done", downloaded_bytes: total, total_bytes: total, media_path: `C:/DubFlow/source-media/${scanId}.mp4` }
-    : { ...base, state: "downloading", downloaded_bytes: done, total_bytes: total };
+    : { ...base, state: "downloading", downloaded_bytes: Math.max(0, done), total_bytes: known };
+}
+
+/** Pretend disk usage per cleanup category, in bytes. */
+const GB = 1_073_741_824;
+const previewStorage: Record<string, number> = { work: 3.4 * GB, versions: 10.5 * GB, profiles: 0.62 * GB, link_cache: 2.4 * GB };
+/** Every other report shows the link cache as busy, so both states can be designed. */
+let previewLinkBusy = true;
+/** The first clean of old versions finds one in use. */
+let previewVersionInUse = true;
+
+function previewStorageReport() {
+  const downloading = [...linkFetches.keys()].some((scan) => !["done", "failed"].includes(String(fetchStatus(scan)?.state)));
+  previewLinkBusy = !previewLinkBusy;
+  const busy = downloading || previewLinkBusy;
+  return {
+    categories: Object.entries(previewStorage).map(([id, bytes]) => ({
+      id, bytes: id === "link_cache" && busy ? 0 : Math.round(bytes), items: bytes > 0 ? (id === "versions" ? 12 : id === "profiles" ? 9 : 3) : 0,
+      busy: id === "link_cache" && busy,
+    })),
+    total_used: Math.round(3.6 * GB + Object.values(previewStorage).reduce((sum, bytes) => sum + bytes, 0)),
+    install_free_bytes: Math.round(96.2 * GB), output_free_bytes: Math.round(123.1 * GB),
+  };
+}
+
+function previewStorageClean(categories: string[], olderThanDays: unknown) {
+  // The automatic clean only finds older videos' work files.
+  if (typeof olderThanDays === "number") {
+    const freed = Math.min(2.3 * GB, previewStorage.work);
+    previewStorage.work -= freed;
+    return { freed_bytes: Math.round(freed), skipped: [] };
+  }
+  let freed = 0;
+  const skipped: string[] = [];
+  for (const id of categories) {
+    if (id === "link_cache" && previewLinkBusy) { skipped.push("Bộ đệm tải link (đang tải link)"); continue; }
+    if (id === "versions" && previewVersionInUse) {
+      previewVersionInUse = false;
+      freed += 9.6 * GB;
+      previewStorage.versions -= 9.6 * GB;
+      skipped.push("Bản cài 1.1.18");
+      continue;
+    }
+    freed += previewStorage[id] ?? 0;
+    previewStorage[id] = 0;
+  }
+  return { freed_bytes: Math.round(freed), skipped };
 }
 
 let picked = 0;
@@ -89,9 +158,147 @@ const packages = new Map<string, { started: number; cancelled: boolean }>();
 const compilations = new Map<string, { started: number; cancelled: boolean; total: number }>();
 const shorts = new Map<string, { started: number; cancelled: boolean; items: Array<{ title: string }> }>();
 const reframes = new Map<string, { started: number; cancelled: boolean }>();
+/** Edit drafts and exports per finished video (Cắt ghép, Chèn). */
+const editProjects = new Map<string, unknown>();
+type PreviewSegment = { media?: number; start: number; end: number; speed: number; volume: number };
+type PreviewExport = {
+  path: string; srt_path: string; created: number; duration: number; quality: string; segments: PreviewSegment[];
+  media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[];
+  audio?: unknown[]; main_volume?: number; texts?: unknown[];
+};
+
+/** Finished videos the browser preview offers in "Chèn › Từ DubFlow" (it has no real queue jobs to insert). */
+export const PREVIEW_EDIT_LIBRARY = [
+  { id: "preview-intro", title: "Mở đầu kênh Phim Hay", outputPath: "D:\\Videos\\DubFlow Output\\Mo dau kenh - vi\\run-1\\final_vi.mp4" },
+  { id: "preview-trailer", title: "Trailer phim cổ trang tập 2", outputPath: "D:\\Videos\\DubFlow Output\\Trailer co trang - vi\\run-1\\final_vi.mp4" },
+];
+const editExports = new Map<string, PreviewExport[]>([[PREVIEW_EDIT_LIBRARY[1].outputPath, [{
+  path: "D:\\Videos\\Trailer co trang (sửa 1).mp4", srt_path: "D:\\Videos\\Trailer co trang (sửa 1).srt", created: 1_790_000_000, duration: 42.5,
+  quality: "source", segments: [{ start: 0, end: 42.5, speed: 1, volume: 1 }],
+}]]]);
+
+/** Facts of a local video for "Chèn": portrait clips and a silent one, so every case can be designed. */
+function previewMediaInfo(path: string) {
+  const name = path.split(/[\\/]/).pop() ?? path;
+  let hash = 0;
+  for (const char of path) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  const portrait = /doc|dọc|douyin|short/i.test(path);
+  const silent = /khong-tieng|im-lang|silent/i.test(path);
+  return {
+    path, title: name.replace(/\.[^.]*$/, ""), duration: /final_vi/i.test(name) ? 60 + hash % 120 : 8 + hash % 50,
+    width: portrait ? 1080 : 1280, height: portrait ? 1920 : 720, fps: hash % 2 ? 30 : 25, has_audio: !silent, size_bytes: 9_000_000 + hash % 40_000_000,
+  };
+}
+// Âm thanh (Issue #420): the sound-effect pack "downloads" in about three seconds.
+const SFX_PACK_BYTES = 2_194_688;
+let sfxDownloadStarted = 0;
+const PREVIEW_AUDIO_FOLDER = "D:\\Âm thanh\\Hiệu ứng của tôi";
+const PREVIEW_AUDIO_FILES = ["nhac-nen-vui-tuoi.mp3", "tieng-cuoi-khan-gia.wav", "trong-don-dap.m4a", "chuong-bao-thuc.ogg", "nhac-kich-tinh-ngan.mp3"];
+function previewSfxStatus() {
+  const elapsed = sfxDownloadStarted ? Date.now() - sfxDownloadStarted : -1;
+  const installed = elapsed >= 3500;
+  const state = elapsed < 0 || installed ? "idle" : elapsed < 3000 ? "downloading" : "installing";
+  return { installed, version: installed ? "v1" : "", count: installed ? 199 : 0, size_bytes: SFX_PACK_BYTES, state,
+    received: state === "downloading" ? Math.floor(SFX_PACK_BYTES * elapsed / 3000) : installed ? SFX_PACK_BYTES : 0, error: null };
+}
+function previewAudioSeconds(path: string): number {
+  let hash = 0;
+  for (const char of path) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return 1.5 + (hash % 900) / 10;
+}
+const editRuns = new Map<string, { started: number; cancelled: boolean; entry: PreviewExport; recorded: boolean }>();
+const EDIT_EXPORT_MS = 5000;
+
+function previewEditStatus(outputPath: string) {
+  const run = editRuns.get(outputPath);
+  const exports = editExports.get(outputPath) ?? [];
+  if (!run) return { status: null, exports };
+  const elapsed = Date.now() - run.started;
+  if (run.cancelled) return { status: { schema_version: 1, state: "CANCELLED", percent: 0, message: "Đã hủy xuất video.", output_path: null }, exports };
+  if (elapsed < EDIT_EXPORT_MS) {
+    const percent = Math.floor(elapsed / EDIT_EXPORT_MS * 100);
+    return { status: { schema_version: 1, state: "RUNNING", percent, message: `Đang xuất video… ${percent}%`, output_path: run.entry.path }, exports };
+  }
+  if (!run.recorded) {
+    run.recorded = true;
+    exports.push(run.entry);
+    editExports.set(outputPath, exports);
+  }
+  return { status: { schema_version: 1, state: "COMPLETED", percent: 100, message: "Đã xuất video.", output_path: run.entry.path }, exports };
+}
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
+    case "edit_project_load": {
+      const path = String(args.outputPath);
+      const product = /[\\/]video-(\d+)\.mp4$/i.exec(path);
+      if (product) {
+        // A re-made video (Mẫu) is a little longer when its script changed.
+        const run = productRuns.get(path.replace(/[\\/]video-\d+\.mp4$/i, ""));
+        return { duration: run?.durationMs ? run.durationMs / 1000 : 31.4, width: 1080, height: 1920, fps: 30, size_bytes: 9_800_000, has_audio: true,
+          project: editProjects.get(path) ?? null, kind: "product", reviewable: false, variant: Number(product[1]),
+          cues: [{ start_ms: 300, end_ms: 2600, text: "Nồi chiên không dầu 5 lít" }, { start_ms: 2850, end_ms: 6200, text: "chiên giòn mà không cần dầu" }] } as T;
+      }
+      if (/[\\/]compilation\.mp4$/i.test(path)) {
+        return { duration: 202.5, width: 1920, height: 1080, fps: 30, size_bytes: 88_000_000, has_audio: true, project: editProjects.get(path) ?? null,
+          kind: "compilation", reviewable: false, variant: null, cues: [] } as T;
+      }
+      return {
+        duration: 154.2, width: 1024, height: 576, fps: 25, size_bytes: 46_000_000, has_audio: true,
+        project: editProjects.get(path) ?? null, kind: "job", reviewable: true, variant: null,
+        cues: reviewCues.map(({ cue_id, start_ms, end_ms, machine_text }) => ({ start_ms, end_ms, text: savedOverrides[cue_id] ?? machine_text })),
+      } as T;
+    }
+    case "edit_project_save": editProjects.set(String(args.outputPath), JSON.parse(JSON.stringify(args.project))); return null as T;
+    case "edit_export": {
+      const request = args.request as { outputPath: string; folder: string; fileName: string; quality: string; segments: PreviewSegment[];
+        media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[];
+        audio?: unknown[]; mainVolume?: number; texts?: unknown[] };
+      if (editRuns.get(request.outputPath) && previewEditStatus(request.outputPath).status?.state === "RUNNING") throw new Error("Video này đang được xuất");
+      const taken = new Set((editExports.get(request.outputPath) ?? []).map((entry) => entry.path));
+      const stem = request.fileName.replace(/\.mp4$/i, "").trim();
+      let path = `${request.folder}/${stem}.mp4`;
+      for (let number = 2; taken.has(path); number++) path = `${request.folder}/${stem} (${number}).mp4`;
+      // A dissolve overlaps its neighbours; fade through black keeps the length.
+      const duration = request.segments.reduce((total, segment) => total + (segment.end - segment.start) / segment.speed, 0)
+        - (request.transitions ?? []).filter((joint) => joint.type === "dissolve").reduce((total, joint) => total + joint.duration, 0);
+      editRuns.set(request.outputPath, { started: Date.now(), cancelled: false, recorded: false,
+        entry: { path, srt_path: path.replace(/\.mp4$/, ".srt"), created: Math.floor(Date.now() / 1000), duration, quality: request.quality,
+          segments: request.segments, media: request.media ?? [], transitions: request.transitions ?? [], overlays: request.overlays ?? [],
+          audio: request.audio ?? [], main_volume: request.mainVolume ?? 1, texts: request.texts ?? [] } });
+      return { path } as T;
+    }
+    case "edit_subtitles_load": return {
+      cues: reviewCues.map((cue) => {
+        const text = savedOverrides[cue.cue_id] ?? cue.machine_text;
+        return { ...cue, text, voice_text: savedVoice[cue.cue_id] ?? text, edited: cue.cue_id in savedOverrides };
+      }),
+      style: savedSubtitleStyle,
+      // No asset protocol in a browser: the preview falls back to the final video with its note.
+      source_path: "D:\\Videos\\Douyin\\phim-ngan-tap-1.mp4",
+      mix_path: "D:\\Videos\\DubFlow Output\\preview\\editable\\final_mix.wav",
+      dubbed: true,
+      blur_regions: previewCaptions,
+      cover: savedCover,
+    } as T;
+    case "edit_subtitles_apply": {
+      const style = args.subtitleStyle as { font?: unknown } | null;
+      if (!style || typeof style.font !== "string") throw new Error("Kiểu phụ đề không hợp lệ");
+      savedOverrides = { ...(args.overrides as Record<string, string>) };
+      savedVoice = { ...(args.voice as Record<string, string>) };
+      savedSubtitleStyle = JSON.parse(JSON.stringify(style));
+      const cover = args.cover as { style?: { mode?: unknown } } | null | undefined;
+      if (cover && cover.style && typeof cover.style.mode !== "string") throw new Error("Kiểu che không hợp lệ");
+      if (cover) savedCover = JSON.parse(JSON.stringify(cover));
+      return "D:\\Videos\\DubFlow Output\\preview (sửa 1)" as T;
+    }
+    case "edit_status": return previewEditStatus(String(args.outputPath)) as T;
+    case "edit_media_info": return previewMediaInfo(String(args.path)) as T;
+    case "edit_cancel": {
+      const run = editRuns.get(String(args.outputPath));
+      if (run && Date.now() - run.started < EDIT_EXPORT_MS) run.cancelled = true;
+      return null as T;
+    }
     case "reframe_info": return { width: 1080, height: 1920, vertical: true } as T;
     case "reframe_render": {
       const request = args.request as { outputPath: string };
@@ -154,6 +361,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       if (run) run.cancelled = true;
       return null as T;
     }
+    case "compilation_runs": return previewCompilationRuns() as T;
     case "compilation_description": return "00:00 Mở đầu\n00:05 Phần 1: Video thứ nhất\n00:30 Phần 2: Video thứ hai\n\nNguồn: Tác giả (Bilibili) – https://example.org/video\n" as T;
     case "package_info": return { has_background_stem: true, voice_id: voices[0].voice_id } as T;
     case "package_video": {
@@ -194,17 +402,31 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "start_job": running.set(String(args.jobId), { startedAt: Date.now(), dubbing: !!args.enableDubbing, cancelled: false }); return null as T;
     case "cancel_job": { const job = running.get(String(args.jobId)); if (job) job.cancelled = true; return null as T; }
     case "job_status": return status(String(args.jobId)) as T;
-    case "open_path": case "reveal_path": console.info(`[preview] ${command}`, args.path); return null as T;
+    case "open_path": case "reveal_path": case "reveal_download": console.info(`[preview] ${command}`, args.path); return null as T;
     case "fetch_url": {
-      const scanId = `link-${Date.now().toString(16)}`;
-      linkFetches.set(scanId, { url: String(args.url), startedAt: Date.now() });
-      return { status: fetchStatus(scanId), output_dir: `D:/Videos/DubFlow Output/${scanId}` } as T;
+      const scanId = `link-${Date.now().toString(16)}${Math.random().toString(16).slice(2, 6)}`;
+      const title = typeof args.title === "string" && args.title.trim() ? args.title.trim().slice(0, 200) : null;
+      linkFetches.set(scanId, { url: String(args.url), title, startedAt: Date.now() });
+      return { status: fetchStatus(scanId), output_dir: `D:/Videos/DubFlow Output/${title ?? scanId} - vi/${scanId}` } as T;
     }
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
-    case "open_douyin_login": return null as T;
+    case "withdraw_fetch": case "cancel_fetch": return linkFetches.delete(String(args.scanId)) as T;
+    case "default_download_dir": return "D:/Videos/DubFlow Downloads" as T;
+    case "keep_download": {
+      const name = String(args.title ?? "video").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "").trim().slice(0, 120) || "video";
+      return `${typeof args.folder === "string" && args.folder ? args.folder : "D:/Videos/DubFlow Downloads"}/${name}.mp4` as T;
+    }
+    // A plain check is "ready"; a forced refresh stands for a fresh session.
+    case "ensure_douyin_session": if (args.force) douyinSession = true; return "ready" as T;
+    case "douyin_account": return { logged_in: false } as T;
+    case "douyin_logout": douyinSession = false; return null as T;
+    case "douyin_view_open": case "douyin_view_bounds": case "douyin_view_close": return null as T;
     case "check_update": return { ok: true, available: true, version: "0.3.0", channel: "candidate", notes: "DubFlow 0.3.0", setup: { size_bytes: 325_000_000 } } as T;
     case "download_update": return { ok: true, path: "C:/Users/preview/AppData/Local/DubFlow/updates/DubFlow-0.3.0-windows-x64-setup.exe", version: "0.3.0" } as T;
     case "install_update": case "restart_app": return null as T;
+    case "storage_report": await new Promise((resolve) => setTimeout(resolve, 700)); return previewStorageReport() as T;
+    case "storage_clean": await new Promise((resolve) => setTimeout(resolve, 1200)); return previewStorageClean(args.categories as string[], args.olderThanDays) as T;
+    case "storage_free": return Math.round(123.1 * GB) as T;
     case "list_versions": return { ok: true, current: "0.2.0-rc6", versions: [
       { version: "0.2.0-rc6", channel: "candidate", installed_at_utc: "2026-10-25T00:00:00Z" },
       { version: "0.2.0-rc5", channel: "candidate", installed_at_utc: "2026-10-24T00:00:00Z" },
@@ -221,18 +443,69 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "discover": return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1)) as T;
     case "open_discovery": return `https://example.invalid/${String(args.platform)}` as T;
     case "scroll_discovery": return null as T;
-    case "translate_terms": return { ok: true, items: (args.terms as string[]).map((term) => `(nghĩa) ${term}`) } as T;
+    case "translate_terms": {
+      const terms = args.terms as string[];
+      // Titles take a moment, like the local translator, so "Đang dịch…" shows.
+      if (terms.some((term) => PREVIEW_GLOSS.has(term))) await new Promise((resolve) => setTimeout(resolve, 900));
+      return { ok: true, items: terms.map((term) => PREVIEW_GLOSS.get(term) ?? `(nghĩa) ${term}`) } as T;
+    }
     case "collect_discovery": return previewCollected(String(args.platform)) as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
+    // No asset protocol in a browser: the player shows its placeholder.
+    case "allow_media": return null as T;
+    case "sfx_status": return previewSfxStatus() as T;
+    case "sfx_install": if (!sfxDownloadStarted) sfxDownloadStarted = Date.now(); return previewSfxStatus() as T;
+    case "sfx_path": return (previewSfxStatus().installed ? `C:\\Users\\preview\\AppData\\Local\\DubFlow\\sfx\\v1\\sounds\\${String(args.id)}.ogg` : null) as T;
+    case "pick_audio_folder": return PREVIEW_AUDIO_FOLDER as T;
+    case "user_audio_list": return PREVIEW_AUDIO_FILES.map((name, index) => ({
+      path: `${String(args.folder)}\\${name}`, name, size_bytes: 180_000 + index * 731_000 })) as T;
+    case "audio_info": {
+      const path = String(args.path);
+      return { path, title: (path.split(/[\\/]/).pop() ?? path).replace(/\.[^.]*$/, ""), duration: previewAudioSeconds(path), size_bytes: 900_000 } as T;
+    }
+    case "pick_audio_files": return [`${PREVIEW_AUDIO_FOLDER}\\tieng-vo-tay.mp3`] as T;
+    case "expand_audio_paths": return (args.paths as string[]).filter((path) => /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(path)) as T;
     case "video_frame": return await previewFrame(Number(args.position), /final_vi\.mp4$/i.test(String(args.sourcePath))) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
     case "save_review": savedOverrides = { ...(args.overrides as Record<string, string>) }; return "D:\Videos\DubFlow Output\preview" as T;
-    case "pick_product_files": return (args.kind === "music" ? ["D:/Nhac/nen.mp3"] : args.kind === "background" ? ["D:/Anh/nen-1080x720.png"] : args.kind === "media" ? ["D:/Clip/doi-tac.mp4"] : ["D:/Anh/hop.jpg", "D:/Anh/nhan.png"]) as T;
-    case "product_image": return await previewFrame(String(args.path).length % 3 / 3) as T;
-    case "product_render": productStarted = Date.now(); productCancelled = 0; return "D:/Videos/DubFlow Output/Ban hang - preview/run-000000000000" as T;
-    case "product_status": return previewProductStatus() as T;
-    case "product_cancel": productCancelled = Date.now(); return null as T;
+    case "pick_product_files": return (args.kind === "music" ? ["D:/Nhac/nen.mp3"] : args.kind === "background" ? ["D:/Anh/nen-doc-1080x1920.png"] : args.kind === "media" ? ["D:/Anh/hop.jpg", "D:/Anh/nhan.png", "D:/Clip/doi-tac.mp4"] : ["D:/Anh/hop.jpg", "D:/Anh/nhan.png"]) as T;
+    case "product_image": {
+      const background = previewBackgrounds.find((entry) => entry.path === String(args.path));
+      return await (background ? previewBackgroundImage(background.width, background.height, background.hue) : previewFrame(String(args.path).length % 3 / 3)) as T;
+    }
+    case "product_backgrounds": return previewBackgrounds.map(({ hue: _hue, ...entry }) => entry) as T;
+    case "product_background_add": {
+      const id = "c".repeat(64);
+      if (!previewBackgrounds.some((entry) => entry.id === id)) {
+        previewBackgrounds.unshift({ id, extension: "png", name: "nen-doc-1080x1920.png", width: 1080, height: 1920, path: `C:\\Users\\preview\\AppData\\Local\\DubFlow\\backgrounds\\${id}.png`, hue: 330 });
+      }
+      const { hue: _hue, ...entry } = previewBackgrounds.find((item) => item.id === id)!;
+      return entry as T;
+    }
+    case "product_background_delete": {
+      const index = previewBackgrounds.findIndex((entry) => entry.id === String(args.id));
+      if (index >= 0) previewBackgrounds.splice(index, 1);
+      return null as T;
+    }
+    case "product_render": {
+      const request = args.request as { variants: string[]; reuseAudioFrom?: string; name: string };
+      const dir = `D:\\Videos\\DubFlow Output\\Ban hang - ${request.name || "san pham"}\\run-${productRuns.size.toString(16).padStart(12, "0")}`;
+      const before = request.reuseAudioFrom ? previewSpec(request.reuseAudioFrom) : null;
+      const reused = !!before && before.spec.variants.includes(request.variants[0]);
+      productRuns.set(dir, { started: Date.now(), cancelled: 0, count: request.variants.length, reused, name: request.name,
+        durationMs: reused ? 31_400 : 31_400 + 2_600 * Math.sign(request.variants[0].length - 60), variants: request.variants });
+      return dir as T;
+    }
+    case "product_status": return previewProductStatus(String(args.outputDir)) as T;
+    case "product_cancel": { const run = productRuns.get(String(args.outputDir)); if (run) run.cancelled = Date.now(); return null as T; }
+    case "product_spec": {
+      const path = String(args.outputPath);
+      const run = path.replace(/[\\/]video-\d+\.mp4$/i, "");
+      const variant = Number(/video-(\d+)\.mp4$/i.exec(path)?.[1] ?? 1);
+      return { ...previewSpec(run), variant, run, duration_ms: 31_400, narration: true } as T;
+    }
+    case "product_runs": return previewProductRuns() as T;
     default: throw new Error(`preview host does not implement ${command}`);
   }
 }
@@ -247,35 +520,134 @@ function previewDiscover(platform: string, action: string, page: number): unknow
   if (platform !== "bilibili") return { ok: false, code: "UNSUPPORTED", message: "preview" };
   return {
     ok: true, next_page: page < 3 ? page + 1 : null,
-    items: Array.from({ length: 8 }, (_, index) => ({
-      platform, video_id: `BV1preview${page}${index}`, title: `【预览】${PREVIEW_WORDS[index]} 第${page}页 · 精彩片段合集`, author: "UP主示例",
-      author_id: "1", duration_s: 95 + index * 37, plays: 12_000 * (index + 1) * page, likes: null, cover_url: "",
-      page_url: `https://www.bilibili.com/video/BV1preview${page}${index}`,
-    })),
+    items: Array.from({ length: 8 }, (_, index) => {
+      // BV + 10 characters, like real Bilibili ids.
+      const bvid = `BV1Xe4y1${page}${index}7Q`;
+      return {
+        platform, video_id: bvid, title: PREVIEW_TITLES[(index + page - 1) % PREVIEW_TITLES.length][0], author: PREVIEW_AUTHORS[index % PREVIEW_AUTHORS.length],
+        author_id: String(546195 + index), duration_s: 95 + index * 37, plays: 12_000 * (index + 1) * page, likes: null,
+        cover_url: `https://picsum.photos/seed/${bvid}/480/300`, page_url: `https://www.bilibili.com/video/${bvid}`,
+      };
+    }),
   };
 }
 
+/** Result titles as the platforms write them, with what the local translator would give for the cleaned text. */
+const PREVIEW_TITLES: ReadonlyArray<[string, string, string]> = [
+  ["中国少有的R级犯罪片《猎虎贰》 #电影解说 #犯罪", "中国少有的R级犯罪片《猎虎贰》", "Phim tội phạm hiếm có của Trung Quốc: Săn hổ 2"],
+  ["1939年，穷女孩混进上流舞会🔥🔥 @电影小助手", "1939年，穷女孩混进上流舞会", "Năm 1939, cô gái nghèo lẻn vào dạ tiệc thượng lưu"],
+  ["男人抠出一块骨头，鼻子里竟藏着活物😱 #悬疑", "男人抠出一块骨头，鼻子里竟藏着活物", "Người đàn ông rút ra mẩu xương, trong mũi còn có vật sống"],
+  ["难道这就是传说中的完美犯罪吗？", "难道这就是传说中的完美犯罪吗？", "Đây có phải là tội ác hoàn hảo trong truyền thuyết?"],
+  ["仙侠剧名场面合集 太燃了 #仙侠 #古装", "仙侠剧名场面合集 太燃了", "Tổng hợp cảnh kinh điển phim tiên hiệp, quá cháy"],
+  ["农村生活vlog｜奶奶做的手工面条", "农村生活vlog｜奶奶做的手工面条", "Vlog đời sống nông thôn | Mì tự làm của bà"],
+  ["Vlog du lịch Trùng Khánh 4K", "Vlog du lịch Trùng Khánh 4K", "Vlog du lịch Trùng Khánh 4K"],
+  ["萌宠日常：猫咪第一次见到雪❄️ #萌宠", "萌宠日常：猫咪第一次见到雪", "Thú cưng mỗi ngày: mèo lần đầu thấy tuyết"],
+  ["国漫新番 第3集 高能片段", "国漫新番 第3集 高能片段", "Hoạt hình Trung Quốc mới tập 3, đoạn gay cấn"],
+];
+const PREVIEW_GLOSS = new Map(PREVIEW_TITLES.map(([, cleaned, vi]) => [cleaned, vi]));
+const PREVIEW_AUTHORS = ["影视飓风", "小片片说大片", "李子柒", "萌宠研究所"];
+
 function previewCollected(platform: string): unknown {
-  const host = platform === "kuaishou" ? "www.kuaishou.com/short-video" : platform === "douyin" ? "www.douyin.com/video" : "www.bilibili.com/video";
-  return Array.from({ length: 6 }, (_, index) => ({
-    page_url: `https://${host}/7${index}00000000000000`, title: `${PREVIEW_WORDS[index + 2]} · 视频 ${index + 1}`, cover_url: null,
-    author: "示例作者", fetch_url: `https://${host}/7${index}00000000000000`,
-  }));
+  return Array.from({ length: 6 }, (_, index) => {
+    const [title] = PREVIEW_TITLES[(index + 3) % PREVIEW_TITLES.length];
+    if (platform === "kuaishou") {
+      const id = `3x${["k8f2", "9qzm", "tw4e", "c7ua", "h2pn", "r5vd"][index]}${"abcdefghjk".slice(index, index + 4)}`;
+      // Kuaishou pages carry a direct media link on its CDN.
+      return { page_url: `https://www.kuaishou.com/short-video/${id}`, title, author: PREVIEW_AUTHORS[index % PREVIEW_AUTHORS.length],
+        cover_url: `https://picsum.photos/seed/${id}/300/480`, fetch_url: `https://v2.kwaicdn.com/ksc2/preview-${id}.mp4?pkey=preview` };
+    }
+    const host = platform === "douyin" ? "www.douyin.com/video" : "www.bilibili.com/video";
+    const id = platform === "douyin" ? `7431852694117${String(28_610 + index * 7_919).padStart(6, "0")}` : `BV1Kq4y1${index}m7Z`;
+    return { page_url: `https://${host}/${id}`, title, author: PREVIEW_AUTHORS[index % PREVIEW_AUTHORS.length],
+      cover_url: `https://picsum.photos/seed/${id}/${platform === "douyin" ? "300/480" : "480/300"}`, fetch_url: `https://${host}/${id}` };
+  });
 }
 
-/** A product batch of three videos, one every 3 s, that can be cancelled. */
 /** Stand-in for Windows Credential Manager. */
 const previewKeys = new Map<string, string>();
-let productStarted = 0;
-let productCancelled = 0;
-function previewProductStatus() {
-  const now = productCancelled || Date.now();
-  const done = Math.min(3, Math.floor((now - productStarted) / 3000));
-  const videos = Array.from({ length: done }, (_, index) => ({ index: index + 1, ok: true, path: `D:/Videos/DubFlow Output/Ban hang - preview/run-000000000000/video-${index + 1}.mp4`, duration_ms: 31_000 }));
-  if (productCancelled && done < 3) return { schema_version: 1, state: "CANCELLED", done, total: 3, message: done ? `Đã hủy. Giữ lại ${done} video đã xong.` : "Đã hủy.", videos };
-  return done < 3
-    ? { schema_version: 1, state: "RUNNING", done, total: 3, message: `Đang render video ${done + 1}/3…`, videos }
-    : { schema_version: 1, state: "COMPLETED", done, total: 3, message: "Đã tạo 3/3 video", videos };
+/** Product runs: one video every 3 s (1.5 s when the narration is reused), cancellable. */
+type PreviewProductRun = { started: number; cancelled: number; count: number; reused: boolean; name: string; durationMs: number; variants: string[] };
+const PREVIEW_PRODUCT_RUN = "D:\\Videos\\DubFlow Output\\Ban hang - Nồi chiên không dầu 5L\\run-0a1b2c3d4e5f";
+const productRuns = new Map<string, PreviewProductRun>([[PREVIEW_PRODUCT_RUN, {
+  started: 0, cancelled: 0, count: 2, reused: false, name: "Nồi chiên không dầu 5L", durationMs: 31_400,
+  variants: ["Nồi chiên không dầu 5 lít, chiên giòn mà không cần dầu. Hẹn giờ tới 60 phút, dễ rửa. Giá chỉ 299 nghìn, đặt ngay hôm nay!",
+    "Bạn muốn món chiên giòn mà ít dầu mỡ? Nồi chiên 5 lít này là lựa chọn cho cả nhà."],
+}]]);
+function previewProductStatus(dir: string) {
+  const run = productRuns.get(dir);
+  if (!run) return null;
+  const step = run.reused ? 1500 : 3000;
+  const now = run.cancelled || Date.now();
+  const done = Math.min(run.count, Math.floor((now - run.started) / step));
+  const videos = Array.from({ length: done }, (_, index) => ({ index: index + 1, ok: true, path: `${dir}\\video-${index + 1}.mp4`, duration_ms: run.durationMs, reused_voice: run.reused }));
+  if (run.cancelled && done < run.count) return { schema_version: 1, state: "CANCELLED", done, total: run.count, message: done ? `Đã hủy. Giữ lại ${done} video đã xong.` : "Đã hủy.", videos };
+  return done < run.count
+    ? { schema_version: 1, state: "RUNNING", done, total: run.count, message: run.reused ? `Dùng lại giọng đọc cũ, đang render video ${done + 1}/${run.count}…` : `Đang render video ${done + 1}/${run.count}…`, videos }
+    : { schema_version: 1, state: "COMPLETED", done, total: run.count, message: `Đã tạo ${done}/${run.count} video`, videos };
+}
+function previewSpec(dir: string) {
+  const run = productRuns.get(dir) ?? productRuns.get(PREVIEW_PRODUCT_RUN)!;
+  return { spec: { schema_version: 1, name: run.name, price: "299.000đ", voice_id: voices[0].voice_id, variants: run.variants,
+    visuals: ["D:\\Anh\\noi-chien.jpg", "D:\\Clip\\noi-chien-demo.mp4"], music: null, music_volume: 0.15,
+    background: `C:\\Users\\preview\\AppData\\Local\\DubFlow\\backgrounds\\${"b".repeat(64)}.png`, template: "ban-tin", speed: 1,
+    features: ["Dung tích 5 lít", "Hẹn giờ 60 phút", "Lòng nồi chống dính"], focus: { x: 0.3, y: 0.5 } } };
+}
+function previewProductRuns() {
+  return [...productRuns.entries()].reverse().map(([dir, run]) => ({
+    dir, name: run.name, template: "ban-tin", created: Math.floor((run.started || Date.now() - 86_400_000) / 1000), status: previewProductStatus(dir),
+  }));
+}
+/** Earlier compilations in the output folders, and the ones started in the preview. */
+function previewCompilationRuns() {
+  const spec = (title: string) => ({ schema_version: 1, title, layout: "bang-thong-tin", voice_id: voices[0].voice_id, speed: 1.1, music: null, music_volume: 0.15,
+    intro: "Chào mừng các bạn quay lại kênh.", outro: "Cảm ơn đã xem, hẹn gặp lại.",
+    items: PREVIEW_EDIT_LIBRARY.map((item, index) => ({ video: item.outputPath, title: item.title, lead: index ? "" : "Mở màn bằng một đoạn rất cuốn.", score: 8 - index,
+      pros: ["Hình đẹp"], cons: [], start_ms: null, end_ms: null })) });
+  const started = [...compilations.entries()].reverse().map(([dir, run]) => {
+    const done = Math.min(run.total, Math.floor((Date.now() - run.started) / 1000));
+    const state = run.cancelled ? "CANCELLED" : done === run.total ? "COMPLETED" : "RUNNING";
+    return { dir, created: Math.floor(run.started / 1000), spec: spec("Tổng hợp mới"),
+      status: { schema_version: 1, state, done, total: run.total, message: state === "RUNNING" ? "Đang tạo video tổng hợp…" : state === "CANCELLED" ? "Đã hủy tổng hợp." : "Đã tạo video tổng hợp.",
+        path: state === "COMPLETED" ? `${dir}/compilation.mp4` : null },
+      video: state === "COMPLETED" ? `${dir}/compilation.mp4` : null };
+  });
+  const old = "D:\\Videos\\DubFlow Output\\Tong hop - Top 3 phim ngan\\run-00000000a1b2";
+  const failed = "D:\\Videos\\DubFlow Output\\Tong hop - Phim co trang\\run-00000000c3d4";
+  return [...started,
+    { dir: old, created: 1_793_500_000, spec: spec("Top 3 phim ngắn đáng xem tuần này"), video: `${old}\\compilation.mp4`,
+      status: { schema_version: 1, state: "COMPLETED", done: 7, total: 7, message: "Đã tạo video tổng hợp.", path: `${old}\\compilation.mp4`, duration_ms: 202_500 } },
+    { dir: failed, created: 1_793_400_000, spec: spec("Phim cổ trang hay nhất"), video: null,
+      status: { schema_version: 1, state: "FAILED", done: 2, total: 6, message: "Phần 2: Trailer phim cổ trang tập 2: Mốc cắt nằm ngoài thời lượng video", path: null } },
+  ];
+}
+
+/** The preview's background library: one panel-sized image and one that needs cropping. */
+const previewBackgrounds = [
+  { id: "a".repeat(64), extension: "jpg", name: "nen-go.jpg", width: 1080, height: 720, path: `C:\\Users\\preview\\AppData\\Local\\DubFlow\\backgrounds\\${"a".repeat(64)}.jpg`, hue: 30 },
+  { id: "b".repeat(64), extension: "png", name: "hoa-van-rong.png", width: 1600, height: 900, path: `C:\\Users\\preview\\AppData\\Local\\DubFlow\\backgrounds\\${"b".repeat(64)}.png`, hue: 200 },
+];
+
+/** A stand-in background: a gradient with a grid, so dragging the focus shows. */
+async function previewBackgroundImage(width: number, height: number, hue: number): Promise<ArrayBuffer> {
+  const scale = Math.min(1, 720 / Math.max(width, height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const context = canvas.getContext("2d")!;
+  const fill = context.createLinearGradient(0, 0, canvas.width, canvas.height);
+  fill.addColorStop(0, `hsl(${hue} 55% 38%)`);
+  fill.addColorStop(1, `hsl(${hue + 60} 45% 18%)`);
+  context.fillStyle = fill;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.strokeStyle = "rgba(255,255,255,.18)";
+  context.lineWidth = 2;
+  for (let x = 0; x < canvas.width; x += 60) { context.beginPath(); context.moveTo(x, 0); context.lineTo(x, canvas.height); context.stroke(); }
+  for (let y = 0; y < canvas.height; y += 60) { context.beginPath(); context.moveTo(0, y); context.lineTo(canvas.width, y); context.stroke(); }
+  context.fillStyle = "rgba(255,255,255,.5)";
+  context.font = "bold 28px sans-serif";
+  context.fillText(`${width}×${height}`, 16, 40);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+  return blob!.arrayBuffer();
 }
 
 /** A 16:9 stand-in frame with a burned-in Chinese caption near the bottom. */

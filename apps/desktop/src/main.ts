@@ -1,13 +1,23 @@
-import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
-import { previewInvoke } from "./shell/preview_invoke.ts";
+import { confirmDialog } from "./shell/confirm.ts";
+import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
+import {
+  DEFAULTS_KEY, FIRST_RUN_DEFAULTS, LEGACY_DEFAULTS_KEY, readJobDefaults, serializeJobDefaults, type JobDefaults,
+} from "./features/queue/defaults.ts";
+import { matchesQueueFilter, type QueueFilter } from "./features/queue/view_model.ts";
 import { mountDiscovery } from "./features/discovery/view.ts";
 import { extractLinks } from "./features/links/extract.ts";
-import { fetchBadge, fetchMessage, shortPath, type FetchStatus } from "./features/links/status.ts";
+import { fetchBadge, fetchMessage, isDouyinLink, needsDouyinLogin, shortPath, type FetchStatus } from "./features/links/status.ts";
+import { addSample, fractionDone, progressLine, type Sample } from "./features/fetch/progress.ts";
+import { mountDouyinLogin } from "./features/douyin/view.ts";
 import { mountUpdates } from "./features/update/view.ts";
-import { DEFAULT_REGION, describeRegions, dragRegion, isBlurRegionList, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
+import { mountStorage } from "./features/storage/view.ts";
+import { queueOutputs } from "./features/storage/model.ts";
+import { DEFAULT_REGION, describeRegions, dragRegion, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
 import { mountPostSuggestions } from "./features/seo/view.ts";
 import { mountSourceCredit } from "./features/credit/view.ts";
 import { mountPackage } from "./features/package/view.ts";
@@ -15,13 +25,18 @@ import { mountShorts } from "./features/shorts/view.ts";
 import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
+import { mountEditor, type EditTarget } from "./features/edit/view.ts";
+import { createSfxLibrary } from "./features/sfx/library.ts";
+import { mountSfxSettings } from "./features/sfx/settings.ts";
+import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
+import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
 import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import {
   applySourceLanguage, chooseTranslator, effectiveTranslator, FAST_PHRASE_SYLLABLES_PER_SECOND, hachimiAllowed,
-  phrasePaces, reviewOverrides, saveReviewRevision, startJobRequest, translatorDefaults,
+  phrasePaces, reviewOverrides, saveReviewRevision, startJobRequest,
 } from "./features/translation_review/flow.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
@@ -60,7 +75,17 @@ function browserStorage(): SnapshotStorage {
 
 const queue = new QueueController(browserStorage());
 const pollers = new Map<string, number>();
-type FetchEntry = { status: FetchStatus; outputDir: string; timer: number };
+type FetchEntry = {
+  status: FetchStatus; outputDir: string; timer: number;
+  /** Bytes seen at each poll, for speed and time left. */
+  samples: Sample[];
+  /** Already retried once with a fresh Douyin session. */
+  authRetried: boolean;
+  /** Refreshing the Douyin session before that retry. */
+  renewing: boolean;
+  /** Finished; being copied to the download folder. */
+  saving: boolean;
+};
 const fetches = new Map<string, FetchEntry>();
 
 const $ = <T extends HTMLElement>(selector: string): T => {
@@ -70,14 +95,21 @@ const $ = <T extends HTMLElement>(selector: string): T => {
 };
 
 const queueList = $("#queue-list");
+const fetchList = $("#fetch-list");
 const dropZone = $("#drop-zone");
 const queueState = $("#queue-state");
 const inspector = $("#inspector");
+const queueScreen = $("#queue-content");
+const listToggle = $<HTMLButtonElement>("#list-toggle");
+const playerVideo = $<HTMLVideoElement>("#player-video");
+const playButton = $<HTMLButtonElement>("#player-play");
 const sourceCredit = mountSourceCredit(invoke);
 const packageVideo = mountPackage(invoke, { cpuOnly });
 // One AI choice and saved keys, shared by every AI feature. The inspector
 // sections below are used by the first render, so they are mounted up here.
 const claudeKey = createAiSession(hostKeyStore(invoke));
+// The sound-effect pack and the user's sound folder (editor Âm thanh, Cài đặt).
+const sfxLibrary = createSfxLibrary(invoke);
 const shorts = mountShorts(invoke, claudeKey);
 const reframe = mountReframe(invoke, claudeKey);
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
@@ -94,6 +126,7 @@ hachimiNeedsChinese.hidden = true;
 const translationEngineSelect = $<HTMLSelectElement>("#translation-engine");
 translationEngineSelect.after(hachimiNeedsChinese);
 const blurModeSelect = $<HTMLSelectElement>("#blur-mode");
+const coverStyleSelect = $<HTMLSelectElement>("#cover-style");
 const runAllButton = $<HTMLButtonElement>("#run-all");
 let batchRunning = false;
 let blurJobId: string | null = null;
@@ -107,6 +140,15 @@ const newVersionButton = $<HTMLButtonElement>("#new-processing-version");
 let voiceCatalog: VoiceCatalog | null = null;
 let voiceCatalogError = "";
 let voiceJobId: string | null = null;
+let queueFilter: QueueFilter = "all";
+/** A link still downloading (or failed) shown in the player instead of a job. */
+let selectedFetchId: string | null = null;
+type DetailTab = "result" | "setup" | "more";
+let detailTab: DetailTab = "result";
+/** The job and phase the current tab was chosen for; a new one picks the default tab again. */
+let detailTabKey = "";
+/** Durations the player has read, shown on the list thumbnails. */
+const knownDurations = new Map<string, number>();
 
 function selectedJob(): QueueJob | undefined {
   const snapshot = queue.getSnapshot();
@@ -154,11 +196,28 @@ function progressBar(fraction: number | null, state: JobStatusState): HTMLElemen
   return bar;
 }
 
-const AVATAR_COLORS = ["#6d66f5", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6"];
-function avatarColor(id: string): string {
+function hashOf(id: string): number {
   let hash = 0;
   for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+  return hash;
+}
+
+const AVATAR_COLORS = ["#6d66f5", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6"];
+function avatarColor(id: string): string {
+  return AVATAR_COLORS[hashOf(id) % AVATAR_COLORS.length];
+}
+
+// Muted placeholder colours for list thumbnails until real frames exist.
+const THUMB_TONES = ["oklch(0.30 0.025 60)", "oklch(0.29 0.025 230)", "oklch(0.28 0.03 320)", "oklch(0.30 0.025 160)"];
+const VIDEO_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10 9.5 4.5 2.5-4.5 2.5z" fill="currentColor"/></svg>`;
+const LINK_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>`;
+
+function jobThumb(id: string, icon: string, seconds?: number): HTMLElement {
+  const thumb = element("span", "job-thumb");
+  thumb.style.background = THUMB_TONES[hashOf(id) % THUMB_TONES.length];
+  thumb.innerHTML = icon;
+  if (seconds !== undefined) thumb.append(element("span", "job-dur", duration(seconds * 1000)));
+  return thumb;
 }
 
 function initials(name: string): string {
@@ -205,8 +264,11 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   const blurMode = job?.blurAuto ? "auto" : job?.blurRegions?.length ? "manual" : "off";
   // "Thủ công" stays selected while the user has not drawn a region yet.
   if (blurModeSelect.value !== "manual" || blurMode !== "off" || blurJobId === null) blurModeSelect.value = blurMode;
-  $("#blur-summary").textContent = blurMode === "auto" ? "Tự dò phụ đề và làm mờ khi nó xuất hiện" : describeRegions(job?.blurRegions);
+  const coverStyle = rememberedCoverStyle();
+  $("#blur-summary").textContent = blurMode === "auto" ? `Tự dò chữ gốc, che bằng ${describeCoverStyle(coverStyle)}` : describeRegions(job?.blurRegions);
   $("#blur-manual-row").hidden = blurModeSelect.value !== "manual";
+  $("#cover-style-row").hidden = blurModeSelect.value === "off";
+  coverStyleSelect.value = coverStyle.mode;
   sourceLanguageSelect.value = job?.sourceLanguage ?? "";
   // Hachimi only translates Chinese: English hides the choice, Auto shows Argos and asks for Chinese.
   const engine = job ? effectiveTranslator(job) : "argos";
@@ -245,46 +307,63 @@ function renderVoiceControls(job: QueueJob | undefined): void {
 
 function renderQueue(view: DesktopShellModel["view"]): void {
   const hasJobs = view.rows.length > 0;
-  dropZone.hidden = hasJobs || fetches.size > 0;
-  queueList.hidden = !hasJobs;
   $("#clear-queue").hidden = !hasJobs;
   renderRunAll();
   const { summary } = view;
-  $("#nav-count").textContent = String(summary.total);
+  const navCount = $("#nav-count");
+  navCount.textContent = String(summary.total);
+  navCount.hidden = summary.total === 0;
   $("#stat-running").textContent = String(summary.active);
   $("#stat-done").textContent = String(summary.completed);
   $("#stat-failed").textContent = String(summary.failed);
-  $("#queue-summary").textContent = hasJobs
-    ? [`${summary.total} video`, summary.active ? `${summary.active} đang chạy` : "", summary.queued ? `${summary.queued} chờ xử lý` : "",
-      summary.completed ? `${summary.completed} hoàn tất` : ""].filter(Boolean).join(" · ")
+  const queueSummary = $("#queue-summary");
+  queueSummary.textContent = hasJobs
+    ? [`${summary.total} video`, summary.active ? `${summary.active} đang chạy` : "", summary.queued ? `${summary.queued} chờ` : "",
+      summary.completed ? `${summary.completed} xong` : "", summary.failed ? `${summary.failed} lỗi` : ""].filter(Boolean).join(" · ")
     : "Chưa có video";
+  queueSummary.title = queueSummary.textContent;
 
   queueList.replaceChildren();
-  for (const row of view.rows) {
-    const item = element("li", `job${row.selected ? " selected" : ""}`);
+  const rows = view.rows.filter((row) => matchesQueueFilter(row.state, queueFilter));
+  queueList.hidden = rows.length === 0;
+  for (const row of rows) {
+    const selected = row.selected && selectedFetchId === null;
+    const item = element("li", `job${selected ? " selected" : ""}`);
     item.tabIndex = 0;
-    const thumb = element("span", "job-thumb");
-    thumb.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10 9.5 4.5 2.5-4.5 2.5z" fill="currentColor"/></svg>`;
-    const main = element("div", "job-main");
-    const meta = element("div", "job-meta");
-    meta.append(element("span", `mini-tag${row.dubbing ? "" : " muted"}`, row.dubbing ? "Lồng tiếng" : "Vietsub"));
+    if (selected) item.setAttribute("aria-current", "true");
+    const working = !["QUEUED", "COMPLETED", "FAILED"].includes(row.state);
+    const main = element("span", "job-main");
+    const meta = element("span", "job-meta");
+    meta.append(element("span", `dot ${tone(row.state, row.cancelled)}`), element("span", "msg", working ? row.status || row.stateLabel : row.stateLabel));
+    if (working && row.fraction !== null) meta.append(element("span", "pct", row.progress));
     if (row.revision) meta.append(element("span", "mini-tag muted", "Bản sửa"));
-    if (row.fromLink) meta.append(element("span", "mini-tag muted", "Từ link"));
-    meta.append(element("span", "msg", row.state === "QUEUED" ? row.origin : row.status));
     main.append(element("span", "job-title", row.title), meta);
-    if (row.state !== "QUEUED") main.append(progressBar(row.fraction, row.state));
-    const side = element("div", "job-side");
-    side.append(element("span", `badge ${tone(row.state, row.cancelled)}`, row.stateLabel));
-    if (row.state !== "QUEUED") side.append(element("span", "percent", row.progress));
-    item.append(thumb, main, side);
-    item.title = row.origin;
-    const select = () => queue.selectJob(row.id);
+    if (working) main.append(progressBar(row.fraction, row.state));
+    item.append(jobThumb(row.id, VIDEO_ICON, knownDurations.get(row.id)), main);
+    item.title = `${row.title}\n${row.origin}`;
+    const select = () => {
+      selectedFetchId = null;
+      setListOpen(false);
+      queue.selectJob(row.id);
+    };
     item.addEventListener("click", select);
     item.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") select();
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        select();
+      }
     });
     queueList.append(item);
   }
+  renderQueueEmpty();
+}
+
+function renderQueueEmpty(): void {
+  const empty = $("#queue-empty");
+  empty.hidden = !queueList.hidden || !fetchList.hidden;
+  empty.textContent = queue.getSnapshot().jobs.length || fetches.size
+    ? "Không có video nào ở mục này."
+    : "Chưa có video. Thêm từ máy hoặc dán link ở thanh trên cùng.";
 }
 
 function duration(ms: number): string {
@@ -305,7 +384,35 @@ function timingLabel(job: QueueJob, fraction: number | null): string {
   return `Đã chạy ${duration(elapsed)}` + (remaining === null ? "" : ` · còn khoảng ${remaining < 60_000 ? "dưới 1 phút" : `${Math.round(remaining / 60_000)} phút`}`);
 }
 
+/** Short stage names for the slim strip under the player; the full label is the tooltip. */
+const STAGE_SHORT: Record<string, string> = {
+  probe: "Kiểm tra", audio: "Tách", asr: "Nhận dạng", translate: "Dịch", subtitles: "Phụ đề",
+  dubbing: "Lồng tiếng", render: "Xuất", qc: "Kiểm tra lại",
+};
+
+function selectTab(tab: DetailTab): void {
+  detailTab = tab;
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".tabs [data-tab]")) {
+    const active = button.dataset.tab === tab;
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  }
+  $("#tab-result").hidden = tab !== "result";
+  $("#tab-setup").hidden = tab !== "setup";
+  $("#tab-more").hidden = tab !== "more";
+}
+
+function finishedLabel(job: QueueJob): string {
+  if (!job.startedAt || !job.finishedAt) return "Đã xong";
+  return `Đã xong sau ${duration(Date.parse(job.finishedAt) - Date.parse(job.startedAt))}`;
+}
+
 function renderInspector(job: QueueJob | null): void {
+  // A selected download has no options yet; the job's panels keep their state.
+  if (selectedFetchId !== null) {
+    inspector.hidden = true;
+    return;
+  }
   inspector.hidden = !job;
   sourceCredit.select(job);
   packageVideo.select(job);
@@ -313,36 +420,27 @@ function renderInspector(job: QueueJob | null): void {
   reframe.select(job);
   if (!job) return;
   const { status } = job;
-  $("#detail-name").textContent = job.displayName;
+  // Queued videos open on their options, everything else on its results.
+  const tabKey = `${job.id}:${status.state === "QUEUED"}`;
+  if (tabKey !== detailTabKey) {
+    detailTabKey = tabKey;
+    detailTab = status.state === "QUEUED" ? "setup" : "result";
+  }
+  selectTab(detailTab);
   $("#detail-path").textContent = job.originUrl ?? job.sourcePath;
-  const badge = $("#detail-state");
-  badge.className = `badge ${tone(status.state, isCancelled(status))}`;
-  badge.textContent = stateLabel(status.state, status.reason);
-  const fraction = progressFraction(status);
-  $("#detail-percent").textContent = status.state === "QUEUED" || fraction === null ? "" : `${Math.floor(fraction * 100)}%`;
-  const bar = $("#detail-bar");
-  bar.style.width = `${Math.round((fraction ?? 0) * 100)}%`;
-  bar.parentElement!.className = `bar ${status.state === "COMPLETED" ? "ok" : status.state === "FAILED" ? "err" : ""}`;
-  bar.parentElement!.hidden = status.state === "QUEUED";
-  $("#detail-timing").textContent = timingLabel(job, fraction);
-  $("#detail-message").textContent = status.state === "QUEUED"
-    ? "Chọn tùy chọn bên dưới rồi bấm “Bắt đầu xử lý”."
-    : displayJobStatus(status);
-
-  const stages = $("#stage-list");
-  stages.replaceChildren();
-  const active = activeStageIndex(status);
-  PIPELINE_STAGES.forEach((stage, index) => {
-    const item = element("li", "", stage.label);
-    if (stage.id === "dubbing" && !job.dubbing.enabled) item.classList.add("skipped");
-    else if (index < active) item.classList.add("done");
-    else if (index === active) item.classList.add(status.state === "FAILED" ? "failed" : "active");
-    stages.append(item);
-  });
-  stages.hidden = status.state === "QUEUED";
-  $("#create-report").hidden = !["FAILED", "COMPLETED"].includes(status.state);
+  $("#create-report-done").hidden = status.state !== "COMPLETED";
 
   const output = status.state === "COMPLETED" ? job.outputPath : null;
+  const pending = $("#result-pending");
+  pending.hidden = !!output;
+  pending.textContent = status.state === "QUEUED"
+    ? "Video lồng tiếng, Shorts và bản đóng gói sẽ hiện ở đây khi xử lý xong. Bạn vẫn đổi được thiết lập ở thẻ bên cạnh."
+    : ["FAILED", "BLOCKED_NEEDS_ACTION"].includes(status.state)
+      ? "Lần xử lý này chưa tạo ra video. Nguyên nhân và cách thử lại hiện trên khung video."
+      : "Video lồng tiếng, Shorts và bản đóng gói sẽ hiện ở đây khi xử lý xong.";
+  $("#open-post").hidden = !output;
+  $("#more-empty").hidden = !!output;
+  $("#result-title").textContent = finishedLabel(job);
   $("#result-card").hidden = !output;
   // Partial dubbing keeps the original voice for some lines; say so and point
   // to the review dialog, whose filter starts on those lines.
@@ -364,17 +462,350 @@ function renderInspector(job: QueueJob | null): void {
   cancelButton.disabled = !isActive(job);
   newVersionButton.hidden = !canCreateNewVersion(job);
   newVersionButton.disabled = !canCreateNewVersion(job);
-  $<HTMLButtonElement>("#remove-job").disabled = isActive(job);
   $("#action-hint").textContent = canCreateNewVersion(job)
     ? "Tạo bản mới để đổi giọng hoặc tùy chọn. Kết quả cũ vẫn được giữ lại."
     : isActive(job) ? "Có thể đóng ứng dụng — tiến trình được lưu checkpoint." : "";
+  const locked = $("#setup-locked");
+  locked.hidden = status.state === "QUEUED";
+  locked.textContent = canCreateNewVersion(job)
+    ? "Thiết lập của lần xử lý này đã khóa. Bấm “Xử lý lại với tùy chọn khác” để đổi."
+    : "Thiết lập đã khóa khi bắt đầu xử lý. Muốn đổi, hãy hủy rồi chạy lại.";
+}
+
+// In-app player: the finished video ("Bản Việt"), the source ("Bản gốc") or
+// an edited export picked in Kết quả ("Bản sửa").
+let playerMode: "output" | "source" | "edited" = "output";
+let playerJobId: string | null = null;
+/** The edited export shown as "Bản sửa" for the player's job. */
+let playerEditedPath: string | null = null;
+let playerPath: string | null = null;
+let playerRequest = 0;
+let failedActionsKey = "";
+const PLAYER_NOTE = "Xem video ngay trong ứng dụng DubFlow";
+
+function showPlaceholder(text: string): void {
+  $("#player-placeholder-text").textContent = text;
+  $("#player-placeholder").hidden = false;
+}
+
+function renderPlayButton(): void {
+  // While editing, other players may be playing the output (inserted clips).
+  const playing = editor.isPlaying() ?? (!playerVideo.paused && !playerVideo.ended);
+  const covered = !$("#player-busy").hidden || !$("#player-failed").hidden;
+  playButton.disabled = covered || !playerVideo.getAttribute("src") || playerVideo.readyState < 1;
+  playButton.classList.toggle("playing", playing);
+  playButton.setAttribute("aria-label", playing ? "Tạm dừng" : "Phát");
+  const length = Number.isFinite(playerVideo.duration) ? playerVideo.duration : 0;
+  // While editing, the time is on the edited output.
+  $("#player-time").textContent = editor.timeLabel() ?? `${duration(playerVideo.currentTime * 1000)} / ${duration(length * 1000)}`;
+}
+
+// Edit mode (Cắt ghép, Chèn): the player previews the edit; the panel and timeline replace the list and details.
+const editor = mountEditor(invoke, {
+  video: playerVideo,
+  confirm: confirmDialog,
+  refresh: () => {
+    if (lastModel) render(lastModel);
+    else if (editor.target && editor.target.kind !== "job") renderEditedStage(editor.target);
+  },
+  renderPlayer: renderPlayButton,
+  showError,
+  playExport: (jobId, path) => {
+    if (selectedJob()?.id !== jobId) return;
+    playerMode = "edited";
+    playerEditedPath = path;
+    playWhenLoaded = true;
+    if (lastModel) renderStage(lastModel.view.selected);
+  },
+  mediaUrl: async (path) => {
+    const allowed = await invoke<string | null>("allow_media", { path });
+    return allowed ? convertFileSrc(allowed) : null;
+  },
+  library: () => [
+    ...queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
+      .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath! })),
+    // The browser preview has no finished jobs of its own to insert.
+    ...(isTauri ? [] : PREVIEW_EDIT_LIBRARY),
+  ],
+  revise: async (job, outputDir) => {
+    const revisionId = queue.reviseJob(job.id, outputDir);
+    const revision = queue.getSnapshot().jobs.find((candidate) => candidate.id === revisionId);
+    if (revision) await startJob(revision);
+    return revisionId;
+  },
+  sfx: sfxLibrary,
+  ai: claudeKey,
+  openAiSettings: () => aiSettings.open(),
+  cpuOnly: () => cpuOnly(),
+  // A Bán hàng video or a compilation goes back to its page.
+  left: (target) => {
+    if (target.kind === "job" || !editOrigin) return;
+    const origin = editOrigin;
+    editOrigin = null;
+    showView(origin);
+  },
+});
+/** The page a Bán hàng video or a compilation was opened from (Issue #426). */
+let editOrigin: View | null = null;
+
+/** Open a Bán hàng video or a compilation in the editor, on the queue screen. */
+async function editVideo(target: EditTarget, origin: View): Promise<void> {
+  const previous = editOrigin;
+  editOrigin = origin;
+  showView("queue", origin);
+  if (await editor.openTarget(target)) return;
+  // Not opened: the edit that stayed open, else the page it came from.
+  editOrigin = previous;
+  if (editor.target) showView("queue", editor.target.kind === "job" ? "queue" : previous ?? "queue");
+  else showView(origin);
+}
+
+/** The middle column while another page's video is being edited. */
+function renderEditedStage(target: EditTarget): void {
+  dropZone.hidden = true;
+  $("#player-frame").hidden = false;
+  $("#player-controls").hidden = false;
+  $("#stages-strip").hidden = true;
+  $("#remove-job").hidden = true;
+  $("#player-busy").hidden = true;
+  $("#player-failed").hidden = true;
+  $("#player-mode").hidden = true;
+  $("#detail-name").textContent = target.displayName;
+  $("#detail-name").title = target.outputPath;
+  playerJobId = null;
+  setPlayerSource(target.outputPath);
+  $("#detail-timing").textContent = "";
+  renderPlayButton();
+}
+/** "Xem" on an edited export starts it as soon as it has loaded. */
+let playWhenLoaded = false;
+
+/** Load a local video into the player through the asset protocol. */
+function setPlayerSource(path: string | null, note = PLAYER_NOTE): void {
+  if (path === playerPath) {
+    if (!path) showPlaceholder(note);
+    return;
+  }
+  playerPath = path;
+  const request = ++playerRequest;
+  playerVideo.pause();
+  playerVideo.removeAttribute("src");
+  playerVideo.load();
+  showPlaceholder(note);
+  renderPlayButton();
+  if (!path) return;
+  invoke<string | null>("allow_media", { path }).then((allowed) => {
+    if (request !== playerRequest) return;
+    if (!allowed) {
+      showPlaceholder(isTauri ? "Không xem được video này trong ứng dụng." : "Bản xem thử trên trình duyệt không phát video; hãy mở ứng dụng DubFlow để xem.");
+      return;
+    }
+    playerVideo.src = convertFileSrc(allowed);
+  }).catch((error) => {
+    if (request === playerRequest) showPlaceholder(`Không mở được video để xem: ${String(error).slice(0, 160)}`);
+  });
+}
+
+playerVideo.addEventListener("loadeddata", () => {
+  $("#player-placeholder").hidden = true;
+  if (playWhenLoaded) void playerVideo.play().catch(() => undefined);
+  playWhenLoaded = false;
+  renderPlayButton();
+});
+playerVideo.addEventListener("loadedmetadata", () => {
+  if (playerJobId && Number.isFinite(playerVideo.duration) && !knownDurations.has(playerJobId)) {
+    knownDurations.set(playerJobId, playerVideo.duration);
+    if (lastModel) renderQueue(lastModel.view);
+  }
+  renderPlayButton();
+});
+playerVideo.addEventListener("error", () => {
+  if (playerVideo.getAttribute("src")) showPlaceholder("Trình xem trong ứng dụng chưa đọc được định dạng này. Hãy mở bằng trình phát khác.");
+  renderPlayButton();
+});
+for (const name of ["play", "pause", "ended", "timeupdate", "durationchange"]) playerVideo.addEventListener(name, renderPlayButton);
+const togglePlayback = (): void => {
+  if (playButton.disabled) return;
+  if (editor.target !== null) return editor.togglePlay();
+  if (playerVideo.paused || playerVideo.ended) void playerVideo.play().catch(() => undefined);
+  else playerVideo.pause();
+};
+playButton.addEventListener("click", togglePlayback);
+playerVideo.addEventListener("click", togglePlayback);
+for (const button of document.querySelectorAll<HTMLButtonElement>("#player-mode [data-mode]")) {
+  button.addEventListener("click", () => {
+    playerMode = button.dataset.mode === "source" ? "source" : button.dataset.mode === "edited" && playerEditedPath ? "edited" : "output";
+    if (lastModel) renderStage(lastModel.view.selected);
+  });
+}
+
+function renderStages(job: QueueJob): void {
+  const { status } = job;
+  const badge = $("#detail-state");
+  badge.className = `badge ${tone(status.state, isCancelled(status))}`;
+  badge.textContent = stateLabel(status.state, status.reason);
+  const fraction = progressFraction(status);
+  $("#detail-percent").textContent = status.state === "QUEUED" || fraction === null ? "" : `${Math.floor(fraction * 100)}%`;
+  const stages = $("#stage-list");
+  stages.replaceChildren();
+  const active = activeStageIndex(status);
+  PIPELINE_STAGES.forEach((stage, index) => {
+    const item = element("li");
+    item.title = stage.label;
+    item.append(element("span", "stage-dot"), element("span", "stage-label", STAGE_SHORT[stage.id] ?? stage.label));
+    if (stage.id === "dubbing" && !job.dubbing.enabled) item.classList.add("skipped");
+    else if (index < active) item.classList.add("done");
+    else if (index === active) item.classList.add(["FAILED", "BLOCKED_NEEDS_ACTION"].includes(status.state) ? "failed" : "active");
+    stages.append(item);
+  });
+}
+
+function actionButton(label: string, className: string, onClick: () => void): HTMLButtonElement {
+  const button = element("button", className, label);
+  button.type = "button";
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+/** The middle column: drop zone, the selected job's video, or a download in progress. */
+function renderStage(job: QueueJob | null): void {
+  const edited = editor.target;
+  if (edited && edited.kind !== "job") {
+    renderEditedStage(edited);
+    return;
+  }
+  const fetch = selectedFetchId === null ? undefined : fetches.get(selectedFetchId);
+  if (selectedFetchId !== null && !fetch) selectedFetchId = null;
+  const subject = !!job || !!fetch;
+  dropZone.hidden = subject;
+  $("#player-frame").hidden = !subject;
+  $("#player-controls").hidden = !subject;
+  $("#stages-strip").hidden = !job || !!fetch;
+  $("#remove-job").hidden = !job || !!fetch;
+  const busy = $("#player-busy");
+  const failed = $("#player-failed");
+  if (fetch) {
+    renderFetchStage(fetch);
+    renderPlayButton();
+    return;
+  }
+  if (!job) {
+    $("#detail-name").textContent = queue.getSnapshot().jobs.length ? "Chọn một video trong danh sách" : "Thêm video để bắt đầu";
+    $("#player-mode").hidden = true;
+    busy.hidden = failed.hidden = true;
+    playerJobId = null;
+    setPlayerSource(null);
+    renderPlayButton();
+    return;
+  }
+  const { status } = job;
+  if (playerJobId !== job.id) {
+    playerMode = "output";
+    playerEditedPath = null;
+  }
+  playerJobId = job.id;
+  $("#detail-name").textContent = job.displayName;
+  $("#detail-name").title = job.displayName;
+  $<HTMLButtonElement>("#remove-job").disabled = isActive(job);
+  const done = status.state === "COMPLETED" && !!job.outputPath;
+  $("#player-mode").hidden = !done;
+  $("#player-mode-edited").hidden = !playerEditedPath;
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#player-mode [data-mode]")) {
+    button.setAttribute("aria-selected", String(button.dataset.mode === playerMode));
+  }
+  // Edit mode always previews the finished video.
+  const editing = editor.jobId === job.id;
+  setPlayerSource(done && (editing || playerMode === "output") ? job.outputPath
+    : done && playerMode === "edited" && playerEditedPath ? playerEditedPath : job.sourcePath);
+
+  const fraction = progressFraction(status);
+  const stopped = ["FAILED", "BLOCKED_NEEDS_ACTION"].includes(status.state);
+  busy.hidden = stopped || ["QUEUED", "COMPLETED"].includes(status.state);
+  failed.hidden = !stopped;
+  if (!busy.hidden) {
+    const stage = PIPELINE_STAGES[Math.min(Math.max(activeStageIndex(status), 0), PIPELINE_STAGES.length - 1)];
+    $("#busy-title").textContent = isActive(job) && fraction !== null && status.state !== "RECOVERED"
+      ? `${stage.label} · ${Math.floor(fraction * 100)}%`
+      : stateLabel(status.state, status.reason);
+    $("#detail-bar").style.width = `${Math.round((fraction ?? 0) * 100)}%`;
+    $("#detail-bar").parentElement!.hidden = fraction === null;
+    $("#detail-bar").parentElement!.classList.remove("indeterminate");
+    $("#detail-message").textContent = displayJobStatus(status);
+    const resume = $<HTMLButtonElement>("#busy-resume");
+    resume.hidden = status.state !== "RECOVERED";
+    resume.disabled = !canStart(job);
+    const cancel = $<HTMLButtonElement>("#busy-cancel");
+    cancel.textContent = "Hủy xử lý";
+    cancel.hidden = !isActive(job);
+    cancel.disabled = cancelButton.disabled;
+    $("#busy-folder").hidden = true;
+  }
+  if (stopped) {
+    const cancelled = isCancelled(status);
+    $("#failed-title").textContent = cancelled ? "Đã hủy xử lý video này"
+      : status.state === "BLOCKED_NEEDS_ACTION" ? "Video này đang chờ bạn thao tác" : "Không xử lý được video này";
+    $("#failed-cause").textContent = cancelled ? "Bấm Thử lại để xử lý lại từ đầu với cùng thiết lập." : displayJobStatus(status) || "Không rõ nguyên nhân.";
+    $("#failed-more").hidden = false;
+    const key = `job:${job.id}:${status.state}`;
+    if (failedActionsKey !== key) {
+      failedActionsKey = key;
+      $("#failed-actions").replaceChildren(actionButton("Thử lại", "btn primary", () => void retrySelected()));
+    }
+  } else {
+    failedActionsKey = "";
+  }
+  $("#detail-timing").textContent = timingLabel(job, fraction) || (status.state === "QUEUED" ? "Chưa bắt đầu" : stateLabel(status.state, status.reason));
+  renderStages(job);
+  renderPlayButton();
+}
+
+function renderFetchStage(entry: FetchEntry): void {
+  const { status } = entry;
+  playerJobId = null;
+  $("#detail-name").textContent = fetchName(status);
+  $("#detail-name").title = `${fetchName(status)}\n${status.url}`;
+  $("#player-mode").hidden = true;
+  setPlayerSource(null, "Video hiện ở đây khi tải xong");
+  const view = fetchView(entry, Date.now());
+  $("#player-busy").hidden = view.failed;
+  $("#player-failed").hidden = !view.failed;
+  const provider = PROVIDER_NAMES[status.provider] ?? status.provider;
+  if (!view.failed) {
+    $("#busy-title").textContent = entry.saving || entry.renewing ? view.badge : `${view.badge} từ ${provider}`;
+    const bar = $("#detail-bar");
+    const track = bar.parentElement!;
+    track.hidden = !view.bar;
+    track.classList.toggle("indeterminate", view.fraction === null);
+    bar.style.width = view.fraction === null ? "" : `${Math.round(view.fraction * 100)}%`;
+    $("#detail-message").textContent = `${view.message}\nLưu vào ${shortPath(entry.outputDir)}`;
+    $("#busy-resume").hidden = true;
+    const cancel = $<HTMLButtonElement>("#busy-cancel");
+    cancel.hidden = entry.saving || entry.renewing;
+    cancel.disabled = false;
+    cancel.textContent = "Hủy tải";
+    $("#busy-folder").hidden = false;
+    failedActionsKey = "";
+  } else {
+    $("#failed-title").textContent = "Không tải được video này";
+    $("#failed-cause").textContent = view.message;
+    $("#failed-more").hidden = true;
+    const key = `fetch:${status.scan_id}:${status.state}:${needsDouyinLogin(status)}`;
+    if (failedActionsKey !== key) {
+      failedActionsKey = key;
+      $("#failed-actions").replaceChildren(...failedFetchActions(entry));
+    }
+  }
+  $("#detail-timing").textContent = view.badge;
 }
 
 let lastModel: DesktopShellModel | null = null;
 function render(model: DesktopShellModel): void {
   lastModel = model;
+  if (selectedFetchId !== null && !fetches.has(selectedFetchId)) selectedFetchId = null;
+  editor.select(selectedFetchId === null ? model.view.selected : null);
   renderQueue(model.view);
   renderInspector(model.view.selected);
+  renderStage(model.view.selected);
 }
 
 const shell = connectDesktopShell(queue, render);
@@ -415,38 +846,33 @@ function beginPolling(jobId: string): void {
 
 // The last options the user chose become the defaults for newly added videos,
 // so a batch needs its dubbing/voice/burn-in set once (per-viewer convenience).
-const DEFAULTS_KEY = "dubflow.defaults.v1";
-type JobDefaults = { dubbing: boolean; voiceId: string | null; burnIn: boolean; sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[]; blurAuto?: true; multiVoice?: true; separateBackground?: true };
-
-function readDefaults(): JobDefaults | null {
+// "Ghi nhớ thiết lập lần trước" off: new videos start from the first-run defaults.
+const REMEMBER_KEY = "dubflow.rememberDefaults.v1";
+function rememberEnabled(): boolean {
   try {
-    const value = JSON.parse(window.localStorage.getItem(DEFAULTS_KEY) ?? "null") as Partial<JobDefaults> | null;
-    if (!value || typeof value.dubbing !== "boolean" || typeof value.burnIn !== "boolean") return null;
-    return translatorDefaults<JobDefaults>({ dubbing: value.dubbing, burnIn: value.burnIn, voiceId: typeof value.voiceId === "string" ? value.voiceId : null,
-      sourceLanguage: value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? value.sourceLanguage : undefined,
-      translationEngine: value.translationEngine === "hachimi" ? "hachimi" : undefined,
-      blurRegions: isBlurRegionList(value.blurRegions) ? value.blurRegions : undefined,
-      blurAuto: value.blurAuto === true ? true : undefined,
-      multiVoice: value.multiVoice === true ? true : undefined,
-      separateBackground: value.separateBackground === true ? true : undefined });
+    return window.localStorage.getItem(REMEMBER_KEY) !== "0";
   } catch {
-    return null;
+    return true;
+  }
+}
+
+function currentDefaults(): JobDefaults {
+  if (!rememberEnabled()) return FIRST_RUN_DEFAULTS;
+  try {
+    return readJobDefaults(window.localStorage.getItem(DEFAULTS_KEY), window.localStorage.getItem(LEGACY_DEFAULTS_KEY)) ?? FIRST_RUN_DEFAULTS;
+  } catch {
+    return FIRST_RUN_DEFAULTS;
   }
 }
 
 function rememberDefaults(job: QueueJob): void {
   try {
-    window.localStorage.setItem(DEFAULTS_KEY, JSON.stringify(translatorDefaults({ dubbing: job.dubbing.enabled, voiceId: job.dubbing.voiceId,
-      burnIn: job.burnIn ?? true, sourceLanguage: job.sourceLanguage, translationEngine: job.translationEngine,
-      blurRegions: job.blurRegions, blurAuto: job.blurAuto, multiVoice: job.multiVoice,
-      separateBackground: job.separateBackground })));
+    window.localStorage.setItem(DEFAULTS_KEY, serializeJobDefaults(job));
   } catch {
     // Defaults are a convenience; the queue works without storage.
   }
 }
 
-// A first-time user gets a dubbed video, not subtitles only.
-const FIRST_RUN_DEFAULTS: JobDefaults = { dubbing: true, voiceId: null, burnIn: true };
 /** Videos added before the voice catalog loaded; they get their dubbing default once it arrives. */
 const awaitingCatalog = new Set<string>();
 
@@ -460,13 +886,13 @@ function applyDubbingDefault(id: string, voiceId: string | null): void {
 }
 
 function applyDefaults(jobIds: readonly string[]): void {
-  const defaults = readDefaults() ?? FIRST_RUN_DEFAULTS;
+  const defaults = currentDefaults();
   for (const id of jobIds) {
     try {
       if (!defaults.burnIn) queue.setBurnIn(id, false);
       if (defaults.sourceLanguage) queue.setSourceLanguage(id, defaults.sourceLanguage);
       if (defaults.blurRegions) queue.setBlurRegions(id, defaults.blurRegions);
-      if (defaults.blurAuto) queue.setBlurAuto(id, true);
+      else if (defaults.blurAuto) queue.setBlurAuto(id, true);
       if (defaults.multiVoice) queue.setMultiVoice(id, true);
       if (defaults.separateBackground) queue.setSeparateBackground(id, true);
       if (defaults.translationEngine) queue.setTranslationEngine(id, defaults.translationEngine);
@@ -486,6 +912,10 @@ function addPaths(paths: string[]): void {
   showError("");
   const added = queue.addPaths(videos);
   applyDefaults(added);
+  if (added.length) {
+    selectedFetchId = null;
+    showView("queue");
+  }
   if (added.length && !selectedJob()) queue.selectJob(added[0]);
   else if (added.length) queue.selectJob(added[added.length - 1]);
 }
@@ -524,8 +954,9 @@ function runnableJobs(): QueueJob[] {
 
 function renderRunAll(): void {
   const waiting = runnableJobs().length;
-  runAllButton.hidden = waiting < 2 && !batchRunning;
-  runAllButton.textContent = batchRunning ? `Dừng hàng đợi (${waiting} chờ)` : `Xử lý tất cả (${waiting})`;
+  runAllButton.hidden = waiting < 1 && !batchRunning;
+  $("#queue-col-foot").hidden = runAllButton.hidden;
+  runAllButton.textContent = batchRunning ? `Dừng hàng đợi (${waiting} chờ)` : `Bắt đầu ${waiting} video đang chờ`;
   runAllButton.title = batchRunning ? "Video đang chạy sẽ chạy xong; các video còn lại không tự bắt đầu" : "Xử lý lần lượt từng video đang chờ";
 }
 
@@ -608,10 +1039,9 @@ cpuOnlyToggle.addEventListener("change", () => {
 });
 
 // One click: a small zip of this job's reports (no media) on the Desktop, shown in Explorer.
-$("#create-report").addEventListener("click", async () => {
+async function createReport(button: HTMLButtonElement): Promise<void> {
   const job = selectedJob();
   if (!job) return;
-  const button = $<HTMLButtonElement>("#create-report");
   button.disabled = true;
   button.textContent = "Đang tạo báo cáo…";
   try {
@@ -619,20 +1049,43 @@ $("#create-report").addEventListener("click", async () => {
     button.textContent = "Đã tạo báo cáo trên Desktop";
     button.title = path;
   } catch (error) {
-    button.textContent = "Tạo báo cáo lỗi";
+    button.textContent = "Gửi báo cáo lỗi";
     showError(String(error).slice(0, 400));
   } finally {
     button.disabled = false;
-    window.setTimeout(() => { button.textContent = "Tạo báo cáo lỗi"; }, 6000);
+    window.setTimeout(() => { button.textContent = "Gửi báo cáo lỗi"; }, 6000);
   }
-});
+}
+for (const id of ["#create-report", "#create-report-done"]) {
+  const button = $<HTMLButtonElement>(id);
+  button.addEventListener("click", () => void createReport(button));
+}
+
+/** The look last applied in Phụ đề, the default for new videos (none: today's look). */
+function rememberedSubtitleStyle(): SubtitleStyle | null {
+  try {
+    return storedStyle(window.localStorage.getItem(STYLE_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+/** The cover last applied in Che or chosen in Thiết lập, the default for new videos (none: edge stretch). */
+function rememberedCoverStyle(): CoverStyle {
+  try {
+    return storedCoverStyle(window.localStorage.getItem(COVER_STORAGE_KEY));
+  } catch {
+    return storedCoverStyle(null);
+  }
+}
 
 async function startJob(job: QueueJob): Promise<void> {
   if (!canStart(job)) return;
   startButton.disabled = true;
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    const started = await invoke<{ output_dir: string } | null>("start_job", startJobRequest(job, outputRoot(), cpuOnly()));
+    const started = await invoke<{ output_dir: string } | null>("start_job",
+      startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle()));
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
     if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);
@@ -652,11 +1105,41 @@ startButton.addEventListener("click", () => {
   const selected = selectedJob();
   if (selected) void startJob(selected);
 });
+$("#busy-resume").addEventListener("click", () => startButton.click());
 
-cancelButton.addEventListener("click", async () => {
+/** Copy a stopped job's options to its new version, so "Thử lại" reruns the same choices. */
+function copyOptions(from: QueueJob, id: string): void {
+  if (from.burnIn === false) queue.setBurnIn(id, false);
+  if (from.sourceLanguage) queue.setSourceLanguage(id, from.sourceLanguage);
+  if (from.translationEngine) queue.setTranslationEngine(id, from.translationEngine);
+  if (from.blurRegions?.length) queue.setBlurRegions(id, from.blurRegions);
+  else if (from.blurAuto) queue.setBlurAuto(id, true);
+  if (from.multiVoice) queue.setMultiVoice(id, true);
+  if (from.speakerVoices) queue.setSpeakerVoices(id, from.speakerVoices);
+  if (from.separateBackground) queue.setSeparateBackground(id, true);
+}
+
+/** "Thử lại" on a stopped video: a new version with the same options, started at once. */
+async function retrySelected(): Promise<void> {
+  const selected = selectedJob();
+  if (!selected) return;
+  if (canStart(selected)) return startJob(selected);
+  if (!canCreateNewVersion(selected)) return;
+  try {
+    const id = queue.retryJob(selected.id);
+    copyOptions(selected, id);
+    const retry = queue.getSnapshot().jobs.find((job) => job.id === id);
+    if (retry && canStart(retry)) await startJob(retry);
+  } catch (error) {
+    showError(`Không thử lại được: ${String(error).slice(0, 180)}`);
+  }
+}
+
+async function cancelSelected(): Promise<void> {
   const selected = selectedJob();
   if (!selected || !isActive(selected)) return;
   cancelButton.disabled = true;
+  $<HTMLButtonElement>("#busy-cancel").disabled = true;
   try {
     await invoke("cancel_job", { jobId: selected.id });
     beginPolling(selected.id);
@@ -667,6 +1150,16 @@ cancelButton.addEventListener("click", async () => {
       message: "Không thể hủy: " + String(error).slice(0, 300),
     });
   }
+}
+cancelButton.addEventListener("click", () => void cancelSelected());
+$("#busy-cancel").addEventListener("click", () => {
+  const entry = selectedFetchId === null ? undefined : fetches.get(selectedFetchId);
+  if (entry) void cancelFetch(entry.status.scan_id);
+  else void cancelSelected();
+});
+$("#busy-folder").addEventListener("click", () => {
+  const entry = selectedFetchId === null ? undefined : fetches.get(selectedFetchId);
+  if (entry) openFolder(entry.outputDir);
 });
 
 newVersionButton.addEventListener("click", () => {
@@ -685,14 +1178,28 @@ $("#remove-job").addEventListener("click", () => {
   stopPolling(selected.id);
   queue.removeJob(selected.id);
 });
+$("#failed-remove").addEventListener("click", () => $("#remove-job").click());
 
-$("#clear-queue").addEventListener("click", () => {
+$("#clear-queue").addEventListener("click", async () => {
   const jobs = queue.getSnapshot().jobs;
   const active = jobs.filter((job) => isActive(job)).length;
-  if (!window.confirm(active
-    ? `Xóa ${jobs.length - active} video khỏi danh sách? ${active} video đang chạy sẽ được giữ lại.`
-    : `Xóa toàn bộ ${jobs.length} video khỏi danh sách? File kết quả trên ổ đĩa không bị xóa.`)) return;
-  for (const job of jobs) {
+  const removable = jobs.length - active;
+  if (!removable) {
+    showError("Video đang chạy không xóa được khỏi danh sách; hãy hủy xử lý trước.");
+    return;
+  }
+  const confirmed = await confirmDialog({
+    title: `Xóa ${removable} video khỏi danh sách?`,
+    message: active
+      ? `${active} video đang chạy vẫn được giữ lại. File kết quả trên ổ đĩa không bị xóa.`
+      : "File kết quả trên ổ đĩa không bị xóa.",
+    confirmLabel: `Xóa ${removable} video`,
+    cancelLabel: "Giữ lại",
+    danger: true,
+  });
+  if (!confirmed) return;
+  // Re-read: a video may have started while the dialog was open.
+  for (const job of queue.getSnapshot().jobs) {
     if (isActive(job)) continue;
     stopPolling(job.id);
     queue.removeJob(job.id);
@@ -717,9 +1224,10 @@ $("#reveal-output").addEventListener("click", () => {
 });
 
 // Links: the host downloads through the supervisor's source service; the
-// finished file joins the queue as a local job with its own output folder.
-const fetchList = $("#fetch-list");
+// finished file is copied to the download folder and joins the queue as a
+// local job with its own output folder.
 const PROVIDER_NAMES: Record<string, string> = { bilibili: "Bilibili", douyin: "Douyin", generic: "Link video" };
+const CLOSE_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 
 function linkName(url: string): string {
   try {
@@ -731,108 +1239,267 @@ function linkName(url: string): string {
   }
 }
 
+/** The video's title when known (Khám phá), else the link's last part. */
+function fetchName(status: FetchStatus): string {
+  return status.title?.trim() || linkName(status.url);
+}
+
 function openFolder(path: string): void {
   invoke("open_folder", { path }).catch((error) => showError(`Không mở được thư mục: ${String(error).slice(0, 160)}`));
 }
 
+/** What a download row and the player overlay show right now. */
+function fetchView(entry: FetchEntry, now: number, compact = false): { failed: boolean; badge: string; message: string; fraction: number | null; bar: boolean } {
+  const { status } = entry;
+  if (entry.saving) return { failed: false, badge: "Đang lưu video", message: "Đang chép video vào thư mục tải về…", fraction: null, bar: true };
+  if (entry.renewing) return { failed: false, badge: "Đang thử lại", message: "Đang làm mới phiên Douyin rồi tải lại…", fraction: null, bar: true };
+  if (status.state === "downloading") {
+    const line = progressLine(status.downloaded_bytes, status.total_bytes, entry.samples, compact);
+    return { failed: false, badge: fetchBadge(status.state), message: status.detail ? `${status.detail} · ${line}` : line,
+      fraction: fractionDone(status.downloaded_bytes, status.total_bytes), bar: true };
+  }
+  return { failed: status.state === "failed", badge: fetchBadge(status.state), message: fetchMessage(status, now), fraction: null, bar: status.state === "preparing" };
+}
+
+/** A determinate bar, or a sliding one when the size is not known yet. */
+function fetchBar(fraction: number | null): HTMLElement {
+  const bar = progressBar(fraction, "RUNNING");
+  if (fraction === null) {
+    bar.classList.add("indeterminate");
+    bar.firstElementChild!.removeAttribute("style");
+    bar.style.setProperty("--phase", `-${Date.now() % 1400}ms`);
+  }
+  return bar;
+}
+
 function renderFetches(): void {
+  const stale = selectedFetchId !== null && !fetches.has(selectedFetchId);
+  if (stale) selectedFetchId = null;
   fetchList.replaceChildren();
-  fetchList.hidden = fetches.size === 0;
-  dropZone.hidden = fetches.size > 0 || queue.getSnapshot().jobs.length > 0;
+  fetchList.hidden = fetches.size === 0 || queueFilter === "done";
   const now = Date.now();
-  for (const { status, outputDir } of fetches.values()) {
-    const failed = status.state === "failed";
-    const item = element("li", `job${failed ? " failed" : ""}`);
-    const thumb = element("span", "job-thumb");
-    thumb.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>`;
-    const main = element("div", "job-main");
-    const meta = element("div", "job-meta");
-    meta.append(element("span", "mini-tag muted", PROVIDER_NAMES[status.provider] ?? status.provider));
-    meta.append(element("span", `msg${failed ? " err" : ""}`, fetchMessage(status, now)));
-    main.append(element("span", "job-title", linkName(status.url)), meta);
-    if (!failed && status.state !== "queued") {
-      const fraction = status.state === "downloading" && status.total_bytes ? status.downloaded_bytes / status.total_bytes : null;
-      main.append(progressBar(fraction, "RUNNING"));
+  for (const entry of fetches.values()) {
+    const { status, outputDir } = entry;
+    const view = fetchView(entry, now, true);
+    const selected = selectedFetchId === status.scan_id;
+    const item = element("li", `job${view.failed ? " failed" : ""}${selected ? " selected" : ""}`);
+    item.tabIndex = 0;
+    if (selected) item.setAttribute("aria-current", "true");
+    const main = element("span", "job-main");
+    const meta = element("span", "job-meta");
+    meta.append(element("span", `dot ${view.failed ? "err" : status.state === "queued" ? "" : "run"}`),
+      element("span", `msg${view.failed ? " err" : ""}`, view.failed ? "Tải không được" : view.message));
+    const title = element("span", "job-title", fetchName(status));
+    main.append(title, meta);
+    if (view.bar) main.append(fetchBar(view.fraction));
+    item.append(jobThumb(status.scan_id, LINK_ICON), main);
+    if (!entry.saving) {
+      const remove = element("button", "icon-btn job-dismiss");
+      remove.type = "button";
+      remove.title = "Hủy tải";
+      remove.setAttribute("aria-label", "Hủy tải");
+      remove.innerHTML = CLOSE_ICON;
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void cancelFetch(status.scan_id);
+      });
+      item.append(remove);
     }
     // Where the results of this link will be saved, from the moment it is added.
-    const where = element("div", "fetch-where");
-    const open = element("button", "link", "Mở thư mục");
-    open.type = "button";
-    open.addEventListener("click", () => openFolder(outputDir));
-    where.append(element("span", "path", `Lưu vào ${shortPath(outputDir)}`), open);
-    where.title = outputDir;
-    main.append(where);
-    if (failed) main.append(status.provider === "douyin" ? douyinActions(status) : retryAction(status));
-    const side = element("div", "job-side");
-    side.append(element("span", `badge ${failed ? "err" : status.state === "queued" ? "" : "run"}`, fetchBadge(status.state)));
-    if (failed || status.state === "queued") {
-      const dismiss = element("button", "icon-btn");
-      dismiss.type = "button";
-      dismiss.title = dismiss.ariaLabel = failed ? "Bỏ qua" : "Bỏ link này";
-      dismiss.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
-      dismiss.addEventListener("click", async () => {
-        if (status.state === "queued" && !(await invoke<boolean>("withdraw_fetch", { scanId: status.scan_id }))) return;
-        window.clearInterval(fetches.get(status.scan_id)?.timer);
-        fetches.delete(status.scan_id);
-        renderFetches();
-      });
-      side.append(dismiss);
-    }
-    item.append(thumb, main, side);
-    item.title = status.url;
+    item.title = `${fetchName(status)}\n${status.url}\nLưu vào ${outputDir}`;
+    const select = () => {
+      selectedFetchId = status.scan_id;
+      setListOpen(false);
+      renderFetches();
+    };
+    item.addEventListener("click", select);
+    item.addEventListener("keydown", (event) => {
+      if (event.target === item && (event.key === "Enter" || event.key === " ")) {
+        event.preventDefault();
+        select();
+      }
+    });
     fetchList.append(item);
+  }
+  renderQueueEmpty();
+  // The player follows the selected download, and returns to the job once it is gone.
+  if ((selectedFetchId !== null || stale) && lastModel) render(lastModel);
+}
+
+function scheduleFetchPoll(entry: FetchEntry): void {
+  window.clearTimeout(entry.timer);
+  const active = entry.status.state === "preparing" || entry.status.state === "downloading";
+  entry.timer = window.setTimeout(() => void pollFetch(entry.status.scan_id), active ? 1000 : 1500);
+}
+
+/** Take a row off the list (the host has already let go of it). */
+function removeFetch(scanId: string): void {
+  window.clearTimeout(fetches.get(scanId)?.timer);
+  fetches.delete(scanId);
+  renderFetches();
+}
+
+/**
+ * The row's × and the overlay's "Hủy tải": a link being prepared or
+ * downloading asks first; a waiting or failed one goes at once.
+ */
+async function cancelFetch(scanId: string): Promise<void> {
+  const entry = fetches.get(scanId);
+  if (!entry || entry.saving) return;
+  if (["preparing", "downloading"].includes(entry.status.state) && !(await confirmDialog({
+    title: "Hủy tải video này?",
+    message: "Phần đã tải sẽ bị bỏ.",
+    confirmLabel: "Hủy tải",
+    cancelLabel: "Tiếp tục tải",
+    danger: true,
+  }))) return;
+  // Re-read: the download may have finished while the dialog was open.
+  const current = fetches.get(scanId);
+  if (!current || current.saving) return;
+  if (!["failed", "cancelled"].includes(current.status.state)) {
+    try {
+      if (!(await invoke<boolean>("cancel_fetch", { scanId }))) {
+        const latest = await invoke<FetchStatus | null>("fetch_status", { scanId }).catch(() => null);
+        // Finished just now: it joins the queue as usual.
+        if (latest?.state === "done") return;
+      }
+    } catch (error) {
+      showError(`Không hủy được: ${String(error).slice(0, 160)}`);
+      return;
+    }
+  }
+  removeFetch(scanId);
+}
+
+/** Start a failed link again; the new download takes over its place in the player. */
+async function refetch(entry: FetchEntry, authRetried = entry.authRetried): Promise<void> {
+  const { status } = entry;
+  const scanId = await startFetch(status.url, status.title ?? undefined, authRetried);
+  const wasSelected = selectedFetchId === status.scan_id;
+  window.clearTimeout(entry.timer);
+  fetches.delete(status.scan_id);
+  if (wasSelected) selectedFetchId = scanId;
+  renderFetches();
+}
+
+/** A Douyin link refused for lack of a session: refresh it once and retry by itself. */
+async function retryWithFreshSession(entry: FetchEntry): Promise<void> {
+  entry.authRetried = true;
+  entry.renewing = true;
+  renderFetches();
+  try {
+    await douyin.ensureSession(true);
+    if (fetches.get(entry.status.scan_id) !== entry) return;
+    await refetch(entry, true);
+  } catch {
+    // Shown as failed with "Đăng nhập Douyin".
+    entry.renewing = false;
+    renderFetches();
   }
 }
 
-/** Fetch a failed link again, as a new row. */
-function retryAction(status: FetchStatus): HTMLElement {
-  const actions = element("div", "fetch-actions");
-  const retry = element("button", "btn", "Thử lại");
-  retry.type = "button";
-  retry.addEventListener("click", async () => {
+function failedFetchActions(entry: FetchEntry): HTMLButtonElement[] {
+  const retry = actionButton("Thử lại", "btn primary", async () => {
     retry.disabled = true;
     try {
-      await startFetch(status.url);
-      fetches.delete(status.scan_id);
-      renderFetches();
+      await refetch(entry);
     } catch (error) {
       retry.disabled = false;
       showError(String(error).slice(0, 300));
     }
   });
-  actions.append(retry);
-  return actions;
-}
-
-function douyinActions(status: FetchStatus): HTMLElement {
-  const actions = element("div", "fetch-actions");
-  const open = element("button", "btn", "Mở Douyin");
-  open.type = "button";
-  open.addEventListener("click", () => {
-    invoke("open_douyin_login").catch((error) => showError(String(error).slice(0, 200)));
-  });
-  const save = element("button", "btn primary", "Lưu phiên & thử lại");
-  save.type = "button";
-  save.addEventListener("click", async () => {
-    save.disabled = open.disabled = true;
-    save.textContent = "Đang lưu phiên…";
+  const skip = actionButton("Bỏ qua", "btn", () => removeFetch(entry.status.scan_id));
+  if (!needsDouyinLogin(entry.status)) return [retry, skip];
+  retry.className = "btn";
+  const login = actionButton("Đăng nhập Douyin", "btn primary", async () => {
+    login.disabled = true;
     try {
-      await invoke<number>("save_douyin_session");
-      fetches.delete(status.scan_id);
-      renderFetches();
-      await startFetch(status.url);
+      if (await douyin.open()) await refetch(entry, true);
     } catch (error) {
-      save.disabled = open.disabled = false;
-      save.textContent = "Lưu phiên & thử lại";
       showError(String(error).slice(0, 300));
+    } finally {
+      login.disabled = false;
     }
   });
-  actions.append(open, save);
-  return actions;
+  return [login, retry, skip];
 }
 
-// Sidebar navigation between the queue and the discovery view.
-const discovery = mountDiscovery(invoke, startFetch, () => {
+// Download folder: copies of finished link downloads, under their titles.
+const DOWNLOAD_DIR_KEY = "dubflow.downloadDir.v1";
+let defaultDownloadDir = "";
+/** A failed copy is reported once; the job then uses the file in DubFlow's store. */
+let keepErrorShown = false;
+/** The folder the user chose, or null for the default. */
+function downloadDir(): string | null {
+  try {
+    return window.localStorage.getItem(DOWNLOAD_DIR_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+function renderDownloadDir(): void {
+  const chosen = downloadDir();
+  const label = $("#download-dir-label");
+  label.textContent = chosen ?? (defaultDownloadDir || "Videos\\DubFlow Downloads");
+  label.title = chosen ?? defaultDownloadDir;
+  $("#reset-download-dir").hidden = !chosen;
+}
+$("#choose-download-dir").addEventListener("click", async () => {
+  const folder = await invoke<string | null>("pick_folder").catch(() => null);
+  if (!folder) return;
+  try {
+    window.localStorage.setItem(DOWNLOAD_DIR_KEY, folder);
+  } catch {
+    showError("Không lưu được lựa chọn thư mục trên máy này.");
+  }
+  keepErrorShown = false;
+  renderDownloadDir();
+});
+$("#reset-download-dir").addEventListener("click", () => {
+  try {
+    window.localStorage.removeItem(DOWNLOAD_DIR_KEY);
+  } catch {
+    // Nothing stored.
+  }
+  keepErrorShown = false;
+  renderDownloadDir();
+});
+void invoke<string>("default_download_dir").then((dir) => {
+  defaultDownloadDir = dir;
+  renderDownloadDir();
+}).catch(() => undefined);
+renderDownloadDir();
+
+/** Copy a finished download to the download folder and queue it. */
+async function finishFetch(entry: FetchEntry, mediaPath: string): Promise<void> {
+  const { status } = entry;
+  const title = fetchName(status);
+  entry.saving = true;
+  renderFetches();
+  let path = mediaPath;
+  try {
+    path = await invoke<string>("keep_download", { mediaPath, title, folder: downloadDir() });
+  } catch (error) {
+    if (!keepErrorShown) {
+      keepErrorShown = true;
+      showError(`Không chép được video vào thư mục tải về; dùng bản trong kho của DubFlow. ${String(error).slice(0, 160)}`);
+    }
+  }
+  fetches.delete(status.scan_id);
+  try {
+    const linkJob = queue.addLinkJob(path, status.url, title, entry.outputDir);
+    if (linkJob) applyDefaults([linkJob]);
+  } catch (error) {
+    showError(`Không thêm được video vào danh sách: ${String(error).slice(0, 160)}`);
+  }
+  renderFetches();
+}
+
+// Rail navigation between the queue and the other screens.
+const douyin = mountDouyinLogin(invoke, (listener) => {
+  if (isTauri) void getCurrentWindow().onMoved(listener).catch(() => undefined);
+});
+const discovery = mountDiscovery(invoke, async (url, title) => { await startFetch(url, title); }, () => {
   try {
     return window.localStorage.getItem("dubflow.hachimiAck.v1") === "1" ? "hachimi" : "argos";
   } catch {
@@ -842,66 +1509,129 @@ const discovery = mountDiscovery(invoke, startFetch, () => {
 void claudeKey.restore();
 const aiSettings = mountAiSettings(claudeKey);
 $("#open-ai-settings").addEventListener("click", () => aiSettings.open());
-const productStudio = mountProductStudio(invoke, claudeKey, { outputRoot, cpuOnly });
-const compilation = mountCompilation(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly });
-function showView(view: "queue" | "discover" | "product" | "compilation"): void {
+mountSfxSettings(sfxLibrary, showError);
+/** Folders whose "DubFlow Output" may hold earlier Bán hàng and Tổng hợp runs: the chosen one and the queue's. */
+function outputRoots(): string[] {
+  const roots = new Set<string>();
+  const chosen = outputRoot();
+  if (chosen) roots.add(chosen);
+  for (const job of queue.getSnapshot().jobs) {
+    const dir = job.outputDir ?? job.outputPath?.replace(/[\\/][^\\/]*$/, "");
+    if (dir) roots.add(dir);
+  }
+  return [...roots].slice(0, 64);
+}
+async function playableUrl(path: string): Promise<string | null> {
+  const allowed = await invoke<string | null>("allow_media", { path });
+  return allowed ? convertFileSrc(allowed) : null;
+}
+const productStudio = mountProductStudio(invoke, claudeKey, {
+  outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,
+  edit: (video) => void editVideo({ id: video.outputPath, kind: "product", outputPath: video.outputPath, displayName: video.displayName }, "product"),
+});
+const compilation = mountCompilation(invoke, claudeKey, {
+  jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,
+  edit: (video) => void editVideo({ id: video.outputPath, kind: "compilation", outputPath: video.outputPath, displayName: video.displayName }, "compilation"),
+});
+type View = "queue" | "discover" | "product" | "compilation";
+const VIEW_HEADINGS: Record<View, [string, string]> = {
+  queue: ["Hàng đợi", ""],
+  discover: ["Khám phá", "Douyin, Bilibili, Kuaishou"],
+  product: ["Video bán hàng", "Từ mô tả hoặc ảnh"],
+  compilation: ["Tổng hợp", "Ghép các video đã xong"],
+};
+/** Show a page; `highlight` is the rail item lit (the page an edited video came from). */
+function showView(view: View, highlight: View = view): void {
   $("#compilation-view").hidden = view !== "compilation";
   $("#discover-view").hidden = view !== "discover";
   $("#product-view").hidden = view !== "product";
-  $("#queue-topbar").hidden = view !== "queue";
   $("#queue-content").hidden = view !== "queue";
-  for (const [id, active] of [["#nav-queue", view === "queue"], ["#nav-discover", view === "discover"], ["#nav-product", view === "product"], ["#nav-compilation", view === "compilation"]] as const) {
+  const [title, meta] = VIEW_HEADINGS[highlight];
+  $("#page-title").textContent = title;
+  $("#queue-summary").hidden = highlight !== "queue";
+  $("#page-meta").hidden = highlight === "queue";
+  $("#page-meta").textContent = meta;
+  if (view !== "queue") setListOpen(false);
+  for (const [id, active] of [["#nav-queue", highlight === "queue"], ["#nav-discover", highlight === "discover"], ["#nav-product", highlight === "product"], ["#nav-compilation", highlight === "compilation"]] as const) {
     $(id).classList.toggle("active", active);
     if (active) $(id).setAttribute("aria-current", "page");
     else $(id).removeAttribute("aria-current");
   }
   if (view === "discover") discovery.show();
+  else discovery.hide();
   if (view === "product") productStudio.show();
   if (view === "compilation") compilation.show();
 }
-$("#nav-queue").addEventListener("click", (event) => {
-  event.preventDefault();
-  showView("queue");
-});
-$("#nav-discover").addEventListener("click", (event) => {
-  event.preventDefault();
-  showView("discover");
-});
-$("#nav-product").addEventListener("click", (event) => {
-  event.preventDefault();
-  showView("product");
-});
+/** Go to a page; editing another page's video ends first (asking when something is not saved). */
+async function navigate(view: View): Promise<void> {
+  const edited = editor.target;
+  if (edited && edited.kind !== "job") {
+    if (editOrigin === view) return;
+    editOrigin = null;
+    if (!(await editor.close(true))) {
+      editOrigin = edited.kind === "product" ? "product" : "compilation";
+      return;
+    }
+  }
+  showView(view);
+}
+for (const [id, view] of [["#nav-queue", "queue"], ["#nav-discover", "discover"], ["#nav-product", "product"], ["#nav-compilation", "compilation"]] as const) {
+  $(id).addEventListener("click", (event) => {
+    event.preventDefault();
+    void navigate(view);
+  });
+}
 
-$("#nav-compilation").addEventListener("click", (event) => {
-  event.preventDefault(); showView("compilation");
-});
-
-async function startFetch(url: string): Promise<void> {
-  const started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url });
-  const timer = window.setInterval(() => void pollFetch(started.status.scan_id), 1500);
-  fetches.set(started.status.scan_id, { status: started.status, outputDir: started.output_dir, timer });
+async function startFetch(url: string, title?: string, authRetried = false): Promise<string> {
+  // A Douyin link first gets a session (kept for 20 h); without one it still starts.
+  if (isDouyinLink(url)) {
+    const note = "Đang chuẩn bị phiên Douyin…";
+    if (!queueState.textContent) showError(note);
+    await douyin.ensureSession(false).catch(() => undefined);
+    if (queueState.textContent === note) showError("");
+  }
+  const started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url, title: title?.trim() || null });
+  const entry: FetchEntry = { status: started.status, outputDir: started.output_dir, timer: 0, samples: [], authRetried, renewing: false, saving: false };
+  fetches.set(started.status.scan_id, entry);
+  scheduleFetchPoll(entry);
   renderFetches();
+  return started.status.scan_id;
 }
 
 async function pollFetch(scanId: string): Promise<void> {
   const entry = fetches.get(scanId);
   if (!entry) return;
+  let status: FetchStatus | null;
   try {
-    const status = await invoke<FetchStatus | null>("fetch_status", { scanId });
-    if (!status) return;
-    entry.status = status;
-    if (status.state === "done" && status.media_path) {
-      window.clearInterval(entry.timer);
-      fetches.delete(scanId);
-      const linkJob = queue.addLinkJob(status.media_path, status.url, linkName(status.url), entry.outputDir);
-      if (linkJob) applyDefaults([linkJob]);
-    } else if (status.state === "failed") {
-      window.clearInterval(entry.timer);
-    }
+    status = await invoke<FetchStatus | null>("fetch_status", { scanId });
   } catch (error) {
-    window.clearInterval(entry.timer);
+    if (fetches.get(scanId) !== entry) return;
     entry.status = { ...entry.status, state: "failed", error: String(error).slice(0, 200) };
+    renderFetches();
+    return;
   }
+  // Cancelled or retried while the host answered.
+  if (fetches.get(scanId) !== entry) return;
+  if (!status) {
+    scheduleFetchPoll(entry);
+    return;
+  }
+  entry.status = status;
+  if (status.state === "downloading") entry.samples = addSample(entry.samples, status.downloaded_bytes, Date.now());
+  if (status.state === "done" && status.media_path) {
+    await finishFetch(entry, status.media_path);
+    return;
+  }
+  if (status.state === "cancelled") {
+    removeFetch(scanId);
+    return;
+  }
+  if (status.state === "failed") {
+    if (needsDouyinLogin(status) && !entry.authRetried) void retryWithFreshSession(entry);
+    else renderFetches();
+    return;
+  }
+  scheduleFetchPoll(entry);
   renderFetches();
 }
 
@@ -918,6 +1648,8 @@ $("#link-form").addEventListener("submit", async (event) => {
   }
   const submit = $<HTMLButtonElement>("#link-submit");
   submit.disabled = true;
+  // The header is on every screen; the downloads show up in the queue.
+  showView("queue");
   const failures: string[] = [];
   for (const link of links) {
     try {
@@ -943,6 +1675,13 @@ $<HTMLInputElement>("#link-input").addEventListener("paste", (event) => {
   const input = event.currentTarget as HTMLInputElement;
   input.value = text.replace(/\s+/g, " ").trim();
 });
+// Narrow windows get a shorter hint so the box never shows a clipped sentence.
+const narrowHeader = window.matchMedia("(max-width: 1199.98px)");
+function syncLinkHint(): void {
+  $<HTMLInputElement>("#link-input").placeholder = narrowHeader.matches ? "Dán link video" : "Dán link Douyin, Bilibili hoặc Kuaishou";
+}
+narrowHeader.addEventListener("change", syncLinkHint);
+syncLinkHint();
 
 // Review: edit Vietnamese text per cue, then re-run in the same output folder.
 type ReviewCue = {
@@ -1140,9 +1879,21 @@ async function playClip(cue: ReviewCue, source: boolean, button: HTMLButtonEleme
   }
 }
 
-function closeReview(): void {
+let reviewClosing = false;
+async function closeReview(): Promise<void> {
+  if (reviewClosing || review.hidden) return;
   clipPlayer?.pause();
-  if ((reviewDirty() || speakersChanged()) && !window.confirm("Bỏ các thay đổi chưa lưu?")) return;
+  if (reviewDirty() || speakersChanged()) {
+    reviewClosing = true;
+    const discard = await confirmDialog({
+      title: "Bỏ các thay đổi chưa lưu?",
+      message: "Các câu đã sửa và giọng đã đổi trong lần xem này sẽ mất.",
+      confirmLabel: "Bỏ thay đổi",
+      cancelLabel: "Sửa tiếp",
+      danger: true,
+    }).finally(() => { reviewClosing = false; });
+    if (!discard) return;
+  }
   speakerChoice.clear();
   review.hidden = true;
   reviewJobId = null;
@@ -1221,18 +1972,28 @@ $("#open-post").addEventListener("click", () => {
   const job = selectedJob();
   if (job?.outputPath) postSuggestions.open(job.outputPath, job.displayName, job.originUrl);
 });
-$("#review-close").addEventListener("click", closeReview);
-$("#review-cancel").addEventListener("click", closeReview);
+$("#review-close").addEventListener("click", () => void closeReview());
+$("#review-cancel").addEventListener("click", () => void closeReview());
 reviewUndo.addEventListener("click", undoReview);
 reviewOnlyIssues.addEventListener("change", renderReview);
 review.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeReview();
+  if (event.key === "Escape") void closeReview();
   if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "z"
     && !(event.target instanceof HTMLTextAreaElement)) {
     event.preventDefault();
     undoReview();
   }
 });
+
+// Disk usage in Settings, the "Dọn dẹp" dialog and the automatic clean.
+let noticeTimer = 0;
+function showNotice(text: string): void {
+  const notice = $("#queue-notice");
+  notice.textContent = text;
+  window.clearTimeout(noticeTimer);
+  noticeTimer = window.setTimeout(() => { notice.textContent = ""; }, 10_000);
+}
+const storage = mountStorage(invoke, { outputs: () => queueOutputs(queue.getSnapshot().jobs), notice: showNotice });
 
 // Tell the user in the taskbar title when a video finishes while they are away.
 const lastStates = new Map<string, JobStatusState>();
@@ -1242,6 +2003,7 @@ window.addEventListener("focus", () => { document.title = baseTitle; });
 queue.subscribe((snapshot) => {
   for (const job of snapshot.jobs) {
     const previous = lastStates.get(job.id);
+    if (previous && ACTIVE.includes(previous) && job.status.state === "COMPLETED") storage.jobFinished();
     if (previous && ACTIVE.includes(previous) && (job.status.state === "COMPLETED" || job.status.state === "FAILED") && !document.hasFocus()) {
       document.title = `${job.status.state === "COMPLETED" ? "✓ Xong" : "✕ Lỗi"}: ${job.displayName} — ${baseTitle}`;
     }
@@ -1263,15 +2025,20 @@ sourceLanguageSelect.addEventListener("change", () => {
 });
 // Ask once per viewer before the first opt-in: the model's licence terms are unverified.
 const HACHIMI_ACK_KEY = "dubflow.hachimiAck.v1";
-function hachimiAcknowledged(): boolean {
+async function hachimiAcknowledged(): Promise<boolean> {
   try {
     if (window.localStorage.getItem(HACHIMI_ACK_KEY) === "1") return true;
   } catch {
     // Without storage, ask every time.
   }
-  const accepted = window.confirm("HachimiMT-60 là bộ dịch thử nghiệm. Giấy phép chưa được xác minh cho mục đích thương mại "
-    + "(model được huấn luyện có dữ liệu chưng cất từ Gemini và một bộ dữ liệu GPL-3.0). Chỉ dùng cá nhân/thử nghiệm và tự kiểm tra điều khoản trước khi dùng thương mại.\n\n"
-    + "Lần đầu dùng sẽ tải model khoảng 58 MB. Tiếp tục?");
+  const accepted = await confirmDialog({
+    title: "Dùng bộ dịch HachimiMT-60?",
+    message: "HachimiMT-60 là bộ dịch thử nghiệm. Giấy phép chưa được xác minh cho mục đích thương mại "
+      + "(model được huấn luyện có dữ liệu chưng cất từ Gemini và một bộ dữ liệu GPL-3.0). Chỉ dùng cá nhân/thử nghiệm và tự kiểm tra điều khoản trước khi dùng thương mại.\n\n"
+      + "Lần đầu dùng sẽ tải model khoảng 58 MB.",
+    confirmLabel: "Tiếp tục",
+    cancelLabel: "Dùng Argos",
+  });
   if (accepted) {
     try {
       window.localStorage.setItem(HACHIMI_ACK_KEY, "1");
@@ -1281,16 +2048,21 @@ function hachimiAcknowledged(): boolean {
   }
   return accepted;
 }
-translationEngineSelect.addEventListener("change", () => {
+translationEngineSelect.addEventListener("change", async () => {
   const job = selectedJob();
   if (!job) return;
-  const engine = chooseTranslator(translationEngineSelect.value, job.sourceLanguage, hachimiAcknowledged);
+  const requested = translationEngineSelect.value;
+  // Only an actual Hachimi opt-in (Chinese source) needs the acknowledgement.
+  const accepted = chooseTranslator(requested, job.sourceLanguage, () => false) === null ? await hachimiAcknowledged() : true;
+  const current = queue.getSnapshot().jobs.find((candidate) => candidate.id === job.id);
+  if (!current || current.status.state !== "QUEUED") return;
+  const engine = chooseTranslator(requested, current.sourceLanguage, () => accepted);
   if (engine === null) {
-    translationEngineSelect.value = job.translationEngine ?? "argos";
+    translationEngineSelect.value = current.translationEngine ?? "argos";
     return;
   }
-  queue.setTranslationEngine(job.id, engine);
-  rememberDefaults(selectedJob() ?? job);
+  queue.setTranslationEngine(current.id, engine);
+  rememberDefaults(selectedJob() ?? current);
 });
 // Blur editor: drag a rectangle over a frame of the video to hide its burned-in captions.
 const blurDialog = $("#blur-dialog");
@@ -1335,7 +2107,7 @@ function openBlurEditor(): void {
   const job = selectedJob();
   if (!job || job.status.state !== "QUEUED") return;
   blurJobId = job.id;
-  blurDraft = job.blurRegions?.[0] ?? readDefaults()?.blurRegions?.[0] ?? DEFAULT_REGION;
+  blurDraft = job.blurRegions?.[0] ?? currentDefaults().blurRegions?.[0] ?? DEFAULT_REGION;
   renderBlurRect();
   blurDialog.hidden = false;
   blurRect.focus();
@@ -1408,6 +2180,15 @@ blurModeSelect.addEventListener("change", () => {
   }
   rememberDefaults(selectedJob() ?? job);
 });
+coverStyleSelect.addEventListener("change", () => {
+  const style = normalizeCoverStyle({ ...rememberedCoverStyle(), mode: coverStyleSelect.value as CoverMode });
+  try {
+    window.localStorage.setItem(COVER_STORAGE_KEY, JSON.stringify(style));
+  } catch {
+    // Without storage new videos keep edge stretch.
+  }
+  renderVoiceControls(selectedJob());
+});
 $("#blur-close").addEventListener("click", closeBlurEditor);
 $("#blur-apply").addEventListener("click", () => applyBlur([blurDraft], false));
 $("#blur-all").addEventListener("click", () => applyBlur([blurDraft], true));
@@ -1455,7 +2236,7 @@ void invoke<unknown>("voice_catalog").then((data) => {
       select.append(option);
     }
   }
-  const voiceId = (readDefaults() ?? FIRST_RUN_DEFAULTS).voiceId;
+  const voiceId = currentDefaults().voiceId;
   for (const id of awaitingCatalog) {
     try {
       applyDubbingDefault(id, voiceId);
@@ -1478,20 +2259,157 @@ void invoke<ReleaseInfo>("release_info")
   .catch(() => {
     $("#release-version").textContent = "development";
   })
-  .finally(() => mountUpdates(invoke));
+  .finally(() => mountUpdates(invoke, (version) => {
+    // A found update also shows as a compact button in the header and a dot on Cài đặt.
+    updateVersion = version;
+    $("#header-update").hidden = version === null;
+    $("#header-update-label").textContent = version ? `Cập nhật ${version}` : "Cập nhật";
+    $("#nav-settings").classList.toggle("has-update", version !== null);
+    $("#update-summary").textContent = version
+      ? `Đang dùng ${$("#release-version").textContent}, có bản ${version}.`
+      : "DubFlow tự kiểm tra bản mới khi mở ứng dụng và mỗi 6 giờ.";
+  }));
+$("#installed-versions").addEventListener("click", () => $("#release-version").click());
+
+// Settings dialog, opened from the rail and from the header's update button.
+const settingsDialog = $("#settings-dialog");
+let settingsReturnFocus: HTMLElement | null = null;
+/** The newer version found, while one is waiting to be installed. */
+let updateVersion: string | null = null;
+function openSettings(): void {
+  settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  settingsDialog.hidden = false;
+  $("#nav-settings").classList.add("active");
+  $("#settings-close").focus();
+  void douyin.refreshAccount();
+  storage.refreshSummary();
+  // With an update waiting, Settings opens at it.
+  if (updateVersion !== null) {
+    $("#settings-update").scrollIntoView({ block: "nearest" });
+    const install = $<HTMLButtonElement>("#update-install");
+    if (!$("#update-card").hidden && !install.disabled) install.focus();
+  }
+}
+function closeSettings(): void {
+  if (settingsDialog.hidden) return;
+  settingsDialog.hidden = true;
+  $("#nav-settings").classList.remove("active");
+  if (settingsReturnFocus?.isConnected) settingsReturnFocus.focus();
+}
+$("#nav-settings").addEventListener("click", openSettings);
+$("#header-update").addEventListener("click", openSettings);
+$("#settings-close").addEventListener("click", closeSettings);
+settingsDialog.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeSettings();
+});
+settingsDialog.addEventListener("mousedown", (event) => {
+  if (event.target === settingsDialog) closeSettings();
+});
+const rememberToggle = $<HTMLInputElement>("#remember-defaults");
+rememberToggle.checked = rememberEnabled();
+rememberToggle.addEventListener("change", () => {
+  try {
+    if (rememberToggle.checked) window.localStorage.removeItem(REMEMBER_KEY);
+    else window.localStorage.setItem(REMEMBER_KEY, "0");
+  } catch {
+    rememberToggle.checked = !rememberToggle.checked;
+    showError("Không lưu được lựa chọn này trên máy này.");
+  }
+});
+
+// Right column tabs: Kết quả / Thiết lập / Tạo thêm, with arrow-key movement.
+const tabButtons = [...document.querySelectorAll<HTMLButtonElement>(".tabs [data-tab]")];
+for (const button of tabButtons) {
+  button.addEventListener("click", () => selectTab(button.dataset.tab as DetailTab));
+  button.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
+    const next = tabButtons[(tabButtons.indexOf(button) + (event.key === "ArrowRight" ? 1 : tabButtons.length - 1)) % tabButtons.length];
+    selectTab(next.dataset.tab as DetailTab);
+    next.focus();
+  });
+}
+
+// List filter: Tất cả / Đang chạy / Xong, applied here in the window.
+for (const button of document.querySelectorAll<HTMLButtonElement>("#queue-filter [data-filter]")) {
+  button.addEventListener("click", () => {
+    queueFilter = button.dataset.filter === "running" ? "running" : button.dataset.filter === "done" ? "done" : "all";
+    for (const other of document.querySelectorAll<HTMLButtonElement>("#queue-filter [data-filter]")) {
+      other.setAttribute("aria-selected", String(other === button));
+    }
+    renderFetches();
+    if (lastModel) renderQueue(lastModel.view);
+  });
+}
+
+// Below 1200 px the list becomes a slide-over: "Danh sách" opens it; Esc or a click outside closes it.
+function setListOpen(open: boolean): void {
+  queueScreen.classList.toggle("list-open", open);
+  listToggle.setAttribute("aria-expanded", String(open));
+}
+listToggle.addEventListener("click", () => setListOpen(!queueScreen.classList.contains("list-open")));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && queueScreen.classList.contains("list-open")) {
+    setListOpen(false);
+    listToggle.focus();
+  }
+});
+document.addEventListener("mousedown", (event) => {
+  if (!queueScreen.classList.contains("list-open")) return;
+  const target = event.target as Node;
+  if (!$("#queue-col").contains(target) && !listToggle.contains(target)) setListOpen(false);
+});
+window.addEventListener("resize", () => {
+  if (window.innerWidth >= 1200) setListOpen(false);
+});
+
+// Custom title bar: drag from empty header space, double-click to maximize.
+// In the browser preview there is no window to control, so the buttons do nothing.
+const appWindow = isTauri ? getCurrentWindow() : null;
+async function syncMaximized(): Promise<void> {
+  if (!appWindow) return;
+  const maximized = await appWindow.isMaximized().catch(() => false);
+  document.documentElement.classList.toggle("window-maximized", maximized);
+  const button = $("#window-maximize");
+  button.title = maximized ? "Khôi phục" : "Phóng to";
+  button.setAttribute("aria-label", button.title);
+}
+$("#window-minimize").addEventListener("click", () => void appWindow?.minimize());
+$("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaximize());
+// A pending edit autosave is written first.
+$("#window-close").addEventListener("click", () => void editor.flush().finally(() => appWindow?.close()));
+$("#app-header").addEventListener("mousedown", (event) => {
+  if (!appWindow || event.button !== 0) return;
+  if ((event.target as Element).closest("button, a, input, select, textarea, label, form")) return;
+  if (event.detail === 2) void appWindow.toggleMaximize();
+  else void appWindow.startDragging();
+});
+if (appWindow) {
+  void syncMaximized();
+  void appWindow.onResized(() => void syncMaximized()).catch(() => undefined);
+}
 
 // Native drag & drop: Tauri intercepts file drops and reports real paths.
 if (isTauri) {
-  type DropEvent = { payload: { type: "enter" | "over" | "drop" | "leave"; paths?: string[] } };
+  type DropEvent = { payload: { type: "enter" | "over" | "drop" | "leave"; paths?: string[]; position?: { x: number; y: number } } };
   void getCurrentWebview().onDragDropEvent((event: DropEvent) => {
     const overlay = $("#drag-overlay");
+    // While editing, dropped videos are inserted into the edit instead of joining the queue.
+    const editing = editor.target !== null;
       if (event.payload.type === "enter" || event.payload.type === "over") {
         overlay.hidden = false;
+        $("#drag-overlay-text").textContent = editing ? "Thả để chèn vào video đang sửa" : "Thả để thêm video";
         dropZone.classList.add("hover");
       } else {
         overlay.hidden = true;
         dropZone.classList.remove("hover");
-        if (event.payload.type === "drop") void addDropped(event.payload.paths ?? []);
+        if (event.payload.type !== "drop") return;
+        const paths = event.payload.paths ?? [];
+        const position = event.payload.position;
+        // Tauri reports physical pixels.
+        const point = position ? { x: position.x / window.devicePixelRatio, y: position.y / window.devicePixelRatio } : null;
+        if (editing) editor.drop(paths, point);
+        else void addDropped(paths);
       }
   }).catch(() => undefined);
 }

@@ -6,12 +6,15 @@
 mod ai_keys;
 mod compilation;
 mod discovery;
+mod edit;
 mod package;
 mod shorts;
 mod reframe;
 mod product;
+mod sfx;
 mod source;
 mod source_credit;
+mod storage;
 mod updater;
 mod work_lease;
 
@@ -175,7 +178,9 @@ fn inherit_previous_profile(profile: &Path) {
     }
     let Some(root) = profile.parent() else { return };
     let storage = |dir: &Path| LOCAL_STORAGE.iter().fold(dir.to_path_buf(), |path, part| path.join(part));
+    // Dot-prefixed folders are cleanup leftovers being deleted, never a profile.
     let newest = fs::read_dir(root).into_iter().flatten().flatten()
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
         .map(|entry| storage(&entry.path()))
         .filter_map(|path| fs::metadata(path.join("leveldb")).and_then(|metadata| metadata.modified()).ok().map(|modified| (modified, path)))
         .max_by_key(|(modified, _)| *modified);
@@ -471,8 +476,14 @@ struct BlurRegion {
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>, separate_background: Option<bool>, cpu_only: Option<bool>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>, separate_background: Option<bool>, cpu_only: Option<bool>, subtitle_style: Option<edit::SubtitleStyle>, cover_style: Option<edit::CoverStyle>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
+    if let Some(style) = &subtitle_style {
+        style.validate()?;
+    }
+    if let Some(style) = &cover_style {
+        style.validate()?;
+    }
     let source = absolute_file(&source_path, "source_path")?;
     let root = version_root()?;
     let selected_voice = if enable_dubbing.unwrap_or(false) {
@@ -502,6 +513,20 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
         return Err(fail("output_dir must be an absolute path"));
     }
     fs::create_dir_all(&output).map_err(|error| fail(format!("unable to create output directory: {error}")))?;
+    // The last applied look is the default for new videos. A folder that
+    // already has one (a new version from the editor, a resumed job) keeps it.
+    if let Some(style) = subtitle_style.filter(|_| burn_in != Some(false)) {
+        if !output.join(edit::SUBTITLE_STYLE_FILE).exists() {
+            edit::write_subtitle_style(&output, &style)?;
+        }
+    }
+    // Likewise the last applied cover style (edge stretch unless changed); the
+    // worker only uses it when something is covered.
+    if let Some(style) = cover_style {
+        if !output.join(edit::COVER_FILE).exists() {
+            edit::write_cover(&output, &edit::CoverChoice::with_style(style))?;
+        }
+    }
     let model_root = control.join("models");
     let supervisor = supervisor_binary(&root)?;
     let mut command = command_with_no_window(&supervisor);
@@ -821,6 +846,9 @@ struct ReviewCue {
     source_text: String,
     machine_text: String,
     text: String,
+    /// What the line's voice speaks: the subtitle text unless a subtitle edit
+    /// kept the earlier speech (the overrides file's "voice").
+    voice_text: String,
     edited: bool,
     dub_failed: bool,
     /// Detected source speaker ("S1"…) when experimental multi-voice ran.
@@ -877,6 +905,7 @@ fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
         let cue_id = text("cue_id");
         let machine_text = text("translated_text");
         let edited = overrides["cues"][&cue_id].as_str().map(str::to_owned);
+        let subtitle = edited.clone().unwrap_or_else(|| machine_text.clone());
         Ok(ReviewCue {
             start_ms: cue["start_ms"].as_u64().ok_or_else(|| fail("cue has no start"))?,
             end_ms: cue["end_ms"].as_u64().ok_or_else(|| fail("cue has no end"))?,
@@ -884,7 +913,8 @@ fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
             dub_failed: failed.contains(&cue_id),
             speaker: speakers["labels"][&cue_id].as_str().map(str::to_owned),
             edited: edited.is_some(),
-            text: edited.unwrap_or_else(|| machine_text.clone()),
+            voice_text: overrides["voice"][&cue_id].as_str().map_or_else(|| subtitle.clone(), str::to_owned),
+            text: subtitle,
             machine_text,
             cue_id,
         })
@@ -893,7 +923,9 @@ fn review_cues(output_path: String) -> Result<Vec<ReviewCue>, String> {
 
 const REVISION_OF_FILE: &str = "revision_of.json";
 /// Work-cache entries every revision rebuilds; copying them would only cost disk.
-const REVISION_SKIP: [&str; 2] = ["b2-audio", "export-pending"];
+/// The editor folder belongs to the old version (its exports and their
+/// status); only its draft carries over, by `edit::carry_draft`.
+const REVISION_SKIP: [&str; 3] = ["b2-audio", "export-pending", "edit"];
 const REVISION_SUFFIX: &str = " (sửa ";
 
 /// "Clip - vi (sửa 2)" -> "Clip - vi", so revisions of revisions stay siblings.
@@ -934,17 +966,55 @@ fn copy_work_cache(from: &Path, to: &Path, skip: &[&str]) -> std::io::Result<()>
     Ok(())
 }
 
+/// What a new version changes: the subtitle texts ("cues"), the text each
+/// voice speaks where it differs from its subtitle, the lines to voice again,
+/// the look and the cover (None keeps the original's).
+pub(crate) struct Revision<'a> {
+    pub overrides: &'a std::collections::BTreeMap<String, String>,
+    pub voice: &'a std::collections::BTreeMap<String, String>,
+    pub revoice: &'a [String],
+    pub style: Option<&'a edit::SubtitleStyle>,
+    pub cover: Option<&'a edit::CoverChoice>,
+}
+
 /// Prepare a separate folder for a review revision and return it. The original
 /// output folder is only read, so its validated outputs stay as they were.
 fn create_revision(original: &Path, overrides: &std::collections::BTreeMap<String, String>) -> Result<PathBuf, String> {
+    let none = std::collections::BTreeMap::new();
+    create_revision_with(original, &Revision { overrides, voice: &none, revoice: &[], style: None, cover: None })
+}
+
+fn create_revision_with(original: &Path, revision: &Revision) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
+    let overrides = revision.overrides;
     let partial = create_revision_temp(original).map_err(|error| fail(format!("Không tạo được thư mục bản sửa: {error}")))?;
     let build = || -> Result<(), String> {
         copy_work_cache(&original.join(".dubflow-work"), &partial.join(".dubflow-work"), &REVISION_SKIP)
             .map_err(|error| fail(format!("Không chép được dữ liệu bản dịch: {error}")))?;
-        if !overrides.is_empty() {
-            let body = serde_json::to_vec_pretty(&json!({"schema_version": 1, "cues": overrides})).map_err(|error| fail(error.to_string()))?;
+        if !overrides.is_empty() || !revision.voice.is_empty() || !revision.revoice.is_empty() {
+            let mut document = json!({"schema_version": 1, "cues": overrides});
+            if !revision.voice.is_empty() || !revision.revoice.is_empty() {
+                document["voice"] = json!(revision.voice);
+                document["revoice"] = json!(revision.revoice);
+            }
+            let body = serde_json::to_vec_pretty(&document).map_err(|error| fail(error.to_string()))?;
             fs::write(partial.join(OVERRIDES_FILE), body).map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))?;
+        }
+        match revision.style {
+            Some(style) => edit::write_subtitle_style(&partial, style)?,
+            None if original.join(edit::SUBTITLE_STYLE_FILE).is_file() => {
+                fs::copy(original.join(edit::SUBTITLE_STYLE_FILE), partial.join(edit::SUBTITLE_STYLE_FILE))
+                    .map_err(|error| fail(format!("Không chép được kiểu phụ đề: {error}")))?;
+            }
+            None => {}
+        }
+        match revision.cover {
+            Some(cover) => edit::write_cover(&partial, cover)?,
+            None if original.join(edit::COVER_FILE).is_file() => {
+                fs::copy(original.join(edit::COVER_FILE), partial.join(edit::COVER_FILE))
+                    .map_err(|error| fail(format!("Không chép được cách che chữ: {error}")))?;
+            }
+            None => {}
         }
         let manifest = fs::read(original.join("job_manifest.json")).ok()
             .map(|bytes| format!("sha256:{:x}", Sha256::digest(bytes)));
@@ -955,9 +1025,12 @@ fn create_revision(original: &Path, overrides: &std::collections::BTreeMap<Strin
             .map_err(|error| fail(format!("Không lưu được bản sửa: {error}")))
     };
     let result = build().and_then(|()| publish_revision(&partial, original));
-    if result.is_err() {
+    match &result {
+        Ok(target) => edit::carry_draft(original, target),
         // Only ever the folder this call created; nothing else is removed.
-        let _ = fs::remove_dir_all(&partial);
+        Err(_) => {
+            let _ = fs::remove_dir_all(&partial);
+        }
     }
     result
 }
@@ -1030,11 +1103,16 @@ fn move_into_reserved(partial: &Path, target: &Path) -> std::io::Result<()> {
 #[tauri::command]
 fn save_review(output_path: String, overrides: std::collections::BTreeMap<String, String>) -> Result<String, String> {
     let dir = review_dir(&output_path)?;
-    if overrides.len() > 10_000 || overrides.iter().any(|(id, text)| id.is_empty() || id.len() > 128
+    check_review_texts(&overrides)?;
+    Ok(display_path(&create_revision(&dir, &overrides)?))
+}
+
+fn check_review_texts(texts: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+    if texts.len() > 10_000 || texts.iter().any(|(id, text)| id.is_empty() || id.len() > 128
         || text.trim().is_empty() || text.chars().count() > 2000) {
         return Err(fail("Câu sửa không hợp lệ: không được để trống hoặc dài quá 2000 ký tự"));
     }
-    Ok(display_path(&create_revision(&dir, &overrides)?))
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -1044,12 +1122,13 @@ struct FetchStarted {
 }
 
 #[tauri::command]
-fn fetch_url(url: String, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
+fn fetch_url(url: String, title: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
     let url = url.trim().to_owned();
     let root = version_root()?;
     let supervisor = supervisor_binary(&root)?;
-    let status = sources.fetch(url.clone(), &supervisor, &root, &control_root()?)?;
-    let output_dir = source::link_output_dir(&url, &status.scan_id)?;
+    let status = sources.fetch(url.clone(), title, &supervisor, &root, &control_root()?)?;
+    storage::note_fetch(&status.scan_id);
+    let output_dir = source::link_output_dir(&url, status.title.as_deref(), &status.scan_id)?;
     // Exists from the start, so "Mở thư mục" works while the link downloads.
     fs::create_dir_all(&output_dir).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
     Ok(FetchStarted { output_dir: output_dir.to_string_lossy().into_owned(), status })
@@ -1066,6 +1145,76 @@ fn withdraw_fetch(scan_id: String, sources: tauri::State<'_, std::sync::Arc<sour
     sources.withdraw(&scan_id)
 }
 
+/// Cancel a link that is waiting, being prepared or downloading.
+#[tauri::command]
+fn cancel_fetch(scan_id: String, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> bool {
+    sources.cancel(&scan_id)
+}
+
+/// A file the link service saved below `<data root>\source-media`.
+fn downloaded_media(path: &str) -> Result<PathBuf, String> {
+    let file = PathBuf::from(path).canonicalize().map_err(|_| fail("Không tìm thấy video đã tải"))?;
+    let media = data_root()?.join("source-media").canonicalize().map_err(|_| fail("Không tìm thấy video đã tải"))?;
+    if !file.starts_with(&media) || !file.is_file() {
+        return Err(fail("Chỉ dùng được video DubFlow đã tải về"));
+    }
+    Ok(file)
+}
+
+fn default_download_folder() -> Result<PathBuf, String> {
+    let profile = std::env::var_os("USERPROFILE").ok_or_else(|| fail("USERPROFILE is unavailable"))?;
+    Ok(PathBuf::from(profile).join("Videos").join("DubFlow Downloads"))
+}
+
+/// Where downloaded videos are kept when the user has not chosen a folder.
+#[tauri::command]
+fn default_download_dir() -> Result<String, String> {
+    Ok(default_download_folder()?.to_string_lossy().into_owned())
+}
+
+/// Copy `file` into `folder` as `<name>.<ext>`, or `<name> (2).<ext>`… when
+/// taken. `create_new` reserves the name, so nothing is ever overwritten.
+fn copy_to_unique(file: &Path, folder: &Path, name: &str) -> Result<PathBuf, String> {
+    fs::create_dir_all(folder).map_err(|error| fail(format!("Không tạo được thư mục lưu video: {error}")))?;
+    let extension = file.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+    for number in 1..=999 {
+        let target = folder.join(source::numbered_file_name(name, extension, number));
+        match fs::OpenOptions::new().write(true).create_new(true).open(&target) {
+            Ok(mut out) => {
+                let copied = fs::File::open(file).and_then(|mut input| std::io::copy(&mut input, &mut out)).and_then(|_| out.sync_all());
+                if let Err(error) = copied {
+                    drop(out);
+                    let _ = fs::remove_file(&target);
+                    return Err(fail(format!("Không chép được video vào thư mục lưu: {error}")));
+                }
+                return Ok(target);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(fail(format!("Không chép được video vào thư mục lưu: {error}"))),
+        }
+    }
+    Err(fail("Thư mục lưu đã có quá nhiều video trùng tên"))
+}
+
+/// Copy a finished download into the user's download folder (the default
+/// when `folder` is empty) under its title; the source store keeps its own
+/// file. Returns the new path.
+#[tauri::command]
+async fn keep_download(media_path: String, title: String, folder: Option<String>) -> Result<String, String> {
+    let file = downloaded_media(&media_path)?;
+    let folder = match folder.map(|folder| folder.trim().to_owned()).filter(|folder| !folder.is_empty()) {
+        Some(folder) => PathBuf::from(folder),
+        None => default_download_folder()?,
+    };
+    if !folder.is_absolute() {
+        return Err(fail("Thư mục lưu video tải về không hợp lệ; hãy chọn lại"));
+    }
+    let name = source::safe_file_name(&title);
+    let target = tauri::async_runtime::spawn_blocking(move || copy_to_unique(&file, &folder, &name))
+        .await.map_err(|error| fail(error.to_string()))??;
+    Ok(display_path(&target))
+}
+
 /// Open a results folder; only folders below "DubFlow Output".
 #[tauri::command]
 fn open_folder(path: String) -> Result<(), String> {
@@ -1079,15 +1228,13 @@ fn open_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Show a downloaded source video in Explorer; only files the link service
-/// saved below `<data root>\source-media`.
+/// Show a downloaded source video in Explorer: a file the link service saved
+/// below `<data root>\source-media`, or its copy in the download folder (any
+/// local video; Explorer only selects it).
 #[tauri::command]
 fn reveal_download(path: String) -> Result<(), String> {
-    let file = PathBuf::from(&path).canonicalize().map_err(|_| fail("Không tìm thấy video đã tải"))?;
-    let media = data_root()?.join("source-media").canonicalize().map_err(|_| fail("Không tìm thấy video đã tải"))?;
-    if !file.starts_with(&media) || !file.is_file() {
-        return Err(fail("Chỉ mở được video DubFlow đã tải về"));
-    }
+    let file = downloaded_media(&path).or_else(|_| playable_media(&path))
+        .map_err(|_| fail("Chỉ mở được video DubFlow đã tải về"))?;
     Command::new("explorer.exe").arg(format!("/select,{}", display_path(&file))).spawn()
         .map_err(|error| fail(format!("Không mở được thư mục: {error}")))?;
     Ok(())
@@ -1240,10 +1387,11 @@ async fn collect_discovery(app: tauri::AppHandle, platform: String) -> Result<Ve
 }
 
 /// One JPEG frame of a local video at `position` (0–1 of its duration), for
-/// drawing blur regions on. Async: FFprobe/FFmpeg run off the UI thread.
-/// Scaled to at most 960 px wide.
+/// drawing blur regions on and for the editor's timeline thumbnails. Async:
+/// FFprobe/FFmpeg run off the UI thread. Scaled to at most `max_width` px
+/// wide (64–960, default 960).
 #[tauri::command]
-async fn video_frame(source_path: String, position: f64) -> Result<tauri::ipc::Response, String> {
+async fn video_frame(source_path: String, position: f64, max_width: Option<u32>) -> Result<tauri::ipc::Response, String> {
     if !(0.0..=1.0).contains(&position) {
         return Err(fail("Vị trí khung hình phải trong khoảng 0–1"));
     }
@@ -1262,10 +1410,11 @@ async fn video_frame(source_path: String, position: f64) -> Result<tauri::ipc::R
         .unwrap_or(0.0);
     // Stay a little before the end, where a seek can land past the last frame.
     let seconds = (duration * position).min((duration - 0.5).max(0.0));
+    let scale = format!("scale='min({},iw)':-2", max_width.unwrap_or(960).clamp(64, 960));
     let mut command = Command::new(media.join("ffmpeg.exe"));
     command.args(["-nostdin", "-v", "error", "-ss", &format!("{seconds:.3}"), "-i"])
         .arg(&source)
-        .args(["-frames:v", "1", "-vf", "scale='min(960,iw)':-2", "-q:v", "4", "-f", "image2", "-c:v", "mjpeg", "pipe:1"])
+        .args(["-frames:v", "1", "-vf", &scale, "-q:v", "4", "-f", "image2", "-c:v", "mjpeg", "pipe:1"])
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -1276,51 +1425,315 @@ async fn video_frame(source_path: String, position: f64) -> Result<tauri::ipc::R
     Ok(tauri::ipc::Response::new(output.stdout))
 }
 
-const DOUYIN_LOGIN: &str = "douyin-login";
-const DOUYIN_HOME: &str = "https://www.douyin.com/";
+/// Video files the in-app player may stream through the asset protocol.
+const PLAYABLE_EXTENSIONS: [&str; 8] = ["mp4", "mkv", "mov", "webm", "avi", "m4v", "ts", "flv"];
 
-/// Open douyin.com in its own window so it can set fresh cookies (and the
-/// user may log in). Async: WebView2 cookie access deadlocks in sync commands.
-#[tauri::command]
-async fn open_douyin_login(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    if let Some(window) = app.get_webview_window(DOUYIN_LOGIN) {
-        let _ = window.set_focus();
-        return Ok(());
-    }
-    let url = DOUYIN_HOME.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))?;
-    tauri::WebviewWindowBuilder::new(&app, DOUYIN_LOGIN, tauri::WebviewUrl::External(url))
-        .title("Douyin — mở trang, đăng nhập nếu muốn, rồi quay lại DubFlow bấm “Lưu phiên”")
-        .inner_size(1100.0, 800.0)
-        .build()
-        .map_err(|error| fail(format!("Không mở được cửa sổ Douyin: {error}")))?;
-    Ok(())
+fn has_playable_extension(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str())
+        .is_some_and(|extension| PLAYABLE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
 }
 
-/// Read the Douyin window's cookies and store them as the protected Douyin
-/// session used by link downloads. Returns how many cookies were kept.
+/// The canonical path of an existing local video, or why the player may not open it.
+fn playable_media(value: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    if !path.is_absolute() || !has_playable_extension(path) {
+        return Err(fail("Chỉ xem được file video MP4, MKV, MOV, WEBM, AVI, M4V, TS hoặc FLV trên máy"));
+    }
+    let resolved = path.canonicalize().map_err(|_| fail("Không tìm thấy file video"))?;
+    // A link may point elsewhere; the file actually served must be a video too.
+    if !resolved.is_file() || !has_playable_extension(&resolved) {
+        return Err(fail("Không tìm thấy file video"));
+    }
+    Ok(resolved)
+}
+
+/// The dubbed mix of a finished job (`<output>\editable\*.wav`), which the
+/// editor's Phụ đề preview plays beside the muted source video. No other
+/// audio file can be streamed.
+fn editable_audio(value: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    let is_wav = |path: &Path| path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("wav"));
+    if !path.is_absolute() || !is_wav(path) {
+        return Err(fail("Chỉ phát được âm thanh lồng tiếng của DubFlow"));
+    }
+    let resolved = path.canonicalize().map_err(|_| fail("Không tìm thấy âm thanh lồng tiếng"))?;
+    let in_editable = resolved.parent().and_then(Path::file_name).is_some_and(|name| name == "editable");
+    let in_output = resolved.ancestors().any(|dir| dir.file_name().is_some_and(|name| name == "DubFlow Output"));
+    if !resolved.is_file() || !is_wav(&resolved) || !in_editable || !in_output {
+        return Err(fail("Chỉ phát được âm thanh lồng tiếng của DubFlow"));
+    }
+    Ok(resolved)
+}
+
+/// Let the main window's player stream one local video (or a job's dubbed
+/// mix, see `editable_audio`, or a sound the editor's Âm thanh may play, see
+/// `sfx::playable_audio`); returns the path to load.
 #[tauri::command]
-async fn save_douyin_session(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<usize, String> {
+fn allow_media(app: tauri::AppHandle, path: String) -> Result<String, String> {
     use tauri::Manager;
-    let window = app.get_webview_window(DOUYIN_LOGIN).ok_or_else(|| fail("Hãy mở cửa sổ Douyin trước"))?;
-    let url = DOUYIN_HOME.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))?;
-    let cookies: Vec<(String, String)> = window.cookies_for_url(url)
-        .map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?
-        .into_iter().map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned())).collect();
-    if !cookies.iter().any(|(name, _)| name == "s_v_web_id" || name == "ttwid") {
+    let extension = Path::new(&path).extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let media = if extension == "wav" {
+        editable_audio(&path).or_else(|error| sfx::playable_audio(&path).map_err(|_| error))?
+    } else if sfx::AUDIO_EXTENSIONS.contains(&extension.as_str()) {
+        sfx::playable_audio(&path)?
+    } else {
+        playable_media(&path)?
+    };
+    app.asset_protocol_scope().allow_file(&media).map_err(|error| fail(error.to_string()))?;
+    let text = media.to_string_lossy();
+    Ok(match text.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => display_path(&media),
+    })
+}
+
+const MAIN_WINDOW: &str = "main";
+/// The douyin.com page shown inside the main window's "Đăng nhập Douyin" dialog.
+const DOUYIN_LOGIN: &str = "douyin-login";
+/// Fallback when a child webview cannot be created: a frameless window owned
+/// by the main window, kept over the dialog's box.
+const DOUYIN_LOGIN_WINDOW: &str = "douyin-login-window";
+/// Hidden window that visits douyin.com to refresh the session.
+const DOUYIN_SESSION: &str = "douyin-session";
+const DOUYIN_HOME: &str = "https://www.douyin.com/";
+const DOUYIN_STATE_FILE: &str = "douyin-session.json";
+
+fn douyin_home() -> Result<tauri::Url, String> {
+    DOUYIN_HOME.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// When this app last saved a Douyin session (no cookie values on disk here;
+/// those live only in the service's protected store).
+fn douyin_state_path() -> Result<PathBuf, String> {
+    Ok(control_root()?.join("control").join(DOUYIN_STATE_FILE))
+}
+
+fn douyin_saved_at() -> Option<u64> {
+    let text = fs::read_to_string(douyin_state_path().ok()?).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?["saved_at_unix"].as_u64()
+}
+
+/// Where the login page goes, in CSS (= logical) pixels of the main window.
+#[derive(Clone, Copy)]
+struct ViewBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl ViewBounds {
+    fn new(x: f64, y: f64, width: f64, height: f64) -> Result<Self, String> {
+        if ![x, y, width, height].iter().all(|value| value.is_finite() && value.abs() < 100_000.0) {
+            return Err(fail("Vị trí khung Douyin không hợp lệ"));
+        }
+        Ok(Self { x: x.max(0.0), y: y.max(0.0), width: width.max(1.0), height: height.max(1.0) })
+    }
+}
+
+enum DouyinView {
+    Child(tauri::Webview),
+    Window(tauri::WebviewWindow),
+}
+
+fn douyin_view(app: &tauri::AppHandle) -> Option<DouyinView> {
+    use tauri::Manager;
+    app.get_webview(DOUYIN_LOGIN).map(DouyinView::Child)
+        .or_else(|| app.get_webview_window(DOUYIN_LOGIN_WINDOW).map(DouyinView::Window))
+}
+
+fn place_douyin_view(app: &tauri::AppHandle, view: &DouyinView, bounds: ViewBounds) -> Result<(), String> {
+    use tauri::Manager;
+    let error = |error: tauri::Error| fail(error.to_string());
+    match view {
+        DouyinView::Child(webview) => {
+            webview.set_position(tauri::LogicalPosition::new(bounds.x, bounds.y)).map_err(error)?;
+            webview.set_size(tauri::LogicalSize::new(bounds.width, bounds.height)).map_err(error)
+        }
+        DouyinView::Window(window) => {
+            let main = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
+            let origin = main.inner_position().map_err(error)?;
+            let scale = main.scale_factor().map_err(error)?;
+            window.set_position(tauri::PhysicalPosition::new(origin.x + (bounds.x * scale).round() as i32, origin.y + (bounds.y * scale).round() as i32))
+                .map_err(error)?;
+            window.set_size(tauri::LogicalSize::new(bounds.width, bounds.height)).map_err(error)
+        }
+    }
+}
+
+/// Show douyin.com inside the "Đăng nhập Douyin" dialog at `x, y, width,
+/// height` (CSS pixels of the main window). Async: creating a webview
+/// deadlocks in a sync command on Windows.
+#[tauri::command]
+async fn douyin_view_open(app: tauri::AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    use tauri::Manager;
+    let bounds = ViewBounds::new(x, y, width, height)?;
+    if let Some(view) = douyin_view(&app) {
+        place_douyin_view(&app, &view, bounds)?;
+        let _ = match &view {
+            DouyinView::Child(webview) => webview.show().and_then(|_| webview.set_focus()),
+            DouyinView::Window(window) => window.show().and_then(|_| window.set_focus()),
+        };
+        return Ok(());
+    }
+    let main = app.get_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
+    let child = main.add_child(tauri::webview::WebviewBuilder::new(DOUYIN_LOGIN, tauri::WebviewUrl::External(douyin_home()?)),
+        tauri::LogicalPosition::new(bounds.x, bounds.y), tauri::LogicalSize::new(bounds.width, bounds.height));
+    if child.is_ok() {
+        return Ok(());
+    }
+    // No child webviews here: a frameless window owned by DubFlow stands in.
+    let owner = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
+    let window = tauri::WebviewWindowBuilder::new(&app, DOUYIN_LOGIN_WINDOW, tauri::WebviewUrl::External(douyin_home()?))
+        .title("Đăng nhập Douyin")
+        .decorations(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .inner_size(bounds.width, bounds.height)
+        .parent(&owner).map_err(|error| fail(error.to_string()))?
+        .build()
+        .map_err(|error| fail(format!("Không mở được trang Douyin: {error}")))?;
+    place_douyin_view(&app, &DouyinView::Window(window), bounds)
+}
+
+/// Keep the login page over the dialog's box when the window changes.
+#[tauri::command]
+async fn douyin_view_bounds(app: tauri::AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    let bounds = ViewBounds::new(x, y, width, height)?;
+    match douyin_view(&app) {
+        Some(view) => place_douyin_view(&app, &view, bounds),
+        None => Ok(()),
+    }
+}
+
+#[tauri::command]
+async fn douyin_view_close(app: tauri::AppHandle) -> Result<(), String> {
+    match douyin_view(&app) {
+        Some(DouyinView::Child(webview)) => webview.close(),
+        Some(DouyinView::Window(window)) => window.close(),
+        None => Ok(()),
+    }
+    .map_err(|error| fail(error.to_string()))
+}
+
+/// douyin.com cookies, read through the login page when it is open, else the
+/// main window (all webviews share one browser profile).
+fn douyin_cookies(app: &tauri::AppHandle) -> Result<Vec<(String, String)>, String> {
+    use tauri::Manager;
+    let url = douyin_home()?;
+    let cookies = match douyin_view(app) {
+        Some(DouyinView::Child(webview)) => webview.cookies_for_url(url),
+        Some(DouyinView::Window(window)) => window.cookies_for_url(url),
+        None => app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?.cookies_for_url(url),
+    };
+    Ok(cookies.map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?
+        .into_iter().map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned())).collect())
+}
+
+/// Douyin has given this browser profile a visitor identity.
+fn has_douyin_visit(cookies: &[(String, String)]) -> bool {
+    cookies.iter().any(|(name, value)| (name == "s_v_web_id" || name == "ttwid") && !value.is_empty())
+}
+
+/// Store the cookies as the protected Douyin session used by link downloads
+/// and remember when. Returns how many cookies were kept.
+async fn store_douyin_session(sources: std::sync::Arc<source::Sources>, cookies: Vec<(String, String)>) -> Result<usize, String> {
+    if !has_douyin_visit(&cookies) {
         return Err(fail("Trang Douyin chưa tải xong; hãy đợi trang hiện video rồi bấm lại"));
     }
     let header = source::cookie_header(&cookies, &source::DOUYIN_PRIORITY).ok_or_else(|| fail("Không có cookie Douyin hợp lệ"))?;
     let count = header.split("; ").count();
-    let expires_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| fail(error.to_string()))?.as_secs() + source::SESSION_SECONDS;
+    let now = unix_now();
     let root = version_root()?;
     let supervisor = supervisor_binary(&root)?;
     let data = control_root()?;
-    let sources = std::sync::Arc::clone(&sources);
-    tauri::async_runtime::spawn_blocking(move || sources.save_session("douyin", header, expires_at, &supervisor, &root, &data))
+    tauri::async_runtime::spawn_blocking(move || sources.save_session("douyin", header, now + source::SESSION_SECONDS, &supervisor, &root, &data))
         .await.map_err(|error| fail(error.to_string()))??;
-    let _ = window.close();
+    let _ = fs::write(douyin_state_path()?, json!({"schema_version": 1, "saved_at_unix": now}).to_string());
     Ok(count)
+}
+
+/// "Xong" in the login dialog: save the session from the login page and close it.
+#[tauri::command]
+async fn save_douyin_session(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<usize, String> {
+    let cookies = douyin_cookies(&app)?;
+    let count = store_douyin_session(std::sync::Arc::clone(&sources), cookies).await?;
+    let _ = douyin_view_close(app).await;
+    Ok(count)
+}
+
+fn douyin_ensure_lock() -> &'static tauri::async_runtime::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tauri::async_runtime::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tauri::async_runtime::Mutex::new(()))
+}
+
+/// Make sure link downloads have a fresh Douyin session: one saved by this app
+/// less than 20 hours ago is kept unless `force`; otherwise a hidden window
+/// visits douyin.com until it has a visitor cookie (at most 25 s) and the
+/// session is saved from it.
+#[tauri::command]
+async fn ensure_douyin_session(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>, force: bool) -> Result<String, String> {
+    use tauri::Manager;
+    let _one_at_a_time = douyin_ensure_lock().lock().await;
+    if !force && douyin_saved_at().is_some_and(|saved| source::session_fresh(saved, unix_now())) {
+        return Ok("ready".into());
+    }
+    if let Some(stale) = app.get_webview_window(DOUYIN_SESSION) {
+        let _ = stale.close();
+    }
+    let url = douyin_home()?;
+    let window = tauri::WebviewWindowBuilder::new(&app, DOUYIN_SESSION, tauri::WebviewUrl::External(url.clone()))
+        .title("Douyin")
+        .visible(false)
+        .skip_taskbar(true)
+        .build()
+        .map_err(|error| fail(format!("Không mở được Douyin: {error}")))?;
+    let mut cookies = Vec::new();
+    for _ in 0..50 {
+        tauri::async_runtime::spawn_blocking(|| std::thread::sleep(std::time::Duration::from_millis(500)))
+            .await.map_err(|error| fail(error.to_string()))?;
+        cookies = window.cookies_for_url(url.clone()).unwrap_or_default().into_iter()
+            .map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned())).collect();
+        if has_douyin_visit(&cookies) {
+            break;
+        }
+    }
+    let _ = window.close();
+    if !has_douyin_visit(&cookies) {
+        return Err(fail("Douyin không phản hồi sau 25 giây; chưa lấy được phiên truy cập."));
+    }
+    store_douyin_session(std::sync::Arc::clone(&sources), cookies).await?;
+    Ok("ready".into())
+}
+
+/// Whether the shared browser profile is logged in to Douyin.
+#[tauri::command]
+async fn douyin_account(app: tauri::AppHandle) -> Result<Value, String> {
+    let logged_in = douyin_cookies(&app)?.iter().any(|(name, value)| name == "sessionid" && !value.is_empty());
+    Ok(json!({"logged_in": logged_in}))
+}
+
+/// Log out of Douyin: delete every douyin.com cookie of the browser profile.
+/// The next Douyin link saves a fresh visitor session.
+#[tauri::command]
+async fn douyin_logout(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let main = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
+    let cookies = main.cookies().map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?;
+    for cookie in cookies.into_iter().filter(|cookie| cookie.domain().is_some_and(|domain| {
+        let domain = domain.trim_start_matches('.').to_ascii_lowercase();
+        domain == "douyin.com" || domain.ends_with(".douyin.com")
+    })) {
+        main.delete_cookie(cookie).map_err(|error| fail(format!("Không xóa được cookie Douyin: {error}")))?;
+    }
+    if let Ok(path) = douyin_state_path() {
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
 }
 
 fn main() {
@@ -1330,7 +1743,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, open_folder, reveal_download, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description])
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_media_info, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
@@ -1343,6 +1756,61 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kept_downloads_get_a_free_name_and_never_overwrite() {
+        let root = std::env::temp_dir().join(format!("dubflow-keep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let media = root.join("abc123.mp4");
+        fs::write(&media, "video").unwrap();
+        let folder = root.join("DubFlow Downloads");
+        let first = copy_to_unique(&media, &folder, "Phim hay").unwrap();
+        assert_eq!(first, folder.join("Phim hay.mp4"));
+        let second = copy_to_unique(&media, &folder, "Phim hay").unwrap();
+        assert_eq!(second, folder.join("Phim hay (2).mp4"));
+        fs::write(&first, "mine").unwrap();
+        assert_eq!(copy_to_unique(&media, &folder, "Phim hay").unwrap(), folder.join("Phim hay (3).mp4"));
+        assert_eq!(fs::read_to_string(&first).unwrap(), "mine", "an existing file is never replaced");
+        assert_eq!(fs::read_to_string(&second).unwrap(), "video");
+        assert!(media.is_file(), "the store keeps its own file");
+        assert!(copy_to_unique(&root.join("missing.mp4"), &folder, "x").is_err());
+        assert!(!folder.join("x.mp4").exists(), "a failed copy leaves nothing behind");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn player_accepts_only_existing_local_videos() {
+        let root = std::env::temp_dir().join(format!("dubflow-playable-{}", std::process::id()));
+        fs::create_dir_all(root.join("folder.mp4")).unwrap();
+        fs::write(root.join("clip.MP4"), "video").unwrap();
+        fs::write(root.join("notes.txt"), "text").unwrap();
+        let clip = playable_media(&root.join("clip.MP4").to_string_lossy()).unwrap();
+        assert_eq!(clip, fs::canonicalize(root.join("clip.MP4")).unwrap());
+        assert!(playable_media(&root.join("notes.txt").to_string_lossy()).is_err());
+        assert!(playable_media(&root.join("missing.mkv").to_string_lossy()).is_err());
+        assert!(playable_media(&root.join("folder.mp4").to_string_lossy()).is_err());
+        assert!(playable_media("clip.mp4").is_err());
+        assert!(playable_media(&root.join("clip").to_string_lossy()).is_err());
+        for name in ["a.mkv", "a.mov", "a.webm", "a.avi", "a.m4v", "a.ts", "a.flv"] {
+            assert!(has_playable_extension(Path::new(name)), "{name}");
+        }
+        assert!(!has_playable_extension(Path::new("a.exe")));
+        // Audio: only a finished job's editable mix.
+        let editable = root.join("DubFlow Output/clip - vi/editable");
+        fs::create_dir_all(&editable).unwrap();
+        fs::write(editable.join("final_mix.wav"), "wav").unwrap();
+        fs::write(root.join("DubFlow Output/clip - vi/final_mix.wav"), "wav").unwrap();
+        fs::write(root.join("song.wav"), "wav").unwrap();
+        assert_eq!(editable_audio(&editable.join("final_mix.wav").to_string_lossy()).unwrap(),
+            fs::canonicalize(editable.join("final_mix.wav")).unwrap());
+        assert!(editable_audio(&root.join("DubFlow Output/clip - vi/final_mix.wav").to_string_lossy()).is_err(), "not in editable");
+        assert!(editable_audio(&root.join("song.wav").to_string_lossy()).is_err(), "not a DubFlow output");
+        assert!(editable_audio(&editable.join("missing.wav").to_string_lossy()).is_err());
+        assert!(editable_audio(&root.join("clip.MP4").to_string_lossy()).is_err());
+        assert!(editable_audio("editable/final_mix.wav").is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn review_marks_all_failed_phrase_members_across_voices_and_legacy_documents() {
@@ -1403,7 +1871,8 @@ mod tests {
         let files = [("final_vi.mp4", "video"), ("captions_vi.srt", "srt"), ("job_manifest.json", "{}"),
             (".dubflow-work/translation.json", "{\"cues\": []}"), (".dubflow-work/checkpoint.json", "{}"),
             (".dubflow-work/tts-cache/a.wav", "tts"), (".dubflow-work/b2-audio/x/y.wav", "mix"),
-            (".dubflow-work/export-pending/final_vi.mp4", "pending")];
+            (".dubflow-work/export-pending/final_vi.mp4", "pending"), (".dubflow-work/edit/exports.json", "[]"),
+            ("subtitle_style.json", "{\"schema_version\": 1}"), ("cover.json", "{\"schema_version\": 1, \"regions\": []}")];
         for (path, body) in files {
             fs::create_dir_all(original.join(path).parent().unwrap()).unwrap();
             fs::write(original.join(path), body).unwrap();
@@ -1437,6 +1906,9 @@ mod tests {
         assert_eq!(fs::read_to_string(first.join(".dubflow-work/tts-cache/a.wav")).unwrap(), "tts");
         assert!(first.join(".dubflow-work/translation.json").is_file() && first.join(".dubflow-work/checkpoint.json").is_file());
         assert!(!first.join(".dubflow-work/b2-audio").exists() && !first.join(".dubflow-work/export-pending").exists());
+        assert!(!first.join(".dubflow-work/edit").exists(), "no draft to carry, and the old exports stay behind");
+        assert_eq!(fs::read_to_string(first.join("subtitle_style.json")).unwrap(), "{\"schema_version\": 1}", "the look carries over");
+        assert_eq!(fs::read_to_string(first.join("cover.json")).unwrap(), "{\"schema_version\": 1, \"regions\": []}", "so does the cover");
         assert!(!first.join("final_vi.mp4").exists(), "the revision renders its own output");
         let stored: Value = serde_json::from_slice(&fs::read(first.join(OVERRIDES_FILE)).unwrap()).unwrap();
         assert_eq!(stored, json!({"schema_version": 1, "cues": {"c1": "Xin chào"}}));
