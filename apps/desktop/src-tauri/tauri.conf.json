@@ -13,15 +13,17 @@
     "windows": [
       {
         "title": "DubFlow Local",
-        "width": 1180,
-        "height": 760,
+        "width": 1360,
+        "height": 820,
         "minWidth": 900,
         "minHeight": 620,
-        "resizable": true
+        "resizable": true,
+        "decorations": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com https://generativelanguage.googleapis.com; media-src 'self' blob:; img-src 'self' blob: https:"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://api.anthropic.com https://generativelanguage.googleapis.com; media-src 'self' blob: asset: http://asset.localhost; img-src 'self' blob: https: asset: http://asset.localhost",
+      "assetProtocol": { "enable": true, "scope": [] }
     }
   },
   "bundle": {

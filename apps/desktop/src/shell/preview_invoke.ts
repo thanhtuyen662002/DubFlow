@@ -224,6 +224,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "translate_terms": return { ok: true, items: (args.terms as string[]).map((term) => `(nghĩa) ${term}`) } as T;
     case "collect_discovery": return previewCollected(String(args.platform)) as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
+    // No asset protocol in a browser: the player shows its placeholder.
+    case "allow_media": return null as T;
     case "video_frame": return await previewFrame(Number(args.position), /final_vi\.mp4$/i.test(String(args.sourcePath))) as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;

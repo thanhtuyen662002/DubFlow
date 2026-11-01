@@ -1276,6 +1276,41 @@ async fn video_frame(source_path: String, position: f64) -> Result<tauri::ipc::R
     Ok(tauri::ipc::Response::new(output.stdout))
 }
 
+/// Video files the in-app player may stream through the asset protocol.
+const PLAYABLE_EXTENSIONS: [&str; 8] = ["mp4", "mkv", "mov", "webm", "avi", "m4v", "ts", "flv"];
+
+fn has_playable_extension(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str())
+        .is_some_and(|extension| PLAYABLE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+/// The canonical path of an existing local video, or why the player may not open it.
+fn playable_media(value: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    if !path.is_absolute() || !has_playable_extension(path) {
+        return Err(fail("Chỉ xem được file video MP4, MKV, MOV, WEBM, AVI, M4V, TS hoặc FLV trên máy"));
+    }
+    let resolved = path.canonicalize().map_err(|_| fail("Không tìm thấy file video"))?;
+    // A link may point elsewhere; the file actually served must be a video too.
+    if !resolved.is_file() || !has_playable_extension(&resolved) {
+        return Err(fail("Không tìm thấy file video"));
+    }
+    Ok(resolved)
+}
+
+/// Let the main window's player stream one local video; returns the path to load.
+#[tauri::command]
+fn allow_media(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    use tauri::Manager;
+    let media = playable_media(&path)?;
+    app.asset_protocol_scope().allow_file(&media).map_err(|error| fail(error.to_string()))?;
+    let text = media.to_string_lossy();
+    Ok(match text.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => display_path(&media),
+    })
+}
+
 const DOUYIN_LOGIN: &str = "douyin-login";
 const DOUYIN_HOME: &str = "https://www.douyin.com/";
 
@@ -1330,7 +1365,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, open_folder, reveal_download, open_douyin_login, save_douyin_session, review_clip, video_frame, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description])
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, open_folder, reveal_download, open_douyin_login, save_douyin_session, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
@@ -1343,6 +1378,26 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_accepts_only_existing_local_videos() {
+        let root = std::env::temp_dir().join(format!("dubflow-playable-{}", std::process::id()));
+        fs::create_dir_all(root.join("folder.mp4")).unwrap();
+        fs::write(root.join("clip.MP4"), "video").unwrap();
+        fs::write(root.join("notes.txt"), "text").unwrap();
+        let clip = playable_media(&root.join("clip.MP4").to_string_lossy()).unwrap();
+        assert_eq!(clip, fs::canonicalize(root.join("clip.MP4")).unwrap());
+        assert!(playable_media(&root.join("notes.txt").to_string_lossy()).is_err());
+        assert!(playable_media(&root.join("missing.mkv").to_string_lossy()).is_err());
+        assert!(playable_media(&root.join("folder.mp4").to_string_lossy()).is_err());
+        assert!(playable_media("clip.mp4").is_err());
+        assert!(playable_media(&root.join("clip").to_string_lossy()).is_err());
+        for name in ["a.mkv", "a.mov", "a.webm", "a.avi", "a.m4v", "a.ts", "a.flv"] {
+            assert!(has_playable_extension(Path::new(name)), "{name}");
+        }
+        assert!(!has_playable_extension(Path::new("a.exe")));
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn review_marks_all_failed_phrase_members_across_voices_and_legacy_documents() {
