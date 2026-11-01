@@ -1,8 +1,8 @@
 DUBFLOW_PR_V1
 Issue: #386
 Lease-Owner: Claude/issue-386-gemini-resilience
-Lease-Heartbeat: 2026-11-01T18:27:32Z
-Tested-Base-SHA: 48ea024eacd91f0e2b2262181d6fbd59e3317072
+Lease-Heartbeat: 2026-11-01T18:28:48Z
+Tested-Base-SHA: d07aa243c4a4ff05570170d759b31bd985e21cee
 Conflict-Domains: desktop-ai-provider,ci-component-registry
 Expected-Paths: .claims/issue-386-gemini-resilience.md,apps/desktop/src/features/ai/provider.ts,apps/desktop/src/features/reframe/ai.ts,apps/desktop/src/features/shorts/ai.ts,apps/desktop/test/ai.test.mjs,scripts/ci/component_registry.json
 Required-CI: PR Fast + PR Integration + desktop-ai-provider
