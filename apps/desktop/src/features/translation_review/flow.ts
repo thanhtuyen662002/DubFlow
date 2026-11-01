@@ -1,4 +1,5 @@
 import type { QueueController, QueueJob } from "../queue/model.ts";
+import type { SubtitleStyle } from "../edit/subtitles.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type TranslationEngine = "argos" | "hachimi";
@@ -37,9 +38,10 @@ export function applySourceLanguage(queue: QueueController, jobId: string, value
 
 /**
  * The exact `start_job` arguments for a job; Auto stays "auto", never a guessed language.
- * `cpuOnly` is the app-wide choice to keep every model off the GPU.
+ * `cpuOnly` is the app-wide choice to keep every model off the GPU; `subtitleStyle`
+ * is the look last applied in the editor's Phụ đề (the host keeps a folder's own).
  */
-export function startJobRequest(job: QueueJob, outputRoot: string | null, cpuOnly = false): Record<string, unknown> {
+export function startJobRequest(job: QueueJob, outputRoot: string | null, cpuOnly = false, subtitleStyle: SubtitleStyle | null = null): Record<string, unknown> {
   const sourceLanguage = job.sourceLanguage ?? "auto";
   return {
     jobId: job.id, sourcePath: job.sourcePath, outputDir: job.outputDir ?? null, outputRoot: job.outputDir ? null : outputRoot,
@@ -51,6 +53,7 @@ export function startJobRequest(job: QueueJob, outputRoot: string | null, cpuOnl
     multiVoice: job.multiVoice ?? false, speakerVoices: job.speakerVoices ?? null,
     separateBackground: job.separateBackground ?? false,
     cpuOnly,
+    ...(subtitleStyle ? { subtitleStyle } : {}),
   };
 }
 

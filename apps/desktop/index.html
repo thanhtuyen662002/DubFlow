@@ -270,6 +270,7 @@
                 <div id="edit-modes" class="seg edit-modes edit-only" role="tablist" aria-label="Công cụ chỉnh sửa">
                   <button type="button" role="tab" data-mode="cut" aria-selected="true" aria-controls="edit-panel">Cắt ghép</button>
                   <button type="button" role="tab" data-mode="insert" aria-selected="false" aria-controls="edit-panel">Chèn</button>
+                  <button type="button" role="tab" data-mode="subs" aria-selected="false" aria-controls="edit-panel">Phụ đề</button>
                 </div>
                 <button id="list-toggle" class="btn ghost list-toggle view-only" type="button" aria-controls="queue-col" aria-expanded="false">
                   <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
@@ -281,7 +282,7 @@
                   <button type="button" role="tab" data-mode="source" aria-selected="false">Bản gốc</button>
                   <button id="player-mode-edited" type="button" role="tab" data-mode="edited" aria-selected="false" hidden>Bản sửa</button>
                 </div>
-                <button id="edit-open" class="btn edit-open view-only" type="button" hidden title="Cắt ghép, đổi tốc độ và âm lượng từng đoạn">
+                <button id="edit-open" class="btn edit-open view-only" type="button" hidden title="Cắt ghép, chèn video, sửa phụ đề">
                   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                   Chỉnh sửa
                 </button>
@@ -291,6 +292,13 @@
               </div>
               <p id="queue-state" class="queue-state" role="status"></p>
               <p id="queue-notice" class="queue-notice" role="status"></p>
+              <div id="edit-revision-ready" class="edit-revision-ready view-only" role="status" hidden>
+                <span>Phiên bản mới với phụ đề đã sửa đã xong.</span>
+                <button id="edit-revision-open" class="btn primary" type="button">Mở phiên bản mới trong trình chỉnh sửa</button>
+                <button id="edit-revision-dismiss" class="icon-btn" type="button" aria-label="Ẩn thông báo" title="Ẩn">
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                </button>
+              </div>
               <div class="player-stage">
                 <div id="drop-zone" class="drop-zone">
                   <div class="drop-icon" aria-hidden="true">
@@ -310,6 +318,16 @@
                   <canvas id="edit-ghost" class="edit-ghost" aria-hidden="true"></canvas>
                   <div id="edit-fade" class="edit-fade" aria-hidden="true"></div>
                   <div id="edit-overlays" class="edit-overlays" aria-label="Video chồng"></div>
+                  <div id="edit-subs-layer" class="edit-subs-layer" hidden>
+                    <div id="subs-covers" class="subs-covers" aria-hidden="true"></div>
+                    <span class="subs-guide center" hidden></span>
+                    <span class="subs-guide top" hidden></span>
+                    <span class="subs-guide bottom" hidden></span>
+                    <div id="subs-block" class="subs-block" title="Kéo lên xuống để đổi vị trí phụ đề; giữ Shift để kéo cả sang ngang">
+                      <span id="subs-text" class="subs-text"></span>
+                    </div>
+                    <p id="subs-note" class="subs-note" hidden></p>
+                  </div>
                   <div id="player-placeholder" class="player-placeholder">
                     <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10 9.5 4.5 2.5-4.5 2.5z" fill="currentColor"/></svg>
                     <span id="player-placeholder-text">Xem video ngay trong ứng dụng DubFlow</span>
@@ -749,6 +767,72 @@
                   </div>
                   <p class="edit-note">Kéo khung trên video để đổi chỗ, kéo góc dưới bên phải để đổi cỡ.</p>
                 </section>
+                <section id="edit-subs" class="edit-subs" aria-label="Phụ đề" hidden>
+                  <div id="subs-tabs" class="seg subs-tabs" role="tablist" aria-label="Phụ đề">
+                    <button id="subs-tab-lines" type="button" role="tab" data-pane="lines" aria-selected="true" aria-controls="subs-lines-pane">Câu thoại</button>
+                    <button id="subs-tab-style" type="button" role="tab" data-pane="style" aria-selected="false" aria-controls="subs-style-pane">Kiểu chữ</button>
+                  </div>
+                  <div id="subs-lines-pane" class="subs-pane" role="tabpanel" aria-labelledby="subs-tab-lines">
+                    <p id="subs-loading" class="edit-note" role="status">Đang đọc phụ đề…</p>
+                    <ol id="subs-list" class="subs-list" aria-label="Các câu phụ đề"></ol>
+                    <div id="subs-more" class="subs-more" aria-hidden="true"></div>
+                  </div>
+                  <div id="subs-style-pane" class="subs-pane subs-style" role="tabpanel" aria-labelledby="subs-tab-style" hidden>
+                    <div class="edit-field">
+                      <span class="edit-label">Kiểu có sẵn</span>
+                      <div id="subs-presets" class="subs-presets" role="radiogroup" aria-label="Kiểu có sẵn"></div>
+                    </div>
+                    <div class="edit-field">
+                      <span class="edit-label">Phông chữ <output id="subs-font-name"></output></span>
+                      <div id="subs-fonts" class="subs-fonts" role="radiogroup" aria-label="Phông chữ"></div>
+                    </div>
+                    <label class="edit-field">
+                      <span class="edit-label">Cỡ chữ <output id="subs-size-value">100%</output></span>
+                      <input id="subs-size" type="range" min="60" max="200" step="5" value="100" />
+                    </label>
+                    <div class="subs-row">
+                      <span>Màu chữ</span>
+                      <div id="subs-primary" class="subs-swatches" role="radiogroup" aria-label="Màu chữ"></div>
+                    </div>
+                    <div class="subs-row">
+                      <span>Màu viền</span>
+                      <div id="subs-outline" class="subs-swatches" role="radiogroup" aria-label="Màu viền"></div>
+                    </div>
+                    <label class="edit-field">
+                      <span class="edit-label">Độ dày viền <output id="subs-outline-value">3</output></span>
+                      <input id="subs-outline-width" type="range" min="0" max="8" step="0.5" value="3" />
+                    </label>
+                    <label class="subs-row">
+                      <span>Chữ đậm</span>
+                      <input id="subs-bold" class="switch" type="checkbox" role="switch" />
+                    </label>
+                    <label class="subs-row">
+                      <span>Hộp nền sau chữ</span>
+                      <input id="subs-box" class="switch" type="checkbox" role="switch" />
+                    </label>
+                    <div id="subs-box-options" class="subs-box-options">
+                      <div class="subs-row">
+                        <span>Màu hộp</span>
+                        <div id="subs-box-color" class="subs-swatches" role="radiogroup" aria-label="Màu hộp"></div>
+                      </div>
+                      <label class="edit-field">
+                        <span class="edit-label">Độ đậm của hộp <output id="subs-box-opacity-value">60%</output></span>
+                        <input id="subs-box-opacity" type="range" min="10" max="100" step="5" value="60" />
+                      </label>
+                    </div>
+                    <div class="edit-field">
+                      <span class="edit-label">Vị trí</span>
+                      <div id="subs-align" class="seg subs-align" role="radiogroup" aria-label="Vị trí phụ đề">
+                        <button type="button" role="radio" data-align="top" aria-checked="false">Trên</button>
+                        <button type="button" role="radio" data-align="middle" aria-checked="false">Giữa</button>
+                        <button type="button" role="radio" data-align="bottom" aria-checked="true">Dưới</button>
+                      </div>
+                      <small id="subs-position-note" class="edit-note">Kéo khối phụ đề trên video để đổi chỗ; giữ Shift để kéo cả sang ngang.</small>
+                      <button id="subs-reset-position" class="btn subs-reset" type="button">Đặt lại vị trí</button>
+                    </div>
+                    <p class="edit-note">Kiểu chữ áp dụng cho mọi câu. Kiểu đã áp dụng lần gần nhất được dùng cho video mới.</p>
+                  </div>
+                </section>
                 <p id="edit-select-hint" class="edit-note" hidden>Chọn một đoạn chèn hoặc video chồng trên dòng thời gian để chỉnh.</p>
                 <p id="edit-hint" class="edit-hint" role="status"></p>
                 <div id="edit-cut-notes" class="edit-cut-notes">
@@ -756,6 +840,10 @@
                   <p class="edit-note">Thay đổi hiện ngay trên khung video và được tự lưu nháp. Bấm Xuất video để ra file mới, video gốc vẫn giữ nguyên.</p>
                 </div>
                 <p id="edit-save-state" class="edit-hint warn" role="status"></p>
+              </div>
+              <div id="subs-foot" class="subs-foot" hidden>
+                <span id="subs-summary" class="subs-summary" role="status">Chưa có thay đổi</span>
+                <button id="subs-apply" class="btn primary" type="button" disabled>Áp dụng</button>
               </div>
             </aside>
 

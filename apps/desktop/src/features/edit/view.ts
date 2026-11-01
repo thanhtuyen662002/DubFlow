@@ -16,6 +16,7 @@ import {
   SPEED_PRESETS, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
+import { mountSubtitles } from "./subtitles_view.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
@@ -46,6 +47,8 @@ export type EditorHost = {
   mediaUrl: (path: string) => Promise<string | null>;
   /** Finished videos in the queue, for "Từ DubFlow". */
   library: () => LibraryJob[];
+  /** Phụ đề "Áp dụng": queue the new version prepared in `outputDir` and start it; its job id. */
+  revise: (job: QueueJob, outputDir: string) => Promise<string | null>;
 };
 
 export type Editor = {
@@ -84,7 +87,7 @@ type Session = {
   recent: Media[];
 };
 
-type Mode = "cut" | "insert";
+type Mode = "cut" | "insert" | "subs";
 type Where = "playhead" | "end" | "overlay";
 type LibraryItem = { key: string; path: string; title: string; meta: string; kind: "job" | "file"; duration: number | null };
 type Box = { element: HTMLDivElement; video: HTMLVideoElement; path: string };
@@ -285,6 +288,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     // Above 100% is heard only after export.
     player.volume = Math.min(1, segment.volume);
     player.muted = segment.volume === 0;
+    // Phụ đề previews the muted source with the dubbed mix beside it.
+    if (player === video && subs.active) subs.volume(segment.volume);
   }
 
   /** Cue the next segment's player when it is another file, so the switch is quick. */
@@ -471,6 +476,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     fadeLayer.style.opacity = black.toFixed(3);
     ghost.style.opacity = still.toFixed(3);
     renderOverlays(edit, time);
+    subs.frame();
   }
 
   function boxFor(overlay: Overlay): Box {
@@ -546,6 +552,27 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   new ResizeObserver(() => { if (session) renderOverlays(current(), session.outputTime); }).observe(frame);
+
+  const subs = mountSubtitles(invoke, host, {
+    video,
+    picture: () => pictureRect(),
+    edit: () => current(),
+    outputTime: () => session?.outputTime ?? 0,
+    playing: () => !!session?.playing,
+    active: () => active,
+    seek: (time) => {
+      if (!session) return;
+      session.overlay = null;
+      seekOutput(time);
+      session.selected = outputToSource(current(), session.outputTime)?.segment.id ?? session.selected;
+      renderPanel();
+      renderTimeline();
+    },
+    flush: () => flush(),
+    finish: async () => { await close(false); },
+    changed: () => renderPanel(),
+  });
+  const revisionReady = $("#edit-revision-ready");
 
   // ---------- Changes, history, autosave ----------
 
@@ -839,6 +866,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   function renderModes(): void {
     for (const tab of modeTabs) tab.setAttribute("aria-selected", String(tab.dataset.mode === mode));
+    $("#edit-panel").classList.toggle("subs", mode === "subs");
   }
 
   function renderPanel(): void {
@@ -854,14 +882,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     changesBadge.title = `${history.changes} thay đổi chưa xuất · bản nháp được tự lưu`;
     exportButton.disabled = isUnchanged(edit, facts.duration);
     exportButton.title = exportButton.disabled ? "Chưa có thay đổi để xuất" : "Xuất bản đã chỉnh sửa thành file video mới";
-    const overlay = selectedOverlay();
+    const overlay = mode === "subs" ? undefined : selectedOverlay();
     const segment = selectedSegment();
     const inserted = !!segment && segment.mediaId !== MAIN;
     $("#edit-sources").hidden = mode !== "insert";
     $("#edit-ov-controls").hidden = !overlay;
-    $("#edit-seg-controls").hidden = !!overlay || (mode === "insert" && !inserted);
+    $("#edit-seg-controls").hidden = mode === "subs" || !!overlay || (mode === "insert" && !inserted);
     $("#edit-select-hint").hidden = !(mode === "insert" && !overlay && !inserted);
     $("#edit-cut-notes").hidden = mode !== "cut" || !!overlay;
+    if (subs.dirty()) {
+      changesBadge.hidden = false;
+      $("#edit-changes-text").textContent = pending ? `${history.changes} thay đổi · phụ đề chưa áp dụng` : "Phụ đề chưa áp dụng";
+      changesBadge.title = "Bấm Áp dụng ở cuối bảng Phụ đề để tạo phiên bản mới";
+    }
     if (overlay) renderOverlayPanel(edit, overlay);
     if (!segment) return;
     const index = edit.segments.indexOf(segment);
@@ -1103,6 +1136,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!session) return;
     renderPanel();
     renderTimeline();
+    subs.editChanged();
     renderEffects();
     if (!pop.hidden) renderPopover();
     host.renderPlayer();
@@ -1445,15 +1479,23 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   // ---------- Panel input ----------
 
+  function setMode(next: Mode): void {
+    mode = next;
+    if (!session) return;
+    if (mode === "subs") {
+      session.overlay = null;
+      subs.enter();
+    } else {
+      subs.leave();
+    }
+    if (mode === "insert") {
+      renderSources();
+      void loadLibrary();
+    }
+    render();
+  }
   for (const tab of modeTabs) {
-    tab.addEventListener("click", () => {
-      mode = tab.dataset.mode === "insert" ? "insert" : "cut";
-      if (mode === "insert") {
-        renderSources();
-        void loadLibrary();
-      }
-      render();
-    });
+    tab.addEventListener("click", () => setMode(tab.dataset.mode === "insert" ? "insert" : tab.dataset.mode === "subs" ? "subs" : "cut"));
   }
   for (const button of whereButtons) {
     button.addEventListener("click", () => {
@@ -1557,6 +1599,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   undoButton.addEventListener("click", undo);
   redoButton.addEventListener("click", redo);
   $("#edit-exit").addEventListener("click", () => void close(true));
+  $("#edit-revision-open").addEventListener("click", () => {
+    if (!listJob) return;
+    subs.pending.delete(listJob.id);
+    revisionReady.hidden = true;
+    mode = "subs";
+    void open(listJob);
+  });
+  $("#edit-revision-dismiss").addEventListener("click", () => {
+    if (listJob) subs.pending.delete(listJob.id);
+    revisionReady.hidden = true;
+  });
   openButton.addEventListener("click", () => { if (listJob) void open(listJob); });
   exportButton.addEventListener("click", openDialog);
 
@@ -1626,6 +1679,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       active = video;
       library = [];
       zoom.value = "0";
+      subs.begin(job, outputPath);
       $("#edit-save-state").textContent = "";
       $("#edit-hint").textContent = "";
       screen.classList.add("editing");
@@ -1636,6 +1690,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         renderSources();
         void loadLibrary();
       }
+      if (mode === "subs") setMode("subs");
       $<HTMLButtonElement>("#edit-exit").focus();
     } catch (error) {
       host.showError(`Không mở được chế độ chỉnh sửa: ${String(error).slice(0, 200)}`);
@@ -1647,8 +1702,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   async function close(ask: boolean): Promise<boolean> {
     if (!session) return true;
-    if (ask && unexported()) {
-      const leave = await host.confirm({
+    if (ask && (unexported() || subs.dirty())) {
+      const leave = await host.confirm(subs.dirty() ? {
+        title: "Thoát chỉnh sửa?", message: "Các câu đã sửa và kiểu chữ chưa bấm Áp dụng sẽ mất. Cắt ghép vẫn được lưu nháp.",
+        confirmLabel: "Thoát", cancelLabel: "Ở lại", danger: true,
+      } : {
         title: "Thoát chỉnh sửa?", message: "Các thay đổi vẫn được lưu nháp; bạn có thể xuất sau.", confirmLabel: "Thoát", cancelLabel: "Ở lại",
       });
       if (!leave) return false;
@@ -1657,6 +1715,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (session.draft) session.draft = null;
     session.playing = false;
     await flush();
+    subs.end();
     restorePlayer();
     session = null;
     drag = null;
@@ -1755,6 +1814,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (session && job?.id !== session.job.id) void close(false);
     const done = !!job && job.status.state === "COMPLETED" && !!job.outputPath;
     openButton.hidden = !done;
+    // A version made by Phụ đề "Áp dụng" is offered for editing once it is ready.
+    revisionReady.hidden = !(done && job && subs.pending.has(job.id));
     const same = listJob?.id === job?.id && listJob?.outputPath === job?.outputPath && listJob?.status.state === job?.status.state;
     listJob = job;
     if (same) return;
