@@ -20,7 +20,9 @@ from engine.dubflow.media import (
     Rational,
     parse_ffprobe_json,
 )
-from engine.dubflow.media.adapter import MAX_BLUR_REGIONS, MediaStream, audio_origin_samples, blur_filtergraph, video_bitrate
+from engine.dubflow.media.adapter import (
+    MAX_BLUR_REGIONS, CoverStyle, MediaStream, audio_origin_samples, blur_filtergraph, cover_filtergraph, video_bitrate,
+)
 
 
 def _probe_document() -> dict[str, object]:
@@ -481,6 +483,148 @@ class BlurRegionTests(unittest.TestCase):
             self.assertEqual(sorted(path.name for path in root.iterdir()), ["out.mp4", "source.mp4"], "the filter file is removed")
 
 
+STRIP = "max(2\\,trunc(ih*0.003704/2)*2)"
+WIDE = "w=max(2\\,trunc(iw*0.800000/2)*2)"
+
+
+class CoverStyleTests(unittest.TestCase):
+    def test_style_is_validated_and_normalized(self):
+        self.assertEqual(CoverStyle.from_mapping({"mode": "stretch"}).to_dict(),
+                         {"mode": "stretch", "direction": "top", "strip_px": 4, "color": "#000000", "block": 24, "feather": 0})
+        self.assertEqual(CoverStyle.from_mapping({"mode": "color", "color": "#a0b1c2"}).to_dict()["color"], "#A0B1C2")
+        invalid = ({}, {"mode": "smear"}, {"mode": "stretch", "direction": "left"}, {"mode": "stretch", "strip_px": 1},
+                   {"mode": "stretch", "strip_px": 13}, {"mode": "stretch", "strip_px": 4.0}, {"mode": "mosaic", "block": 7},
+                   {"mode": "mosaic", "block": 65}, {"mode": "color", "color": "red"}, {"mode": "stretch", "feather": 9},
+                   {"mode": "stretch", "feather": True}, {"mode": "blur", "sigma": 40}, ["stretch"])
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaisesRegex(MediaAdapterError, "MEDIA_COVER_INVALID"):
+                CoverStyle.from_mapping(value)
+
+    def test_without_a_style_or_with_blur_the_graph_is_todays_blur(self):
+        for regions in ([BlurRegion(0.08, 0.895, 0.84, 0.06), BlurRegion(0.1, 0.1, 0.2, 0.1, 2000, 4500)],
+                        [BlurRegion(0.1, 0.8, 0.8, 0.1, 1000 * index, 1000 * index + 500) for index in range(13)]):
+            self.assertEqual(cover_filtergraph(regions), blur_filtergraph(regions))
+            self.assertEqual(cover_filtergraph(regions, CoverStyle("blur", feather=4)), blur_filtergraph(regions))
+
+    def test_stretch_pulls_the_strip_above_over_the_region_while_it_is_on(self):
+        graph = cover_filtergraph([BlurRegion(0.1, 0.8, 0.8, 0.1, 1000, 2500)], CoverStyle("stretch"))
+        self.assertEqual(graph, ";".join([
+            "split=3[cv0m][cv0s][cv0r]",
+            f"[cv0s]crop={WIDE}:h={STRIP}:x=trunc(iw*0.100000/2)*2:y=max(0\\,trunc(ih*0.800000/2)*2-oh)[cv0c]",
+            "[cv0c][cv0r]scale=w=max(2\\,trunc(rw*0.800000/2)*2):h=max(2\\,trunc(rh*0.100000/2)*2):flags=bilinear[cv0p]",
+            "[cv0m][cv0p]overlay=x=trunc(W*0.100000/2)*2:y=trunc(H*0.800000/2)*2:enable=between(t\\,1.000\\,2.500)",
+        ]))
+        # A strip of 12 px on the 1080-line scale; any resolution gets the same share of the frame.
+        self.assertIn("h=max(2\\,trunc(ih*0.011111/2)*2)", cover_filtergraph([BlurRegion(0.1, 0.8, 0.8, 0.1)], CoverStyle("stretch", strip_px=12)))
+
+    def test_strips_switch_sides_at_the_frame_edge(self):
+        below = "y=min(ih-oh\\,trunc(ih*0.100000/2)*2)"
+        # No room above a region at the very top: the strip comes from below it.
+        self.assertIn(f"[cv0s]crop={WIDE}:h={STRIP}:x=trunc(iw*0.100000/2)*2:{below}[cv0c]",
+                      cover_filtergraph([BlurRegion(0.1, 0.0, 0.8, 0.1)], CoverStyle("stretch")))
+        # No room below a region touching the bottom: the strip comes from above it.
+        self.assertIn(f"[cv0s]crop={WIDE}:h={STRIP}:x=trunc(iw*0.100000/2)*2:y=max(0\\,trunc(ih*0.900000/2)*2-oh)[cv0c]",
+                      cover_filtergraph([BlurRegion(0.1, 0.9, 0.8, 0.1)], CoverStyle("stretch", "bottom")))
+        self.assertIn("y=min(ih-oh\\,trunc(ih*0.600000/2)*2)[cv0c]", cover_filtergraph([BlurRegion(0.1, 0.5, 0.8, 0.1)], CoverStyle("stretch", "bottom")))
+
+    def test_both_stacks_the_upper_half_from_above_on_the_lower_half_from_below(self):
+        graph = cover_filtergraph([BlurRegion(0.1, 0.8, 0.8, 0.1)], CoverStyle("stretch", "both"))
+        self.assertEqual(graph, ";".join([
+            "split=5[cv0m][cv0s][cv0t][cv0r][cv0q]",
+            f"[cv0s]crop={WIDE}:h={STRIP}:x=trunc(iw*0.100000/2)*2:y=max(0\\,trunc(ih*0.800000/2)*2-oh)[cv0c]",
+            f"[cv0t]crop={WIDE}:h={STRIP}:x=trunc(iw*0.100000/2)*2:y=min(ih-oh\\,trunc(ih*0.900000/2)*2)[cv0e]",
+            "[cv0c][cv0r]scale=w=max(2\\,trunc(rw*0.800000/2)*2):h=max(2\\,trunc(rh*0.050000/2)*2):flags=bilinear[cv0u]",
+            "[cv0e][cv0q]scale=w=max(2\\,trunc(rw*0.800000/2)*2):h=max(2\\,trunc(rh*0.100000/2)*2-trunc(rh*0.050000/2)*2):flags=bilinear[cv0l]",
+            "[cv0u][cv0l]vstack[cv0p]",
+            "[cv0m][cv0p]overlay=x=trunc(W*0.100000/2)*2:y=trunc(H*0.800000/2)*2",
+        ]))
+
+    def test_color_draws_boxes_and_mosaic_scales_down_and_up(self):
+        color = cover_filtergraph([BlurRegion(0.1, 0.8, 0.8, 0.1, 0, 500), BlurRegion(0.2, 0.1, 0.3, 0.1, 100, 200)], CoverStyle("color", color="#ff8800"))
+        self.assertEqual(color, ",".join([
+            "drawbox=x=trunc(iw*0.100000/2)*2:y=trunc(ih*0.800000/2)*2:w=max(2\\,trunc(iw*0.800000/2)*2):h=max(2\\,trunc(ih*0.100000/2)*2)"
+            ":color=0xFF8800:t=fill:enable=between(t\\,0.000\\,0.500)",
+            "drawbox=x=trunc(iw*0.200000/2)*2:y=trunc(ih*0.100000/2)*2:w=max(2\\,trunc(iw*0.300000/2)*2):h=max(2\\,trunc(ih*0.100000/2)*2)"
+            ":color=0xFF8800:t=fill:enable=between(t\\,0.100\\,0.200)",
+        ]))
+        mosaic = cover_filtergraph([BlurRegion(0.1, 0.8, 0.8, 0.1)], CoverStyle("mosaic", block=16))
+        self.assertEqual(mosaic, ";".join([
+            "split=3[cv0m][cv0s][cv0r]",
+            # 108 px tall at 1080p in 16 px blocks: 7 rows at any resolution.
+            f"[cv0s]crop={WIDE}:h=max(2\\,trunc(ih*0.100000/2)*2):x=trunc(iw*0.100000/2)*2:y=trunc(ih*0.800000/2)*2,"
+            "scale=w=max(1\\,round(iw*7/ih)):h=7:flags=area[cv0d]",
+            "[cv0d][cv0r]scale=w=max(2\\,trunc(rw*0.800000/2)*2):h=max(2\\,trunc(rh*0.100000/2)*2):flags=neighbor[cv0p]",
+            "[cv0m][cv0p]overlay=x=trunc(W*0.100000/2)*2:y=trunc(H*0.800000/2)*2",
+        ]))
+
+    def test_feather_fades_the_cover_edges_through_an_alpha_mask(self):
+        graph = cover_filtergraph([BlurRegion(0.1, 0.8, 0.8, 0.1)], CoverStyle("stretch", feather=4))
+        self.assertIn(";[cv0p]format=yuva420p,split=2[cv0pa][cv0pm];[cv0pm]format=gray,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill,"
+                      "drawbox=x=trunc(ih*0.037037):y=trunc(ih*0.037037):w=max(2\\,iw-2*trunc(ih*0.037037)):h=max(2\\,ih-2*trunc(ih*0.037037)):"
+                      "color=white:t=fill,lut=c0=clip((val-16)*255/219\\,0\\,255),gblur=sigma=2[cv0pk];[cv0pa][cv0pk]alphamerge[cv0pf];"
+                      "[cv0m][cv0pf]overlay=", graph)
+        self.assertNotIn("alphamerge", cover_filtergraph([BlurRegion(0.1, 0.8, 0.8, 0.1)], CoverStyle("color", feather=4)))
+
+    def test_regions_sharing_a_rectangle_share_one_chain_with_chunked_windows(self):
+        regions = [BlurRegion(0.1, 0.8, 0.8, 0.1, 1000 * index, 1000 * index + 500) for index in range(100)]
+        regions.append(BlurRegion(0.1, 0.8, 0.8, 0.1, 250, 900))  # Overlaps the first window: coalesced.
+        graph = cover_filtergraph(regions, CoverStyle("stretch"))
+        self.assertEqual(graph.count("crop="), 1)
+        self.assertEqual(graph.count("between("), 100)
+        self.assertIn("between(t\\,0.000\\,0.900)+between(t\\,1.000\\,1.500)", graph)
+        # 100 windows in chunks of 48: one picture split to three overlays chained on the main picture.
+        self.assertIn("[cv0p]split=3[cv0p0][cv0p1][cv0p2];[cv0m][cv0p0]overlay=", graph)
+        self.assertIn("[cv0m1][cv0p1]overlay=", graph)
+        self.assertRegex(graph, r";\[cv0m2\]\[cv0p2\]overlay=[^;\[]*between\(t\\,99\.000\\,99\.500\)$")
+        color = cover_filtergraph(regions, CoverStyle("color"))
+        self.assertEqual(color.count("drawbox="), 3)
+        # A region covered for the whole video makes its rectangle always on.
+        always = cover_filtergraph([*regions, BlurRegion(0.1, 0.8, 0.8, 0.1)], CoverStyle("mosaic"))
+        self.assertNotIn("enable=", always)
+
+    def test_many_rectangles_merge_per_caption_line_and_chain_top_down(self):
+        # Auto-detected captions: one line at slightly different widths, and a second line above it.
+        lower = [BlurRegion(round(0.2 + 0.001 * (index % 20), 4), 0.85, round(0.6 - 0.002 * (index % 20), 4), 0.08, 100 * index, 100 * index + 80)
+                 for index in range(200)]
+        upper = [BlurRegion(0.25, 0.76, 0.5, 0.08, 100 * index + 20, 100 * index + 60) for index in range(56)]
+        graph = cover_filtergraph(lower + upper, CoverStyle("stretch"))
+        self.assertEqual(graph.count("crop="), 2, "one chain per caption line")
+        self.assertEqual(graph.count("between("), 256)
+        # The upper line is covered first, so the lower line's strip above reads the covered picture.
+        self.assertLess(graph.index("y=max(0\\,trunc(ih*0.760000/2)*2-oh)"), graph.index("y=max(0\\,trunc(ih*0.850000/2)*2-oh)"))
+        self.assertIn(f"crop=w=max(2\\,trunc(iw*0.600000/2)*2):h={STRIP}:x=trunc(iw*0.200000/2)*2:", graph, "the union of the line's widths")
+        bottom_up = cover_filtergraph(lower + upper, CoverStyle("stretch", "bottom"))
+        self.assertLess(bottom_up.index("trunc(ih*0.930000/2)*2"), bottom_up.index("trunc(ih*0.840000/2)*2"))
+        # Scattered rectangles never exceed the chain budget.
+        scattered = [BlurRegion(0.05 * (index % 10), 0.06 * index, 0.1, 0.05, 10 * index, 10 * index + 5) for index in range(16)]
+        self.assertEqual(cover_filtergraph(scattered, CoverStyle("mosaic")).count("crop="), 12)
+        for regions in ([], [BlurRegion(0, 0, 0.5, 0.5)] * (MAX_BLUR_REGIONS + 1)):
+            with self.assertRaisesRegex(MediaAdapterError, "MEDIA_BLUR_INVALID"):
+                cover_filtergraph(regions, CoverStyle("stretch"))
+
+    def test_render_covers_in_the_chosen_style_before_the_subtitles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            subtitle = root / "captions.ass"
+            source.write_bytes(b"video")
+            subtitle.write_text("[Script Info]\n", encoding="utf-8")
+            probe = parse_ffprobe_json(json.dumps(_probe_document()), source_path=source)
+            runner = RecordingRunner()
+            adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+            region = BlurRegion(0.1, 0.85, 0.8, 0.1)
+            adapter.render(source, root / "out.mp4", subtitle_path=subtitle, source_probe=probe, burn_in_subtitles=True,
+                           blur_regions=(region,), cover_style=CoverStyle("stretch"), overwrite=True)
+            filters = runner.calls[-1][runner.calls[-1].index("-vf") + 1]
+            self.assertTrue(filters.startswith("setpts=PTS-STARTPTS,split=3[cv0m][cv0s][cv0r];"))
+            self.assertRegex(filters, r"overlay=x=trunc\(W\*0\.100000/2\)\*2:y=trunc\(H\*0\.850000/2\)\*2,subtitles=\.dubflow-subtitle-")
+            # A style alone draws nothing.
+            adapter.render(source, root / "plain.mp4", cover_style=CoverStyle("stretch"), overwrite=True)
+            self.assertEqual(runner.calls[-1][runner.calls[-1].index("-vf") + 1], "scale=trunc(iw/2)*2:trunc(ih/2)*2")
+            with self.assertRaisesRegex(MediaAdapterError, "MEDIA_COVER_INVALID"):
+                adapter.render(source, root / "bad.mp4", blur_regions=(region,), cover_style={"mode": "stretch"}, overwrite=True)
+
+
 @unittest.skipUnless(os.environ.get("DUBFLOW_TEST_FFMPEG"), "set DUBFLOW_TEST_FFMPEG to a real ffmpeg.exe to run")
 class RealFfmpegBlurTests(unittest.TestCase):
     def gray(self, ffmpeg: str, video: Path, seconds: float) -> bytes:
@@ -532,6 +676,31 @@ class RealFfmpegBlurTests(unittest.TestCase):
             self.assertLess(pixel(after, 160, 42), 40)
             # Outside the region, beside the bar, the frame is untouched.
             self.assertLess(pixel(after, 10, 208), 40)
+
+    def test_cover_styles_hide_the_caption_only_inside_the_region_and_time(self):
+        ffmpeg = os.environ["DUBFLOW_TEST_FFMPEG"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "caption.mp4"
+            # Black scene with a white "caption" bar near the bottom and a sharp bar near the top.
+            subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=black:s=320x240:d=3:r=10",
+                            "-vf", "drawbox=x=60:y=200:w=200:h=16:color=white:t=fill,drawbox=x=60:y=20:w=200:h=16:color=white:t=fill",
+                            "-c:v", "mpeg4", "-q:v", "2", "-pix_fmt", "yuv420p", str(source)], check=True)
+            adapter = FfmpegMediaAdapter(ffmpeg, trusted_root=Path(ffmpeg).resolve().parent)
+            pixel = lambda frame, x, y: frame[y * 320 + x]
+            region = BlurRegion(0.1, 0.75, 0.8, 0.2, 1000, 3000)
+            for style, inside in ((CoverStyle("stretch"), lambda value: value < 40), (CoverStyle("stretch", "bottom"), lambda value: value < 40),
+                                  (CoverStyle("stretch", "both", feather=2), lambda value: value < 40),
+                                  (CoverStyle("color", color="#808080"), lambda value: 100 < value < 150),
+                                  (CoverStyle("mosaic", block=64), lambda value: value < 200)):
+                with self.subTest(style=style):
+                    output = adapter.render(source, root / f"{style.mode}-{style.direction}.mp4", blur_regions=(region,), cover_style=style, overwrite=True)
+                    before, after = self.gray(ffmpeg, output, 0.5), self.gray(ffmpeg, output, 2.0)
+                    self.assertGreater(pixel(before, 160, 208), 200)
+                    self.assertTrue(inside(pixel(after, 160, 208)), pixel(after, 160, 208))
+                    # The top bar and the scene beside the region stay as they were.
+                    self.assertGreater(pixel(after, 160, 28), 200)
+                    self.assertLess(pixel(after, 10, 208), 40)
 
     def test_odd_dimensions_render_to_even_h264(self):
         ffmpeg = os.environ["DUBFLOW_TEST_FFMPEG"]

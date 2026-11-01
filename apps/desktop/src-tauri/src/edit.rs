@@ -714,14 +714,143 @@ fn read_subtitle_style(dir: &Path) -> Option<SubtitleStyle> {
     serde_json::from_value::<SubtitleStyle>(value["style"].clone()).ok().filter(|style| style.validate().is_ok())
 }
 
-/// Caption rectangles the worker detected and blurred (`caption_scan.json`), for the preview's cover.
+/// Caption rectangles the worker detected (`caption_scan.json`), each with
+/// its `index` there, which `disabled_auto` in cover.json refers to.
 fn detected_blur_regions(work: &Path) -> Vec<Value> {
     let path = work.join("caption_scan.json");
     let Some(scan) = fs::metadata(&path).ok().filter(|metadata| metadata.len() <= 4 * 1024 * 1024)
         .and_then(|_| fs::read(&path).ok()).and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()) else { return Vec::new() };
-    scan["regions"].as_array().into_iter().flatten().take(256).filter(|region| {
+    scan["regions"].as_array().into_iter().flatten().take(256).enumerate().filter(|(_, region)| {
         ["x", "y", "w", "h"].iter().all(|key| region[*key].as_f64().is_some_and(|value| (0.0..=1.0).contains(&value)))
-    }).cloned().collect()
+    }).map(|(index, region)| {
+        let mut region = region.clone();
+        region["index"] = json!(index);
+        region
+    }).collect()
+}
+
+// ---------- Che (Issue #418) ----------
+
+/// How and where source captions are covered, beside a job's outputs; the
+/// worker validates it again (engine/dubflow/worker/production_job.py).
+pub(crate) const COVER_FILE: &str = "cover.json";
+const MAX_COVER_REGIONS: usize = 64;
+const MAX_DISABLED: usize = 1024;
+const DAY_MS: u64 = 86_400_000;
+
+fn default_direction() -> String { "top".into() }
+fn default_strip() -> u32 { 4 }
+fn default_cover_color() -> String { "#000000".into() }
+fn default_block() -> u32 { 24 }
+
+/// Edge stretch (`stretch`, the default for new videos), `blur`, `color` or `mosaic`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CoverStyle {
+    mode: String,
+    #[serde(default = "default_direction")]
+    direction: String,
+    #[serde(default = "default_strip")]
+    strip_px: u32,
+    #[serde(default = "default_cover_color")]
+    color: String,
+    #[serde(default = "default_block")]
+    block: u32,
+    #[serde(default)]
+    feather: u32,
+}
+
+impl CoverStyle {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        let valid = ["stretch", "blur", "color", "mosaic"].contains(&self.mode.as_str())
+            && ["top", "bottom", "both"].contains(&self.direction.as_str())
+            && (2..=12).contains(&self.strip_px) && (8..=64).contains(&self.block) && self.feather <= 8 && hex_color(&self.color);
+        if valid { Ok(()) } else { Err(fail("Kiểu che không hợp lệ")) }
+    }
+}
+
+fn inside(x: f64, y: f64, w: f64, h: f64) -> bool {
+    [x, y, w, h].iter().all(|value| value.is_finite()) && x >= 0.0 && y >= 0.0 && w >= 0.01 && h >= 0.01
+        && x + w <= 1.000001 && y + h <= 1.000001
+}
+
+/// A rectangle drawn in Che, for the whole video or one stretch of it.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CoverRegion {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end_ms: Option<u64>,
+}
+
+/// "Che cố định cả video": one rectangle with no times.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FixedRegion {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// What Che applies: the style, regions drawn by hand, a fixed region and
+/// detected regions switched off (their index in caption_scan.json).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CoverChoice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    style: Option<CoverStyle>,
+    #[serde(default)]
+    regions: Vec<CoverRegion>,
+    #[serde(default)]
+    disabled_auto: Vec<u32>,
+    #[serde(default)]
+    fixed: Option<FixedRegion>,
+}
+
+impl CoverChoice {
+    pub(crate) fn with_style(style: CoverStyle) -> Self {
+        Self { style: Some(style), ..Self::default() }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(style) = &self.style {
+            style.validate()?;
+        }
+        let timed = |region: &CoverRegion| match (region.start_ms, region.end_ms) {
+            (None, None) => true,
+            (Some(start), Some(end)) => start < end && end <= DAY_MS,
+            _ => false,
+        };
+        let valid = self.regions.len() <= MAX_COVER_REGIONS
+            && self.regions.iter().all(|region| inside(region.x, region.y, region.w, region.h) && timed(region))
+            && self.fixed.as_ref().is_none_or(|fixed| inside(fixed.x, fixed.y, fixed.w, fixed.h))
+            && self.disabled_auto.len() <= MAX_DISABLED && self.disabled_auto.iter().all(|index| *index < 1_000_000);
+        if valid { Ok(()) } else { Err(fail("Vùng che không hợp lệ")) }
+    }
+}
+
+/// Store a job's cover beside its outputs, where the worker reads it.
+pub(crate) fn write_cover(dir: &Path, cover: &CoverChoice) -> Result<(), String> {
+    cover.validate()?;
+    let mut document = serde_json::to_value(cover).map_err(|error| fail(error.to_string()))?;
+    document["schema_version"] = json!(1);
+    let body = serde_json::to_vec_pretty(&document).map_err(|error| fail(error.to_string()))?;
+    write_atomic(&dir.join(COVER_FILE), &body).map_err(|error| fail(format!("Không lưu được cách che chữ: {error}")))
+}
+
+fn read_cover(dir: &Path) -> Option<CoverChoice> {
+    let path = dir.join(COVER_FILE);
+    fs::metadata(&path).ok().filter(|metadata| metadata.len() <= 256 * 1024)?;
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+    (value["schema_version"] == 1).then_some(())?;
+    value.as_object_mut()?.remove("schema_version");
+    serde_json::from_value::<CoverChoice>(value).ok().filter(|cover| cover.validate().is_ok())
 }
 
 /// Everything the Phụ đề mode needs: each line (subtitle text, spoken text,
@@ -743,19 +872,25 @@ pub fn edit_subtitles_load(output_path: String) -> Result<Value, String> {
         "mix_path": mix.is_file().then(|| display_path(&mix)),
         "dubbed": manifest["audio"]["mode"] == "dubbed",
         "blur_regions": detected_blur_regions(&dir.join(".dubflow-work")),
+        "cover": read_cover(&dir),
         "fonts": SUBTITLE_FONTS,
     }))
 }
 
-/// "Áp dụng" in Phụ đề: a new version of the job in a sibling "(sửa N)"
-/// folder, as "Xem & sửa bản dịch" makes, carrying the edited lines, what
-/// each line's voice speaks, the lines to voice again and the look. The
-/// caller re-runs the job there; cached stages are reused.
+/// "Áp dụng" in Phụ đề and Che: a new version of the job in a sibling
+/// "(sửa N)" folder, as "Xem & sửa bản dịch" makes, carrying the edited
+/// lines, what each line's voice speaks, the lines to voice again, the look
+/// and the cover (None keeps the original's). The caller re-runs the job
+/// there; cached stages, the caption scan among them, are reused.
 #[tauri::command]
 pub fn edit_subtitles_apply(output_path: String, overrides: std::collections::BTreeMap<String, String>,
-    voice: std::collections::BTreeMap<String, String>, revoice: Vec<String>, subtitle_style: SubtitleStyle) -> Result<String, String> {
+    voice: std::collections::BTreeMap<String, String>, revoice: Vec<String>, subtitle_style: SubtitleStyle,
+    cover: Option<CoverChoice>) -> Result<String, String> {
     let dir = crate::review_dir(&output_path)?;
     subtitle_style.validate()?;
+    if let Some(cover) = &cover {
+        cover.validate()?;
+    }
     crate::check_review_texts(&overrides)?;
     crate::check_review_texts(&voice)?;
     let known: std::collections::HashSet<String> = crate::review_cues(output_path)?.into_iter().map(|cue| cue.cue_id).collect();
@@ -766,7 +901,7 @@ pub fn edit_subtitles_apply(output_path: String, overrides: std::collections::BT
         || !overrides.keys().chain(voice.keys()).chain(marked.iter()).all(|id| known.contains(id)) {
         return Err(fail("Danh sách câu đọc lại không hợp lệ"));
     }
-    let revision = crate::Revision { overrides: &overrides, voice: &voice, revoice: &marked, style: Some(&subtitle_style) };
+    let revision = crate::Revision { overrides: &overrides, voice: &voice, revoice: &marked, style: Some(&subtitle_style), cover: cover.as_ref() };
     Ok(display_path(&crate::create_revision_with(&dir, &revision)?))
 }
 
@@ -1459,6 +1594,28 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     }
 
     #[test]
+    fn cover_choices_are_validated_like_the_worker_does() {
+        let parse = |value: Value| serde_json::from_value::<CoverChoice>(value).map_err(|error| error.to_string()).and_then(|cover| cover.validate());
+        assert!(parse(json!({})).is_ok());
+        assert!(parse(json!({"style": {"mode": "stretch", "direction": "both", "strip_px": 12, "feather": 8}})).is_ok());
+        assert!(parse(json!({"style": {"mode": "color", "color": "#1A2B3C"}, "fixed": {"x": 0, "y": 0.9, "w": 1, "h": 0.1},
+            "regions": [{"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "start_ms": 0, "end_ms": 900}], "disabled_auto": [0, 3]})).is_ok());
+        for value in [json!({"style": {"mode": "smear"}}), json!({"style": {"mode": "stretch", "direction": "left"}}),
+                      json!({"style": {"mode": "stretch", "strip_px": 1}}), json!({"style": {"mode": "mosaic", "block": 65}}),
+                      json!({"style": {"mode": "color", "color": "red"}}), json!({"style": {"mode": "stretch", "feather": 9}}),
+                      json!({"style": {"mode": "stretch", "sigma": 4}}), json!({"style": {"direction": "top"}}),
+                      json!({"regions": [{"x": 0.5, "y": 0.5, "w": 0.9, "h": 0.1}]}),
+                      json!({"regions": [{"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "start_ms": 900}]}),
+                      json!({"regions": [{"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "start_ms": 900, "end_ms": 900}]}),
+                      json!({"fixed": {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "start_ms": 0, "end_ms": 10}}),
+                      json!({"disabled_auto": [-1]}), json!({"disabled_auto": [{"start_ms": 0, "end_ms": 10}]}), json!({"colour": 1})] {
+            assert!(parse(value.clone()).is_err(), "{value}");
+        }
+        let many = json!({"regions": vec![json!({"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}); MAX_COVER_REGIONS + 1]});
+        assert!(parse(many).is_err());
+    }
+
+    #[test]
     fn applying_subtitles_makes_a_new_version_with_texts_voices_style_and_the_draft() {
         let base = std::env::temp_dir().join(format!("dubflow-edit-subs-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
@@ -1490,17 +1647,24 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert!(loaded["mix_path"].as_str().unwrap().ends_with("final_mix.wav"));
         assert_eq!(loaded["dubbed"], true);
         assert_eq!(loaded["blur_regions"].as_array().unwrap().len(), 1, "an invalid region is dropped");
+        assert_eq!(loaded["blur_regions"][0]["index"], 0, "each keeps its index in the scan");
+        assert_eq!(loaded["cover"], Value::Null);
 
         let chosen: SubtitleStyle = serde_json::from_value(style(json!({"x": 0.5, "y": 0.3}))).unwrap();
         let texts = std::collections::BTreeMap::from([("a".to_owned(), "Xin chào".to_owned())]);
         let voice = std::collections::BTreeMap::from([("a".to_owned(), "Chào".to_owned())]);
-        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec!["nope".into()], chosen.clone()).is_err());
-        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec!["b".into(), "b".into()], chosen.clone()).is_err());
+        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec!["nope".into()], chosen.clone(), None).is_err());
+        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec!["b".into(), "b".into()], chosen.clone(), None).is_err());
         let bad: SubtitleStyle = serde_json::from_value(style(json!({"font": "Impact"}))).unwrap();
-        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec![], bad).is_err());
+        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec![], bad, None).is_err());
+        let wide: CoverChoice = serde_json::from_value(json!({"regions": [{"x": 0.5, "y": 0.5, "w": 0.9, "h": 0.1}]})).unwrap();
+        assert!(edit_subtitles_apply(output.clone(), texts.clone(), voice.clone(), vec![], chosen.clone(), Some(wide)).is_err());
         assert!(!dir.parent().unwrap().join("clip - vi (sửa 1)").exists(), "a refused apply creates nothing");
 
-        let revision = PathBuf::from(edit_subtitles_apply(output.clone(), texts, voice, vec!["b".into()], chosen.clone()).unwrap());
+        let cover: CoverChoice = serde_json::from_value(json!({"style": {"mode": "mosaic", "block": 32},
+            "regions": [{"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1, "start_ms": 1000, "end_ms": 2500}],
+            "disabled_auto": [0], "fixed": {"x": 0.7, "y": 0.02, "w": 0.25, "h": 0.06}})).unwrap();
+        let revision = PathBuf::from(edit_subtitles_apply(output.clone(), texts, voice, vec!["b".into()], chosen.clone(), Some(cover.clone())).unwrap());
         assert_eq!(revision, dir.parent().unwrap().join("clip - vi (sửa 1)"));
         let overrides: Value = serde_json::from_slice(&fs::read(revision.join("translation_overrides.json")).unwrap()).unwrap();
         assert_eq!(overrides, json!({"schema_version": 1, "cues": {"a": "Xin chào"}, "voice": {"a": "Chào"}, "revoice": ["b"]}));
@@ -1516,6 +1680,12 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let again = edit_subtitles_load(crate::display_path(&revision.join("final_vi.mp4"))).unwrap();
         assert_eq!((again["cues"][0]["text"].as_str(), again["cues"][0]["voice_text"].as_str()), (Some("Xin chào"), Some("Chào")));
         assert_eq!(again["style"]["font"], "Candara");
+        assert_eq!(read_cover(&revision), Some(cover.clone()));
+        assert_eq!(again["cover"]["style"], json!({"mode": "mosaic", "direction": "top", "strip_px": 4, "color": "#000000", "block": 32, "feather": 0}));
+        assert_eq!(again["cover"]["disabled_auto"], json!([0]));
+        let written: Value = serde_json::from_slice(&fs::read(revision.join(COVER_FILE)).unwrap()).unwrap();
+        assert_eq!(written["schema_version"], 1);
+        assert!(read_cover(&dir).is_none(), "the original keeps its cover");
         fs::remove_dir_all(base).unwrap();
     }
 }

@@ -859,7 +859,6 @@ select { color-scheme: dark; }
 .edit-subs-layer { position: absolute; z-index: 1; overflow: hidden; pointer-events: none; }
 .edit-subs-layer[hidden], .subs-block[hidden], .subs-guide[hidden], .subs-note[hidden] { display: none; }
 .subs-covers { position: absolute; inset: 0; }
-.subs-cover { position: absolute; background: oklch(0.5 0 0 / .06); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 /* production_job.ASS_BAND_EVENT: y 820–1064 of 1080, ~94% opaque. */
 .subs-band { position: absolute; top: 75.926%; left: 0; right: 0; height: 22.593%; background: rgba(0, 0, 0, .94); }
 .subs-block { position: absolute; display: flex; justify-content: center; text-align: center; pointer-events: none; }
@@ -941,3 +940,55 @@ select { color-scheme: dark; }
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .bar.indeterminate > span { width: 100%; opacity: .45; }
 }
+
+/* Che: the cover style, the region list, and the regions drawn over the picture */
+.edit-cover { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+.edit-cover[hidden], .cover-options[hidden], .cover-selected[hidden], .cover-boxes[hidden], .cover-draw[hidden],
+#cover-color-options[hidden], #cover-mosaic-options[hidden], #cover-feather-row[hidden], #cover-span-field[hidden], #cover-times[hidden],
+#cover-blur-note[hidden], #cover-empty[hidden], #cover-missed[hidden], #cover-fix[hidden], #cover-delete[hidden], #cover-style-row[hidden] { display: none; }
+.cover-pane { display: flex; flex: 1; flex-direction: column; gap: 14px; min-height: 0; padding: 14px 16px 16px; overflow: auto; }
+.cover-options { display: flex; flex-direction: column; gap: 10px; }
+.cover-modes, .cover-direction, .cover-span { background: var(--canvas); }
+.cover-modes button, .cover-span button { min-width: 0; padding: 0 6px; }
+.cover-direction button { flex: none; padding: 0 8px; font-size: 12.5px; }
+.cover-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.cover-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding-right: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
+.cover-row.selected { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.cover-row.off .cover-row-title { color: var(--text-3); text-decoration: line-through; text-decoration-color: oklch(1 0 0 / .35); }
+.cover-row-main { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; padding: 7px 4px 7px 10px; border: 0; background: none; color: var(--text); text-align: left; cursor: pointer; }
+.cover-row.job .cover-row-main { cursor: default; }
+.cover-row-title { max-width: 100%; overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.cover-row-meta { max-width: 100%; overflow: hidden; color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.cover-row-switch { flex: none; }
+.cover-row-remove { flex: none; width: 28px; height: 28px; }
+.cover-selected { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
+.cover-selected .edit-segment-title { white-space: normal; }
+.cover-selected .cover-span { background: var(--surface); }
+.cover-actions { display: flex; flex-direction: column; gap: 8px; }
+.cover-actions .btn { height: 34px; }
+.cover-actions #cover-missed { border-color: var(--line-strong); }
+.cover-actions .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-text); }
+
+.cover-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.edit-subs-layer.passive .subs-text { pointer-events: none; cursor: default; outline-color: transparent; }
+.cover-boxes { position: absolute; inset: 0; }
+.cover-box { position: absolute; box-sizing: border-box; outline: 1px dashed oklch(1 0 0 / .55); outline-offset: -1px; pointer-events: auto; cursor: pointer; }
+.cover-box.selected { outline: 2px solid var(--voice); }
+.cover-box.auto.selected { outline-style: dashed; }
+.cover-box.off { outline-color: oklch(0.72 0.15 22 / .8); background: repeating-linear-gradient(135deg, oklch(0.72 0.15 22 / .12) 0 6px, transparent 6px 12px); }
+.cover-box.idle { background: oklch(0.74 0.13 40 / .12); }
+.cover-box.editable { cursor: move; touch-action: none; }
+.cover-box.sketch { pointer-events: none; background: oklch(0.74 0.13 40 / .18); }
+.cover-box-label { position: absolute; left: -2px; bottom: calc(100% + 4px); padding: 1px 6px; border-radius: 4px; background: var(--voice); color: oklch(0.2 0.02 40); font-size: 11.5px; font-weight: 600; line-height: 18px; white-space: nowrap; pointer-events: none; }
+.cover-box-label.below { top: calc(100% + 6px); bottom: auto; }
+.cover-handle { position: absolute; width: 10px; height: 10px; border: 2px solid #fff; border-radius: 3px; background: var(--voice); box-shadow: 0 0 0 1px oklch(0 0 0 / .35); }
+.cover-handle.nw { left: -6px; top: -6px; cursor: nwse-resize; }
+.cover-handle.n { left: calc(50% - 6px); top: -6px; cursor: ns-resize; }
+.cover-handle.ne { right: -6px; top: -6px; cursor: nesw-resize; }
+.cover-handle.e { right: -6px; top: calc(50% - 6px); cursor: ew-resize; }
+.cover-handle.se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.cover-handle.s { left: calc(50% - 6px); bottom: -6px; cursor: ns-resize; }
+.cover-handle.sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.cover-handle.w { left: -6px; top: calc(50% - 6px); cursor: ew-resize; }
+.cover-draw { position: absolute; inset: 0; background: oklch(0 0 0 / .08); pointer-events: auto; cursor: crosshair; touch-action: none; }
+.cover-hint { top: auto; bottom: 8px; }

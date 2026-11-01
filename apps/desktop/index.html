@@ -271,6 +271,7 @@
                   <button type="button" role="tab" data-mode="cut" aria-selected="true" aria-controls="edit-panel">Cắt ghép</button>
                   <button type="button" role="tab" data-mode="insert" aria-selected="false" aria-controls="edit-panel">Chèn</button>
                   <button type="button" role="tab" data-mode="subs" aria-selected="false" aria-controls="edit-panel">Phụ đề</button>
+                  <button type="button" role="tab" data-mode="cover" aria-selected="false" aria-controls="edit-panel" title="Che chữ gốc">Che</button>
                 </div>
                 <button id="list-toggle" class="btn ghost list-toggle view-only" type="button" aria-controls="queue-col" aria-expanded="false">
                   <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
@@ -319,6 +320,7 @@
                   <div id="edit-fade" class="edit-fade" aria-hidden="true"></div>
                   <div id="edit-overlays" class="edit-overlays" aria-label="Video chồng"></div>
                   <div id="edit-subs-layer" class="edit-subs-layer" hidden>
+                    <canvas id="cover-canvas" class="cover-canvas" aria-hidden="true"></canvas>
                     <div id="subs-covers" class="subs-covers" aria-hidden="true"></div>
                     <span class="subs-guide center" hidden></span>
                     <span class="subs-guide top" hidden></span>
@@ -326,6 +328,9 @@
                     <div id="subs-block" class="subs-block" title="Kéo lên xuống để đổi vị trí phụ đề; giữ Shift để kéo cả sang ngang">
                       <span id="subs-text" class="subs-text"></span>
                     </div>
+                    <div id="cover-boxes" class="cover-boxes" aria-label="Vùng che" hidden></div>
+                    <div id="cover-draw" class="cover-draw" aria-label="Vẽ vùng che" hidden></div>
+                    <p id="cover-hint" class="subs-note cover-hint" role="status" hidden></p>
                     <p id="subs-note" class="subs-note" hidden></p>
                   </div>
                   <div id="player-placeholder" class="player-placeholder">
@@ -504,6 +509,18 @@
                     <div id="blur-manual-row" class="blur-manual-row" hidden>
                       <button id="blur-edit" class="btn" type="button">Chọn vùng…</button>
                     </div>
+                    <label id="cover-style-row" class="select-row">
+                      <span>
+                        <strong>Kiểu che</strong>
+                        <small>Cho video bắt đầu xử lý từ giờ; chỉnh từng video ở Chỉnh sửa › Che</small>
+                      </span>
+                      <select id="cover-style">
+                        <option value="stretch">Kéo dãn mép (mặc định)</option>
+                        <option value="blur">Làm mờ</option>
+                        <option value="color">Màu đặc</option>
+                        <option value="mosaic">Khảm</option>
+                      </select>
+                    </label>
 
                     <h3 class="setup-group">Dịch</h3>
                     <label class="select-row">
@@ -831,6 +848,75 @@
                       <button id="subs-reset-position" class="btn subs-reset" type="button">Đặt lại vị trí</button>
                     </div>
                     <p class="edit-note">Kiểu chữ áp dụng cho mọi câu. Kiểu đã áp dụng lần gần nhất được dùng cho video mới.</p>
+                  </div>
+                </section>
+                <section id="edit-cover" class="edit-cover" aria-label="Che chữ gốc" hidden>
+                  <div class="cover-pane">
+                    <div class="edit-field">
+                      <span class="edit-label">Kiểu che</span>
+                      <div id="cover-modes" class="seg cover-modes" role="radiogroup" aria-label="Kiểu che">
+                        <button type="button" role="radio" data-cover-mode="stretch" aria-checked="true">Kéo mép</button>
+                        <button type="button" role="radio" data-cover-mode="blur" aria-checked="false">Làm mờ</button>
+                        <button type="button" role="radio" data-cover-mode="color" aria-checked="false">Màu</button>
+                        <button type="button" role="radio" data-cover-mode="mosaic" aria-checked="false">Khảm</button>
+                      </div>
+                      <small id="cover-mode-hint" class="edit-note"></small>
+                    </div>
+                    <div id="cover-stretch-options" class="cover-options">
+                      <div class="subs-row">
+                        <span>Lấy mép từ</span>
+                        <div id="cover-direction" class="seg cover-direction" role="radiogroup" aria-label="Lấy mép từ">
+                          <button type="button" role="radio" data-direction="top" aria-checked="true">Phía trên</button>
+                          <button type="button" role="radio" data-direction="bottom" aria-checked="false">Phía dưới</button>
+                          <button type="button" role="radio" data-direction="both" aria-checked="false">Hai phía</button>
+                        </div>
+                      </div>
+                      <label class="edit-field">
+                        <span class="edit-label">Độ dày dải mép <output id="cover-strip-value">4 px</output></span>
+                        <input id="cover-strip" type="range" min="2" max="12" step="1" value="4" />
+                      </label>
+                    </div>
+                    <div id="cover-color-options" class="subs-row" hidden>
+                      <span>Màu che</span>
+                      <div id="cover-colors" class="subs-swatches" role="radiogroup" aria-label="Màu che"></div>
+                    </div>
+                    <label id="cover-mosaic-options" class="edit-field" hidden>
+                      <span class="edit-label">Cỡ ô <output id="cover-block-value">24 px</output></span>
+                      <input id="cover-block" type="range" min="8" max="64" step="4" value="24" />
+                    </label>
+                    <label id="cover-feather-row" class="edit-field">
+                      <span class="edit-label">Hòa mép với cảnh <output id="cover-feather-value">Tắt</output></span>
+                      <input id="cover-feather" type="range" min="0" max="8" step="1" value="0" />
+                    </label>
+                    <p id="cover-blur-note" class="edit-note" hidden>Làm mờ mạnh như các bản trước.</p>
+                    <div class="edit-field">
+                      <span class="edit-label">Các vùng che <output id="cover-count"></output></span>
+                      <ul id="cover-list" class="cover-list" aria-label="Các vùng che"></ul>
+                      <p id="cover-empty" class="edit-note" hidden>Video này chưa có vùng che nào. Bấm Thêm vùng che rồi kéo trên video.</p>
+                    </div>
+                    <section id="cover-selected" class="cover-selected" aria-labelledby="cover-selected-title" hidden>
+                      <h3 id="cover-selected-title" class="edit-segment-title">Vùng che</h3>
+                      <p id="cover-selected-meta" class="edit-note"></p>
+                      <div id="cover-span-field" class="edit-field">
+                        <div id="cover-span" class="seg cover-span" role="radiogroup" aria-label="Thời gian che">
+                          <button type="button" role="radio" data-span="segment" aria-checked="true">Chỉ đoạn này</button>
+                          <button type="button" role="radio" data-span="all" aria-checked="false">Che cố định cả video</button>
+                        </div>
+                        <div id="cover-times" class="edit-times">
+                          <label title="Thời điểm trong video gốc">Từ<input id="cover-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                          <label title="Thời điểm trong video gốc">Đến<input id="cover-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                        </div>
+                      </div>
+                      <div class="edit-actions">
+                        <button id="cover-fix" class="btn" type="button">Che cố định dải này cả video</button>
+                        <button id="cover-delete" class="btn danger" type="button" aria-keyshortcuts="Delete">Xóa vùng che</button>
+                      </div>
+                    </section>
+                    <div class="cover-actions">
+                      <button id="cover-add" class="btn" type="button" aria-pressed="false">Thêm vùng che</button>
+                      <button id="cover-missed" class="btn ghost" type="button" hidden>Còn sót chữ?</button>
+                    </div>
+                    <p class="edit-note">Thời gian vùng che tính theo video gốc. Kiểu che đã áp dụng lần gần nhất được dùng cho video mới.</p>
                   </div>
                 </section>
                 <p id="edit-select-hint" class="edit-note" hidden>Chọn một đoạn chèn hoặc video chồng trên dòng thời gian để chỉnh.</p>
