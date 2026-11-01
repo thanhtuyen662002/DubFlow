@@ -168,6 +168,11 @@ function isActive(job: QueueJob | undefined): boolean {
   return !!job && ACTIVE.includes(job.status.state);
 }
 
+/** A job whose worker is gone holds nothing, so it can leave the list like a finished one. */
+function isRemovable(job: QueueJob | undefined): boolean {
+  return !!job && (!isActive(job) || job.status.state === "WORKER_LOST");
+}
+
 function tone(state: JobStatusState, cancelled = false): string {
   if (cancelled) return "";
   if (state === "COMPLETED") return "ok";
@@ -706,7 +711,7 @@ function renderStage(job: QueueJob | null): void {
   playerJobId = job.id;
   $("#detail-name").textContent = job.displayName;
   $("#detail-name").title = job.displayName;
-  $<HTMLButtonElement>("#remove-job").disabled = isActive(job);
+  $("#remove-job").title = isRemovable(job) ? "Xóa video khỏi danh sách" : "Hủy xử lý rồi xóa video khỏi danh sách";
   const done = status.state === "COMPLETED" && !!job.outputPath;
   $("#player-mode").hidden = !done;
   $("#player-mode-edited").hidden = !playerEditedPath;
@@ -1172,9 +1177,27 @@ newVersionButton.addEventListener("click", () => {
   }
 });
 
-$("#remove-job").addEventListener("click", () => {
+$("#remove-job").addEventListener("click", async () => {
   const selected = selectedJob();
-  if (!selected || isActive(selected)) return;
+  if (!selected) return;
+  if (!isRemovable(selected)) {
+    // A running video is cancelled first, so its worker does not keep writing.
+    const confirmed = await confirmDialog({
+      title: "Hủy và xóa video này?",
+      message: "Video đang được xử lý. DubFlow sẽ dừng xử lý rồi xóa video khỏi danh sách; file đã tạo trên ổ đĩa không bị xóa.",
+      confirmLabel: "Hủy và xóa",
+      cancelLabel: "Giữ lại",
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await invoke("cancel_job", { jobId: selected.id });
+    } catch (error) {
+      showError(`Không dừng được xử lý: ${String(error).slice(0, 180)}`);
+      return;
+    }
+  }
+  if (!queue.getSnapshot().jobs.some((job) => job.id === selected.id)) return;
   stopPolling(selected.id);
   queue.removeJob(selected.id);
 });
@@ -1182,7 +1205,7 @@ $("#failed-remove").addEventListener("click", () => $("#remove-job").click());
 
 $("#clear-queue").addEventListener("click", async () => {
   const jobs = queue.getSnapshot().jobs;
-  const active = jobs.filter((job) => isActive(job)).length;
+  const active = jobs.filter((job) => !isRemovable(job)).length;
   const removable = jobs.length - active;
   if (!removable) {
     showError("Video đang chạy không xóa được khỏi danh sách; hãy hủy xử lý trước.");
@@ -1200,7 +1223,7 @@ $("#clear-queue").addEventListener("click", async () => {
   if (!confirmed) return;
   // Re-read: a video may have started while the dialog was open.
   for (const job of queue.getSnapshot().jobs) {
-    if (isActive(job)) continue;
+    if (!isRemovable(job)) continue;
     stopPolling(job.id);
     queue.removeJob(job.id);
   }

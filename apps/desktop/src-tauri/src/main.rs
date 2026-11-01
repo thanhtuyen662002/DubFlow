@@ -238,7 +238,23 @@ fn status_path(root: &Path, job_id: &str) -> Result<PathBuf, String> {
 }
 
 fn default_job_output(source: &Path, job_id: &str) -> Result<PathBuf, String> {
-    job_output_in(source.parent().unwrap_or(Path::new(".")), source, job_id)
+    let media_store = data_root().ok().map(|root| root.join("source-media"));
+    job_output_in(&results_base(source, media_store.as_deref(), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref()), source, job_id)
+}
+
+/// Results go next to the source, except for a video the link service keeps
+/// in its own deep `source-media` store: those go to `Videos` like link
+/// downloads, so the path stays short and the store holds only sources.
+fn results_base(source: &Path, media_store: Option<&Path>, profile: Option<&Path>) -> PathBuf {
+    let beside = source.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let inside = |store: &Path| {
+        let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        canonical(source).starts_with(canonical(store))
+    };
+    match (media_store, profile) {
+        (Some(store), Some(profile)) if inside(store) => profile.join("Videos"),
+        _ => beside,
+    }
 }
 
 /// Longest video title kept in the output folder name, in characters.
@@ -1911,6 +1927,23 @@ mod tests {
         assert!(media.is_file(), "the store keeps its own file");
         assert!(copy_to_unique(&root.join("missing.mp4"), &folder, "x").is_err());
         assert!(!folder.join("x.mp4").exists(), "a failed copy leaves nothing behind");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn results_of_cached_link_videos_leave_the_source_store() {
+        let root = std::env::temp_dir().join(format!("dubflow-results-base-{}", std::process::id()));
+        let store = root.join("data").join("source-media");
+        let cached = store.join("ab12").join("link-1").join("cd34").join("ef56.mp4");
+        let local = root.join("clips").join("talk.mp4");
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::create_dir_all(local.parent().unwrap()).unwrap();
+        fs::write(&cached, "video").unwrap();
+        fs::write(&local, "video").unwrap();
+        let profile = root.join("profile");
+        assert_eq!(results_base(&cached, Some(&store), Some(&profile)), profile.join("Videos"));
+        assert_eq!(results_base(&local, Some(&store), Some(&profile)), root.join("clips"));
+        assert_eq!(results_base(&cached, None, Some(&profile)), cached.parent().unwrap());
         fs::remove_dir_all(&root).unwrap();
     }
 
