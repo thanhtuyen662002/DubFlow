@@ -453,8 +453,25 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
     case "save_review": savedOverrides = { ...(args.overrides as Record<string, string>) }; return "D:\Videos\DubFlow Output\preview" as T;
-    case "pick_product_files": return (args.kind === "music" ? ["D:/Nhac/nen.mp3"] : args.kind === "background" ? ["D:/Anh/nen-1080x720.png"] : args.kind === "media" ? ["D:/Clip/doi-tac.mp4"] : ["D:/Anh/hop.jpg", "D:/Anh/nhan.png"]) as T;
-    case "product_image": return await previewFrame(String(args.path).length % 3 / 3) as T;
+    case "pick_product_files": return (args.kind === "music" ? ["D:/Nhac/nen.mp3"] : args.kind === "background" ? ["D:/Anh/nen-doc-1080x1920.png"] : args.kind === "media" ? ["D:/Anh/hop.jpg", "D:/Anh/nhan.png", "D:/Clip/doi-tac.mp4"] : ["D:/Anh/hop.jpg", "D:/Anh/nhan.png"]) as T;
+    case "product_image": {
+      const background = previewBackgrounds.find((entry) => entry.path === String(args.path));
+      return await (background ? previewBackgroundImage(background.width, background.height, background.hue) : previewFrame(String(args.path).length % 3 / 3)) as T;
+    }
+    case "product_backgrounds": return previewBackgrounds.map(({ hue: _hue, ...entry }) => entry) as T;
+    case "product_background_add": {
+      const id = "c".repeat(64);
+      if (!previewBackgrounds.some((entry) => entry.id === id)) {
+        previewBackgrounds.unshift({ id, extension: "png", name: "nen-doc-1080x1920.png", width: 1080, height: 1920, path: `C:\\Users\\preview\\AppData\\Local\\DubFlow\\backgrounds\\${id}.png`, hue: 330 });
+      }
+      const { hue: _hue, ...entry } = previewBackgrounds.find((item) => item.id === id)!;
+      return entry as T;
+    }
+    case "product_background_delete": {
+      const index = previewBackgrounds.findIndex((entry) => entry.id === String(args.id));
+      if (index >= 0) previewBackgrounds.splice(index, 1);
+      return null as T;
+    }
     case "product_render": productStarted = Date.now(); productCancelled = 0; return "D:/Videos/DubFlow Output/Ban hang - preview/run-000000000000" as T;
     case "product_status": return previewProductStatus() as T;
     case "product_cancel": productCancelled = Date.now(); return null as T;
@@ -528,6 +545,35 @@ function previewProductStatus() {
   return done < 3
     ? { schema_version: 1, state: "RUNNING", done, total: 3, message: `Đang render video ${done + 1}/3…`, videos }
     : { schema_version: 1, state: "COMPLETED", done, total: 3, message: "Đã tạo 3/3 video", videos };
+}
+
+/** The preview's background library: one panel-sized image and one that needs cropping. */
+const previewBackgrounds = [
+  { id: "a".repeat(64), extension: "jpg", name: "nen-go.jpg", width: 1080, height: 720, path: `C:\\Users\\preview\\AppData\\Local\\DubFlow\\backgrounds\\${"a".repeat(64)}.jpg`, hue: 30 },
+  { id: "b".repeat(64), extension: "png", name: "hoa-van-rong.png", width: 1600, height: 900, path: `C:\\Users\\preview\\AppData\\Local\\DubFlow\\backgrounds\\${"b".repeat(64)}.png`, hue: 200 },
+];
+
+/** A stand-in background: a gradient with a grid, so dragging the focus shows. */
+async function previewBackgroundImage(width: number, height: number, hue: number): Promise<ArrayBuffer> {
+  const scale = Math.min(1, 720 / Math.max(width, height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const context = canvas.getContext("2d")!;
+  const fill = context.createLinearGradient(0, 0, canvas.width, canvas.height);
+  fill.addColorStop(0, `hsl(${hue} 55% 38%)`);
+  fill.addColorStop(1, `hsl(${hue + 60} 45% 18%)`);
+  context.fillStyle = fill;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.strokeStyle = "rgba(255,255,255,.18)";
+  context.lineWidth = 2;
+  for (let x = 0; x < canvas.width; x += 60) { context.beginPath(); context.moveTo(x, 0); context.lineTo(x, canvas.height); context.stroke(); }
+  for (let y = 0; y < canvas.height; y += 60) { context.beginPath(); context.moveTo(0, y); context.lineTo(canvas.width, y); context.stroke(); }
+  context.fillStyle = "rgba(255,255,255,.5)";
+  context.font = "bold 28px sans-serif";
+  context.fillText(`${width}×${height}`, 16, 40);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+  return blob!.arrayBuffer();
 }
 
 /** A 16:9 stand-in frame with a burned-in Chinese caption near the bottom. */

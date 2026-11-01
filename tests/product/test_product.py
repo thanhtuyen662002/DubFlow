@@ -16,6 +16,7 @@ import wave
 from engine.dubflow.product import job, layout, render, script
 
 FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG") or shutil.which("ffmpeg")
+DESKTOP_LAYOUT = Path(__file__).resolve().parents[2] / "apps" / "desktop" / "src" / "features" / "product" / "layout.json"
 
 
 class ScriptTests(unittest.TestCase):
@@ -75,6 +76,44 @@ class LayoutTests(unittest.TestCase):
         self.assertNotIn(",Title,", document)
         self.assertNotIn(",Price,", document)
 
+    def test_text_only_shows_the_name_a_card_per_highlight_and_the_price(self):
+        captions = [script.Caption(300, 1500, "Giá tốt")]
+        document = layout.ass_document("Nồi chiên {5L}", "299.000đ", captions, 9000, template="chi-chu",
+                                       features=["Chiên không dầu", " ", "Hẹn giờ 60 phút", "Dễ rửa"])
+        self.assertIn("Style: Card,Arial,76,&H00FFFFFF,", document)
+        self.assertIn("Title,,0,0,0,,{\\an8\\move(540,190,540,230,0,400)\\fad(400,0)}Nồi chiên (5L)", document)
+        cards = [line for line in document.splitlines() if ",Card,," in line]
+        self.assertEqual(len(cards), 3)
+        self.assertIn("Dialogue: 3,0:00:00.00,0:00:03.00,Card,,0,0,0,,{\\an5\\move(600,840,540,840,0,300)\\fad(250,200)}Chiên không dầu", cards[0])
+        self.assertTrue(cards[2].startswith("Dialogue: 3,0:00:06.00,0:00:09.00,Card,"))
+        self.assertIn("}3/3", document)
+        self.assertIn("Price,,0,0,0,,{\\an5\\pos(540,1300)\\fad(300,0)", document)
+        self.assertIn("Caption,,0,0,0,,{\\an5\\pos(540,1580)}Giá tốt", document)
+        self.assertNotIn("\\1a&HA0&", document, "no scrim without a background")
+        self.assertIn("\\1a&HA0&", layout.ass_document("a", "", [], 1000, template="chi-chu", outlined=True))
+
+    def test_text_only_without_highlights_makes_the_name_the_card(self):
+        document = layout.ass_document("Nồi chiên", "", [], 4000, template="chi-chu")
+        self.assertNotIn(",Title,,", document)
+        self.assertIn("}Nồi chiên", [line for line in document.splitlines() if ",Card,," in line][0])
+        self.assertNotIn(",Counter,,", document, "one card needs no counter")
+        self.assertNotIn(",Card,,", layout.ass_document("", "", [], 4000, template="chi-chu"))
+
+    def test_cards_share_the_video_and_short_videos_show_fewer(self):
+        self.assertEqual(layout.card_times(3, 9000), [(0, 3000), (3000, 6000), (6000, 9000)])
+        self.assertEqual(len(layout.card_times(8, 5000)), 5000 // layout.MIN_CARD_MS)
+        self.assertEqual(layout.card_times(2, 1000), [(0, 1000)])
+        self.assertEqual(layout.card_times(0, 9000), [])
+        self.assertEqual(layout.media_height("chi-chu"), 0)
+
+    def test_the_desktop_preview_draws_the_engine_layout(self):
+        # Regenerate with: python -m engine.dubflow.product.layout > apps/desktop/src/features/product/layout.json
+        self.assertEqual(json.loads(DESKTOP_LAYOUT.read_text(encoding="utf-8")), json.loads(json.dumps(layout.preview_layout())))
+        preview = layout.preview_layout()["templates"]
+        self.assertEqual((preview["ban-tin"]["title"]["y"], preview["ban-tin"]["caption"]["y"], preview["ban-tin"]["price"]["y"]), (1244, 1560, 1850))
+        self.assertEqual(preview["ban-tin"]["price"]["box"], {"colour": "#D81C1C", "opacity": 1.0, "pad": 16})
+        self.assertEqual(preview["toan-man-hinh"]["caption"]["box"]["opacity"], round(1 - 0x60 / 255, 3))
+
     def test_srt_numbers_and_times_each_caption(self):
         text = layout.srt_document([script.Caption(0, 1234, "a"), script.Caption(1234, 61000, "b")])
         self.assertEqual(text, "1\n00:00:00,000 --> 00:00:01,234\na\n\n2\n00:00:01,234 --> 00:01:01,000\nb\n")
@@ -128,6 +167,27 @@ class RenderTests(unittest.TestCase):
                 self.assertIn("[base][media]overlay=0:0", graph)
         plain = render.ffmpeg_argv(Path("ffmpeg.exe"), segments, Path("n.wav"), None, 0.2, 4000, Path("out.mp4"))
         self.assertIn("[panel]null[base]", plain[plain.index("-filter_complex") + 1])
+
+    def test_the_focus_picks_the_part_of_the_background_kept(self):
+        segments = render.plan([render.Visual(Path("C:/a.jpg"))], 4000)
+        backdrop = render.background(Path("C:/bg.png"), 1080, 720, (0.25, 1.0))
+        graph = render.ffmpeg_argv(Path("ffmpeg.exe"), segments, Path("n.wav"), None, 0.2, 4000, Path("out.mp4"), backdrop=backdrop)
+        graph = graph[graph.index("-filter_complex") + 1]
+        self.assertIn("crop=1080:720:x='(iw-1080)*0.2500':y='(ih-720)*1.0000'", graph)
+
+    def test_text_only_has_no_media_inputs_and_draws_a_gradient(self):
+        argv = render.ffmpeg_argv(Path("ffmpeg.exe"), [], Path("n.wav"), Path("m.mp3"), 0.2, 4000, Path("out.mp4"), media_height=0)
+        graph = argv[argv.index("-filter_complex") + 1]
+        self.assertEqual([argv[index + 1] for index, value in enumerate(argv) if value == "-i"], ["n.wav", "m.mp3"])
+        self.assertIn("geq=r='20+(-6)*Y/(H-1)'", graph)
+        self.assertIn("[base]subtitles=captions.ass[video]", graph)
+        self.assertIn("[0:a]aformat", graph)
+        self.assertNotIn("[media]", graph)
+        framed = render.ffmpeg_argv(Path("ffmpeg.exe"), [], Path("n.wav"), None, 0.2, 4000, Path("out.mp4"), media_height=0,
+                                    backdrop=render.Background(Path("C:/bg.png"), True, (0.5, 0.0)))
+        graph = framed[framed.index("-filter_complex") + 1]
+        self.assertIn("[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:x='(iw-1080)*0.5000':y='(ih-1920)*0.0000'", graph)
+        self.assertIn("[panel][backdrop]overlay=0:0[base]", graph)
 
     def test_full_screen_media_fills_the_frame(self):
         segments = render.plan([render.Visual(Path("C:/a.jpg")), render.Visual(Path("C:/b.mp4"), 9000)], 8000)
@@ -253,6 +313,39 @@ class JobTests(unittest.TestCase):
             self.assertFalse(any(str(background) in argv for argv in commands))
             self.assertIn("crop=1080:1920", commands[0][commands[0].index("-filter_complex") + 1])
 
+    def test_text_only_needs_no_media_and_fills_the_frame_with_the_background(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            background = root / "nen.jpg"
+            background.write_bytes(b"jpg")
+            path = self.write_spec(root, template="chi-chu", visuals=[], background=str(background), focus={"x": 0.2, "y": 0.8},
+                                   features=["  Chiên   không dầu ", "", "Dễ rửa"])
+            spec = job.load_spec(path)
+            self.assertEqual((spec.visuals, spec.features, spec.focus), ((), ("Chiên không dầu", "Dễ rửa"), (0.2, 0.8)))
+            commands = []
+
+            def ffmpeg(argv, cwd, cancelled):
+                commands.append(argv)
+                Path(argv[-1]).write_bytes(b"mp4")
+
+            def measure(path):
+                raise AssertionError("Chỉ chữ always fills the frame")
+
+            def probe(path):
+                raise AssertionError("Chỉ chữ reads no clips")
+            result = job.run(spec, root / "out", speaker=lambda status: FakeSpeaker(), probe=probe, measure=measure,
+                             ffmpeg=Path("ffmpeg"), ffmpeg_runner=ffmpeg)
+            self.assertEqual(result["state"], "COMPLETED", result)
+            graph = commands[0][commands[0].index("-filter_complex") + 1]
+            self.assertIn("crop=1080:1920:x='(iw-1080)*0.2000':y='(ih-1920)*0.8000'", graph)
+            ass = (root / "out" / ".dubflow-work" / "captions.ass").read_text(encoding="utf-8")
+            self.assertIn("}Chiên không dầu", ass, "a 1.5 s video has room for one card")
+            for changes in ({"template": "ban-tin", "visuals": []}, {"features": ["a"] * 9}, {"features": "a"},
+                            {"focus": {"x": 2, "y": 0}}, {"focus": {"x": True, "y": 0}}, {"focus": [0.5, 0.5]}):
+                with self.subTest(changes=changes), self.assertRaises(job.ProductError):
+                    job.load_spec(self.write_spec(root, **changes))
+            self.assertEqual(job.load_spec(self.write_spec(root, template="chi-chu")).visuals, (), "Chỉ chữ ignores media")
+
     def test_an_unreadable_sentence_fails_only_its_variant(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -369,6 +462,22 @@ class FfmpegRenderTests(unittest.TestCase):
             self.assertEqual(result["state"], "COMPLETED", result)
             colour = self.pixel(output / "video-1.mp4", 20, 1890)
             self.assertTrue(min(colour) > 180, f"no green panel: {colour}")
+
+    def test_text_only_renders_cards_over_a_gradient(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec_path = root / "spec.json"
+            spec_path.write_text(json.dumps({"schema_version": 1, "name": "Nồi chiên", "price": "299.000đ", "voice_id": "vi-test",
+                                             "variants": ["Xin chào. Nồi chiên rất tốt."], "visuals": [], "template": "chi-chu",
+                                             "features": ["Chiên không dầu", "Dễ rửa"]}), encoding="utf-8")
+            output = root / "DubFlow Output" / "text"
+            result = job.run(job.load_spec(spec_path), output, speaker=lambda status: FakeSpeaker(), probe=lambda path: 1000,
+                             ffmpeg=Path(FFMPEG), encoder="mpeg4")
+            self.assertEqual(result["state"], "COMPLETED", result)
+            probe = subprocess.run([FFMPEG, "-i", str(output / "video-1.mp4")], capture_output=True, text=True)
+            self.assertIn("1080x1920", probe.stderr)
+            top, bottom = self.pixel(output / "video-1.mp4", 1060, 4), self.pixel(output / "video-1.mp4", 1060, 1910)
+            self.assertTrue(top[2] > top[1] and bottom[1] > bottom[2] + 40, f"no gradient: {top} {bottom}")
 
     def test_both_background_sizes_land_where_they_belong(self):
         with TemporaryDirectory() as directory:

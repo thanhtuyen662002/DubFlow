@@ -1468,7 +1468,7 @@ type View = "queue" | "discover" | "product" | "compilation";
 const VIEW_HEADINGS: Record<View, [string, string]> = {
   queue: ["Hàng đợi", ""],
   discover: ["Khám phá", "Douyin, Bilibili, Kuaishou"],
-  product: ["Video bán hàng", "Từ ảnh sản phẩm"],
+  product: ["Video bán hàng", "Từ mô tả hoặc ảnh"],
   compilation: ["Tổng hợp", "Ghép các video đã xong"],
 };
 function showView(view: View): void {
