@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { MemorySnapshotStorage, QueueController, parseQueueSnapshot } from "../src/features/queue/model.ts";
+import { MemorySnapshotStorage, QueueController, parseQueueSnapshot, siblingRunDir } from "../src/features/queue/model.ts";
 import { matchesQueueFilter, toQueueViewModel } from "../src/features/queue/view_model.ts";
 import { acceptsPolledStatus, failureHint } from "../src/features/job_status/status.ts";
 
@@ -202,3 +202,18 @@ assert.equal(matchesQueueFilter("FAILED", "done"), false);
 for (const state of ["QUEUED", "RUNNING", "COMPLETED", "FAILED"]) assert.equal(matchesQueueFilter(state, "all"), true, state);
 
 console.log("desktop queue tests passed");
+
+// A rerun keeps the name, options and a fresh run folder beside a pinned output.
+{
+  const store = new QueueController(new MemorySnapshotStorage(), clock);
+  const linkId = store.addLinkJob("D:/Tools/DubFlow/source-media/ab/link-1/cd/ef.mp4", "https://www.bilibili.com/video/BV1ckx16aEBz",
+    "BV1ckx16aEBz", "C:\\Users\\me\\Videos\\DubFlow Output\\BV1ckx16aEBz - vi\\link-7699798b");
+  store.updateStatus(linkId, { ...store.getSnapshot().jobs[0].status, state: "FAILED" });
+  const again = store.retryJob(linkId);
+  const rerun = store.getSnapshot().jobs.find((job) => job.id === again);
+  assert.equal(rerun.displayName, "BV1ckx16aEBz");
+  assert.equal(rerun.originUrl, "https://www.bilibili.com/video/BV1ckx16aEBz");
+  assert.match(rerun.outputDir, /^C:\\Users\\me\\Videos\\DubFlow Output\\BV1ckx16aEBz - vi\\run-[a-z0-9]{1,12}$/);
+  assert.equal(siblingRunDir("D:/out/a - vi/run-1/", "job-ABC123def456"), "D:/out/a - vi/run-abc123def456");
+}
+console.log("queue rerun tests passed");

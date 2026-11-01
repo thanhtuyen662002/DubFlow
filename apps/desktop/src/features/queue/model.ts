@@ -262,6 +262,29 @@ export function summarizeQueue(snapshot: QueueSnapshot): QueueSummary {
   return summary;
 }
 
+/** A new run folder next to `outputDir`, named from the new job's id. */
+export function siblingRunDir(outputDir: string, jobId: string): string {
+  const separator = outputDir.includes("\\") ? "\\" : "/";
+  const trimmed = outputDir.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+  const parent = cut > 0 ? trimmed.slice(0, cut) : trimmed;
+  const tag = jobId.replace(/[^a-zA-Z0-9]/g, "").slice(-12).toLowerCase() || "retry";
+  return `${parent}${separator}run-${tag}`;
+}
+
+/** Processing options a rerun keeps from the job it repeats. */
+function copyOptions(from: QueueJob, to: QueueJob): void {
+  if (from.burnIn !== undefined) to.burnIn = from.burnIn;
+  if (from.subtitleBox !== undefined) to.subtitleBox = from.subtitleBox;
+  if (from.sourceLanguage !== undefined) to.sourceLanguage = from.sourceLanguage;
+  if (from.translationEngine !== undefined) to.translationEngine = from.translationEngine;
+  if (from.blurRegions !== undefined) to.blurRegions = from.blurRegions.map((region) => ({ ...region }));
+  if (from.blurAuto) to.blurAuto = true;
+  if (from.multiVoice) to.multiVoice = true;
+  if (from.separateBackground) to.separateBackground = true;
+  if (from.speakerVoices) to.speakerVoices = { ...from.speakerVoices };
+}
+
 export function createQueueJob(
   id: string,
   sourcePath: string,
@@ -395,6 +418,12 @@ export class QueueController {
     const retry = createQueueJob(this.allocateId(), job.sourcePath, this.clock());
     retry.dubbing = { ...job.dubbing };
     if (job.originUrl) retry.originUrl = job.originUrl;
+    // Same name and options; a pinned output folder gets a fresh sibling run,
+    // so a downloaded video keeps its results under "DubFlow Output" instead
+    // of falling back to the folder of its cached source file.
+    retry.displayName = job.displayName;
+    if (job.outputDir) retry.outputDir = siblingRunDir(job.outputDir, retry.id);
+    copyOptions(job, retry);
     retry.status = {
       ...emptyStatus(),
       reason: "manual_retry",
@@ -419,15 +448,7 @@ export class QueueController {
     revision.dubbing = { ...job.dubbing };
     revision.outputDir = outputDir;
     revision.revisionOf = job.id;
-    if (job.burnIn !== undefined) revision.burnIn = job.burnIn;
-    if (job.subtitleBox !== undefined) revision.subtitleBox = job.subtitleBox;
-    if (job.sourceLanguage !== undefined) revision.sourceLanguage = job.sourceLanguage;
-    if (job.translationEngine !== undefined) revision.translationEngine = job.translationEngine;
-    if (job.blurRegions !== undefined) revision.blurRegions = job.blurRegions.map((region) => ({ ...region }));
-    if (job.blurAuto) revision.blurAuto = true;
-    if (job.multiVoice) revision.multiVoice = true;
-    if (job.separateBackground) revision.separateBackground = true;
-    if (job.speakerVoices) revision.speakerVoices = { ...job.speakerVoices };
+    copyOptions(job, revision);
     if (job.originUrl) revision.originUrl = job.originUrl;
     revision.displayName = job.displayName;
     revision.status = { ...emptyStatus(), reason: "review_revision", message: "Chờ xử lý lại với bản dịch đã sửa" };
