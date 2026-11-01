@@ -425,6 +425,92 @@ class CancelTests(unittest.TestCase):
                 job.run_ffmpeg([sys.executable, "-c", "import sys; sys.stderr.write('bad input'); sys.exit(1)"], Path(directory))
 
 
+class ReuseTests(unittest.TestCase):
+    """Mẫu (#426): a video made again reuses the narration of the same script, voice and speed."""
+
+    def first_run(self, root: Path) -> Path:
+        spec_path = JobTests.write_spec(self, root)
+        output = root / "DubFlow Output" / "Ban hang - x" / "run-1"
+        result = job.run(job.load_spec(spec_path), output, speaker=lambda status: FakeSpeaker(), probe=lambda path: 1000,
+                         ffmpeg=Path("ffmpeg"), ffmpeg_runner=self.ffmpeg)
+        self.assertEqual(result["state"], "COMPLETED", result)
+        # The desktop keeps the request beside the run.
+        shutil.copyfile(spec_path, output / ".dubflow-work" / "spec.json")
+        return output
+
+    @staticmethod
+    def ffmpeg(argv, cwd, cancelled):
+        Path(argv[-1]).write_bytes(b"mp4")
+
+    def again(self, root: Path, previous: Path, **changes):
+        changes.setdefault("variants", ["Xin chào. Mua ngay hôm nay."])
+        spec = job.load_spec(JobTests.write_spec(self, root, reuse_audio_from=str(previous), **changes))
+        output = root / "DubFlow Output" / "Ban hang - x" / f"run-{len(list(previous.parent.iterdir())) + 1}"
+        spoken = []
+
+        def speaker(status):
+            voice = FakeSpeaker()
+            spoken.append(voice)
+            return voice
+        result = job.run(spec, output, speaker=speaker, probe=lambda path: 1000, ffmpeg=Path("ffmpeg"), ffmpeg_runner=self.ffmpeg)
+        self.assertEqual(result["state"], "COMPLETED", result)
+        return output, result, spoken
+
+    def test_the_same_script_and_voice_reuse_the_narration_without_the_voice_model(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous = self.first_run(root)
+            self.assertTrue((previous / ".dubflow-work" / "narration-2.json").is_file())
+            output, result, spoken = self.again(root, previous, name="Tên mới", template="chi-chu", visuals=[])
+            self.assertEqual(spoken, [], "the voice model is not even started")
+            self.assertTrue(result["videos"][0]["reused_voice"])
+            self.assertEqual((output / ".dubflow-work" / "narration-1.wav").read_bytes(), (previous / ".dubflow-work" / "narration-2.wav").read_bytes())
+            self.assertEqual((output / "captions-1.srt").read_text(encoding="utf-8"), (previous / "captions-2.srt").read_text(encoding="utf-8"))
+            self.assertEqual(result["videos"][0]["duration_ms"], json.loads((previous / ".dubflow-work" / "status.json").read_text(encoding="utf-8"))["videos"][1]["duration_ms"])
+            # The new run records its narration as well, so the next change reuses it again.
+            _, again, spoken = self.again(root, output)
+            self.assertEqual((spoken, again["videos"][0]["reused_voice"]), ([], True))
+
+    def test_a_changed_script_voice_or_speed_is_spoken_again(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous = self.first_run(root)
+            for changes in ({"variants": ["Xin chào. Mua ngay hôm nay nhé."]}, {"voice_id": "vi-other"}, {"speed": 1.1}):
+                with self.subTest(changes=changes):
+                    _, result, spoken = self.again(root, previous, **changes)
+                    self.assertEqual(len(spoken), 1)
+                    self.assertFalse(result["videos"][0]["reused_voice"])
+
+    def test_a_run_without_the_record_is_matched_by_its_request_and_captions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous = self.first_run(root)
+            for record in (previous / ".dubflow-work").glob("narration-*.json"):
+                record.unlink()
+            output, result, spoken = self.again(root, previous)
+            self.assertEqual(spoken, [])
+            self.assertEqual((output / "captions-1.srt").read_text(encoding="utf-8"), (previous / "captions-2.srt").read_text(encoding="utf-8"))
+            # Edited captions no longer say how long each sentence took.
+            srt = previous / "captions-2.srt"
+            srt.write_text(srt.read_text(encoding="utf-8").replace("Xin chào.", "Chào."), encoding="utf-8")
+            _, result, spoken = self.again(root, previous)
+            self.assertEqual(len(spoken), 1)
+
+    def test_a_damaged_narration_or_a_missing_run_is_spoken_again(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous = self.first_run(root)
+            wav = previous / ".dubflow-work" / "narration-2.wav"
+            wav.write_bytes(wav.read_bytes()[:-9600])
+            _, result, spoken = self.again(root, previous)
+            self.assertEqual(len(spoken), 1)
+            spec = job.load_spec(JobTests.write_spec(self, root, reuse_audio_from=str(root / "gone")))
+            self.assertIsNone(spec.reuse_from)
+            for value in (5, "a\x00b"):
+                with self.subTest(value=value), self.assertRaises(job.ProductError):
+                    job.load_spec(JobTests.write_spec(self, root, reuse_audio_from=value))
+
+
 @unittest.skipUnless(FFMPEG, "FFmpeg is not available")
 class FfmpegRenderTests(unittest.TestCase):
     def test_a_photo_and_a_clip_render_to_a_vertical_video_of_the_narration_length(self):

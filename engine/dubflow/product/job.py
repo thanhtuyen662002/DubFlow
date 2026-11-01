@@ -7,9 +7,10 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import wave
 from typing import Any, Callable, Protocol, Sequence
 
-from . import layout, render, script
+from . import layout, render, reuse, script
 
 MAX_VARIANTS = 5
 MIN_SPEED, MAX_SPEED = 1.0, 1.3
@@ -51,6 +52,8 @@ class Spec:
     features: tuple[str, ...] = ()
     # The part of the background kept when it is cropped to fit (0–1 across, 0–1 down).
     focus: tuple[float, float] = (0.5, 0.5)
+    # An earlier run whose narration is reused for a script spoken the same way (Mẫu, #426).
+    reuse_from: Path | None = None
 
 
 class Speaker(Protocol):
@@ -119,6 +122,11 @@ def load_spec(path: Path) -> Spec:
     speed = value.get("speed", 1.0)
     if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not MIN_SPEED <= speed <= MAX_SPEED:
         raise ProductError("Tốc độ đọc không hợp lệ")
+    reuse_from = value.get("reuse_audio_from")
+    if reuse_from is not None and (type(reuse_from) is not str or len(reuse_from) > 1024 or "\x00" in reuse_from):
+        raise ProductError("Bản cũ để dùng lại giọng đọc không hợp lệ")
+    # Reusing is only a shortcut: a run that is gone is simply spoken again.
+    reuse_dir = Path(reuse_from) if reuse_from and Path(reuse_from).is_absolute() and Path(reuse_from).is_dir() else None
     return Spec(
         name=_string(value.get("name"), "Tên sản phẩm", 120),
         price=_string(value.get("price"), "Giá", 60),
@@ -132,6 +140,7 @@ def load_spec(path: Path) -> Spec:
         speed=float(speed),
         features=tuple(text for text in (" ".join(_string(item, "Điểm nổi bật", MAX_FEATURE_CHARS).split()) for item in features) if text),
         focus=(float(focus["x"]), float(focus["y"])),
+        reuse_from=reuse_dir,
     )
 
 
@@ -206,6 +215,11 @@ def probe_size(ffprobe: Path, path: Path) -> tuple[int, int]:
     return width, height
 
 
+def _wav_rate(path: Path) -> int:
+    with wave.open(str(path), "rb") as reader:
+        return reader.getframerate()
+
+
 def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], probe: Callable[[Path], int],
         measure: Callable[[Path], tuple[int, int]] | None = None,
         ffmpeg: Path, ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None] = run_ffmpeg,
@@ -240,24 +254,42 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 raise ProductError("Không đọc được ảnh nền")
             backdrop = render.background(spec.background, *measure(spec.background), spec.focus)
         check()
-        voice = speaker(status)
         for number, text in enumerate(spec.variants, start=1):
             check()
-            status.write(message=f"Đang đọc kịch bản {number}/{len(spec.variants)}…")
+            narration = work / f"narration-{number}.wav"
+            # The same script, voice and speed as in the earlier run: its narration, not the voice model.
+            reused = reuse.find(spec.reuse_from, text, spec.voice_id, spec.speed) if spec.reuse_from is not None else None
+            if reused is not None:
+                try:
+                    reuse.copy(reused, narration)
+                except OSError:
+                    reused = None
+            if reused is None and voice is None:
+                # Outside the variant's own errors: a voice that cannot start fails the batch.
+                voice = speaker(status)
+            status.write(message=f"Dùng lại giọng đọc cũ cho video {number}/{len(spec.variants)}…" if reused
+                         else f"Đang đọc kịch bản {number}/{len(spec.variants)}…")
             try:
-                speech = []
-                for sentence in script.sentences(text):
-                    check()
-                    if sentence not in cache:
-                        try:
-                            cache[sentence] = voice.speak(sentence)
-                        except Exception as error:
-                            raise ProductError(f"Không đọc được câu “{sentence[:80]}”. Hãy sửa câu này rồi thử lại.") from error
-                    speech.append((sentence, cache[sentence]))
-                captions, total_ms = script.captions([(sentence, len(samples) * 1000 // voice.sample_rate) for sentence, samples in speech])
-                narration = work / f"narration-{number}.wav"
-                render.write_narration(narration, [samples for _, samples in speech], voice.sample_rate,
-                                       lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS, tail_ms=script.TAIL_MS)
+                if reused is not None:
+                    spoken = list(reused.spoken)
+                    rate = _wav_rate(narration)
+                else:
+                    speech = []
+                    for sentence in script.sentences(text):
+                        check()
+                        if sentence not in cache:
+                            try:
+                                cache[sentence] = voice.speak(sentence)
+                            except Exception as error:
+                                raise ProductError(f"Không đọc được câu “{sentence[:80]}”. Hãy sửa câu này rồi thử lại.") from error
+                        speech.append((sentence, cache[sentence]))
+                    spoken = [(sentence, len(samples) * 1000 // voice.sample_rate) for sentence, samples in speech]
+                    rate = voice.sample_rate
+                    render.write_narration(narration, [samples for _, samples in speech], rate,
+                                           lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS, tail_ms=script.TAIL_MS)
+                # What this narration says, so a later Mẫu change can reuse it too.
+                reuse.write_sidecar(work, number, voice_id=spec.voice_id, speed=spec.speed, text=text, sample_rate=rate, spoken=spoken)
+                captions, total_ms = script.captions(spoken)
                 _atomic_text(work / "captions.ass", layout.ass_document(spec.name, spec.price, captions, total_ms, outlined=backdrop is not None,
                                                                              template=spec.template, features=spec.features))
                 status.write(message=f"Đang render video {number}/{len(spec.variants)}…")
@@ -272,7 +304,7 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 partial = None
                 _atomic_text(output_dir / f"script-{number}.txt", text.strip() + "\n")
                 _atomic_text(output_dir / f"captions-{number}.srt", layout.srt_document(captions))
-                videos.append({"index": number, "ok": True, "path": str(final), "duration_ms": total_ms})
+                videos.append({"index": number, "ok": True, "path": str(final), "duration_ms": total_ms, "reused_voice": reused is not None})
             except ProductError as error:
                 videos.append({"index": number, "ok": False, "message": error.message})
             status.write(done=number, videos=videos)

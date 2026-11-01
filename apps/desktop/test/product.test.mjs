@@ -3,8 +3,9 @@ import { readFileSync } from "node:fs";
 import { describeProduct, MAX_SOURCE_CHARS, normalizeInfo, normalizeScripts, readParts } from "../src/features/product/ai.ts";
 import {
   addMedia, addPaths, backgroundBox, buildRequest, coverOverflow, dragFocus, focusKey, moveItem, parseBackgroundMemory, parseBackgrounds,
-  parseFeatures, parseStatus, photosToRead, readForm, TEMPLATES, toBase64, videoMedia,
+  keepsVoice, parseFeatures, parseProductSpec, parseRuns, parseStatus, photosToRead, readForm, recentVideos, TEMPLATES, toBase64, videoMedia,
 } from "../src/features/product/model.ts";
+import { backgroundHint, captionAt, templateButtonsHtml, templateNote } from "../src/features/product/look.ts";
 import { anchorStyle, ASS_EM, captionChunks, cardTexts, cardTimes, inkStyle, LAYOUT, mediaHeight } from "../src/features/product/layout.ts";
 import { escapeHtml, previewLayers } from "../src/features/product/preview.ts";
 
@@ -148,5 +149,33 @@ assert.match(previewLayers({ ...state, template: "chi-chu", background: { url: n
 assert.equal(previewLayers({ ...state, template: "chi-chu", name: "", features: [] }).card, "");
 assert.equal(previewLayers({ ...state, price: " " }).base.includes("299"), false);
 assert.equal(escapeHtml(`<a href="x">'&`), "&lt;a href=&quot;x&quot;&gt;&#39;&amp;");
+
+// Mẫu (Issue #426): a product video's request, earlier runs, and whether a new render keeps the narration.
+{
+  const raw = { spec: { schema_version: 1, name: "Nồi", price: "299k", voice_id: "vi-a", variants: ["Một.", "Hai."], visuals: ["D:/a.jpg", 3], music: null,
+    music_volume: 0.2, background: "C:/bg.png", template: "chi-chu", speed: 1.1, features: ["x", 2], focus: { x: 2, y: 0.25 } },
+    variant: 2, run: "D:/o/run-1", duration_ms: 31000, narration: true };
+  const info = parseProductSpec(raw);
+  assert.equal(info.spec.script, "Hai.");
+  assert.deepEqual([info.spec.visuals, info.spec.features, info.spec.focus, info.spec.template, info.spec.speed], [["D:/a.jpg"], ["x"], { x: 1, y: 0.25 }, "chi-chu", 1.1]);
+  assert.equal(info.durationMs, 31000);
+  for (const bad of [{ ...raw, variant: 3 }, { ...raw, run: "" }, { ...raw, variant: 0 }, null]) assert.equal(parseProductSpec(bad), null);
+  assert.equal(keepsVoice(info, { script: " Hai. ", voiceId: "vi-a", speed: 1.1 }), true);
+  for (const change of [{ script: "Ba." }, { voiceId: "vi-b" }, { speed: 1 }]) {
+    assert.equal(keepsVoice(info, { script: "Hai.", voiceId: "vi-a", speed: 1.1, ...change }), false);
+  }
+  assert.equal(keepsVoice({ ...info, narration: false }, { script: "Hai.", voiceId: "vi-a", speed: 1.1 }), false, "no narration left to reuse");
+  const runs = parseRuns([{ dir: "D:/o/run-2", name: "Nồi", created: 1_793_500_000, status: { state: "COMPLETED", message: "x", videos: [
+    { index: 1, ok: true, path: "D:/o/run-2/video-1.mp4", duration_ms: 30400 }, { index: 2, ok: false, message: "lỗi" }] } }, { dir: 5 }, { dir: "D:/o/run-1", status: null }]);
+  assert.equal(runs.length, 2);
+  const videos = recentVideos(runs, 5);
+  assert.equal(videos.length, 1);
+  assert.equal(videos[0].displayName, "Nồi · video 1");
+  assert.match(videos[0].meta, /^30 giây · \d\d\/\d\d \d\d:\d\d$/);
+  assert.equal((templateButtonsHtml().match(/data-template=/g) ?? []).length, 3);
+  assert.match(templateNote("chi-chu"), /thẻ chữ/);
+  assert.match(backgroundHint("ban-tin", { id: "a".repeat(64), path: "x", name: "n", extension: "png", width: 1600, height: 900 }), /1600×900 được cắt cho vừa nền dưới 1080×720/);
+  assert.equal(captionAt("", 0, 1000), "Phụ đề lời đọc hiện ở đây");
+}
 
 console.log("product tests passed");

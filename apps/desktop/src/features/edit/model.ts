@@ -733,6 +733,49 @@ export function textsAt(edit: Edit, time: number, total = outputDuration(edit)):
   return edit.texts.filter((text) => time >= text.at && time < text.at + textLength(text, total));
 }
 
+// ---------- A new render of the main video ----------
+
+/**
+ * The edit carried to a new render of the main video lasting `duration`
+ * (Mẫu, Issue #426). Parts of the main video keep their times: those that
+ * reached the old end reach the new end, the rest are cut to the new length
+ * and parts past it go. Inserted videos stay; overlays, sounds and texts that
+ * no longer start inside the output go. `trimmed` counts what was cut or
+ * removed, for a warning.
+ */
+export function retargetEdit(edit: Edit, duration: number, info: Partial<Omit<MediaInfo, "duration" | "kind">> = {}): { edit: Edit; trimmed: number } {
+  const old = mediaOf(edit, MAIN);
+  const main = mainMedia(duration, { path: old?.path, title: old?.title, width: old?.width, height: old?.height, fps: old?.fps, hasAudio: old?.hasAudio, ...info });
+  const end = ms(duration);
+  let trimmed = 0;
+  let nextId = edit.nextId;
+  const segments: Segment[] = [];
+  for (const segment of edit.segments) {
+    if (segment.mediaId !== MAIN) {
+      segments.push(segment);
+      continue;
+    }
+    const reachedEnd = segment.end >= edit.duration - 0.05;
+    if (segment.start > end - MIN_SEGMENT) {
+      trimmed += 1;
+      continue;
+    }
+    const cut = reachedEnd ? end : Math.min(segment.end, end);
+    if (cut < segment.end - 0.0005 && !reachedEnd) trimmed += 1;
+    segments.push({ ...segment, end: cut });
+  }
+  if (!segments.length) segments.push({ id: `s${nextId++}`, mediaId: MAIN, start: 0, end, speed: 1, volume: 1 });
+  const kept = new Set(segments.slice(0, -1).map((segment) => segment.id));
+  const transitions = Object.fromEntries(Object.entries(edit.transitions).filter(([id]) => kept.has(id)));
+  const next = pruneMedia({ ...edit, duration, media: [main, ...edit.media.filter((media) => media.id !== MAIN)], segments, transitions, nextId });
+  const total = outputDuration(next);
+  const overlays = next.overlays.filter((overlay) => overlay.at < total - MIN_SEGMENT);
+  const audio = next.audio.filter((clip) => clip.at < total - MIN_AUDIO);
+  const texts = next.texts.filter((text) => text.at < total - MIN_TEXT);
+  trimmed += next.overlays.length - overlays.length + next.audio.length - audio.length + next.texts.length - texts.length;
+  return { edit: pruneMedia({ ...next, overlays, audio, texts }), trimmed };
+}
+
 // ---------- Comparing, exporting ----------
 
 /** The whole main video once, at normal speed and volume, nothing added: nothing to export. */

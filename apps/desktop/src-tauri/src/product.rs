@@ -14,7 +14,7 @@ use std::sync::Mutex;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use crate::{control_root, data_root, default_download_folder, display_path, fail, load_voice_catalog, version_root, CREATE_NO_WINDOW};
+use crate::{control_root, data_root, default_download_folder, display_path, fail, load_voice_catalog, output_file, version_root, CREATE_NO_WINDOW};
 
 const IMAGE_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "webp", "bmp"];
 const CLIP_EXTENSIONS: [&str; 6] = ["mp4", "mov", "mkv", "webm", "avi", "m4v"];
@@ -101,6 +101,10 @@ pub struct ProductRequest {
     /// Narration speed, 1.0–1.3; 1.0 when absent.
     #[serde(default)]
     speed: Option<f64>,
+    /// Mẫu (#426): an earlier run whose narration is reused for a script spoken
+    /// the same way; the new run sits beside it unless a folder is chosen.
+    #[serde(default)]
+    reuse_audio_from: Option<String>,
     cpu_only: bool,
     output_root: Option<String>,
 }
@@ -172,6 +176,9 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
         .collect::<Result<Vec<_>, _>>()?;
     let music = request.music.as_deref().map(|value| local_file(value, &MUSIC_EXTENSIONS)).transpose()?;
     let background = request.background.as_deref().map(|value| local_file(value, &IMAGE_EXTENSIONS)).transpose()?;
+    let reuse = request.reuse_audio_from.as_deref().map(product_dir).transpose()?;
+    let beside_reuse = reuse.as_deref().and_then(|dir| dir.ancestors().find(|part| part.file_name().is_some_and(|name| name == "DubFlow Output")))
+        .and_then(Path::parent).map(Path::to_path_buf);
     let base = match request.output_root {
         Some(value) => {
             let base = PathBuf::from(value);
@@ -180,7 +187,9 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
             }
             base
         }
-        // Next to the first photo or clip; "Chỉ chữ" has none, so the Videos folder.
+        // Beside the run it is made again from; else next to the first photo or
+        // clip; "Chỉ chữ" has none, so the Videos folder.
+        None if beside_reuse.is_some() => beside_reuse.unwrap_or_default(),
         None => match visuals.first() {
             Some(first) => first.parent().ok_or_else(|| fail("Không xác định được thư mục lưu"))?.to_path_buf(),
             None => default_download_folder()?.parent().ok_or_else(|| fail("Không xác định được thư mục lưu"))?.to_path_buf(),
@@ -194,6 +203,7 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
         "schema_version": 1, "name": request.name, "price": request.price, "voice_id": request.voice_id,
         "variants": request.variants, "visuals": visuals, "music": music, "music_volume": request.music_volume, "background": background,
         "template": template, "speed": speed, "features": request.features, "focus": {"x": focus.0, "y": focus.1},
+        "reuse_audio_from": reuse.as_deref().map(display_path),
     });
     let spec_path = work.join("spec.json");
     fs::write(&spec_path, serde_json::to_vec(&spec).map_err(|error| fail(error.to_string()))?)
@@ -233,6 +243,99 @@ pub fn product_status(output_dir: String) -> Result<Value, String> {
 pub fn product_cancel(output_dir: String) -> Result<(), String> {
     let dir = product_dir(&output_dir)?;
     fs::write(dir.join(".dubflow-work").join("cancel"), b"").map_err(|error| fail(format!("Không hủy được: {error}")))
+}
+
+/// A product video `<…>\DubFlow Output\Ban hang - <name>\run-<id>\video-<n>.mp4`
+/// of a run that kept its request: the run's folder and `n`.
+pub(crate) fn product_video(video: &Path) -> Option<(PathBuf, usize)> {
+    let number = video.file_name()?.to_str()?.strip_prefix("video-")?.strip_suffix(".mp4")?;
+    let number = (!number.is_empty() && number.len() <= 2 && number.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| number.parse::<usize>().ok()).flatten().filter(|value| *value >= 1)?;
+    let run = video.parent()?;
+    let named = |dir: Option<&Path>, check: &dyn Fn(&str) -> bool| dir.and_then(Path::file_name).and_then(|name| name.to_str()).is_some_and(check);
+    (named(Some(run), &|name| name.starts_with("run-")) && named(run.parent(), &|name| name.starts_with("Ban hang - "))
+        && named(run.parent().and_then(Path::parent), &|name| name == "DubFlow Output")
+        && run.join(".dubflow-work").join("spec.json").is_file()).then(|| (run.to_path_buf(), number))
+}
+
+const SPEC_LIMIT: u64 = 256 * 1024;
+
+pub(crate) fn read_small_json(path: &Path, limit: u64) -> Option<Value> {
+    fs::metadata(path).ok().filter(|metadata| metadata.is_file() && metadata.len() <= limit)?;
+    serde_json::from_slice::<Value>(&fs::read(path).ok()?).ok().filter(Value::is_object)
+}
+
+/// Mẫu (#426): what a product video was made from, its number in the run and
+/// whether its narration is still there to reuse.
+#[tauri::command]
+pub fn product_spec(output_path: String) -> Result<Value, String> {
+    let video = output_file(&output_path)?;
+    let (run, number) = product_video(&video).ok_or_else(|| fail("Đây không phải video bán hàng của DubFlow"))?;
+    let work = run.join(".dubflow-work");
+    let spec = read_small_json(&work.join("spec.json"), SPEC_LIMIT).filter(|spec| spec["schema_version"] == 1)
+        .ok_or_else(|| fail("Không đọc được thông tin mẫu của video này"))?;
+    let status = read_small_json(&work.join("status.json"), SPEC_LIMIT);
+    let duration = status.as_ref().and_then(|status| status["videos"].as_array().cloned()).unwrap_or_default().into_iter()
+        .find(|video| video["index"] == number).map_or(Value::Null, |video| video["duration_ms"].clone());
+    Ok(json!({"spec": spec, "variant": number, "run": display_path(&run), "duration_ms": duration,
+        "narration": work.join(format!("narration-{number}.wav")).is_file()}))
+}
+
+/// Run folders `<root>\DubFlow Output\<prefix><title>\run-*` that kept their
+/// request, newest first. Each root is a folder the user saves to (or any
+/// folder inside "DubFlow Output"); the Videos folder is always looked at.
+pub(crate) fn find_runs(roots: &[String], prefix: &str, limit: usize) -> Vec<PathBuf> {
+    let mut outputs: Vec<PathBuf> = Vec::new();
+    let videos = default_download_folder().ok().and_then(|folder| folder.parent().map(Path::to_path_buf));
+    for root in roots.iter().take(64).map(PathBuf::from).chain(videos) {
+        if !root.is_absolute() || root.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+            continue;
+        }
+        let output = root.ancestors().find(|dir| dir.file_name().is_some_and(|name| name == "DubFlow Output"))
+            .map_or_else(|| root.join("DubFlow Output"), Path::to_path_buf);
+        let Ok(output) = output.canonicalize() else { continue };
+        if output.is_dir() && !outputs.contains(&output) {
+            outputs.push(output);
+        }
+    }
+    let mut runs: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for output in outputs {
+        let Ok(titles) = fs::read_dir(&output) else { continue };
+        for title in titles.flatten().take(2000) {
+            if !title.file_name().to_str().is_some_and(|name| name.starts_with(prefix)) || !title.path().is_dir() {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(title.path()) else { continue };
+            for entry in entries.flatten().take(500) {
+                let dir = entry.path();
+                if !entry.file_name().to_str().is_some_and(|name| name.starts_with("run-")) || !dir.is_dir() {
+                    continue;
+                }
+                if let Ok(modified) = fs::metadata(dir.join(".dubflow-work").join("spec.json")).and_then(|metadata| metadata.modified()) {
+                    runs.push((modified, dir));
+                }
+            }
+        }
+    }
+    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    runs.into_iter().take(limit).map(|(_, dir)| dir).collect()
+}
+
+/// When a run was started: its request's time, in Unix seconds.
+pub(crate) fn created_seconds(dir: &Path) -> u64 {
+    fs::metadata(dir.join(".dubflow-work").join("spec.json")).and_then(|metadata| metadata.modified()).ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |time| time.as_secs())
+}
+
+/// Product runs found below the given folders, newest first, with their status.
+#[tauri::command]
+pub fn product_runs(roots: Vec<String>) -> Vec<Value> {
+    find_runs(&roots, "Ban hang - ", 40).into_iter().filter_map(|dir| {
+        let work = dir.join(".dubflow-work");
+        let spec = read_small_json(&work.join("spec.json"), SPEC_LIMIT)?;
+        Some(json!({"dir": display_path(&dir), "name": spec["name"], "template": spec["template"], "created": created_seconds(&dir),
+            "status": read_small_json(&work.join("status.json"), SPEC_LIMIT)}))
+    }).collect()
 }
 
 /// One image in the background library, `<data root>\backgrounds\<sha256>.<ext>`.
@@ -410,6 +513,38 @@ mod tests {
         assert_eq!(read_library(&library), vec![newer.clone()]);
         assert!(remove_from_library(&library, "../index").is_err());
         remove_from_library(&library, &"0".repeat(64)).unwrap();
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn product_videos_their_request_and_runs_are_found() {
+        let base = std::env::temp_dir().join(format!("dubflow-product-spec-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let run = base.join("DubFlow Output").join("Ban hang - Nồi").join("run-0123456789ab");
+        fs::create_dir_all(run.join(".dubflow-work")).unwrap();
+        fs::write(run.join(".dubflow-work/spec.json"), json!({"schema_version": 1, "name": "Nồi", "template": "chi-chu", "variants": ["A.", "B."]}).to_string()).unwrap();
+        fs::write(run.join(".dubflow-work/status.json"), json!({"state": "COMPLETED", "videos": [{"index": 2, "ok": true, "duration_ms": 31000}]}).to_string()).unwrap();
+        fs::write(run.join(".dubflow-work/narration-2.wav"), b"wav").unwrap();
+        for name in ["video-2.mp4", "video-0.mp4", "video-123.mp4", "video-2.mkv"] {
+            fs::write(run.join(name), b"video").unwrap();
+        }
+        let video = run.join("video-2.mp4").canonicalize().unwrap();
+        assert_eq!(product_video(&video).map(|(_, number)| number), Some(2));
+        for name in ["video-0.mp4", "video-123.mp4", "video-2.mkv"] {
+            assert!(product_video(&run.join(name)).is_none(), "{name}");
+        }
+        let spec = product_spec(display_path(&video)).unwrap();
+        assert_eq!((spec["variant"].as_u64(), spec["spec"]["variants"][1].as_str(), spec["duration_ms"].as_u64(), spec["narration"].as_bool()),
+            (Some(2), Some("B."), Some(31000), Some(true)));
+        assert!(product_spec(display_path(&run.join("video-2.mkv"))).is_err());
+        let runs = product_runs(vec![display_path(&base)]);
+        let ours: Vec<_> = runs.iter().filter(|value| value["dir"].as_str().is_some_and(|dir| dir.contains("dubflow-product-spec-"))).collect();
+        assert_eq!(ours.len(), 1);
+        assert_eq!((ours[0]["name"].as_str(), ours[0]["status"]["state"].as_str()), (Some("Nồi"), Some("COMPLETED")));
+        // Another kind of run below the same folder is not listed.
+        fs::create_dir_all(base.join("DubFlow Output/Tong hop - x/run-0123456789ab/.dubflow-work")).unwrap();
+        fs::write(base.join("DubFlow Output/Tong hop - x/run-0123456789ab/.dubflow-work/spec.json"), b"{}").unwrap();
+        assert_eq!(find_runs(&[display_path(&base)], "Ban hang - ", 10).iter().filter(|dir| dir.to_string_lossy().contains("dubflow-product-spec-")).count(), 1);
         fs::remove_dir_all(&base).unwrap();
     }
 
