@@ -1283,3 +1283,66 @@ select { color-scheme: dark; }
 .compilation-past-parts { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--text-2); font-size: 13px; }
 .compilation-inspector .tab-foot { display: grid; gap: 8px; }
 .compilation-inspector .tab-foot .hint:empty { display: none; }
+
+/* Phim tài liệu (Issue #440): source player, editable script and project settings. */
+.docu-screen { flex: 1; }
+.docu-col { width: 284px; }
+.docu-player-col { overflow: hidden; }
+.docu-workspace { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+.docu-player { position: relative; display: flex; flex: 0 0 min(34%, 260px); flex-direction: column; min-width: 0; min-height: 150px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--canvas); }
+.docu-player-head { display: flex; flex: none; align-items: center; gap: 8px; min-height: 30px; color: var(--text-3); font-size: 12px; }
+.docu-player-head select { flex: 1; min-width: 0; height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--text); }
+.docu-player video { display: block; flex: 1; width: 100%; min-height: 0; background: #050607; object-fit: contain; }
+.docu-player .player-placeholder { position: absolute; inset: 38px 12px 8px; display: grid; place-items: center; padding: 14px; background: oklch(0.11 0.005 275); color: var(--text-3); text-align: center; }
+.docu-player .player-placeholder[hidden] { display: none; }
+.docu-editor { flex: 1; min-width: 0; min-height: 0; padding: 12px; overflow: auto; }
+.docu-chapter { display: grid; gap: 10px; min-width: 0; margin-bottom: 16px; }
+.docu-chapter > header, .docu-scene > header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.docu-chapter > header { justify-content: space-between; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
+.docu-chapter h3 { font-size: 14px; font-weight: 650; }
+.docu-chapter > header small { color: var(--text-3); font-size: 11.5px; }
+.docu-chapter-empty { color: var(--text-3); font-size: 13px; }
+.docu-scene { display: grid; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.docu-scene > header { color: var(--text-2); font-size: 12px; }
+.docu-scene > header strong { color: var(--accent-text); font-variant-numeric: tabular-nums; }
+.docu-scene-time { margin-right: auto; color: var(--text-3); }
+.docu-scene label, .docu-fields > label { display: flex; flex-direction: column; gap: 4px; min-width: 0; color: var(--text-2); font-size: 12px; }
+.docu-scene :is(textarea, input, select), .docu-fields :is(input, textarea, select) { box-sizing: border-box; width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--canvas); color: var(--text); font: inherit; font-size: 13px; line-height: 1.4; }
+.docu-scene textarea { resize: vertical; }
+.docu-scene select, .docu-fields select { height: 34px; padding: 0 7px; }
+.docu-word-count { display: flex; justify-content: space-between; gap: 8px; margin-top: -5px; color: var(--text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.docu-refs { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+.docu-ref-wrap { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); }
+.docu-ref, .docu-ref-remove { padding: 0; border: 0; background: transparent; color: var(--accent-text); font: inherit; font-size: 11.5px; cursor: pointer; }
+.docu-ref-remove { color: var(--text-3); font-size: 15px; line-height: 1; }
+.docu-graphic-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.docu-review { display: grid; gap: 5px; padding: 9px; border: 1px solid color-mix(in oklch, var(--warn) 35%, transparent); border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 12px; }
+.docu-review ul, .docu-script-notes { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--text-2); line-height: 1.4; }
+.docu-review .btn { justify-self: start; height: 28px; padding: 0 10px; font-size: 12px; }
+.docu-inspector .tab-scroll { gap: 12px; }
+.docu-fields { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.docu-fields > label input, .docu-fields > label textarea { background: var(--canvas); }
+.docu-fields .docu-check { display: flex; flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
+.docu-fields .docu-check input { width: auto; accent-color: var(--accent); }
+.docu-source-picker { display: grid; gap: 7px; padding-top: 12px; border-top: 1px solid var(--line); }
+.docu-source-picker h3 { font-size: 13px; }
+.docu-source-picker .btn { justify-content: center; min-height: 32px; padding: 0 10px; }
+.docu-source-order { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; counter-reset: none; }
+.docu-source-order li { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); }
+.docu-source-order li > span { display: flex; flex: 1; flex-direction: column; min-width: 0; overflow: hidden; }
+.docu-source-order strong, .docu-source-order small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docu-source-order strong { font-size: 12px; font-weight: 600; }
+.docu-source-order small { color: var(--text-3); font-size: 10.5px; }
+.docu-source-order .icon-btn { flex: none; width: 26px; height: 26px; font-size: 13px; }
+.docu-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; margin: 0; padding: 10px; border-radius: 8px; background: var(--canvas); font-size: 12.5px; }
+.docu-summary dt { color: var(--text-3); }
+.docu-summary dd { margin: 0; font-variant-numeric: tabular-nums; }
+.docu-script-notes:empty { display: none; }
+@media (max-width: 700px) {
+  .docu-player { flex-basis: 30%; min-height: 130px; }
+  .docu-inspector { width: min(344px, 45vw); }
+  .docu-graphic-fields { grid-template-columns: minmax(0, 1fr); }
+}
+.docu-mood { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.docu-mood select { height: 28px; min-width: 0; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--canvas); color: var(--text); font: inherit; font-size: 12px; }
+.docu-graphic-fields[hidden] { display: none; }

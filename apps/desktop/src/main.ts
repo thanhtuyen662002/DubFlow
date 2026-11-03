@@ -24,6 +24,7 @@ import { mountPackage } from "./features/package/view.ts";
 import { mountShorts } from "./features/shorts/view.ts";
 import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
+import { mountDocu } from "./features/docu/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { mountEditor, type EditTarget } from "./features/edit/view.ts";
 import { createSfxLibrary } from "./features/sfx/library.ts";
@@ -1558,16 +1559,19 @@ const compilation = mountCompilation(invoke, claudeKey, {
   jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,
   edit: (video) => void editVideo({ id: video.outputPath, kind: "compilation", outputPath: video.outputPath, displayName: video.displayName }, "compilation"),
 });
-type View = "queue" | "discover" | "product" | "compilation";
+const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl });
+type View = "queue" | "discover" | "product" | "compilation" | "docu";
 const VIEW_HEADINGS: Record<View, [string, string]> = {
   queue: ["Hàng đợi", ""],
   discover: ["Khám phá", "Douyin, Bilibili, Kuaishou"],
   product: ["Video bán hàng", "Từ mô tả hoặc ảnh"],
   compilation: ["Tổng hợp", "Ghép các video đã xong"],
+  docu: ["Phim tài liệu", "Kịch bản phim tài liệu tiếng Anh"],
 };
 /** Show a page; `highlight` is the rail item lit (the page an edited video came from). */
 function showView(view: View, highlight: View = view): void {
   $("#compilation-view").hidden = view !== "compilation";
+  $("#docu-view").hidden = view !== "docu";
   $("#discover-view").hidden = view !== "discover";
   $("#product-view").hidden = view !== "product";
   $("#queue-content").hidden = view !== "queue";
@@ -1577,7 +1581,7 @@ function showView(view: View, highlight: View = view): void {
   $("#page-meta").hidden = highlight === "queue";
   $("#page-meta").textContent = meta;
   if (view !== "queue") setListOpen(false);
-  for (const [id, active] of [["#nav-queue", highlight === "queue"], ["#nav-discover", highlight === "discover"], ["#nav-product", highlight === "product"], ["#nav-compilation", highlight === "compilation"]] as const) {
+  for (const [id, active] of [["#nav-queue", highlight === "queue"], ["#nav-discover", highlight === "discover"], ["#nav-product", highlight === "product"], ["#nav-compilation", highlight === "compilation"], ["#nav-docu", highlight === "docu"]] as const) {
     $(id).classList.toggle("active", active);
     if (active) $(id).setAttribute("aria-current", "page");
     else $(id).removeAttribute("aria-current");
@@ -1586,6 +1590,7 @@ function showView(view: View, highlight: View = view): void {
   else discovery.hide();
   if (view === "product") productStudio.show();
   if (view === "compilation") compilation.show();
+  if (view === "docu") docu.show();
 }
 /** Go to a page; editing another page's video ends first (asking when something is not saved). */
 async function navigate(view: View): Promise<void> {
@@ -1600,7 +1605,7 @@ async function navigate(view: View): Promise<void> {
   }
   showView(view);
 }
-for (const [id, view] of [["#nav-queue", "queue"], ["#nav-discover", "discover"], ["#nav-product", "product"], ["#nav-compilation", "compilation"]] as const) {
+for (const [id, view] of [["#nav-queue", "queue"], ["#nav-discover", "discover"], ["#nav-product", "product"], ["#nav-compilation", "compilation"], ["#nav-docu", "docu"]] as const) {
   $(id).addEventListener("click", (event) => {
     event.preventDefault();
     void navigate(view);
