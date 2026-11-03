@@ -107,6 +107,24 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(manifest["source"]["path"], "<path>/clip.mp4")
             self.assertNotIn("output_dir", summary)
 
+    def test_source_worker_log_is_included_without_local_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "source-work" / "worker-errors.log"
+            log.parent.mkdir()
+            worker_file = root / "app" / "worker.py"
+            log.write_text(f'--- 2026-11-03T00:00:00Z source_download KeyError: x\n  File "{worker_file}", line 9\n', encoding="utf-8")
+            path = report.create_report(output_dir=None, job_status=None, destination=root / "desktop", now=0, source_log=log)
+            with zipfile.ZipFile(path) as archive:
+                text = archive.read("source-worker-errors.log").decode("utf-8")
+                summary = json.loads(archive.read("summary.json"))
+            self.assertIn("source_download KeyError", text)
+            self.assertNotIn(str(root), text)
+            self.assertIn("source-worker-errors.log", summary["included"])
+            missing = report.create_report(output_dir=None, job_status=None, destination=root / "desktop", now=1, source_log=root / "none.log")
+            with zipfile.ZipFile(missing) as archive:
+                self.assertNotIn("source-worker-errors.log", archive.namelist())
+
     def test_files_behind_a_linked_folder_are_not_read(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

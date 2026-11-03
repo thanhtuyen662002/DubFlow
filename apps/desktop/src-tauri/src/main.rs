@@ -353,6 +353,11 @@ async fn create_report(job_id: String, output_dir: Option<String>) -> Result<Str
         }
         args.extend(["--output-dir".into(), dir.into_os_string()]);
     }
+    // The source worker's traceback log (SOURCE_WORKER_FAILED): link jobs have no results folder.
+    let source_log = root.join("source-work").join("worker-errors.log");
+    if source_log.is_file() {
+        args.extend(["--source-log".into(), source_log.into_os_string()]);
+    }
     let result = python_json(args, "bộ tạo báo cáo").await?;
     let path = result.get("path").and_then(Value::as_str)
         .ok_or_else(|| fail(result.get("message").and_then(Value::as_str).unwrap_or("Không tạo được báo cáo")))?

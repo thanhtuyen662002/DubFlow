@@ -7,14 +7,19 @@ before its checked SQLite transaction. This process never receives a database.
 from __future__ import annotations
 
 from hashlib import sha256
+import http.client
 import json
 import os
 from pathlib import Path
 import queue
 import re
+import socket
+import ssl
 import sys
 import threading
 import time
+import traceback
+import urllib.error
 import uuid
 from urllib.parse import parse_qsl, urlsplit
 
@@ -419,13 +424,68 @@ def _request(line, validator, job_id=None):
     return message
 
 
+# A dropped or slow connection is a network failure the user can retry, not a broken worker.
+NETWORK_ERRORS = (ConnectionError, TimeoutError, socket.timeout, http.client.HTTPException, urllib.error.URLError, ssl.SSLError)
+ERROR_LOG = "worker-errors.log"
+ERROR_LOG_LIMIT = 256 * 1024
+
+
+def failure_code(error: BaseException, command: str | None) -> tuple[str, bool]:
+    """The failure the supervisor receives: typed source errors as they are, network errors as NETWORK."""
+    if isinstance(error, SourceError):
+        return error.code.value, error.retryable
+    # Session operations have no NETWORK outcome in the supervisor's contract.
+    if command != "source_session" and isinstance(error, NETWORK_ERRORS):
+        return SourceErrorCode.NETWORK.value, True
+    return "SOURCE_WORKER_FAILED", False
+
+
+def error_log_dir(args: object) -> Path | None:
+    """``<data root>/source-work``: above the job's work folder or in its data root, else beside the installed versions."""
+    args = args if isinstance(args, dict) else {}
+    if isinstance(args.get("work_root"), str) and args["work_root"]:
+        work = Path(args["work_root"])
+        for folder in [work, *work.parents]:
+            if folder.name == "source-work" and folder.is_dir():
+                return folder
+    if isinstance(args.get("data_root"), str) and args["data_root"] and (Path(args["data_root"]) / "source-work").is_dir():
+        return Path(args["data_root"]) / "source-work"
+    installed = Path(__file__).resolve().parents[7] / "source-work" if len(Path(__file__).resolve().parents) > 7 else None
+    return installed if installed is not None and installed.is_dir() else None
+
+
+def log_failure(error: BaseException, command: str | None, folder: Path | None, *, now: float | None = None) -> Path | None:
+    """Append the error and its traceback; the "Gửi báo cáo lỗi" zip carries the file, paths redacted."""
+    if folder is None:
+        return None
+    path = folder / ERROR_LOG
+    try:
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now if now is not None else time.time()))
+        entry = f"--- {stamp} {command or 'unknown'} {type(error).__name__}: {error}\n{''.join(traceback.format_exception(error))}\n"
+        previous = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+        text = previous + entry
+        if len(text.encode("utf-8")) > ERROR_LOG_LIMIT:
+            text = text[-(ERROR_LOG_LIMIT // 2):]
+            text = text[text.find("--- "):] if "--- " in text else text
+        partial = path.with_name(path.name + ".partial")
+        partial.write_text(text, encoding="utf-8")
+        os.replace(partial, path)
+        return path
+    except OSError:
+        return None
+
+
 def main() -> int:
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
     validator = StreamValidator()
     emitter = None
     controls = None
+    command = None
+    args = None
     try:
         first = _request(stdin.readline(MAX_LINE_BYTES + 1), validator)
+        if isinstance(first.payload, dict):
+            command, args = first.payload.get("command"), first.payload.get("args")
         if first.message_type is not MessageType.COMMAND or first.payload["command"] not in {"source_prepare", "source_session"}:
             raise _invalid()
         emitter = _Emitter(first.job_id, stdout)
@@ -469,6 +529,7 @@ def main() -> int:
         emitter.checkpoint(session.publish(session.ready(), first.job_id))
         while not emitter.finished.is_set():
             request = pending.get()
+            command = request.payload["command"]
             if request.payload["command"] == "source_download":
                 last_progress = [0.0]
 
@@ -491,9 +552,11 @@ def main() -> int:
                 return 0
         return 0
     except Exception as error:
+        code, retryable = failure_code(error, command)
+        if not isinstance(error, SourceError):
+            log_failure(error, command, error_log_dir(args))
         if emitter is not None:
-            emitter.fail(error.code.value if isinstance(error, SourceError) else "SOURCE_WORKER_FAILED",
-                retryable=error.retryable if isinstance(error, SourceError) else False)
+            emitter.fail(code, retryable=retryable)
         return 2
     finally:
         if emitter is not None:
