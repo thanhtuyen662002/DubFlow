@@ -4,6 +4,8 @@ import {
   isEnglish, narrationStale, normalizeScript, parseRender, parseVisual, planStale, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
 } from "../src/features/docu/model.ts";
 import { writeChapter, writeScript } from "../src/features/docu/ai.ts";
+import { addText, createEdit } from "../src/features/edit/model.ts";
+import { calloutTexts } from "../src/features/docu/model.ts";
 
 const path = name => `D:\\Documentary\\${name}`;
 const form = { title: "Three Gorges Dam", topic: "Engineering and community impact", targetMinutes: 11,
@@ -180,5 +182,26 @@ assert.deepEqual(parseRender({ video: "D:/run/documentary.mp4", status: { state:
   { video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok" } });
 assert.deepEqual(parseRender({ video: 5, status: { state: "?" } }), { video: null, status: null });
 assert.equal(parseOpen({ dir: "D:/run", spec: { schema_version: 1, sources: [] }, contexts, script: null }).render.video, null);
+
+// Editor (phase 3a): the script's graphics become Chữ texts at their scene's narrated time.
+const withGraphics = { project_title: "T", target_Coordinates_3D: null, script_sha256: "abc", chapters: [{ chapter_type: "HOOK", scenes: [
+  { scene_id: "sc_001", narration_text: "One.", matched_source_refs: [], visual_search_tags: [], ambient_sfx_tag: null, needs_review: false, review_notes: [], review_numbers: [], acknowledged_numbers: [],
+    on_screen_graphic: { type: "METRIC_CALLOUT", title: "TOTAL CONCRETE", value: "280 Million Cubic Feet", subtext: "About 7.6 Empire State Buildings" } },
+  { scene_id: "sc_002", narration_text: "Two.", matched_source_refs: [], visual_search_tags: [], ambient_sfx_tag: null, needs_review: false, review_notes: [], review_numbers: [], acknowledged_numbers: [],
+    on_screen_graphic: { type: "LOWER_THIRD", title: "Baihetan Dam", value: "", subtext: "Sichuan–Yunnan border" } },
+  { scene_id: "sc_003", narration_text: "Three.", matched_source_refs: [], visual_search_tags: [], ambient_sfx_tag: null, needs_review: false, review_notes: [], review_numbers: [], acknowledged_numbers: [], on_screen_graphic: null }] }] };
+const timedScenes = { ...timed, duration: 20, scenes: [
+  { scene_id: "sc_001", chapter_type: "HOOK", start: 0, end: 7.5, slot_end: 8.3, exact_duration_ms: 7500 },
+  { scene_id: "sc_002", chapter_type: "HOOK", start: 8.3, end: 10, slot_end: 10.8, exact_duration_ms: 1700 }] };
+const callouts = calloutTexts(withGraphics, timedScenes);
+assert.deepEqual(callouts.map(c => [c.at, Math.round(c.seconds * 10) / 10, c.text]), [
+  [0.3, 5, "280 Million Cubic Feet\nTOTAL CONCRETE\nAbout 7.6 Empire State Buildings"], [8.6, 2.2, "Baihetan Dam\nSichuan–Yunnan border"]]);
+assert.equal(callouts[0].look.box, "#0F172A");
+assert.equal(callouts[1].look.animation, "slide-up");
+assert.deepEqual(calloutTexts(withGraphics, null), []);
+const draft = callouts.reduce((edit, c) => addText(edit, c.at, c.text, c.look, c.seconds), createEdit(20, { path: "D:/run/documentary.mp4", title: "T", width: 1920, height: 1080, fps: 30, hasAudio: true }));
+assert.equal(draft.texts.length, 2);
+assert.equal(draft.texts[0].box_opacity, 0.9);
+assert.equal(draft.texts[1].at, 8.6);
 
 console.log("docu model and AI passed");

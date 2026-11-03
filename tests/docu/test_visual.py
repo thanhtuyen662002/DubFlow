@@ -74,6 +74,14 @@ def sources():
             matcher.Source("src_02", 90.0, tuple(t + 0.5 for t in range(3, 90, 3)))]
 
 
+class WarningTests(unittest.TestCase):
+    def test_caption_warning_follows_the_preset(self):
+        boxed = visual.caption_warning("src_01", "letterbox_235")
+        self.assertIn("kéo giãn mép ảnh", boxed)
+        self.assertNotIn("Chọn khung Letterbox", boxed)
+        self.assertIn("Chọn khung Letterbox 2.35:1", visual.caption_warning("src_01", "none"))
+
+
 class MatcherTests(unittest.TestCase):
     def test_lengths(self):
         self.assertEqual(matcher.lengths(4.0), [4.0])
