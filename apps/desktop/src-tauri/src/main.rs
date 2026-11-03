@@ -1566,7 +1566,7 @@ fn allow_media(app: tauri::AppHandle, path: String) -> Result<String, String> {
     use tauri::Manager;
     let extension = Path::new(&path).extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
     let media = if extension == "wav" {
-        editable_audio(&path).or_else(|error| sfx::playable_audio(&path).map_err(|_| error))?
+        editable_audio(&path).or_else(|error| docu::narration_audio(&path).or_else(|_| sfx::playable_audio(&path)).map_err(|_| error))?
     } else if sfx::AUDIO_EXTENSIONS.contains(&extension.as_str()) {
         sfx::playable_audio(&path)?
     } else {
