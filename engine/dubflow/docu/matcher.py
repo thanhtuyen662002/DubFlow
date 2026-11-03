@@ -3,8 +3,9 @@
 Each scene's slot (its narration plus the pause after it) is filled with
 3.0–4.5 s slices cut from the footage its script cites. Rules, in order:
 
-* footage the scene cites first, then a few seconds around it, then the rest of
-  those sources, then any source; the scene says when it had to look further;
+* footage the scene cites first, then a few seconds around it, then uncited
+  footage (the rest of the cited sources or any other source, ranked equally so
+  interleaving decides); the scene says when it had to look further;
 * consecutive slices alternate sources when the candidates allow it (A/B
   interleaving); two consecutive slices from one source are at least 8 s apart
   in that source, so the cut never jumps within one shot;
@@ -181,7 +182,10 @@ def _choose(candidates, sources: dict[str, Source], used: _Used, previous: Slice
         if same and (start < previous.end + SAME_SOURCE_GAP and end > previous.start - SAME_SOURCE_GAP):
             continue
         on_cut = 0 if (start == 0 or any(abs(cut - start) < 0.01 for cut in source.cuts)) else 1
-        key = (REUSED if reuse else tier, int(same), on_cut, order, source_id, start)
+        # Uncited footage is uncited wherever it comes from: between the rest of a cited
+        # source and another source, the A/B interleaving decides (#450).
+        rank = REUSED if reuse else min(tier, SAME_SOURCES)
+        key = (rank, int(same), on_cut, order, source_id, start)
         if best is None or key < best[0]:
             best = (key, (REUSED if reuse else tier, source_id, start, end))
     return best[1] if best else None
