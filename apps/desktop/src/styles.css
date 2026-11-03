@@ -1370,3 +1370,6 @@ select { color-scheme: dark; }
 .docu-render code { font-size: 11.5px; }
 .docu-capcut { display: grid; gap: 6px; }
 .docu-capcut[hidden], .docu-capcut .btn[hidden] { display: none; }
+.docu-mcp textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--canvas);
+  color: var(--text); font: 11.5px/1.4 ui-monospace, Consolas, monospace; resize: vertical; }
+.docu-mcp[hidden] { display: none; }

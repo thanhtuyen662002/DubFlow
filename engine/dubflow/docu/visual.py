@@ -34,16 +34,35 @@ def caption_warning(source_id: str, preset: str) -> str:
     return covered if preset == "letterbox_235" else f"{covered}. Chọn khung Letterbox 2.35:1 để vùng che nhỏ hơn"
 
 
-def _scenes(script: dict[str, Any], timeline: dict[str, Any]) -> list[matcher.Scene]:
+PACING = "pacing.json"
+MIN_PACE, MAX_PACE = 2.0, 8.0
+
+
+def load_pacing(run_dir: Path) -> dict[str, Any]:
+    """Per-chapter longest slice and the Ken Burns strength, as set over MCP; defaults when absent."""
+    try:
+        value = json.loads((work_dir(run_dir) / PACING).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        value = {}
+    paces = value.get("max_slice") if isinstance(value, dict) and isinstance(value.get("max_slice"), dict) else {}
+    paces = {chapter: float(seconds) for chapter, seconds in paces.items()
+             if isinstance(seconds, (int, float)) and MIN_PACE <= seconds <= MAX_PACE}
+    burns = value.get("ken_burns") if isinstance(value, dict) else None
+    return {"max_slice": paces, "ken_burns": float(burns) if isinstance(burns, (int, float)) and 0 <= burns <= 0.1 else None}
+
+
+def _scenes(script: dict[str, Any], timeline: dict[str, Any], paces: dict[str, float] | None = None) -> list[matcher.Scene]:
     refs = {scene["scene_id"]: scene.get("matched_source_refs", []) for chapter in script["chapters"] for scene in chapter["scenes"]}
+    paces = paces or {}
     result = []
     for timed in timeline["scenes"]:
         cited = tuple(matcher.Ref(ref["source_id"], float(ref["start"]), float(ref["end"])) for ref in refs.get(timed["scene_id"], []))
-        result.append(matcher.Scene(timed["scene_id"], float(timed["start"]), float(timed["slot_end"]), cited))
+        pace = paces.get(timed.get("chapter_type"), matcher.MAX_SLICE)
+        result.append(matcher.Scene(timed["scene_id"], float(timed["start"]), float(timed["slot_end"]), cited, pace))
     if result:
         # The film starts with the first picture, not with the first word.
         first = result[0]
-        result[0] = matcher.Scene(first.scene_id, 0.0, first.end, first.refs)
+        result[0] = matcher.Scene(first.scene_id, 0.0, first.end, first.refs, first.max_slice)
     return result
 
 
@@ -94,7 +113,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
             sources.append(matcher.Source(source.id, duration, tuple(cuts)))
         status.write(done=done, message="Đang ghép lát cắt cho từng cảnh…")
         try:
-            planned = matcher.plan(_scenes(script, timeline), sources)
+            planned = matcher.plan(_scenes(script, timeline, load_pacing(run_dir)["max_slice"]), sources)
         except ValueError as error:
             raise DocuError("Video nguồn quá ngắn để dựng đủ hình cho lời đọc") from error
         plan = {

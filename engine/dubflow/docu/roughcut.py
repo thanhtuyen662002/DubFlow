@@ -77,7 +77,8 @@ def _even(value: float) -> int:
     return max(2, int(round(value / 2)) * 2)
 
 
-def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: int, ken_burns: bool) -> str:
+def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: int, ken_burns: bool,
+                 zoom_push: float = KEN_BURNS_ZOOM, labels: str | None = None) -> str:
     """One slice's picture: cover the caption band if framing cannot clear it, frame, fill 1080p, look, motion, bars."""
     steps: list[str] = []
     graph: list[str] = []
@@ -105,13 +106,16 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
                      f"[front]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,setsar=1[fit];"
                      f"[fill][fit]overlay=(W-w)/2:(H-h)/2[framed]")
     after = [LOOK]
-    if ken_burns:
+    if ken_burns and zoom_push > 0:
         # Upscaled first, so the slow push does not step from pixel to pixel.
-        after.append(f"scale={WIDTH * 2}:{HEIGHT * 2},zoompan=z='1+{KEN_BURNS_ZOOM}*on/{max(1, frames - 1)}':d=1"
+        after.append(f"scale={WIDTH * 2}:{HEIGHT * 2},zoompan=z='1+{zoom_push:g}*on/{max(1, frames - 1)}':d=1"
                      f":x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':s={WIDTH}x{HEIGHT}:fps={FPS}")
     bar = _even(float(framing.get("letterbox") or 0.0) * HEIGHT) if framing.get("letterbox") else 0
     if bar:
         after.append(f"drawbox=x=0:y=0:w=iw:h={bar}:color=black:t=fill,drawbox=x=0:y=ih-{bar}:w=iw:h={bar}:color=black:t=fill")
+    if labels:
+        # English labels over foreign text in the picture (MCP apply_smart_label_overlay), drawn last.
+        after.append(f"subtitles={labels}")
     after.append(f"fps={FPS},format=yuv420p,setsar=1")
     graph.append(f"[framed]{','.join(after)}[video]")
     return ";".join(graph)
@@ -141,6 +145,34 @@ def mux_argv(ffmpeg: Path, concat: str, narration: Path, seconds: float, output:
 def _clock(seconds: float) -> str:
     total = int(seconds)
     return f"{total // 3600}:{total // 60 % 60:02d}:{total % 60:02d}" if total >= 3600 else f"{total // 60}:{total % 60:02d}"
+
+
+LABELS = "labels.json"
+
+
+def load_labels(run_dir: Path) -> list[dict[str, Any]]:
+    """Label boxes set over MCP: scene, words and normalized centre and width."""
+    try:
+        value = json.loads((work_dir(run_dir) / LABELS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    items = value.get("labels") if isinstance(value, dict) else None
+    return [item for item in items if isinstance(item, dict) and isinstance(item.get("text"), str)] if isinstance(items, list) else []
+
+
+def labels_ass(labels: Sequence[dict[str, Any]], seconds: float) -> str:
+    """Dark slate boxes (90 % opaque) with white words, each at its centre, wrapped to its width."""
+    head = ("[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 0\n\n[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n"
+            "Style: Label,Segoe UI,44,&H00FFFFFF,&H192A170F,&H192A170F,1,0,3,14,0,5,0,0,0\n\n[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+    end = f"0:{int(seconds) // 60:02d}:{seconds % 60:05.2f}"
+    rows = []
+    for label in labels:
+        x, y, w = float(label["x"]) * WIDTH, float(label["y"]) * HEIGHT, float(label["w"]) * WIDTH
+        margin = max(0, round((WIDTH - w) / 2))
+        rows.append(f"Dialogue: 0,0:00:00.00,{end},Label,,{margin},{margin},0,,{{\\pos({round(x)},{round(y)})}}{_ass_text(label['text'])}\n")
+    return head + "".join(rows)
 
 
 def credits(spec: Spec) -> list[dict[str, Any]]:
@@ -231,6 +263,11 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
         card = spec.burn_end_credits
         status.write(total=len(slices) + int(card) + 1)
         sizes: dict[str, tuple[int, int]] = {}
+        from .visual import load_pacing
+        pace = load_pacing(run_dir)["ken_burns"]
+        push = KEN_BURNS_ZOOM if pace is None else pace
+        labels = load_labels(run_dir)
+        scene_of = {id(piece): scene["scene_id"] for scene in plan["scenes"] for piece in scene["slices"]}
         encoder = encoders[0]
         parts: list[str] = []
         for index, (piece, count) in enumerate(zip(slices, frames), 1):
@@ -246,13 +283,18 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
             shot_start = max(cut for cut in cuts[source_id] if cut <= start + 1e-3)
             later = [cut for cut in cuts[source_id] if cut > start + 1e-3]
             shot_end = later[0] if later else math.inf
-            graph = video_filter(*sizes[source_id], framings.get(source_id, {}), frames=count,
-                                 ken_burns=shot_end - shot_start >= KEN_BURNS_SHOT)
-            stat = video.stat()
             name = f"slice-{index:04d}.mp4"
+            shown = [label for label in labels if label.get("scene_id") == scene_of[id(piece)]]
+            ass = None
+            if shown:
+                ass = f"slice-{index:04d}.ass"
+                (work / ass).write_text(labels_ass(shown, count / FPS), encoding="utf-8")
+            graph = video_filter(*sizes[source_id], framings.get(source_id, {}), frames=count,
+                                 ken_burns=shot_end - shot_start >= KEN_BURNS_SHOT, zoom_push=push, labels=ass)
+            stat = video.stat()
             output = work / name
             key = {"recipe": RECIPE, "video": [str(video), stat.st_size, stat.st_mtime_ns], "start": round(start, 3),
-                   "frames": count, "graph": graph}
+                   "frames": count, "graph": graph, "labels": shown}
             receipt = work / f"slice-{index:04d}.json"
             saved = _receipt(receipt)
             if not (output.is_file() and saved and saved.get("key") == key):
