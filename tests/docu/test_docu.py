@@ -200,6 +200,14 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(result["target_Coordinates_3D"]["location_name"], "Baihetan Dam")
         self.assertEqual(result["script_sha256"], script.script_sha256(result))
 
+    def test_non_english_narration_is_flagged_not_dropped(self):
+        value = draft()
+        value["chapters"][0]["scenes"][0]["narration_text"] = "Những bức tường hẻm núi không ổn định."
+        result = script.check(value, self.spec, script.load_contexts(self.run, self.spec))
+        scene = result["chapters"][1]["scenes"][0]
+        self.assertTrue(scene["needs_review"])
+        self.assertIn("Lời đọc không phải tiếng Anh; hãy viết lại cảnh này bằng tiếng Anh", scene["review_notes"])
+
     def test_acknowledging_clears_the_flag(self):
         value = draft()
         value["chapters"][1]["scenes"][0]["acknowledged_numbers"] = ["3,200 Empire State Buildings"]

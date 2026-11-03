@@ -122,7 +122,8 @@ export function isKeyError(error: unknown): boolean {
 }
 
 export type Part = { text: string } | { image: { mediaType: "image/jpeg"; data: string } };
-export type JsonRequest = { system: string; schema: Record<string, unknown>; parts: Part[]; effort: "low" | "medium" };
+/** `language` is the answer's language: Vietnamese (the default) or English, which skips the Vietnamese-diacritics guard. */
+export type JsonRequest = { system: string; schema: Record<string, unknown>; parts: Part[]; effort: "low" | "medium"; language?: "vi" | "en" };
 
 async function askClaude(key: string, request: JsonRequest): Promise<unknown> {
   // The key belongs to the user of this desktop app and stays on this machine.
@@ -225,7 +226,7 @@ async function askGeminiOnce(key: string, request: JsonRequest, send: typeof fet
       headers: { "content-type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         // The fast model sometimes drops Vietnamese diacritics under a schema; ask for them.
-        systemInstruction: { parts: [{ text: `${request.system}\n${KEEP_DIACRITICS}` }] },
+        systemInstruction: { parts: [{ text: request.language === "en" ? request.system : `${request.system}\n${KEEP_DIACRITICS}` }] },
         contents: [{
           role: "user",
           parts: request.parts.map((part) => ("text" in part ? { text: part.text } : { inlineData: { mimeType: part.image.mediaType, data: part.image.data } })),
@@ -321,7 +322,8 @@ async function askGemini(key: string, request: JsonRequest, send: typeof fetch, 
     }
     try {
       const value = await askGeminiOnce(key, request, send, model);
-      if (!lacksDiacritics(value) || unaccented !== undefined) return value;
+      // English answers have no diacritics to lose (#444).
+      if (request.language === "en" || !lacksDiacritics(value) || unaccented !== undefined) return value;
       unaccented = value;
     } catch (error) {
       if (unaccented !== undefined) return unaccented;

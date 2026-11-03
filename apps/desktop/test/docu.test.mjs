@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import {
   CHAPTER_ORDER, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, chapterWordBudget, flattenScenes, hasNarration,
-  narrationStale, normalizeScript, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
+  isEnglish, narrationStale, normalizeScript, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
 } from "../src/features/docu/model.ts";
-import { writeScript } from "../src/features/docu/ai.ts";
+import { writeChapter, writeScript } from "../src/features/docu/ai.ts";
 
 const path = name => `D:\\Documentary\\${name}`;
 const form = { title: "Three Gorges Dam", topic: "Engineering and community impact", targetMinutes: 11,
@@ -142,5 +142,23 @@ assert.equal(narrationStale({ chapters: [], script_sha256: "def" }, info.timelin
 assert.equal(narrationStale({ chapters: [] }, info.timeline), true, "an unsaved edit has no hash yet");
 assert.equal(narrationStale({ chapters: [] }, null), false, "no narration is not stale");
 assert.equal(parseOpen({ dir: "D:/run", spec: { schema_version: 1, sources: [] }, contexts, script: null, narration: { audio: null, timeline: null, status: null } }).narration.audio, null);
+
+// English only (#444): requests say so, and a chapter answered in another language is asked once more, then refused.
+assert.equal(isEnglish("Engineers poured 280 million cubic feet of concrete into the Baihetan canyon."), true);
+assert.equal(isEnglish("Những nỗ lực tự cứu lấy mình đều thất bại."), false);
+assert.equal(isEnglish("坝高289米"), false);
+assert.equal(calls.every(call => call.request.language === "en"), true);
+const vietnamese = { recommended_bgm_mood: "epic_build", scenes: [{ narration_text: "Những nỗ lực tự cứu lấy mình đều thất bại.",
+  matched_source_refs: [], visual_search_tags: [], on_screen_graphic: null, ambient_sfx_tag: null }] };
+const englishReply = { recommended_bgm_mood: "epic_build", scenes: [{ narration_text: "Every attempt to fix it failed.",
+  matched_source_refs: [], visual_search_tags: [], on_screen_graphic: null, ambient_sfx_tag: null }] };
+const retried = [];
+const fixed = await writeChapter("gemini", "k", { project: { title: "T", topic: "", targetMinutes: 5 }, chapter: "PROBLEM", contexts, previous: [] },
+  async (_provider, _key, request) => { retried.push(request); return retried.length === 1 ? vietnamese : englishReply; });
+assert.equal(retried.length, 2);
+assert.match(retried[1].parts.at(-1).text, /not in English/);
+assert.equal(fixed.scenes[0].narration_text, "Every attempt to fix it failed.");
+await assert.rejects(writeChapter("gemini", "k", { project: { title: "T", topic: "", targetMinutes: 5 }, chapter: "PROBLEM", contexts, previous: [] },
+  async () => vietnamese), /tiếng Anh/);
 
 console.log("docu model and AI passed");

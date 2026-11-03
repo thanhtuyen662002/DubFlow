@@ -142,6 +142,14 @@ const kept = await askJson("gemini", "k", request, async () => {
 }, async () => {});
 assert.equal(tries, 2);
 assert.match(kept.x, /^Ban co/);
+// An English request (#444) gets no Vietnamese instruction and is never re-asked for diacritics.
+const english = [];
+const englishValue = await askJson("gemini", "k", { ...request, language: "en" }, async (_url, init) => {
+  english.push(JSON.parse(init.body).systemInstruction.parts[0].text);
+  return okReply(JSON.stringify({ x: "Engineers poured concrete into the canyon for nine years without stopping." }));
+}, async () => {});
+assert.deepEqual(english, [request.system]);
+assert.match(englishValue.x, /^Engineers/);
 
 // ---- Resilience (#386): model order, the retryable set, waits Google asks for, and what is never retried. ----
 assert.equal(GEMINI_MODEL, "gemini-3.5-flash-lite", "the fast model is tried first");
