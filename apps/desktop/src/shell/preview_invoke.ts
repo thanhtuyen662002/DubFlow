@@ -372,6 +372,9 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_plan_status": return previewVisual(String(args.dir)) as T;
     case "docu_render": docuRenders.set(String(args.dir), { polls: 0, cancelled: false }); return undefined as T;
     case "docu_render_status": return previewRender(String(args.dir)) as T;
+    case "docu_capcut": return { state: "COMPLETED", folder: "C:\\Users\\me\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\DubFlow - Three Gorges",
+      name: "DubFlow - Three Gorges", clips: 18, duration: 64.1, captions: "D:\\Videos\\captions_en.srt" } as T;
+    case "docu_launch_capcut": return undefined as T;
     case "docu_render_cancel": { const run = docuRenders.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_plan_cancel": { const run = docuPlans.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_narration_cancel": { const run = docuNarration.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }

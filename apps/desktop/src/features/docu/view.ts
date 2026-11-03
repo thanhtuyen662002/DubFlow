@@ -3,8 +3,8 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
-  hasNarration, moveItem, narrationStale, parseNarration, parseOpen, parseRender, parseRuns, parseVisual, parseVoices, planStale,
-  calloutTexts, renumberScenes, sourceTitle, wordCount, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
+  hasNarration, moveItem, narrationStale, parseCapcut, parseNarration, parseOpen, parseRender, parseRuns, parseVisual, parseVoices, planStale,
+  calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
@@ -120,6 +120,11 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
                 <button id="docu-render-edit" class="btn primary" type="button" title="Cắt ghép, chèn, chữ, âm thanh và phụ đề tiếng Anh">Chỉnh sửa</button>
                 <button id="docu-render-reveal" class="btn" type="button">Mở thư mục</button>
               </div>
+              <div class="docu-capcut" id="docu-capcut" hidden>
+                <button id="docu-capcut-export" class="btn block" type="button" title="Mỗi lát cắt là một clip riêng; lời đọc ở rãnh âm thanh">Xuất sang CapCut</button>
+                <p id="docu-capcut-state" class="hint" role="status"></p>
+                <button id="docu-capcut-open" class="btn block" type="button" hidden>Mở CapCut</button>
+              </div>
             </section>
             <ul id="docu-script-notes" class="docu-script-notes"></ul>
           </div>
@@ -142,6 +147,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   let visual: VisualInfo = { plan: null, status: null };
   let visualTimer: ReturnType<typeof setInterval> | undefined;
   let render: RenderInfo = { video: null, status: null };
+  let capcut: CapcutExport | null = null;
   let renderTimer: ReturnType<typeof setInterval> | undefined;
   const ROUGH_CUT = "__rough_cut";
   let checkTimer: ReturnType<typeof setTimeout> | undefined;
@@ -314,7 +320,28 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     $("#docu-render-state").textContent = running || failed ? render.status!.message
       : !planFresh ? "Cần kế hoạch hình ảnh khớp với lời đọc trước." : render.video ? "Bản nháp đã sẵn sàng." : "";
     $("#docu-render-actions").hidden = !render.video || running;
+    $("#docu-capcut").hidden = !render.video || running;
+    renderCapcut();
     $("#docu-render-edit").hidden = !settings.edit;
+  }
+
+  function renderCapcut(message?: string): void {
+    $("#docu-capcut-open").hidden = !capcut;
+    $("#docu-capcut-state").textContent = message ?? (capcut
+      ? `Đã có dự án “${capcut.name}” trong CapCut (${capcut.clips} clip). Phụ đề tiếng Anh: nhập captions_en.srt trong CapCut.`
+      : "Đóng CapCut trước khi xuất; dự án mới hiện ở đầu danh sách Projects của CapCut.");
+  }
+
+  async function exportCapcut(): Promise<void> {
+    if (!selected) return;
+    const button = $<HTMLButtonElement>("#docu-capcut-export");
+    button.disabled = true;
+    renderCapcut("Đang tạo dự án CapCut…");
+    try {
+      capcut = parseCapcut(await invoke("docu_capcut", { dir: selected.dir }));
+      renderCapcut();
+    } catch (error) { renderCapcut(error instanceof Error ? error.message : String(error)); }
+    finally { button.disabled = false; }
   }
 
   function followRender(): void {
@@ -495,7 +522,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       await refreshRuns();
       const result = parseOpen(await invoke("docu_open", { dir: created.dir }));
       if (!result) throw new Error("Dự án mới chưa mở được.");
-      selected = result; currentScript = result.script ?? emptyScript(result.spec.title); narration = result.narration; visual = result.visual; render = result.render;
+      selected = result; currentScript = result.script ?? emptyScript(result.spec.title); narration = result.narration; visual = result.visual; render = result.render; capcut = result.capcut;
       $("#docu-project-name").textContent = result.spec.title;
       setTab("script"); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration();
       $("#docu-setup-state").textContent = "Đã tạo dự án và phân tích nguồn.";
@@ -533,7 +560,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     try {
       const opened = parseOpen(await invoke("docu_open", { dir }));
       if (!opened) throw new Error("Dữ liệu dự án không hợp lệ.");
-      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration; visual = opened.visual; render = opened.render;
+      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration; visual = opened.visual; render = opened.render; capcut = opened.capcut;
       $("#docu-project-name").textContent = opened.spec.title;
       renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration(); followVisual(); followRender(); setTab("script");
     } catch (error) { $("#docu-setup-state").textContent = error instanceof Error ? error.message : String(error); }
@@ -542,7 +569,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function newProject(): void {
     selected = null; currentScript = null; sourceForms = []; narration = { audio: null, timeline: null, status: null }; clearInterval(narrationTimer);
     visual = { plan: null, status: null }; clearInterval(visualTimer);
-    render = { video: null, status: null }; clearInterval(renderTimer);
+    render = { video: null, status: null }; clearInterval(renderTimer); capcut = null;
     $("#docu-project-name").textContent = "Tạo dự án mới";
     $("#docu-title").value = ""; $("#docu-topic").value = ""; $("#docu-minutes").value = "11";
     $("#docu-framing").value = "none"; $("#docu-credits").checked = false; $("#docu-setup-state").textContent = "";
@@ -604,6 +631,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     settings.edit({ outputPath: render.video, displayName: currentScript?.project_title || selected?.spec.title || "documentary.mp4" },
       edit => callouts.reduce((draft, callout) => addText(draft, callout.at, callout.text, callout.look, callout.seconds), edit));
   });
+  $("#docu-capcut-export").addEventListener("click", () => void exportCapcut());
+  $("#docu-capcut-open").addEventListener("click", () => void invoke("docu_launch_capcut").catch(error => renderCapcut(error instanceof Error ? error.message : String(error))));
   $("#docu-render-reveal").addEventListener("click", () => { if (render.video) void invoke("reveal_path", { path: render.video }).catch(() => undefined); });
   $("#docu-plan-cancel").addEventListener("click", () => { if (selected) void invoke("docu_plan_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-narration-cancel").addEventListener("click", () => { if (selected) void invoke("docu_narration_cancel", { dir: selected.dir }).catch(() => undefined); });

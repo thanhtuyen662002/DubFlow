@@ -210,3 +210,18 @@ The rough cut is rendered by the engine, like "Tổng hợp" and "Bán hàng", s
 - **Navigation.** The documentary page opens the editor with "Chỉnh sửa" next to the rough cut. Leaving the editor returns to the documentary page.
 - **Caption-band warning.** When the caption band cannot be cleared, the warning now says it is covered by edge stretch, and suggests the letterbox only when the project does not already use it.
 - **Deferred.** Editing the plan slice by slice inside the editor (per-segment framing and narration lanes in the editor's own renderer) remains later work, as does the MCP server and CapCut bridge (phase 4).
+
+## Phase 4a: CapCut draft (Issue #454)
+
+The owner chose to write drafts straight into CapCut's draft folder. CapCut stays an adapter: the draft is made from DubFlow's own rough cut.
+
+- **Draft contents.** `capcut_draft.py` writes a CapCut 9.x draft into `%LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft\DubFlow - <title>`. The folder name is numbered and never overwrites.
+  - Files: `draft_content.json` (version 360000), `draft_meta_info.json`, `draft_settings`, `timeline_layout.json` and two small configs, written compact like CapCut and moved into place from a temporary folder.
+  - Video track: every rendered slice (and the end card) is a separate clip on the main track, at frame-exact microsecond times.
+  - Audio track: the narration.
+  - English captions stay in `captions_en.srt`, for CapCut's caption import.
+- **Template.** `engine/dubflow/docu/capcut/capcut_9_template.json` was derived from a CapCut 9.6–made empty draft and a CapCut-saved project, keeping their structure and defaults. Device id, MAC addresses, paths and names were removed, and a test guards that.
+- **Media.** The clips are `capcut_media` in the run folder: hard links of the rendered slices (no extra space; a copy across volumes). Cleaning the render cache therefore cannot break the draft.
+- **CapCut's project list.** CapCut lists drafts from `root_meta_info.json`, which it rewrites on exit. So the export refuses while `CapCut.exe` runs, keeps `root_meta_info.json.dubflow-backup`, and puts the draft first in `all_draft_store`.
+- **Verified** on CapCut 9.6.0: the exported draft is listed first in its projects.
+- **Host and page.** The host exports (`docu_capcut`) and can start CapCut (`docu_launch_capcut`). The page offers "Xuất sang CapCut" after the rough cut.

@@ -1,4 +1,4 @@
-"""python -m engine.dubflow.docu {context,check,narrate,plan,render}; the last stdout line is ASCII JSON."""
+"""python -m engine.dubflow.docu {context,check,narrate,plan,render,capcut}; the last stdout line is ASCII JSON."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from engine.dubflow.product.job import probe_duration_ms
-from . import context, narration, roughcut, script, visual
+from . import capcut_draft, context, narration, roughcut, script, visual
 from .project import DocuError, load_spec, script_path, spec_path, write_json
 
 
@@ -71,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     cut = commands.add_parser("render", help="render the visual plan and the narration into documentary.mp4")
     for name in ("run-dir", "ffmpeg", "ffprobe"):
         cut.add_argument(f"--{name}", type=Path, required=True)
+    capcut = commands.add_parser("capcut", help="write the rough cut as a CapCut draft and list it in CapCut")
+    capcut.add_argument("--run-dir", type=Path, required=True)
+    capcut.add_argument("--root", type=Path, help="CapCut's draft folder (default: CapCut's own)")
     args = parser.parse_args(argv)
     try:
         if args.command == "context":
@@ -78,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
             spec = load_spec(args.spec)
             sources = context.build_all(run_dir, spec, lambda path: probe_duration_ms(args.ffprobe, path))
             result: dict[str, object] = {"state": "COMPLETED", "message": "", "sources": sources}
+        elif args.command == "capcut":
+            exported = capcut_draft.export(args.run_dir, load_spec(spec_path(args.run_dir)), root=args.root or capcut_draft.default_root())
+            result = {"state": "COMPLETED", "message": "", **exported}
         elif args.command == "render":
             result = roughcut.run(args.run_dir, load_spec(spec_path(args.run_dir)), ffmpeg=args.ffmpeg,
                                   probe=lambda video: roughcut.probe_display(args.ffprobe, video))
