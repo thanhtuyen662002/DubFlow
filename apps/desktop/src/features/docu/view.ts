@@ -3,8 +3,8 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
-  hasNarration, moveItem, narrationStale, parseCapcut, parseNarration, parseOpen, parseRender, parseRuns, parseVisual, parseVoices, planStale,
-  calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
+  hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseRender, parseRuns, parseVisual, parseVoices, planStale,
+  calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
@@ -126,6 +126,14 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
                 <button id="docu-capcut-open" class="btn block" type="button" hidden>Mở CapCut</button>
               </div>
             </section>
+            <section class="docu-narration docu-mcp" aria-labelledby="docu-mcp-title">
+              <h3 id="docu-mcp-title">Kết nối Claude (MCP)</h3>
+              <p class="hint">Cho Claude xem và chỉnh dự án: đọc dòng thời gian, đổi lát cắt, đặt nhãn tiếng Anh, chỉnh nhịp, xem khung hình, dựng lại và xuất CapCut. Sau mỗi lần cập nhật DubFlow, hãy thêm lại lệnh này.</p>
+              <label>Claude Code<textarea id="docu-mcp-code" rows="3" readonly></textarea></label>
+              <button id="docu-mcp-copy-code" class="btn" type="button">Sao chép lệnh</button>
+              <label>Claude Desktop (claude_desktop_config.json)<textarea id="docu-mcp-desktop" rows="6" readonly></textarea></label>
+              <button id="docu-mcp-copy-desktop" class="btn" type="button">Sao chép cấu hình</button>
+            </section>
             <ul id="docu-script-notes" class="docu-script-notes"></ul>
           </div>
         </div>
@@ -148,6 +156,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   let visualTimer: ReturnType<typeof setInterval> | undefined;
   let render: RenderInfo = { video: null, status: null };
   let capcut: CapcutExport | null = null;
+  let labels: DocuLabel[] = [];
   let renderTimer: ReturnType<typeof setInterval> | undefined;
   const ROUGH_CUT = "__rough_cut";
   let checkTimer: ReturnType<typeof setTimeout> | undefined;
@@ -522,7 +531,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       await refreshRuns();
       const result = parseOpen(await invoke("docu_open", { dir: created.dir }));
       if (!result) throw new Error("Dự án mới chưa mở được.");
-      selected = result; currentScript = result.script ?? emptyScript(result.spec.title); narration = result.narration; visual = result.visual; render = result.render; capcut = result.capcut;
+      selected = result; currentScript = result.script ?? emptyScript(result.spec.title); narration = result.narration; visual = result.visual; render = result.render; capcut = result.capcut; labels = result.labels;
       $("#docu-project-name").textContent = result.spec.title;
       setTab("script"); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration();
       $("#docu-setup-state").textContent = "Đã tạo dự án và phân tích nguồn.";
@@ -560,7 +569,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     try {
       const opened = parseOpen(await invoke("docu_open", { dir }));
       if (!opened) throw new Error("Dữ liệu dự án không hợp lệ.");
-      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration; visual = opened.visual; render = opened.render; capcut = opened.capcut;
+      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration; visual = opened.visual; render = opened.render; capcut = opened.capcut; labels = opened.labels;
       $("#docu-project-name").textContent = opened.spec.title;
       renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration(); followVisual(); followRender(); setTab("script");
     } catch (error) { $("#docu-setup-state").textContent = error instanceof Error ? error.message : String(error); }
@@ -569,7 +578,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function newProject(): void {
     selected = null; currentScript = null; sourceForms = []; narration = { audio: null, timeline: null, status: null }; clearInterval(narrationTimer);
     visual = { plan: null, status: null }; clearInterval(visualTimer);
-    render = { video: null, status: null }; clearInterval(renderTimer); capcut = null;
+    render = { video: null, status: null }; clearInterval(renderTimer); capcut = null; labels = [];
     $("#docu-project-name").textContent = "Tạo dự án mới";
     $("#docu-title").value = ""; $("#docu-topic").value = ""; $("#docu-minutes").value = "11";
     $("#docu-framing").value = "none"; $("#docu-credits").checked = false; $("#docu-setup-state").textContent = "";
@@ -627,11 +636,23 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-render-edit").addEventListener("click", () => {
     if (!render.video || !settings.edit) return;
     // The first draft gets the script's on-screen graphics; a saved draft is kept as it is.
-    const callouts = calloutTexts(currentScript, narration.timeline);
+    const callouts = calloutTexts(currentScript, narration.timeline, labels);
     settings.edit({ outputPath: render.video, displayName: currentScript?.project_title || selected?.spec.title || "documentary.mp4" },
       edit => callouts.reduce((draft, callout) => addText(draft, callout.at, callout.text, callout.look, callout.seconds), edit));
   });
   $("#docu-capcut-export").addEventListener("click", () => void exportCapcut());
+  for (const [button, field] of [["#docu-mcp-copy-code", "#docu-mcp-code"], ["#docu-mcp-copy-desktop", "#docu-mcp-desktop"]] as const) {
+    $(button).addEventListener("click", () => {
+      const text = $<HTMLTextAreaElement>(field).value;
+      void navigator.clipboard?.writeText(text).then(() => { $(button).textContent = "Đã sao chép"; setTimeout(() => { $(button).textContent = button.endsWith("code") ? "Sao chép lệnh" : "Sao chép cấu hình"; }, 1500); });
+    });
+  }
+  void invoke("docu_mcp_connection").then(value => {
+    const connection = parseMcp(value);
+    if (!connection) return;
+    $<HTMLTextAreaElement>("#docu-mcp-code").value = connection.claudeCode;
+    $<HTMLTextAreaElement>("#docu-mcp-desktop").value = connection.claudeDesktop;
+  }).catch(() => { $("#docu-mcp-title").closest("section")!.hidden = true; });
   $("#docu-capcut-open").addEventListener("click", () => void invoke("docu_launch_capcut").catch(error => renderCapcut(error instanceof Error ? error.message : String(error))));
   $("#docu-render-reveal").addEventListener("click", () => { if (render.video) void invoke("reveal_path", { path: render.video }).catch(() => undefined); });
   $("#docu-plan-cancel").addEventListener("click", () => { if (selected) void invoke("docu_plan_cancel", { dir: selected.dir }).catch(() => undefined); });

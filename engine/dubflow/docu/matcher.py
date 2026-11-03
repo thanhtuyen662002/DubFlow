@@ -57,6 +57,8 @@ class Scene:
     start: float
     end: float
     refs: tuple[Ref, ...]
+    # Longest slice for this scene (its chapter's pacing, adjusted over MCP).
+    max_slice: float = MAX_SLICE
 
 
 @dataclass(frozen=True)
@@ -72,12 +74,17 @@ class Slice:
         return self.end - self.start
 
 
-def lengths(duration: float) -> list[float]:
-    """Equal slices within 3.0–4.5 s; one slice when the slot cannot split into slices of at least 3 s."""
-    if duration <= MAX_SLICE:
+def shortest(max_slice: float) -> float:
+    """3 s, or two thirds of a faster pace's longest slice."""
+    return min(MIN_SLICE, max_slice * 2 / 3)
+
+
+def lengths(duration: float, max_slice: float = MAX_SLICE) -> list[float]:
+    """Equal slices of at most ``max_slice`` (3.0–4.5 s by default); one slice when the slot is too short to split."""
+    if duration <= max_slice:
         return [duration]
-    count = math.ceil(duration / MAX_SLICE)
-    while count > 1 and duration / count < MIN_SLICE:
+    count = math.ceil(duration / max_slice)
+    while count > 1 and duration / count < shortest(max_slice):
         count -= 1
     return [duration / count] * count
 
@@ -103,9 +110,9 @@ def _starts(source: Source, low: float, high: float) -> list[float]:
 
 
 def _snap(source: Source, start: float, length: float) -> float:
-    """End at a cut close to the planned end, keeping the slice within its limits."""
+    """End at a cut close to the planned end (within 0.4 s, so the length stays near the plan)."""
     planned = start + length
-    near = [cut for cut in source.cuts if abs(cut - planned) <= SNAP and MIN_SLICE - 0.5 <= cut - start <= MAX_SLICE + 0.5]
+    near = [cut for cut in source.cuts if abs(cut - planned) <= SNAP and cut - start > SNAP]
     return min(near, key=lambda cut: (abs(cut - planned), cut)) if near else planned
 
 
@@ -146,9 +153,10 @@ def plan(scenes: Sequence[Scene], sources: Iterable[Source]) -> list[tuple[Scene
         slices: list[Slice] = []
         at, remaining = scene.start, slot
         while remaining > EPSILON:
-            length = lengths(remaining)[0]
-            choice = _choose(candidates, by_id, used, previous, length, remaining, reuse=False) \
-                or _choose(candidates, by_id, used, previous, length, remaining, reuse=True)
+            length = lengths(remaining, scene.max_slice)[0]
+            minimum = shortest(scene.max_slice)
+            choice = _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=False) \
+                or _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=True)
             if choice is None:
                 raise ValueError(f"no footage long enough for {scene.scene_id}")
             tier, source_id, start, end = choice
@@ -164,7 +172,7 @@ def plan(scenes: Sequence[Scene], sources: Iterable[Source]) -> list[tuple[Scene
 
 
 def _choose(candidates, sources: dict[str, Source], used: _Used, previous: Slice | None, length: float, remaining: float,
-            *, reuse: bool) -> tuple[int, str, float, float] | None:
+            minimum: float, *, reuse: bool) -> tuple[int, str, float, float] | None:
     best: tuple | None = None
     for tier, order, source_id, wanted in candidates:
         source = sources[source_id]
@@ -174,7 +182,7 @@ def _choose(candidates, sources: dict[str, Source], used: _Used, previous: Slice
         # A slice may end on a nearby cut when what is left still makes a full slice;
         # the last one ends exactly at the slot end.
         end = _snap(source, start, length)
-        if end - start > remaining or (remaining - (end - start) < MIN_SLICE - EPSILON and end - start != remaining):
+        if end - start > remaining or (remaining - (end - start) < minimum - EPSILON and end - start != remaining):
             end = start + length
         if not reuse and used.overlaps(source_id, start, end):
             continue

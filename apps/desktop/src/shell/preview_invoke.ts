@@ -375,6 +375,10 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_capcut": return { state: "COMPLETED", folder: "C:\\Users\\me\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\DubFlow - Three Gorges",
       name: "DubFlow - Three Gorges", clips: 18, duration: 64.1, captions: "D:\\Videos\\captions_en.srt" } as T;
     case "docu_launch_capcut": return undefined as T;
+    case "docu_mcp_connection": return { python: "D:\\Tools\\DubFlow\\versions\\1.1.47\\runtime\\python.exe", app: "D:\\Tools\\DubFlow\\versions\\1.1.47\\app",
+      claudeCode: "claude mcp add dubflow --scope user -e PYTHONPATH=\"D:\\Tools\\DubFlow\\versions\\1.1.47\\app\" -- \"D:\\Tools\\DubFlow\\versions\\1.1.47\\runtime\\python.exe\" -B -m engine.dubflow.mcp",
+      claudeDesktop: JSON.stringify({ mcpServers: { dubflow: { command: "D:\\Tools\\DubFlow\\versions\\1.1.47\\runtime\\python.exe", args: ["-B", "-m", "engine.dubflow.mcp"],
+        env: { PYTHONPATH: "D:\\Tools\\DubFlow\\versions\\1.1.47\\app" } } } }, null, 2) } as T;
     case "docu_render_cancel": { const run = docuRenders.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_plan_cancel": { const run = docuPlans.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_narration_cancel": { const run = docuNarration.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }

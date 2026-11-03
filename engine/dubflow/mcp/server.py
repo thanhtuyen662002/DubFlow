@@ -1,0 +1,175 @@
+"""DubFlow's Model Context Protocol server over stdio (ADR-0049, phase 4b).
+
+Newline-delimited JSON-RPC 2.0 on stdin/stdout, standard library only, so the
+bundled runtime needs no extra package. Logs go to stderr; stdout carries
+protocol messages only.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import traceback
+from pathlib import Path
+from typing import Any, Callable, TextIO
+
+from engine.dubflow.docu import capcut_draft, mcp_tools, roughcut, visual
+from engine.dubflow.docu.project import DocuError, load_spec, spec_path
+
+PROTOCOL = "2025-06-18"
+SUPPORTED = ("2025-06-18", "2025-03-26", "2024-11-05")
+SERVER = {"name": "dubflow", "title": "DubFlow Phim tài liệu", "version": "1"}
+INSTRUCTIONS = ("Tools for DubFlow documentary projects (Phim tài liệu). Start with list_projects, then inspect_timeline_state. "
+                "Plan edits (replace_timeline_clip, apply_smart_label_overlay, adjust_pacing_and_transitions) take effect after "
+                "render_rough_cut. Use get_frame to look at a moment, e.g. to read a foreign label before covering it.")
+
+_PROJECT = {"type": "string", "description": "The project's run folder (…\\Phim tai lieu - <title>\\run-<id>), from list_projects"}
+
+
+def _tool(name: str, description: str, properties: dict[str, Any], required: list[str], *, read_only: bool = False) -> dict[str, Any]:
+    return {"name": name, "description": description,
+            "inputSchema": {"type": "object", "properties": properties, "required": required, "additionalProperties": False},
+            "annotations": {"readOnlyHint": read_only}}
+
+
+TOOLS = [
+    _tool("list_projects", "List DubFlow documentary projects, newest first, with what each has (script, narration, plan, rough cut).",
+          {"root": {"type": "string", "description": "A 'DubFlow Output' folder to search; default: the user's Videos\\DubFlow Output"}}, [],
+          read_only=True),
+    _tool("inspect_timeline_state", "The project's timeline: chapters, scenes with narration and times, the B-roll slices of each scene, "
+          "labels, plan warnings (e.g. burned-in captions), review flags, pacing and the rough cut / CapCut state.",
+          {"project": _PROJECT}, ["project"], read_only=True),
+    _tool("replace_timeline_clip", "Point one B-roll slice of a scene at other footage (another source or time). The slice keeps its "
+          "length, set by the narration. Re-render to see it.",
+          {"project": _PROJECT, "scene_id": {"type": "string"}, "clip_index": {"type": "integer", "minimum": 0},
+           "new_source_id": {"type": "string", "description": "src_01…"},
+           "start_time": {"type": "number", "minimum": 0, "description": "Seconds into the source"}},
+          ["project", "scene_id", "clip_index", "new_source_id", "start_time"]),
+    _tool("apply_smart_label_overlay", "Put an English label box (dark slate, white words) over the picture during a scene, e.g. over a "
+          "Chinese label in a technical graphic. Positions are fractions of the 16:9 frame (centre x/y, width). Burned into the rough cut "
+          "on the next render and offered in the editor's first draft.",
+          {"project": _PROJECT, "scene_id": {"type": "string"}, "text_en": {"type": "string", "maxLength": 160},
+           "pos_x": {"type": "number", "minimum": 0, "maximum": 1}, "pos_y": {"type": "number", "minimum": 0, "maximum": 1},
+           "width": {"type": "number", "minimum": 0.05, "maximum": 1}},
+          ["project", "scene_id", "text_en", "pos_x", "pos_y", "width"]),
+    _tool("remove_label", "Remove a label added with apply_smart_label_overlay.", {"project": _PROJECT, "label_id": {"type": "string"}},
+          ["project", "label_id"]),
+    _tool("adjust_pacing_and_transitions", "Change the longest B-roll slice for one chapter (or all) and the Ken Burns push, then rebuild "
+          "the visual plan (shots and caption scans are cached). Transitions are hard cuts.",
+          {"project": _PROJECT, "chapter": {"type": "string", "enum": ["all", "HOOK", "PROBLEM", "ENGINEERING_SOLUTION", "CRITICAL_EVALUATION"]},
+           "max_clip_duration": {"type": "number", "minimum": 2, "maximum": 8},
+           "ken_burns_intensity": {"type": "number", "minimum": 0, "maximum": 0.1, "description": "0 turns it off; 0.04 is the default"}},
+          ["project"]),
+    _tool("render_rough_cut", "Render documentary.mp4 from the plan and narration (unchanged slices are reused). Can take minutes.",
+          {"project": _PROJECT}, ["project"]),
+    _tool("sync_to_capcut_draft", "Write the rough cut as a CapCut PC draft (one clip per slice plus the narration) and list it first in "
+          "CapCut's projects. CapCut must be closed.",
+          {"project": _PROJECT, "capcut_drafts_dir": {"type": "string", "description": "Default: CapCut's own draft folder"}}, ["project"]),
+    _tool("get_frame", "One frame (PNG, 960 px wide) of the rough cut, or of a source when source_id is given, at a time in seconds.",
+          {"project": _PROJECT, "time": {"type": "number", "minimum": 0}, "source_id": {"type": "string"}}, ["project", "time"],
+          read_only=True),
+]
+
+
+def _text(value: Any) -> list[dict[str, Any]]:
+    return [{"type": "text", "text": json.dumps(value, ensure_ascii=False, indent=1)}]
+
+
+class Server:
+    def __init__(self, install: mcp_tools.Install, *, roots: Callable[[], list[Path]] = mcp_tools.default_roots) -> None:
+        self.install = install
+        self.roots = roots
+
+    def _replan(self, run: Path) -> dict[str, Any]:
+        from engine.dubflow.ocr import caption_scan
+        from engine.dubflow.models.runtime import ensure_model_profile
+        import hashlib
+
+        spec = load_spec(spec_path(run))
+        profile = self.install.app_root / visual.OCR_PROFILE
+        if not profile.is_file():
+            return visual.run(run, spec, ffmpeg=self.install.ffmpeg, scanner=None, ocr_identity=None)
+        manifest = json.loads(profile.read_text(encoding="utf-8"))
+        identity = {"recipe": caption_scan.SCAN_RECIPE, "profile": hashlib.sha256(profile.read_bytes()).hexdigest()}
+
+        def scanner():
+            ensure_model_profile(profile, self.install.model_root)
+            return caption_scan.CaptionScanner(self.install.model_root / manifest["model_path"], self.install.ffmpeg)
+        return visual.run(run, spec, ffmpeg=self.install.ffmpeg, scanner=scanner, ocr_identity=identity)
+
+    def call(self, name: str, args: dict[str, Any]) -> list[dict[str, Any]]:
+        if name == "list_projects":
+            roots = [Path(args["root"])] if args.get("root") else self.roots()
+            return _text(mcp_tools.list_projects(roots))
+        run = mcp_tools.project(args.get("project"))
+        if name == "inspect_timeline_state":
+            return _text(mcp_tools.inspect(run))
+        if name == "replace_timeline_clip":
+            return _text(mcp_tools.replace_clip(run, args.get("scene_id"), args.get("clip_index"), args.get("new_source_id"), args.get("start_time")))
+        if name == "apply_smart_label_overlay":
+            return _text(mcp_tools.apply_label(run, args.get("scene_id"), args.get("text_en"), args.get("pos_x"), args.get("pos_y"), args.get("width")))
+        if name == "remove_label":
+            return _text(mcp_tools.remove_label(run, args.get("label_id")))
+        if name == "adjust_pacing_and_transitions":
+            return _text(mcp_tools.adjust_pacing(run, self.install, chapter=args.get("chapter"), max_clip_duration=args.get("max_clip_duration"),
+                                                 ken_burns_intensity=args.get("ken_burns_intensity"), replan=self._replan))
+        if name == "render_rough_cut":
+            status = roughcut.run(run, load_spec(spec_path(run)), ffmpeg=self.install.ffmpeg,
+                                  probe=lambda video: roughcut.probe_display(self.install.ffprobe, video))
+            if status.get("state") != "COMPLETED":
+                raise DocuError(str(status.get("message")))
+            return _text(status)
+        if name == "sync_to_capcut_draft":
+            root = Path(args["capcut_drafts_dir"]) if args.get("capcut_drafts_dir") else capcut_draft.default_root()
+            return _text(capcut_draft.export(run, load_spec(spec_path(run)), root=root))
+        if name == "get_frame":
+            data = mcp_tools.frame(run, self.install, args.get("time"), args.get("source_id"))
+            return [{"type": "image", "data": mcp_tools.png_base64(data), "mimeType": "image/png"}]
+        raise KeyError(name)
+
+    def handle(self, message: Any) -> dict[str, Any] | None:
+        """One JSON-RPC message in, its response out (None for notifications)."""
+        if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+            return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}}
+        method, ident = message.get("method"), message.get("id")
+        if ident is None:
+            return None
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+
+        def ok(result: dict[str, Any]) -> dict[str, Any]:
+            return {"jsonrpc": "2.0", "id": ident, "result": result}
+
+        if method == "initialize":
+            asked = params.get("protocolVersion")
+            return ok({"protocolVersion": asked if asked in SUPPORTED else PROTOCOL, "capabilities": {"tools": {"listChanged": False}},
+                       "serverInfo": SERVER, "instructions": INSTRUCTIONS})
+        if method == "ping":
+            return ok({})
+        if method == "tools/list":
+            return ok({"tools": TOOLS})
+        if method == "tools/call":
+            name, args = params.get("name"), params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+            if name not in {tool["name"] for tool in TOOLS}:
+                return {"jsonrpc": "2.0", "id": ident, "error": {"code": -32602, "message": f"Unknown tool: {name}"}}
+            try:
+                return ok({"content": self.call(name, args), "isError": False})
+            except DocuError as error:
+                return ok({"content": [{"type": "text", "text": error.message}], "isError": True})
+            except Exception as error:  # a tool failing must not end the session
+                traceback.print_exc(file=sys.stderr)
+                return ok({"content": [{"type": "text", "text": f"{type(error).__name__}: {error}"}], "isError": True})
+        return {"jsonrpc": "2.0", "id": ident, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+
+
+def serve(server: Server, stdin: TextIO, stdout: TextIO) -> None:
+    for line in stdin:
+        if not line.strip():
+            continue
+        try:
+            message = json.loads(line)
+        except ValueError:
+            reply: dict[str, Any] | None = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
+        else:
+            reply = server.handle(message)
+        if reply is not None:
+            stdout.write(json.dumps(reply, ensure_ascii=False) + "\n")
+            stdout.flush()

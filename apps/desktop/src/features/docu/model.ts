@@ -75,7 +75,10 @@ export type VisualInfo = { plan: VisualPlan | null; status: NarrationStatus | nu
 export type RenderInfo = { video: string | null; status: NarrationStatus | null };
 /** The last CapCut export (engine/dubflow/docu/capcut_draft.py). */
 export type CapcutExport = { folder: string; name: string; clips: number; duration: number; captions: string };
-export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null; narration: NarrationInfo; visual: VisualInfo; render: RenderInfo; capcut: CapcutExport | null };
+/** An English label box set over MCP (apply_smart_label_overlay): scene, words, normalized centre and width. */
+export type DocuLabel = { id: string; scene_id: string; text: string; x: number; y: number; w: number };
+export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null; narration: NarrationInfo; visual: VisualInfo; render: RenderInfo; capcut: CapcutExport | null; labels: DocuLabel[] };
+export type McpConnection = { python: string; app: string; claudeCode: string; claudeDesktop: string };
 export type CreateDocuResult = { dir: string; sources: Array<{ id: string; duration: number; segments: number }> };
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
@@ -319,6 +322,22 @@ export function parseVisual(value: unknown): VisualInfo {
   };
 }
 
+export function parseLabels(value: unknown): DocuLabel[] {
+  const items = obj(value)?.labels;
+  return (Array.isArray(items) ? items : []).flatMap(raw => {
+    const label = obj(raw);
+    const [x, y, w] = [Number(label?.x), Number(label?.y), Number(label?.w)];
+    return label && typeof label.text === "string" && typeof label.scene_id === "string" && [x, y, w].every(Number.isFinite)
+      ? [{ id: string(label.id), scene_id: label.scene_id, text: label.text, x, y, w }] : [];
+  });
+}
+
+export function parseMcp(value: unknown): McpConnection | null {
+  const info = obj(value);
+  return info && typeof info.claudeCode === "string" && typeof info.claudeDesktop === "string"
+    ? { python: string(info.python), app: string(info.app), claudeCode: info.claudeCode, claudeDesktop: info.claudeDesktop } : null;
+}
+
 export function parseCapcut(value: unknown): CapcutExport | null {
   const info = obj(value);
   return info && typeof info.folder === "string" && typeof info.name === "string"
@@ -352,7 +371,7 @@ export function parseOpen(value: unknown): OpenDocuRun | null {
   return { dir: result.dir, spec: spec as unknown as DocuSpec, contexts,
     script: result.script === null || result.script === undefined ? null : normalizeScript(result.script, sourceIds),
     narration: parseNarration(result.narration), visual: parseVisual(result.visual), render: parseRender(result.render),
-    capcut: parseCapcut(result.capcut) };
+    capcut: parseCapcut(result.capcut), labels: parseLabels(result.labels) };
 }
 
 export function sourceLines(contexts: readonly SourceContext[], charLimit = 120_000): string[] {
@@ -401,8 +420,19 @@ export const CALLOUT_SECONDS = 5;
  * The script's on-screen graphics as Chữ texts at their scene's narrated time
  * (a little after the scene starts, at most 5 s and never past the scene).
  */
-export function calloutTexts(script: DocuScript | null, timeline: NarrationTimeline | null): Callout[] {
+export function calloutTexts(script: DocuScript | null, timeline: NarrationTimeline | null, labels: readonly DocuLabel[] = []): Callout[] {
   if (!script || !timeline) return [];
+  const slots = new Map(timeline.scenes.map(scene => [scene.scene_id, scene]));
+  // Labels are burned into the rough cut already; in the editor they are Chữ texts to move or restyle.
+  const boxes = labels.flatMap(label => {
+    const scene = slots.get(label.scene_id);
+    return scene ? [{ at: Math.round(scene.start * 1000) / 1000, seconds: Math.max(1, scene.slot_end - scene.start), text: label.text,
+      look: { ...CALLOUT_LOOKS.LABEL, x: label.x, y: label.y, w: label.w, animation: "none" } as Partial<TextLook> }] : [];
+  });
+  return [...calloutsOf(script, timeline), ...boxes];
+}
+
+function calloutsOf(script: DocuScript, timeline: NarrationTimeline): Callout[] {
   const times = new Map(timeline.scenes.map(scene => [scene.scene_id, scene]));
   return flattenScenes(script.chapters).flatMap(({ scene }) => {
     const graphic = scene.on_screen_graphic, timed = times.get(scene.scene_id);

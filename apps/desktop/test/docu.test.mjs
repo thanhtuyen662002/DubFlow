@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   CHAPTER_ORDER, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, chapterWordBudget, flattenScenes, hasNarration,
-  isEnglish, narrationStale, normalizeScript, parseCapcut, parseRender, parseVisual, planStale, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
+  isEnglish, narrationStale, normalizeScript, parseCapcut, parseLabels, parseMcp, parseRender, parseVisual, planStale, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
 } from "../src/features/docu/model.ts";
 import { writeChapter, writeScript } from "../src/features/docu/ai.ts";
 import { addText, createEdit } from "../src/features/edit/model.ts";
@@ -209,5 +209,14 @@ assert.deepEqual(parseCapcut({ folder: "C:/x/DubFlow - T", name: "DubFlow - T", 
   { folder: "C:/x/DubFlow - T", name: "DubFlow - T", clips: 3, duration: 13.1, captions: "D:/run/captions_en.srt" });
 assert.equal(parseCapcut({ name: "x" }), null);
 assert.equal(parseOpen({ dir: "D:/run", spec: { schema_version: 1, sources: [] }, contexts, script: null }).capcut, null);
+
+// MCP (phase 4b): labels join the editor's first draft; the connection commands parse.
+const mcpLabels = parseLabels({ labels: [{ id: "l001", scene_id: "sc_002", text: "Turbine hall", x: 0.5, y: 0.4, w: 0.3 }, { text: 5 }] });
+assert.equal(mcpLabels.length, 1);
+const withLabels = calloutTexts(withGraphics, timedScenes, mcpLabels);
+assert.equal(withLabels.length, 3);
+assert.deepEqual([withLabels[2].at, withLabels[2].text, withLabels[2].look.x, withLabels[2].look.w], [8.3, "Turbine hall", 0.5, 0.3]);
+assert.equal(parseMcp({ claudeCode: "claude mcp add dubflow", claudeDesktop: "{}" }).claudeCode, "claude mcp add dubflow");
+assert.equal(parseMcp({}), null);
 
 console.log("docu model and AI passed");

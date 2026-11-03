@@ -225,3 +225,19 @@ The owner chose to write drafts straight into CapCut's draft folder. CapCut stay
 - **CapCut's project list.** CapCut lists drafts from `root_meta_info.json`, which it rewrites on exit. So the export refuses while `CapCut.exe` runs, keeps `root_meta_info.json.dubflow-backup`, and puts the draft first in `all_draft_store`.
 - **Verified** on CapCut 9.6.0: the exported draft is listed first in its projects.
 - **Host and page.** The host exports (`docu_capcut`) and can start CapCut (`docu_launch_capcut`). The page offers "Xuất sang CapCut" after the rough cut.
+
+## Phase 4b: MCP server (Issue #456)
+
+- **Server.** `python -B -m engine.dubflow.mcp` is a Model Context Protocol server over stdio: newline-delimited JSON-RPC 2.0, protocol 2025-06-18 (it also answers 2025-03-26 and 2024-11-05 clients).
+  - It uses the standard library only, so the runtime and installer do not change.
+  - It handles `initialize`, `ping`, `tools/list` and `tools/call`. A failing tool returns an `isError` result and the session goes on. Logs go to stderr.
+- **Tools.** Every tool names a project by its run folder and is limited to documentary run folders:
+  - `list_projects`;
+  - `inspect_timeline_state`: chapters and scenes with narration and times, slices, labels, plan warnings, review flags, pacing, and the rough cut and CapCut state;
+  - `replace_timeline_clip`: another source or time for one slice, with the same length; marked `tier: -1` (manual);
+  - `apply_smart_label_overlay` and `remove_label`: English label boxes at a normalized centre and width during a scene. They are stored in `.dubflow-work/labels.json`, burned into that scene's slices on the next render (an ASS box, part of the slice receipt), and added to the editor's first draft as Chữ texts;
+  - `adjust_pacing_and_transitions`: the longest slice per chapter (2–8 s; slices shorter than 3 s are allowed at faster paces) and the Ken Burns push (0–10 %), stored in `.dubflow-work/pacing.json`. The visual plan is then rebuilt; the shot and caption scans are cached. Transitions remain hard cuts;
+  - `render_rough_cut`;
+  - `sync_to_capcut_draft`;
+  - `get_frame`: a 960 px PNG of the rough cut or a source, so Claude can read a foreign label before covering it.
+- **Connecting.** The page shows the `claude mcp add` command and the Claude Desktop configuration for this install. Both point at the version's bundled Python with `PYTHONPATH` set to the app folder, so they are added again after an update.

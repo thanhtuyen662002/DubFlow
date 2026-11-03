@@ -261,7 +261,8 @@ pub fn docu_open(dir: String) -> Result<Value, String> {
     let script_path = dir.join("documentary_script.json");
     let script = if script_path.is_file() { Some(read_json(&script_path, SCRIPT_LIMIT, "documentary_script.json vượt quá 4 MB hoặc không hợp lệ")?) } else { None };
     Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script, "narration": narration_info(&dir), "visual": visual_info(&dir), "render": render_info(&dir),
-        "capcut": crate::product::read_small_json(&dir.join(".dubflow-work/capcut.json"), 64 * 1024) }))
+        "capcut": crate::product::read_small_json(&dir.join(".dubflow-work/capcut.json"), 64 * 1024),
+        "labels": crate::product::read_small_json(&dir.join(".dubflow-work/labels.json"), 256 * 1024) }))
 }
 
 /// `narration.wav` directly inside a documentary run, for `allow_media` (#446).
@@ -465,6 +466,24 @@ fn capcut_exe() -> Option<PathBuf> {
     exe.is_file().then_some(exe)
 }
 
+/// How to connect Claude to this install's MCP server (phase 4b): the bundled
+/// Python runs `engine.dubflow.mcp` with the app folder on its path.
+fn mcp_connection(root: &Path) -> Value {
+    let python = display_path(&root.join("runtime/python.exe"));
+    let app = display_path(&root.join("app"));
+    let desktop = json!({"mcpServers": {"dubflow": {"command": python, "args": ["-B", "-m", "engine.dubflow.mcp"], "env": {"PYTHONPATH": app}}}});
+    json!({
+        "python": python, "app": app,
+        "claudeCode": format!("claude mcp add dubflow --scope user -e PYTHONPATH=\"{app}\" -- \"{python}\" -B -m engine.dubflow.mcp"),
+        "claudeDesktop": serde_json::to_string_pretty(&desktop).unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+pub fn docu_mcp_connection() -> Result<Value, String> {
+    Ok(mcp_connection(&version_root()?))
+}
+
 /// Start CapCut so the user can open the exported draft.
 #[tauri::command]
 pub fn docu_launch_capcut() -> Result<(), String> {
@@ -656,6 +675,12 @@ mod tests {
         assert!(dir.join(".dubflow-work/render/cancel").is_file());
         let args: Vec<String> = render_args(Path::new("run"), Path::new("v")).iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(args[..4], ["-B", "-m", "engine.dubflow.docu", "render"]);
+        let connection = mcp_connection(Path::new("D:/Tools/DubFlow/versions/9.9.9"));
+        assert!(connection["claudeCode"].as_str().unwrap().starts_with("claude mcp add dubflow --scope user -e PYTHONPATH=\""));
+        assert!(connection["claudeCode"].as_str().unwrap().ends_with("python.exe\" -B -m engine.dubflow.mcp"));
+        let desktop: Value = serde_json::from_str(connection["claudeDesktop"].as_str().unwrap()).unwrap();
+        assert_eq!(desktop["mcpServers"]["dubflow"]["args"], json!(["-B", "-m", "engine.dubflow.mcp"]));
+        assert!(desktop["mcpServers"]["dubflow"]["env"]["PYTHONPATH"].as_str().unwrap().ends_with("app"));
         let args: Vec<String> = capcut_args(Path::new("run")).iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(args, ["-m", "engine.dubflow.docu", "capcut", "--run-dir", "run"]);
         fs::remove_dir_all(base).unwrap();
