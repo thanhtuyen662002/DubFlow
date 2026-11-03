@@ -1364,3 +1364,7 @@ select { color-scheme: dark; }
 .docu-slice { padding: 2px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); }
 .docu-slice.far { border-style: dashed; color: var(--text-2); }
 .docu-slice-note { flex-basis: 100%; color: var(--warn); font-size: 11.5px; }
+.docu-render-actions { display: flex; gap: 8px; }
+.docu-render-actions[hidden] { display: none; }
+.docu-render-actions .btn { flex: 1; justify-content: center; }
+.docu-render code { font-size: 11.5px; }

@@ -71,7 +71,8 @@ export type PlanSlice = { source_id: string; start: number; end: number; at: num
 export type PlanScene = { scene_id: string; start: number; end: number; warnings: string[]; slices: PlanSlice[] };
 export type VisualPlan = { script_sha256: string; duration: number; scenes: PlanScene[]; warnings: string[] };
 export type VisualInfo = { plan: VisualPlan | null; status: NarrationStatus | null };
-export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null; narration: NarrationInfo; visual: VisualInfo };
+export type RenderInfo = { video: string | null; status: NarrationStatus | null };
+export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null; narration: NarrationInfo; visual: VisualInfo; render: RenderInfo };
 export type CreateDocuResult = { dir: string; sources: Array<{ id: string; duration: number; segments: number }> };
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
@@ -315,6 +316,11 @@ export function parseVisual(value: unknown): VisualInfo {
   };
 }
 
+export function parseRender(value: unknown): RenderInfo {
+  const info = obj(value);
+  return { video: typeof info?.video === "string" ? info.video : null, status: parseStatus(info?.status) };
+}
+
 /** A plan made before the script or its narration changed. */
 export function planStale(script: DocuScript | null, timeline: NarrationTimeline | null, plan: VisualPlan | null): boolean {
   return Boolean(plan && (!script || script.script_sha256 !== plan.script_sha256 || !timeline || Math.abs(timeline.duration - plan.duration) > 0.01));
@@ -336,7 +342,7 @@ export function parseOpen(value: unknown): OpenDocuRun | null {
   const sourceIds = new Set(contexts.map(context => context.source_id));
   return { dir: result.dir, spec: spec as unknown as DocuSpec, contexts,
     script: result.script === null || result.script === undefined ? null : normalizeScript(result.script, sourceIds),
-    narration: parseNarration(result.narration), visual: parseVisual(result.visual) };
+    narration: parseNarration(result.narration), visual: parseVisual(result.visual), render: parseRender(result.render) };
 }
 
 export function sourceLines(contexts: readonly SourceContext[], charLimit = 120_000): string[] {

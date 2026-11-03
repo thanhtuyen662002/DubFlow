@@ -195,6 +195,16 @@ const previewDocuHash = (script: unknown): string => {
   for (const char of spoken) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   return hash.toString(16).padStart(64, "0");
 };
+/** Simulated rough cuts: a few polls, then the sample video stands in for documentary.mp4. */
+const docuRenders = new Map<string, { polls: number; cancelled: boolean }>();
+function previewRender(dir: string): Record<string, unknown> {
+  const run = docuRenders.get(dir);
+  if (!run) return { video: null, status: null };
+  if (run.cancelled) return { video: null, status: { state: "CANCELLED", done: 0, total: 6, message: "Đã hủy dựng bản nháp" } };
+  run.polls += 1;
+  if (run.polls < 4) return { video: null, status: { state: "RUNNING", done: run.polls, total: 6, message: `Đang dựng lát cắt ${run.polls}/5` } };
+  return { video: "D:\\Videos\\DubFlow Output\\Phim tai lieu - Three Gorges\\documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "Đã dựng bản nháp" } };
+}
 /** Simulated visual plans: three polls, then slices alternating the two sources across each scene's slot. */
 const docuPlans = new Map<string, { polls: number; cancelled: boolean }>();
 function previewVisual(dir: string): Record<string, unknown> {
@@ -318,7 +328,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_open": {
       const project = docuProjects.get(String(args.dir));
       if (!project) throw new Error("Không tìm thấy dự án phim tài liệu");
-      return JSON.parse(JSON.stringify({ dir: project.dir, spec: project.spec, contexts: project.contexts, script: project.script, narration: previewNarration(project.dir), visual: previewVisual(project.dir) })) as T;
+      return JSON.parse(JSON.stringify({ dir: project.dir, spec: project.spec, contexts: project.contexts, script: project.script, narration: previewNarration(project.dir), visual: previewVisual(project.dir), render: previewRender(project.dir) })) as T;
     }
     case "docu_create": {
       const request = args.request as { title: string; topic: string; targetMinutes: number; cinematicFramingPreset: string; burnEndCredits: boolean; sources: Array<Record<string, string>> };
@@ -360,6 +370,9 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_narration_status": return previewNarration(String(args.dir)) as T;
     case "docu_plan": docuPlans.set(String(args.dir), { polls: 0, cancelled: false }); return undefined as T;
     case "docu_plan_status": return previewVisual(String(args.dir)) as T;
+    case "docu_render": docuRenders.set(String(args.dir), { polls: 0, cancelled: false }); return undefined as T;
+    case "docu_render_status": return previewRender(String(args.dir)) as T;
+    case "docu_render_cancel": { const run = docuRenders.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_plan_cancel": { const run = docuPlans.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_narration_cancel": { const run = docuNarration.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_pick_file": return (args.kind === "video" ? "D:\\Documentary\\local-source.mp4" : "D:\\Documentary\\local-source.srt") as T;

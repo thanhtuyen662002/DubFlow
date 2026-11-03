@@ -1,4 +1,4 @@
-"""python -m engine.dubflow.docu {context,check,narrate,plan}; the last stdout line is ASCII JSON."""
+"""python -m engine.dubflow.docu {context,check,narrate,plan,render}; the last stdout line is ASCII JSON."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from engine.dubflow.product.job import probe_duration_ms
-from . import context, narration, script, visual
+from . import context, narration, roughcut, script, visual
 from .project import DocuError, load_spec, script_path, spec_path, write_json
 
 
@@ -68,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("run-dir", "app-root", "model-root", "ffmpeg"):
         visuals.add_argument(f"--{name}", type=Path, required=True)
     visuals.add_argument("--no-ocr", action="store_true", help="skip the caption scan")
+    cut = commands.add_parser("render", help="render the visual plan and the narration into documentary.mp4")
+    for name in ("run-dir", "ffmpeg", "ffprobe"):
+        cut.add_argument(f"--{name}", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "context":
@@ -75,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
             spec = load_spec(args.spec)
             sources = context.build_all(run_dir, spec, lambda path: probe_duration_ms(args.ffprobe, path))
             result: dict[str, object] = {"state": "COMPLETED", "message": "", "sources": sources}
+        elif args.command == "render":
+            result = roughcut.run(args.run_dir, load_spec(spec_path(args.run_dir)), ffmpeg=args.ffmpeg,
+                                  probe=lambda video: roughcut.probe_display(args.ffprobe, video))
+            print(json.dumps(result, ensure_ascii=True))
+            return 0 if result.get("state") == "COMPLETED" else 1
         elif args.command in ("narrate", "plan"):
             result = _narrate(args) if args.command == "narrate" else _plan(args)
             print(json.dumps(result, ensure_ascii=True))

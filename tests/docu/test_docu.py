@@ -142,7 +142,8 @@ def make_run(base: Path) -> Path:
     write_json(spec_path(run), {"schema_version": 1, "title": "Đập Bạch Hạc Than", "topic": "", "target_minutes": 11,
                                 "cinematic_framing_preset": "letterbox_235", "burn_end_credits": False, "sources": [
         {"id": "src_01", "title": "Nguồn A", "video": str(base / "a.mp4"), "transcript": str(base / "a.json"),
-         "origin_url": "https://www.bilibili.com/video/BV1", "credit": {"name": "Kênh A"}},
+         "origin_url": "https://www.bilibili.com/video/BV1", "credit": {"schema_version": 1, "creator": "Kênh A", "platform": "Bilibili",
+                                                                 "url": "https://www.bilibili.com/video/BV1", "rights": "unknown", "note": ""}},
         {"id": "src_02", "title": "Nguồn B", "video": str(base / "b.mp4"), "transcript": str(base / "b.srt"),
          "origin_url": None, "credit": None}]})
     return run
