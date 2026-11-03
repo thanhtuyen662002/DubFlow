@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   CHAPTER_ORDER, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, chapterWordBudget, flattenScenes, hasNarration,
-  isEnglish, narrationStale, normalizeScript, parseRender, parseVisual, planStale, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
+  isEnglish, narrationStale, normalizeScript, parseCapcut, parseRender, parseVisual, planStale, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
 } from "../src/features/docu/model.ts";
 import { writeChapter, writeScript } from "../src/features/docu/ai.ts";
 import { addText, createEdit } from "../src/features/edit/model.ts";
@@ -203,5 +203,11 @@ const draft = callouts.reduce((edit, c) => addText(edit, c.at, c.text, c.look, c
 assert.equal(draft.texts.length, 2);
 assert.equal(draft.texts[0].box_opacity, 0.9);
 assert.equal(draft.texts[1].at, 8.6);
+
+// CapCut export (phase 4a).
+assert.deepEqual(parseCapcut({ folder: "C:/x/DubFlow - T", name: "DubFlow - T", clips: 3, duration: 13.1, captions: "D:/run/captions_en.srt" }),
+  { folder: "C:/x/DubFlow - T", name: "DubFlow - T", clips: 3, duration: 13.1, captions: "D:/run/captions_en.srt" });
+assert.equal(parseCapcut({ name: "x" }), null);
+assert.equal(parseOpen({ dir: "D:/run", spec: { schema_version: 1, sources: [] }, contexts, script: null }).capcut, null);
 
 console.log("docu model and AI passed");

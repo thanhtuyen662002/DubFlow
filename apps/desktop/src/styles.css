@@ -1368,3 +1368,5 @@ select { color-scheme: dark; }
 .docu-render-actions[hidden] { display: none; }
 .docu-render-actions .btn { flex: 1; justify-content: center; }
 .docu-render code { font-size: 11.5px; }
+.docu-capcut { display: grid; gap: 6px; }
+.docu-capcut[hidden], .docu-capcut .btn[hidden] { display: none; }

@@ -260,7 +260,8 @@ pub fn docu_open(dir: String) -> Result<Value, String> {
     }
     let script_path = dir.join("documentary_script.json");
     let script = if script_path.is_file() { Some(read_json(&script_path, SCRIPT_LIMIT, "documentary_script.json vượt quá 4 MB hoặc không hợp lệ")?) } else { None };
-    Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script, "narration": narration_info(&dir), "visual": visual_info(&dir), "render": render_info(&dir) }))
+    Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script, "narration": narration_info(&dir), "visual": visual_info(&dir), "render": render_info(&dir),
+        "capcut": crate::product::read_small_json(&dir.join(".dubflow-work/capcut.json"), 64 * 1024) }))
 }
 
 /// `narration.wav` directly inside a documentary run, for `allow_media` (#446).
@@ -443,6 +444,32 @@ pub fn docu_render_status(dir: String) -> Result<Value, String> {
 #[tauri::command]
 pub fn docu_render_cancel(dir: String) -> Result<(), String> {
     cancel_job(&dir, &RENDER_JOB)
+}
+
+fn capcut_args(dir: &Path) -> Vec<OsString> {
+    vec!["-m".into(), "engine.dubflow.docu".into(), "capcut".into(), "--run-dir".into(), dir.into()]
+}
+
+/// The rough cut as a CapCut draft, listed in CapCut's own projects (phase 4a); refused while CapCut runs.
+#[tauri::command]
+pub async fn docu_capcut(dir: String) -> Result<Value, String> {
+    let dir = docu_dir(&dir)?;
+    if !dir.join("documentary.mp4").is_file() { return Err(fail("Hãy dựng bản nháp trước khi xuất sang CapCut")); }
+    let result = python_json(capcut_args(&dir), "bộ xuất CapCut").await?;
+    if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
+    Ok(result)
+}
+
+fn capcut_exe() -> Option<PathBuf> {
+    let exe = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("CapCut/Apps/CapCut.exe");
+    exe.is_file().then_some(exe)
+}
+
+/// Start CapCut so the user can open the exported draft.
+#[tauri::command]
+pub fn docu_launch_capcut() -> Result<(), String> {
+    let exe = capcut_exe().ok_or_else(|| fail("Không tìm thấy CapCut trên máy này"))?;
+    Command::new(exe).spawn().map(|_| ()).map_err(|_| fail("Không mở được CapCut"))
 }
 
 /// Validate a draft with the engine, which publishes `documentary_script.json` and returns it normalised.
@@ -629,6 +656,8 @@ mod tests {
         assert!(dir.join(".dubflow-work/render/cancel").is_file());
         let args: Vec<String> = render_args(Path::new("run"), Path::new("v")).iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(args[..4], ["-B", "-m", "engine.dubflow.docu", "render"]);
+        let args: Vec<String> = capcut_args(Path::new("run")).iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["-m", "engine.dubflow.docu", "capcut", "--run-dir", "run"]);
         fs::remove_dir_all(base).unwrap();
     }
 

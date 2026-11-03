@@ -73,7 +73,9 @@ export type PlanScene = { scene_id: string; start: number; end: number; warnings
 export type VisualPlan = { script_sha256: string; duration: number; scenes: PlanScene[]; warnings: string[] };
 export type VisualInfo = { plan: VisualPlan | null; status: NarrationStatus | null };
 export type RenderInfo = { video: string | null; status: NarrationStatus | null };
-export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null; narration: NarrationInfo; visual: VisualInfo; render: RenderInfo };
+/** The last CapCut export (engine/dubflow/docu/capcut_draft.py). */
+export type CapcutExport = { folder: string; name: string; clips: number; duration: number; captions: string };
+export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null; narration: NarrationInfo; visual: VisualInfo; render: RenderInfo; capcut: CapcutExport | null };
 export type CreateDocuResult = { dir: string; sources: Array<{ id: string; duration: number; segments: number }> };
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
@@ -317,6 +319,12 @@ export function parseVisual(value: unknown): VisualInfo {
   };
 }
 
+export function parseCapcut(value: unknown): CapcutExport | null {
+  const info = obj(value);
+  return info && typeof info.folder === "string" && typeof info.name === "string"
+    ? { folder: info.folder, name: info.name, clips: Number(info.clips) || 0, duration: Number(info.duration) || 0, captions: string(info.captions) } : null;
+}
+
 export function parseRender(value: unknown): RenderInfo {
   const info = obj(value);
   return { video: typeof info?.video === "string" ? info.video : null, status: parseStatus(info?.status) };
@@ -343,7 +351,8 @@ export function parseOpen(value: unknown): OpenDocuRun | null {
   const sourceIds = new Set(contexts.map(context => context.source_id));
   return { dir: result.dir, spec: spec as unknown as DocuSpec, contexts,
     script: result.script === null || result.script === undefined ? null : normalizeScript(result.script, sourceIds),
-    narration: parseNarration(result.narration), visual: parseVisual(result.visual), render: parseRender(result.render) };
+    narration: parseNarration(result.narration), visual: parseVisual(result.visual), render: parseRender(result.render),
+    capcut: parseCapcut(result.capcut) };
 }
 
 export function sourceLines(contexts: readonly SourceContext[], charLimit = 120_000): string[] {
