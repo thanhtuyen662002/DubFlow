@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
+import stat
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
 from engine.dubflow.docu import matcher, mcp_tools, roughcut, visual
@@ -35,10 +38,16 @@ class ToolTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_project_boundary(self):
-        self.assertEqual(mcp_tools.project(str(self.run)), self.run.resolve())
+        roots = [mcp_tools.output_root(str(self.run.parent.parent))]
+        self.assertEqual(mcp_tools.project(str(self.run), roots), self.run.resolve())
         for bad in ("", "relative/run-000000000001", str(self.run.parent), str(Path(self.temp.name))):
             with self.subTest(bad), self.assertRaises(DocuError):
-                mcp_tools.project(bad)
+                mcp_tools.project(bad, roots)
+        with self.assertRaises(DocuError):
+            mcp_tools.project(str(self.run), [])
+        for bad in ("", "relative", str(Path(self.temp.name) / "missing"), str(self.run / ".dubflow-work" / "spec.json")):
+            with self.subTest(root=bad), self.assertRaises(DocuError):
+                mcp_tools.output_root(bad)
 
     def test_inspect_and_list(self):
         state = mcp_tools.inspect(self.run)
@@ -96,6 +105,160 @@ class ToolTests(unittest.TestCase):
         fast = matcher.plan([matcher.Scene("sc_001", 0, 10, (matcher.Ref("src_01", 0, 60),), 2.5)], [matcher.Source("src_01", 60, tuple(float(t) for t in range(2, 60, 2)))])
         self.assertTrue(all(piece.duration <= 2.5 + 0.41 for piece in fast[0][1]))
         self.assertEqual(len(fast[0][1]), 4)
+
+
+OUTSIDE = "nằm ngoài thư mục DubFlow Output"
+LINKED = "liên kết"
+
+
+def _link_dir(link: Path, target: Path) -> None:
+    """A directory junction on Windows (a reparse point, no privilege needed), a directory symlink elsewhere."""
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def _snapshot(base: Path) -> dict[str, bytes]:
+    return {str(path.relative_to(base)): path.read_bytes() if path.is_file() else b"<dir>" for path in sorted(base.rglob("*"))}
+
+
+class BoundaryTests(unittest.TestCase):
+    """Tools reach only runs directly under a chosen DubFlow Output root, and never through a link."""
+
+    def setUp(self):
+        self.temp = TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.run = make_run(base / "home")
+        _planned(self.run)
+        self.root = self.run.parent.parent
+        self.outside = base / "elsewhere"
+        self.outside_run = make_run(self.outside)
+        _planned(self.outside_run)
+        self.marker = self.outside / "marker.json"
+        self.marker.write_bytes(b'{"keep": "these exact bytes"}\n')
+        self.before = _snapshot(self.outside)
+        self.server = Server(mcp_tools.Install(base, Path("ffmpeg"), Path("ffprobe"), base), roots=lambda: [self.root])
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def call(self, name: str, **args) -> tuple[bool, str]:
+        reply = self.server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}})
+        result = reply["result"]
+        return result["isError"], result["content"][0].get("text", "")
+
+    def refused(self, project: Path, why: str) -> None:
+        calls = {"inspect_timeline_state": {}, "apply_smart_label_overlay": {"scene_id": "sc_001", "text_en": "x", "pos_x": 0.5, "pos_y": 0.5, "width": 0.3},
+                 "remove_label": {"label_id": "l001"}, "replace_timeline_clip": {"scene_id": "sc_001", "clip_index": 0, "new_source_id": "src_01", "start_time": 2.0},
+                 "adjust_pacing_and_transitions": {"chapter": "all", "max_clip_duration": 3}, "render_rough_cut": {},
+                 "sync_to_capcut_draft": {"capcut_drafts_dir": str(self.outside)}, "get_frame": {"time": 0}}
+        for name, args in calls.items():
+            with self.subTest(name, project=str(project)):
+                failed, text = self.call(name, project=str(project), **args)
+                self.assertTrue(failed)
+                self.assertIn(why, text)
+        self.assertEqual(_snapshot(self.outside), self.before)
+
+    def test_default_root_project_is_usable(self):
+        failed, text = self.call("inspect_timeline_state", project=str(self.run))
+        self.assertFalse(failed, text)
+        failed, text = self.call("apply_smart_label_overlay", project=str(self.run), scene_id="sc_001", text_en="Spillway", pos_x=0.5, pos_y=0.5, width=0.3)
+        self.assertFalse(failed, text)
+        self.assertEqual([label["text"] for label in roughcut.load_labels(self.run)], ["Spillway"])
+
+    def test_custom_root_is_bound_by_list_projects(self):
+        custom = make_run(Path(self.temp.name) / "D drive")
+        _planned(custom)
+        failed, text = self.call("inspect_timeline_state", project=str(custom))
+        self.assertTrue(failed)
+        self.assertIn(OUTSIDE, text)
+        failed, text = self.call("list_projects", root=str(custom.parent.parent))
+        self.assertFalse(failed, text)
+        self.assertEqual([item["project"] for item in json.loads(text)], [str(custom.resolve())])
+        self.assertFalse(self.call("inspect_timeline_state", project=str(custom))[0])
+        self.assertFalse(self.call("inspect_timeline_state", project=str(self.run))[0])
+        listed = json.loads(self.call("list_projects")[1])
+        self.assertEqual({item["project"] for item in listed}, {str(custom.resolve()), str(self.run.resolve())})
+        for bad in ("relative\\DubFlow Output", str(Path(self.temp.name) / "missing")):
+            with self.subTest(bad):
+                self.assertTrue(self.call("list_projects", root=bad)[0])
+        self.assertEqual(self.server.chosen, [custom.parent.parent.resolve()])
+
+    def test_out_of_root_project_is_refused(self):
+        self.refused(self.outside_run, OUTSIDE)
+        # The same folder spelled from inside the root.
+        self.refused(self.root / ".." / ".." / "elsewhere" / "DubFlow Output" / self.outside_run.parent.name / self.outside_run.name, OUTSIDE)
+
+    def test_linked_title_and_run_folders_are_refused_and_not_listed(self):
+        title = self.root / "Phim tai lieu - Ext"
+        _link_dir(title, self.outside_run.parent)
+        self.refused(title / self.outside_run.name, OUTSIDE)
+        run = self.run.parent / "run-00000000000a"
+        _link_dir(run, self.outside_run)
+        self.refused(run, OUTSIDE)
+        alias = self.run.parent / "run-00000000000b"
+        _link_dir(alias, self.run)
+        self.refused(alias, LINKED)
+        for args in ({}, {"root": str(self.root)}):
+            with self.subTest(args):
+                listed = json.loads(self.call("list_projects", **args)[1])
+                self.assertEqual([item["project"] for item in listed], [str(self.run.resolve())])
+        self.assertEqual(_snapshot(self.outside), self.before)
+
+    def test_linked_work_folder_is_refused(self):
+        run = self.run.parent / "run-00000000000c"
+        run.mkdir()
+        _planned(run)
+        _link_dir(work_dir(run), work_dir(self.outside_run))
+        self.refused(run, LINKED)
+        listed = json.loads(self.call("list_projects")[1])
+        self.assertEqual([item["project"] for item in listed], [str(self.run.resolve())])
+
+    def test_linked_mutable_files_are_refused(self):
+        for child in (work_dir(self.run) / roughcut.LABELS, work_dir(self.run) / (roughcut.LABELS + ".partial"),
+                      self.run / "visual_plan.json", work_dir(self.run) / visual.PACING):
+            original = child.read_bytes() if child.is_file() else None
+            child.unlink(missing_ok=True)
+            child.symlink_to(self.marker)
+            self.refused(self.run, LINKED)
+            child.unlink()
+            if original is not None:
+                child.write_bytes(original)
+        render = work_dir(self.run) / "render"
+        (self.outside / "render").mkdir()
+        self.before = _snapshot(self.outside)
+        _link_dir(render, self.outside / "render")
+        self.refused(self.run, LINKED)
+
+    def test_hard_linked_partial_is_dropped_before_writing(self):
+        partial = work_dir(self.run) / (roughcut.LABELS + ".partial")
+        os.link(self.marker, partial)
+        failed, text = self.call("apply_smart_label_overlay", project=str(self.run), scene_id="sc_001", text_en="Spillway", pos_x=0.5, pos_y=0.5, width=0.3)
+        self.assertFalse(failed, text)
+        self.assertEqual(_snapshot(self.outside), self.before)
+        self.assertEqual(len(roughcut.load_labels(self.run)), 1)
+
+    def test_reparse_points_that_name_another_place(self):
+        point = stat.FILE_ATTRIBUTE_REPARSE_POINT
+        cases = {"junction": (stat.S_IFDIR, point, 0xA0000003, True), "symlink reparse": (stat.S_IFREG, point, 0xA000000C, True),
+                 "posix symlink": (stat.S_IFLNK, 0, 0, True), "OneDrive placeholder": (stat.S_IFREG, point, 0x9000601A, False),
+                 "app alias": (stat.S_IFREG, point, 0x8000001B, False), "folder": (stat.S_IFDIR, stat.FILE_ATTRIBUTE_DIRECTORY, 0, False)}
+        for name, (mode, attributes, tag, expected) in cases.items():
+            with self.subTest(name):
+                info = SimpleNamespace(st_mode=mode, st_file_attributes=attributes, st_reparse_tag=tag)
+                self.assertIs(mcp_tools.redirects(info), expected)
+        if os.name == "nt":
+            # A real junction, as scandir and lstat report it on Windows.
+            target = Path(self.temp.name) / "target"
+            target.mkdir()
+            _link_dir(Path(self.temp.name) / "junction", target)
+            self.assertTrue(mcp_tools.linked(Path(self.temp.name) / "junction"))
+            with os.scandir(self.temp.name) as entries:
+                entry = next(item for item in entries if item.name == "junction")
+                self.assertTrue(mcp_tools.redirects(entry.stat(follow_symlinks=False)))
+        self.assertFalse(mcp_tools.linked(self.run))
 
 
 class ProtocolTests(unittest.TestCase):

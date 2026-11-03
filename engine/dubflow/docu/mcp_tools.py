@@ -2,8 +2,10 @@
 
 Every tool names a project by its run folder and touches nothing outside
 documentary run folders, CapCut's draft folder (``sync_to_capcut_draft``) and
-the bundled FFmpeg. Tools return plain data; the server turns it into MCP
-results.
+the bundled FFmpeg. A run folder counts only directly under a DubFlow Output
+root the server was given (the default one, or one passed to
+``list_projects``), and only while no symlink or junction inside it leads
+elsewhere. Tools return plain data; the server turns it into MCP results.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 from typing import Any, Callable
 
@@ -24,6 +27,9 @@ _RUN = re.compile(r"run-[0-9a-f]{12}")
 PREFIX = "Phim tai lieu - "
 MAX_LABELS = 60
 MAX_LABEL_TEXT = 160
+# IsReparseTagNameSurrogate: the reparse point names another file (symlink, junction, mount point),
+# unlike a OneDrive placeholder or an app execution alias.
+_NAME_SURROGATE = 0x20000000
 
 
 @dataclass(frozen=True)
@@ -46,17 +52,79 @@ class Install:
         return cls(app, ffmpeg, ffprobe, models)
 
 
-def project(value: Any) -> Path:
-    """A documentary run folder: ``…\\Phim tai lieu - <title>\\run-<12 hex>`` with its request."""
+def redirects(info: os.stat_result) -> bool:
+    """Whether an lstat result is a symlink, junction or other link to another place."""
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    return bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                and getattr(info, "st_reparse_tag", 0) & _NAME_SURROGATE)
+
+
+def linked(path: Path) -> bool:
+    try:
+        return redirects(path.lstat())
+    except OSError:
+        return False
+
+
+def output_root(value: Any) -> Path:
+    """A DubFlow Output folder, canonical, for the server to look for projects in."""
+    if not isinstance(value, str) or not value.strip():
+        raise DocuError("Cần đường dẫn thư mục DubFlow Output (root)")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise DocuError("root phải là đường dẫn đầy đủ tới thư mục DubFlow Output")
+    try:
+        path = path.resolve(strict=True)
+    except OSError:
+        raise DocuError("Không tìm thấy thư mục DubFlow Output đó") from None
+    if not path.is_dir():
+        raise DocuError("root phải là một thư mục")
+    return path
+
+
+def _no_links(run: Path) -> None:
+    """Refuse a run holding a symlink or junction: a read or write through it would leave the project."""
+    pending = [run]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if redirects(info):
+                    inside = Path(entry.path).relative_to(run)
+                    raise DocuError(f"Dự án có liên kết (symlink/junction) trỏ ra nơi khác: {inside}. DubFlow không đọc hay ghi qua liên kết")
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(Path(entry.path))
+
+
+def project(value: Any, roots: list[Path]) -> Path:
+    """A documentary run folder ``<root>\\Phim tai lieu - <title>\\run-<12 hex>`` with its request, ``root`` one of ``roots`` (canonical)."""
     if not isinstance(value, str) or not value.strip():
         raise DocuError("Cần đường dẫn thư mục dự án (project)")
     path = Path(value).expanduser()
     if not path.is_absolute():
         raise DocuError("project phải là đường dẫn đầy đủ tới thư mục run-… của dự án")
-    path = path.resolve()
-    if not (_RUN.fullmatch(path.name) and path.parent.name.startswith(PREFIX) and spec_path(path).is_file()):
+    try:
+        real = path.resolve(strict=True)
+    except OSError:
+        real = None
+    if real is None or not (_RUN.fullmatch(real.name) and real.parent.name.startswith(PREFIX)):
         raise DocuError("Không phải thư mục dự án Phim tài liệu (…\\Phim tai lieu - <tên>\\run-<id>)")
-    return path
+    if real.parent.parent not in roots:
+        raise DocuError("Dự án nằm ngoài thư mục DubFlow Output đang dùng. Nếu dự án ở thư mục DubFlow Output khác, "
+                        "gọi list_projects với root là thư mục đó trước")
+    if linked(path) or linked(path.parent):
+        raise DocuError("Đường dẫn dự án đi qua liên kết (symlink/junction); hãy dùng đường dẫn từ list_projects")
+    _no_links(real)
+    if not spec_path(real).is_file():
+        raise DocuError("Không phải thư mục dự án Phim tài liệu (…\\Phim tai lieu - <tên>\\run-<id>)")
+    return real
+
+
+def _publish(path: Path, value: Any) -> None:
+    # write_json writes <name>.partial first; drop a leftover one so a hard link planted there cannot take the write elsewhere.
+    path.with_name(path.name + ".partial").unlink(missing_ok=True)
+    write_json(path, value)
 
 
 def _json(path: Path) -> Any:
@@ -67,12 +135,19 @@ def _json(path: Path) -> Any:
 
 
 def list_projects(roots: list[Path]) -> list[dict[str, Any]]:
+    """Projects directly under ``roots``; a linked title or run folder is skipped, not followed."""
     found = []
     for base in roots:
-        for folder in sorted(base.glob(f"{PREFIX}*")) if base.is_dir() else []:
+        try:
+            base = output_root(str(base))
+        except DocuError:
+            continue
+        for folder in sorted(base.glob(f"{PREFIX}*")):
+            if linked(folder):
+                continue
             for run in folder.glob("run-*"):
                 try:
-                    run = project(str(run))
+                    run = project(str(run), [base])
                 except DocuError:
                     continue
                 script = _json(script_path(run)) or {}
@@ -136,7 +211,7 @@ def replace_clip(run: Path, scene_id: str, slice_index: int, source_id: str, sta
     if not isinstance(start, (int, float)) or start < 0 or start + length > float(source["duration"]) + 1e-3:
         raise DocuError(f"Đoạn {start}–{start + length:.3f} s nằm ngoài video {source_id} ({source['duration']} s)")
     piece.update({"source_id": source_id, "start": round(float(start), 3), "end": round(float(start) + length, 3), "tier": -1})
-    write_json(plan_path, plan)
+    _publish(plan_path, plan)
     return {"scene_id": scene_id, "slice": piece, "note": "Dựng lại bản nháp (render_rough_cut) để thấy thay đổi"}
 
 
@@ -155,7 +230,7 @@ def apply_label(run: Path, scene_id: str, text: str, x: float, y: float, width: 
         raise DocuError(f"Tối đa {MAX_LABELS} nhãn mỗi dự án")
     label = {"id": f"l{len(labels) + 1:03d}", "scene_id": scene_id, "text": words, "x": round(float(x), 4), "y": round(float(y), 4),
              "w": round(float(width), 4)}
-    write_json(work_dir(run) / roughcut.LABELS, {"schema_version": 1, "labels": labels + [label]})
+    _publish(work_dir(run) / roughcut.LABELS, {"schema_version": 1, "labels": labels + [label]})
     return {"label": label, "note": "Dựng lại bản nháp (render_rough_cut) để thấy nhãn"}
 
 
@@ -164,7 +239,7 @@ def remove_label(run: Path, label_id: str) -> dict[str, Any]:
     kept = [label for label in labels if label.get("id") != label_id]
     if len(kept) == len(labels):
         raise DocuError(f"Không có nhãn {label_id}")
-    write_json(work_dir(run) / roughcut.LABELS, {"schema_version": 1, "labels": kept})
+    _publish(work_dir(run) / roughcut.LABELS, {"schema_version": 1, "labels": kept})
     return {"removed": label_id}
 
 
@@ -185,7 +260,7 @@ def adjust_pacing(run: Path, install: Install, *, chapter: str | None, max_clip_
         if not isinstance(ken_burns_intensity, (int, float)) or not 0 <= ken_burns_intensity <= 0.1:
             raise DocuError("ken_burns_intensity phải từ 0 (tắt) đến 0.1 (phóng 10 %)")
         burns = float(ken_burns_intensity)
-    write_json(work_dir(run) / visual.PACING, {"schema_version": 1, "max_slice": paces, "ken_burns": burns})
+    _publish(work_dir(run) / visual.PACING, {"schema_version": 1, "max_slice": paces, "ken_burns": burns})
     status = replan(run)
     if status.get("state") != "COMPLETED":
         raise DocuError(f"Lập lại kế hoạch hình ảnh không thành công: {status.get('message')}")

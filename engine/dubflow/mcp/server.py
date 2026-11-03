@@ -22,7 +22,8 @@ INSTRUCTIONS = ("Tools for DubFlow documentary projects (Phim tài liệu). Star
                 "Plan edits (replace_timeline_clip, apply_smart_label_overlay, adjust_pacing_and_transitions) take effect after "
                 "render_rough_cut. Use get_frame to look at a moment, e.g. to read a foreign label before covering it.")
 
-_PROJECT = {"type": "string", "description": "The project's run folder (…\\Phim tai lieu - <title>\\run-<id>), from list_projects"}
+_PROJECT = {"type": "string", "description": "The project's run folder (…\\Phim tai lieu - <title>\\run-<id>), from list_projects; "
+            "it must be in the default DubFlow Output folder or one passed to list_projects as root"}
 
 
 def _tool(name: str, description: str, properties: dict[str, Any], required: list[str], *, read_only: bool = False) -> dict[str, Any]:
@@ -33,7 +34,8 @@ def _tool(name: str, description: str, properties: dict[str, Any], required: lis
 
 TOOLS = [
     _tool("list_projects", "List DubFlow documentary projects, newest first, with what each has (script, narration, plan, rough cut).",
-          {"root": {"type": "string", "description": "A 'DubFlow Output' folder to search; default: the user's Videos\\DubFlow Output"}}, [],
+          {"root": {"type": "string", "description": "A 'DubFlow Output' folder to search (absolute path); its projects "
+                            "can then be used in this session. Default: the user's Videos\\DubFlow Output"}}, [],
           read_only=True),
     _tool("inspect_timeline_state", "The project's timeline: chapters, scenes with narration and times, the B-roll slices of each scene, "
           "labels, plan warnings (e.g. burned-in captions), review flags, pacing and the rough cut / CapCut state.",
@@ -78,6 +80,17 @@ class Server:
     def __init__(self, install: mcp_tools.Install, *, roots: Callable[[], list[Path]] = mcp_tools.default_roots) -> None:
         self.install = install
         self.roots = roots
+        self.chosen: list[Path] = []  # roots passed to list_projects, canonical
+
+    def allowed_roots(self) -> list[Path]:
+        """The canonical DubFlow Output folders whose projects the tools may open."""
+        found = []
+        for root in self.roots():
+            try:
+                found.append(mcp_tools.output_root(str(root)))
+            except DocuError:
+                continue
+        return found + [root for root in self.chosen if root not in found]
 
     def _replan(self, run: Path) -> dict[str, Any]:
         from engine.dubflow.ocr import caption_scan
@@ -98,9 +111,13 @@ class Server:
 
     def call(self, name: str, args: dict[str, Any]) -> list[dict[str, Any]]:
         if name == "list_projects":
-            roots = [Path(args["root"])] if args.get("root") else self.roots()
-            return _text(mcp_tools.list_projects(roots))
-        run = mcp_tools.project(args.get("project"))
+            if args.get("root"):
+                root = mcp_tools.output_root(args["root"])
+                if root not in self.chosen:
+                    self.chosen.append(root)
+                return _text(mcp_tools.list_projects([root]))
+            return _text(mcp_tools.list_projects(self.allowed_roots()))
+        run = mcp_tools.project(args.get("project"), self.allowed_roots())
         if name == "inspect_timeline_state":
             return _text(mcp_tools.inspect(run))
         if name == "replace_timeline_clip":
