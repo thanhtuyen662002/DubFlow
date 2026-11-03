@@ -1,4 +1,4 @@
-"""python -m engine.dubflow.docu {context,check,narrate}; the last stdout line is ASCII JSON."""
+"""python -m engine.dubflow.docu {context,check,narrate,plan}; the last stdout line is ASCII JSON."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from engine.dubflow.product.job import probe_duration_ms
-from . import context, narration, script
+from . import context, narration, script, visual
 from .project import DocuError, load_spec, script_path, spec_path, write_json
 
 
@@ -32,6 +32,24 @@ def _narrate(args: argparse.Namespace) -> dict[str, object]:
                          ffmpeg=args.ffmpeg, producer=producer)
 
 
+def _plan(args: argparse.Namespace) -> dict[str, object]:
+    spec = load_spec(spec_path(args.run_dir))
+    profile = args.app_root / visual.OCR_PROFILE
+    if args.no_ocr or not profile.is_file():
+        scanner, identity = None, None
+    else:
+        from engine.dubflow.ocr import caption_scan
+        from engine.dubflow.models.runtime import ensure_model_profile
+
+        manifest = json.loads(profile.read_text(encoding="utf-8"))
+        identity = {"recipe": caption_scan.SCAN_RECIPE, "profile": hashlib.sha256(profile.read_bytes()).hexdigest()}
+
+        def scanner():
+            ensure_model_profile(profile, args.model_root)
+            return caption_scan.CaptionScanner(args.model_root / manifest["model_path"], args.ffmpeg)
+    return visual.run(args.run_dir, spec, ffmpeg=args.ffmpeg, scanner=scanner, ocr_identity=identity)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m engine.dubflow.docu")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -46,6 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         speak.add_argument(f"--{name}", type=Path, required=True)
     speak.add_argument("--voice", required=True)
     speak.add_argument("--speed", type=float, default=1.0)
+    visuals = commands.add_parser("plan", help="cut the sources into the visual plan the rough cut follows")
+    for name in ("run-dir", "app-root", "model-root", "ffmpeg"):
+        visuals.add_argument(f"--{name}", type=Path, required=True)
+    visuals.add_argument("--no-ocr", action="store_true", help="skip the caption scan")
     args = parser.parse_args(argv)
     try:
         if args.command == "context":
@@ -53,8 +75,8 @@ def main(argv: list[str] | None = None) -> int:
             spec = load_spec(args.spec)
             sources = context.build_all(run_dir, spec, lambda path: probe_duration_ms(args.ffprobe, path))
             result: dict[str, object] = {"state": "COMPLETED", "message": "", "sources": sources}
-        elif args.command == "narrate":
-            result = _narrate(args)
+        elif args.command in ("narrate", "plan"):
+            result = _narrate(args) if args.command == "narrate" else _plan(args)
             print(json.dumps(result, ensure_ascii=True))
             return 0 if result.get("state") == "COMPLETED" else 1
         else:
