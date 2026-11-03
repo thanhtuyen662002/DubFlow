@@ -89,6 +89,10 @@ Mở **Tổng hợp** sau **Video bán hàng**, chọn 2–30 video đã xong tr
 
 Chọn giọng, tốc độ và nhạc tùy ý rồi bấm **Tạo video tổng hợp**. Nhạc chỉ phát dưới lời dẫn; các clip giữ âm thanh đã lồng tiếng. Kết quả 1920×1080 gồm `compilation.mp4`, `chapters.txt` và `description.txt` (chương + nguồn đã lưu), trong `DubFlow Output/Tong hop - <tiêu đề>/run-<id>`. Có thể hủy, mở video/thư mục và **Sao chép mô tả** khi hoàn tất. Một phần bị lỗi sẽ dừng toàn bộ bản tổng hợp và báo rõ phần đó. Xem [ADR-0046](docs/adr/ADR-0046-compilation.md).
 
+### Phim tài liệu (đang phát triển)
+
+Mở **Phim tài liệu** sau **Tổng hợp** để soạn một phim tài liệu tiếng Anh từ 2–5 nguồn tiếng Trung cùng chủ đề: video đã xong trong hàng đợi (dùng lời gốc và video gốc, không dùng bản đã lồng tiếng) hoặc một video kèm phụ đề `.srt`. DubFlow tách các số liệu trong lời gốc và tự quy đổi sang đơn vị Mỹ/USD kèm phép so sánh quen thuộc (tòa Empire State, sân bóng bầu dục, Boeing 747…). AI đã lưu trong **Cài đặt AI** viết kịch bản 4 hồi (Mở đầu, Vấn đề, Giải pháp kỹ thuật, Đánh giá), mỗi cảnh ghi rõ đoạn video nguồn. Số liệu không khớp nguồn hay bảng quy đổi được đánh dấu **Cần kiểm tra**, không bị xóa. Dự án nằm trong `DubFlow Output/Phim tai lieu - <tên>/run-<id>`. Lời đọc, dựng hình và trình chỉnh sửa sẽ có ở các bước sau. Xem [ADR-0049](docs/adr/ADR-0049-documentary.md).
+
 ### Gợi ý tiêu đề & hashtag khi đăng lại
 Ở video đã xong, điền mục **Nguồn & quyền** để lưu tác giả, nền tảng, link nguồn, quyền sử dụng và ghi chú, rồi bấm **Lưu**. Video tải từ link được điền sẵn link và nền tảng khi chưa có thông tin đã lưu. Thông tin nằm trong `source_credit.json` cạnh video kết quả; link nguồn không tự xác nhận quyền sử dụng.
 
