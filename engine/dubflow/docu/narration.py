@@ -20,7 +20,7 @@ import wave
 
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
 from .project import DocuError, work_dir, write_json
-from .script import CHAPTERS
+from .script import CHAPTERS, script_sha256
 
 SENTENCE_PAUSE = 0.4
 SCENE_PAUSE = 0.8
@@ -121,13 +121,6 @@ def plan(script: dict[str, Any]) -> list[Piece]:
     if not pieces:
         raise DocuError("Kịch bản chưa có lời đọc")
     return pieces
-
-
-def script_sha256(script: dict[str, Any]) -> str:
-    """The spoken content only: flags and tags do not make a narration stale."""
-    spoken = [[chapter.get("chapter_type"), [[scene.get("scene_id"), scene.get("narration_text")] for scene in chapter.get("scenes", [])]]
-              for chapter in script.get("chapters", [])]
-    return hashlib.sha256(json.dumps(spoken, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _pcm(samples: Iterable[float]) -> bytes:

@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 import unittest
 import wave
 
-from engine.dubflow.docu import narration, units
+from engine.dubflow.docu import narration, script as docu_script, units
 from engine.dubflow.docu.project import DocuError
 from engine.dubflow.tts import kokoro
 
@@ -74,9 +74,9 @@ class SentenceTests(unittest.TestCase):
         value = script()
         flagged = json.loads(json.dumps(value))
         flagged["chapters"][0]["scenes"][0]["needs_review"] = True
-        self.assertEqual(narration.script_sha256(value), narration.script_sha256(flagged))
+        self.assertEqual(docu_script.script_sha256(value), docu_script.script_sha256(flagged))
         flagged["chapters"][0]["scenes"][0]["narration_text"] = "Changed."
-        self.assertNotEqual(narration.script_sha256(value), narration.script_sha256(flagged))
+        self.assertNotEqual(docu_script.script_sha256(value), docu_script.script_sha256(flagged))
 
     def test_captions_are_balanced_two_line_cues(self):
         text = "Hidden deep within a seismic fault line, engineers poured 280 million cubic feet of concrete."
@@ -134,7 +134,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(result["state"], "COMPLETED", result)
             self.assertTrue(voices[0].closed)
             timeline = json.loads((run_dir / "master_audio_timeline.json").read_text(encoding="utf-8"))
-            self.assertEqual(timeline["script_sha256"], narration.script_sha256(script()))
+            self.assertEqual(timeline["script_sha256"], docu_script.script_sha256(script()))
             self.assertEqual([s["scene_id"] for s in timeline["scenes"]], ["sc_001", "sc_003", "sc_004"])
             with wave.open(str(run_dir / "narration.wav"), "rb") as handle:
                 self.assertEqual(handle.getframerate(), narration.OUTPUT_RATE)

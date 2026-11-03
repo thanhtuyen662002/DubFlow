@@ -186,6 +186,34 @@ const previewDocuProject: PreviewDocuProject = {
     ] },
 };
 const docuProjects = new Map<string, PreviewDocuProject>([[PREVIEW_DOCU_DIR, previewDocuProject]]);
+/** Simulated narration per project: a run finishes after a few polls. */
+const docuNarration = new Map<string, { polls: number; total: number; script: string; cancelled: boolean } | null>();
+const previewDocuHash = (script: unknown): string => {
+  const spoken = JSON.stringify(((script as { chapters?: Array<{ scenes?: Array<{ scene_id?: string; narration_text?: string }> }> })?.chapters ?? [])
+    .map(chapter => (chapter.scenes ?? []).map(scene => [scene.scene_id, scene.narration_text])));
+  let hash = 0;
+  for (const char of spoken) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return hash.toString(16).padStart(64, "0");
+};
+function previewNarration(dir: string): Record<string, unknown> {
+  const run = docuNarration.get(dir);
+  if (!run) return { audio: null, timeline: null, status: null };
+  if (run.cancelled) return { audio: null, timeline: null, status: { state: "CANCELLED", done: 0, total: run.total, message: "Đã hủy tạo lời đọc" } };
+  run.polls += 1;
+  const done = Math.min(run.total, run.polls * 2);
+  if (done < run.total) return { audio: null, timeline: null, status: { state: "RUNNING", done, total: run.total, message: `Đang đọc câu ${done}/${run.total}` } };
+  const project = docuProjects.get(dir)!;
+  const scenes = ((project.script?.chapters ?? []) as Array<{ chapter_type: string; scenes: Array<{ scene_id: string; narration_text: string }> }>)
+    .flatMap(chapter => chapter.scenes.map(scene => ({ ...scene, chapter_type: chapter.chapter_type })));
+  let at = 0;
+  const timed = scenes.map(scene => {
+    const seconds = Math.max(2, scene.narration_text.split(/\s+/).length * 0.4), start = at;
+    at += seconds + 0.8;
+    return { scene_id: scene.scene_id, chapter_type: scene.chapter_type, start, end: start + seconds, slot_end: at, exact_duration_ms: Math.round(seconds * 1000) };
+  });
+  return { audio: "D:\\Documentary\\narration.wav", status: { state: "COMPLETED", done: run.total, total: run.total, message: "Đã tạo lời đọc" },
+    timeline: { script_sha256: run.script, voice_id: "am_michael", speed: 1, duration: at, scenes: timed } };
+}
 const shorts = new Map<string, { started: number; cancelled: boolean; items: Array<{ title: string }> }>();
 const reframes = new Map<string, { started: number; cancelled: boolean }>();
 /** Edit drafts and exports per finished video (Cắt ghép, Chèn). */
@@ -265,7 +293,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_open": {
       const project = docuProjects.get(String(args.dir));
       if (!project) throw new Error("Không tìm thấy dự án phim tài liệu");
-      return JSON.parse(JSON.stringify({ dir: project.dir, spec: project.spec, contexts: project.contexts, script: project.script })) as T;
+      return JSON.parse(JSON.stringify({ dir: project.dir, spec: project.spec, contexts: project.contexts, script: project.script, narration: previewNarration(project.dir) })) as T;
     }
     case "docu_create": {
       const request = args.request as { title: string; topic: string; targetMinutes: number; cinematicFramingPreset: string; burnEndCredits: boolean; sources: Array<Record<string, string>> };
@@ -290,9 +318,22 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
         scene.needs_review = numbers.some(number => !acknowledged.includes(number));
         if (!scene.needs_review) scene.review_notes = [];
       }
+      script.script_sha256 = previewDocuHash(script);
       project.script = script;
       return script as T;
     }
+    case "docu_voices": return { defaultVoiceId: "am_michael", voices: [
+      { voiceId: "am_michael", name: "Michael", gender: "Nam", accent: "Mỹ", description: "trầm ấm, hợp phim tài liệu" },
+      { voiceId: "af_heart", name: "Heart", gender: "Nữ", accent: "Mỹ", description: "tự nhiên, ấm" },
+      { voiceId: "bm_george", name: "George", gender: "Nam", accent: "Anh", description: "giọng Anh trang trọng" }] } as T;
+    case "docu_narrate": {
+      const project = docuProjects.get(String(args.dir));
+      if (!project?.script) throw new Error("Hãy viết và lưu kịch bản trước khi tạo lời đọc");
+      docuNarration.set(project.dir, { polls: 0, total: 8, script: String(project.script.script_sha256 ?? ""), cancelled: false });
+      return undefined as T;
+    }
+    case "docu_narration_status": return previewNarration(String(args.dir)) as T;
+    case "docu_narration_cancel": { const run = docuNarration.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_pick_file": return (args.kind === "video" ? "D:\\Documentary\\local-source.mp4" : "D:\\Documentary\\local-source.srt") as T;
     case "edit_project_load": {
       const path = String(args.outputPath);

@@ -6,6 +6,7 @@ benchmark table do not explain marks its scene ``needs_review`` for the user.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -183,9 +184,19 @@ def check(draft: Any, spec: Spec, contexts: dict[str, dict[str, Any]]) -> dict[s
         notes.append(f"Đã bỏ {dropped_refs} đoạn nguồn không hợp lệ hoặc ngoài thời lượng video")
     if not total:
         raise DocuError("Kịch bản chưa có cảnh nào có lời đọc")
-    return {"schema_version": 1, "project_title": _text(draft.get("project_title"), 100) or spec.title,
-            "target_Coordinates_3D": _coordinates(draft.get("target_Coordinates_3D")), "chapters": chapters,
-            "review_notes": notes}
+    result = {"schema_version": 1, "project_title": _text(draft.get("project_title"), 100) or spec.title,
+              "target_Coordinates_3D": _coordinates(draft.get("target_Coordinates_3D")), "chapters": chapters,
+              "review_notes": notes}
+    # The narration's timeline carries the same hash; a difference means it is out of date.
+    result["script_sha256"] = script_sha256(result)
+    return result
+
+
+def script_sha256(script: dict[str, Any]) -> str:
+    """The spoken content only: flags and tags do not make a narration stale."""
+    spoken = [[chapter.get("chapter_type"), [[scene.get("scene_id"), scene.get("narration_text")] for scene in chapter.get("scenes", [])]]
+              for chapter in script.get("chapters", [])]
+    return hashlib.sha256(json.dumps(spoken, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def load_draft(path: Path) -> Any:

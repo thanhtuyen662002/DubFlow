@@ -136,3 +136,21 @@ Phase 2 reads `spec.json`, the source contexts and `documentary_script.json`
 without needing the AI. The checker can be rerun after every edit on the page.
 No new runtime dependency is added: the engine uses only the standard library and
 the bundled ffprobe.
+
+## Phase 2a: master narration (Issue #442)
+
+- **The voice.** The narrator is Kokoro-82M v1.0 (fp32), run through the sherpa-onnx 1.13.8 already in the runtime, so no new Python dependency is added.
+  - `models/manifests/production-kokoro-en-v1.json` pins 15 files (367 MB): the model, the voice table, the US/UK lexicons and an English espeak-ng data subset. Every file is downloaded on first use and hash-checked by `ensure_model_profile` (licensing: `docs/licenses/kokoro.md`).
+  - Nine US and UK voices are offered; the default is `am_michael`.
+  - On the reference machine the fp32 model runs at about 0.4× real time on 4 CPU threads, against 0.95× for int8.
+- **The narration job.** `python -B -m engine.dubflow.docu narrate` reads the saved `documentary_script.json` and speaks one sentence per request. Over-long sentences are split at clause marks.
+  - **Pauses:** 0.4 s between sentences, 0.8 s between scenes, 1.6 s between chapters (longer so the music can rise there in phase 2b).
+  - **Cache:** each piece is cached under `.dubflow-work/narration/cache`, keyed by its text, voice, speed and the voice manifest. Reruns and edits only speak what changed. Cancelling stops between sentences.
+  - **Loudness:** a two-pass `loudnorm` brings the track to -16 LUFS integrated with a -1.5 dBTP ceiling, in linear mode, so no time moves.
+  - **Outputs:**
+    - `narration.wav`: 48 kHz mono PCM.
+    - `captions_en.srt`: balanced cues of two 42-character lines at most.
+    - `master_audio_timeline.json`: every chapter, scene and sentence with `start` and `end`. Scenes also carry `slot_end` (the next scene's start, used for the visuals), `exact_duration_ms`, the voice, the speed, the measured loudness and `script_sha256`.
+- **Staleness.** `check` now stamps `documentary_script.json` with `script_sha256`, a hash of the spoken words only. The page compares it with the timeline's hash and shows when a narration no longer matches the script.
+- **Host.** It runs the job in the background (`docu_narrate`, `docu_narration_status`, `docu_narration_cancel`), refuses a second run while one is active, and turns an abandoned RUNNING status into FAILED or CANCELLED.
+- **Word timing deferred.** Word-level timing for on-screen numbers moves to phase 2b, where the callouts are placed. Sentence times already come from exact sample counts.
