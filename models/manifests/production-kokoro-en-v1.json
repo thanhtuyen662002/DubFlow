@@ -1,0 +1,220 @@
+{
+ "schema_version": 1,
+ "profile_id": "dubflow-kokoro-en-v1_0-fp32",
+ "backend": "sherpa-onnx-kokoro",
+ "runtime_versions": {
+  "sherpa-onnx": "1.13.8"
+ },
+ "model_id": "kokoro-82m-v1_0",
+ "upstream_revision": "f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b",
+ "sample_rate": 24000,
+ "license_id": "Apache-2.0",
+ "data_license_id": "GPL-3.0-or-later",
+ "distribution": "download-on-first-use",
+ "attribution": "Kokoro-82M v1.0 by hexgrad (Apache-2.0), sherpa-onnx export by k2-fsa; English espeak-ng-data subset (GPL-3.0-or-later).",
+ "pack": "tts/packs/kokoro-en-v1_0",
+ "inference": {
+  "threads": 4,
+  "provider": "cpu"
+ },
+ "voices": [
+  {
+   "voice_id": "am_michael",
+   "speaker_id": 16,
+   "name": "Michael",
+   "gender": "Nam",
+   "accent": "Mỹ",
+   "description": "trầm ấm, hợp phim tài liệu",
+   "lexicon": "lexicon-us-en.txt",
+   "lang": "en-us"
+  },
+  {
+   "voice_id": "am_adam",
+   "speaker_id": 11,
+   "name": "Adam",
+   "gender": "Nam",
+   "accent": "Mỹ",
+   "description": "rõ, trung tính",
+   "lexicon": "lexicon-us-en.txt",
+   "lang": "en-us"
+  },
+  {
+   "voice_id": "am_onyx",
+   "speaker_id": 17,
+   "name": "Onyx",
+   "gender": "Nam",
+   "accent": "Mỹ",
+   "description": "trầm, chậm",
+   "lexicon": "lexicon-us-en.txt",
+   "lang": "en-us"
+  },
+  {
+   "voice_id": "am_fenrir",
+   "speaker_id": 14,
+   "name": "Fenrir",
+   "gender": "Nam",
+   "accent": "Mỹ",
+   "description": "mạnh, kịch tính",
+   "lexicon": "lexicon-us-en.txt",
+   "lang": "en-us"
+  },
+  {
+   "voice_id": "af_heart",
+   "speaker_id": 3,
+   "name": "Heart",
+   "gender": "Nữ",
+   "accent": "Mỹ",
+   "description": "tự nhiên, ấm",
+   "lexicon": "lexicon-us-en.txt",
+   "lang": "en-us"
+  },
+  {
+   "voice_id": "af_bella",
+   "speaker_id": 2,
+   "name": "Bella",
+   "gender": "Nữ",
+   "accent": "Mỹ",
+   "description": "sáng, rõ",
+   "lexicon": "lexicon-us-en.txt",
+   "lang": "en-us"
+  },
+  {
+   "voice_id": "bm_george",
+   "speaker_id": 26,
+   "name": "George",
+   "gender": "Nam",
+   "accent": "Anh",
+   "description": "giọng Anh trang trọng",
+   "lexicon": "lexicon-gb-en.txt",
+   "lang": "en-gb"
+  },
+  {
+   "voice_id": "bm_lewis",
+   "speaker_id": 27,
+   "name": "Lewis",
+   "gender": "Nam",
+   "accent": "Anh",
+   "description": "giọng Anh trầm",
+   "lexicon": "lexicon-gb-en.txt",
+   "lang": "en-gb"
+  },
+  {
+   "voice_id": "bf_emma",
+   "speaker_id": 21,
+   "name": "Emma",
+   "gender": "Nữ",
+   "accent": "Anh",
+   "description": "giọng Anh nhẹ nhàng",
+   "lexicon": "lexicon-gb-en.txt",
+   "lang": "en-gb"
+  }
+ ],
+ "default_voice_id": "am_michael",
+ "artifacts": [
+  {
+   "id": "kokoro-0",
+   "path": "tts/packs/kokoro-en-v1_0/model.onnx",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/model.onnx",
+   "sha256": "b40f62b166ac8164b0627ef48a0b358eda0985e272fb03ef5252e7206305da11",
+   "size_bytes": 325560556
+  },
+  {
+   "id": "kokoro-1",
+   "path": "tts/packs/kokoro-en-v1_0/voices.bin",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/voices.bin",
+   "sha256": "1c5a5b983d3d50d8586d437a51f3faa2da7919ce76a013c081e65671a3447c29",
+   "size_bytes": 28200960
+  },
+  {
+   "id": "kokoro-2",
+   "path": "tts/packs/kokoro-en-v1_0/tokens.txt",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/tokens.txt",
+   "sha256": "6ebb6bb288f20f3ae8d004d3c2ca27697da27c037d75e81a60e2a6a663f95425",
+   "size_bytes": 687
+  },
+  {
+   "id": "kokoro-3",
+   "path": "tts/packs/kokoro-en-v1_0/lexicon-us-en.txt",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/lexicon-us-en.txt",
+   "sha256": "7daaab53a181be9885b853a8582bf1838186317e5dadacbcef9c426d6fa0da14",
+   "size_bytes": 5956885
+  },
+  {
+   "id": "kokoro-4",
+   "path": "tts/packs/kokoro-en-v1_0/lexicon-gb-en.txt",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/lexicon-gb-en.txt",
+   "sha256": "c4cbb37316f62210dff52718a7afcaae24f50c032cc75ab47ae67b831d1049e7",
+   "size_bytes": 6366635
+  },
+  {
+   "id": "kokoro-5",
+   "path": "tts/packs/kokoro-en-v1_0/LICENSE",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/LICENSE",
+   "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+   "size_bytes": 11358
+  },
+  {
+   "id": "kokoro-6",
+   "path": "tts/packs/kokoro-en-v1_0/espeak-ng-data/intonations",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/espeak-ng-data/intonations",
+   "sha256": "3f8af65fd3eda9759a10f021d61361c120871f463515229c925995c7f90918cc",
+   "size_bytes": 2040
+  },
+  {
+   "id": "kokoro-7",
+   "path": "tts/packs/kokoro-en-v1_0/espeak-ng-data/phondata",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/espeak-ng-data/phondata",
+   "sha256": "4e0288957874029a8c3c9f41a8f517ad4bf18127046decbdd4b9d1d6807ce3a3",
+   "size_bytes": 550424
+  },
+  {
+   "id": "kokoro-8",
+   "path": "tts/packs/kokoro-en-v1_0/espeak-ng-data/phondata-manifest",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/espeak-ng-data/phondata-manifest",
+   "sha256": "7b387af0702c7cf0b61f0bead68feded0bd8e1620729b0b252e76acbc30d3813",
+   "size_bytes": 21821
+  },
+  {
+   "id": "kokoro-9",
+   "path": "tts/packs/kokoro-en-v1_0/espeak-ng-data/phonindex",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/espeak-ng-data/phonindex",
+   "sha256": "3ca7b8fa3b42624e4b0f152707e7a39245fce569aa99ea47c055d9e622fcf0c4",
+   "size_bytes": 39074
+  },
+  {
+   "id": "kokoro-10",
+   "path": "tts/packs/kokoro-en-v1_0/espeak-ng-data/phontab",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/espeak-ng-data/phontab",
+   "sha256": "886f3fa402cb0ba73d483aa8ad000af47a6b7cc06293c75a97913fba68a530f6",
+   "size_bytes": 55796
+  },
+  {
+   "id": "kokoro-11",
+   "path": "tts/packs/kokoro-en-v1_0/espeak-ng-data/en_dict",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/espeak-ng-data/en_dict",
+   "sha256": "71bd330ba8a2e3e8076e631508208ef49449d6147c17b7bd2b4b1e1468292e35",
+   "size_bytes": 166944
+  },
+  {
+   "id": "kokoro-12",
+   "path": "tts/packs/kokoro-en-v1_0/espeak-ng-data/lang/gmw/en",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/espeak-ng-data/lang/gmw/en",
+   "sha256": "4605d5330801de3641c6e366d15f129ea1f5ffbce8722642aba01ace07ab9c83",
+   "size_bytes": 140
+  },
+  {
+   "id": "kokoro-13",
+   "path": "tts/packs/kokoro-en-v1_0/espeak-ng-data/lang/gmw/en-US",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/espeak-ng-data/lang/gmw/en-US",
+   "sha256": "41534c2a22df5dd4f1052ff9e1a33a3ea7bff5a26b5c02bdad5ba8ddb7524704",
+   "size_bytes": 257
+  },
+  {
+   "id": "kokoro-14",
+   "path": "tts/packs/kokoro-en-v1_0/espeak-ng-data/lang/gmw/en-GB-x-rp",
+   "url": "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b/espeak-ng-data/lang/gmw/en-GB-x-rp",
+   "sha256": "d0625af7f58561b1b8cf96fd7f93eee6553bcb3eadb9020ae0757bf96e5115e5",
+   "size_bytes": 249
+  }
+ ]
+}

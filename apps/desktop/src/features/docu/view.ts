@@ -2,8 +2,9 @@ import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
-  acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes, hasNarration,
-  moveItem, parseOpen, parseRuns, renumberScenes, sourceTitle, wordCount,
+  NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
+  hasNarration, moveItem, narrationStale, parseNarration, parseOpen, parseRuns, parseVoices, renumberScenes, sourceTitle, wordCount,
+  type NarrationInfo, type NarrationVoice,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
@@ -74,6 +75,20 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
             <p id="docu-ai-state" class="discover-state" role="status"></p>
             <button id="docu-check" class="btn block" type="button">Kiểm tra lại</button>
             <dl id="docu-summary" class="docu-summary"></dl>
+            <section class="docu-narration" aria-labelledby="docu-narration-title">
+              <h3 id="docu-narration-title">Lời đọc tiếng Anh</h3>
+              <label>Giọng<select id="docu-voice"></select></label>
+              <label>Tốc độ<select id="docu-speed">${NARRATION_SPEEDS.map(speed => `<option value="${speed}" ${speed === 1 ? "selected" : ""}>${speed === 1 ? "Bình thường" : `${speed}×`}</option>`).join("")}</select></label>
+              <button id="docu-narrate" class="btn primary block" type="button">Tạo lời đọc</button>
+              <div id="docu-narration-progress" class="docu-narration-progress" hidden>
+                <div class="bar busy-bar"><span id="docu-narration-bar"></span></div>
+                <button id="docu-narration-cancel" class="btn" type="button">Hủy</button>
+              </div>
+              <p id="docu-narration-state" class="hint" role="status"></p>
+              <p id="docu-narration-stale" class="docu-stale" hidden>Kịch bản đã sửa sau lần tạo lời đọc này; hãy tạo lại để khớp.</p>
+              <audio id="docu-narration-audio" controls preload="metadata" hidden></audio>
+              <p class="hint">Lần đầu DubFlow tải giọng đọc tiếng Anh (khoảng 370 MB). Lời đọc được chuẩn hóa ở -16 LUFS; câu nào không đổi sẽ không phải đọc lại.</p>
+            </section>
             <ul id="docu-script-notes" class="docu-script-notes"></ul>
           </div>
         </div>
@@ -88,6 +103,10 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   let currentScript: DocuScript | null = null;
   let sourceForms: SourceForm[] = [];
   let shown = false;
+  let voices: NarrationVoice[] = [];
+  let narration: NarrationInfo = { audio: null, timeline: null, status: null };
+  let narrationTimer: ReturnType<typeof setInterval> | undefined;
+  let narrationAudio: string | null = null;
   let checkTimer: ReturnType<typeof setTimeout> | undefined;
   let sourceVideoUrl: string | null = null;
   let stoppingAt: number | null = null;
@@ -157,7 +176,9 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const seconds = scenes.reduce((sum, scene) => sum + estimatedSeconds(scene.narration_text), 0);
     const target = selected.spec.target_minutes * 60;
     const reviewCount = scenes.filter(scene => scene.needs_review).length;
-    $("#docu-summary").innerHTML = `<dt>Cảnh</dt><dd>${scenes.length}</dd><dt>Từ</dt><dd>${words}</dd><dt>Thời lượng ước tính</dt><dd>${clock(seconds)} / ${clock(target)}</dd><dt>Cần kiểm tra</dt><dd>${reviewCount}</dd>`;
+    const spoken = narration.timeline && !narrationStale(script, narration.timeline)
+      ? `<dt>Lời đọc thật</dt><dd>${clock(narration.timeline.duration)} / ${clock(target)}</dd>` : "";
+    $("#docu-summary").innerHTML = `<dt>Cảnh</dt><dd>${scenes.length}</dd><dt>Từ</dt><dd>${words}</dd><dt>Thời lượng ước tính</dt><dd>${clock(seconds)} / ${clock(target)}</dd>${spoken}<dt>Cần kiểm tra</dt><dd>${reviewCount}</dd>`;
     $("#docu-script-notes").innerHTML = (script.review_notes ?? []).map(note => `<li>${escapeHtml(note)}</li>`).join("");
   }
 
@@ -201,7 +222,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function sceneCard(scene: DocuScene, chapterIndex: number, sceneIndex: number): string {
     const graphic = scene.on_screen_graphic;
     return `<article class="docu-scene" data-scene-card="${escapeHtml(scene.scene_id)}" data-chapter="${chapterIndex}" data-scene="${sceneIndex}">
-      <header><strong>${escapeHtml(scene.scene_id)}</strong><span class="docu-scene-time">${estimatedSeconds(scene.narration_text)} giây</span><button type="button" class="quiet-btn" data-add-scene="${chapterIndex}" data-after="${sceneIndex}">Thêm sau</button><button type="button" class="quiet-btn" data-delete-scene="${chapterIndex}" data-scene="${sceneIndex}">Xóa cảnh</button></header>
+      <header><strong>${escapeHtml(scene.scene_id)}</strong><span class="docu-scene-time">${sceneTime(scene)}</span><button type="button" class="quiet-btn" data-add-scene="${chapterIndex}" data-after="${sceneIndex}">Thêm sau</button><button type="button" class="quiet-btn" data-delete-scene="${chapterIndex}" data-scene="${sceneIndex}">Xóa cảnh</button></header>
       <label>Lời dẫn<textarea data-field="narration_text" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" maxlength="${MAX_NARRATION}" rows="4">${escapeHtml(scene.narration_text)}</textarea></label>
       <p class="docu-word-count"><span>${wordCount(scene.narration_text)} từ</span><span>Ước tính ${estimatedSeconds(scene.narration_text)} giây</span></p>
       <div class="docu-refs" aria-label="Nguồn dẫn">${refsHtml(scene, chapterIndex, sceneIndex)}</div>
@@ -212,12 +233,82 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     </article>`;
   }
 
+  /** The narrated length when the narration matches the script, else the estimate. */
+  function sceneTime(scene: DocuScene): string {
+    const timed = !narrationStale(currentScript, narration.timeline) ? narration.timeline?.scenes.find(item => item.scene_id === scene.scene_id) : undefined;
+    return timed ? `${(timed.exact_duration_ms / 1000).toFixed(1).replace(".", ",")} giây đã đọc` : `${estimatedSeconds(scene.narration_text)} giây (ước tính)`;
+  }
+
+  function renderNarration(): void {
+    const info = narration, running = info.status?.state === "RUNNING";
+    $<HTMLButtonElement>("#docu-narrate").disabled = running || !selected || !voices.length;
+    $<HTMLButtonElement>("#docu-narrate").textContent = info.timeline ? "Tạo lại lời đọc" : "Tạo lời đọc";
+    $("#docu-narration-progress").hidden = !running;
+    const total = info.status?.total ?? 0;
+    $("#docu-narration-bar").style.width = `${running && total ? Math.round(100 * (info.status!.done / total)) : 0}%`;
+    const failed = info.status && ["FAILED", "CANCELLED"].includes(info.status.state);
+    $("#docu-narration-state").textContent = running || failed ? info.status!.message
+      : info.timeline ? `Lời đọc ${clock(info.timeline.duration)} · giọng ${voices.find(voice => voice.voiceId === info.timeline!.voice_id)?.name ?? info.timeline.voice_id}` : "";
+    $("#docu-narration-stale").hidden = !narrationStale(currentScript, info.timeline);
+    const audio = $<HTMLAudioElement>("#docu-narration-audio");
+    audio.hidden = !info.audio;
+    if (info.audio && info.audio !== narrationAudio) {
+      narrationAudio = info.audio;
+      // A new take replaces the file in place: a fresh URL makes the player reload it.
+      void settings.mediaUrl?.(info.audio).then(url => { if (url) audio.src = `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`; });
+    } else if (!info.audio) { narrationAudio = null; audio.removeAttribute("src"); }
+    for (const card of editor.querySelectorAll<HTMLElement>("[data-scene-card]")) {
+      const scene = sceneAt(Number(card.dataset.chapter), Number(card.dataset.scene));
+      const time = card.querySelector(".docu-scene-time");
+      if (scene && time) time.textContent = sceneTime(scene);
+    }
+    updateSummary();
+  }
+
+  async function loadVoices(): Promise<void> {
+    if (voices.length) return;
+    try {
+      const parsed = parseVoices(await invoke("docu_voices"));
+      voices = parsed.voices;
+      $("#docu-voice").innerHTML = voices.map(voice => `<option value="${escapeHtml(voice.voiceId)}" ${voice.voiceId === parsed.defaultVoiceId ? "selected" : ""}>${escapeHtml(voice.name)} · ${escapeHtml(voice.gender)}, giọng ${escapeHtml(voice.accent)} · ${escapeHtml(voice.description)}</option>`).join("");
+    } catch (error) { $("#docu-narration-state").textContent = error instanceof Error ? error.message : String(error); }
+    renderNarration();
+  }
+
+  function followNarration(): void {
+    clearInterval(narrationTimer);
+    if (narration.status?.state !== "RUNNING" || !selected) return;
+    const dir = selected.dir;
+    narrationTimer = setInterval(async () => {
+      if (selected?.dir !== dir) { clearInterval(narrationTimer); return; }
+      try {
+        narration = parseNarration(await invoke("docu_narration_status", { dir }));
+        if (narration.status?.state !== "RUNNING") clearInterval(narrationTimer);
+        renderNarration();
+      } catch { clearInterval(narrationTimer); }
+    }, 1000);
+  }
+
+  async function narrate(): Promise<void> {
+    if (!selected || !currentScript) return;
+    if (!hasNarration(currentScript.chapters)) { $("#docu-narration-state").textContent = "Kịch bản chưa có lời đọc."; return; }
+    // The engine reads the saved script, so save the edits first.
+    await checkScript();
+    if (!currentScript.script_sha256) return;
+    try {
+      await invoke("docu_narrate", { dir: selected.dir, voice: $<HTMLSelectElement>("#docu-voice").value, speed: Number($<HTMLSelectElement>("#docu-speed").value) });
+      narration = parseNarration(await invoke("docu_narration_status", { dir: selected.dir }));
+      renderNarration(); followNarration();
+    } catch (error) { $("#docu-narration-state").textContent = error instanceof Error ? error.message : String(error); }
+  }
+
   function updateSceneMetrics(text: HTMLTextAreaElement): void {
     const card = text.closest<HTMLElement>("[data-scene-card]");
     if (!card) return;
     const words = wordCount(text.value), seconds = estimatedSeconds(text.value);
     card.querySelector(".docu-word-count")!.innerHTML = `<span>${words} từ</span><span>Ước tính ${seconds} giây</span>`;
-    card.querySelector(".docu-scene-time")!.textContent = `${seconds} giây`;
+    const scene = sceneAt(Number(card.dataset.chapter), Number(card.dataset.scene));
+    if (scene) card.querySelector(".docu-scene-time")!.textContent = sceneTime(scene);
   }
 
   function sceneAt(chapterIndex: number, sceneIndex: number): DocuScene | null {
@@ -241,6 +332,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       if (!Array.isArray(checked?.chapters)) throw new Error("Bộ kiểm tra không trả về kịch bản hợp lệ.");
       if (script !== currentScript) return;
       applyFlags(script.chapters, checked.chapters);
+      script.script_sha256 = typeof checked.script_sha256 === "string" ? checked.script_sha256 : undefined;
       script.review_notes = Array.isArray(checked.review_notes) ? checked.review_notes : [];
       // Badges only: the text being typed in keeps its caret.
       for (const card of editor.querySelectorAll<HTMLElement>("[data-scene-card]")) {
@@ -249,7 +341,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
         card.querySelector(".docu-review")?.remove();
         if (scene) card.insertAdjacentHTML("beforeend", reviewHtml(scene, chapterIndex, sceneIndex));
       }
-      updateSummary();
+      renderNarration();
       $("#docu-ai-state").textContent = "Đã kiểm tra và lưu kịch bản.";
     } catch (error) {
       $("#docu-ai-state").textContent = error instanceof Error ? error.message : String(error);
@@ -272,9 +364,9 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       await refreshRuns();
       const result = parseOpen(await invoke("docu_open", { dir: created.dir }));
       if (!result) throw new Error("Dự án mới chưa mở được.");
-      selected = result; currentScript = result.script ?? emptyScript(result.spec.title);
+      selected = result; currentScript = result.script ?? emptyScript(result.spec.title); narration = result.narration;
       $("#docu-project-name").textContent = result.spec.title;
-      setTab("script"); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo();
+      setTab("script"); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration();
       $("#docu-setup-state").textContent = "Đã tạo dự án và phân tích nguồn.";
     } catch (error) {
       $("#docu-setup-state").textContent = error instanceof Error ? error.message : String(error);
@@ -294,7 +386,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
         targetMinutes: selected.spec.target_minutes }, selected.contexts, undefined, (chapter, index, total) => {
         $("#docu-ai-state").textContent = `Đang viết phần ${index}/${total}: ${CHAPTER_NAMES[chapter]}…`;
       });
-      renderEditor();
+      renderEditor(); renderNarration();
       await checkScript();
     } catch (error) {
       $("#docu-ai-state").textContent = error instanceof Error ? error.message : String(error);
@@ -310,19 +402,19 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     try {
       const opened = parseOpen(await invoke("docu_open", { dir }));
       if (!opened) throw new Error("Dữ liệu dự án không hợp lệ.");
-      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title);
+      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration;
       $("#docu-project-name").textContent = opened.spec.title;
-      renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); setTab("script");
+      renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration(); setTab("script");
     } catch (error) { $("#docu-setup-state").textContent = error instanceof Error ? error.message : String(error); }
   }
 
   function newProject(): void {
-    selected = null; currentScript = null; sourceForms = [];
+    selected = null; currentScript = null; sourceForms = []; narration = { audio: null, timeline: null, status: null }; clearInterval(narrationTimer);
     $("#docu-project-name").textContent = "Tạo dự án mới";
     $("#docu-title").value = ""; $("#docu-topic").value = ""; $("#docu-minutes").value = "11";
     $("#docu-framing").value = "none"; $("#docu-credits").checked = false; $("#docu-setup-state").textContent = "";
     $("#docu-output-root").value = settings.outputRoot() ?? "%USERPROFILE%\\Videos";
-    renderSourcePicker(); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); setTab("setup");
+    renderSourcePicker(); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); setTab("setup");
   }
 
   async function addFileSource(): Promise<void> {
@@ -367,6 +459,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-create").addEventListener("click", () => void createProject());
   $("#docu-write").addEventListener("click", () => void writeAllChapters());
   $("#docu-check").addEventListener("click", () => void checkScript());
+  $("#docu-narrate").addEventListener("click", () => void narrate());
+  $("#docu-narration-cancel").addEventListener("click", () => { if (selected) void invoke("docu_narration_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-player-source").addEventListener("change", () => void setPlayerSource(($("#docu-player-source") as HTMLSelectElement).value));
   video.addEventListener("timeupdate", () => {
     if (stoppingAt !== null && video.currentTime >= stoppingAt) { video.pause(); stoppingAt = null; }
@@ -378,11 +472,11 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     if (target.dataset.addScene !== undefined) {
       const chapter = currentScript.chapters[Number(target.dataset.addScene)];
       const index = target.dataset.after === undefined ? chapter.scenes.length : Number(target.dataset.after) + 1;
-      chapter.scenes.splice(index, 0, emptyScene()); currentScript.chapters = renumberScenes(currentScript.chapters); renderEditor(); requestCheck(); return;
+      chapter.scenes.splice(index, 0, emptyScene()); currentScript.chapters = renumberScenes(currentScript.chapters); currentScript.script_sha256 = undefined; renderEditor(); renderNarration(); requestCheck(); return;
     }
     if (target.dataset.deleteScene !== undefined) {
       const chapter = currentScript.chapters[Number(target.dataset.deleteScene)];
-      chapter.scenes.splice(Number(target.dataset.scene), 1); currentScript.chapters = renumberScenes(currentScript.chapters); renderEditor(); requestCheck(); return;
+      chapter.scenes.splice(Number(target.dataset.scene), 1); currentScript.chapters = renumberScenes(currentScript.chapters); currentScript.script_sha256 = undefined; renderEditor(); renderNarration(); requestCheck(); return;
     }
     if (target.dataset.removeRef !== undefined) {
       sceneAt(Number(target.dataset.chapter), Number(target.dataset.scene))?.matched_source_refs.splice(Number(target.dataset.removeRef), 1);
@@ -400,7 +494,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const scene = sceneAt(Number(field.dataset.chapter), Number(field.dataset.scene));
     if (!scene) return;
     const name = field.dataset.field;
-    if (name === "narration_text") { scene.narration_text = field.value; updateSceneMetrics(field as HTMLTextAreaElement); updateSummary(); }
+    if (name === "narration_text") { scene.narration_text = field.value; currentScript.script_sha256 = undefined; updateSceneMetrics(field as HTMLTextAreaElement); renderNarration(); }
     else if (name === "graphic_title" || name === "graphic_value" || name === "graphic_subtext") {
       const current = scene.on_screen_graphic;
       if (current) current[name === "graphic_title" ? "title" : name === "graphic_value" ? "value" : "subtext"] = field.value;
@@ -428,7 +522,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   renderRuns();
   return {
     show() {
-      if (!shown) { shown = true; newProject(); void refreshRuns(); }
+      if (!shown) { shown = true; newProject(); void refreshRuns(); void loadVoices(); }
       renderSourcePicker(); renderProvider();
     },
   };

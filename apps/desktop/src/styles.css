@@ -1346,3 +1346,15 @@ select { color-scheme: dark; }
 .docu-mood { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--text-3); font-size: 12px; white-space: nowrap; }
 .docu-mood select { height: 28px; min-width: 0; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--canvas); color: var(--text); font: inherit; font-size: 12px; }
 .docu-graphic-fields[hidden] { display: none; }
+.docu-narration { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.docu-narration > * { min-width: 0; }
+.docu-narration h3 { font-size: 13px; }
+.docu-narration > label { display: flex; flex-direction: column; gap: 4px; color: var(--text-2); font-size: 12px; }
+.docu-narration select { width: 100%; min-width: 0; height: 34px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--canvas); color: var(--text); font: inherit; font-size: 13px; }
+.docu-narration-progress { display: flex; align-items: center; gap: 8px; }
+.docu-narration-progress[hidden] { display: none; }
+.docu-narration-progress .bar { flex: 1; }
+.docu-narration audio { width: 100%; }
+.docu-narration audio[hidden] { display: none; }
+.docu-stale { margin: 0; padding: 8px; border-radius: 7px; background: var(--warn-bg); color: var(--warn); font-size: 12px; }
+.docu-stale[hidden] { display: none; }

@@ -61,7 +61,13 @@ export type DocuScript = {
   chapters: DocuChapter[]; review_notes?: string[]; [key: string]: unknown;
 };
 export type DocuRun = { dir: string; created: number; spec: DocuSpec; script: boolean };
-export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null };
+export type NarrationVoice = { voiceId: string; name: string; gender: string; accent: string; description: string };
+export type TimelineScene = { scene_id: string; chapter_type: string; start: number; end: number; slot_end: number; exact_duration_ms: number };
+export type NarrationTimeline = { script_sha256: string; voice_id: string; speed: number; duration: number; scenes: TimelineScene[] };
+export type NarrationStatus = { state: "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED"; done: number; total: number; message: string };
+export type NarrationInfo = { audio: string | null; timeline: NarrationTimeline | null; status: NarrationStatus | null };
+export const NARRATION_SPEEDS = [0.9, 0.95, 1, 1.05, 1.1] as const;
+export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null; narration: NarrationInfo };
 export type CreateDocuResult = { dir: string; sources: Array<{ id: string; duration: number; segments: number }> };
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
@@ -243,6 +249,40 @@ export function parseRuns(value: unknown): DocuRun[] {
   }).sort((a, b) => b.created - a.created);
 }
 
+export function parseVoices(value: unknown): { voices: NarrationVoice[]; defaultVoiceId: string } {
+  const result = obj(value), voices = (Array.isArray(result?.voices) ? result.voices : []).flatMap(raw => {
+    const voice = obj(raw);
+    return voice && typeof voice.voiceId === "string" && voice.voiceId ? [{ voiceId: voice.voiceId, name: string(voice.name) || voice.voiceId,
+      gender: string(voice.gender), accent: string(voice.accent), description: string(voice.description) }] : [];
+  });
+  const fallback = voices[0]?.voiceId ?? "";
+  const preferred = string(result?.defaultVoiceId);
+  return { voices, defaultVoiceId: voices.some(voice => voice.voiceId === preferred) ? preferred : fallback };
+}
+
+export function parseNarration(value: unknown): NarrationInfo {
+  const info = obj(value), timeline = obj(info?.timeline), status = obj(info?.status);
+  const scenes = (Array.isArray(timeline?.scenes) ? timeline.scenes : []).flatMap(raw => {
+    const scene = obj(raw);
+    return scene && typeof scene.scene_id === "string" && Number.isFinite(Number(scene.start)) && Number.isFinite(Number(scene.end))
+      ? [{ scene_id: scene.scene_id, chapter_type: string(scene.chapter_type), start: Number(scene.start), end: Number(scene.end),
+        slot_end: Number(scene.slot_end) || Number(scene.end), exact_duration_ms: Number(scene.exact_duration_ms) || 0 }] : [];
+  });
+  const states = ["RUNNING", "COMPLETED", "FAILED", "CANCELLED"];
+  return {
+    audio: typeof info?.audio === "string" ? info.audio : null,
+    timeline: timeline && typeof timeline.script_sha256 === "string" ? { script_sha256: timeline.script_sha256, voice_id: string(timeline.voice_id),
+      speed: Number(timeline.speed) || 1, duration: Number(timeline.duration) || 0, scenes } : null,
+    status: status && states.includes(string(status.state)) ? { state: status.state as NarrationStatus["state"], done: Number(status.done) || 0,
+      total: Number(status.total) || 0, message: string(status.message) } : null,
+  };
+}
+
+/** A narration made from a different script (the checker stamps each saved script with the hash of its spoken words). */
+export function narrationStale(script: DocuScript | null, timeline: NarrationTimeline | null): boolean {
+  return Boolean(timeline && (!script || typeof script.script_sha256 !== "string" || script.script_sha256 !== timeline.script_sha256));
+}
+
 export function parseOpen(value: unknown): OpenDocuRun | null {
   const result = obj(value), spec = obj(result?.spec);
   if (!result || typeof result.dir !== "string" || !spec || spec.schema_version !== 1 || !Array.isArray(result.contexts)) return null;
@@ -253,7 +293,8 @@ export function parseOpen(value: unknown): OpenDocuRun | null {
   });
   const sourceIds = new Set(contexts.map(context => context.source_id));
   return { dir: result.dir, spec: spec as unknown as DocuSpec, contexts,
-    script: result.script === null || result.script === undefined ? null : normalizeScript(result.script, sourceIds) };
+    script: result.script === null || result.script === undefined ? null : normalizeScript(result.script, sourceIds),
+    narration: parseNarration(result.narration) };
 }
 
 export function sourceLines(contexts: readonly SourceContext[], charLimit = 120_000): string[] {

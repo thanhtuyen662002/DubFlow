@@ -6,7 +6,10 @@ use std::fs;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use crate::{display_path, fail, python_json, review_dir, version_root};
+use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+use crate::{control_root, display_path, fail, python_json, review_dir, version_root, CREATE_NO_WINDOW};
 
 const VIDEO_EXTENSIONS: [&str; 7] = ["mp4", "mov", "mkv", "webm", "avi", "m4v", "flv"];
 const PREFIX: &str = "Phim tai lieu - ";
@@ -14,6 +17,8 @@ const TRANSCRIPT_LIMIT: u64 = 32 * 1024 * 1024;
 const MANIFEST_LIMIT: u64 = 8 * 1024 * 1024;
 const CONTEXT_LIMIT: u64 = 16 * 1024 * 1024;
 const SCRIPT_LIMIT: u64 = 4 * 1024 * 1024;
+const KOKORO_PROFILE: &str = "app/models/manifests/production-kokoro-en-v1.json";
+const SPEEDS: (f64, f64) = (0.8, 1.2);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -250,7 +255,92 @@ pub fn docu_open(dir: String) -> Result<Value, String> {
     }
     let script_path = dir.join("documentary_script.json");
     let script = if script_path.is_file() { Some(read_json(&script_path, SCRIPT_LIMIT, "documentary_script.json vượt quá 4 MB hoặc không hợp lệ")?) } else { None };
-    Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script }))
+    Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script, "narration": narration_info(&dir) }))
+}
+
+/// The finished narration (its audio and timeline) and the last run's status, when there are any.
+fn narration_info(dir: &Path) -> Value {
+    let audio = dir.join("narration.wav");
+    let timeline = crate::product::read_small_json(&dir.join("master_audio_timeline.json"), SCRIPT_LIMIT);
+    json!({ "audio": (audio.is_file() && timeline.is_some()).then(|| display_path(&audio)), "timeline": timeline,
+        "status": crate::product::read_small_json(&dir.join(".dubflow-work/narration/status.json"), 64 * 1024) })
+}
+
+fn voice_profile(root: &Path) -> Result<Value, String> {
+    read_json(&root.join(KOKORO_PROFILE), 1024 * 1024, "Không đọc được danh sách giọng tiếng Anh")
+}
+
+/// The English narration voices of this version, and the default one.
+#[tauri::command]
+pub fn docu_voices() -> Result<Value, String> {
+    let profile = voice_profile(&version_root()?)?;
+    let voices: Vec<Value> = profile["voices"].as_array().into_iter().flatten().map(|voice| json!({
+        "voiceId": voice["voice_id"], "name": voice["name"], "gender": voice["gender"], "accent": voice["accent"], "description": voice["description"],
+    })).collect();
+    if voices.is_empty() { return Err(fail("Danh sách giọng tiếng Anh trống")); }
+    Ok(json!({ "voices": voices, "defaultVoiceId": profile["default_voice_id"] }))
+}
+
+fn narration_args(dir: &Path, root: &Path, models: &Path, voice: &str, speed: f64) -> Vec<OsString> {
+    vec!["-B".into(), "-m".into(), "engine.dubflow.docu".into(), "narrate".into(), "--run-dir".into(), dir.into(),
+        "--app-root".into(), root.join("app").into(), "--model-root".into(), models.into(),
+        "--ffmpeg".into(), root.join("runtime/media/ffmpeg.exe").into(), "--voice".into(), voice.into(), "--speed".into(), format!("{speed:.2}").into()]
+}
+
+fn write_narration_status(work: &Path, state: &str, message: &str) -> Result<(), String> {
+    fs::create_dir_all(work).map_err(|_| fail("Không tạo được thư mục lời đọc"))?;
+    let partial = work.join("status.json.partial");
+    fs::write(&partial, serde_json::to_vec(&json!({"schema_version":1,"state":state,"done":0,"total":0,"message":message})).unwrap())
+        .and_then(|()| fs::rename(partial, work.join("status.json")))
+        .map_err(|_| fail("Không ghi được trạng thái lời đọc"))
+}
+
+/// Speak the saved script in the background; `docu_narration_status` follows it.
+#[tauri::command]
+pub fn docu_narrate(dir: String, voice: String, speed: f64) -> Result<(), String> {
+    let dir = docu_dir(&dir)?;
+    let root = version_root()?;
+    let known = voice_profile(&root)?["voices"].as_array().into_iter().flatten().any(|item| item["voice_id"] == voice.as_str());
+    if !known { return Err(fail("Giọng đọc tiếng Anh đã chọn không có trong phiên bản này")); }
+    if !speed.is_finite() || !(SPEEDS.0..=SPEEDS.1).contains(&speed) { return Err(fail("Tốc độ đọc phải từ 0,8 đến 1,2")); }
+    if !dir.join("documentary_script.json").is_file() { return Err(fail("Hãy viết và lưu kịch bản trước khi tạo lời đọc")); }
+    let work = dir.join(".dubflow-work/narration");
+    if crate::product::read_small_json(&work.join("status.json"), 64 * 1024).is_some_and(|status| status["state"] == "RUNNING") {
+        return Err(fail("Lời đọc của dự án này đang được tạo"));
+    }
+    let _ = fs::remove_file(work.join("cancel"));
+    write_narration_status(&work, "RUNNING", "Đang khởi động giọng đọc tiếng Anh…")?;
+    let mut command = Command::new(root.join("runtime/python.exe"));
+    command.current_dir(root.join("app")).args(narration_args(&dir, &root, &control_root()?.join("models"), &voice, speed))
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().map_err(|_| {
+        let _ = write_narration_status(&work, "FAILED", "Không chạy được bộ tạo lời đọc");
+        fail("Không chạy được bộ tạo lời đọc")
+    })?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let status = crate::product::read_small_json(&work.join("status.json"), 64 * 1024);
+        if status.is_none_or(|value| value["state"] == "RUNNING") {
+            let cancelled = work.join("cancel").exists();
+            let _ = write_narration_status(&work, if cancelled { "CANCELLED" } else { "FAILED" },
+                if cancelled { "Đã hủy tạo lời đọc." } else { "Bộ tạo lời đọc đã dừng. Hãy thử lại." });
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn docu_narration_status(dir: String) -> Result<Value, String> {
+    let dir = docu_dir(&dir)?;
+    Ok(narration_info(&dir))
+}
+
+#[tauri::command]
+pub fn docu_narration_cancel(dir: String) -> Result<(), String> {
+    let work = docu_dir(&dir)?.join(".dubflow-work/narration");
+    fs::create_dir_all(&work).and_then(|()| fs::write(work.join("cancel"), b"")).map_err(|_| fail("Không hủy được tạo lời đọc"))
 }
 
 /// Validate a draft with the engine, which publishes `documentary_script.json` and returns it normalised.
@@ -367,6 +457,35 @@ mod tests {
         let args = check_args(Path::new("run"), Path::new("draft.json"));
         assert_eq!(args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>(),
             ["-m", "engine.dubflow.docu", "check", "--run-dir", "run", "--script", "draft.json"]);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn narration_commands_and_info() {
+        let base = std::env::temp_dir().join(format!("dubflow-docu-narration-{}", std::process::id()));
+        let output = output_dir(&base, "Lời đọc", "seed-narration");
+        fs::create_dir_all(output.join(".dubflow-work")).unwrap();
+        fs::write(output.join(".dubflow-work/spec.json"), json!({"schema_version":1,"sources":[]}).to_string()).unwrap();
+        let dir = output.canonicalize().unwrap();
+        assert!(narration_info(&dir)["audio"].is_null());
+        write_narration_status(&dir.join(".dubflow-work/narration"), "RUNNING", "Đang đọc").unwrap();
+        assert_eq!(docu_narration_status(display_path(&dir)).unwrap()["status"]["state"], "RUNNING");
+        docu_narration_cancel(display_path(&dir)).unwrap();
+        assert!(dir.join(".dubflow-work/narration/cancel").is_file());
+        // The audio counts only with its timeline.
+        fs::write(dir.join("narration.wav"), b"RIFF").unwrap();
+        assert!(narration_info(&dir)["audio"].is_null());
+        fs::write(dir.join("master_audio_timeline.json"), json!({"schema_version":1,"duration":12.5}).to_string()).unwrap();
+        assert!(narration_info(&dir)["audio"].as_str().unwrap().ends_with("narration.wav"));
+        assert_eq!(narration_info(&dir)["timeline"]["duration"], 12.5);
+        let args: Vec<String> = narration_args(Path::new("run"), Path::new("v"), Path::new("models"), "am_michael", 1.0)
+            .iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args[..4], ["-B", "-m", "engine.dubflow.docu", "narrate"]);
+        assert_eq!(args[args.len() - 4..], ["--voice", "am_michael", "--speed", "1.00"]);
+        assert!(docu_narration_cancel("relative".into()).is_err());
+        let profile: Value = serde_json::from_str(include_str!("../../../../models/manifests/production-kokoro-en-v1.json")).unwrap();
+        assert_eq!(profile["default_voice_id"], "am_michael");
+        assert!(profile["voices"].as_array().unwrap().iter().any(|voice| voice["voice_id"] == "am_michael"));
         fs::remove_dir_all(base).unwrap();
     }
 

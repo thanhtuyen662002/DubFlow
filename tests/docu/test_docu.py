@@ -198,6 +198,7 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("Chưa có đoạn video nguồn nào khớp với cảnh này", solution["review_notes"])
         self.assertTrue(any("hệ mét" in note for note in solution["review_notes"]))
         self.assertEqual(result["target_Coordinates_3D"]["location_name"], "Baihetan Dam")
+        self.assertEqual(result["script_sha256"], script.script_sha256(result))
 
     def test_acknowledging_clears_the_flag(self):
         value = draft()

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   CHAPTER_ORDER, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, chapterWordBudget, flattenScenes, hasNarration,
-  normalizeScript, parseOpen, parseRuns, quantityLines, renumberScenes, sourceLines,
+  narrationStale, normalizeScript, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
 } from "../src/features/docu/model.ts";
 import { writeScript } from "../src/features/docu/ai.ts";
 
@@ -126,5 +126,21 @@ assert.equal(script.project_title, "A River Rewritten");
 assert.deepEqual(script.chapters.map(chapter => chapter.recommended_bgm_mood), ["cinematic_tension_drone", "dark_suspense", "curious_pulse", "reflective_ambient"]);
 assert.equal("project_title" in script.chapters[0], false);
 assert.equal(script.target_Coordinates_3D.location_name, "Yichang");
+
+// Narration (phase 2a): voices, the host's narration info, and staleness by the checker's hash.
+assert.deepEqual(parseVoices({ defaultVoiceId: "missing", voices: [{ voiceId: "am_michael", name: "Michael", gender: "Nam", accent: "Mỹ", description: "trầm" }, { name: "no id" }] }),
+  { voices: [{ voiceId: "am_michael", name: "Michael", gender: "Nam", accent: "Mỹ", description: "trầm" }], defaultVoiceId: "am_michael" });
+assert.deepEqual(parseVoices(null), { voices: [], defaultVoiceId: "" });
+const info = parseNarration({ audio: "D:/run/narration.wav", status: { state: "COMPLETED", done: 5, total: 5, message: "ok" },
+  timeline: { script_sha256: "abc", voice_id: "am_michael", speed: 1, duration: 24.1, scenes: [
+    { scene_id: "sc_001", chapter_type: "HOOK", start: 0, end: 11.4, slot_end: 12.2, exact_duration_ms: 11400 }, { scene_id: 5 }] } });
+assert.equal(info.timeline.scenes.length, 1);
+assert.equal(info.status.state, "COMPLETED");
+assert.deepEqual(parseNarration({ status: { state: "WEIRD" } }), { audio: null, timeline: null, status: null });
+assert.equal(narrationStale({ chapters: [], script_sha256: "abc" }, info.timeline), false);
+assert.equal(narrationStale({ chapters: [], script_sha256: "def" }, info.timeline), true);
+assert.equal(narrationStale({ chapters: [] }, info.timeline), true, "an unsaved edit has no hash yet");
+assert.equal(narrationStale({ chapters: [] }, null), false, "no narration is not stale");
+assert.equal(parseOpen({ dir: "D:/run", spec: { schema_version: 1, sources: [] }, contexts, script: null, narration: { audio: null, timeline: null, status: null } }).narration.audio, null);
 
 console.log("docu model and AI passed");

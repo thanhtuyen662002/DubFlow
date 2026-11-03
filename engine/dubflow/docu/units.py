@@ -133,6 +133,7 @@ _EN_UNITS: tuple[tuple[str, str, float], ...] = tuple(sorted((
     ("acre-feet", "volume", 1_233.48183754752), ("gallons", "volume", 0.003785411784), ("gallon", "volume", 0.003785411784),
     ("liters", "volume", 0.001), ("litres", "volume", 0.001),
     ("feet", "length", 0.3048), ("foot", "length", 0.3048), ("ft", "length", 0.3048), ("inches", "length", 0.0254),
+    ("inch", "length", 0.0254),
     ("yards", "length", 0.9144), ("yard", "length", 0.9144), ("miles", "length", 1_609.344), ("mile", "length", 1_609.344),
     ("kilometers", "length", 1000.0), ("kilometres", "length", 1000.0), ("km", "length", 1000.0),
     ("meters", "length", 1.0), ("metres", "length", 1.0), ("meter", "length", 1.0), ("metre", "length", 1.0),
