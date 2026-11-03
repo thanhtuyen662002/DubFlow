@@ -559,6 +559,11 @@
       "commands": [["python", "-B", "-m", "unittest", "discover", "-s", "tests/compilation", "-p", "test_*.py"]]
     },
     {
+      "id": "documentary",
+      "roots": ["engine/dubflow/docu", "tests/docu"],
+      "commands": [["python", "-B", "-m", "unittest", "discover", "-s", "tests/docu", "-p", "test_*.py"]]
+    },
+    {
       "id": "package-video",
       "roots": [
         "engine/dubflow/package",

@@ -1,0 +1,286 @@
+import type { QueueJob } from "../queue/model.ts";
+
+export const CHAPTER_ORDER = ["HOOK", "PROBLEM", "ENGINEERING_SOLUTION", "CRITICAL_EVALUATION"] as const;
+export type ChapterType = typeof CHAPTER_ORDER[number];
+export const CHAPTER_NAMES: Record<ChapterType, string> = {
+  HOOK: "Mở đầu gây tò mò", PROBLEM: "Vấn đề", ENGINEERING_SOLUTION: "Giải pháp kỹ thuật", CRITICAL_EVALUATION: "Đánh giá",
+};
+export const CHAPTER_SHARES: Record<ChapterType, number> = {
+  HOOK: 0.07, PROBLEM: 0.20, ENGINEERING_SOLUTION: 0.50, CRITICAL_EVALUATION: 0.23,
+};
+export const FRAMING_PRESETS = ["none", "letterbox_235", "overscan_108"] as const;
+export type FramingPreset = typeof FRAMING_PRESETS[number];
+export const MOODS = ["cinematic_tension_drone", "epic_build", "curious_pulse", "reflective_ambient", "hopeful_rise", "dark_suspense"] as const;
+export const AMBIENT_SFX = ["wind_high_altitude", "heavy_machinery_hum", "water_turbine_roar", "data_beeps", "construction_site", "city_traffic", "flowing_water", "rain", "crowd_murmur", "industrial_metal"] as const;
+export type Mood = typeof MOODS[number];
+export type AmbientSfx = typeof AMBIENT_SFX[number];
+
+export type DocuSource =
+  | { kind: "job"; outputPath: string; title: string }
+  | { kind: "file"; video: string; subtitles: string; title: string };
+export type DocuRequest = {
+  title: string; topic: string; targetMinutes: number; cinematicFramingPreset: FramingPreset;
+  burnEndCredits: boolean; sources: DocuSource[]; outputRoot: string | null;
+};
+export type SourceForm = { kind: "job" | "file"; outputPath?: string; video?: string; subtitles?: string; title: string };
+export type DocuJob = Pick<QueueJob, "id" | "displayName" | "outputPath" | "status">;
+export type DocuSpecSource = { id: string; title: string; video: string; transcript: string; origin_url: string | null; credit: unknown | null };
+export type DocuSpec = {
+  schema_version: 1; title: string; topic: string; target_minutes: number; cinematic_framing_preset: FramingPreset;
+  burn_end_credits: boolean; sources: DocuSpecSource[];
+};
+export type QuantityFact = { text: string; dimension: string; si: number; imperial: string | null; comparisons: string[] };
+export type ContextSegment = {
+  seg_id: string; start: number; end: number; original_text: string; extracted_keywords: string[]; quantities: QuantityFact[];
+};
+export type SourceContext = { schema_version?: number; source_id: string; title: string; video_path: string; duration: number; segments: ContextSegment[] };
+export type SourceRef = { source_id: string; start: number; end: number };
+export const GRAPHIC_TYPES = ["METRIC_CALLOUT", "LOWER_THIRD", "LABEL"] as const;
+export type GraphicType = typeof GRAPHIC_TYPES[number];
+export const GRAPHIC_NAMES: Record<GraphicType, string> = { METRIC_CALLOUT: "Thẻ số liệu", LOWER_THIRD: "Lower third", LABEL: "Nhãn" };
+export type OnScreenGraphic = { type: GraphicType; title: string; value: string; subtext: string } | null;
+export type DocuScene = {
+  scene_id: string; narration_text: string; matched_source_refs: SourceRef[]; visual_search_tags: string[];
+  on_screen_graphic: OnScreenGraphic; ambient_sfx_tag: AmbientSfx | null;
+  needs_review: boolean; review_notes: string[]; review_numbers: string[]; acknowledged_numbers: string[];
+  [key: string]: unknown;
+};
+export type DocuChapter = { chapter_type: ChapterType; recommended_bgm_mood?: Mood; scenes: DocuScene[]; [key: string]: unknown };
+export const DEFAULT_MOODS: Record<ChapterType, Mood> = {
+  HOOK: "cinematic_tension_drone", PROBLEM: "dark_suspense", ENGINEERING_SOLUTION: "curious_pulse", CRITICAL_EVALUATION: "reflective_ambient",
+};
+export const MOOD_NAMES: Record<Mood, string> = {
+  cinematic_tension_drone: "Căng thẳng điện ảnh", epic_build: "Hùng tráng dần", curious_pulse: "Tò mò, nhịp đều",
+  reflective_ambient: "Trầm lắng", hopeful_rise: "Lạc quan", dark_suspense: "Hồi hộp, u tối",
+};
+/** Engine limits (engine/dubflow/docu/script.py). */
+export const MAX_NARRATION = 600;
+export const MAX_REFS = 6;
+export type DocuScript = {
+  project_title: string; target_Coordinates_3D: { lat: number; lng: number; location_name: string } | null;
+  chapters: DocuChapter[]; review_notes?: string[]; [key: string]: unknown;
+};
+export type DocuRun = { dir: string; created: number; spec: DocuSpec; script: boolean };
+export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null };
+export type CreateDocuResult = { dir: string; sources: Array<{ id: string; duration: number; segments: number }> };
+
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
+const VIDEO_EXT = /\.(mp4|mov|mkv|webm|avi|m4v|flv)$/i;
+const absolute = (value: string): boolean => /^(?:[a-z]:[\\/]|\\\\|\/)/i.test(value);
+const validText = (value: string, limit: number, required = false): boolean =>
+  [...value].length <= limit && !CONTROL.test(value) && (!required || Boolean(value.trim()));
+const obj = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const string = (value: unknown): string => typeof value === "string" ? value : "";
+
+export function completedDocuJobs(jobs: readonly DocuJob[]): DocuJob[] {
+  return jobs.filter(job => job.status.state === "COMPLETED" && Boolean(job.outputPath));
+}
+
+export function moveItem<T>(items: readonly T[], index: number, delta: number): T[] {
+  const result = [...items], target = index + delta;
+  if (index >= 0 && index < result.length && target >= 0 && target < result.length) [result[index], result[target]] = [result[target], result[index]];
+  return result;
+}
+
+export function sourceTitle(job: DocuJob): string {
+  return [...job.displayName.replace(/\.[^.]+$/, "")].slice(0, 120).join("") || "Video";
+}
+
+export function buildRequest(input: {
+  title: string; topic: string; targetMinutes: number | string; cinematicFramingPreset: string;
+  burnEndCredits: boolean; sources: readonly SourceForm[]; outputRoot: string | null;
+}): DocuRequest | string {
+  const minutes = typeof input.targetMinutes === "number" ? input.targetMinutes : Number(input.targetMinutes);
+  if (!validText(input.title, 120, true)) return "Nhập tiêu đề dự án, tối đa 120 ký tự.";
+  if (!validText(input.topic, 600)) return "Ghi chú chủ đề tối đa 600 ký tự.";
+  if (!Number.isInteger(minutes) || minutes < 3 || minutes > 20) return "Thời lượng mục tiêu từ 3 đến 20 phút.";
+  if (!(FRAMING_PRESETS as readonly string[]).includes(input.cinematicFramingPreset)) return "Kiểu khung hình không hợp lệ.";
+  if (typeof input.burnEndCredits !== "boolean") return "Thiết lập credit cuối video không hợp lệ.";
+  if (input.outputRoot !== null && (!absolute(input.outputRoot) || !input.outputRoot.trim())) return "Thư mục lưu phải là đường dẫn tuyệt đối.";
+  if (input.sources.length < 2 || input.sources.length > 5) return "Hãy chọn từ 2 đến 5 nguồn.";
+  const sources: DocuSource[] = [];
+  for (const [index, source] of input.sources.entries()) {
+    if (!validText(source.title, 120, true)) return `Nguồn ${index + 1}: tiêu đề từ 1 đến 120 ký tự.`;
+    if (source.kind === "job") {
+      if (!source.outputPath || !absolute(source.outputPath) || !/[/\\]final_vi\.mp4$/i.test(source.outputPath)) {
+        return `Nguồn ${index + 1}: chọn video DubFlow đã hoàn tất.`;
+      }
+      sources.push({ kind: "job", outputPath: source.outputPath, title: source.title.trim() });
+    } else if (source.kind === "file") {
+      if (!source.video || !absolute(source.video) || !VIDEO_EXT.test(source.video)
+          || !source.subtitles || !absolute(source.subtitles) || !/\.srt$/i.test(source.subtitles)) {
+        return `Nguồn ${index + 1}: chọn video và phụ đề SRT hợp lệ.`;
+      }
+      sources.push({ kind: "file", video: source.video, subtitles: source.subtitles, title: source.title.trim() });
+    } else return `Nguồn ${index + 1}: loại nguồn không hợp lệ.`;
+  }
+  return { title: input.title.trim(), topic: input.topic.trim(), targetMinutes: minutes,
+    cinematicFramingPreset: input.cinematicFramingPreset as FramingPreset, burnEndCredits: input.burnEndCredits,
+    sources, outputRoot: input.outputRoot?.trim() || null };
+}
+
+export function chapterTargetSeconds(targetMinutes: number, chapter: ChapterType): number {
+  return Math.round(targetMinutes * 60 * CHAPTER_SHARES[chapter]);
+}
+
+export function chapterWordBudget(targetMinutes: number, chapter: ChapterType): number {
+  return Math.round(chapterTargetSeconds(targetMinutes, chapter) * 150 / 60);
+}
+
+export function wordCount(text: string): number {
+  return text.trim() ? text.trim().split(/\s+/u).length : 0;
+}
+
+export function estimatedSeconds(text: string): number {
+  return Math.round(wordCount(text) * 60 / 150);
+}
+
+export function cleanString(value: unknown, limit: number): string {
+  if (typeof value !== "string") return "";
+  return [...value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").replace(/\s+/gu, " ").trim()].slice(0, limit).join("");
+}
+
+export function normalizeScene(value: unknown, knownSources: ReadonlySet<string>, index = 0): DocuScene | null {
+  const scene = obj(value);
+  if (!scene) return null;
+  const narration = cleanString(scene.narration_text, MAX_NARRATION);
+  if (!narration) return null;
+  const refs = (Array.isArray(scene.matched_source_refs) ? scene.matched_source_refs : []).flatMap((raw) => {
+    const ref = obj(raw);
+    if (!ref) return [];
+    const source_id = cleanString(ref.source_id, 20);
+    const start = Number(ref.start), end = Number(ref.end);
+    if (!knownSources.has(source_id) || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return [];
+    return [{ source_id, start: Math.round(start * 1000) / 1000, end: Math.round(end * 1000) / 1000 }];
+  }).slice(0, MAX_REFS);
+  const graphicValue = obj(scene.on_screen_graphic);
+  const graphic: OnScreenGraphic = graphicValue && (GRAPHIC_TYPES as readonly string[]).includes(string(graphicValue.type))
+    ? { type: graphicValue.type as GraphicType, title: cleanString(graphicValue.title, 60),
+      value: cleanString(graphicValue.value, 60), subtext: cleanString(graphicValue.subtext, 120) } : null;
+  const sfx = AMBIENT_SFX.includes(scene.ambient_sfx_tag as AmbientSfx) ? scene.ambient_sfx_tag as AmbientSfx : null;
+  const extra = Array.isArray(scene.visual_search_tags) ? scene.visual_search_tags : [];
+  const tags = extra.map(tag => cleanString(tag, 60)).filter(Boolean).slice(0, 6);
+  const { recommended_bgm_mood: _mood, ...rest } = scene;
+  return {
+    ...rest, scene_id: `sc_${String(index + 1).padStart(3, "0")}`, narration_text: narration,
+    matched_source_refs: refs, visual_search_tags: tags, on_screen_graphic: graphic,
+    ambient_sfx_tag: sfx, needs_review: Boolean(scene.needs_review),
+    review_notes: (Array.isArray(scene.review_notes) ? scene.review_notes : []).map(note => cleanString(note, 240)).filter(Boolean).slice(0, 8),
+    review_numbers: (Array.isArray(scene.review_numbers) ? scene.review_numbers : []).map(number => cleanString(number, 40)).filter(Boolean).slice(0, 24),
+    acknowledged_numbers: (Array.isArray(scene.acknowledged_numbers) ? scene.acknowledged_numbers : []).map(number => cleanString(number, 40)).filter(Boolean).slice(0, 24),
+  };
+}
+
+export function normalizeScript(value: unknown, knownSources: ReadonlySet<string>): DocuScript | null {
+  const script = obj(value);
+  if (!script || !Array.isArray(script.chapters)) return null;
+  const inputChapters = new Map<string, Record<string, unknown>>();
+  for (const raw of script.chapters) {
+    const chapter = obj(raw);
+    const type = string(chapter?.chapter_type ?? chapter?.type);
+    if (chapter && CHAPTER_ORDER.includes(type as ChapterType) && !inputChapters.has(type)) inputChapters.set(type, chapter);
+  }
+  const chapters = CHAPTER_ORDER.map((chapterType) => {
+    const raw = inputChapters.get(chapterType);
+    const scenes = (Array.isArray(raw?.scenes) ? raw.scenes : []).map(scene => normalizeScene(scene, knownSources)).filter((scene): scene is DocuScene => Boolean(scene));
+    const mood = MOODS.includes(raw?.recommended_bgm_mood as Mood) ? raw!.recommended_bgm_mood as Mood : DEFAULT_MOODS[chapterType];
+    return { ...(raw ?? {}), chapter_type: chapterType, recommended_bgm_mood: mood, scenes };
+  });
+  const flattened = renumberScenes(chapters);
+  const coords = obj(script.target_Coordinates_3D);
+  const lat = Number(coords?.lat), lng = Number(coords?.lng);
+  const target_Coordinates_3D = coords && Number.isFinite(lat) && Math.abs(lat) <= 90 && Number.isFinite(lng) && Math.abs(lng) <= 180
+    ? { lat, lng, location_name: cleanString(coords.location_name, 100) } : null;
+  return { ...script, project_title: cleanString(script.project_title, 100), target_Coordinates_3D,
+    chapters: flattened, review_notes: (Array.isArray(script.review_notes) ? script.review_notes : []).map(note => cleanString(note, 240)).filter(Boolean).slice(0, 24) };
+}
+
+export function flattenScenes(chapters: readonly DocuChapter[]): Array<{ chapter: ChapterType; scene: DocuScene }> {
+  return chapters.flatMap(chapter => chapter.scenes.map(scene => ({ chapter: chapter.chapter_type, scene })));
+}
+
+export function renumberScenes(chapters: readonly DocuChapter[]): DocuChapter[] {
+  let index = 0;
+  return chapters.map(chapter => ({ ...chapter, scenes: chapter.scenes.map(scene => ({ ...scene, scene_id: `sc_${String(++index).padStart(3, "0")}` })) }));
+}
+
+/**
+ * Copy the checker's flags onto the scenes being edited. The checker drops
+ * scenes without narration and renumbers the rest, so scenes pair up in order,
+ * skipping empty ones; the user's text and ids stay as they are.
+ */
+export function applyFlags(chapters: readonly DocuChapter[], checked: readonly DocuChapter[]): void {
+  const flagged = flattenScenes(checked).map(item => item.scene);
+  let next = 0;
+  for (const { scene } of flattenScenes(chapters)) {
+    if (!scene.narration_text.trim()) { Object.assign(scene, { needs_review: false, review_notes: [], review_numbers: [] }); continue; }
+    const flags = flagged[next++];
+    if (!flags) break;
+    scene.needs_review = Boolean(flags.needs_review);
+    scene.review_notes = Array.isArray(flags.review_notes) ? flags.review_notes.map(note => cleanString(note, 240)) : [];
+    scene.review_numbers = Array.isArray(flags.review_numbers) ? flags.review_numbers.map(number => cleanString(number, 60)) : [];
+    scene.acknowledged_numbers = Array.isArray(flags.acknowledged_numbers) ? flags.acknowledged_numbers.map(number => cleanString(number, 60)) : [];
+  }
+}
+
+export function hasNarration(chapters: readonly DocuChapter[]): boolean {
+  return flattenScenes(chapters).some(({ scene }) => Boolean(scene.narration_text.trim()));
+}
+
+export function acknowledge(scene: DocuScene): DocuScene {
+  const confirmed = new Set(scene.acknowledged_numbers);
+  scene.review_numbers.forEach(number => confirmed.add(number));
+  return { ...scene, acknowledged_numbers: [...confirmed] };
+}
+
+export function parseRuns(value: unknown): DocuRun[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(raw => {
+    const run = obj(raw), spec = obj(run?.spec);
+    if (!run || !spec || typeof run.dir !== "string" || spec.schema_version !== 1 || !Array.isArray(spec.sources)) return [];
+    return [{ dir: run.dir, created: Number(run.created) || 0, spec: spec as unknown as DocuSpec, script: Boolean(run.script) }];
+  }).sort((a, b) => b.created - a.created);
+}
+
+export function parseOpen(value: unknown): OpenDocuRun | null {
+  const result = obj(value), spec = obj(result?.spec);
+  if (!result || typeof result.dir !== "string" || !spec || spec.schema_version !== 1 || !Array.isArray(result.contexts)) return null;
+  const contexts = result.contexts.flatMap(raw => {
+    const context = obj(raw);
+    return context && typeof context.source_id === "string" && Array.isArray(context.segments)
+      ? [context as unknown as SourceContext] : [];
+  });
+  const sourceIds = new Set(contexts.map(context => context.source_id));
+  return { dir: result.dir, spec: spec as unknown as DocuSpec, contexts,
+    script: result.script === null || result.script === undefined ? null : normalizeScript(result.script, sourceIds) };
+}
+
+export function sourceLines(contexts: readonly SourceContext[], charLimit = 120_000): string[] {
+  type Line = { source_id: string; start: number; end: number; text: string };
+  const original: Line[] = contexts.flatMap(context => context.segments.map(segment => ({ source_id: context.source_id,
+    start: segment.start, end: segment.end, text: segment.original_text.trim() })));
+  const format = (lines: readonly Line[]) => lines.map(line => `[${line.source_id}:${line.start.toFixed(1)}-${line.end.toFixed(1)}] ${line.text}`).join("\n");
+  let packed = [...original];
+  for (const minWindow of [8, 15]) {
+    if (format(packed).length <= charLimit) break;
+    const merged: Line[] = [];
+    for (const line of packed) {
+      const prior = merged.at(-1);
+      if (prior && prior.source_id === line.source_id && line.start - prior.start >= 0 && line.end - prior.start <= minWindow) {
+        prior.end = Math.max(prior.end, line.end);
+        prior.text = `${prior.text} ${line.text}`.trim();
+      } else merged.push({ ...line });
+    }
+    packed = merged;
+  }
+  const result = format(packed);
+  if (result.length <= charLimit) return [result];
+  const truncated = [...result].slice(0, charLimit).join("");
+  return [truncated];
+}
+
+export function quantityLines(contexts: readonly SourceContext[]): string[] {
+  return contexts.flatMap(context => context.segments.flatMap(segment => (segment.quantities ?? []).map(quantity =>
+    `[${context.source_id}:${segment.start.toFixed(1)}-${segment.end.toFixed(1)}] ${quantity.text}${quantity.imperial ? ` = ${quantity.imperial}` : ""}${quantity.comparisons?.length ? `; ${quantity.comparisons.join("; ")}` : ""}`)));
+}

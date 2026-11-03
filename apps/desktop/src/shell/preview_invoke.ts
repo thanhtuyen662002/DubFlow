@@ -158,6 +158,34 @@ let picked = 0;
 const sourceCredits = new Map<string, SourceCredit>();
 const packages = new Map<string, { started: number; cancelled: boolean }>();
 const compilations = new Map<string, { started: number; cancelled: boolean; total: number }>();
+type PreviewDocuProject = { dir: string; created: number; spec: Record<string, unknown>; contexts: Array<Record<string, unknown>>; script: Record<string, unknown> | null };
+const PREVIEW_DOCU_DIR = "D:\\Videos\\DubFlow Output\\Phim tai lieu - Three Gorges\\run-00000000d049";
+const previewDocuProject: PreviewDocuProject = {
+  dir: PREVIEW_DOCU_DIR, created: 1_793_500_200,
+  spec: { schema_version: 1, title: "Three Gorges Dam", topic: "Engineering scale and community impact", target_minutes: 11,
+    cinematic_framing_preset: "none", burn_end_credits: false, sources: [
+      { id: "src_01", title: "Building the Three Gorges Dam", video: "D:\\Documentary\\three-gorges-build.mp4", transcript: "D:\\Documentary\\three-gorges-build.srt", origin_url: null, credit: null },
+      { id: "src_02", title: "Inside the world's largest dam", video: "D:\\Documentary\\three-gorges-tour.mp4", transcript: "D:\\Documentary\\three-gorges-tour.srt", origin_url: "https://example.org/dam", credit: { url: "https://example.org/dam", creator: "Engineering Archive" } },
+    ] },
+  contexts: [
+    { schema_version: 1, source_id: "src_01", title: "Building the Three Gorges Dam", video_path: "D:\\Documentary\\three-gorges-build.mp4", duration: 945.5,
+      segments: [
+        { seg_id: "src_01_seg_001", start: 12, end: 18.5, original_text: "工程建设期间，数百万人搬迁，三峡大坝改变了长江的水流。", extracted_keywords: ["三峡大坝"], quantities: [] },
+        { seg_id: "src_01_seg_002", start: 41, end: 49.4, original_text: "水库总库容达到四百亿立方米。", extracted_keywords: ["水库"], quantities: [{ text: "400亿立方米", dimension: "volume", si: 40000000000, imperial: "1.41 trillion cubic feet", comparisons: ["about 11 times the volume of Lake Mead"] }] },
+      ] },
+    { schema_version: 1, source_id: "src_02", title: "Inside the world's largest dam", video_path: "D:\\Documentary\\three-gorges-tour.mp4", duration: 620.2,
+      segments: [
+        { seg_id: "src_02_seg_001", start: 3.2, end: 9.8, original_text: "发电站安装了三十二台水轮发电机组。", extracted_keywords: ["发电站"], quantities: [{ text: "32台机组", dimension: "count", si: 32, imperial: "32 generating units", comparisons: [] }] },
+        { seg_id: "src_02_seg_002", start: 27.5, end: 35, original_text: "工程师必须平衡防洪、发电和航运需求。", extracted_keywords: ["工程师"], quantities: [] },
+      ] },
+  ],
+  script: { project_title: "The Three Gorges Dam: A River Rewritten", target_Coordinates_3D: { lat: 30.8231, lng: 111.003, location_name: "Yichang, China" },
+    review_notes: ["Một số con số cần người dùng xác nhận."], chapters: [
+      { chapter_type: "HOOK", scenes: [{ scene_id: "sc_001", narration_text: "A wall across the Yangtze changed the scale of a river—and the lives built around it.", matched_source_refs: [{ source_id: "src_01", start: 12, end: 18.5 }], visual_search_tags: ["dam spillway", "Yangtze River"], on_screen_graphic: null, ambient_sfx_tag: "water_turbine_roar", recommended_bgm_mood: "cinematic_tension_drone", needs_review: true, review_notes: ["Cần xác minh con số 40 triệu người trong lời dẫn."], review_numbers: ["40 million"], acknowledged_numbers: [] }] },
+      { chapter_type: "PROBLEM", scenes: [] }, { chapter_type: "ENGINEERING_SOLUTION", scenes: [] }, { chapter_type: "CRITICAL_EVALUATION", scenes: [] },
+    ] },
+};
+const docuProjects = new Map<string, PreviewDocuProject>([[PREVIEW_DOCU_DIR, previewDocuProject]]);
 const shorts = new Map<string, { started: number; cancelled: boolean; items: Array<{ title: string }> }>();
 const reframes = new Map<string, { started: number; cancelled: boolean }>();
 /** Edit drafts and exports per finished video (Cắt ghép, Chèn). */
@@ -231,6 +259,41 @@ function previewEditStatus(outputPath: string) {
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
+    case "docu_runs":
+      return [...docuProjects.values()].sort((a, b) => b.created - a.created).map(project => ({ dir: project.dir, created: project.created,
+        spec: project.spec, script: Boolean(project.script) })) as T;
+    case "docu_open": {
+      const project = docuProjects.get(String(args.dir));
+      if (!project) throw new Error("Không tìm thấy dự án phim tài liệu");
+      return JSON.parse(JSON.stringify({ dir: project.dir, spec: project.spec, contexts: project.contexts, script: project.script })) as T;
+    }
+    case "docu_create": {
+      const request = args.request as { title: string; topic: string; targetMinutes: number; cinematicFramingPreset: string; burnEndCredits: boolean; sources: Array<Record<string, string>> };
+      const dir = `D:\\Videos\\DubFlow Output\\Phim tai lieu - ${request.title.replace(/[<>:"/\\|?*]/g, " ").slice(0, 40)}\\run-${(docuProjects.size + 1).toString(16).padStart(12, "0")}`;
+      const sources = request.sources.map((source, index) => ({ id: `src_${String(index + 1).padStart(2, "0")}`, title: source.title,
+        video: source.video ?? source.outputPath ?? `D:\\Documentary\\source-${index + 1}.mp4`, transcript: source.subtitles ?? `D:\\Documentary\\source-${index + 1}.srt`, origin_url: null, credit: null }));
+      const project: PreviewDocuProject = { dir, created: Math.floor(Date.now() / 1000), spec: { schema_version: 1, title: request.title, topic: request.topic,
+        target_minutes: request.targetMinutes, cinematic_framing_preset: request.cinematicFramingPreset, burn_end_credits: request.burnEndCredits, sources },
+        contexts: sources.map(source => ({ schema_version: 1, source_id: source.id, title: source.title, video_path: source.video, duration: 60,
+          segments: [{ seg_id: `${source.id}_seg_001`, start: 0, end: 12, original_text: "工程师必须解决复杂的施工和环境问题。", extracted_keywords: ["工程"], quantities: [] }] })), script: null };
+      docuProjects.set(dir, project);
+      return { dir, sources: project.contexts.map(context => ({ id: context.source_id, duration: context.duration, segments: (context.segments as unknown[]).length })) } as T;
+    }
+    case "docu_check_script": {
+      const project = docuProjects.get(String(args.dir));
+      if (!project) throw new Error("Không tìm thấy dự án phim tài liệu");
+      const script = JSON.parse(JSON.stringify(args.script)) as Record<string, unknown>;
+      const chapters = Array.isArray(script.chapters) ? script.chapters as Array<Record<string, unknown>> : [];
+      for (const chapter of chapters) for (const scene of Array.isArray(chapter.scenes) ? chapter.scenes as Array<Record<string, unknown>> : []) {
+        const numbers = Array.isArray(scene.review_numbers) ? scene.review_numbers.map(String) : [];
+        const acknowledged = Array.isArray(scene.acknowledged_numbers) ? scene.acknowledged_numbers.map(String) : [];
+        scene.needs_review = numbers.some(number => !acknowledged.includes(number));
+        if (!scene.needs_review) scene.review_notes = [];
+      }
+      project.script = script;
+      return script as T;
+    }
+    case "docu_pick_file": return (args.kind === "video" ? "D:\\Documentary\\local-source.mp4" : "D:\\Documentary\\local-source.srt") as T;
     case "edit_project_load": {
       const path = String(args.outputPath);
       const product = /[\\/]video-(\d+)\.mp4$/i.exec(path);
