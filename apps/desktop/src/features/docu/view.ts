@@ -3,8 +3,8 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
-  hasNarration, moveItem, narrationStale, parseNarration, parseOpen, parseRuns, parseVisual, parseVoices, planStale, renumberScenes,
-  sourceTitle, wordCount, type NarrationInfo, type NarrationVoice, type VisualInfo,
+  hasNarration, moveItem, narrationStale, parseNarration, parseOpen, parseRender, parseRuns, parseVisual, parseVoices, planStale,
+  renumberScenes, sourceTitle, wordCount, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
@@ -101,6 +101,20 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
               <p id="docu-plan-stale" class="docu-stale" hidden>Kịch bản hoặc lời đọc đã đổi sau lần lập kế hoạch này; hãy lập lại.</p>
               <ul id="docu-plan-warnings" class="docu-script-notes"></ul>
             </section>
+            <section class="docu-narration docu-render" aria-labelledby="docu-render-title">
+              <h3 id="docu-render-title">Bản nháp</h3>
+              <p class="hint">Dựng hình theo kế hoạch với lời đọc thành <code>documentary.mp4</code> (1080p, 30 fps, bỏ tiếng gốc), kèm <code>description.txt</code> có chương và nguồn.</p>
+              <button id="docu-render" class="btn primary block" type="button">Dựng bản nháp</button>
+              <div id="docu-render-progress" class="docu-narration-progress" hidden>
+                <div class="bar busy-bar"><span id="docu-render-bar"></span></div>
+                <button id="docu-render-cancel" class="btn" type="button">Hủy</button>
+              </div>
+              <p id="docu-render-state" class="hint" role="status"></p>
+              <div class="docu-render-actions" id="docu-render-actions" hidden>
+                <button id="docu-render-watch" class="btn" type="button">Xem bản nháp</button>
+                <button id="docu-render-reveal" class="btn" type="button">Mở thư mục</button>
+              </div>
+            </section>
             <ul id="docu-script-notes" class="docu-script-notes"></ul>
           </div>
         </div>
@@ -121,6 +135,9 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   let narrationAudio: string | null = null;
   let visual: VisualInfo = { plan: null, status: null };
   let visualTimer: ReturnType<typeof setInterval> | undefined;
+  let render: RenderInfo = { video: null, status: null };
+  let renderTimer: ReturnType<typeof setInterval> | undefined;
+  const ROUGH_CUT = "__rough_cut";
   let checkTimer: ReturnType<typeof setTimeout> | undefined;
   let sourceVideoUrl: string | null = null;
   let stoppingAt: number | null = null;
@@ -154,7 +171,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function renderContexts(): void {
     const contexts = selected?.contexts ?? [];
     const select = $("#docu-player-source") as HTMLSelectElement;
-    select.innerHTML = contexts.map(context => `<option value="${escapeHtml(context.source_id)}">${escapeHtml(context.source_id)} · ${escapeHtml(context.title)}</option>`).join("");
+    select.innerHTML = (render.video ? `<option value="${ROUGH_CUT}">Bản nháp · documentary.mp4</option>` : "")
+      + contexts.map(context => `<option value="${escapeHtml(context.source_id)}">${escapeHtml(context.source_id)} · ${escapeHtml(context.title)}</option>`).join("");
     if (!contexts.length) {
       video.removeAttribute("src"); video.load();
       $("#docu-player-empty").hidden = false;
@@ -165,9 +183,9 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   }
 
   async function setPlayerSource(sourceId: string, start?: number, end?: number): Promise<void> {
-    const context = selected?.contexts.find(source => source.source_id === sourceId);
-    if (!context) return;
-    const url = await settings.mediaUrl?.(context.video_path) ?? null;
+    const path = sourceId === ROUGH_CUT ? render.video : selected?.contexts.find(source => source.source_id === sourceId)?.video_path;
+    if (!path) return;
+    const url = await settings.mediaUrl?.(path) ?? null;
     if (!url) {
       $("#docu-player-empty").hidden = false;
       $("#docu-player-empty").textContent = "Không mở được video nguồn để xem trước.";
@@ -270,11 +288,49 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       : !timelineFresh ? "Cần lời đọc khớp với kịch bản trước." : visual.plan ? `${count} lát cắt cho ${visual.plan.scenes.length} cảnh` : "";
     $("#docu-plan-stale").hidden = !planStale(currentScript, narration.timeline, visual.plan);
     $("#docu-plan-warnings").innerHTML = (visual.plan?.warnings ?? []).map(note => `<li>${escapeHtml(note)}</li>`).join("");
+    renderRough();
     for (const holder of editor.querySelectorAll<HTMLElement>("[data-slices]")) {
       const card = holder.closest<HTMLElement>("[data-scene-card]");
       const scene = card ? sceneAt(Number(card.dataset.chapter), Number(card.dataset.scene)) : null;
       holder.innerHTML = scene ? slicesHtml(scene) : "";
     }
+  }
+
+  function renderRough(): void {
+    const running = render.status?.state === "RUNNING";
+    const planFresh = Boolean(visual.plan) && !planStale(currentScript, narration.timeline, visual.plan);
+    $<HTMLButtonElement>("#docu-render").disabled = running || !selected || !planFresh;
+    $<HTMLButtonElement>("#docu-render").textContent = render.video ? "Dựng lại bản nháp" : "Dựng bản nháp";
+    $("#docu-render-progress").hidden = !running;
+    const total = render.status?.total ?? 0;
+    $("#docu-render-bar").style.width = `${running && total ? Math.round(100 * (render.status!.done / total)) : 0}%`;
+    const failed = render.status && ["FAILED", "CANCELLED"].includes(render.status.state);
+    $("#docu-render-state").textContent = running || failed ? render.status!.message
+      : !planFresh ? "Cần kế hoạch hình ảnh khớp với lời đọc trước." : render.video ? "Bản nháp đã sẵn sàng." : "";
+    $("#docu-render-actions").hidden = !render.video || running;
+  }
+
+  function followRender(): void {
+    clearInterval(renderTimer);
+    if (render.status?.state !== "RUNNING" || !selected) return;
+    const dir = selected.dir;
+    renderTimer = setInterval(async () => {
+      if (selected?.dir !== dir) { clearInterval(renderTimer); return; }
+      try {
+        render = parseRender(await invoke("docu_render_status", { dir }));
+        if (render.status?.state !== "RUNNING") { clearInterval(renderTimer); if (render.video) renderContexts(); }
+        renderRough();
+      } catch { clearInterval(renderTimer); }
+    }, 1000);
+  }
+
+  async function makeRoughCut(): Promise<void> {
+    if (!selected) return;
+    try {
+      await invoke("docu_render", { dir: selected.dir });
+      render = parseRender(await invoke("docu_render_status", { dir: selected.dir }));
+      renderRough(); followRender();
+    } catch (error) { $("#docu-render-state").textContent = error instanceof Error ? error.message : String(error); }
   }
 
   function followVisual(): void {
@@ -432,7 +488,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       await refreshRuns();
       const result = parseOpen(await invoke("docu_open", { dir: created.dir }));
       if (!result) throw new Error("Dự án mới chưa mở được.");
-      selected = result; currentScript = result.script ?? emptyScript(result.spec.title); narration = result.narration; visual = result.visual;
+      selected = result; currentScript = result.script ?? emptyScript(result.spec.title); narration = result.narration; visual = result.visual; render = result.render;
       $("#docu-project-name").textContent = result.spec.title;
       setTab("script"); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration();
       $("#docu-setup-state").textContent = "Đã tạo dự án và phân tích nguồn.";
@@ -470,15 +526,16 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     try {
       const opened = parseOpen(await invoke("docu_open", { dir }));
       if (!opened) throw new Error("Dữ liệu dự án không hợp lệ.");
-      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration; visual = opened.visual;
+      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration; visual = opened.visual; render = opened.render;
       $("#docu-project-name").textContent = opened.spec.title;
-      renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration(); followVisual(); setTab("script");
+      renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration(); followVisual(); followRender(); setTab("script");
     } catch (error) { $("#docu-setup-state").textContent = error instanceof Error ? error.message : String(error); }
   }
 
   function newProject(): void {
     selected = null; currentScript = null; sourceForms = []; narration = { audio: null, timeline: null, status: null }; clearInterval(narrationTimer);
     visual = { plan: null, status: null }; clearInterval(visualTimer);
+    render = { video: null, status: null }; clearInterval(renderTimer);
     $("#docu-project-name").textContent = "Tạo dự án mới";
     $("#docu-title").value = ""; $("#docu-topic").value = ""; $("#docu-minutes").value = "11";
     $("#docu-framing").value = "none"; $("#docu-credits").checked = false; $("#docu-setup-state").textContent = "";
@@ -530,6 +587,10 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-check").addEventListener("click", () => void checkScript());
   $("#docu-narrate").addEventListener("click", () => void narrate());
   $("#docu-plan").addEventListener("click", () => void makePlan());
+  $("#docu-render").addEventListener("click", () => void makeRoughCut());
+  $("#docu-render-cancel").addEventListener("click", () => { if (selected) void invoke("docu_render_cancel", { dir: selected.dir }).catch(() => undefined); });
+  $("#docu-render-watch").addEventListener("click", () => { $<HTMLSelectElement>("#docu-player-source").value = ROUGH_CUT; void setPlayerSource(ROUGH_CUT, 0); });
+  $("#docu-render-reveal").addEventListener("click", () => { if (render.video) void invoke("reveal_path", { path: render.video }).catch(() => undefined); });
   $("#docu-plan-cancel").addEventListener("click", () => { if (selected) void invoke("docu_plan_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-narration-cancel").addEventListener("click", () => { if (selected) void invoke("docu_narration_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-player-source").addEventListener("change", () => void setPlayerSource(($("#docu-player-source") as HTMLSelectElement).value));

@@ -255,7 +255,7 @@ pub fn docu_open(dir: String) -> Result<Value, String> {
     }
     let script_path = dir.join("documentary_script.json");
     let script = if script_path.is_file() { Some(read_json(&script_path, SCRIPT_LIMIT, "documentary_script.json vượt quá 4 MB hoặc không hợp lệ")?) } else { None };
-    Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script, "narration": narration_info(&dir), "visual": visual_info(&dir) }))
+    Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script, "narration": narration_info(&dir), "visual": visual_info(&dir), "render": render_info(&dir) }))
 }
 
 /// `narration.wav` directly inside a documentary run, for `allow_media` (#446).
@@ -312,6 +312,9 @@ struct Job { work: &'static str, busy: &'static str, starting: &'static str, can
 const NARRATION_JOB: Job = Job { work: ".dubflow-work/narration", busy: "Lời đọc của dự án này đang được tạo",
     starting: "Đang khởi động giọng đọc tiếng Anh…", cannot: "Không chạy được bộ tạo lời đọc",
     cancelled: "Đã hủy tạo lời đọc.", stopped: "Bộ tạo lời đọc đã dừng. Hãy thử lại." };
+const RENDER_JOB: Job = Job { work: ".dubflow-work/render", busy: "Bản nháp của dự án này đang được dựng",
+    starting: "Đang khởi động dựng bản nháp…", cannot: "Không chạy được bộ dựng bản nháp",
+    cancelled: "Đã hủy dựng bản nháp.", stopped: "Bộ dựng bản nháp đã dừng. Hãy thử lại." };
 const VISUAL_JOB: Job = Job { work: ".dubflow-work/visual", busy: "Kế hoạch hình ảnh của dự án này đang được lập",
     starting: "Đang khởi động lập kế hoạch hình ảnh…", cannot: "Không chạy được bộ lập kế hoạch hình ảnh",
     cancelled: "Đã hủy lập kế hoạch hình ảnh.", stopped: "Bộ lập kế hoạch hình ảnh đã dừng. Hãy thử lại." };
@@ -404,6 +407,37 @@ pub fn docu_plan_status(dir: String) -> Result<Value, String> {
 #[tauri::command]
 pub fn docu_plan_cancel(dir: String) -> Result<(), String> {
     cancel_job(&dir, &VISUAL_JOB)
+}
+
+fn render_args(dir: &Path, root: &Path) -> Vec<OsString> {
+    vec!["-B".into(), "-m".into(), "engine.dubflow.docu".into(), "render".into(), "--run-dir".into(), dir.into(),
+        "--ffmpeg".into(), root.join("runtime/media/ffmpeg.exe").into(), "--ffprobe".into(), root.join("runtime/media/ffprobe.exe").into()]
+}
+
+/// The rough cut (phase 2b-2) and the last render's status.
+fn render_info(dir: &Path) -> Value {
+    let video = dir.join("documentary.mp4");
+    json!({ "video": video.is_file().then(|| display_path(&video)),
+        "status": crate::product::read_small_json(&dir.join(".dubflow-work/render/status.json"), 64 * 1024) })
+}
+
+/// Render the visual plan and the narration into `documentary.mp4` in the background.
+#[tauri::command]
+pub fn docu_render(dir: String) -> Result<(), String> {
+    let dir = docu_dir(&dir)?;
+    if !dir.join("visual_plan.json").is_file() { return Err(fail("Hãy lập kế hoạch hình ảnh trước khi dựng bản nháp")); }
+    let root = version_root()?;
+    spawn_job(&dir, &RENDER_JOB, render_args(&dir, &root))
+}
+
+#[tauri::command]
+pub fn docu_render_status(dir: String) -> Result<Value, String> {
+    Ok(render_info(&docu_dir(&dir)?))
+}
+
+#[tauri::command]
+pub fn docu_render_cancel(dir: String) -> Result<(), String> {
+    cancel_job(&dir, &RENDER_JOB)
 }
 
 /// Validate a draft with the engine, which publishes `documentary_script.json` and returns it normalised.
@@ -579,6 +613,17 @@ mod tests {
         let args: Vec<String> = plan_args(Path::new("run"), Path::new("v"), Path::new("models")).iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(args[..4], ["-B", "-m", "engine.dubflow.docu", "plan"]);
         assert!(docu_plan_cancel("relative".into()).is_err());
+        // The rough cut follows the plan.
+        assert!(docu_render(display_path(&base)).is_err());
+        fs::remove_file(dir.join("visual_plan.json")).unwrap();
+        assert!(docu_render(display_path(&dir)).unwrap_err().contains("kế hoạch"));
+        assert!(render_info(&dir)["video"].is_null());
+        fs::write(dir.join("documentary.mp4"), b"mp4").unwrap();
+        assert!(docu_render_status(display_path(&dir)).unwrap()["video"].as_str().unwrap().ends_with("documentary.mp4"));
+        docu_render_cancel(display_path(&dir)).unwrap();
+        assert!(dir.join(".dubflow-work/render/cancel").is_file());
+        let args: Vec<String> = render_args(Path::new("run"), Path::new("v")).iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args[..4], ["-B", "-m", "engine.dubflow.docu", "render"]);
         fs::remove_dir_all(base).unwrap();
     }
 

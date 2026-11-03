@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   CHAPTER_ORDER, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, chapterWordBudget, flattenScenes, hasNarration,
-  isEnglish, narrationStale, normalizeScript, parseVisual, planStale, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
+  isEnglish, narrationStale, normalizeScript, parseRender, parseVisual, planStale, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
 } from "../src/features/docu/model.ts";
 import { writeChapter, writeScript } from "../src/features/docu/ai.ts";
 
@@ -174,5 +174,11 @@ assert.equal(planStale({ chapters: [], script_sha256: "new" }, timed, visualInfo
 assert.equal(planStale({ chapters: [], script_sha256: "abc" }, { ...timed, duration: 30 }, visualInfo.plan), true, "the narration was remade");
 assert.equal(planStale({ chapters: [], script_sha256: "abc" }, null, visualInfo.plan), true);
 assert.equal(planStale({ chapters: [] }, timed, null), false, "no plan is not stale");
+
+// Rough cut (phase 2b-2).
+assert.deepEqual(parseRender({ video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok" } }),
+  { video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok" } });
+assert.deepEqual(parseRender({ video: 5, status: { state: "?" } }), { video: null, status: null });
+assert.equal(parseOpen({ dir: "D:/run", spec: { schema_version: 1, sources: [] }, contexts, script: null }).render.video, null);
 
 console.log("docu model and AI passed");

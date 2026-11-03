@@ -177,3 +177,24 @@ the bundled ffprobe.
   - The plan is deterministic.
 - **Output.** `visual.py` refuses a narration made from another script and writes `visual_plan.json`: the per-source framing and every scene's slices (`at`, source `start` and `end`, tier, warnings), with the script hash and the timeline's hash and duration.
 - **Host and page.** The host runs it like the narration (`docu_plan`, `docu_plan_status`, `docu_plan_cancel`, logging to `engine.log`). The page shows each scene's slices as preview buttons and flags a plan made before the script or narration changed.
+
+## Phase 2b-2: the rough cut (Issue #450)
+
+The rough cut is rendered by the engine, like "Tổng hợp" and "Bán hàng", so there is a viewable film before the editor work. Phase 3 brings the same visual operations into the built-in editor, so the plan can be edited and re-exported there.
+
+- **Slices.** `roughcut.py` renders every slice of `visual_plan.json` as its own 1920×1080, 30 fps H.264 file with no sound.
+  - **Length:** frame-exact; slice boundaries are rounded from the timeline, so the frame count adds up to the narration.
+  - **Order of operations:**
+    1. an edge-stretch cover over the caption band, when the source's framing cannot clear it;
+    2. the framing crop (zoom, upward shift);
+    3. fill to 16:9, or a fit over a blurred fill for sources narrower than 1.5:1;
+    4. one uniform look: a gentle S-curve plus 8 % saturation, because the bundled FFmpeg has no `eq`;
+    5. on slices from shots of 6 s or more, a 4 % Ken Burns push with `zoompan` on a 2× upscale;
+    6. the letterbox bars.
+  - **Rotation:** sizes come from a probe that honours rotation tags.
+  - **Encoding:** H.264 uses Media Foundation, falling back to libopenh264.
+  - **Receipts:** each slice keeps one (source file, start, frames, filter graph), so a cancelled or repeated render only redoes what changed.
+- **Assembly.** The concat demuxer joins the files without re-encoding. The narration is muxed as AAC 192 kb/s and the result is published atomically as `documentary.mp4`. Rendering refuses a plan whose script or timeline hash no longer matches.
+- **Credits.** `source_credit.json` and `description.txt` are always written. The description holds the title, YouTube chapters from the timeline (the first at 0:00), the footage credits (creator, platform, link) and a synthetic-voice note. A 6 s "Footage" end card is added only when `burn_end_credits` is true.
+- **Matcher change.** Uncited footage from the rest of a cited source and from any other source now ranks the same, so A/B interleaving decides between them. Before, a scene whose cited footage ran out stayed on the same source.
+- **Measured** with the bundled runtime: a real 28.8 s plan from a 1080p Bilibili source rendered in 11.7 s, at exactly 863 frames.
