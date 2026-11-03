@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   CHAPTER_ORDER, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, chapterWordBudget, flattenScenes, hasNarration,
-  isEnglish, narrationStale, normalizeScript, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
+  isEnglish, narrationStale, normalizeScript, parseVisual, planStale, parseNarration, parseOpen, parseRuns, parseVoices, quantityLines, renumberScenes, sourceLines,
 } from "../src/features/docu/model.ts";
 import { writeChapter, writeScript } from "../src/features/docu/ai.ts";
 
@@ -160,5 +160,19 @@ assert.match(retried[1].parts.at(-1).text, /not in English/);
 assert.equal(fixed.scenes[0].narration_text, "Every attempt to fix it failed.");
 await assert.rejects(writeChapter("gemini", "k", { project: { title: "T", topic: "", targetMinutes: 5 }, chapter: "PROBLEM", contexts, previous: [] },
   async () => vietnamese), /tiếng Anh/);
+
+// Visual plan (phase 2b-1): parsing and staleness against the script and its narration.
+const visualInfo = parseVisual({ status: { state: "COMPLETED", done: 5, total: 5, message: "ok" }, plan: { script_sha256: "abc", duration: 24.1, warnings: ["w", 5],
+  scenes: [{ scene_id: "sc_001", start: 0, end: 12.3, warnings: [], slices: [{ source_id: "src_01", start: 10, end: 14.1, at: 0, duration: 4.1, tier: 0 }, { source_id: 3 }] }, { start: 1 }] } });
+assert.equal(visualInfo.plan.scenes.length, 1);
+assert.equal(visualInfo.plan.scenes[0].slices.length, 1);
+assert.deepEqual(visualInfo.plan.warnings, ["w"]);
+assert.deepEqual(parseVisual(null), { plan: null, status: null });
+const timed = { script_sha256: "abc", voice_id: "am_michael", speed: 1, duration: 24.1, scenes: [] };
+assert.equal(planStale({ chapters: [], script_sha256: "abc" }, timed, visualInfo.plan), false);
+assert.equal(planStale({ chapters: [], script_sha256: "new" }, timed, visualInfo.plan), true, "the script changed");
+assert.equal(planStale({ chapters: [], script_sha256: "abc" }, { ...timed, duration: 30 }, visualInfo.plan), true, "the narration was remade");
+assert.equal(planStale({ chapters: [], script_sha256: "abc" }, null, visualInfo.plan), true);
+assert.equal(planStale({ chapters: [] }, timed, null), false, "no plan is not stale");
 
 console.log("docu model and AI passed");

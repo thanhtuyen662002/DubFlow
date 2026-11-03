@@ -154,3 +154,26 @@ the bundled ffprobe.
 - **Staleness.** `check` now stamps `documentary_script.json` with `script_sha256`, a hash of the spoken words only. The page compares it with the timeline's hash and shows when a narration no longer matches the script.
 - **Host.** It runs the job in the background (`docu_narrate`, `docu_narration_status`, `docu_narration_cancel`), refuses a second run while one is active, and turns an abandoned RUNNING status into FAILED or CANCELLED.
 - **Word timing deferred.** Word-level timing for on-screen numbers moves to phase 2b, where the callouts are placed. Sentence times already come from exact sample counts.
+
+## Phase 2b-1: the visual plan (Issue #448)
+
+- **Shots.** `shots.py` cuts each source into shots with the bundled FFmpeg's `scdet` filter (threshold 10, frames scaled to 320 px wide, about 30× real time), so OpenCV is not needed.
+  - Cuts closer than 0.4 s are one transition.
+  - Results are cached in `sources/<id>/shots.json`, keyed by the file's size, modification time and the threshold.
+- **Safe zone.** `safezone.py` reuses the dubbing pipeline's PP-OCRv4 caption scan, with the source's speech times. Only captions count: fixed text such as logos and channel names is never targeted.
+  - Captions on screen for at least 25 % of the speech give the source a caption band.
+  - The framing is the smallest zoom (at most 114 %) and upward shift that clears that band, on top of the project's uniform `cinematic_framing_preset` (letterbox 2.35:1 or 108 % overscan).
+  - When 114 % cannot clear the band, the plan says so and suggests the letterbox. Phase 2b-2 may add the existing edge-stretch cover.
+- **Matcher.** `matcher.py` fills each scene's slot (its narration plus the pause after it; the first scene starts at 0) with equal 3.0–4.5 s slices. When a slot cannot split into slices of at least 3 s, it gets one slice.
+  - **Where footage comes from**, in order of preference:
+    1. the footage the script cites;
+    2. 6 s around it;
+    3. the rest of the cited sources;
+    4. any source;
+    5. reuse, as a last resort.
+    Each scene notes when it had to go beyond the cited footage.
+  - **Interleaving:** consecutive slices prefer another source (A/B). Two consecutive slices from one source are at least 8 s apart in it. No source range is used twice.
+  - **Cut points:** slices start on shot boundaries and end on a cut within 0.4 s when the remainder still makes a full slice.
+  - The plan is deterministic.
+- **Output.** `visual.py` refuses a narration made from another script and writes `visual_plan.json`: the per-source framing and every scene's slices (`at`, source `start` and `end`, tier, warnings), with the script hash and the timeline's hash and duration.
+- **Host and page.** The host runs it like the narration (`docu_plan`, `docu_plan_status`, `docu_plan_cancel`, logging to `engine.log`). The page shows each scene's slices as preview buttons and flags a plan made before the script or narration changed.

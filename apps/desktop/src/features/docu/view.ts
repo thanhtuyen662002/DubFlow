@@ -3,8 +3,8 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
-  hasNarration, moveItem, narrationStale, parseNarration, parseOpen, parseRuns, parseVoices, renumberScenes, sourceTitle, wordCount,
-  type NarrationInfo, type NarrationVoice,
+  hasNarration, moveItem, narrationStale, parseNarration, parseOpen, parseRuns, parseVisual, parseVoices, planStale, renumberScenes,
+  sourceTitle, wordCount, type NarrationInfo, type NarrationVoice, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
@@ -87,7 +87,19 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
               <p id="docu-narration-state" class="hint" role="status"></p>
               <p id="docu-narration-stale" class="docu-stale" hidden>Kịch bản đã sửa sau lần tạo lời đọc này; hãy tạo lại để khớp.</p>
               <audio id="docu-narration-audio" controls preload="metadata" hidden></audio>
-              <p class="hint">Lần đầu DubFlow tải giọng đọc tiếng Anh (khoảng 370 MB). Lời đọc được chuẩn hóa ở -16 LUFS; câu nào không đổi sẽ không phải đọc lại.</p>
+              <p class="hint" id="docu-narration-note">Lần đầu DubFlow tải giọng đọc tiếng Anh (khoảng 370 MB). Lời đọc được chuẩn hóa ở -16 LUFS; câu nào không đổi sẽ không phải đọc lại.</p>
+            </section>
+            <section class="docu-narration docu-visual" aria-labelledby="docu-visual-title">
+              <h3 id="docu-visual-title">Kế hoạch hình ảnh</h3>
+              <p class="hint">Tách cảnh các video nguồn, tránh vùng phụ đề gốc rồi chia mỗi cảnh lời đọc thành các lát 3–4,5 giây, xen kẽ góc máy giữa các nguồn.</p>
+              <button id="docu-plan" class="btn primary block" type="button">Lập kế hoạch hình ảnh</button>
+              <div id="docu-plan-progress" class="docu-narration-progress" hidden>
+                <div class="bar busy-bar"><span id="docu-plan-bar"></span></div>
+                <button id="docu-plan-cancel" class="btn" type="button">Hủy</button>
+              </div>
+              <p id="docu-plan-state" class="hint" role="status"></p>
+              <p id="docu-plan-stale" class="docu-stale" hidden>Kịch bản hoặc lời đọc đã đổi sau lần lập kế hoạch này; hãy lập lại.</p>
+              <ul id="docu-plan-warnings" class="docu-script-notes"></ul>
             </section>
             <ul id="docu-script-notes" class="docu-script-notes"></ul>
           </div>
@@ -107,6 +119,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   let narration: NarrationInfo = { audio: null, timeline: null, status: null };
   let narrationTimer: ReturnType<typeof setInterval> | undefined;
   let narrationAudio: string | null = null;
+  let visual: VisualInfo = { plan: null, status: null };
+  let visualTimer: ReturnType<typeof setInterval> | undefined;
   let checkTimer: ReturnType<typeof setTimeout> | undefined;
   let sourceVideoUrl: string | null = null;
   let stoppingAt: number | null = null;
@@ -226,11 +240,64 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       <label>Lời dẫn<textarea data-field="narration_text" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" maxlength="${MAX_NARRATION}" rows="4">${escapeHtml(scene.narration_text)}</textarea></label>
       <p class="docu-word-count"><span>${wordCount(scene.narration_text)} từ</span><span>Ước tính ${estimatedSeconds(scene.narration_text)} giây</span></p>
       <div class="docu-refs" aria-label="Nguồn dẫn">${refsHtml(scene, chapterIndex, sceneIndex)}</div>
+      <div class="docu-slices" data-slices="${escapeHtml(scene.scene_id)}">${slicesHtml(scene)}</div>
       <label>Đồ họa trên màn hình<select data-field="graphic_type" data-chapter="${chapterIndex}" data-scene="${sceneIndex}"><option value="">Không có</option>${GRAPHIC_TYPES.map(type => `<option value="${type}" ${graphic?.type === type ? "selected" : ""}>${GRAPHIC_NAMES[type]}</option>`).join("")}</select></label>
       <div class="docu-graphic-fields" ${graphic ? "" : "hidden"}><label>Tiêu đề<input data-field="graphic_title" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" value="${escapeHtml(graphic?.title ?? "")}" maxlength="60" /></label><label>Giá trị<input data-field="graphic_value" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" value="${escapeHtml(graphic?.value ?? "")}" maxlength="60" /></label><label>Chú thích<input data-field="graphic_subtext" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" value="${escapeHtml(graphic?.subtext ?? "")}" maxlength="120" /></label></div>
       <label>Âm thanh nền<select data-field="ambient_sfx_tag" data-chapter="${chapterIndex}" data-scene="${sceneIndex}"><option value="">Không có</option>${AMBIENT_SFX.map(tag => `<option value="${tag}" ${scene.ambient_sfx_tag === tag ? "selected" : ""}>${tag}</option>`).join("")}</select></label>
       ${reviewHtml(scene, chapterIndex, sceneIndex)}
     </article>`;
+  }
+
+  /** The scene's B-roll slices from the visual plan, each a preview button. */
+  function slicesHtml(scene: DocuScene): string {
+    const planned = visual.plan?.scenes.find(item => item.scene_id === scene.scene_id);
+    if (!planned) return "";
+    const seconds = (value: number) => value.toFixed(1).replace(".", ",");
+    return `<span class="docu-slices-label">Hình:</span>${planned.slices.map(piece => `<button type="button" class="docu-ref docu-slice ${piece.tier ? "far" : ""}" data-seek-source="${escapeHtml(piece.source_id)}" data-seek-start="${piece.start}" data-seek-end="${piece.end}" title="${piece.tier ? "Ngoài đoạn nguồn gợi ý" : "Trong đoạn nguồn gợi ý"}">${escapeHtml(piece.source_id)} ${seconds(piece.start)}–${seconds(piece.end)}</button>`).join("")}${planned.warnings.map(note => `<small class="docu-slice-note">${escapeHtml(note)}</small>`).join("")}`;
+  }
+
+  function renderVisual(): void {
+    const running = visual.status?.state === "RUNNING";
+    const timelineFresh = Boolean(narration.timeline) && !narrationStale(currentScript, narration.timeline);
+    $<HTMLButtonElement>("#docu-plan").disabled = running || !selected || !timelineFresh;
+    $<HTMLButtonElement>("#docu-plan").textContent = visual.plan ? "Lập lại kế hoạch hình ảnh" : "Lập kế hoạch hình ảnh";
+    $("#docu-plan-progress").hidden = !running;
+    const total = visual.status?.total ?? 0;
+    $("#docu-plan-bar").style.width = `${running && total ? Math.round(100 * (visual.status!.done / total)) : 0}%`;
+    const failed = visual.status && ["FAILED", "CANCELLED"].includes(visual.status.state);
+    const count = visual.plan?.scenes.reduce((sum, scene) => sum + scene.slices.length, 0) ?? 0;
+    $("#docu-plan-state").textContent = running || failed ? visual.status!.message
+      : !timelineFresh ? "Cần lời đọc khớp với kịch bản trước." : visual.plan ? `${count} lát cắt cho ${visual.plan.scenes.length} cảnh` : "";
+    $("#docu-plan-stale").hidden = !planStale(currentScript, narration.timeline, visual.plan);
+    $("#docu-plan-warnings").innerHTML = (visual.plan?.warnings ?? []).map(note => `<li>${escapeHtml(note)}</li>`).join("");
+    for (const holder of editor.querySelectorAll<HTMLElement>("[data-slices]")) {
+      const card = holder.closest<HTMLElement>("[data-scene-card]");
+      const scene = card ? sceneAt(Number(card.dataset.chapter), Number(card.dataset.scene)) : null;
+      holder.innerHTML = scene ? slicesHtml(scene) : "";
+    }
+  }
+
+  function followVisual(): void {
+    clearInterval(visualTimer);
+    if (visual.status?.state !== "RUNNING" || !selected) return;
+    const dir = selected.dir;
+    visualTimer = setInterval(async () => {
+      if (selected?.dir !== dir) { clearInterval(visualTimer); return; }
+      try {
+        visual = parseVisual(await invoke("docu_plan_status", { dir }));
+        if (visual.status?.state !== "RUNNING") clearInterval(visualTimer);
+        renderVisual();
+      } catch { clearInterval(visualTimer); }
+    }, 1000);
+  }
+
+  async function makePlan(): Promise<void> {
+    if (!selected) return;
+    try {
+      await invoke("docu_plan", { dir: selected.dir });
+      visual = parseVisual(await invoke("docu_plan_status", { dir: selected.dir }));
+      renderVisual(); followVisual();
+    } catch (error) { $("#docu-plan-state").textContent = error instanceof Error ? error.message : String(error); }
   }
 
   /** The narrated length when the narration matches the script, else the estimate. */
@@ -263,6 +330,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       if (scene && time) time.textContent = sceneTime(scene);
     }
     updateSummary();
+    renderVisual();
   }
 
   async function loadVoices(): Promise<void> {
@@ -364,7 +432,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       await refreshRuns();
       const result = parseOpen(await invoke("docu_open", { dir: created.dir }));
       if (!result) throw new Error("Dự án mới chưa mở được.");
-      selected = result; currentScript = result.script ?? emptyScript(result.spec.title); narration = result.narration;
+      selected = result; currentScript = result.script ?? emptyScript(result.spec.title); narration = result.narration; visual = result.visual;
       $("#docu-project-name").textContent = result.spec.title;
       setTab("script"); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration();
       $("#docu-setup-state").textContent = "Đã tạo dự án và phân tích nguồn.";
@@ -402,14 +470,15 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     try {
       const opened = parseOpen(await invoke("docu_open", { dir }));
       if (!opened) throw new Error("Dữ liệu dự án không hợp lệ.");
-      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration;
+      selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration; visual = opened.visual;
       $("#docu-project-name").textContent = opened.spec.title;
-      renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration(); setTab("script");
+      renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration(); followVisual(); setTab("script");
     } catch (error) { $("#docu-setup-state").textContent = error instanceof Error ? error.message : String(error); }
   }
 
   function newProject(): void {
     selected = null; currentScript = null; sourceForms = []; narration = { audio: null, timeline: null, status: null }; clearInterval(narrationTimer);
+    visual = { plan: null, status: null }; clearInterval(visualTimer);
     $("#docu-project-name").textContent = "Tạo dự án mới";
     $("#docu-title").value = ""; $("#docu-topic").value = ""; $("#docu-minutes").value = "11";
     $("#docu-framing").value = "none"; $("#docu-credits").checked = false; $("#docu-setup-state").textContent = "";
@@ -460,6 +529,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-write").addEventListener("click", () => void writeAllChapters());
   $("#docu-check").addEventListener("click", () => void checkScript());
   $("#docu-narrate").addEventListener("click", () => void narrate());
+  $("#docu-plan").addEventListener("click", () => void makePlan());
+  $("#docu-plan-cancel").addEventListener("click", () => { if (selected) void invoke("docu_plan_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-narration-cancel").addEventListener("click", () => { if (selected) void invoke("docu_narration_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-player-source").addEventListener("change", () => void setPlayerSource(($("#docu-player-source") as HTMLSelectElement).value));
   video.addEventListener("timeupdate", () => {

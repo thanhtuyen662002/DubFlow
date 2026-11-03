@@ -67,7 +67,11 @@ export type NarrationTimeline = { script_sha256: string; voice_id: string; speed
 export type NarrationStatus = { state: "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED"; done: number; total: number; message: string };
 export type NarrationInfo = { audio: string | null; timeline: NarrationTimeline | null; status: NarrationStatus | null };
 export const NARRATION_SPEEDS = [0.9, 0.95, 1, 1.05, 1.1] as const;
-export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null; narration: NarrationInfo };
+export type PlanSlice = { source_id: string; start: number; end: number; at: number; duration: number; tier: number };
+export type PlanScene = { scene_id: string; start: number; end: number; warnings: string[]; slices: PlanSlice[] };
+export type VisualPlan = { script_sha256: string; duration: number; scenes: PlanScene[]; warnings: string[] };
+export type VisualInfo = { plan: VisualPlan | null; status: NarrationStatus | null };
+export type OpenDocuRun = { dir: string; spec: DocuSpec; contexts: SourceContext[]; script: DocuScript | null; narration: NarrationInfo; visual: VisualInfo };
 export type CreateDocuResult = { dir: string; sources: Array<{ id: string; duration: number; segments: number }> };
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
@@ -285,6 +289,37 @@ export function parseNarration(value: unknown): NarrationInfo {
   };
 }
 
+function parseStatus(value: unknown): NarrationStatus | null {
+  const status = obj(value);
+  return status && ["RUNNING", "COMPLETED", "FAILED", "CANCELLED"].includes(string(status.state)) ? { state: status.state as NarrationStatus["state"],
+    done: Number(status.done) || 0, total: Number(status.total) || 0, message: string(status.message) } : null;
+}
+
+export function parseVisual(value: unknown): VisualInfo {
+  const info = obj(value), plan = obj(info?.plan);
+  const strings = (items: unknown) => (Array.isArray(items) ? items : []).filter((item): item is string => typeof item === "string");
+  const scenes = (Array.isArray(plan?.scenes) ? plan.scenes : []).flatMap(raw => {
+    const scene = obj(raw);
+    if (!scene || typeof scene.scene_id !== "string") return [];
+    const slices = (Array.isArray(scene.slices) ? scene.slices : []).flatMap(item => {
+      const piece = obj(item);
+      return piece && typeof piece.source_id === "string" && [piece.start, piece.end, piece.at].every(v => Number.isFinite(Number(v)))
+        ? [{ source_id: piece.source_id, start: Number(piece.start), end: Number(piece.end), at: Number(piece.at),
+          duration: Number(piece.duration) || Number(piece.end) - Number(piece.start), tier: Number(piece.tier) || 0 }] : [];
+    });
+    return [{ scene_id: scene.scene_id, start: Number(scene.start) || 0, end: Number(scene.end) || 0, warnings: strings(scene.warnings), slices }];
+  });
+  return {
+    plan: plan && typeof plan.script_sha256 === "string" ? { script_sha256: plan.script_sha256, duration: Number(plan.duration) || 0, scenes, warnings: strings(plan.warnings) } : null,
+    status: parseStatus(info?.status),
+  };
+}
+
+/** A plan made before the script or its narration changed. */
+export function planStale(script: DocuScript | null, timeline: NarrationTimeline | null, plan: VisualPlan | null): boolean {
+  return Boolean(plan && (!script || script.script_sha256 !== plan.script_sha256 || !timeline || Math.abs(timeline.duration - plan.duration) > 0.01));
+}
+
 /** A narration made from a different script (the checker stamps each saved script with the hash of its spoken words). */
 export function narrationStale(script: DocuScript | null, timeline: NarrationTimeline | null): boolean {
   return Boolean(timeline && (!script || typeof script.script_sha256 !== "string" || script.script_sha256 !== timeline.script_sha256));
@@ -301,7 +336,7 @@ export function parseOpen(value: unknown): OpenDocuRun | null {
   const sourceIds = new Set(contexts.map(context => context.source_id));
   return { dir: result.dir, spec: spec as unknown as DocuSpec, contexts,
     script: result.script === null || result.script === undefined ? null : normalizeScript(result.script, sourceIds),
-    narration: parseNarration(result.narration) };
+    narration: parseNarration(result.narration), visual: parseVisual(result.visual) };
 }
 
 export function sourceLines(contexts: readonly SourceContext[], charLimit = 120_000): string[] {
