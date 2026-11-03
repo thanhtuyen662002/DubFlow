@@ -1358,3 +1358,9 @@ select { color-scheme: dark; }
 .docu-narration audio[hidden] { display: none; }
 .docu-stale { margin: 0; padding: 8px; border-radius: 7px; background: var(--warn-bg); color: var(--warn); font-size: 12px; }
 .docu-stale[hidden] { display: none; }
+.docu-slices { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+.docu-slices:empty { display: none; }
+.docu-slices-label { color: var(--text-3); font-size: 11.5px; }
+.docu-slice { padding: 2px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); }
+.docu-slice.far { border-style: dashed; color: var(--text-2); }
+.docu-slice-note { flex-basis: 100%; color: var(--warn); font-size: 11.5px; }

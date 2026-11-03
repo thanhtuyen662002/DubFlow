@@ -195,6 +195,31 @@ const previewDocuHash = (script: unknown): string => {
   for (const char of spoken) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   return hash.toString(16).padStart(64, "0");
 };
+/** Simulated visual plans: three polls, then slices alternating the two sources across each scene's slot. */
+const docuPlans = new Map<string, { polls: number; cancelled: boolean }>();
+function previewVisual(dir: string): Record<string, unknown> {
+  const run = docuPlans.get(dir);
+  if (!run) return { plan: null, status: null };
+  if (run.cancelled) return { plan: null, status: { state: "CANCELLED", done: 0, total: 5, message: "Đã hủy lập kế hoạch hình ảnh" } };
+  run.polls += 1;
+  if (run.polls < 3) return { plan: null, status: { state: "RUNNING", done: run.polls * 2, total: 5, message: run.polls === 1 ? "Đang tách cảnh src_01…" : "Đang dò phụ đề gốc của src_02…" } };
+  const narration = previewNarration(dir) as { timeline: { duration: number; scenes: Array<{ scene_id: string; start: number; slot_end: number }> } | null };
+  const project = docuProjects.get(dir)!;
+  let source = 0;
+  const scenes = (narration.timeline?.scenes ?? []).map((scene, index) => {
+    const slices = [];
+    for (let at = index ? scene.start : 0; at < scene.slot_end - 0.05;) {
+      const duration = Math.min(4, scene.slot_end - at), id = `src_0${source % 2 + 1}`, start = 12 + at * 2;
+      slices.push({ source_id: id, start, end: start + duration, at, duration, tier: index === 1 ? 1 : 0 });
+      at += duration; source += 1;
+    }
+    return { scene_id: scene.scene_id, start: index ? scene.start : 0, end: scene.slot_end, slices,
+      warnings: index === 1 ? ["Một số lát cắt lấy ngay quanh đoạn nguồn kịch bản gợi ý"] : [] };
+  });
+  return { status: { state: "COMPLETED", done: 5, total: 5, message: "Đã lập kế hoạch" },
+    plan: { script_sha256: String(project.script?.script_sha256 ?? ""), duration: narration.timeline?.duration ?? 0, scenes,
+      warnings: ["Phụ đề gốc của src_01 vẫn lộ một phần sau khi phóng 114%; nên chọn khung Letterbox 2.35:1 cho dự án"] } };
+}
 function previewNarration(dir: string): Record<string, unknown> {
   const run = docuNarration.get(dir);
   if (!run) return { audio: null, timeline: null, status: null };
@@ -293,7 +318,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_open": {
       const project = docuProjects.get(String(args.dir));
       if (!project) throw new Error("Không tìm thấy dự án phim tài liệu");
-      return JSON.parse(JSON.stringify({ dir: project.dir, spec: project.spec, contexts: project.contexts, script: project.script, narration: previewNarration(project.dir) })) as T;
+      return JSON.parse(JSON.stringify({ dir: project.dir, spec: project.spec, contexts: project.contexts, script: project.script, narration: previewNarration(project.dir), visual: previewVisual(project.dir) })) as T;
     }
     case "docu_create": {
       const request = args.request as { title: string; topic: string; targetMinutes: number; cinematicFramingPreset: string; burnEndCredits: boolean; sources: Array<Record<string, string>> };
@@ -333,6 +358,9 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       return undefined as T;
     }
     case "docu_narration_status": return previewNarration(String(args.dir)) as T;
+    case "docu_plan": docuPlans.set(String(args.dir), { polls: 0, cancelled: false }); return undefined as T;
+    case "docu_plan_status": return previewVisual(String(args.dir)) as T;
+    case "docu_plan_cancel": { const run = docuPlans.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_narration_cancel": { const run = docuNarration.get(String(args.dir)); if (run) run.cancelled = true; return undefined as T; }
     case "docu_pick_file": return (args.kind === "video" ? "D:\\Documentary\\local-source.mp4" : "D:\\Documentary\\local-source.srt") as T;
     case "edit_project_load": {

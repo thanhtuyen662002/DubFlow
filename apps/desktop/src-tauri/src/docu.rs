@@ -255,7 +255,7 @@ pub fn docu_open(dir: String) -> Result<Value, String> {
     }
     let script_path = dir.join("documentary_script.json");
     let script = if script_path.is_file() { Some(read_json(&script_path, SCRIPT_LIMIT, "documentary_script.json vượt quá 4 MB hoặc không hợp lệ")?) } else { None };
-    Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script, "narration": narration_info(&dir) }))
+    Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script, "narration": narration_info(&dir), "visual": visual_info(&dir) }))
 }
 
 /// `narration.wav` directly inside a documentary run, for `allow_media` (#446).
@@ -299,12 +299,57 @@ fn narration_args(dir: &Path, root: &Path, models: &Path, voice: &str, speed: f6
         "--ffmpeg".into(), root.join("runtime/media/ffmpeg.exe").into(), "--voice".into(), voice.into(), "--speed".into(), format!("{speed:.2}").into()]
 }
 
-fn write_narration_status(work: &Path, state: &str, message: &str) -> Result<(), String> {
-    fs::create_dir_all(work).map_err(|_| fail("Không tạo được thư mục lời đọc"))?;
+fn write_job_status(work: &Path, state: &str, message: &str) -> Result<(), String> {
+    fs::create_dir_all(work).map_err(|_| fail("Không tạo được thư mục làm việc"))?;
     let partial = work.join("status.json.partial");
     fs::write(&partial, serde_json::to_vec(&json!({"schema_version":1,"state":state,"done":0,"total":0,"message":message})).unwrap())
         .and_then(|()| fs::rename(partial, work.join("status.json")))
-        .map_err(|_| fail("Không ghi được trạng thái lời đọc"))
+        .map_err(|_| fail("Không ghi được trạng thái công việc"))
+}
+
+/// What a background engine job is called in its messages.
+struct Job { work: &'static str, busy: &'static str, starting: &'static str, cannot: &'static str, cancelled: &'static str, stopped: &'static str }
+const NARRATION_JOB: Job = Job { work: ".dubflow-work/narration", busy: "Lời đọc của dự án này đang được tạo",
+    starting: "Đang khởi động giọng đọc tiếng Anh…", cannot: "Không chạy được bộ tạo lời đọc",
+    cancelled: "Đã hủy tạo lời đọc.", stopped: "Bộ tạo lời đọc đã dừng. Hãy thử lại." };
+const VISUAL_JOB: Job = Job { work: ".dubflow-work/visual", busy: "Kế hoạch hình ảnh của dự án này đang được lập",
+    starting: "Đang khởi động lập kế hoạch hình ảnh…", cannot: "Không chạy được bộ lập kế hoạch hình ảnh",
+    cancelled: "Đã hủy lập kế hoạch hình ảnh.", stopped: "Bộ lập kế hoạch hình ảnh đã dừng. Hãy thử lại." };
+
+/// Run `python -B -m engine.dubflow.docu <args>` in the background with a status file the page polls; one at a time per kind.
+fn spawn_job(dir: &Path, job: &Job, args: Vec<OsString>) -> Result<(), String> {
+    let root = version_root()?;
+    let work = dir.join(job.work);
+    if crate::product::read_small_json(&work.join("status.json"), 64 * 1024).is_some_and(|status| status["state"] == "RUNNING") {
+        return Err(fail(job.busy));
+    }
+    let _ = fs::remove_file(work.join("cancel"));
+    write_job_status(&work, "RUNNING", job.starting)?;
+    // The engine's own errors (a traceback) land here for diagnosis (#444).
+    let log = fs::File::create(work.join("engine.log")).map_err(|_| fail("Không ghi được nhật ký"))?;
+    let mut command = Command::new(root.join("runtime/python.exe"));
+    command.current_dir(root.join("app")).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(log));
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().map_err(|_| {
+        let _ = write_job_status(&work, "FAILED", job.cannot);
+        fail(job.cannot)
+    })?;
+    let (cancelled, stopped) = (job.cancelled, job.stopped);
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let status = crate::product::read_small_json(&work.join("status.json"), 64 * 1024);
+        if status.is_none_or(|value| value["state"] == "RUNNING") {
+            let was_cancelled = work.join("cancel").exists();
+            let _ = write_job_status(&work, if was_cancelled { "CANCELLED" } else { "FAILED" }, if was_cancelled { cancelled } else { stopped });
+        }
+    });
+    Ok(())
+}
+
+fn cancel_job(dir: &str, job: &Job) -> Result<(), String> {
+    let work = docu_dir(dir)?.join(job.work);
+    fs::create_dir_all(&work).and_then(|()| fs::write(work.join("cancel"), b"")).map_err(|_| fail("Không hủy được"))
 }
 
 /// Speak the saved script in the background; `docu_narration_status` follows it.
@@ -316,33 +361,7 @@ pub fn docu_narrate(dir: String, voice: String, speed: f64) -> Result<(), String
     if !known { return Err(fail("Giọng đọc tiếng Anh đã chọn không có trong phiên bản này")); }
     if !speed.is_finite() || !(SPEEDS.0..=SPEEDS.1).contains(&speed) { return Err(fail("Tốc độ đọc phải từ 0,8 đến 1,2")); }
     if !dir.join("documentary_script.json").is_file() { return Err(fail("Hãy viết và lưu kịch bản trước khi tạo lời đọc")); }
-    let work = dir.join(".dubflow-work/narration");
-    if crate::product::read_small_json(&work.join("status.json"), 64 * 1024).is_some_and(|status| status["state"] == "RUNNING") {
-        return Err(fail("Lời đọc của dự án này đang được tạo"));
-    }
-    let _ = fs::remove_file(work.join("cancel"));
-    write_narration_status(&work, "RUNNING", "Đang khởi động giọng đọc tiếng Anh…")?;
-    // The engine's own errors (a traceback) land here for diagnosis (#444).
-    let log = fs::File::create(work.join("engine.log")).map_err(|_| fail("Không ghi được nhật ký lời đọc"))?;
-    let mut command = Command::new(root.join("runtime/python.exe"));
-    command.current_dir(root.join("app")).args(narration_args(&dir, &root, &control_root()?.join("models"), &voice, speed))
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(log));
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-    let mut child = command.spawn().map_err(|_| {
-        let _ = write_narration_status(&work, "FAILED", "Không chạy được bộ tạo lời đọc");
-        fail("Không chạy được bộ tạo lời đọc")
-    })?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-        let status = crate::product::read_small_json(&work.join("status.json"), 64 * 1024);
-        if status.is_none_or(|value| value["state"] == "RUNNING") {
-            let cancelled = work.join("cancel").exists();
-            let _ = write_narration_status(&work, if cancelled { "CANCELLED" } else { "FAILED" },
-                if cancelled { "Đã hủy tạo lời đọc." } else { "Bộ tạo lời đọc đã dừng. Hãy thử lại." });
-        }
-    });
-    Ok(())
+    spawn_job(&dir, &NARRATION_JOB, narration_args(&dir, &root, &control_root()?.join("models"), &voice, speed))
 }
 
 #[tauri::command]
@@ -353,8 +372,38 @@ pub fn docu_narration_status(dir: String) -> Result<Value, String> {
 
 #[tauri::command]
 pub fn docu_narration_cancel(dir: String) -> Result<(), String> {
-    let work = docu_dir(&dir)?.join(".dubflow-work/narration");
-    fs::create_dir_all(&work).and_then(|()| fs::write(work.join("cancel"), b"")).map_err(|_| fail("Không hủy được tạo lời đọc"))
+    cancel_job(&dir, &NARRATION_JOB)
+}
+
+fn plan_args(dir: &Path, root: &Path, models: &Path) -> Vec<OsString> {
+    vec!["-B".into(), "-m".into(), "engine.dubflow.docu".into(), "plan".into(), "--run-dir".into(), dir.into(),
+        "--app-root".into(), root.join("app").into(), "--model-root".into(), models.into(),
+        "--ffmpeg".into(), root.join("runtime/media/ffmpeg.exe").into()]
+}
+
+/// The visual plan (phase 2b) and the last planning run's status.
+fn visual_info(dir: &Path) -> Value {
+    json!({ "plan": crate::product::read_small_json(&dir.join("visual_plan.json"), SCRIPT_LIMIT),
+        "status": crate::product::read_small_json(&dir.join(".dubflow-work/visual/status.json"), 64 * 1024) })
+}
+
+/// Cut the sources into the visual plan in the background (shots, caption band, slices).
+#[tauri::command]
+pub fn docu_plan(dir: String) -> Result<(), String> {
+    let dir = docu_dir(&dir)?;
+    if !dir.join("master_audio_timeline.json").is_file() { return Err(fail("Hãy tạo lời đọc trước khi lập kế hoạch hình ảnh")); }
+    let root = version_root()?;
+    spawn_job(&dir, &VISUAL_JOB, plan_args(&dir, &root, &control_root()?.join("models")))
+}
+
+#[tauri::command]
+pub fn docu_plan_status(dir: String) -> Result<Value, String> {
+    Ok(visual_info(&docu_dir(&dir)?))
+}
+
+#[tauri::command]
+pub fn docu_plan_cancel(dir: String) -> Result<(), String> {
+    cancel_job(&dir, &VISUAL_JOB)
 }
 
 /// Validate a draft with the engine, which publishes `documentary_script.json` and returns it normalised.
@@ -482,7 +531,7 @@ mod tests {
         fs::write(output.join(".dubflow-work/spec.json"), json!({"schema_version":1,"sources":[]}).to_string()).unwrap();
         let dir = output.canonicalize().unwrap();
         assert!(narration_info(&dir)["audio"].is_null());
-        write_narration_status(&dir.join(".dubflow-work/narration"), "RUNNING", "Đang đọc").unwrap();
+        write_job_status(&dir.join(".dubflow-work/narration"), "RUNNING", "Đang đọc").unwrap();
         assert_eq!(docu_narration_status(display_path(&dir)).unwrap()["status"]["state"], "RUNNING");
         docu_narration_cancel(display_path(&dir)).unwrap();
         assert!(dir.join(".dubflow-work/narration/cancel").is_file());
@@ -508,6 +557,28 @@ mod tests {
         let profile: Value = serde_json::from_str(include_str!("../../../../models/manifests/production-kokoro-en-v1.json")).unwrap();
         assert_eq!(profile["default_voice_id"], "am_michael");
         assert!(profile["voices"].as_array().unwrap().iter().any(|voice| voice["voice_id"] == "am_michael"));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn plan_commands_and_info() {
+        let base = std::env::temp_dir().join(format!("dubflow-docu-plan-{}", std::process::id()));
+        let output = output_dir(&base, "Kế hoạch", "seed-plan");
+        fs::create_dir_all(output.join(".dubflow-work")).unwrap();
+        fs::write(output.join(".dubflow-work/spec.json"), json!({"schema_version":1,"sources":[]}).to_string()).unwrap();
+        let dir = output.canonicalize().unwrap();
+        assert!(docu_plan(display_path(&dir)).unwrap_err().contains("lời đọc"));
+        assert!(visual_info(&dir)["plan"].is_null());
+        fs::write(dir.join("visual_plan.json"), json!({"schema_version":1,"scenes":[]}).to_string()).unwrap();
+        write_job_status(&dir.join(".dubflow-work/visual"), "COMPLETED", "Xong").unwrap();
+        let info = docu_plan_status(display_path(&dir)).unwrap();
+        assert_eq!(info["plan"]["schema_version"], 1);
+        assert_eq!(info["status"]["state"], "COMPLETED");
+        docu_plan_cancel(display_path(&dir)).unwrap();
+        assert!(dir.join(".dubflow-work/visual/cancel").is_file());
+        let args: Vec<String> = plan_args(Path::new("run"), Path::new("v"), Path::new("models")).iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args[..4], ["-B", "-m", "engine.dubflow.docu", "plan"]);
+        assert!(docu_plan_cancel("relative".into()).is_err());
         fs::remove_dir_all(base).unwrap();
     }
 
