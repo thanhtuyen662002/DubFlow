@@ -230,6 +230,13 @@ export function applyFlags(chapters: readonly DocuChapter[], checked: readonly D
   }
 }
 
+/** Mostly plain Latin letters: English, not Vietnamese or Chinese (engine/dubflow/docu/script.py has the same rule). */
+export function isEnglish(text: string): boolean {
+  const letters = text.match(/\p{L}/gu)?.length ?? 0;
+  const plain = text.match(/[A-Za-z]/g)?.length ?? 0;
+  return letters === 0 || plain / letters >= 0.95;
+}
+
 export function hasNarration(chapters: readonly DocuChapter[]): boolean {
   return flattenScenes(chapters).some(({ scene }) => Boolean(scene.narration_text.trim()));
 }

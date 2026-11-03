@@ -15,12 +15,13 @@ import math
 from pathlib import Path
 import re
 import time
+import traceback
 from typing import Any, Callable, Iterable, Protocol, Sequence
 import wave
 
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
 from .project import DocuError, work_dir, write_json
-from .script import CHAPTERS, script_sha256
+from .script import CHAPTERS, is_english, script_sha256
 
 SENTENCE_PAUSE = 0.4
 SCENE_PAUSE = 0.8
@@ -120,6 +121,10 @@ def plan(script: dict[str, Any]) -> list[Piece]:
                     pieces.append(Piece(chapter["chapter_type"], scene["scene_id"], sentence_index, part, pause))
     if not pieces:
         raise DocuError("Kịch bản chưa có lời đọc")
+    foreign = [scene["scene_id"] for chapter in chapters for scene in chapter.get("scenes", [])
+               if str(scene.get("narration_text", "")).strip() and not is_english(scene["narration_text"])]
+    if foreign:
+        raise DocuError(f"Các cảnh {', '.join(foreign[:6])}{'…' if len(foreign) > 6 else ''} chưa viết bằng tiếng Anh; hãy sửa rồi tạo lời đọc")
     return pieces
 
 
@@ -131,11 +136,11 @@ def _pcm(samples: Iterable[float]) -> bytes:
 
 
 class _Status:
-    def __init__(self, path: Path, total: int) -> None:
+    def __init__(self, path: Path, total: int, **changes: Any) -> None:
         self.path = path
         self.value: dict[str, Any] = {"schema_version": 1, "state": "RUNNING", "done": 0, "total": total,
                                       "message": "Đang chuẩn bị giọng đọc tiếng Anh…"}
-        self.write()
+        self.write(**changes)
 
     def write(self, **changes: Any) -> None:
         self.value.update(changes)
@@ -199,7 +204,10 @@ def run(run_dir: Path, script: dict[str, Any], *, speaker: Callable[[Callable[[s
     cache.mkdir(parents=True, exist_ok=True)
     cancel = work / "cancel"
     cancel.unlink(missing_ok=True)
-    pieces = plan(script)
+    try:
+        pieces = plan(script)
+    except DocuError as error:
+        return _Status(work / "status.json", 0, state="FAILED", message=error.message).value
     status = _Status(work / "status.json", len(pieces))
     cancelled = cancel.exists
     voice: Speaker | None = None
@@ -258,6 +266,10 @@ def run(run_dir: Path, script: dict[str, Any], *, speaker: Callable[[Callable[[s
         return status.value
     except (DocuError, ProductError) as error:
         status.write(state="FAILED", message=getattr(error, "message", str(error)))
+        return status.value
+    except Exception as error:  # a network drop during the first download, a full disk…: say so instead of dying
+        traceback.print_exc()
+        status.write(state="FAILED", message=f"Không tạo được lời đọc ({type(error).__name__}: {str(error)[:200]}); hãy thử lại")
         return status.value
     finally:
         if voice is not None:

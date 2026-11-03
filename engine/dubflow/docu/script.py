@@ -170,6 +170,8 @@ def check(draft: Any, spec: Spec, contexts: dict[str, dict[str, Any]]) -> dict[s
             flagged = units.unverified(spoken, quantities, acknowledged)
             for number in flagged:
                 scene_notes.append(f"Số liệu “{number}” không thấy trong nguồn hay bảng quy đổi; hãy kiểm tra")
+            if not is_english(narration):
+                scene_notes.append("Lời đọc không phải tiếng Anh; hãy viết lại cảnh này bằng tiếng Anh")
             metric = units.metric_units(narration)
             if metric:
                 scene_notes.append("Còn đơn vị hệ mét (" + ", ".join(metric) + "); khán giả Mỹ quen feet, miles, pounds")
@@ -190,6 +192,13 @@ def check(draft: Any, spec: Spec, contexts: dict[str, dict[str, Any]]) -> dict[s
     # The narration's timeline carries the same hash; a difference means it is out of date.
     result["script_sha256"] = script_sha256(result)
     return result
+
+
+def is_english(text: str) -> bool:
+    """Mostly plain Latin letters: English, not Vietnamese or Chinese (the page uses the same rule)."""
+    letters = sum(1 for char in text if char.isalpha())
+    plain = sum(1 for char in text if "a" <= char.lower() <= "z" and char.isascii())
+    return letters == 0 or plain / letters >= 0.95
 
 
 def script_sha256(script: dict[str, Any]) -> str:

@@ -310,9 +310,11 @@ pub fn docu_narrate(dir: String, voice: String, speed: f64) -> Result<(), String
     }
     let _ = fs::remove_file(work.join("cancel"));
     write_narration_status(&work, "RUNNING", "Đang khởi động giọng đọc tiếng Anh…")?;
+    // The engine's own errors (a traceback) land here for diagnosis (#444).
+    let log = fs::File::create(work.join("engine.log")).map_err(|_| fail("Không ghi được nhật ký lời đọc"))?;
     let mut command = Command::new(root.join("runtime/python.exe"));
     command.current_dir(root.join("app")).args(narration_args(&dir, &root, &control_root()?.join("models"), &voice, speed))
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(log));
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command.spawn().map_err(|_| {

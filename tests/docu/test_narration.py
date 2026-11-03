@@ -61,6 +61,16 @@ class SentenceTests(unittest.TestCase):
         self.assertTrue(all(len(piece) <= narration.MAX_PIECE for piece in pieces))
         self.assertEqual(" ".join(pieces), long)
 
+    def test_non_english_scenes_are_refused(self):
+        value = script()
+        value["chapters"][0]["scenes"][2]["narration_text"] = "Những nỗ lực tự cứu lấy mình đều thất bại."
+        with self.assertRaises(DocuError) as caught:
+            narration.plan(value)
+        self.assertIn("sc_003", caught.exception.message)
+        self.assertTrue(docu_script.is_english("The Baihetan dam, near Zürich-style café towns, cost $4.8 billion."))
+        self.assertFalse(docu_script.is_english("坝高289米"))
+        self.assertTrue(docu_script.is_english("2021 — 289"))
+
     def test_plan_pauses(self):
         pieces = narration.plan(script())
         self.assertEqual([(p.scene_id, p.text, p.pause) for p in pieces], [
@@ -156,6 +166,24 @@ class RunTests(unittest.TestCase):
                 return FakeVoice()
             stopped = narration.run(run_dir, script(), speaker=cancelling, voice_id="bf_emma", speed=1.0, ffmpeg=Path(FFMPEG))
             self.assertEqual(stopped["state"], "CANCELLED")
+
+    def test_unexpected_errors_become_a_failed_status(self):
+        with TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "run"
+            run_dir.mkdir()
+
+            def broken(_report):
+                raise ConnectionResetError("the connection dropped")
+            result = narration.run(run_dir, script(), speaker=broken, voice_id="am_michael", speed=1.0, ffmpeg=Path(FFMPEG))
+            self.assertEqual(result["state"], "FAILED")
+            self.assertIn("ConnectionResetError", result["message"])
+            status = json.loads((run_dir / ".dubflow-work/narration/status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["state"], "FAILED")
+            value = script()
+            value["chapters"][0]["scenes"][0]["narration_text"] = "坝高289米。"
+            refused = narration.run(run_dir, value, speaker=broken, voice_id="am_michael", speed=1.0, ffmpeg=Path(FFMPEG))
+            self.assertEqual(refused["state"], "FAILED")
+            self.assertIn("sc_001", refused["message"])
 
 
 class KokoroProfileTests(unittest.TestCase):
