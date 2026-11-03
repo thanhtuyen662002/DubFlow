@@ -258,6 +258,18 @@ pub fn docu_open(dir: String) -> Result<Value, String> {
     Ok(json!({ "dir": display_path(&dir), "spec": spec, "contexts": contexts, "script": script, "narration": narration_info(&dir) }))
 }
 
+/// `narration.wav` directly inside a documentary run, for `allow_media` (#446).
+pub(crate) fn narration_audio(value: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    if path.file_name().is_none_or(|name| name != "narration.wav") {
+        return Err(fail("Không phải lời đọc phim tài liệu"));
+    }
+    let dir = docu_dir(&display_path(path.parent().ok_or_else(|| fail("Không phải lời đọc phim tài liệu"))?))?;
+    let file = dir.join("narration.wav");
+    if !file.is_file() { return Err(fail("Chưa có lời đọc")); }
+    Ok(file)
+}
+
 /// The finished narration (its audio and timeline) and the last run's status, when there are any.
 fn narration_info(dir: &Path) -> Value {
     let audio = dir.join("narration.wav");
@@ -480,6 +492,14 @@ mod tests {
         fs::write(dir.join("master_audio_timeline.json"), json!({"schema_version":1,"duration":12.5}).to_string()).unwrap();
         assert!(narration_info(&dir)["audio"].as_str().unwrap().ends_with("narration.wav"));
         assert_eq!(narration_info(&dir)["timeline"]["duration"], 12.5);
+        // The player may stream this file, and only this one (#446).
+        assert_eq!(narration_audio(&display_path(&dir.join("narration.wav"))).unwrap(), dir.join("narration.wav"));
+        fs::write(dir.join("other.wav"), b"RIFF").unwrap();
+        assert!(narration_audio(&display_path(&dir.join("other.wav"))).is_err());
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/narration.wav"), b"RIFF").unwrap();
+        assert!(narration_audio(&display_path(&dir.join("sub/narration.wav"))).is_err());
+        assert!(narration_audio("relative/narration.wav").is_err());
         let args: Vec<String> = narration_args(Path::new("run"), Path::new("v"), Path::new("models"), "am_michael", 1.0)
             .iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(args[..4], ["-B", "-m", "engine.dubflow.docu", "narrate"]);
