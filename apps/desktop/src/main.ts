@@ -1433,7 +1433,21 @@ function failedFetchActions(entry: FetchEntry): HTMLButtonElement[] {
     }
   });
   const skip = actionButton("Bỏ qua", "btn", () => removeFetch(entry.status.scan_id));
-  if (!needsDouyinLogin(entry.status)) return [retry, skip];
+  // The zip carries the source worker's error log; a link job has no results folder yet.
+  const report = actionButton("Gửi báo cáo lỗi", "btn", async () => {
+    report.disabled = true;
+    report.textContent = "Đang tạo báo cáo…";
+    try {
+      report.title = await invoke<string>("create_report", { jobId: entry.status.scan_id, outputDir: null });
+      report.textContent = "Đã tạo báo cáo trên Desktop";
+    } catch (error) {
+      report.textContent = "Gửi báo cáo lỗi";
+      showError(String(error).slice(0, 400));
+    } finally {
+      report.disabled = false;
+    }
+  });
+  if (!needsDouyinLogin(entry.status)) return [retry, report, skip];
   retry.className = "btn";
   const login = actionButton("Đăng nhập Douyin", "btn primary", async () => {
     login.disabled = true;

@@ -191,6 +191,7 @@ fn human_error(code: &str, provider: &str) -> String {
         "INVALID_INPUT" => "Link không hợp lệ.".into(),
         "SOURCE_REQUEST_REJECTED" => "Dịch vụ tải không nhận link này. Hãy thử lại.".into(),
         "SOURCE_CHANGED" => "Trang nguồn vừa thay đổi nên chưa tải được. Hãy cập nhật DubFlow lên bản mới nhất rồi thử lại.".into(),
+        "SOURCE_WORKER_FAILED" => "Trình tải gặp lỗi bất ngờ. Bấm “Thử lại”; nếu vẫn lỗi, bấm “Gửi báo cáo lỗi” rồi gửi file zip trên Desktop cho nhà phát triển.".into(),
         other => format!("Tải link thất bại ({other})."),
     }
 }

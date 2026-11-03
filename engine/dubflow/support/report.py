@@ -144,7 +144,8 @@ def _add(archive: zipfile.ZipFile, path: Path | None, name: str) -> bool:
     return True
 
 
-def create_report(*, output_dir: Path | None, job_status: Path | None, destination: Path, now: float | None = None) -> Path:
+def create_report(*, output_dir: Path | None, job_status: Path | None, destination: Path, now: float | None = None,
+                  source_log: Path | None = None) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / f"DubFlow-report-{stamp}.zip"
@@ -171,6 +172,9 @@ def create_report(*, output_dir: Path | None, job_status: Path | None, destinati
             archive.writestr("file-sizes.json", json.dumps(rows, ensure_ascii=False, indent=1))
         if job_status is not None and not _linked(job_status) and job_status.is_file() and _add(archive, job_status, "job-status.json"):
             summary["included"].append("job-status.json")
+        # Tracebacks of unexpected source-worker failures (SOURCE_WORKER_FAILED), shared by every link job.
+        if source_log is not None and not _linked(source_log) and source_log.is_file() and _add(archive, source_log, "source-worker-errors.log"):
+            summary["included"].append("source-worker-errors.log")
         archive.writestr("summary.json", json.dumps(summary, ensure_ascii=False, indent=2))
     os.replace(temporary, target)
     return target
@@ -181,9 +185,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--job-status", type=Path)
     parser.add_argument("--destination", type=Path)
+    parser.add_argument("--source-log", type=Path)
     args = parser.parse_args(argv)
     try:
-        path = create_report(output_dir=args.output_dir, job_status=args.job_status, destination=args.destination or _desktop())
+        path = create_report(output_dir=args.output_dir, job_status=args.job_status, destination=args.destination or _desktop(),
+                             source_log=args.source_log)
         print(json.dumps({"ok": True, "path": str(path), "bytes": path.stat().st_size}, ensure_ascii=True))
         return 0
     except OSError as error:
