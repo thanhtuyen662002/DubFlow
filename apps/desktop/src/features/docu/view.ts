@@ -4,13 +4,18 @@ import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
   hasNarration, moveItem, narrationStale, parseNarration, parseOpen, parseRender, parseRuns, parseVisual, parseVoices, planStale,
-  renumberScenes, sourceTitle, wordCount, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
+  calloutTexts, renumberScenes, sourceTitle, wordCount, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
+import { addText, type Edit } from "../edit/model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-type Settings = { jobs(): readonly DocuJob[]; outputRoot(): string | null; roots?(): string[]; mediaUrl?(path: string): Promise<string | null> };
+type Settings = {
+  jobs(): readonly DocuJob[]; outputRoot(): string | null; roots?(): string[]; mediaUrl?(path: string): Promise<string | null>;
+  /** Open the rough cut in the editor; `seed` fills its first draft. */
+  edit?(video: { outputPath: string; displayName: string }, seed: (edit: Edit) => Edit): void;
+};
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
 const videoName = (path: string): string => path.split(/[\\/]/).at(-1) ?? path;
 const clock = (seconds: number): string => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
@@ -112,6 +117,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
               <p id="docu-render-state" class="hint" role="status"></p>
               <div class="docu-render-actions" id="docu-render-actions" hidden>
                 <button id="docu-render-watch" class="btn" type="button">Xem bản nháp</button>
+                <button id="docu-render-edit" class="btn primary" type="button" title="Cắt ghép, chèn, chữ, âm thanh và phụ đề tiếng Anh">Chỉnh sửa</button>
                 <button id="docu-render-reveal" class="btn" type="button">Mở thư mục</button>
               </div>
             </section>
@@ -308,6 +314,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     $("#docu-render-state").textContent = running || failed ? render.status!.message
       : !planFresh ? "Cần kế hoạch hình ảnh khớp với lời đọc trước." : render.video ? "Bản nháp đã sẵn sàng." : "";
     $("#docu-render-actions").hidden = !render.video || running;
+    $("#docu-render-edit").hidden = !settings.edit;
   }
 
   function followRender(): void {
@@ -590,6 +597,13 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-render").addEventListener("click", () => void makeRoughCut());
   $("#docu-render-cancel").addEventListener("click", () => { if (selected) void invoke("docu_render_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-render-watch").addEventListener("click", () => { $<HTMLSelectElement>("#docu-player-source").value = ROUGH_CUT; void setPlayerSource(ROUGH_CUT, 0); });
+  $("#docu-render-edit").addEventListener("click", () => {
+    if (!render.video || !settings.edit) return;
+    // The first draft gets the script's on-screen graphics; a saved draft is kept as it is.
+    const callouts = calloutTexts(currentScript, narration.timeline);
+    settings.edit({ outputPath: render.video, displayName: currentScript?.project_title || selected?.spec.title || "documentary.mp4" },
+      edit => callouts.reduce((draft, callout) => addText(draft, callout.at, callout.text, callout.look, callout.seconds), edit));
+  });
   $("#docu-render-reveal").addEventListener("click", () => { if (render.video) void invoke("reveal_path", { path: render.video }).catch(() => undefined); });
   $("#docu-plan-cancel").addEventListener("click", () => { if (selected) void invoke("docu_plan_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-narration-cancel").addEventListener("click", () => { if (selected) void invoke("docu_narration_cancel", { dir: selected.dir }).catch(() => undefined); });

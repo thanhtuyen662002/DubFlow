@@ -238,6 +238,8 @@ enum Kind {
     Product(usize),
     /// A Tổng hợp run's `compilation.mp4`.
     Compilation,
+    /// A Phim tài liệu run's rough cut, `documentary.mp4` (ADR-0049).
+    Docu,
 }
 
 /// A finished video below "DubFlow Output" that the editor may open: the
@@ -253,11 +255,11 @@ struct Target {
 
 impl Target {
     fn kind_name(&self) -> &'static str {
-        match self.kind { Kind::Job => "job", Kind::Product(_) => "product", Kind::Compilation => "compilation" }
+        match self.kind { Kind::Job => "job", Kind::Product(_) => "product", Kind::Compilation => "compilation", Kind::Docu => "docu" }
     }
 }
 
-/// A finished job's `final_vi.mp4`, a product video or a compilation, below "DubFlow Output".
+/// A finished job's `final_vi.mp4`, a product video, a compilation or a documentary rough cut, below "DubFlow Output".
 fn edit_target(output_path: &str) -> Result<Target, String> {
     let video = output_file(output_path)?;
     let dir = video.parent().ok_or_else(|| fail("output has no directory"))?.to_path_buf();
@@ -268,6 +270,9 @@ fn edit_target(output_path: &str) -> Result<Target, String> {
         (Kind::Product(number), dir.join(".dubflow-work").join(format!("edit-{number}")), Some(dir.join(format!("captions-{number}.srt"))))
     } else if name == "compilation.mp4" && is_compilation_run(&dir) {
         (Kind::Compilation, work_dir(&dir), None)
+    } else if name == "documentary.mp4" && crate::docu::is_run(&dir) {
+        // Its English captions are the Phụ đề track.
+        (Kind::Docu, work_dir(&dir), Some(dir.join("captions_en.srt")))
     } else {
         return Err(fail("Chỉ chỉnh sửa được video DubFlow đã hoàn tất"));
     };
@@ -2087,6 +2092,16 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert_eq!((first.kind, second.kind), (Kind::Product(1), Kind::Product(2)));
         assert!(first.work.ends_with(".dubflow-work/edit-1") && second.work.ends_with(".dubflow-work/edit-2"), "one draft per video");
         assert!(first.captions.as_ref().unwrap().ends_with("captions-1.srt"));
+        // A documentary run's rough cut, with its English captions; not the same name in another folder.
+        let docu = base.join("DubFlow Output/Phim tai lieu - Đập/run-000000000001");
+        fs::create_dir_all(docu.join(".dubflow-work")).unwrap();
+        fs::write(docu.join(".dubflow-work/spec.json"), b"{\"schema_version\":1}").unwrap();
+        fs::write(docu.join("documentary.mp4"), b"video").unwrap();
+        let film = edit_target(&crate::display_path(&docu.join("documentary.mp4"))).unwrap();
+        assert_eq!(film.kind, Kind::Docu);
+        assert!(film.captions.as_ref().unwrap().ends_with("captions_en.srt") && film.work.ends_with(".dubflow-work/edit"));
+        fs::write(compilation.join("documentary.mp4"), b"video").unwrap();
+        assert!(edit_target(&crate::display_path(&compilation.join("documentary.mp4"))).is_err());
         let joined = edit_target(&crate::display_path(&compilation.join("compilation.mp4"))).unwrap();
         assert_eq!((joined.kind, joined.captions.is_none()), (Kind::Compilation, true));
         assert!(joined.work.ends_with(".dubflow-work/edit"));

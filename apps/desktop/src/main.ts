@@ -1559,7 +1559,9 @@ const compilation = mountCompilation(invoke, claudeKey, {
   jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,
   edit: (video) => void editVideo({ id: video.outputPath, kind: "compilation", outputPath: video.outputPath, displayName: video.displayName }, "compilation"),
 });
-const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl });
+const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl,
+  edit: (video, seed) => void editVideo({ id: video.outputPath, kind: "docu", outputPath: video.outputPath, displayName: video.displayName, seed }, "docu"),
+});
 type View = "queue" | "discover" | "product" | "compilation" | "docu";
 const VIEW_HEADINGS: Record<View, [string, string]> = {
   queue: ["Hàng đợi", ""],
@@ -1599,7 +1601,7 @@ async function navigate(view: View): Promise<void> {
     if (editOrigin === view) return;
     editOrigin = null;
     if (!(await editor.close(true))) {
-      editOrigin = edited.kind === "product" ? "product" : "compilation";
+      editOrigin = edited.kind;
       return;
     }
   }

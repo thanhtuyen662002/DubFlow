@@ -28,6 +28,12 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def caption_warning(source_id: str, preset: str) -> str:
+    """A caption band framing cannot clear: it is covered by edge stretch; the letterbox would shrink it."""
+    covered = f"Phụ đề gốc của {source_id} cao hơn mức phóng 114% che được; phần còn lại được che bằng cách kéo giãn mép ảnh"
+    return covered if preset == "letterbox_235" else f"{covered}. Chọn khung Letterbox 2.35:1 để vùng che nhỏ hơn"
+
+
 def _scenes(script: dict[str, Any], timeline: dict[str, Any]) -> list[matcher.Scene]:
     refs = {scene["scene_id"]: scene.get("matched_source_refs", []) for chapter in script["chapters"] for scene in chapter["scenes"]}
     result = []
@@ -83,7 +89,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
             done += 1
             framing = safezone.framing(band, spec.cinematic_framing_preset)
             if not framing.clear:
-                warnings.append(f"Phụ đề gốc của {source.id} vẫn lộ một phần sau khi phóng 114%; nên chọn khung Letterbox 2.35:1 cho dự án")
+                warnings.append(caption_warning(source.id, spec.cinematic_framing_preset))
             framings[source.id] = {"band": band.__dict__ if band else None, **framing.to_dict()}
             sources.append(matcher.Source(source.id, duration, tuple(cuts)))
         status.write(done=done, message="Đang ghép lát cắt cho từng cảnh…")

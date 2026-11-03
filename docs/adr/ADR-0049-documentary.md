@@ -198,3 +198,15 @@ The rough cut is rendered by the engine, like "Tổng hợp" and "Bán hàng", s
 - **Credits.** `source_credit.json` and `description.txt` are always written. The description holds the title, YouTube chapters from the timeline (the first at 0:00), the footage credits (creator, platform, link) and a synthetic-voice note. A 6 s "Footage" end card is added only when `burn_end_credits` is true.
 - **Matcher change.** Uncited footage from the rest of a cited source and from any other source now ranks the same, so A/B interleaving decides between them. Before, a scene whose cited footage ran out stayed on the same source.
 - **Measured** with the bundled runtime: a real 28.8 s plan from a 1080p Bilibili source rendered in 11.7 s, at exactly 863 frames.
+
+## Phase 3a: the rough cut in the built-in editor (Issue #452)
+
+- **Editor target.** `documentary.mp4` of a valid documentary run is a new `docu` editor target, kept in its own `.dubflow-work/edit`. `captions_en.srt` is its "Phụ đề" track. The editor's existing tools work on it as on a compilation: cut and trim, insert, overlays, Âm thanh (sound effects and music, with ducking), Chữ, Phụ đề, Che and export.
+- **Seeded callouts.** On the first open (no saved draft) the "Chữ" track is seeded from the script's on-screen graphics, placed 0.3 s after each scene's narrated start and lasting at most 5 s within the scene's slot:
+  - METRIC_CALLOUT: value, title and subtext as a dark slate card (`#0F172A` at 90 %, the editor's 0.05 opacity steps) with a cyan outline, top right;
+  - LOWER_THIRD: a lower third that slides up;
+  - LABEL: a centred label.
+  A saved draft is never re-seeded.
+- **Navigation.** The documentary page opens the editor with "Chỉnh sửa" next to the rough cut. Leaving the editor returns to the documentary page.
+- **Caption-band warning.** When the caption band cannot be cleared, the warning now says it is covered by edge stretch, and suggests the letterbox only when the project does not already use it.
+- **Deferred.** Editing the plan slice by slice inside the editor (per-segment framing and narration lanes in the editor's own renderer) remains later work, as does the MCP server and CapCut bridge (phase 4).

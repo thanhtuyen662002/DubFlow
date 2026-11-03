@@ -48,11 +48,13 @@ export type LibraryJob = { id: string; title: string; outputPath: string };
 export type EditTarget = {
   /** The queue job's id, else the video's path. */
   id: string;
-  kind: "job" | "product" | "compilation";
+  kind: "job" | "product" | "compilation" | "docu";
   outputPath: string;
   displayName: string;
   /** The queue job (kind "job"): Phụ đề and Che re-run it. */
   job?: QueueJob;
+  /** Fills a first draft when the video has no saved one (a documentary's callouts, ADR-0049). */
+  seed?: (edit: Edit) => Edit;
 };
 
 export function jobTarget(job: QueueJob): EditTarget {
@@ -1890,7 +1892,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (ticket !== openTicket || (target.kind === "job" && listJob?.id !== target.id)) return false;
       const info = { path: outputPath, title: target.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
       const project = parseProject(loaded.project, loaded.duration, info);
-      const edit = project?.edit ?? createEdit(loaded.duration, info);
+      const edit = project?.edit ?? (target.seed ?? ((fresh: Edit) => fresh))(createEdit(loaded.duration, info));
       const last = status?.exports.at(-1);
       // Exported in the background after the draft was saved: nothing is pending.
       const changes = last?.segments && matchesExport(edit, last) ? 0 : project?.changes ?? 0;

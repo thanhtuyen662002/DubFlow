@@ -1,4 +1,5 @@
 import type { QueueJob } from "../queue/model.ts";
+import type { TextLook } from "../edit/model.ts";
 
 export const CHAPTER_ORDER = ["HOOK", "PROBLEM", "ENGINEERING_SOLUTION", "CRITICAL_EVALUATION"] as const;
 export type ChapterType = typeof CHAPTER_ORDER[number];
@@ -372,4 +373,35 @@ export function sourceLines(contexts: readonly SourceContext[], charLimit = 120_
 export function quantityLines(contexts: readonly SourceContext[]): string[] {
   return contexts.flatMap(context => context.segments.flatMap(segment => (segment.quantities ?? []).map(quantity =>
     `[${context.source_id}:${segment.start.toFixed(1)}-${segment.end.toFixed(1)}] ${quantity.text}${quantity.imperial ? ` = ${quantity.imperial}` : ""}${quantity.comparisons?.length ? `; ${quantity.comparisons.join("; ")}` : ""}`)));
+}
+
+/** A text for the editor's Chữ track: output time, length, words and look. */
+export type Callout = { at: number; seconds: number; text: string; look: Partial<TextLook> };
+
+/** Dark slate card (rgba(15, 23, 42, 0.9): the editor steps opacity by 0.05), neon accent; white words. */
+const CARD = { font: "Segoe UI", color: "#FFFFFF", outline: "#38BDF8", outline_width: 2, box: "#0F172A", box_opacity: 0.9,
+  bold: true, italic: false, animation: "pop", anim_duration: 0.4 } as const satisfies Partial<TextLook>;
+const CALLOUT_LOOKS: Record<GraphicType, Partial<TextLook>> = {
+  METRIC_CALLOUT: { ...CARD, size: 54, align: "center", x: 0.76, y: 0.2, w: 0.36 },
+  LOWER_THIRD: { ...CARD, size: 46, align: "left", x: 0.3, y: 0.82, w: 0.5, animation: "slide-up" },
+  LABEL: { ...CARD, size: 44, align: "center", x: 0.5, y: 0.5, w: 0.4, animation: "fade" },
+};
+export const CALLOUT_SECONDS = 5;
+
+/**
+ * The script's on-screen graphics as Chữ texts at their scene's narrated time
+ * (a little after the scene starts, at most 5 s and never past the scene).
+ */
+export function calloutTexts(script: DocuScript | null, timeline: NarrationTimeline | null): Callout[] {
+  if (!script || !timeline) return [];
+  const times = new Map(timeline.scenes.map(scene => [scene.scene_id, scene]));
+  return flattenScenes(script.chapters).flatMap(({ scene }) => {
+    const graphic = scene.on_screen_graphic, timed = times.get(scene.scene_id);
+    if (!graphic || !timed) return [];
+    const lines = graphic.type === "METRIC_CALLOUT" ? [graphic.value, graphic.title, graphic.subtext]
+      : [graphic.title, graphic.value, graphic.subtext];
+    const text = lines.map(line => line.trim()).filter(Boolean).join("\n");
+    const at = Math.round((timed.start + 0.3) * 1000) / 1000, seconds = Math.min(CALLOUT_SECONDS, Math.max(1, timed.slot_end - at));
+    return text ? [{ at, seconds, text, look: CALLOUT_LOOKS[graphic.type] }] : [];
+  });
 }

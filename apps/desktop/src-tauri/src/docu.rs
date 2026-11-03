@@ -155,6 +155,11 @@ fn output_dir(base: &Path, title: &str, seed: &str) -> PathBuf {
     base.join("DubFlow Output").join(format!("{PREFIX}{}", crate::product::folder_title(title))).join(format!("run-{run}"))
 }
 
+/// A documentary run folder (the editor opens its `documentary.mp4`).
+pub(crate) fn is_run(dir: &Path) -> bool {
+    docu_dir(&display_path(dir)).is_ok()
+}
+
 fn docu_dir(value: &str) -> Result<PathBuf, String> {
     let path = Path::new(value);
     if !path.is_absolute() || path.components().any(|component| matches!(component, std::path::Component::ParentDir)) {
