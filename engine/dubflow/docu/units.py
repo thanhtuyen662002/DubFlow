@@ -363,6 +363,22 @@ def extract(text: str) -> list[Quantity]:
     return found
 
 
+def extract_after(previous: str, text: str) -> list[Quantity]:
+    """Quantities in ``text`` read with the end of the line before it.
+
+    Speech recognition splits sentences: "经过加压输送的日处理能力" / "达1万吨的污水处理中心" made a daily
+    wastewater throughput look like a 10,000-ton object (compared to 25 Boeing 747s). Only quantities that
+    start inside ``text`` are returned; their positions are relative to ``text``.
+    """
+    tail = previous[-12:]
+    found = []
+    for quantity in extract(tail + text):
+        if quantity.start >= len(tail):
+            found.append(Quantity(quantity.text, quantity.value, quantity.dimension, quantity.start - len(tail),
+                                  quantity.end - len(tail), quantity.benchmark, quantity.from_cny, quantity.rate))
+    return found
+
+
 def _figure(value: float) -> str:
     rounded = float(f"{value:.4g}")
     if rounded >= 1000:

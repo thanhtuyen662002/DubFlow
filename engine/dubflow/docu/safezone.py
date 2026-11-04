@@ -131,7 +131,7 @@ def scan_band(video: Path, *, duration: float, speech: Iterable[tuple[float, flo
     return band, size
 
 
-LOGO_RECIPE = "fixed-text-full-frame-v2"
+LOGO_RECIPE = "fixed-text-full-frame-v3"
 # Around each sample with big text (samples are 2 s apart), how much footage to leave out.
 TEXT_PAD = 1.2
 LOGO_PAD = 0.012
