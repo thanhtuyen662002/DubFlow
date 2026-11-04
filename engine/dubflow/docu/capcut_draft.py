@@ -63,7 +63,15 @@ def _template() -> dict[str, Any]:
 
 def folder_name(title: str, root: Path) -> str:
     """``DubFlow - <title>``, numbered when a draft of that name exists."""
-    base = re.sub(r"\s+", " ", _UNSAFE.sub(" ", f"DubFlow - {title}")).strip(" .")[:80] or "DubFlow"
+    base = re.sub(r"\s+", " ", _UNSAFE.sub(" ", f"DubFlow - {title}")).strip(" .")
+    if len(base) > 80:
+        # Cut at a word, not mid-word ("… 1.2 Million Pigs in a"): drop the trailing short words too.
+        cut = base[:80].rsplit(" ", 1)[0]
+        words = cut.split(" ")
+        while len(words) > 3 and len(words[-1]) <= 3:
+            words.pop()
+        base = " ".join(words).rstrip(" .,:;-–")
+    base = base or "DubFlow"
     name, number = base, 2
     while (root / name).exists():
         name, number = f"{base} ({number})", number + 1

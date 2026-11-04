@@ -112,6 +112,54 @@ def _collapse_repeats(text: str | None) -> str | None:
     return collapsed if collapsed.strip() else text
 
 
+COVERAGE_GAP_MIN_S = 15.0
+COVERAGE_GAP_LOUD_DBFS = -40.0
+COVERAGE_GAP_LOUD_SHARE = 0.6
+
+
+def _loud_seconds(audio_path: Path) -> list[bool]:
+    """Per second of a PCM WAV: is it louder than ``COVERAGE_GAP_LOUD_DBFS`` (music or speech, not silence)?"""
+    import array
+    import wave
+
+    with wave.open(str(audio_path), "rb") as reader:
+        if reader.getsampwidth() != 2:
+            return []
+        rate, channels = reader.getframerate(), reader.getnchannels()
+        loud: list[bool] = []
+        step = max(1, rate // 1000) * channels  # about 1,000 samples a second is plenty for a level
+        while True:
+            frames = reader.readframes(rate)
+            if not frames:
+                return loud
+            samples = array.array("h", frames)[::step]
+            if not samples:
+                return loud
+            rms = math.sqrt(sum(value * value for value in samples) / len(samples)) / 32768
+            loud.append(rms > 0 and 20 * math.log10(rms) > COVERAGE_GAP_LOUD_DBFS)
+
+
+def _coverage_gaps(cues: Sequence["TextCue"], loud: Sequence[bool]) -> list[tuple[int, int]]:
+    """Stretches of at least ``COVERAGE_GAP_MIN_S`` with no recognised speech that are mostly not silent, in seconds.
+
+    A source whose last 72 s were audible but got no cues passed QC with no warning (2026-11-04); a long
+    instrumental passage is flagged too, which is the point: someone should listen before trusting the subtitles.
+    """
+    covered = sorted((cue.start_ms / 1000, cue.end_ms / 1000) for cue in cues)
+    gaps, position = [], 0.0
+    for start, end in covered + [(float(len(loud)), float(len(loud)))]:
+        if start - position >= COVERAGE_GAP_MIN_S:
+            window = loud[int(position):int(start)]
+            if window and sum(window) / len(window) >= COVERAGE_GAP_LOUD_SHARE:
+                gaps.append((int(position), int(start)))
+        position = max(position, end)
+    return gaps
+
+
+def _clock(seconds: int) -> str:
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
 def _without_repeat_loops(cues: Sequence["TextCue"]) -> tuple[tuple["TextCue", ...], int]:
     cleaned = tuple(replace(cue, source_text=_collapse_repeats(cue.source_text), translated_text=_collapse_repeats(cue.translated_text))
                     for cue in cues)
@@ -1681,6 +1729,17 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     cues, looped = _without_repeat_loops(cues)
     if looped:
         warnings.append(f"ASR_REPETITION_COLLAPSED: {looped} cue(s) had a repeated-token loop removed")
+    if transcript_source == "faster-whisper" and audio_path.is_file():
+        try:
+            gaps = _coverage_gaps(cues, _loud_seconds(audio_path))
+        except (OSError, EOFError, ValueError) as error:  # a level check must not fail the job
+            gaps = []
+            warnings.append(f"ASR_COVERAGE_UNCHECKED: {type(error).__name__}")
+        if gaps:
+            total = sum(end - start for start, end in gaps)
+            spans = ", ".join(f"{_clock(start)}–{_clock(end)}" for start, end in gaps[:4])
+            warnings.append(f"ASR_COVERAGE_GAP: {total} s of audible audio has no recognised speech ({spans}); "
+                            "listen to it: missed speech, or music")
     speaker_result, casting = None, {}
     voice_by_cue = None
     speaker_summary = None
