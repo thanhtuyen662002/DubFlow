@@ -14,7 +14,7 @@ without the model; :class:`CaptionScanner` wires in FFmpeg and ONNX Runtime.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator, Sequence
@@ -72,9 +72,15 @@ class ScanResult:
     samples: int
     caption_samples: int
     fixed_text: tuple[TextBox, ...]
+    # Every caption line seen while someone speaks, as (time s, top, bottom) in frame fractions.
+    # Blur regions are unions over whole segments; where captions *usually* sit is read from these.
+    caption_rows: tuple[tuple[float, float, float], ...] = ()
+    # The analysed frame's width and height in pixels, after FFmpeg's display rotation.
+    frame_size: tuple[int, int] | None = None
 
     def summary(self) -> dict:
         return {"recipe": SCAN_RECIPE, "samples": self.samples, "caption_samples": self.caption_samples,
+                "caption_rows": len(self.caption_rows), "frame_size": list(self.frame_size) if self.frame_size else None,
                 "regions": len(self.regions), "kept_fixed_text": [{"x": round(b.x, 4), "y": round(b.y, 4), "w": round(b.w, 4), "h": round(b.h, 4)} for b in self.fixed_text]}
 
 
@@ -184,9 +190,12 @@ def plan_regions(samples: Sequence[tuple[float, Sequence[TextBox]]], duration_s:
     open_tracks: list[list[float]] = []
     segments: list[list[float]] = []
     caption_samples = 0
+    rows: list[tuple[float, float, float]] = []
     for time_s, boxes in samples:
         captions = [box for box in boxes if is_caption(box) and not any(_iou(box, known) > 0.5 for known in fixed)]
         caption_samples += bool(captions)
+        if speech_ms is None or _speech_share(time_s - half, time_s + half, speech_ms) > 0:
+            rows.extend((round(time_s, 3), round(box.y, 4), round(box.y + box.h, 4)) for box in captions)
         segments.extend(track for track in open_tracks if time_s - half - track[1] > SEGMENT_GAP_S)
         open_tracks = [track for track in open_tracks if time_s - half - track[1] <= SEGMENT_GAP_S]
         for box in captions:
@@ -218,7 +227,7 @@ def plan_regions(samples: Sequence[tuple[float, Sequence[TextBox]]], duration_s:
         if end_ms <= start_ms or right - left < 0.01 or bottom - top < 0.01:
             continue
         regions.append(BlurRegion(round(left, 4), round(top, 4), round(right - left, 4), round(bottom - top, 4), start_ms, end_ms))
-    return ScanResult(tuple(regions), len(samples), caption_samples, tuple(fixed))
+    return ScanResult(tuple(regions), len(samples), caption_samples, tuple(fixed), tuple(rows))
 
 
 class CaptionScanner:
@@ -277,15 +286,17 @@ class CaptionScanner:
     def scan(self, source: Path, *, duration_s: float, speech_ms: Sequence[tuple[int, int]] | None = None,
              progress: Callable[[float], None] | None = None) -> ScanResult:
         samples = []
+        size: tuple[int, int] | None = None
         expected = max(1.0, duration_s * SAMPLE_FPS)
         for time_s, frame in self._frames(source):
             height = frame.shape[0]
+            size = size or (int(frame.shape[1]), int(height))
             band = max(32, int(height * (1 - BAND_TOP)) // 32 * 32)
             top = max(0, height - band)
             samples.append((time_s, self.detect(frame[top:], top / height, (height - top) / height)))
             if progress and len(samples) % 10 == 0:
                 progress(min(1.0, len(samples) / expected))
-        return plan_regions(samples, duration_s, speech_ms=speech_ms)
+        return replace(plan_regions(samples, duration_s, speech_ms=speech_ms), frame_size=size)
 
 
 def _read_ppm_header(stream) -> tuple[int, int] | None:

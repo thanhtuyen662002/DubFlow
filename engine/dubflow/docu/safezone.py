@@ -22,6 +22,13 @@ LETTERBOX_BAR = (1 - (16 / 9) / 2.35) / 2
 # A source counts as captioned when captions are on screen this share of its speech.
 MIN_CAPTION_SHARE = 0.25
 MARGIN = 0.01
+# How the band is read from the scan. Part of the cache identity: a new rule rescans.
+BAND_RECIPE = "caption-rows-densest-v2"
+# Captions sit on one or two lines at one height; the band is the densest window of line centres this tall.
+ROW_WINDOW = 0.12
+# A second caption line sits about one line height (0.05–0.07) from the first; text further away is not a caption.
+ROW_REACH = 0.08
+SAMPLE_FPS = 2.0
 
 
 @dataclass(frozen=True)
@@ -46,19 +53,34 @@ class Framing:
         return {"zoom": round(self.zoom, 4), "shift": round(self.shift, 4), "letterbox": round(self.letterbox, 4), "clear": self.clear}
 
 
-def caption_band(regions: Sequence[Any], speech_seconds: float) -> Band | None:
-    """The vertical span the captions use, when they are on screen often enough to matter."""
-    if not regions or speech_seconds <= 0:
+def band_from_rows(rows: Sequence[tuple[float, float, float]], speech_seconds: float, *,
+                   sample_fps: float = SAMPLE_FPS) -> Band | None:
+    """Where the captions usually sit, from every caption line seen during speech.
+
+    Title cards, big numbers and lower-thirds also pass the caption test now and then. A union or a low
+    percentile of them pushes the band halfway up the frame, so only the lines within ``ROW_REACH``
+    of the median line of the busiest window count; the band spans their 5th to 95th percentile.
+    """
+    if not rows or speech_seconds <= 0:
         return None
-    shown = sum(max(0, (r.end_ms or 0) - (r.start_ms or 0)) for r in regions) / 1000
-    share = min(1.0, shown / speech_seconds)
+    share = min(1.0, len({time for time, _, _ in rows}) / (speech_seconds * sample_fps))
     if share < MIN_CAPTION_SHARE:
         return None
-    tops = sorted(r.y for r in regions)
-    bottoms = sorted(r.y + r.h for r in regions)
-    # The 10th/90th percentile ignore a stray high or low detection.
-    top = tops[len(tops) // 10]
-    bottom = bottoms[min(len(bottoms) - 1, len(bottoms) * 9 // 10)]
+    centres = sorted((top + bottom) / 2 for _, top, bottom in rows)
+    best, low = (0, 0.0), 0
+    for high, centre in enumerate(centres):
+        while centre - centres[low] > ROW_WINDOW:
+            low += 1
+        # Ties go to the lower window: captions live at the bottom, titles above them.
+        if high - low + 1 >= best[0]:
+            best = (high - low + 1, centres[low])
+    # Centre the window on the captions' median line so stray text at its edge drops out.
+    inside = [centre for centre in centres if best[1] <= centre <= best[1] + ROW_WINDOW]
+    middle = inside[len(inside) // 2]
+    kept = [(top, bottom) for _, top, bottom in rows if abs((top + bottom) / 2 - middle) <= ROW_REACH]
+    tops, bottoms = sorted(top for top, _ in kept), sorted(bottom for _, bottom in kept)
+    top = tops[len(tops) * 5 // 100]
+    bottom = bottoms[min(len(bottoms) - 1, len(bottoms) * 95 // 100)]
     return Band(round(top, 4), round(bottom, 4), round(share, 3))
 
 
@@ -86,18 +108,29 @@ def framing(band: Band | None, preset: str) -> Framing:
 
 
 def scan_band(video: Path, *, duration: float, speech: Iterable[tuple[float, float]], cache: Path,
-              scanner: Callable[[], Any], identity: dict[str, Any]) -> Band | None:
-    """Scan once per source file and recipe; ``scanner`` builds the OCR scanner only when needed."""
+              scanner: Callable[[], Any], identity: dict[str, Any]) -> tuple[Band | None, tuple[int, int] | None]:
+    """The caption band and the picture size, scanned once per source file and recipe.
+
+    ``scanner`` builds the OCR scanner only when needed. A scan saved under an older ``BAND_RECIPE`` (the band
+    read from merged blur regions) is scanned again.
+    """
+    identity = {**identity, "band": BAND_RECIPE}
     try:
         saved = json.loads(cache.read_text(encoding="utf-8"))
         if saved.get("identity") == identity:
-            band = saved.get("band")
-            return Band(**band) if band else None
+            band, size = saved.get("band"), saved.get("frame_size")
+            return (Band(**band) if band else None), (tuple(size) if isinstance(size, list) and len(size) == 2 else None)
     except (OSError, ValueError, TypeError):
         pass
     spans = [(round(start * 1000), round(end * 1000)) for start, end in speech]
     result = scanner().scan(video, duration_s=duration, speech_ms=spans)
-    band = caption_band(result.regions, sum(end - start for start, end in spans) / 1000)
-    write_json(cache, {"schema_version": 1, "identity": identity, "band": band.__dict__ if band else None,
-                       "summary": result.summary()})
-    return band
+    band = band_from_rows(result.caption_rows, sum(end - start for start, end in spans) / 1000)
+    size = tuple(result.frame_size) if result.frame_size else None
+    write_json(cache, {"schema_version": 2, "identity": identity, "band": band.__dict__ if band else None,
+                       "frame_size": list(size) if size else None, "summary": result.summary()})
+    return band, size
+
+
+def is_portrait(size: Sequence[int] | None) -> bool:
+    """A picture taller than wide (a phone video): a 16:9 frame keeps only a strip of it."""
+    return bool(size) and len(size) == 2 and size[1] > size[0]

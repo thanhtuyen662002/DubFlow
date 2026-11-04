@@ -41,11 +41,54 @@ class ShotTests(unittest.TestCase):
 
 class SafeZoneTests(unittest.TestCase):
     def test_band_needs_captions_most_of_the_speech(self):
-        regions = [BlurRegion(0.2, 0.86, 0.6, 0.06, i * 1000, i * 1000 + 800) for i in range(10)]
-        band = safezone.caption_band(regions, 10.0)
+        rows = [(i / 2, 0.86, 0.92) for i in range(16)]
+        band = safezone.band_from_rows(rows, 10.0)
         self.assertEqual((band.top, band.bottom, band.share), (0.86, 0.92, 0.8))
-        self.assertIsNone(safezone.caption_band(regions[:2], 10.0))
-        self.assertIsNone(safezone.caption_band([], 10.0))
+        self.assertIsNone(safezone.band_from_rows(rows[:4], 10.0))
+        self.assertIsNone(safezone.band_from_rows([], 10.0))
+
+    def test_title_cards_do_not_pull_the_band_up(self):
+        # 2026-11-04 pig-tower run: captions at 0.88–0.95 in most samples, plus a few centred title cards
+        # ("120万头猪要怎么养?", "1.4万m²") at 0.45–0.65. The old union of merged regions put the band top at 0.39.
+        rows = [(i / 2, 0.88 + (i % 3) * 0.004, 0.945 + (i % 3) * 0.004) for i in range(200)]
+        rows += [(100 + i / 2, 0.45, 0.62) for i in range(12)] + [(110 + i / 2, 0.52, 0.66) for i in range(8)]
+        band = safezone.band_from_rows(rows, 110.0)
+        self.assertGreaterEqual(band.top, 0.87)
+        self.assertLessEqual(band.bottom, 0.96)
+        self.assertTrue(safezone.framing(band, "letterbox_235").clear)
+
+    def test_two_caption_lines_make_one_band(self):
+        rows = [(i / 2, 0.80, 0.85) for i in range(40)] + [(i / 2, 0.86, 0.91) for i in range(40)]
+        band = safezone.band_from_rows(rows, 20.0)
+        self.assertEqual((band.top, band.bottom), (0.8, 0.91))
+
+    def test_scan_band_rescans_old_recipes_and_keeps_the_picture_size(self):
+        class Result:
+            caption_rows = tuple((i / 2, 0.87, 0.94) for i in range(20))
+            frame_size = (360, 640)
+
+            def summary(self):
+                return {}
+
+        class Scanner:
+            calls = 0
+
+            def scan(self, video, duration_s, speech_ms):
+                Scanner.calls += 1
+                return Result()
+
+        with TemporaryDirectory() as temp:
+            cache = Path(temp) / "captions.json"
+            # A scan saved by 1.1.49: same identity, band read from merged regions.
+            write_json(cache, {"schema_version": 1, "identity": {"recipe": "r"}, "band": {"top": 0.39, "bottom": 1.0, "share": 1.0}})
+            args = dict(duration=10.0, speech=[(0.0, 10.0)], cache=cache, scanner=Scanner, identity={"recipe": "r"})
+            band, size = safezone.scan_band(Path(temp) / "a.mp4", **args)
+            self.assertEqual((band.top, size), (0.87, (360, 640)))
+            self.assertTrue(safezone.is_portrait(size))
+            self.assertEqual(safezone.scan_band(Path(temp) / "a.mp4", **args), (band, size))
+            self.assertEqual(Scanner.calls, 1)
+        self.assertFalse(safezone.is_portrait((1920, 1080)))
+        self.assertFalse(safezone.is_portrait(None))
 
     def test_framing_hides_the_band_within_the_limits(self):
         band = safezone.Band(0.86, 0.93, 0.9)
@@ -118,6 +161,15 @@ class MatcherTests(unittest.TestCase):
         self.assertTrue(planned[1][2])
         self.assertEqual(matcher.plan(scenes, sources()), planned, "deterministic")
 
+    def test_a_portrait_source_is_the_last_resort(self):
+        phone = matcher.Source("src_03", 120.0, tuple(float(t) for t in range(5, 120, 5)), portrait=True)
+        scenes = [matcher.Scene("sc_001", 0, 12.0, (matcher.Ref("src_03", 10, 40), matcher.Ref("src_01", 10, 30)))]
+        pieces = matcher.plan(scenes, [*sources(), phone])[0][1]
+        self.assertNotIn("src_03", {piece.source_id for piece in pieces})
+        # With nothing else left, the phone video still fills the scene.
+        only = matcher.plan(scenes, [phone])[0][1]
+        self.assertEqual({piece.source_id for piece in only}, {"src_03"})
+
     def test_reuse_is_the_last_resort(self):
         tiny = [matcher.Source("src_01", 8.0, (4.0,)), matcher.Source("src_02", 8.0, (4.0,))]
         scenes = [matcher.Scene(f"sc_{i:03d}", i * 4.0, (i + 1) * 4.0, (matcher.Ref("src_01", 0, 8),)) for i in range(6)]
@@ -158,7 +210,8 @@ class VisualRunTests(unittest.TestCase):
             self.assertEqual(plan["script_sha256"], checked["script_sha256"])
             self.assertEqual([s["scene_id"] for s in plan["scenes"]], ["sc_001", "sc_002"])
             self.assertEqual(plan["scenes"][0]["start"], 0.0, "the picture starts with the film")
-            self.assertEqual(plan["sources"][0]["framing"], {"band": None, "zoom": 1.0, "shift": 0.0, "letterbox": 0.1217, "clear": True})
+            self.assertEqual(plan["sources"][0]["framing"], {"band": None, "zoom": 1.0, "shift": 0.0, "letterbox": 0.1217, "clear": True,
+                                                             "frame_size": None, "portrait": False})
             self.assertAlmostEqual(sum(s["duration"] for scene in plan["scenes"] for s in scene["slices"]), 9.0, places=2)
 
 

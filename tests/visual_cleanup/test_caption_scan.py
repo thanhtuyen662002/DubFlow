@@ -90,6 +90,10 @@ class PlanRegionTests(unittest.TestCase):
         speech = [(5000, 8000)]
         result = plan_regions(self.samples(9, boxes_at), 9.0, speech_ms=speech)
         self.assertEqual([(r.start_ms, r.end_ms) for r in result.regions], [(4750, 7750)])
+        # Caption rows (where captions sit, for documentary framing) are also only those seen during speech.
+        self.assertTrue(result.caption_rows)
+        self.assertTrue(all(4.5 <= time < 8.5 and (top, bottom) == (0.85, 0.9) for time, top, bottom in result.caption_rows))
+        self.assertEqual(result.summary()["caption_rows"], len(result.caption_rows))
         self.assertEqual(len(plan_regions(self.samples(9, boxes_at), 9.0).regions), 2)
 
     def test_two_caption_lines_are_tracked_separately_and_regions_are_capped(self):
