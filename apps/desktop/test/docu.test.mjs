@@ -231,6 +231,53 @@ assert.deepEqual([withLabels[2].at, withLabels[2].text, withLabels[2].look.x, wi
 assert.equal(parseMcp({ claudeCode: "claude mcp add dubflow", claudeDesktop: "{}" }).claudeCode, "claude mcp add dubflow");
 assert.equal(parseMcp({}), null);
 
+// The player: a slow, older media-URL lookup never overrides the newest one, nor one for another project.
+{
+  const { playerLoader } = await import("../src/features/docu/view.ts");
+  const pending = new Map();
+  const mediaUrl = path => new Promise(resolve => pending.set(path, resolve));
+  let project = "D:/run-a";
+  const loader = playerLoader(mediaUrl, () => project);
+  const applied = [];
+  const later = [];
+  const apply = name => (url, current) => { applied.push([name, url]); later.push([name, current]); };
+  const source = loader.load("src.mp4", apply("source"));
+  const draft = loader.load("documentary.mp4", apply("draft"));
+  pending.get("documentary.mp4")("blob:draft");
+  pending.get("src.mp4")("blob:source");
+  assert.deepEqual([await source, await draft], [false, true]);
+  assert.deepEqual(applied, [["draft", "blob:draft"]]);
+  // A newer load voids the deferred seek of the one already applied.
+  assert.equal(later[0][1](), true);
+  const next = loader.load("src2.mp4", apply("next"));
+  assert.equal(later[0][1](), false);
+  pending.get("src2.mp4")(null);
+  assert.equal(await next, true);
+  assert.deepEqual(applied.at(-1), ["next", null]);
+  // A failed lookup of the newest request still applies (shows the error); an older failure does not.
+  const failing = loader.load("bad.mp4", apply("bad"));
+  const newest = loader.load("ok.mp4", apply("ok"));
+  pending.get("ok.mp4")("blob:ok");
+  pending.get("bad.mp4")(null);
+  assert.deepEqual([await failing, await newest], [false, true]);
+  assert.deepEqual(applied.at(-1), ["ok", "blob:ok"]);
+  // Switching project, or clearing the player, voids a lookup in flight.
+  const switched = loader.load("a.mp4", apply("switched"));
+  project = "D:/run-b";
+  pending.get("a.mp4")("blob:a");
+  assert.equal(await switched, false);
+  const cleared = loader.load("b.mp4", apply("cleared"));
+  loader.cancel();
+  pending.get("b.mp4")("blob:b");
+  assert.equal(await cleared, false);
+  project = undefined;
+  const none = loader.load("c.mp4", apply("none"));
+  project = "D:/run-c";
+  pending.get("c.mp4")("blob:c");
+  assert.equal(await none, false);
+  assert.deepEqual(applied.map(([name]) => name), ["draft", "next", "ok"]);
+}
+
 console.log("docu model and AI passed");
 
 // What Claude does over MCP (control/mcp-activity.json from the MCP server).
