@@ -63,7 +63,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
                 <h3 id="docu-source-title">Nguồn (2–5)</h3>
                 <label>Video đã hoàn tất<select id="docu-job-select"></select></label>
                 <button id="docu-add-job" class="btn" type="button">Thêm video đã xong</button>
-                <button id="docu-add-file" class="btn" type="button">Thêm video và phụ đề</button>
+                <button id="docu-add-file" class="btn" type="button">Thêm video (kèm phụ đề nếu có)</button>
+                <p class="hint">Video không có phụ đề .srt: DubFlow tự nhận dạng lời khi tạo dự án (vài phút mỗi video).</p>
                 <ol id="docu-source-order" class="docu-source-order"></ol>
               </section>
               <label>Thư mục lưu<input id="docu-output-root" readonly /></label>
@@ -642,10 +643,12 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     try {
       const videoPath = await invoke<string | null>("docu_pick_file", { kind: "video" });
       if (!videoPath) return;
-      const subtitlePath = await invoke<string | null>("docu_pick_file", { kind: "subtitles" });
-      if (!subtitlePath) return;
+      const withSubtitles = await confirmDialog({ title: "Phụ đề của video", message: "Video này có file phụ đề .srt không? Nếu không, DubFlow tự nhận dạng lời khi tạo dự án.",
+        confirmLabel: "Chọn file .srt", cancelLabel: "Không có, tự nhận dạng" });
+      const subtitlePath = withSubtitles ? await invoke("docu_pick_file", { kind: "subtitles" }) as string | null : null;
+      if (withSubtitles && !subtitlePath) return;
       if (sourceForms.some(source => source.kind === "file" && source.video === videoPath)) { $("#docu-setup-state").textContent = "Video này đã có trong danh sách nguồn."; return; }
-      sourceForms.push({ kind: "file", video: videoPath, subtitles: subtitlePath, title: videoName(videoPath).replace(/\.[^.]+$/, "") });
+      sourceForms.push({ kind: "file", video: videoPath, subtitles: subtitlePath ?? undefined, title: videoName(videoPath).replace(/\.[^.]+$/, "") });
       renderSourcePicker();
     } catch (error) { $("#docu-setup-state").textContent = error instanceof Error ? error.message : String(error); }
   }

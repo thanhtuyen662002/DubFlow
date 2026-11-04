@@ -47,7 +47,8 @@ struct ResolvedSource {
     id: String,
     title: String,
     video: PathBuf,
-    transcript: PathBuf,
+    // None: no subtitles; the video's speech is recognised once the run folder exists.
+    transcript: Option<PathBuf>,
     origin_url: Option<String>,
     credit: Option<Value>,
 }
@@ -113,7 +114,7 @@ fn resolve_job(output_path: &str, title: &str) -> Result<ResolvedSource, String>
         let url = credit.get("url").and_then(Value::as_str).filter(|url| !url.trim().is_empty()).map(str::to_owned);
         (url, Some(credit))
     } else { (None, None) };
-    Ok(ResolvedSource { id: String::new(), title: title.to_owned(), video: source_path, transcript, origin_url, credit })
+    Ok(ResolvedSource { id: String::new(), title: title.to_owned(), video: source_path, transcript: Some(transcript), origin_url, credit })
 }
 
 fn resolve_sources(request: &DocuRequest) -> Result<Vec<ResolvedSource>, String> {
@@ -137,8 +138,11 @@ fn resolve_sources(request: &DocuRequest) -> Result<Vec<ResolvedSource>, String>
                 if source.output_path.is_some() { return Err(fail(format!("Nguồn {}: đường dẫn job không hợp lệ", index + 1))); }
                 let video = absolute_file(source.video.as_deref().unwrap_or_default(), &VIDEO_EXTENSIONS, None)
                     .map_err(|_| fail(format!("Nguồn {}: chọn video MP4, MOV, MKV, WEBM, AVI, M4V hoặc FLV", index + 1)))?;
-                let transcript = absolute_file(source.subtitles.as_deref().unwrap_or_default(), &["srt"], Some(8 * 1024 * 1024))
-                    .map_err(|_| fail(format!("Nguồn {}: chọn phụ đề SRT không quá 8 MB", index + 1)))?;
+                let transcript = match source.subtitles.as_deref().filter(|value| !value.is_empty()) {
+                    Some(value) => Some(absolute_file(value, &["srt"], Some(8 * 1024 * 1024))
+                        .map_err(|_| fail(format!("Nguồn {}: chọn phụ đề SRT không quá 8 MB", index + 1)))?),
+                    None => None,
+                };
                 ResolvedSource { id: String::new(), title: source.title.clone(), video, transcript, origin_url: None, credit: None }
             }
             _ => return Err(fail(format!("Nguồn {}: loại nguồn không hợp lệ", index + 1))),
@@ -237,6 +241,12 @@ fn read_spec(work: &Path) -> Option<Value> {
         .filter(|spec| spec["schema_version"] == 1 && spec["sources"].is_array())
 }
 
+fn transcribe_args(video: &Path, out: &Path, root: &Path, models: &Path) -> Vec<OsString> {
+    vec!["-m".into(), "engine.dubflow.docu".into(), "transcribe".into(), "--video".into(), video.into(), "--out-dir".into(), out.into(),
+        "--app-root".into(), root.join("app").into(), "--model-root".into(), models.into(),
+        "--ffmpeg".into(), root.join("runtime/media/ffmpeg.exe").into()]
+}
+
 fn context_args(spec: &Path, ffprobe: &Path) -> Vec<OsString> {
     vec!["-m".into(), "engine.dubflow.docu".into(), "context".into(), "--spec".into(), spec.into(), "--ffprobe".into(), ffprobe.into()]
 }
@@ -278,8 +288,17 @@ pub async fn docu_create(request: DocuRequest) -> Result<Value, String> {
     fs::create_dir(&output).map_err(|_| fail("Không tạo được phiên phim tài liệu mới"))?;
     let work = output.join(".dubflow-work");
     fs::create_dir(&work).map_err(|_| fail("Không tạo được thư mục làm việc phim tài liệu"))?;
+    let mut sources = sources;
+    for source in sources.iter_mut().filter(|source| source.transcript.is_none()) {
+        let out = work.join("sources").join(&source.id);
+        let root = version_root()?;
+        let result = python_json(transcribe_args(&source.video, &out, &root, &control_root()?.join("models")), "bộ nhận dạng lời").await?;
+        if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
+        source.transcript = Some(out.join("transcript.json"));
+    }
     let spec_sources: Vec<Value> = sources.iter().map(|source| json!({
-        "id": source.id, "title": source.title, "video": display_path(&source.video), "transcript": display_path(&source.transcript),
+        "id": source.id, "title": source.title, "video": display_path(&source.video),
+        "transcript": source.transcript.as_deref().map(display_path),
         "origin_url": source.origin_url, "credit": source.credit,
     })).collect();
     let spec = json!({ "schema_version": 1, "title": request.title.trim(), "topic": request.topic.trim(),
@@ -666,6 +685,15 @@ mod tests {
         let mut unknown = valid;
         unknown["extra"] = json!(true);
         assert!(serde_json::from_value::<DocuRequest>(unknown).is_err());
+        // No subtitles: accepted; the speech is recognised when the run folder exists.
+        let plain = json!({"kind":"file","video":display_path(&video),"title":"Plain"});
+        let resolved = resolve_sources(&request(vec![plain.clone(), local_source(&video, &subtitles, "B")])).unwrap();
+        assert!(resolved[0].transcript.is_none());
+        assert!(resolved[1].transcript.is_some());
+        let args: Vec<String> = transcribe_args(&video, Path::new("C:/run/src_01"), Path::new("C:/v"), Path::new("C:/m"))
+            .iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(&args[..3], ["-m", "engine.dubflow.docu", "transcribe"]);
+        assert!(args.contains(&"C:/m".to_owned()) && args.iter().any(|arg| arg.ends_with("app")));
         fs::write(&subtitles, vec![b' '; 8 * 1024 * 1024 + 1]).unwrap();
         assert!(resolve_sources(&request(vec![local_source(&video, &subtitles, "A"), local_source(&video, &subtitles, "B")])).is_err());
         fs::remove_dir_all(base).unwrap();
@@ -685,7 +713,7 @@ mod tests {
         fs::write(job.join("source_credit.json"), json!({"schema_version":1,"url":"https://example.org/a"}).to_string()).unwrap();
         let source = resolve_job(&display_path(&job.join("final_vi.mp4")), "Job title").unwrap();
         assert_eq!(source.video, original);
-        assert_eq!(display_path(&source.transcript), display_path(&job.canonicalize().unwrap().join(".dubflow-work").join("transcript.json")));
+        assert_eq!(display_path(source.transcript.as_deref().unwrap()), display_path(&job.canonicalize().unwrap().join(".dubflow-work").join("transcript.json")));
         assert_eq!(source.origin_url.as_deref(), Some("https://example.org/a"));
         assert!(source.credit.is_some());
         fs::remove_dir_all(base).unwrap();

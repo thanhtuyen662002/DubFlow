@@ -18,7 +18,7 @@ export type AmbientSfx = typeof AMBIENT_SFX[number];
 
 export type DocuSource =
   | { kind: "job"; outputPath: string; title: string }
-  | { kind: "file"; video: string; subtitles: string; title: string };
+  | { kind: "file"; video: string; subtitles: string | null; title: string };
 export type DocuRequest = {
   title: string; topic: string; targetMinutes: number; cinematicFramingPreset: FramingPreset;
   burnEndCredits: boolean; sources: DocuSource[]; outputRoot: string | null;
@@ -127,11 +127,12 @@ export function buildRequest(input: {
       }
       sources.push({ kind: "job", outputPath: source.outputPath, title: source.title.trim() });
     } else if (source.kind === "file") {
+      // Without subtitles, DubFlow recognises the video's speech when the project is created (#485).
       if (!source.video || !absolute(source.video) || !VIDEO_EXT.test(source.video)
-          || !source.subtitles || !absolute(source.subtitles) || !/\.srt$/i.test(source.subtitles)) {
-        return `Nguồn ${index + 1}: chọn video và phụ đề SRT hợp lệ.`;
+          || (source.subtitles && (!absolute(source.subtitles) || !/\.srt$/i.test(source.subtitles)))) {
+        return `Nguồn ${index + 1}: chọn video hợp lệ (phụ đề, nếu có, phải là file SRT).`;
       }
-      sources.push({ kind: "file", video: source.video, subtitles: source.subtitles, title: source.title.trim() });
+      sources.push({ kind: "file", video: source.video, subtitles: source.subtitles || null, title: source.title.trim() });
     } else return `Nguồn ${index + 1}: loại nguồn không hợp lệ.`;
   }
   return { title: input.title.trim(), topic: input.topic.trim(), targetMinutes: minutes,

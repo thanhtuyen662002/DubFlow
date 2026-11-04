@@ -1,4 +1,4 @@
-"""python -m engine.dubflow.docu {context,check,narrate,plan,reframe,options,render,capcut}; the last stdout line is ASCII JSON."""
+"""python -m engine.dubflow.docu {context,check,narrate,plan,reframe,options,transcribe,render,capcut}; the last stdout line is ASCII JSON."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from engine.dubflow.product.job import probe_duration_ms
-from . import capcut_draft, context, narration, overlays, roughcut, script, visual
+from . import capcut_draft, context, narration, overlays, roughcut, script, transcribe, visual
 from .project import DocuError, load_spec, script_path, spec_path, write_json
 
 
@@ -80,6 +80,12 @@ def main(argv: list[str] | None = None) -> int:
     options.add_argument("--captions", choices=("true", "false"))
     options.add_argument("--music", choices=("generated", "file", "none"))
     options.add_argument("--music-path")
+    listen = commands.add_parser("transcribe", help="recognise a plain video's speech into transcript.json")
+    listen.add_argument("--video", type=Path, required=True)
+    listen.add_argument("--out-dir", type=Path, required=True)
+    for name in ("app-root", "model-root", "ffmpeg"):
+        listen.add_argument(f"--{name}", type=Path, required=True)
+    listen.add_argument("--language", default="zh", choices=("zh", "en"))
     capcut = commands.add_parser("capcut", help="write the rough cut as a CapCut draft and list it in CapCut")
     capcut.add_argument("--run-dir", type=Path, required=True)
     capcut.add_argument("--root", type=Path, help="CapCut's draft folder (default: CapCut's own)")
@@ -97,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
             chosen = overlays.save_options(args.run_dir, graphics=flag[args.graphics], captions=flag[args.captions],
                                            music_path=args.music_path, music=args.music)
             result = {"state": "COMPLETED", "message": "", "options": overlays.describe(chosen)}
+        elif args.command == "transcribe":
+            path = transcribe.transcribe(args.video, args.out_dir, app_root=args.app_root, model_root=args.model_root,
+                                         ffmpeg=args.ffmpeg, language=args.language)
+            result = {"state": "COMPLETED", "message": "", "transcript": str(path)}
         elif args.command == "capcut":
             exported = capcut_draft.export(args.run_dir, load_spec(spec_path(args.run_dir)), root=args.root or capcut_draft.default_root())
             result = {"state": "COMPLETED", "message": "", **exported}
