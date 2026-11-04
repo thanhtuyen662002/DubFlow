@@ -605,6 +605,12 @@ pub fn docu_mcp_connection() -> Result<Value, String> {
     Ok(mcp_connection(&version_root()?))
 }
 
+/// What an MCP client (Claude) is doing now and did last, written by the MCP server (engine/dubflow/mcp/activity.py).
+#[tauri::command]
+pub fn docu_mcp_activity() -> Result<Option<Value>, String> {
+    Ok(crate::product::read_small_json(&control_root()?.join("control").join("mcp-activity.json"), 256 * 1024))
+}
+
 /// Start CapCut so the user can open the exported draft.
 #[tauri::command]
 pub fn docu_launch_capcut() -> Result<(), String> {

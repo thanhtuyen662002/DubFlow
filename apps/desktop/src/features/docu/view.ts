@@ -3,9 +3,9 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
-  hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
+  hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
   calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
-  type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
+  type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type McpActivity, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
 import { addText, type Edit } from "../edit/model.ts";
@@ -15,6 +15,8 @@ type Settings = {
   jobs(): readonly DocuJob[]; outputRoot(): string | null; roots?(): string[]; mediaUrl?(path: string): Promise<string | null>;
   /** Open the rough cut in the editor; `seed` fills its first draft. */
   edit?(video: { outputPath: string; displayName: string }, seed: (edit: Edit) => Edit): void;
+  /** What Claude is doing over MCP now (null when idle), for the rail. */
+  mcpBusy?(label: string | null): void;
 };
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
 const videoName = (path: string): string => path.split(/[\\/]/).at(-1) ?? path;
@@ -32,6 +34,12 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     <div id="docu-screen" class="queue-screen docu-screen">
       <section class="queue-col docu-col" aria-labelledby="docu-list-title">
         <div class="queue-col-head"><h2 id="docu-list-title">Phim tài liệu</h2><button id="docu-refresh" class="quiet-btn" type="button">Làm mới</button></div>
+        <section id="docu-mcp-activity" class="docu-mcp-activity" aria-label="Claude đang làm qua MCP" hidden>
+          <div class="docu-mcp-head"><strong>Claude qua MCP</strong><label class="docu-mcp-follow"><input id="docu-mcp-follow" type="checkbox" checked /> Theo dõi</label></div>
+          <p id="docu-mcp-current" class="docu-mcp-current" role="status" aria-live="polite"></p>
+          <button id="docu-mcp-open" class="quiet-btn" type="button" hidden>Mở dự án đang làm</button>
+          <ol id="docu-mcp-recent" class="docu-mcp-recent"></ol>
+        </section>
         <div class="queue-scroll"><ul id="docu-runs" class="queue-list" aria-label="Dự án phim tài liệu"></ul><p id="docu-runs-empty" class="queue-empty">Chưa có dự án phim tài liệu nào.</p></div>
         <div class="queue-col-foot"><button id="docu-new" class="btn block" type="button">Tạo dự án mới</button></div>
       </section>
@@ -618,15 +626,65 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     catch { $("#docu-runs-empty").textContent = "Không tải được danh sách dự án."; }
   }
 
-  async function openRun(dir: string): Promise<void> {
+  async function openRun(dir: string, keepTab = false): Promise<void> {
     try {
       const opened = parseOpen(await invoke("docu_open", { dir }));
       if (!opened) throw new Error("Dữ liệu dự án không hợp lệ.");
       selected = opened; currentScript = opened.script ?? emptyScript(opened.spec.title); narration = opened.narration; visual = opened.visual; render = opened.render; capcut = opened.capcut; labels = opened.labels;
       $("#docu-project-name").textContent = opened.spec.title;
-      renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration(); followVisual(); followRender(); setTab("script");
+      renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); followNarration(); followVisual(); followRender();
+      if (!keepTab) setTab("script");
     } catch (error) { $("#docu-setup-state").textContent = error instanceof Error ? error.message : String(error); }
   }
+
+  // ---- What Claude does over MCP, live (the MCP server writes control/mcp-activity.json) ----
+  let mcpSeen = "";
+  const MCP_PROGRESS: Record<string, string> = { narrate: "docu_narration_status", plan_visuals: "docu_plan_status", render_rough_cut: "docu_render_status",
+    adjust_pacing_and_transitions: "docu_plan_status" };
+  const sameDir = (a?: string | null, b?: string | null) => Boolean(a && b) && a!.replace(/\\/g, "/").toLowerCase() === b!.replace(/\\/g, "/").toLowerCase();
+  const timeOf = (value: unknown) => typeof value === "string" ? new Date(value).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+
+  async function pollMcp(): Promise<void> {
+    let activity: McpActivity | null = null;
+    try { activity = parseMcpActivity(await invoke("docu_mcp_activity")); } catch { return; }
+    const panel = $("#docu-mcp-activity");
+    const current = activity?.current ?? null;
+    const fresh = activity && Date.now() - Date.parse(activity.updated) < 24 * 3600 * 1000;
+    panel.hidden = !activity || (!current && !fresh);
+    settings.mcpBusy?.(current ? current.label : null);
+    if (!activity) return;
+    let progress = "";
+    const command = current?.project ? MCP_PROGRESS[current.tool] : undefined;
+    if (current?.project && command) {
+      try {
+        const info = await invoke(command, { dir: current.project }) as { status?: { done?: number; total?: number; message?: string } | null };
+        const status = info?.status;
+        if (status?.total) progress = ` · ${status.message ?? ""} (${status.done ?? 0}/${status.total})`;
+      } catch { /* the project may not be readable yet */ }
+    }
+    $("#docu-mcp-current").textContent = current ? `Đang làm: ${current.label}${progress}` : "Không làm gì lúc này.";
+    $("#docu-mcp-current").classList.toggle("busy", Boolean(current));
+    const target = current?.project ?? activity.recent[0]?.project ?? null;
+    $("#docu-mcp-open").hidden = !target || sameDir(target, selected?.dir);
+    $("#docu-mcp-open").dataset.dir = target ?? "";
+    $("#docu-mcp-recent").innerHTML = activity.recent.slice(0, 6).map(item => `<li class="${item.state === "failed" ? "failed" : ""}"><time>${escapeHtml(timeOf(item.finished))}</time> ${escapeHtml(item.label)}<small>${escapeHtml(item.state === "failed" ? `Lỗi: ${item.message}` : item.message)}</small></li>`).join("");
+    // Follow: open the project Claude works on, and reload it when a call on it finishes.
+    const follow = $<HTMLInputElement>("#docu-mcp-follow").checked && !root.hidden;
+    const newest = activity.recent[0];
+    const stamp = `${current?.started ?? ""}|${newest?.finished ?? ""}`;
+    if (stamp === mcpSeen) return;
+    const first = mcpSeen === "";
+    mcpSeen = stamp;
+    if (first || !follow) return;
+    if (current?.project && !sameDir(current.project, selected?.dir)) { await openRun(current.project, true); return; }
+    if (newest?.project && newest.state === "done") {
+      if (sameDir(newest.project, selected?.dir) || !selected) await openRun(newest.project, true);
+      if (newest.tool === "create_project" || newest.tool === "list_projects") void refreshRuns();
+    }
+  }
+
+  setInterval(() => void pollMcp(), 2000);
+  void pollMcp();
 
   function newProject(): void {
     selected = null; currentScript = null; sourceForms = []; narration = { audio: null, timeline: null, status: null }; clearInterval(narrationTimer);
@@ -654,6 +712,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   }
 
   $("#docu-refresh").addEventListener("click", () => void refreshRuns());
+  $("#docu-mcp-open").addEventListener("click", () => { const dir = $("#docu-mcp-open").dataset.dir; if (dir) void openRun(dir); });
   $("#docu-new").addEventListener("click", newProject);
   $("#docu-list-toggle").addEventListener("click", () => {
     const open = screen.classList.toggle("list-open"); $("#docu-list-toggle").setAttribute("aria-expanded", String(open));

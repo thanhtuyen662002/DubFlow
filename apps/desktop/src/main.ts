@@ -1575,6 +1575,11 @@ const compilation = mountCompilation(invoke, claudeKey, {
 });
 const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl,
   edit: (video, seed) => void editVideo({ id: video.outputPath, kind: "docu", outputPath: video.outputPath, displayName: video.displayName, seed }, "docu"),
+  // Claude working over MCP: a pulsing dot on "Phim tài liệu" wherever the user is.
+  mcpBusy: label => {
+    $("#nav-docu").classList.toggle("mcp-busy", Boolean(label));
+    $("#nav-docu").title = label ? `Claude đang làm: ${label}` : "";
+  },
 });
 type View = "queue" | "discover" | "product" | "compilation" | "docu";
 const VIEW_HEADINGS: Record<View, [string, string]> = {

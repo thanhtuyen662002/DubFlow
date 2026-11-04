@@ -5,7 +5,7 @@ import {
 } from "../src/features/docu/model.ts";
 import { writeChapter, writeScript } from "../src/features/docu/ai.ts";
 import { addText, createEdit } from "../src/features/edit/model.ts";
-import { calloutTexts, parseRenderOptions } from "../src/features/docu/model.ts";
+import { calloutTexts, parseMcpActivity, parseRenderOptions } from "../src/features/docu/model.ts";
 
 const path = name => `D:\\Documentary\\${name}`;
 const form = { title: "Three Gorges Dam", topic: "Engineering and community impact", targetMinutes: 11,
@@ -232,3 +232,12 @@ assert.equal(parseMcp({ claudeCode: "claude mcp add dubflow", claudeDesktop: "{}
 assert.equal(parseMcp({}), null);
 
 console.log("docu model and AI passed");
+
+// What Claude does over MCP (control/mcp-activity.json from the MCP server).
+const activity = parseMcpActivity({ schema_version: 1, updated: "2026-11-04T07:10:00Z",
+  current: { tool: "narrate", label: "Tạo lời đọc (giọng am_michael)", project: "D:/run", started: "2026-11-04T07:09:00Z" },
+  recent: [{ tool: "save_script", label: "Lưu kịch bản", project: "D:/run", started: "x", finished: "y", state: "done", message: "26 cảnh" }, { bad: true }] });
+assert.equal(activity.current.project, "D:/run");
+assert.deepEqual(activity.recent.map(item => [item.tool, item.state]), [["save_script", "done"]]);
+assert.equal(parseMcpActivity(null), null);
+assert.equal(parseMcpActivity({ updated: "x", current: null, recent: [] }).current, null);
