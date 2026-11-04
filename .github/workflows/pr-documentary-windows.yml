@@ -65,5 +65,5 @@ jobs:
             if ($text -notmatch "(?m)^test $([regex]::Escape($name)) \.\.\. ok\s*$") {
               throw "$name did not run as ok (missing, ignored or failed)"
             }
-            Write-Host "$name: ok"
+            Write-Host "${name}: ok"
           }
