@@ -280,3 +280,27 @@ class ScriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplaceTests(unittest.TestCase):
+    def test_a_reader_holding_the_file_is_waited_out(self):
+        # 2026-11-04: the app polled status.json while following an MCP render; os.replace failed with WinError 5.
+        from unittest.mock import patch
+        from engine.dubflow.docu import project
+        with TemporaryDirectory() as temp:
+            target = Path(temp) / "status.json"
+            calls = []
+            real = project.os.replace
+
+            def busy(source, destination):
+                calls.append(1)
+                if len(calls) < 3:
+                    raise PermissionError(5, "Access is denied")
+                real(source, destination)
+            with patch.object(project.os, "replace", busy), patch.object(project.time, "sleep", lambda seconds: None):
+                project.write_json(target, {"state": "RUNNING"})
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"state": "RUNNING"})
+            self.assertEqual(len(calls), 3)
+            with patch.object(project.os, "replace", lambda *a: (_ for _ in ()).throw(PermissionError(5, "x"))), \
+                    patch.object(project.time, "sleep", lambda seconds: None), self.assertRaises(PermissionError):
+                project.write_json(target, {"state": "DONE"})

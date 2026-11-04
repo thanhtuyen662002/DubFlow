@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any
 import unicodedata
 
@@ -126,4 +127,20 @@ def write_json(path: Path, value: Any) -> None:
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(partial, path)
+    replace(partial, path)
+
+
+def replace(partial: Path, path: Path, *, attempts: int = 50, delay: float = 0.1) -> None:
+    """``os.replace`` that waits out a reader: on Windows a file another process has open cannot be replaced.
+
+    The desktop app reads status files every second or two and plays the rough cut while following an MCP
+    client; a render then failed with WinError 5 at slice 85/97 (2026-11-04). Retried for up to ~5 s.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(partial, path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
