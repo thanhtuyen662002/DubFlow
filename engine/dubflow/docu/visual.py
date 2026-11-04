@@ -195,7 +195,8 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
                                           identity={**ocr_identity, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
                 status.write(done=done, message=f"Đang dò logo kênh trong {source.id}…")
                 logos, texts = safezone.scan_frame_text(source.video, duration=duration, cache=context_path(run_dir, source.id).with_name("logos.json"),
-                                            scanner=scanner, identity={**ocr_identity, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+                                            scanner=scanner, identity={**ocr_identity, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+                                                        band=band)
             done += 1
             framing = safezone.framing(band, spec.cinematic_framing_preset)
             if not framing.clear:

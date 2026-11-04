@@ -53,6 +53,10 @@ CAPTION_ZONE = 0.75
 # Two text lines this wide in one frame are a news ticker or a paragraph card (BV1Vy4y1Z7C1: 89-93 % wide);
 # a single wide line is a long caption, which framing hides.
 WIDE_TEXT_WIDTH = 0.7
+# Medium text between the top corner tags and the caption band is a pop-up banner (needs the caption band).
+OVERLAY_HEIGHT = 0.06
+OVERLAY_TOP = 0.2
+OVERLAY_BAND_GAP = 0.03
 WIDE_TEXT_HEIGHT = 0.03
 # ImageNet normalisation used by PaddleOCR's detector.
 MEAN = (0.485, 0.456, 0.406)
@@ -216,7 +220,16 @@ def _big(box: TextBox) -> bool:
     return box.h >= HUGE_TEXT_HEIGHT or not (is_caption(box) or low_caption)
 
 
-def big_text_times(samples: Sequence[tuple[float, Sequence[TextBox]]], logos: Sequence[TextBox] = ()) -> list[float]:
+def _overlay(box: TextBox, band_top: float) -> bool:
+    """Medium text in the middle of the picture, above where the source's captions sit: a subscribe/like
+    banner ("点赞支持 欢迎关注"), a search bar ("搜索 太空记"), a pop-up label. Captions are below ``band_top``,
+    corner tags above ``OVERLAY_TOP``."""
+    return (box.h >= OVERLAY_HEIGHT and box.w >= BIG_TEXT_WIDTH
+            and OVERLAY_TOP <= box.center_y <= band_top - OVERLAY_BAND_GAP)
+
+
+def big_text_times(samples: Sequence[tuple[float, Sequence[TextBox]]], logos: Sequence[TextBox] = (),
+                   band_top: float | None = None) -> list[float]:
     """Times whose frame shows big text that is not a logo: a title card, a giant number, a chapter banner.
 
     The documentary planner leaves these moments out: a viewer of an English film should not see
@@ -226,6 +239,9 @@ def big_text_times(samples: Sequence[tuple[float, Sequence[TextBox]]], logos: Se
     times = []
     for time_s, boxes in samples:
         wide = [box for box in boxes if box.w >= WIDE_TEXT_WIDTH and box.h >= WIDE_TEXT_HEIGHT]
+        if band_top is not None and any(_overlay(box, band_top) and not any(_iou(box, logo) > 0.3 for logo in logos) for box in boxes):
+            times.append(round(time_s, 3))
+            continue
         # Two or more lines spanning the frame: a news ticker or a paragraph card. One wide line is a long caption.
         if len(wide) >= 2 or any(_big(box) and not any(_iou(box, logo) > 0.3 for logo in logos) for box in boxes):
             times.append(round(time_s, 3))
@@ -354,7 +370,8 @@ class CaptionScanner:
         """Logos, watermarks and channel names anywhere in the frame: text that stays put with the same pixels."""
         return self.scan_frame_text(source, duration_s=duration_s, fps=fps)[0]
 
-    def scan_frame_text(self, source: Path, *, duration_s: float, fps: float = LOGO_FPS) -> tuple[list[TextBox], list[float]]:
+    def scan_frame_text(self, source: Path, *, duration_s: float, fps: float = LOGO_FPS,
+                        band_top: float | None = None) -> tuple[list[TextBox], list[float]]:
         """Logos (as ``scan_fixed``) and the sample times showing big burned-in text (titles, giant numbers)."""
         samples: list[tuple[float, list[TextBox]]] = []
         for time_s, frame in self._frames(source, fps):
@@ -362,7 +379,7 @@ class CaptionScanner:
             if height >= 32:
                 samples.append((time_s, self.detect(frame[:height], 0.0, height / frame.shape[0])))
         logos = logo_boxes([boxes for _, boxes in samples])
-        return logos, big_text_times(samples, logos)
+        return logos, big_text_times(samples, logos, band_top)
 
     def scan(self, source: Path, *, duration_s: float, speech_ms: Sequence[tuple[int, int]] | None = None,
              progress: Callable[[float], None] | None = None) -> ScanResult:
