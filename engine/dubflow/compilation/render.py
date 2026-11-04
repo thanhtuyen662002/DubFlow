@@ -9,6 +9,8 @@ from engine.dubflow.package.render import STEREO, Video, concat_argv as package_
 from .layout import FPS, HEIGHT, WIDTH, geometry
 
 ENCODER = "h264_mf"
+# Clips from different videos play at one loudness (their sources differ by 10 dB or more).
+LEVEL = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
 VIDEO = Video(WIDTH, HEIGHT, str(FPS))
 
 
@@ -38,7 +40,7 @@ def clip_argv(ffmpeg: Path, source: Path, video: Video, layout: str, start_ms: i
     g = geometry(video.width, video.height, layout)
     graph = (blurred_fill(blur=blur) + f"[front]scale={g.width}:{g.height},setsar=1[fg];"
              f"[bg][fg]overlay={g.x}:{g.y},fps={FPS},format=yuv420p,setpts=PTS-STARTPTS,subtitles={ass}[video];"
-             f"[0:a:0]{STEREO},apad,atrim=duration={seconds(duration_ms)},asetpts=PTS-STARTPTS[audio]")
+             f"[0:a:0]{STEREO},{LEVEL},apad,atrim=duration={seconds(duration_ms)},asetpts=PTS-STARTPTS[audio]")
     return (start(ffmpeg) + ["-ss", seconds(start_ms), "-i", str(source), "-filter_complex", graph,
             "-map", "[video]", "-map", "[audio]", "-t", seconds(duration_ms)] + encoding(encoder) + [str(output)])
 

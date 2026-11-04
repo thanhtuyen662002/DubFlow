@@ -438,6 +438,16 @@ function selectTab(tab: DetailTab): void {
   $("#tab-more").hidden = tab !== "more";
 }
 
+/** How a kept download reads: its file name, unless that is a hashed store name. */
+function downloadedName(url: string, path: string): string {
+  const file = path.split(/[\\/]/).filter(Boolean).pop() ?? "";
+  if (!/^[0-9a-f]{24,}\.[a-z0-9]+$/i.test(file)) return file;
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* keep the generic name */ }
+  const site = /bilibili|b23\.tv/.test(host) ? "Bilibili" : /douyin/.test(host) ? "Douyin" : /kuaishou/.test(host) ? "Kuaishou" : "";
+  return site ? `Video gốc tải từ ${site}` : "Video gốc đã tải";
+}
+
 function finishedLabel(job: QueueJob): string {
   if (!job.startedAt || !job.finishedAt) return "Đã xong";
   return `Đã xong sau ${duration(Date.parse(job.finishedAt) - Date.parse(job.startedAt))}`;
@@ -494,7 +504,7 @@ function renderInspector(job: QueueJob | null): void {
   $("#link-card").hidden = !job.originUrl;
   const linkMedia = $("#link-media");
   // The kept download can sit in a hashed store folder: its file name is what reads.
-  linkMedia.textContent = job.originUrl ? job.sourcePath.split(/[\\/]/).filter(Boolean).pop() ?? "" : "";
+  linkMedia.textContent = job.originUrl ? downloadedName(job.originUrl, job.sourcePath) : "";
   linkMedia.title = job.originUrl ? job.sourcePath : "";
   const linkOutput = $("#link-output");
   linkOutput.textContent = job.originUrl ? shortPath(job.outputDir ?? "") : "";
