@@ -41,6 +41,11 @@ class FilterTests(unittest.TestCase):
                                                      "band": {"top": 0.8, "bottom": 0.95, "share": 1.0}}, frames=90, ken_burns=False)
         self.assertIn("crop=iw:2:0:862,scale=iw:162", covered, "the caption band is covered by stretched edge rows")
         self.assertNotIn("split=2[base]", roughcut.video_filter(1920, 1080, {"clear": True, "band": {"top": 0.8, "bottom": 0.95}}, frames=9, ken_burns=False))
+        # Another channel's logo is blurred where it sits, before the band cover and the framing.
+        logo = roughcut.video_filter(1920, 1080, {"clear": False, "band": {"top": 0.8, "bottom": 0.95}, "logos": [[0.043, 0.682, 0.152, 0.118]]},
+                                     frames=9, ken_burns=False)
+        self.assertIn("[0:v]split=2[logo0base][logo0cut];[logo0cut]crop=292:128:80:734,gblur=sigma=12[logo0blur];"
+                      "[logo0base][logo0blur]overlay=80:734[logo0];[logo0]split=2[base][edge]", logo)
 
     def test_description_and_credits(self):
         with TemporaryDirectory() as temp:

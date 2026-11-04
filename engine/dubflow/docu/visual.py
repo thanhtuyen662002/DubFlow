@@ -185,7 +185,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
             cuts = shots.detect(source.video, duration, context_path(run_dir, source.id).with_name("shots.json"),
                                 ffmpeg=ffmpeg, run=ffmpeg_runner, cancelled=cancel.exists)
             done += 1
-            band, size = None, None
+            band, size, logos = None, None, []
             if scanner is not None and ocr_identity is not None:
                 status.write(done=done, message=f"Đang dò phụ đề gốc của {source.id}…")
                 speech = [(float(s["start"]), float(s["end"])) for s in contexts[source.id]["segments"]]
@@ -193,6 +193,9 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
                 band, size = safezone.scan_band(source.video, duration=duration, speech=speech,
                                           cache=context_path(run_dir, source.id).with_name("captions.json"), scanner=scanner,
                                           identity={**ocr_identity, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+                status.write(done=done, message=f"Đang dò logo kênh trong {source.id}…")
+                logos = safezone.scan_logos(source.video, duration=duration, cache=context_path(run_dir, source.id).with_name("logos.json"),
+                                            scanner=scanner, identity={**ocr_identity, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
             done += 1
             framing = safezone.framing(band, spec.cinematic_framing_preset)
             if not framing.clear:
@@ -201,7 +204,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
             if portrait:
                 warnings.append(portrait_warning(source.id))
             framings[source.id] = {"band": band.__dict__ if band else None, **framing.to_dict(),
-                                   "frame_size": list(size) if size else None, "portrait": portrait}
+                                   "frame_size": list(size) if size else None, "portrait": portrait, "logos": logos}
             sources.append(matcher.Source(source.id, duration, tuple(cuts), portrait))
         status.write(done=done, message="Đang ghép lát cắt cho từng cảnh…")
         try:

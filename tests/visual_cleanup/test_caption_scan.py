@@ -107,6 +107,22 @@ class PlanRegionTests(unittest.TestCase):
         self.assertLessEqual(len(flicker.regions), scan.MAX_BLUR_REGIONS)
 
 
+class LogoTests(unittest.TestCase):
+    def test_a_see_through_logo_over_moving_footage_is_a_logo(self):
+        # 2026-11-04 sources: "太空记" sat in one place in 126/144 samples, but its pixels changed with the footage.
+        def boxes(i):
+            logo = TextBox(0.055 + (i % 3) * 0.002, 0.694, 0.128, 0.094, tuple(float((i * 53 + k * 7) % 255) for k in range(64)))
+            line = caption(i, y=0.88, x=0.27, w=0.46)
+            title = TextBox(0.35, 0.45, 0.3, 0.1, ()) if i % 10 == 0 else None
+            return [logo, line] + ([title] if title else [])
+        found = scan.logo_boxes([boxes(i) for i in range(40)])
+        self.assertEqual(len(found), 1, found)
+        self.assertAlmostEqual(found[0].x, 0.057, places=2)
+        # A caption that never moves is not a logo, nor is a sign filling half the frame.
+        self.assertEqual(scan.logo_boxes([[caption(i, y=0.88)] for i in range(10)]), [])
+        self.assertEqual(scan.logo_boxes([[TextBox(0.1, 0.1, 0.6, 0.3, ())] for _ in range(10)]), [])
+
+
 MODEL = os.environ.get("DUBFLOW_TEST_OCR_MODEL")
 FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG")
 
