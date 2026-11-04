@@ -22,6 +22,9 @@ for (const change of [{ title: "" }, { title: "x".repeat(121) }, { topic: "x".re
   assert.equal(typeof buildRequest({ ...form, ...change }), "string");
 }
 assert.equal(typeof buildRequest({ ...form, sources: [form.sources[0], form.sources[1]] }), "object");
+// A plain video without subtitles is a source too: its speech is recognised when the project is created.
+assert.deepEqual(buildRequest({ ...form, sources: [form.sources[0], { ...form.sources[1], subtitles: undefined }] }).sources[1],
+  { kind: "file", video: path("tour.mp4"), subtitles: null, title: "Dam tour" });
 
 assert.deepEqual(CHAPTER_ORDER, ["HOOK", "PROBLEM", "ENGINEERING_SOLUTION", "CRITICAL_EVALUATION"]);
 assert.deepEqual(CHAPTER_ORDER.map(chapter => chapterTargetSeconds(10, chapter)), [42, 120, 300, 138]);

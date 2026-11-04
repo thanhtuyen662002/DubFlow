@@ -12,13 +12,15 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from engine.dubflow.docu import capcut_draft, mcp_tools, overlays, roughcut, visual
+from engine.dubflow.docu import capcut_draft, intake, mcp_tools, overlays, roughcut, visual
 from engine.dubflow.docu.project import DocuError, load_spec, spec_path
 
 PROTOCOL = "2025-06-18"
 SUPPORTED = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER = {"name": "dubflow", "title": "DubFlow Phim tài liệu", "version": "1"}
-INSTRUCTIONS = ("Tools for DubFlow documentary projects (Phim tài liệu). Start with list_projects, then inspect_timeline_state. "
+INSTRUCTIONS = ("Tools for DubFlow documentary projects (Phim tài liệu). A new film: discover_videos -> download_video (2-5 sources) -> "
+                "create_project (speech is recognised when a source has no .srt) -> get_script_brief -> write the script yourself and "
+                "save_script -> narrate -> plan_visuals -> render_rough_cut. An existing one: list_projects, then inspect_timeline_state. "
                 "Plan edits (replace_timeline_clip, apply_smart_label_overlay, adjust_pacing_and_transitions, set_framing) take effect after "
                 "render_rough_cut. Use get_frame to look at a moment, e.g. to read a foreign label before covering it.")
 
@@ -32,7 +34,39 @@ def _tool(name: str, description: str, properties: dict[str, Any], required: lis
             "annotations": {"readOnlyHint": read_only}}
 
 
+_SOURCE = {"type": "object", "additionalProperties": False, "required": ["video"], "properties": {
+    "video": {"type": "string", "description": "Absolute path of the video (e.g. from download_video)"},
+    "subtitles": {"type": "string", "description": "Optional .srt of its speech; without it DubFlow recognises the speech (minutes)"},
+    "title": {"type": "string", "maxLength": 120}, "url": {"type": "string"}, "creator": {"type": "string"}}}
+
 TOOLS = [
+    _tool("discover_videos", "Search Bilibili, Douyin or Kuaishou for source videos (Chinese keywords work best). Douyin and Kuaishou, "
+          "and Bilibili when it asks for verification, need the in-app Khám phá browser instead.",
+          {"platform": {"type": "string", "enum": ["bilibili", "douyin", "kuaishou"]}, "query": {"type": "string"},
+           "page": {"type": "integer", "minimum": 1}}, ["platform", "query"], read_only=True),
+    _tool("download_video", "Download one video through DubFlow's verified downloader (Bilibili, Douyin with a saved session, direct "
+          "links) into Videos\\DubFlow Sources. Only use footage you have the right to use.",
+          {"url": {"type": "string"}}, ["url"]),
+    _tool("create_project", "Create a documentary project from 2-5 local videos, like the page's Tạo dự án. A source without subtitles "
+          "has its speech recognised (faster-whisper on this computer, a few minutes per video).",
+          {"title": {"type": "string", "maxLength": 120}, "topic": {"type": "string", "maxLength": 600},
+           "target_minutes": {"type": "integer", "minimum": 3, "maximum": 20},
+           "framing": {"type": "string", "enum": ["none", "letterbox_235", "overscan_108"], "description": "letterbox_235 hides low captions best"},
+           "burn_end_credits": {"type": "boolean"}, "source_language": {"type": "string", "enum": ["zh", "en"]},
+           "sources": {"type": "array", "minItems": 2, "maxItems": 5, "items": _SOURCE}},
+          ["title", "target_minutes", "sources"]),
+    _tool("get_script_brief", "What to write the script from: the rules, each chapter's purpose and word budget, the timed source lines "
+          "and the quantity facts with US conversions.", {"project": _PROJECT}, ["project"], read_only=True),
+    _tool("save_script", "Check and save a script you wrote (format in get_script_brief). Numbers the sources do not support are "
+          "flagged, not removed; add them to a scene's acknowledged_numbers once checked.",
+          {"project": _PROJECT, "script": {"type": "object"}}, ["project", "script"]),
+    _tool("list_voices", "The English narration voices (Kokoro, on this computer).", {}, [], read_only=True),
+    _tool("narrate", "Speak the saved script into narration.wav (-16 LUFS), captions_en.srt and the timeline. The first run downloads "
+          "the voice (about 370 MB). Unchanged lines are not spoken again.",
+          {"project": _PROJECT, "voice": {"type": "string", "description": "voice_id from list_voices, e.g. am_michael"},
+           "speed": {"type": "number", "minimum": 0.8, "maximum": 1.2}}, ["project", "voice"]),
+    _tool("plan_visuals", "Cut the sources into B-roll slices for every scene (shots, burned-in captions, logos), like the page's "
+          "Lập kế hoạch hình ảnh. Hand-picked slices are kept.", {"project": _PROJECT}, ["project"]),
     _tool("list_projects", "List DubFlow documentary projects, newest first, with what each has (script, narration, plan, rough cut).",
           {"root": {"type": "string", "description": "A 'DubFlow Output' folder to search (absolute path); its projects "
                             "can then be used in this session. Default: the user's Videos\\DubFlow Output"}}, [],
@@ -124,6 +158,21 @@ class Server:
         return visual.run(run, spec, ffmpeg=self.install.ffmpeg, scanner=scanner, ocr_identity=identity)
 
     def call(self, name: str, args: dict[str, Any]) -> list[dict[str, Any]]:
+        install = self.install
+        if name == "discover_videos":
+            return _text(intake.discover(args.get("platform"), args.get("query"), args.get("page") or 1))
+        if name == "download_video":
+            return _text(intake.download(str(args.get("url") or ""), version_root=install.app_root.parent,
+                                         data_root=install.model_root.parent, folder=intake.default_base() / "DubFlow Sources"))
+        if name == "list_voices":
+            return _text(intake.voices(install.app_root))
+        if name == "create_project":
+            created = intake.create_project(title=str(args.get("title") or ""), topic=str(args.get("topic") or ""),
+                                            target_minutes=args.get("target_minutes"), framing=args.get("framing") or "letterbox_235",
+                                            burn_end_credits=bool(args.get("burn_end_credits", True)), sources=args.get("sources"),
+                                            app_root=install.app_root, model_root=install.model_root, ffmpeg=install.ffmpeg,
+                                            ffprobe=install.ffprobe, language=args.get("source_language") or "zh")
+            return _text({**created, "next": "get_script_brief, then save_script"})
         if name == "list_projects":
             if args.get("root"):
                 root = mcp_tools.output_root(args["root"])
@@ -132,6 +181,21 @@ class Server:
                 return _text(mcp_tools.list_projects([root]))
             return _text(mcp_tools.list_projects(self.allowed_roots()))
         run = mcp_tools.project(args.get("project"), self.allowed_roots())
+        if name == "get_script_brief":
+            return _text(intake.script_brief(run))
+        if name == "save_script":
+            return _text(intake.save_script(run, args.get("script")))
+        if name == "narrate":
+            status = intake.narrate(run, app_root=install.app_root, model_root=install.model_root, ffmpeg=install.ffmpeg,
+                                    voice=str(args.get("voice") or ""), speed=float(args.get("speed") or 1.0))
+            if status.get("state") != "COMPLETED":
+                raise DocuError(str(status.get("message")))
+            return _text({**status, "next": "plan_visuals"})
+        if name == "plan_visuals":
+            status = self._replan(run)
+            if status.get("state") != "COMPLETED":
+                raise DocuError(str(status.get("message")))
+            return _text({**status, "warnings": (mcp_tools.inspect(run).get("plan_warnings")), "next": "render_rough_cut"})
         if name == "inspect_timeline_state":
             return _text(mcp_tools.inspect(run))
         if name == "replace_timeline_clip":
