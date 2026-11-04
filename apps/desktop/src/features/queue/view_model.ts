@@ -4,6 +4,8 @@ import { summarizeQueue, type QueueJob, type QueueSnapshot, type QueueSummary } 
 export type QueueRow = {
   id: string;
   title: string;
+  /** When the job was added (ISO time). */
+  created: string;
   sourcePath: string;
   /** What the user recognises: the link for downloaded videos, else the file path. */
   origin: string;
@@ -51,6 +53,7 @@ export function toQueueViewModel(snapshot: QueueSnapshot): QueueViewModel {
     rows: snapshot.jobs.map((job) => ({
       id: job.id,
       title: job.displayName,
+      created: job.createdAt,
       sourcePath: job.sourcePath,
       origin: job.originUrl ?? job.sourcePath,
       status: displayJobStatus(job.status),

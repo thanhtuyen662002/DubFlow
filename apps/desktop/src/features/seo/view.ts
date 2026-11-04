@@ -210,7 +210,14 @@ export function mountPostSuggestions(invoke: Invoke, apiKey: SessionKey = create
     }
   });
   $("#post-close").addEventListener("click", () => { dialog.hidden = true; request += 1; opening += 1; });
-  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { dialog.hidden = true; request += 1; opening += 1; } });
+  // Esc closes it wherever focus is (the dialog opens with focus still on the page behind).
+  const onEscape = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || dialog.hidden || document.querySelector?.(".confirm-backdrop")) return;
+    event.preventDefault();
+    dialog.hidden = true; request += 1; opening += 1;
+  };
+  if (typeof document.addEventListener === "function") document.addEventListener("keydown", onEscape);
+  else dialog.addEventListener("keydown", onEscape);
 
   return {
     open(path: string, displayName: string, originUrl?: string) {

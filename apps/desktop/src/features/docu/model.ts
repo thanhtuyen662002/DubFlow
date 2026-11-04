@@ -38,7 +38,7 @@ export type SourceContext = { schema_version?: number; source_id: string; title:
 export type SourceRef = { source_id: string; start: number; end: number };
 export const GRAPHIC_TYPES = ["METRIC_CALLOUT", "LOWER_THIRD", "LABEL"] as const;
 export type GraphicType = typeof GRAPHIC_TYPES[number];
-export const GRAPHIC_NAMES: Record<GraphicType, string> = { METRIC_CALLOUT: "Thẻ số liệu", LOWER_THIRD: "Lower third", LABEL: "Nhãn" };
+export const GRAPHIC_NAMES: Record<GraphicType, string> = { METRIC_CALLOUT: "Thẻ số liệu", LOWER_THIRD: "Dòng chú thích dưới", LABEL: "Nhãn" };
 export type OnScreenGraphic = { type: GraphicType; title: string; value: string; subtext: string } | null;
 export type DocuScene = {
   scene_id: string; narration_text: string; matched_source_refs: SourceRef[]; visual_search_tags: string[];
@@ -54,6 +54,37 @@ export const MOOD_NAMES: Record<Mood, string> = {
   cinematic_tension_drone: "Căng thẳng điện ảnh", epic_build: "Hùng tráng dần", curious_pulse: "Tò mò, nhịp đều",
   reflective_ambient: "Trầm lắng", hopeful_rise: "Lạc quan", dark_suspense: "Hồi hộp, u tối",
 };
+export const SFX_NAMES: Record<AmbientSfx, string> = {
+  wind_high_altitude: "Gió trên cao", heavy_machinery_hum: "Máy móc hạng nặng", water_turbine_roar: "Tua-bin nước gầm",
+  data_beeps: "Tiếng bíp dữ liệu", construction_site: "Công trường", city_traffic: "Giao thông thành phố",
+  flowing_water: "Nước chảy", rain: "Mưa", crowd_murmur: "Đám đông rì rầm", industrial_metal: "Kim loại công nghiệp",
+};
+/** "sc_007" as the user reads it: "Cảnh 7". */
+export function sceneName(sceneId: string): string {
+  const number = /^sc_0*(\d+)$/.exec(sceneId)?.[1];
+  return number ? `Cảnh ${number}` : sceneId;
+}
+const FRAMING_NAMES: Record<string, string> = { none: "Không", letterbox_235: "Viền đen điện ảnh 2.35:1", overscan_108: "Phóng nhẹ 108% (cắt mép)" };
+/**
+ * What Claude did over MCP, as the user reads it: scene and source ids as
+ * "Cảnh 22" / "Nguồn 4", framing presets by name, tool names (meant for
+ * Claude, in parentheses) left out, decimals with a comma.
+ */
+export function readable(text: string, voiceName: (voiceId: string) => string | undefined = () => undefined): string {
+  return text
+    .replace(/\bgiọng ([a-z]{2}_[a-z]+)\b/g, (whole, id: string) => { const name = voiceName(id); return name ? `giọng ${name}` : whole; })
+    .replace(/\s*\((?:[a-z]+_)+[a-z]+\)/g, "")
+    .replace(/\bsc_0*(\d+)\b/g, "cảnh $1")
+    .replace(/\bsrc_0*(\d+)\b/g, "nguồn $1")
+    .replace(/\b(none|letterbox_235|overscan_108)\b/g, (preset) => FRAMING_NAMES[preset] ?? preset)
+    .replace(/(\d)\.(\d+) s\b/g, "$1,$2 giây")
+    .replace("Platform requires verification in its browser.", "Nền tảng yêu cầu xác minh trong trình duyệt.");
+}
+/** "src_02" as the user reads it: "Nguồn 2". */
+export function sourceName(sourceId: string): string {
+  const number = /^src_0*(\d+)$/.exec(sourceId)?.[1];
+  return number ? `Nguồn ${number}` : sourceId;
+}
 /** Engine limits (engine/dubflow/docu/script.py). */
 export const MAX_NARRATION = 600;
 export const MAX_REFS = 6;

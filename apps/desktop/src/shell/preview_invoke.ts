@@ -228,7 +228,7 @@ function previewVisual(dir: string): Record<string, unknown> {
   });
   return { status: { state: "COMPLETED", done: 5, total: 5, message: "Đã lập kế hoạch" },
     plan: { script_sha256: String(project.script?.script_sha256 ?? ""), duration: narration.timeline?.duration ?? 0, scenes,
-      warnings: ["Phụ đề gốc của src_01 vẫn lộ một phần sau khi phóng 114%; nên chọn khung Letterbox 2.35:1 cho dự án"] } };
+      warnings: ["Phụ đề gốc của src_01 vẫn lộ một phần sau khi phóng 114%; nên chọn khung Viền đen điện ảnh 2.35:1 cho dự án"] } };
 }
 function previewNarration(dir: string): Record<string, unknown> {
   const run = docuNarration.get(dir);
@@ -425,6 +425,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
         cues: reviewCues.map(({ cue_id, start_ms, end_ms, machine_text }) => ({ start_ms, end_ms, text: savedOverrides[cue_id] ?? machine_text })),
       } as T;
     }
+    case "edit_file_sizes": return (args.paths as string[]).map(() => 46_000_000) as T;
     case "edit_library": {
       // The other pages' finished videos, with made-up dates so the list has its groups.
       const now = Math.floor(Date.now() / 1000);

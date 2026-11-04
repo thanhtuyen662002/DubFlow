@@ -1,13 +1,14 @@
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import {
-  AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
+  AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES, SFX_NAMES, readable, sceneName, sourceName,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
   hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
   calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type McpActivity, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
+import { closeDrawerOutside } from "../../shell/drawer.ts";
 import { addText, type Edit } from "../edit/model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -107,7 +108,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
               </section>
               <section class="docu-card" aria-labelledby="docu-look-title">
                 <h3 id="docu-look-title">Hình thức</h3>
-                <label>Khung hình<select id="docu-framing"><option value="none">Không</option><option value="letterbox_235">Letterbox 2.35:1</option><option value="overscan_108">Tight overscan 108%</option></select></label>
+                <label>Khung hình<select id="docu-framing"><option value="none">Không</option><option value="letterbox_235">Viền đen điện ảnh 2.35:1</option><option value="overscan_108">Phóng nhẹ 108% (cắt mép)</option></select></label>
                 <label class="docu-check"><input id="docu-credits" type="checkbox" /> Chèn màn hình credit cuối video</label>
                 <label>Thư mục lưu<input id="docu-output-root" readonly /></label>
               </section>
@@ -168,7 +169,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
                 <label><input id="docu-opt-graphics" type="checkbox" checked /> Thẻ số liệu và tên địa điểm</label>
                 <label><input id="docu-opt-captions" type="checkbox" /> In phụ đề tiếng Anh lên hình</label>
                 <label>Nhạc nền<select id="docu-opt-music"><option value="generated">Tự tạo theo không khí từng chương</option><option value="none">Không có</option><option value="file" hidden>File nhạc đã chọn</option></select></label>
-                <button id="docu-opt-music-file" class="quiet-btn" type="button">Chọn file nhạc…</button>
+                <button id="docu-opt-music-file" class="btn" type="button">Chọn file nhạc…</button>
               </div>
               <button id="docu-render" class="btn primary block" type="button">Dựng bản nháp</button>
               <div id="docu-render-progress" class="docu-narration-progress" hidden>
@@ -267,7 +268,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function renderContexts(): void {
     const contexts = selected?.contexts ?? [];
     const select = $("#docu-player-source") as HTMLSelectElement;
-    select.innerHTML = contexts.map(context => `<option value="${escapeHtml(context.source_id)}">${escapeHtml(context.source_id)} · ${escapeHtml(context.title)}</option>`).join("");
+    select.innerHTML = contexts.map(context => `<option value="${escapeHtml(context.source_id)}">${escapeHtml(sourceName(context.source_id))} · ${escapeHtml(context.title)}</option>`).join("");
     if (playerMode === "draft" && !render.video) playerMode = "source";
     if (playerMode === "draft") { void setPlayerSource(ROUGH_CUT); return; }
     if (!contexts.length) {
@@ -338,10 +339,10 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const spec = selected?.spec;
     $("#docu-project-view").hidden = !spec;
     $("#docu-project-fields").hidden = Boolean(spec);
-    const framing: Record<string, string> = { none: "Không", letterbox_235: "Letterbox 2.35:1", overscan_108: "Tight overscan 108%" };
-    $("#docu-project-info").innerHTML = spec ? `<dt>Nguồn</dt><dd>${spec.sources.map(source => `${escapeHtml(source.id)} · ${escapeHtml(source.title)}`).join("<br>")}</dd>
+    const framing: Record<string, string> = { none: "Không", letterbox_235: "Viền đen điện ảnh 2.35:1", overscan_108: "Phóng nhẹ 108% (cắt mép)" };
+    $("#docu-project-info").innerHTML = spec ? `<dt>Nguồn</dt><dd>${spec.sources.map(source => `${escapeHtml(sourceName(source.id))} · ${escapeHtml(source.title)}`).join("<br>")}</dd>
       <dt>Mục tiêu</dt><dd>${spec.target_minutes} phút</dd><dt>Khung hình</dt><dd><select id="docu-framing-change" aria-label="Đổi khung hình">${Object.entries(framing).map(([value, name]) => `<option value="${value}" ${spec.cinematic_framing_preset === value ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select><small id="docu-framing-state" class="hint" role="status"></small></dd>
-      <dt>Credit cuối video</dt><dd>${spec.burn_end_credits ? "Có" : "Không (chỉ ghi trong mô tả)"}</dd>` : "";
+      <dt>Ghi nguồn cuối video</dt><dd>${spec.burn_end_credits ? "Có" : "Không (chỉ ghi trong mô tả)"}</dd>` : "";
   }
 
   /** Change the framing look in place: slices, hand edits and caption scans stay; re-render to see it. */
@@ -379,7 +380,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   }
 
   function refsHtml(scene: DocuScene, chapterIndex: number, sceneIndex: number): string {
-    return scene.matched_source_refs.map((ref, index) => `<span class="docu-ref-wrap"><button type="button" class="docu-ref" data-seek-source="${escapeHtml(ref.source_id)}" data-seek-start="${ref.start}" data-seek-end="${ref.end}" aria-label="Xem ${escapeHtml(ref.source_id)} từ ${ref.start.toFixed(1)} đến ${ref.end.toFixed(1)} giây">${escapeHtml(ref.source_id)} ${ref.start.toFixed(1)}–${ref.end.toFixed(1)}</button><button type="button" class="docu-ref-remove" data-remove-ref="${index}" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" aria-label="Bỏ nguồn dẫn ${index + 1}">×</button></span>`).join("") || `<span class="hint">Chưa có nguồn dẫn</span>`;
+    return scene.matched_source_refs.map((ref, index) => `<span class="docu-ref-wrap"><button type="button" class="docu-ref" data-seek-source="${escapeHtml(ref.source_id)}" data-seek-start="${ref.start}" data-seek-end="${ref.end}" aria-label="Xem ${escapeHtml(sourceName(ref.source_id))} từ ${ref.start.toFixed(1)} đến ${ref.end.toFixed(1)} giây">${escapeHtml(sourceName(ref.source_id))} · ${ref.start.toFixed(1).replace(".", ",")}–${ref.end.toFixed(1).replace(".", ",")} s</button><button type="button" class="docu-ref-remove" data-remove-ref="${index}" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" aria-label="Bỏ nguồn dẫn ${index + 1}">×</button></span>`).join("") || `<span class="hint">Chưa có nguồn dẫn</span>`;
   }
 
   function renderEditor(): void {
@@ -397,14 +398,14 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function sceneCard(scene: DocuScene, chapterIndex: number, sceneIndex: number): string {
     const graphic = scene.on_screen_graphic;
     return `<article class="docu-scene" data-scene-card="${escapeHtml(scene.scene_id)}" data-chapter="${chapterIndex}" data-scene="${sceneIndex}">
-      <header><strong>${escapeHtml(scene.scene_id)}</strong><span class="docu-scene-time">${sceneTime(scene)}</span><button type="button" class="quiet-btn" data-add-scene="${chapterIndex}" data-after="${sceneIndex}">Thêm sau</button><button type="button" class="quiet-btn" data-delete-scene="${chapterIndex}" data-scene="${sceneIndex}">Xóa cảnh</button></header>
+      <header><strong>${escapeHtml(sceneName(scene.scene_id))}</strong><span class="docu-scene-time">${sceneTime(scene)}</span><button type="button" class="quiet-btn" data-add-scene="${chapterIndex}" data-after="${sceneIndex}">Thêm sau</button><button type="button" class="quiet-btn" data-delete-scene="${chapterIndex}" data-scene="${sceneIndex}">Xóa cảnh</button></header>
       <label>Lời dẫn<textarea data-field="narration_text" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" maxlength="${MAX_NARRATION}" rows="4">${escapeHtml(scene.narration_text)}</textarea></label>
       <p class="docu-word-count"><span>${wordCount(scene.narration_text)} từ</span><span>Ước tính ${estimatedSeconds(scene.narration_text)} giây</span></p>
       <div class="docu-refs" aria-label="Nguồn dẫn">${refsHtml(scene, chapterIndex, sceneIndex)}</div>
       <div class="docu-slices" data-slices="${escapeHtml(scene.scene_id)}">${slicesHtml(scene)}</div>
       <label>Đồ họa trên màn hình<select data-field="graphic_type" data-chapter="${chapterIndex}" data-scene="${sceneIndex}"><option value="">Không có</option>${GRAPHIC_TYPES.map(type => `<option value="${type}" ${graphic?.type === type ? "selected" : ""}>${GRAPHIC_NAMES[type]}</option>`).join("")}</select></label>
       <div class="docu-graphic-fields" ${graphic ? "" : "hidden"}><label>Tiêu đề<input data-field="graphic_title" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" value="${escapeHtml(graphic?.title ?? "")}" maxlength="60" /></label><label>Giá trị<input data-field="graphic_value" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" value="${escapeHtml(graphic?.value ?? "")}" maxlength="60" /></label><label>Chú thích<input data-field="graphic_subtext" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" value="${escapeHtml(graphic?.subtext ?? "")}" maxlength="120" /></label></div>
-      <label>Âm thanh nền<select data-field="ambient_sfx_tag" data-chapter="${chapterIndex}" data-scene="${sceneIndex}"><option value="">Không có</option>${AMBIENT_SFX.map(tag => `<option value="${tag}" ${scene.ambient_sfx_tag === tag ? "selected" : ""}>${tag}</option>`).join("")}</select></label>
+      <label>Âm thanh nền<select data-field="ambient_sfx_tag" data-chapter="${chapterIndex}" data-scene="${sceneIndex}"><option value="">Không có</option>${AMBIENT_SFX.map(tag => `<option value="${tag}" ${scene.ambient_sfx_tag === tag ? "selected" : ""}>${SFX_NAMES[tag]}</option>`).join("")}</select></label>
       ${reviewHtml(scene, chapterIndex, sceneIndex)}
     </article>`;
   }
@@ -414,7 +415,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const planned = visual.plan?.scenes.find(item => item.scene_id === scene.scene_id);
     if (!planned) return "";
     const seconds = (value: number) => value.toFixed(1).replace(".", ",");
-    return `<span class="docu-slices-label">Hình:</span>${planned.slices.map(piece => `<button type="button" class="docu-ref docu-slice ${piece.tier ? "far" : ""}" data-seek-source="${escapeHtml(piece.source_id)}" data-seek-start="${piece.start}" data-seek-end="${piece.end}" title="${piece.tier ? "Ngoài đoạn nguồn gợi ý" : "Trong đoạn nguồn gợi ý"}">${escapeHtml(piece.source_id)} ${seconds(piece.start)}–${seconds(piece.end)}</button>`).join("")}${planned.warnings.map(note => `<small class="docu-slice-note">${escapeHtml(note)}</small>`).join("")}`;
+    return `<span class="docu-slices-label">Hình:</span>${planned.slices.map(piece => `<button type="button" class="docu-ref docu-slice ${piece.tier ? "far" : ""}" data-seek-source="${escapeHtml(piece.source_id)}" data-seek-start="${piece.start}" data-seek-end="${piece.end}" title="${piece.tier ? "Ngoài đoạn nguồn gợi ý" : "Trong đoạn nguồn gợi ý"}">${escapeHtml(sourceName(piece.source_id))} · ${seconds(piece.start)}–${seconds(piece.end)}</button>`).join("")}${planned.warnings.map(note => `<small class="docu-slice-note">${escapeHtml(note)}</small>`).join("")}`;
   }
 
   function renderVisual(): void {
@@ -500,7 +501,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     $("#docu-capcut-open").hidden = !capcut;
     $("#docu-capcut-state").textContent = message ?? (capcut
       ? `Đã có dự án “${capcut.name}” trong CapCut (${capcut.clips} clip). Phụ đề tiếng Anh: nhập captions_en.srt trong CapCut.`
-      : "Đóng CapCut trước khi xuất; dự án mới hiện ở đầu danh sách Projects của CapCut.");
+      : "Đóng CapCut trước khi xuất; dự án mới hiện ở đầu danh sách dự án (Projects) của CapCut.");
   }
 
   async function exportCapcut(): Promise<void> {
@@ -600,7 +601,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     try {
       const parsed = parseVoices(await invoke("docu_voices"));
       voices = parsed.voices;
-      $("#docu-voice").innerHTML = voices.map(voice => `<option value="${escapeHtml(voice.voiceId)}" ${voice.voiceId === parsed.defaultVoiceId ? "selected" : ""}>${escapeHtml(voice.name)} · ${escapeHtml(voice.gender)}, giọng ${escapeHtml(voice.accent)} · ${escapeHtml(voice.description)}</option>`).join("");
+      $("#docu-voice").innerHTML = voices.map(voice => `<option value="${escapeHtml(voice.voiceId)}" title="${escapeHtml(voice.description)}" ${voice.voiceId === parsed.defaultVoiceId ? "selected" : ""}>${escapeHtml(voice.name)} · ${escapeHtml(voice.gender)}, giọng ${escapeHtml(voice.accent)}</option>`).join("");
     } catch (error) { $("#docu-narration-state").textContent = error instanceof Error ? error.message : String(error); }
     renderNarration();
   }
@@ -745,7 +746,14 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   const MCP_PROGRESS: Record<string, string> = { narrate: "docu_narration_status", plan_visuals: "docu_plan_status", render_rough_cut: "docu_render_status",
     adjust_pacing_and_transitions: "docu_plan_status" };
   const sameDir = (a?: string | null, b?: string | null) => Boolean(a && b) && a!.replace(/\\/g, "/").toLowerCase() === b!.replace(/\\/g, "/").toLowerCase();
-  const timeOf = (value: unknown) => typeof value === "string" ? new Date(value).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+  // Today's calls show their time; older ones their date too, so the list reads in order.
+  const timeOf = (value: unknown) => {
+    if (typeof value !== "string" || Number.isNaN(Date.parse(value))) return "";
+    const when = new Date(value), time = when.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+    return when.toDateString() === new Date().toDateString() ? time : `${when.getDate()}/${when.getMonth() + 1} ${time}`;
+  };
+  const voiceName = (voiceId: string) => voices.find(voice => voice.voiceId === voiceId)?.name;
+  const said = (text: string) => readable(text, voiceName);
 
   async function pollMcp(): Promise<void> {
     let activity: McpActivity | null = null;
@@ -753,7 +761,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const current = activity?.current ?? null;
     settings.mcpBusy?.(current ? current.label : null);
     $("#docu-mcp-chip").hidden = !current;
-    $("#docu-mcp-chip-text").textContent = current ? `Claude đang làm: ${current.label}` : "";
+    $("#docu-mcp-chip-text").textContent = current ? `Claude đang làm: ${said(current.label)}` : "";
     if (!activity) return;
     let progress = "";
     const command = current?.project ? MCP_PROGRESS[current.tool] : undefined;
@@ -764,12 +772,12 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
         if (status?.total) progress = ` · ${status.message ?? ""} (${status.done ?? 0}/${status.total})`;
       } catch { /* the project may not be readable yet */ }
     }
-    $("#docu-mcp-current").textContent = current ? `Đang làm: ${current.label}${progress}` : "Không làm gì lúc này.";
+    $("#docu-mcp-current").textContent = current ? `Đang làm: ${said(current.label)}${progress}` : "Không làm gì lúc này.";
     $("#docu-mcp-current").classList.toggle("busy", Boolean(current));
     const target = current?.project ?? activity.recent[0]?.project ?? null;
     $("#docu-mcp-open").hidden = !target || sameDir(target, selected?.dir);
     $("#docu-mcp-open").dataset.dir = target ?? "";
-    $("#docu-mcp-recent").innerHTML = activity.recent.slice(0, 6).map(item => `<li class="${item.state === "failed" ? "failed" : ""}"><time>${escapeHtml(timeOf(item.finished))}</time> ${escapeHtml(item.label)}<small>${escapeHtml(item.state === "failed" ? `Lỗi: ${item.message}` : item.message)}</small></li>`).join("");
+    $("#docu-mcp-recent").innerHTML = [...activity.recent].sort((a, b) => (Date.parse(String(b.finished)) || 0) - (Date.parse(String(a.finished)) || 0)).slice(0, 6).map(item => `<li class="${item.state === "failed" ? "failed" : ""}"><time>${escapeHtml(timeOf(item.finished))}</time> ${escapeHtml(said(item.label))}<small>${escapeHtml(said(item.state === "failed" ? `Lỗi: ${item.message}` : item.message))}</small></li>`).join("");
     // Follow: open the project Claude works on, and reload it when a call on it finishes.
     const follow = $<HTMLInputElement>("#docu-mcp-follow").checked && !root.hidden;
     const newest = activity.recent[0];
@@ -815,13 +823,15 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
 
   $("#docu-refresh").addEventListener("click", () => void refreshRuns());
   $("#docu-mcp-open").addEventListener("click", () => { const dir = $("#docu-mcp-open").dataset.dir; if (dir) void openRun(dir); });
-  $("#docu-new").addEventListener("click", newProject);
-  $("#docu-list-toggle").addEventListener("click", () => {
-    const open = screen.classList.toggle("list-open"); $("#docu-list-toggle").setAttribute("aria-expanded", String(open));
-  });
+  $("#docu-new").addEventListener("click", () => { setListOpen(false); newProject(); });
+  const setListOpen = (open: boolean) => {
+    screen.classList.toggle("list-open", open); $("#docu-list-toggle").setAttribute("aria-expanded", String(open));
+  };
+  $("#docu-list-toggle").addEventListener("click", () => setListOpen(!screen.classList.contains("list-open")));
+  closeDrawerOutside(screen, $(".docu-col"), $("#docu-list-toggle"), () => setListOpen(false));
   $("#docu-runs").addEventListener("click", event => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-run]");
-    if (button) void openRun(button.dataset.run!);
+    if (button) { setListOpen(false); void openRun(button.dataset.run!); }
   });
   for (const button of root.querySelectorAll<HTMLButtonElement>(".docu-inspector [data-tab]")) {
     button.addEventListener("click", () => setTab(button.dataset.tab as Tab));

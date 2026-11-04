@@ -3,7 +3,7 @@ import { MemorySnapshotStorage, QueueController } from "../src/features/queue/mo
 import { ReviewDraftHistory } from "../src/features/review/history.ts";
 import {
   applySourceLanguage, chooseTranslator, effectiveTranslator, FAST_PHRASE_SYLLABLES_PER_SECOND, hachimiAllowed,
-  phrasePaces, reviewOverrides, saveReviewRevision, startJobRequest, translatorDefaults,
+  phrasePaces, phraseSizes, reviewOverrides, saveReviewRevision, startJobRequest, translatorDefaults,
 } from "../src/features/translation_review/flow.ts";
 
 const clock = () => "2026-10-25T00:00:00.000Z";
@@ -180,5 +180,8 @@ assert.equal(speakers.get("a"), 2, "different speakers never share a phrase");
 const long = Array.from({ length: 7 }, (_, index) => ({ cue_id: `c${index}`, start_ms: index * 1000, end_ms: index * 1000 + 1000 }));
 const capped = phrasePaces(long, () => "một");
 assert.equal(capped.get("c0"), 1, "at most 5 cues per phrase");
+const sizes = phraseSizes(paceCues);
+assert.equal(sizes.get("p2"), 3, "the review says a joined cue's pace is its phrase's");
+assert.equal(sizes.get("lone"), 1);
 assert.equal(capped.get("c5"), 1);
 console.log("desktop Chinese review and revision flow tests passed");

@@ -1108,7 +1108,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const title = $("#edit-segment-title");
     title.textContent = inserted
       ? `Đoạn chèn · ${media?.title || "video"} · ${formatClock(start)} – ${formatClock(start + length)}`
-      : `Đoạn ${index + 1} · ${formatClock(start)} – ${formatClock(start + length)}`;
+      : `Đoạn ${edit.segments.slice(0, index + 1).filter((item) => item.mediaId === MAIN).length} · ${formatClock(start)} – ${formatClock(start + length)} trên video xuất`;
     title.title = inserted ? media?.path ?? "" : "";
     if (document.activeElement !== startInput) startInput.value = formatClock(segment.start, true);
     if (document.activeElement !== endInput) endInput.value = formatClock(segment.end, true);
@@ -1948,7 +1948,18 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   /** Leave edit mode; `quiet` keeps the page (the next video opens right after). */
-  async function close(ask: boolean, quiet = false): Promise<boolean> {
+  let asking: Promise<boolean> | null = null;
+  function close(ask: boolean, quiet = false): Promise<boolean> {
+    // One "Thoát chỉnh sửa?" at a time: navigating again while it is open waits on the same answer.
+    if (asking) return asking;
+    const pending = closeNow(ask, quiet);
+    if (!ask) return pending;
+    asking = pending;
+    void pending.finally(() => { if (asking === pending) asking = null; });
+    return pending;
+  }
+
+  async function closeNow(ask: boolean, quiet: boolean): Promise<boolean> {
     if (!session) return true;
     if (ask && (unexported() || subs.dirty() || templateMode.dirty() || templateMode.busy)) {
       const leave = await host.confirm(templateMode.busy ? {

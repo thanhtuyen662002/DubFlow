@@ -156,12 +156,12 @@ status = { state: "COMPLETED", message: "Xong", done: 1, total: 1, outputs: [{ p
 // Force a new read to pick up completed output after selection's initial null/cancelled read.
 await [...timers.values()][0]();
 assert.equal(node("results").children.length, 1);
-node("results").children[0].children[1].listeners.click();
+node("results").children[0].children[1].children[0].listeners.click();
 assert.ok(calls.some(([cmd, args]) => cmd === "open_path" && args.path === "c/shorts/short-1.mp4"));
 const oldNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 let copied = "";
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: { clipboard: { writeText: async text => { copied = text; } } } });
-node("results").children[0].children[2].listeners.click();
+node("results").children[0].children[1].children[1].listeners.click();
 await flush();
 assert.equal(copied, "Nội dung");
 if (oldNavigator) Object.defineProperty(globalThis, "navigator", oldNavigator); else delete globalThis.navigator;

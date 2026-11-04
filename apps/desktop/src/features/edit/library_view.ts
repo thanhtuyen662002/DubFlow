@@ -140,8 +140,23 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
     }
   }
 
+  // Queue videos carry no size of their own; the host reads them once per load.
+  const sizes = new Map<string, number>();
   function entries(): LibraryEntry[] {
-    return distinctTitles(mergeEntries(host.jobs(), found, recent));
+    return distinctTitles(mergeEntries(host.jobs(), found, recent))
+      .map((entry) => entry.sizeBytes || !sizes.get(entry.path) ? entry : { ...entry, sizeBytes: sizes.get(entry.path) });
+  }
+
+  async function loadSizes(): Promise<void> {
+    const missing = entries().filter((entry) => !entry.sizeBytes && !sizes.has(entry.path)).map((entry) => entry.path).slice(0, 2000);
+    if (!missing.length) return;
+    try {
+      const values = await invoke<number[]>("edit_file_sizes", { paths: missing });
+      missing.forEach((path, index) => sizes.set(path, Number(values?.[index]) || 0));
+      render();
+    } catch {
+      // Sizes are a nicety; the cards read fine without them.
+    }
   }
 
   function saveRecent(): void {
@@ -290,6 +305,7 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
       if (ticket !== loadTicket) return;
       found = parseLibrary(value);
       loaded = true;
+      void loadSizes();
     } catch (error) {
       if (ticket === loadTicket) host.showError(`Không đọc được danh sách video: ${String(error).slice(0, 160)}`);
     } finally {

@@ -106,6 +106,15 @@ class SuggestPostTests(unittest.TestCase):
                 self.assertEqual(result, suggest_post(**fixture))
                 self.assertTrue(any("Vietsub" in title for title in result["titles"]))
 
+    def test_link_ids_are_not_used_as_titles(self):
+        cues = ["Hôm nay chúng ta thử khăn giấy mới rất mềm và dai!"]
+        for name in ("BV1ckx16aEBz", "7312345678901234567", "dQw4w9WgXcQ"):
+            with self.subTest(name=name):
+                result = suggest_post(cues, source_title=name)
+                self.assertFalse(any(name in title for title in result["titles"]))
+                self.assertNotIn(name, result["description"])
+        self.assertIn("Khăn giấy mềm (Vietsub)", suggest_post(cues, source_title="Khăn giấy mềm")["titles"])
+
     def test_stopwords_never_become_keywords(self):
         self.assertGreaterEqual(len(STOPWORDS), 120)
         self.assertEqual(suggest_post([" ".join(sorted(STOPWORDS))])["keywords"], [])

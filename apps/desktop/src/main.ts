@@ -40,7 +40,7 @@ import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import {
   applySourceLanguage, chooseTranslator, effectiveTranslator, FAST_PHRASE_SYLLABLES_PER_SECOND, hachimiAllowed,
-  phrasePaces, reviewOverrides, saveReviewRevision, startJobRequest,
+  phrasePaces, phraseSizes, reviewOverrides, saveReviewRevision, startJobRequest,
 } from "./features/translation_review/flow.ts";
 import { dubbingOptions, filterVoices, parseVoiceCatalog, type VoiceCatalog, type VoiceChoice } from "./features/voices/model.ts";
 import {
@@ -221,10 +221,30 @@ const THUMB_TONES = ["oklch(0.30 0.025 60)", "oklch(0.29 0.025 230)", "oklch(0.2
 const VIDEO_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10 9.5 4.5 2.5-4.5 2.5z" fill="currentColor"/></svg>`;
 const LINK_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>`;
 
-function jobThumb(id: string, icon: string, seconds?: number): HTMLElement {
+/** One small frame per source video for the queue list; null when it cannot be read. */
+const queueFrames = new Map<string, string | null>();
+const queueFrameWaits = new Set<string>();
+
+function jobThumb(id: string, icon: string, seconds?: number, sourcePath?: string): HTMLElement {
   const thumb = element("span", "job-thumb");
   thumb.style.background = THUMB_TONES[hashOf(id) % THUMB_TONES.length];
-  thumb.innerHTML = icon;
+  const frame = sourcePath ? queueFrames.get(sourcePath) : null;
+  if (frame) {
+    thumb.classList.add("framed");
+    thumb.style.setProperty("--thumb", `url("${frame}")`);
+  } else {
+    thumb.innerHTML = icon;
+  }
+  if (sourcePath && !queueFrames.has(sourcePath) && !queueFrameWaits.has(sourcePath)) {
+    queueFrameWaits.add(sourcePath);
+    void invoke<ArrayBuffer>("video_frame", { sourcePath, position: 0.15, maxWidth: 160 })
+      .then((bytes) => queueFrames.set(sourcePath, URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }))))
+      .catch(() => queueFrames.set(sourcePath, null))
+      .finally(() => {
+        queueFrameWaits.delete(sourcePath);
+        if (queueFrames.get(sourcePath) && lastModel) renderQueue(lastModel.view);
+      });
+  }
   if (seconds !== undefined) thumb.append(element("span", "job-dur", duration(seconds * 1000)));
   return thumb;
 }
@@ -274,7 +294,9 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   // "Thủ công" stays selected while the user has not drawn a region yet.
   if (blurModeSelect.value !== "manual" || blurMode !== "off" || blurJobId === null) blurModeSelect.value = blurMode;
   const coverStyle = rememberedCoverStyle();
-  $("#blur-summary").textContent = blurMode === "auto" ? `Tự dò chữ gốc, che bằng ${describeCoverStyle(coverStyle)}` : describeRegions(job?.blurRegions);
+  $("#blur-summary").textContent = blurMode === "auto" ? `Tự dò chữ gốc, che bằng ${describeCoverStyle(coverStyle)}`
+    : blurModeSelect.value === "off" ? "Giữ nguyên chữ có sẵn trong video"
+      : job?.blurRegions?.length ? describeRegions(job.blurRegions) : "Chưa chọn vùng — bấm Chọn vùng…";
   $("#blur-manual-row").hidden = blurModeSelect.value !== "manual";
   $("#cover-style-row").hidden = blurModeSelect.value === "off";
   coverStyleSelect.value = coverStyle.mode;
@@ -285,7 +307,7 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   translationEngineSelect.value = engine;
   hachimiOption.disabled = !chinese;
   $("#translator-row").hidden = job?.sourceLanguage === "en";
-  hachimiNeedsChinese.hidden = chinese || job?.sourceLanguage === "en";
+  hachimiNeedsChinese.hidden = chinese || job?.sourceLanguage === "en" || !editable;
   $("#hachimi-warning").hidden = engine !== "hachimi";
   $("#voice-picker").hidden = !dubbingToggle.checked || (!!job && job.status.state !== "QUEUED");
   voiceList.replaceChildren();
@@ -335,8 +357,13 @@ function renderQueue(view: DesktopShellModel["view"]): void {
   queueList.replaceChildren();
   const rows = view.rows.filter((row) => matchesQueueFilter(row.state, queueFilter));
   queueList.hidden = rows.length === 0;
+  // Videos with the same name (several links of one channel) read apart by when they were added.
+  const named = new Map<string, number>();
+  for (const row of view.rows) named.set(row.title, (named.get(row.title) ?? 0) + 1);
   for (const row of rows) {
     const selected = row.selected && selectedFetchId === null;
+    const added = (named.get(row.title) ?? 0) > 1 ? shortDate(Math.floor(Date.parse(row.created) / 1000)) : "";
+    const title = added ? `${row.title} · ${added}` : row.title;
     const item = element("li", `job${selected ? " selected" : ""}`);
     item.tabIndex = 0;
     if (selected) item.setAttribute("aria-current", "true");
@@ -346,10 +373,10 @@ function renderQueue(view: DesktopShellModel["view"]): void {
     meta.append(element("span", `dot ${tone(row.state, row.cancelled)}`), element("span", "msg", working ? row.status || row.stateLabel : row.stateLabel));
     if (working && row.fraction !== null) meta.append(element("span", "pct", row.progress));
     if (row.revision) meta.append(element("span", "mini-tag muted", "Bản sửa"));
-    main.append(element("span", "job-title", row.title), meta);
+    main.append(element("span", "job-title", title), meta);
     if (working) main.append(progressBar(row.fraction, row.state));
-    item.append(jobThumb(row.id, VIDEO_ICON, knownDurations.get(row.id)), main);
-    item.title = `${row.title}\n${row.origin}`;
+    item.append(jobThumb(row.id, VIDEO_ICON, knownDurations.get(row.id), row.sourcePath), main);
+    item.title = `${title}\n${row.origin}`;
     const select = () => {
       selectedFetchId = null;
       setListOpen(false);
@@ -436,7 +463,10 @@ function renderInspector(job: QueueJob | null): void {
     detailTab = status.state === "QUEUED" ? "setup" : "result";
   }
   selectTab(detailTab);
-  $("#detail-path").textContent = job.originUrl ?? job.sourcePath;
+  // A link job shows its link under Nguồn & quyền and its file in Tải từ link: no third copy.
+  $("#detail-path").textContent = job.originUrl ? "" : job.sourcePath;
+  $("#detail-path-label").hidden = !!job.originUrl;
+  $("#detail-path").hidden = !!job.originUrl;
   $("#create-report-done").hidden = status.state !== "COMPLETED";
 
   const output = status.state === "COMPLETED" ? job.outputPath : null;
@@ -460,8 +490,12 @@ function renderInspector(job: QueueJob | null): void {
   $("#result-path").textContent = output ?? "";
   // A link job: where its downloaded video and its results live.
   $("#link-card").hidden = !job.originUrl;
-  $("#link-media").textContent = job.originUrl ? job.sourcePath : "";
-  $("#link-output").textContent = job.originUrl ? job.outputDir ?? "" : "";
+  const linkMedia = $("#link-media");
+  linkMedia.textContent = job.originUrl ? shortPath(job.sourcePath) : "";
+  linkMedia.title = job.originUrl ? job.sourcePath : "";
+  const linkOutput = $("#link-output");
+  linkOutput.textContent = job.originUrl ? shortPath(job.outputDir ?? "") : "";
+  linkOutput.title = job.originUrl ? job.outputDir ?? "" : "";
 
   renderVoiceControls(job);
   startButton.disabled = !canStart(job);
@@ -1010,7 +1044,7 @@ function outputRoot(): string | null {
 function renderOutputRoot(): void {
   const root = outputRoot();
   const label = $("#output-root-label");
-  label.textContent = root ? root.split(/[\\/]/).filter(Boolean).slice(-2).join("\\") : "Cạnh video gốc";
+  label.textContent = root ?? "Cạnh video gốc (thư mục “DubFlow Output”)";
   label.title = root ?? "Mỗi video lưu kết quả trong thư mục “DubFlow Output” cạnh file gốc";
   $("#reset-output-root").hidden = !root;
 }
@@ -1861,8 +1895,11 @@ function renderReviewMeta(cue: ReviewCue, meta: HTMLElement, item: HTMLElement):
   if (cue.dub_failed) meta.append(element("span", "badge err", "Lồng tiếng lỗi"));
   if (text.trim() !== cue.machine_text.trim()) meta.append(element("span", "badge run", "Đã sửa"));
   const fast = rate > FAST_PHRASE_SYLLABLES_PER_SECOND;
+  // Close lines of one speaker are dubbed as one phrase and share its pace: say so.
+  const joined = (phraseSizes(reviewCues).get(cue.cue_id) ?? 1) > 1;
   const speed = element("span", `pace${fast ? " fast" : ""}`,
-    `${rate.toFixed(1)} tiếng/giây${fast ? " · có thể không kịp lồng tiếng, nên rút gọn" : ""}`);
+    `${joined ? "Cả cụm câu liền nhau: " : ""}${rate.toFixed(1).replace(".", ",")} tiếng/giây${fast ? ` · có thể không kịp lồng tiếng, nên rút gọn${joined ? " cụm này" : ""}` : ""}`);
+  if (joined) speed.title = "Các câu sát nhau của cùng một người được lồng tiếng chung một lượt, nên tốc độ tính cho cả cụm.";
   meta.append(speed);
   if (text.trim() !== cue.machine_text.trim()) {
     const revert = element("button", "revert", "Khôi phục bản máy dịch");

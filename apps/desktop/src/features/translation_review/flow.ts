@@ -114,7 +114,8 @@ const PHRASE_CUES = 5;
 type PaceCue = { cue_id: string; start_ms: number; end_ms: number; speaker?: string | null };
 
 /** Syllables per second of each cue's dubbing phrase, grouped like the engine groups them. */
-export function phrasePaces(cues: readonly PaceCue[], textOf: (cueId: string) => string): Map<string, number> {
+/** Neighbouring cues of one speaker that are dubbed together as one phrase. */
+export function phraseGroups(cues: readonly PaceCue[]): PaceCue[][] {
   const ordered = [...cues].sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms || a.cue_id.localeCompare(b.cue_id));
   const groups: PaceCue[][] = [];
   for (const cue of ordered) {
@@ -128,6 +129,18 @@ export function phrasePaces(cues: readonly PaceCue[], textOf: (cueId: string) =>
       groups.push([cue]);
     }
   }
+  return groups;
+}
+
+/** How many cues share each cue's phrase (1 = the cue is dubbed alone). */
+export function phraseSizes(cues: readonly PaceCue[]): Map<string, number> {
+  const sizes = new Map<string, number>();
+  for (const group of phraseGroups(cues)) for (const cue of group) sizes.set(cue.cue_id, group.length);
+  return sizes;
+}
+
+export function phrasePaces(cues: readonly PaceCue[], textOf: (cueId: string) => string): Map<string, number> {
+  const groups = phraseGroups(cues);
   const paces = new Map<string, number>();
   for (const group of groups) {
     const syllables = group.reduce((sum, cue) => sum + textOf(cue.cue_id).trim().split(/\s+/).filter(Boolean).length, 0);

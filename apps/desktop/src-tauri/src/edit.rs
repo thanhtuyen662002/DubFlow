@@ -1684,6 +1684,14 @@ fn check_project(project: &Value) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Sizes of the queue's finished videos for the Chỉnh sửa cards (0 when a file is gone).
+#[tauri::command]
+pub fn edit_file_sizes(paths: Vec<String>) -> Vec<u64> {
+    paths.iter().take(2000)
+        .map(|path| fs::metadata(path).ok().filter(fs::Metadata::is_file).map_or(0, |metadata| metadata.len()))
+        .collect()
+}
+
 /// The finished Bán hàng videos, compilations and documentary rough cuts below
 /// the given folders, newest first, for the Chỉnh sửa screen (Issue #497).
 /// Queue videos are known to the page already.
@@ -2042,6 +2050,17 @@ mod tests {
 
     fn expected(text: &str) -> String {
         text.replace("{fit}", FIT).replace("{af}", AUDIO_FORMAT)
+    }
+
+    #[test]
+    fn reads_the_sizes_of_queue_videos() {
+        let folder = std::env::temp_dir().join(format!("dubflow-edit-sizes-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let video = folder.join("a.mp4");
+        fs::write(&video, b"12345").unwrap();
+        let paths = vec![video.display().to_string(), folder.join("gone.mp4").display().to_string(), folder.display().to_string()];
+        assert_eq!(edit_file_sizes(paths), vec![5, 0, 0]);
+        let _ = fs::remove_dir_all(&folder);
     }
 
     #[test]

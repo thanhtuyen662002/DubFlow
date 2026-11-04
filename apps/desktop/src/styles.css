@@ -152,7 +152,7 @@ select { color-scheme: dark; }
 .el-group-title { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; color: var(--text-2); font-size: 13px; font-weight: 600; }
 .el-group-count { color: var(--text-3); font-weight: 400; }
 .el-flat { margin-top: 18px; }
-.el-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 250px)); gap: 14px; }
+.el-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .el-card { position: relative; display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); cursor: pointer; transition: border-color .15s var(--ease), transform .15s var(--ease); }
 .el-card:hover, .el-card:focus-visible { border-color: var(--line-strong); outline: 0; }
 .el-card:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
@@ -200,8 +200,13 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .job { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 8px; color: var(--text); cursor: pointer; }
 .job:hover { background: var(--raised); }
 .job.selected { background: var(--select); }
+/* A list row that is a <button> (Phim tài liệu) looks like the others: full width, no native border. */
+button.job { width: 100%; border: 0; background: none; font: inherit; text-align: left; }
+button.job:hover { background: var(--raised); }
+button.job.selected { background: var(--select); }
 .job:focus-visible { outline-offset: -2px; }
 .job-thumb { position: relative; display: grid; flex: none; place-items: center; width: 72px; height: 44px; border-radius: 5px; color: oklch(0.95 0.005 275 / .4); }
+.job-thumb.framed { overflow: hidden; background: var(--player-bg) var(--thumb) center / cover no-repeat !important; }
 .job-dur { position: absolute; right: 4px; bottom: 3px; padding: 0 4px; border-radius: 3px; background: oklch(0 0 0 / .72); color: #fff; font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; }
 .job-main { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .job-title { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -267,6 +272,9 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .stages li.skipped { opacity: .6; text-decoration: line-through; }
 @container (max-width: 760px) {
   .stages { gap: 8px; }
+  .stages li { gap: 4px; font-size: 11.5px; }
+}
+@container (max-width: 600px) {
   .stages li:not(.active):not(.failed) .stage-label { display: none; }
 }
 
@@ -303,6 +311,9 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .settings { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--canvas); }
 .settings legend { float: left; width: 100%; margin-bottom: 10px; padding: 0; color: var(--text-3); font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
 .settings:disabled .switch-row, .settings:disabled .voice-picker, .settings:disabled .select-row { opacity: .6; }
+/* A locked job's options read as a record, not as controls. */
+.settings:disabled .switch-row, .settings:disabled .select-row { cursor: default; }
+.settings:disabled .switch, .settings:disabled select { filter: grayscale(1); opacity: .55; cursor: not-allowed; }
 .setup-fields { position: relative; padding: 0; border: 0; background: transparent; }
 .setup-fields > legend.visually-hidden { float: none; top: 0; left: 0; width: 1px; height: 1px; margin: 0; }
 .setup-group { margin: 18px 0 2px; font-size: 14px; font-weight: 600; }
@@ -360,6 +371,18 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 :is(.source-credit, .more-item) .result-actions { align-items: center; }
 :is(.source-credit, .more-item) .result-actions .btn { flex: 0 1 auto; }
 :is(.source-credit, .more-item) .result-actions .hint { flex: 1 1 80px; min-width: 0; margin: 0; }
+/* Tạo thêm: every control on its own row with air around it. */
+.more-item fieldset > button:not(.block) { display: block; margin-bottom: 10px; }
+.more-item fieldset > .btn.block { margin-top: 6px; }
+.more-item fieldset > .result-actions { margin: 0 0 12px; }
+.more-item label > .hint:last-child { align-self: flex-end; margin: 0; font-size: 11.5px; }
+.shorts-row { display: grid; gap: 2px; margin-bottom: 10px; padding: 10px 12px; }
+.shorts-row > input[type="checkbox"] { width: auto; justify-self: start; }
+.shorts-row label { margin-bottom: 6px; }
+.shorts-row > .link { justify-self: start; }
+.shorts-result { padding: 10px 0; border-top: 1px solid var(--line); }
+.shorts-result > p { margin: 0 0 6px; font-weight: 600; overflow-wrap: anywhere; }
+.shorts-result .result-actions { margin-top: 0; }
 .source-credit { padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
 .source-credit .settings legend { float: none; margin-bottom: 10px; }
 .button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
@@ -409,6 +432,9 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .settings-list { flex: 1; min-height: 0; margin: 0; padding: 0 20px 4px; overflow: auto; }
 .settings-row { display: flex; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .settings-row:last-child { border-bottom: 0; }
+.settings-group { padding: 18px 0 2px; }
+.settings-group h3 { margin: 0; color: var(--text-3); font-size: 11.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+.settings-row:has(+ .settings-group) { border-bottom: 0; }
 .settings-text { flex: 1; min-width: 0; }
 .settings-text dt { font-weight: 600; }
 .settings-text dt label { cursor: pointer; }
@@ -472,7 +498,7 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 @media (max-width: 1100px) { .review-head { flex-wrap: wrap; } }
 
 /* Post suggestions, AI settings, versions */
-.post-panel { width: min(760px, 100%); }
+.post-panel { width: min(760px, 100%); height: auto; max-height: min(860px, 100%); }
 .post-body { flex: 1; padding: 4px 20px 20px; overflow: auto; }
 .post-state { padding: 8px 20px 0; }
 .post-credit-hint { margin: 10px 20px; color: var(--warn); }
@@ -490,7 +516,7 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .link.copy { font-size: 12px; }
 .ai-provider { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
 .ai-provider select { height: 30px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--canvas); color: var(--text); }
-.ai-settings-panel { width: min(620px, 100%); }
+.ai-settings-panel { width: min(620px, 100%); height: auto; max-height: min(760px, 100%); }
 .ai-settings-body { display: grid; gap: 14px; padding: 16px 20px 20px; overflow: auto; }
 .ai-settings-keys { display: grid; gap: 12px; }
 .ai-key-card { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
@@ -556,7 +582,7 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .platform-tabs { display: flex; flex: none; gap: 2px; padding: 3px; border-radius: 8px; background: var(--canvas); }
 .platform-tabs button { height: 28px; padding: 0 14px; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); font-weight: 600; white-space: nowrap; cursor: pointer; }
 .platform-tabs button[aria-selected="true"] { background: var(--raised); color: var(--text); }
-.discover-body { display: grid; flex: 1; grid-template-columns: 240px minmax(0, 1fr); gap: 20px; min-height: 0; padding: 20px 24px; overflow: hidden; }
+.discover-body { display: grid; flex: 1; grid-template-columns: 290px minmax(0, 1fr); gap: 20px; min-height: 0; padding: 20px 24px; overflow: hidden; }
 .trend-panel { display: flex; flex-direction: column; min-height: 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .trend-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .trend-head h2 { font-size: 14px; font-weight: 600; }
@@ -599,6 +625,8 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .result-bar label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
 .result-bar .btn.primary { margin-left: auto; }
 .discover-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+.discover-results:empty::before { content: "Gõ từ khóa tiếng Trung, bấm một chủ đề hoặc một mục trong Đang hot để tìm video. Kết quả hiện ở đây, chọn rồi bấm Thêm vào hàng đợi."; grid-column: 1 / -1; padding: 40px 24px; border: 1px dashed var(--line); border-radius: 10px; color: var(--text-3); font-size: 13.5px; line-height: 1.5; text-align: center; }
+.discover-main:has(.discover-state:not(:empty)) .discover-results:empty::before { display: none; }
 .video-card { position: relative; display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); cursor: pointer; user-select: none; }
 .video-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .video-card:focus-visible { outline-offset: 1px; }
@@ -699,6 +727,16 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .product-results li.failed { color: var(--err); }
 /* Bán hàng: two columns (design E), stacking below 1200 px */
 .product-studio { grid-template-columns: minmax(0, 1fr) minmax(340px, 400px); align-items: start; max-width: 1360px; }
+.product-voice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin-top: 12px; }
+.product-voice-grid label { display: grid; gap: 4px; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
+.product-voice-grid select { width: 100%; height: 34px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--canvas); color: var(--text); }
+.product-voice-grid input[type="range"] { width: min(320px, 100%); accent-color: var(--accent); }
+.product-voice-wide { grid-column: 1 / -1; }
+.product-music-field { display: grid; gap: 4px; min-width: 0; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
+.product-music-field .product-music { font-weight: 400; }
+.product-music-field #product-music-name { min-width: 0; max-width: 100%; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.product-create-actions .btn.block { flex: 1 1 100%; }
+.product-recent-actions .btn { height: 30px; padding: 0 12px; }
 .product-col { display: grid; gap: 16px; min-width: 0; }
 .product-paste { display: block; margin-top: 10px; }
 .product-paste textarea { width: 100%; min-height: 150px; padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--canvas); color: var(--text); font-size: 13.5px; line-height: 1.5; resize: vertical; }
@@ -765,10 +803,16 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .product-player-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .product-player-actions .btn { height: 32px; padding: 0 12px; }
 .product-recent { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-.product-recent-list li { min-width: 0; }
+.product-recent-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.product-recent-list li > .hint { grid-column: 1; margin: 0; }
+.product-recent-actions { display: flex; grid-column: 2; grid-row: 1 / span 2; gap: 12px; }
 .product-recent-name { min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1199.98px) {
   .product-studio { grid-template-columns: minmax(0, 1fr); max-width: 980px; }
+  /* One column: the cards read 1 → 5 in order. */
+  .product-studio > .product-col { display: contents; }
+  .product-studio .product-side > .product-card { order: 1; }
+  #product-create-card { order: 2; }
 }
 
 .compilation-fields { display: grid; gap: 16px; min-width: 0; padding: 0; border: 0; }
@@ -780,6 +824,13 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .compilation-list { display: grid; gap: 8px; padding: 0; list-style: none; }
 .compilation-list li { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .compilation-list li > span { flex: 1; overflow-wrap: anywhere; }
+.compilation-pick { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.compilation-pick:hover { border-color: var(--line-strong); }
+.compilation-pick:has(input:checked) { border-color: var(--accent); background: var(--select); }
+.compilation-pick > input { flex: none; }
+.compilation-pick-text { display: grid; flex: 1; min-width: 0; }
+.compilation-pick-name { overflow: hidden; color: var(--text); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.compilation-pick .hint { margin: 0; font-size: 12px; }
 .compilation-list label { overflow-wrap: anywhere; }
 .compilation-editor { min-width: 0; padding-top: 12px; border-top: 1px solid var(--line); }
 .compilation-editor h3 { font-size: 14px; }
@@ -1100,6 +1151,8 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
   .list-toggle { display: inline-flex; }
   .queue-col { position: absolute; top: 0; bottom: 0; left: 0; z-index: 6; border-right-color: var(--line-strong); box-shadow: 16px 0 48px oklch(0 0 0 / .45); transform: translateX(-100%); visibility: hidden; transition: transform .22s var(--ease), visibility 0s linear .22s; }
   .queue-screen.list-open .queue-col { transform: none; visibility: visible; transition: transform .22s var(--ease); }
+  /* The page behind an open list dims, so it reads as a drawer that a click outside closes. */
+  .queue-screen.list-open::after { content: ""; position: absolute; inset: 0; z-index: 5; background: oklch(0 0 0 / .55); }
 }
 @media (max-width: 1023.98px) {
   .link-form { min-width: 150px; }
@@ -1347,6 +1400,7 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .compilation-group .product-form, .compilation-group .product-options { margin-top: 4px; }
 .compilation-inspector .product-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .compilation-order { counter-reset: none; }
+.compilation-list:empty { display: none; }
 .compilation-order li { padding: 4px 6px; border-radius: 6px; background: var(--canvas); }
 .compilation-order .btn { flex: none; width: 30px; height: 28px; padding: 0; }
 .compilation-past { display: grid; gap: 12px; }
@@ -1355,6 +1409,8 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .compilation-facts dd { margin: 0; overflow-wrap: anywhere; white-space: pre-line; }
 .compilation-past-parts { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--text-2); font-size: 13px; }
 .compilation-inspector .tab-foot { display: grid; gap: 8px; }
+/* The Dự án tab's main action stays in reach while its long form scrolls. */
+#docu-create { position: sticky; bottom: 12px; z-index: 1; box-shadow: 0 0 0 12px var(--surface); }
 .compilation-inspector .tab-foot .hint:empty { display: none; }
 
 /* Phim tài liệu (Issue #440): source player, editable script and project settings. */
@@ -1450,9 +1506,11 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .docu-mcp-recent li.failed small { color: var(--warn); }
 .rail-item.mcp-busy { position: relative; }
 .rail-item.mcp-busy::after { content: ""; position: absolute; top: 6px; right: 10px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent, #22d3ee); animation: docu-mcp-pulse 1s ease-in-out infinite alternate; }
-.docu-render-actions { display: flex; gap: 8px; }
+.docu-render-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .docu-render-actions[hidden] { display: none; }
-.docu-render-actions .btn { flex: 1; justify-content: center; }
+.docu-render-actions .btn { justify-content: center; min-width: 0; }
+/* Chỉnh sửa is the next step: a full row of its own above Xem and Mở thư mục. */
+.docu-render-actions #docu-render-edit { grid-column: 1 / -1; order: -1; }
 .docu-render code { font-size: 11.5px; }
 .docu-capcut { gap: 8px; }
 .docu-capcut[hidden], .docu-capcut .btn[hidden] { display: none; }

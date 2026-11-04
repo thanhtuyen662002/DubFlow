@@ -288,3 +288,26 @@ assert.equal(activity.current.project, "D:/run");
 assert.deepEqual(activity.recent.map(item => [item.tool, item.state]), [["save_script", "done"]]);
 assert.equal(parseMcpActivity(null), null);
 assert.equal(parseMcpActivity({ updated: "x", current: null, recent: [] }).current, null);
+
+// What the user reads instead of raw ids (all-screens polish).
+{
+  const { SFX_NAMES, sceneName, sourceName, AMBIENT_SFX } = await import("../src/features/docu/model.ts");
+  assert.equal(sceneName("sc_007"), "Cảnh 7");
+  assert.equal(sceneName("sc_120"), "Cảnh 120");
+  assert.equal(sceneName("custom"), "custom");
+  assert.equal(sourceName("src_02"), "Nguồn 2");
+  assert.equal(sourceName("other"), "other");
+  for (const tag of AMBIENT_SFX) assert.ok(SFX_NAMES[tag] && !SFX_NAMES[tag].includes("_"), tag);
+  console.log("docu names tests passed");
+}
+{
+  const { readable } = await import("../src/features/docu/model.ts");
+  assert.equal(readable("Đổi khung hình: letterbox_235"), "Đổi khung hình: Viền đen điện ảnh 2.35:1");
+  assert.equal(readable("Thay lát cắt sc_022 #2 bằng src_04 từ 112.5 s"), "Thay lát cắt cảnh 22 #2 bằng nguồn 4 từ 112,5 giây");
+  assert.equal(readable("Dựng lại bản nháp (render_rough_cut) để thấy khung mới"), "Dựng lại bản nháp để thấy khung mới");
+  assert.equal(readable("Lỗi: bilibili: Platform requires verification in its browser."), "Lỗi: bilibili: Nền tảng yêu cầu xác minh trong trình duyệt.");
+  assert.equal(readable("Tìm video trên bilibili: 湖北养猪大楼"), "Tìm video trên bilibili: 湖北养猪大楼");
+  assert.equal(readable("Tạo lời đọc (giọng am_michael)", (id) => id === "am_michael" ? "Michael" : undefined), "Tạo lời đọc (giọng Michael)");
+  assert.equal(readable("Tạo lời đọc (giọng am_unknown)"), "Tạo lời đọc (giọng am_unknown)");
+  console.log("docu activity text tests passed");
+}
