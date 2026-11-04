@@ -155,6 +155,56 @@ fn output_dir(base: &Path, title: &str, seed: &str) -> PathBuf {
     base.join("DubFlow Output").join(format!("{PREFIX}{}", crate::product::folder_title(title))).join(format!("run-{run}"))
 }
 
+const IN_SOURCE_STORE: &str = "Không lưu phim tài liệu trong kho video nguồn của DubFlow; hãy chọn thư mục khác";
+
+/// DubFlow's reserved `<data root>\source-media` store (#464); sources there stay read-only (ADR-0049).
+fn source_store() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(store) = TEST_STORE.with(|store| store.borrow().clone()) { return Ok(store); }
+    Ok(crate::data_root()?.join("source-media"))
+}
+
+#[cfg(test)]
+thread_local! { static TEST_STORE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
+
+/// `path` (which need not exist yet) through the canonical form of its nearest
+/// existing ancestor, the same resolution `within` uses; `None` when that fails.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    while fs::symlink_metadata(existing).is_err() {
+        rest.push(existing.file_name()?.to_os_string());
+        existing = existing.parent()?;
+    }
+    // A link whose target is gone cannot be resolved: fail closed.
+    let mut out = existing.canonicalize().ok()?;
+    for name in rest.iter().rev() { out.push(name); }
+    Some(out)
+}
+
+/// Windows paths compare without regard to case.
+fn same_or_inside(path: &Path, root: &Path) -> bool {
+    let key = |path: &Path| -> Vec<String> { path.components().map(|part| {
+        let text = part.as_os_str().to_string_lossy().into_owned();
+        if cfg!(windows) { text.to_lowercase() } else { text }
+    }).collect() };
+    key(path).starts_with(&key(root))
+}
+
+/// Refuse a documentary path that is, or resolves (through links, junctions
+/// or a redirected parent) into, the reserved source store. Called right
+/// before each filesystem write; a same-user process that swaps directories
+/// between this check and the write is not excluded (TOCTOU).
+fn outside_source_store(path: &Path, store: &Path) -> Result<(), String> {
+    let (Some(candidate), Some(reserved)) = (resolved(path), resolved(store)) else { return Err(fail(IN_SOURCE_STORE)) };
+    if same_or_inside(&candidate, &reserved) || crate::within(path, store) { return Err(fail(IN_SOURCE_STORE)); }
+    Ok(())
+}
+
+fn guard_source_store(path: &Path) -> Result<(), String> {
+    outside_source_store(path, &source_store()?)
+}
+
 /// A documentary run folder (the editor opens its `documentary.mp4`).
 pub(crate) fn is_run(dir: &Path) -> bool {
     docu_dir(&display_path(dir)).is_ok()
@@ -166,6 +216,10 @@ fn docu_dir(value: &str) -> Result<PathBuf, String> {
         return Err(fail("Thư mục phim tài liệu không hợp lệ"));
     }
     let dir = path.canonicalize().map_err(|_| fail("Không tìm thấy thư mục phim tài liệu"))?;
+    // Every later step (narration, plan, render, script check, cancel) passes
+    // through here, so a run already inside the source store is refused too.
+    guard_source_store(path)?;
+    guard_source_store(&dir)?;
     let run = dir.file_name().and_then(|name| name.to_str()).unwrap_or_default();
     let title = dir.parent().and_then(Path::file_name).and_then(|name| name.to_str()).unwrap_or_default();
     let root = dir.parent().and_then(Path::parent).and_then(Path::file_name);
@@ -203,6 +257,7 @@ pub async fn docu_create(request: DocuRequest) -> Result<Value, String> {
     let base = if let Some(value) = &request.output_root {
         let path = PathBuf::from(value);
         if !path.is_absolute() || !path.is_dir() { return Err(fail("Hãy chọn lại thư mục lưu kết quả")); }
+        guard_source_store(&path)?;
         path
     } else if let Some(job) = request.sources.iter().find(|source| source.kind == "job") {
         let dir = review_dir(job.output_path.as_deref().unwrap_or_default())?;
@@ -213,8 +268,13 @@ pub async fn docu_create(request: DocuRequest) -> Result<Value, String> {
     };
     let seed = format!("{}:{}:{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(), std::process::id(), request.title);
     let output = output_dir(&base, &request.title, &seed);
+    // The final run path too: an outside root whose `DubFlow Output` is a
+    // link or junction into the store must not slip through.
+    let store = source_store()?;
+    outside_source_store(&output, &store)?;
     fs::create_dir_all(output.parent().ok_or_else(|| fail("Không tạo được thư mục phim tài liệu"))?)
         .map_err(|_| fail("Không tạo được thư mục phim tài liệu"))?;
+    outside_source_store(&output, &store)?;
     fs::create_dir(&output).map_err(|_| fail("Không tạo được phiên phim tài liệu mới"))?;
     let work = output.join(".dubflow-work");
     fs::create_dir(&work).map_err(|_| fail("Không tạo được thư mục làm việc phim tài liệu"))?;
@@ -703,6 +763,162 @@ mod tests {
         assert_eq!(found.iter().map(|run| run["spec"]["title"].as_str()).collect::<Vec<_>>(), [Some("x"), Some("x")]);
         assert_eq!(found[0]["dir"], display_path(&newer.canonicalize().unwrap()));
         assert!(!found[0]["script"].as_bool().unwrap());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Points `source_store()` at a test store on this thread until dropped.
+    struct TestStore;
+    impl TestStore {
+        fn set(store: &Path) -> Self { TEST_STORE.with(|cell| *cell.borrow_mut() = Some(store.to_path_buf())); TestStore }
+    }
+    impl Drop for TestStore {
+        fn drop(&mut self) { TEST_STORE.with(|cell| *cell.borrow_mut() = None); }
+    }
+
+    /// Every entry below `root` (links not followed): kind, size, mtime and content hash.
+    fn snapshot(root: &Path) -> Vec<(String, bool, u64, std::time::SystemTime, String)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                let meta = fs::symlink_metadata(&path).unwrap();
+                let hash = if meta.is_file() { format!("{:x}", Sha256::digest(fs::read(&path).unwrap())) } else { String::new() };
+                if meta.is_dir() && !meta.file_type().is_symlink() { stack.push(path.clone()); }
+                out.push((display_path(path.strip_prefix(root).unwrap()), meta.is_dir(), meta.len(), meta.modified().unwrap(), hash));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// A directory link: an NTFS junction (reparse point) on Windows, a symlink elsewhere.
+    fn link_dir(target: &Path, link: &Path) {
+        #[cfg(windows)]
+        {
+            let status = Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target)
+                .stdout(Stdio::null()).status().unwrap();
+            assert!(status.success(), "mklink /J failed");
+            assert_eq!(fs::read_link(link).ok().and_then(|target| target.canonicalize().ok()), target.canonicalize().ok());
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    /// A store holding one source file, and two local sources outside it.
+    fn store_fixture(name: &str) -> (PathBuf, PathBuf, Vec<Value>) {
+        let base = std::env::temp_dir().join(format!("dubflow-docu-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let store = base.join("data").join("source-media");
+        fs::create_dir_all(store.join("nested")).unwrap();
+        fs::write(store.join("nested/source.mp4"), b"reserved source bytes").unwrap();
+        let (video, subtitles) = file_fixture(&base.join("sources"));
+        (base, store, vec![local_source(&video, &subtitles, "Nguồn một"), local_source(&video, &subtitles, "Nguồn hai")])
+    }
+
+    fn create_in(root: &Path, sources: &[Value]) -> Result<Value, String> {
+        let value = json!({"title":"Công trình lớn","topic":"", "targetMinutes":5, "cinematicFramingPreset":"none",
+            "burnEndCredits":false, "sources":sources, "outputRoot":display_path(root)});
+        tauri::async_runtime::block_on(docu_create(serde_json::from_value(value).unwrap()))
+    }
+
+    fn refused<T: std::fmt::Debug>(result: Result<T, String>) {
+        assert!(result.unwrap_err().contains("kho video nguồn"));
+    }
+
+    #[test]
+    fn source_store_refuses_new_documentary_output() {
+        let (base, store, sources) = store_fixture("store-create");
+        let _store = TestStore::set(&store);
+        let before = snapshot(&store);
+        let mut roots = vec![store.clone(), store.join("nested")];
+        // The same folder spelled differently still resolves into the store.
+        roots.push(if cfg!(windows) { base.join("data").join("SOURCE-MEDIA").join("Nested") } else { store.join(".").join("nested") });
+        for root in &roots {
+            let error = create_in(root, &sources).unwrap_err();
+            assert!(error.contains("kho video nguồn"), "{root:?}: {error}");
+        }
+        assert_eq!(snapshot(&store), before);
+        // An ordinary folder outside the store still gets its run and spec.
+        let outside = base.join("out");
+        fs::create_dir_all(&outside).unwrap();
+        let _ = create_in(&outside, &sources);
+        let runs: Vec<_> = fs::read_dir(outside.join("DubFlow Output")).unwrap().flatten()
+            .flat_map(|title| fs::read_dir(title.path()).unwrap().flatten().map(|run| run.path())).collect();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].join(".dubflow-work/spec.json").is_file());
+        assert!(is_run(&runs[0]));
+        assert_eq!(snapshot(&store), before);
+        // A path that cannot be resolved fails closed.
+        assert!(outside_source_store(Path::new("relative"), &store).is_err());
+        assert!(outside_source_store(&outside, &store).is_ok());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn junction_aliases_into_source_store_are_refused() {
+        let (base, store, sources) = store_fixture("store-junction");
+        let _store = TestStore::set(&store);
+        fs::create_dir_all(store.join("redirect")).unwrap();
+        let before = snapshot(&store);
+        // The chosen root is itself a junction into the store.
+        let alias = base.join("alias");
+        link_dir(&store, &alias);
+        refused(create_in(&alias, &sources));
+        refused(create_in(&alias.join("nested"), &sources));
+        // An outside root whose `DubFlow Output` is redirected into the store.
+        let outside = base.join("out");
+        fs::create_dir_all(&outside).unwrap();
+        link_dir(&store.join("redirect"), &outside.join("DubFlow Output"));
+        refused(create_in(&outside, &sources));
+        assert_eq!(snapshot(&store), before);
+        // A run reached through the junction is still a run inside the store.
+        let run = store.join("redirect").join(format!("{PREFIX}Cũ")).join("run-0000000000aa");
+        fs::create_dir_all(run.join(".dubflow-work")).unwrap();
+        fs::write(run.join(".dubflow-work/spec.json"), json!({"schema_version":1,"sources":[]}).to_string()).unwrap();
+        let through = outside.join("DubFlow Output").join(format!("{PREFIX}Cũ")).join("run-0000000000aa");
+        refused(docu_dir(&display_path(&through)));
+        refused(docu_render_cancel(display_path(&through)));
+        assert!(!run.join(".dubflow-work/render").exists());
+        // Remove the links first so cleanup never follows them into the store.
+        fs::remove_dir(&alias).unwrap();
+        fs::remove_dir(outside.join("DubFlow Output")).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn existing_run_inside_source_store_is_refused_before_any_write() {
+        let (base, store, _) = store_fixture("store-existing");
+        let _store = TestStore::set(&store);
+        let run = store.join("DubFlow Output").join(format!("{PREFIX}Cũ")).join("run-0000000000bb");
+        fs::create_dir_all(run.join(".dubflow-work")).unwrap();
+        fs::write(run.join(".dubflow-work/spec.json"), json!({"schema_version":1,"sources":[]}).to_string()).unwrap();
+        for name in ["documentary_script.json", "master_audio_timeline.json", "visual_plan.json"] {
+            fs::write(run.join(name), b"{}").unwrap();
+        }
+        fs::write(run.join("documentary.mp4"), b"mp4").unwrap();
+        let before = snapshot(&store);
+        let dir = display_path(&run);
+        refused(docu_narrate(dir.clone(), "am_michael".into(), 1.0));
+        refused(docu_plan(dir.clone()));
+        refused(docu_render(dir.clone()));
+        refused(docu_narration_cancel(dir.clone()));
+        refused(docu_plan_cancel(dir.clone()));
+        refused(docu_render_cancel(dir.clone()));
+        refused(tauri::async_runtime::block_on(docu_check_script(dir.clone(), json!({"schema_version":1}))));
+        refused(tauri::async_runtime::block_on(docu_capcut(dir.clone())));
+        refused(docu_open(dir.clone()));
+        refused(narration_audio(&display_path(&run.join("narration.wav"))));
+        assert!(!is_run(&run));
+        assert!(docu_runs(vec![display_path(&store)]).is_empty());
+        assert_eq!(snapshot(&store), before);
+        // The identical run outside the store still works.
+        let outside = base.join("DubFlow Output").join(format!("{PREFIX}Cũ")).join("run-0000000000bb");
+        fs::create_dir_all(outside.join(".dubflow-work")).unwrap();
+        fs::write(outside.join(".dubflow-work/spec.json"), json!({"schema_version":1,"sources":[]}).to_string()).unwrap();
+        docu_render_cancel(display_path(&outside)).unwrap();
+        assert!(outside.join(".dubflow-work/render/cancel").is_file());
+        assert_eq!(snapshot(&store), before);
         fs::remove_dir_all(base).unwrap();
     }
 }

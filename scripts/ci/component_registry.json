@@ -560,7 +560,7 @@
     },
     {
       "id": "documentary",
-      "roots": ["engine/dubflow/docu", "engine/dubflow/mcp", "tests/docu"],
+      "roots": ["engine/dubflow/docu", "engine/dubflow/mcp", "tests/docu", "apps/desktop/src-tauri/src/docu.rs"],
       "commands": [["python", "-B", "-m", "unittest", "discover", "-s", "tests/docu", "-p", "test_*.py"]]
     },
     {
