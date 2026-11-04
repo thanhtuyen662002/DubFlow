@@ -163,7 +163,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
               </div>
             </section>
             <section class="docu-card docu-narration docu-capcut" id="docu-capcut" aria-labelledby="docu-capcut-title" hidden>
-              <header class="docu-step-head"><span class="docu-step-num">4</span><h3 id="docu-capcut-title">Xuất sang CapCut</h3><span class="docu-badge">Tùy chọn</span></header>
+              <header class="docu-step-head"><span class="docu-step-num">4</span><h3 id="docu-capcut-title">Xuất sang CapCut</h3><span id="docu-capcut-badge" class="docu-badge"></span></header>
               <button id="docu-capcut-export" class="btn block" type="button" title="Mỗi lát cắt là một clip riêng; lời đọc ở rãnh âm thanh">Xuất sang CapCut</button>
               <p id="docu-capcut-state" class="hint" role="status"></p>
               <button id="docu-capcut-open" class="btn block" type="button" hidden>Mở CapCut</button>
@@ -215,6 +215,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   let stoppingAt: number | null = null;
   /** The player shows either a source video or the rendered rough cut, never ambiguously. */
   let playerMode: "source" | "draft" = "source";
+  /** Only the latest player request may touch the video: URL lookups can resolve out of order. */
+  let playerRequest = 0;
 
   type Tab = "setup" | "script" | "produce" | "claude";
   function setTab(tab: Tab): void {
@@ -250,6 +252,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     if (playerMode === "draft" && !render.video) playerMode = "source";
     if (playerMode === "draft") { void setPlayerSource(ROUGH_CUT); return; }
     if (!contexts.length) {
+      playerRequest++;
       video.removeAttribute("src"); video.load(); sourceVideoUrl = null;
       $("#docu-player-empty").textContent = "Chọn dự án có nguồn video để xem trước.";
       $("#docu-player-empty").hidden = false;
@@ -271,17 +274,19 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     $<HTMLButtonElement>("#docu-show-source").disabled = !selected?.contexts.length;
     $("#docu-player-source").hidden = draft || !selected?.contexts.length;
     $("#docu-player").classList.toggle("draft", draft);
-    $("#docu-player-badge").textContent = draft ? "documentary.mp4 · bản đã dựng" : selected?.contexts.length ? "Video gốc, chưa dựng" : "";
+    $("#docu-player-badge").textContent = draft ? `documentary.mp4 · bản đã dựng${renderStale() ? " (cũ, cần dựng lại)" : ""}` : selected?.contexts.length ? "Video gốc, chưa dựng" : "";
   }
 
   async function setPlayerSource(sourceId: string, start?: number, end?: number): Promise<void> {
     const draft = sourceId === ROUGH_CUT;
     const path = draft ? render.video : selected?.contexts.find(source => source.source_id === sourceId)?.video_path;
     if (!path) return;
+    const request = ++playerRequest, dir = selected?.dir;
     playerMode = draft ? "draft" : "source";
     if (!draft) ($("#docu-player-source") as HTMLSelectElement).value = sourceId;
     renderPlayerMode();
     const url = await settings.mediaUrl?.(path) ?? null;
+    if (request !== playerRequest || selected?.dir !== dir) return;
     if (!url) {
       $("#docu-player-empty").hidden = false;
       $("#docu-player-empty").textContent = draft ? "Không mở được bản nháp để xem." : "Không mở được video nguồn để xem trước.";
@@ -417,7 +422,11 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     }
   }
 
-  const BADGES = { todo: "Chưa làm", busy: "Đang chạy", stale: "Cần làm lại", done: "Xong" } as const;
+  const BADGES = { todo: "Chưa làm", optional: "Chưa làm · tùy chọn", busy: "Đang chạy", stale: "Cần làm lại", done: "Xong" } as const;
+  /** A rough cut on disk whose script, narration or plan has changed since (no matching plan to have rendered from). */
+  function renderStale(): boolean {
+    return Boolean(render.video) && (!visual.plan || planStale(currentScript, narration.timeline, visual.plan));
+  }
   function badge(selector: string, state: keyof typeof BADGES): void {
     const element = $(selector);
     element.textContent = BADGES[state];
@@ -434,9 +443,10 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     $("#docu-render-bar").style.width = `${running && total ? Math.round(100 * (render.status!.done / total)) : 0}%`;
     const failed = render.status && ["FAILED", "CANCELLED"].includes(render.status.state);
     $("#docu-render-state").textContent = running || failed ? render.status!.message
-      : !planFresh ? "Cần kế hoạch hình ảnh khớp với lời đọc trước." : render.video ? "Bản nháp đã sẵn sàng." : "";
+      : !planFresh ? (render.video ? "Bản nháp hiện có dựng từ kịch bản, lời đọc hoặc kế hoạch cũ. Lập lại kế hoạch hình ảnh rồi dựng lại." : "Cần kế hoạch hình ảnh khớp với lời đọc trước.")
+      : render.video ? "Bản nháp đã sẵn sàng." : "";
     $("#docu-render-actions").hidden = !render.video || running;
-    badge("#docu-render-badge", running ? "busy" : render.video ? "done" : "todo");
+    badge("#docu-render-badge", running ? "busy" : !render.video ? "todo" : renderStale() ? "stale" : "done");
     renderPlayerMode();
     $("#docu-capcut").hidden = !render.video || running;
     renderCapcut();
@@ -468,6 +478,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   }
 
   function renderCapcut(message?: string): void {
+    badge("#docu-capcut-badge", capcut ? "done" : "optional");
     $("#docu-capcut-open").hidden = !capcut;
     $("#docu-capcut-state").textContent = message ?? (capcut
       ? `Đã có dự án “${capcut.name}” trong CapCut (${capcut.clips} clip). Phụ đề tiếng Anh: nhập captions_en.srt trong CapCut.`
