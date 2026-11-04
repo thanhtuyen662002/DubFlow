@@ -27,6 +27,26 @@ const emptyScene = (): DocuScene => ({ scene_id: "", narration_text: "", matched
   on_screen_graphic: null, ambient_sfx_tag: null, needs_review: false,
   review_notes: [], review_numbers: [], acknowledged_numbers: [] });
 
+/**
+ * Loads media into the one player. URL lookups can resolve out of order, so only the newest load,
+ * still on the project it started on, may apply its result; `cancel` voids any load in flight.
+ * `apply` gets a `current()` check for work it defers (a seek waiting for metadata).
+ */
+export function playerLoader(mediaUrl: (path: string) => Promise<string | null>, project: () => string | undefined) {
+  let latest = 0;
+  return {
+    async load(path: string, apply: (url: string | null, current: () => boolean) => void): Promise<boolean> {
+      const request = ++latest, dir = project();
+      const current = () => request === latest && project() === dir;
+      const url = await mediaUrl(path).catch(() => null);
+      if (!current()) return false;
+      apply(url, current);
+      return true;
+    },
+    cancel(): void { latest++; },
+  };
+}
+
 /** The documentary source-and-script workspace (ADR-0049, phase 1). */
 export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings): { show(): void } {
   const root = document.querySelector<HTMLElement>("#docu-view")!;
@@ -215,8 +235,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   let stoppingAt: number | null = null;
   /** The player shows either a source video or the rendered rough cut, never ambiguously. */
   let playerMode: "source" | "draft" = "source";
-  /** Only the latest player request may touch the video: URL lookups can resolve out of order. */
-  let playerRequest = 0;
+  const player = playerLoader(path => settings.mediaUrl?.(path) ?? Promise.resolve(null), () => selected?.dir);
 
   type Tab = "setup" | "script" | "produce" | "claude";
   function setTab(tab: Tab): void {
@@ -252,7 +271,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     if (playerMode === "draft" && !render.video) playerMode = "source";
     if (playerMode === "draft") { void setPlayerSource(ROUGH_CUT); return; }
     if (!contexts.length) {
-      playerRequest++;
+      player.cancel();
       video.removeAttribute("src"); video.load(); sourceVideoUrl = null;
       $("#docu-player-empty").textContent = "Chọn dự án có nguồn video để xem trước.";
       $("#docu-player-empty").hidden = false;
@@ -281,24 +300,23 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const draft = sourceId === ROUGH_CUT;
     const path = draft ? render.video : selected?.contexts.find(source => source.source_id === sourceId)?.video_path;
     if (!path) return;
-    const request = ++playerRequest, dir = selected?.dir;
     playerMode = draft ? "draft" : "source";
     if (!draft) ($("#docu-player-source") as HTMLSelectElement).value = sourceId;
     renderPlayerMode();
-    const url = await settings.mediaUrl?.(path) ?? null;
-    if (request !== playerRequest || selected?.dir !== dir) return;
-    if (!url) {
-      $("#docu-player-empty").hidden = false;
-      $("#docu-player-empty").textContent = draft ? "Không mở được bản nháp để xem." : "Không mở được video nguồn để xem trước.";
-      return;
-    }
-    $("#docu-player-empty").hidden = true;
-    if (sourceVideoUrl !== url) { sourceVideoUrl = url; video.src = url; video.load(); }
-    if (start !== undefined) {
-      stoppingAt = end ?? null;
-      const seek = () => { video.currentTime = Math.max(0, start); void video.play().catch(() => undefined); };
-      if (video.readyState >= 1) seek(); else video.addEventListener("loadedmetadata", seek, { once: true });
-    } else stoppingAt = null;
+    await player.load(path, (url, current) => {
+      if (!url) {
+        $("#docu-player-empty").hidden = false;
+        $("#docu-player-empty").textContent = draft ? "Không mở được bản nháp để xem." : "Không mở được video nguồn để xem trước.";
+        return;
+      }
+      $("#docu-player-empty").hidden = true;
+      if (sourceVideoUrl !== url) { sourceVideoUrl = url; video.src = url; video.load(); }
+      if (start !== undefined) {
+        stoppingAt = end ?? null;
+        const seek = () => { if (!current()) return; video.currentTime = Math.max(0, start); void video.play().catch(() => undefined); };
+        if (video.readyState >= 1) seek(); else video.addEventListener("loadedmetadata", seek, { once: true });
+      } else stoppingAt = null;
+    });
   }
 
   function updateSummary(): void {
