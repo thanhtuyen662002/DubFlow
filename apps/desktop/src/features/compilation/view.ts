@@ -109,7 +109,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
                 <h3 class="setup-group">Nội dung</h3>
                 <div class="product-form">
                   <label class="wide">Chủ đề / tiêu đề<input id="compilation-title" maxlength="120" /></label>
-                  <label class="wide">Bố cục<select id="compilation-layout"><option value="bang-thong-tin">Bảng thông tin (video dọc + bảng bên trái)</option><option value="toan-man-hinh">Toàn màn hình</option></select></label>
+                  <label class="wide">Bố cục<select id="compilation-layout"><option value="bang-thong-tin">Bảng thông tin bên trái (cho video dọc)</option><option value="toan-man-hinh">Toàn màn hình</option></select></label>
                 </div>
                 <p id="compilation-provider" class="hint"></p>
                 <button id="compilation-ai" type="button" class="btn">AI viết mở đầu, chuyển cảnh &amp; nhận xét</button>
@@ -177,6 +177,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   let playingRequest = 0;
   const durations = new Map<string, number>();
   const posters = new Map<string, string | null>();
+  const wide = new Set<string>();
   const message = (error: unknown) => String(error).slice(0, 250);
   function showProvider(): void {
     $("provider").textContent = `Khi bấm AI, chủ đề và tối đa 60 dòng phụ đề tiếng Việt mỗi video được gửi tới ${PROVIDERS[session.provider()].company}. Dùng nhà cung cấp và khóa đã lưu trong Cài đặt AI.`;
@@ -285,6 +286,12 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
       return;
     }
     const index = selected.indexOf(item);
+    // A horizontal clip fills the frame even in Bảng thông tin, with its name on top for the first seconds.
+    const fullFrame = field("layout").value === "toan-man-hinh" || wide.has(item.video);
+    box.dataset.layout = fullFrame ? "toan-man-hinh" : "bang-thong-tin";
+    if (fullFrame && field("layout").value !== "toan-man-hinh") {
+      $("meta").textContent = `${selected.length} phần · video ngang hiện toàn khung (bảng thông tin chỉ dùng cho video dọc)`;
+    }
     const picture = document.createElement("div");
     picture.className = "compilation-preview-clip";
     const poster = posters.get(item.video);
@@ -320,9 +327,16 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     posters.set(path, null);
     void invoke<ArrayBuffer>("video_frame", { sourcePath: path, position: 0.15, maxWidth: 480 })
       .then((bytes) => {
-        posters.set(path, URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" })));
+        const url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
+        posters.set(path, url);
         renderPreview();
         renderRuns();
+        // The engine gives only vertical clips the side panel; learn each clip's shape for the preview.
+        if (typeof Image === "function") {
+          const probe = new Image();
+          probe.onload = () => { if (probe.naturalWidth >= probe.naturalHeight) { wide.add(path); renderPreview(); } };
+          probe.src = url;
+        }
       })
       .catch(() => undefined);
   }

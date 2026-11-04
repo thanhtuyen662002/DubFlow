@@ -112,10 +112,16 @@ class CompilationTests(unittest.TestCase):
             self.assertIn(expected, ass)
         self.assertNotIn(r"Tên {\p1}", ass)
         self.assertIn("Phần 2: Tên", layout.ass_document("Tên", 1000, number=2, score=8))
+        # A full-frame clip names its part at the top for its first seconds only, off the dubbed subtitles.
+        long_clip = layout.ass_document("Tên", 60000, number=2)
+        heading = next(line for line in long_clip.splitlines() if "Phần 2: Tên" in line)
+        self.assertIn(r"\pos(65,60)", heading)
+        self.assertIn("0:00:00.00,0:00:06.00", heading)
+        self.assertNotIn(r"\pos(40,890)", long_clip)
         argv = render.clip_argv(Path("ffmpeg"), Path("clip.mp4"), render.Video(90, 160, "25"), "toan-man-hinh", 250, 1000,
                                 "clip.ass", Path("out.mp4"))
         graph = argv[argv.index("-filter_complex") + 1]
-        for expected in ("split=2", "boxblur", f"scale={full.width}:{full.height}", "overlay=", "fps=30", "48000", "apad"):
+        for expected in ("split=2", "boxblur", f"scale={full.width}:{full.height}", "overlay=", "fps=30", "48000", "apad", "loudnorm=I=-16"):
             self.assertIn(expected, graph)
         for forbidden in ("hflip", "vflip", "reverse", "zoompan"):
             self.assertNotIn(forbidden, graph)

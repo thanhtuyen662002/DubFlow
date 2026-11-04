@@ -807,7 +807,12 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     renderSourcePicker(); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); setTab("setup");
   }
 
+  // One "Thêm video" at a time: a second click while the file or subtitle question is open does nothing.
+  let addingFile = false;
   async function addFileSource(): Promise<void> {
+    if (addingFile) return;
+    addingFile = true;
+    $<HTMLButtonElement>("#docu-add-file").disabled = true;
     try {
       const videoPath = await invoke<string | null>("docu_pick_file", { kind: "video" });
       if (!videoPath) return;
@@ -819,6 +824,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       sourceForms.push({ kind: "file", video: videoPath, subtitles: subtitlePath ?? undefined, title: videoName(videoPath).replace(/\.[^.]+$/, "") });
       renderSourcePicker();
     } catch (error) { $("#docu-setup-state").textContent = error instanceof Error ? error.message : String(error); }
+    finally { addingFile = false; $<HTMLButtonElement>("#docu-add-file").disabled = false; }
   }
 
   $("#docu-refresh").addEventListener("click", () => void refreshRuns());

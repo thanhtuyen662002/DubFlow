@@ -11,6 +11,7 @@ from engine.dubflow.product.script import Caption
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 PANEL_COLOR = "352A17"  # ASS BGR, RGB #172A35.
 LAYOUTS = ("bang-thong-tin", "toan-man-hinh")
+HEADING_MS = 6000  # How long a full-frame clip shows its part name.
 
 
 @dataclass(frozen=True)
@@ -74,8 +75,12 @@ def ass_document(title: str, duration_ms: int, *, number: int = 0, panel_width: 
     elif card:
         line(wrap(heading, 58), WIDTH // 2, 90, 58, align=8)
     else:
-        box(40, 890, 1500, 130, "000000", "55")
-        line(wrap(heading, 68), 65, 910, 38)
+        # The part's name sits at the top for its first seconds: dubbed clips carry their
+        # subtitles at the bottom, and a bar there for the whole clip would hide them.
+        shown = min(duration_ms, HEADING_MS)
+        events.append(f"Dialogue: 0,0:00:00.00,{_time(shown, ass=True)},Text,,0,0,0,,"
+                      f"{{\\an7\\pos(40,40)\\bord0\\shad0\\1c&H000000&\\1a&H55&\\p1}}m 0 0 l 1500 0 1500 130 0 130{{\\p0}}")
+        line(wrap(heading, 68), 65, 60, 38, stop=shown)
         if show_score and score is not None:
             box(1680, 45, 190, 90, "000000", "55")
             line(f"{score}/10", 1775, 90, 48, align=5)
