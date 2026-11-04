@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import threading
 import unittest
 from unittest import mock
 
@@ -119,11 +120,21 @@ class InstallerProgressTests(unittest.TestCase):
             copy_bundle = bootstrap._copy_bundle
             copy_file = bootstrap.shutil.copy2
             locks, copied = [], []
+            # Workers copy in parallel, so an exact-count trigger can be
+            # skipped. The check and the bookkeeping share one lock and the
+            # interruption fires exactly once, after at least nine copies.
+            state = threading.Lock()
+            interrupted = threading.Event()
             def interrupted_file_copy(source, target):
-                if len(copied) == 9:
+                with state:
+                    fire = not interrupted.is_set() and len(copied) >= 9
+                    if fire:
+                        interrupted.set()
+                if fire:
                     raise KeyboardInterrupt("deliberate interrupted installation")
                 copy_file(source, target)
-                copied.append(Path(source).relative_to(bundle.staging_dir).as_posix())
+                with state:
+                    copied.append(Path(source).relative_to(bundle.staging_dir).as_posix())
             def copy_with_observer(*args, **kwargs):
                 reader = deny_delete_reader(progress)
                 reader.__enter__()
@@ -135,6 +146,8 @@ class InstallerProgressTests(unittest.TestCase):
                         mock.patch.object(bootstrap.shutil, "copy2", side_effect=interrupted_file_copy):
                     with self.assertRaises(KeyboardInterrupt):
                         bootstrap.install_bundle(bundle.staging_dir, destination)
+                self.assertTrue(interrupted.is_set())
+                self.assertGreaterEqual(len(copied), 9)
                 self.assertFalse((destination / "current.json").exists())
                 self.assertEqual(json.loads(progress.read_text(encoding="utf-8"))["completed"], [])
                 staging = destination / "versions/.0.1.0-rc1.staging"
