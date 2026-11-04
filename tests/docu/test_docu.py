@@ -49,6 +49,36 @@ class UnitTests(unittest.TestCase):
                 self.assertEqual(found.dimension, dimension)
                 self.assertAlmostEqual(found.value, value, delta=abs(value) * 1e-9 + 1e-9)
 
+    def test_traditional_characters_and_chinese_decimals(self):
+        # Speech recognition wrote these in Traditional for 3 of 5 sources in the 2026-11-04 pig-tower test.
+        cases = {
+            "建築面積達到了40萬平方米": ("area", 400_000), "清理1200噸的豬糞": ("mass", 1_200_000),
+            "佔地60畝": ("area", 60 * 10_000 / 15), "總投資約40億元": ("money", 40e8 * units.USD_PER_CNY),
+            "可以養120萬頭生豬": ("count", 1_200_000), "載重40噸": ("mass", 40_000),
+            "也只有百分之七点八八": ("percent", 7.88), "百分之七點八八": ("percent", 7.88),
+        }
+        for text, (dimension, value) in cases.items():
+            with self.subTest(text):
+                found = quantity(text)
+                self.assertEqual(found.dimension, dimension)
+                self.assertAlmostEqual(found.value, value, delta=abs(value) * 1e-9 + 1e-9)
+        self.assertEqual(units.chinese_number("七点八八"), 7.88)
+        self.assertIsNone(units.chinese_number("一点"))
+        self.assertEqual(units.extract("一点点"), [])
+
+    def test_rates_and_small_amounts_are_said_sensibly(self):
+        # "1万吨 a day of wastewater" was compared to 25 Boeing 747s; 3.2 g came out as 0.007 pounds.
+        daily = quantity("日处理能力达1万吨的污水处理中心")
+        self.assertTrue(daily.rate)
+        self.assertEqual(units.comparisons(daily), [])
+        self.assertEqual(units.describe(daily)["imperial"], "11,020 tons")
+        self.assertTrue(quantity("養豬大樓每天都要清理1200噸").rate)
+        self.assertFalse(quantity("载重40吨的升降机").rate)
+        self.assertTrue(units.comparisons(quantity("载重40吨的升降机")))
+        self.assertEqual(units.imperial(quantity("3.2克")), "0.113 ounces")
+        self.assertEqual(units.imperial(quantity("5毫米")), "0.197 inches")
+        self.assertEqual(units.imperial(quantity("2公斤")), "4.409 pounds")
+
     def test_ordinary_words_and_benchmark_names_are_not_numbers(self):
         self.assertEqual(units.extract("一些人万一不来，一起去"), [])
         self.assertEqual(units.extract("the 21st century"), [])
