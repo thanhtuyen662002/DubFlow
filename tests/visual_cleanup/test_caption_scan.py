@@ -122,6 +122,12 @@ class LogoTests(unittest.TestCase):
         self.assertEqual(scan.logo_boxes([[caption(i, y=0.88)] for i in range(10)]), [])
         self.assertEqual(scan.logo_boxes([[TextBox(0.1, 0.1, 0.6, 0.3, ())] for _ in range(10)]), [])
 
+    def test_big_text_moments_are_found_but_not_logos_or_captions(self):
+        logo = TextBox(0.055, 0.694, 0.128, 0.094)
+        title = TextBox(0.0, 0.3, 0.98, 0.12)  # "120万头猪要怎么养?" across the frame
+        samples = [(0.0, [logo, caption(0)]), (2.0, [logo, title]), (4.0, [logo]), (6.0, [TextBox(0.3, 0.45, 0.3, 0.1)]), (8.0, [TextBox(0.02, 0.04, 0.17, 0.075)])]
+        self.assertEqual(scan.big_text_times(samples, [logo]), [2.0, 6.0])
+
 
 MODEL = os.environ.get("DUBFLOW_TEST_OCR_MODEL")
 FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG")

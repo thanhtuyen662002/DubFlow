@@ -44,6 +44,12 @@ LOGO_FPS = 0.5
 LOGO_MAX_WIDTH = 0.4
 LOGO_MAX_HEIGHT = 0.2
 LOGO_MIN_PRESENCE = 0.6
+# A text line this tall (share of the frame height) is a title or a giant number, not a caption or a sign.
+BIG_TEXT_HEIGHT = 0.09
+BIG_TEXT_WIDTH = 0.08
+# Taller than any caption line: big text wherever it is. Below this, centred text in the lower part is a caption.
+HUGE_TEXT_HEIGHT = 0.16
+CAPTION_ZONE = 0.75
 # ImageNet normalisation used by PaddleOCR's detector.
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
@@ -198,6 +204,28 @@ def logo_boxes(samples: Sequence[Sequence[TextBox]]) -> list[TextBox]:
     return found
 
 
+def _big(box: TextBox) -> bool:
+    """Title-sized text. A dialogue caption line (low, centred, one line high) is not; framing hides it."""
+    if box.w < BIG_TEXT_WIDTH or box.h < BIG_TEXT_HEIGHT:
+        return False
+    low_caption = box.center_y >= CAPTION_ZONE and abs(box.center_x - 0.5) <= CAPTION_MAX_CENTER_OFFSET
+    return box.h >= HUGE_TEXT_HEIGHT or not (is_caption(box) or low_caption)
+
+
+def big_text_times(samples: Sequence[tuple[float, Sequence[TextBox]]], logos: Sequence[TextBox] = ()) -> list[float]:
+    """Times whose frame shows big text that is not a logo: a title card, a giant number, a chapter banner.
+
+    The documentary planner leaves these moments out: a viewer of an English film should not see
+    a Chinese title across the picture (Oscar, 2026-11-04). Captions are thinner than ``BIG_TEXT_HEIGHT``
+    and framing hides them anyway.
+    """
+    times = []
+    for time_s, boxes in samples:
+        if any(_big(box) and not any(_iou(box, logo) > 0.3 for logo in logos) for box in boxes):
+            times.append(round(time_s, 3))
+    return times
+
+
 def is_caption(box: TextBox) -> bool:
     return box.center_y >= CAPTION_MIN_CENTER_Y and abs(box.center_x - 0.5) <= CAPTION_MAX_CENTER_OFFSET and box.w >= box.h * 1.2
 
@@ -318,12 +346,17 @@ class CaptionScanner:
 
     def scan_fixed(self, source: Path, *, duration_s: float, fps: float = LOGO_FPS) -> list[TextBox]:
         """Logos, watermarks and channel names anywhere in the frame: text that stays put with the same pixels."""
-        samples = []
-        for _, frame in self._frames(source, fps):
+        return self.scan_frame_text(source, duration_s=duration_s, fps=fps)[0]
+
+    def scan_frame_text(self, source: Path, *, duration_s: float, fps: float = LOGO_FPS) -> tuple[list[TextBox], list[float]]:
+        """Logos (as ``scan_fixed``) and the sample times showing big burned-in text (titles, giant numbers)."""
+        samples: list[tuple[float, list[TextBox]]] = []
+        for time_s, frame in self._frames(source, fps):
             height = frame.shape[0] // 32 * 32
             if height >= 32:
-                samples.append(self.detect(frame[:height], 0.0, height / frame.shape[0]))
-        return logo_boxes(samples)
+                samples.append((time_s, self.detect(frame[:height], 0.0, height / frame.shape[0])))
+        logos = logo_boxes([boxes for _, boxes in samples])
+        return logos, big_text_times(samples, logos)
 
     def scan(self, source: Path, *, duration_s: float, speech_ms: Sequence[tuple[int, int]] | None = None,
              progress: Callable[[float], None] | None = None) -> ScanResult:
