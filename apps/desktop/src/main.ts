@@ -26,9 +26,10 @@ import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
 import { mountDocu } from "./features/docu/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
+import { shortDate } from "./features/product/model.ts";
 import { jobTarget, mountEditor, type EditTarget } from "./features/edit/view.ts";
 import { mountEditLibrary } from "./features/edit/library_view.ts";
-import type { LibraryEntry } from "./features/edit/library.ts";
+import { KIND_LABELS, distinctTitles, type LibraryEntry } from "./features/edit/library.ts";
 import { createSfxLibrary } from "./features/sfx/library.ts";
 import { mountSfxSettings } from "./features/sfx/settings.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
@@ -535,7 +536,8 @@ const editor = mountEditor(invoke, {
     ...queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
       .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath! })),
     // The other pages' finished videos (Bán hàng, Tổng hợp, Phim tài liệu), as on the Chỉnh sửa screen.
-    ...editLibrary.found().map((entry) => ({ id: entry.path, title: entry.title, outputPath: entry.path })),
+    ...distinctTitles(editLibrary.found()).map((entry) => ({ id: entry.path, title: entry.title, outputPath: entry.path,
+      meta: [KIND_LABELS[entry.kind], shortDate(entry.modified)].filter(Boolean).join(" · ") })),
     // The browser preview has no finished jobs of its own to insert.
     ...(isTauri ? [] : PREVIEW_EDIT_LIBRARY),
   ],

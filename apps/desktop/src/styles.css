@@ -140,9 +140,11 @@ select { color-scheme: dark; }
 .el-tab-label { display: inline-grid; }
 .el-tab-label::after { content: attr(data-label); height: 0; overflow: hidden; font-weight: 600; visibility: hidden; }
 .el-count { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--canvas); color: var(--text-3); font-size: 11px; font-weight: 600; line-height: 17px; text-align: center; font-variant-numeric: tabular-nums; }
+.el-count.zero { opacity: .45; }
 .el-filters button[aria-selected="true"] .el-count { background: var(--select); color: var(--accent-text); }
-.el-actions { display: flex; flex: 1 1 320px; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
-.el-search { display: flex; flex: 0 1 280px; align-items: center; gap: 8px; min-width: 150px; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text-3); }
+.el-actions { display: flex; flex: 1 1 320px; align-items: center; gap: 10px; min-width: 0; }
+.el-actions .btn.primary { margin-left: auto; }
+.el-search { display: flex; flex: 1 1 200px; max-width: 420px; align-items: center; gap: 8px; min-width: 150px; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text-3); }
 .el-search:focus-within { border-color: var(--accent); }
 .el-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 13px; }
 .el-body { flex: 1; min-height: 0; padding: 4px 24px 24px; overflow: auto; }
@@ -798,7 +800,7 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .player-col { container-type: inline-size; }
 .edit-open { flex: none; height: 32px; padding: 0 12px; }
 .edit-exit { flex: none; gap: 6px; height: 32px; padding: 0 10px 0 6px; }
-.edit-modes { flex: none; }
+.edit-modes { flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .edit-modes button { flex: none; }
 @container (max-width: 560px) {
   .edit-open { width: 34px; padding: 0; font-size: 0; gap: 0; }
@@ -806,6 +808,22 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 /* Six editor tools still fit beside "Thoát" from a 900 px window. */
 @container (max-width: 600px) {
   .edit-modes button { padding: 0 8px; }
+}
+@container (max-width: 480px) {
+  .edit-modes button { padding: 0 6px; font-size: 12.5px; }
+  .edit-exit { padding: 0 6px 0 2px; }
+}
+@container (max-width: 400px) {
+  .edit-exit { width: 32px; padding: 0; font-size: 0; gap: 0; }
+}
+/* Short windows: a lower timeline leaves the video room. */
+@media (max-height: 600px) {
+  .queue-screen .edit-timeline { height: 140px; }
+  .queue-screen .tl-content:not(.with-audio, .with-overlays) .tl-track { height: 52px; }
+}
+/* Small windows: a narrower panel leaves the video room. */
+@media (max-width: 1000px) {
+  .queue-screen.editing { grid-template-columns: minmax(0, 1fr) 300px; }
 }
 
 .edit-panel { display: flex; grid-column: 2; grid-row: 1; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); }
@@ -852,7 +870,7 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .tl-zoom { display: flex; align-items: center; gap: 6px; margin-left: 6px; color: var(--text-2); }
 .tl-zoom input { width: 110px; margin: 0; accent-color: var(--accent); }
 .tl-zoom input:disabled { opacity: .4; }
-.tl-scroll { position: relative; flex: 1; min-height: 0; overflow-x: auto; overflow-y: hidden; }
+.tl-scroll { position: relative; flex: 1; min-height: 0; overflow-x: auto; overflow-y: auto; }
 .tl-content { position: relative; min-width: 100%; height: 100%; user-select: none; touch-action: none; }
 .tl-ruler { position: relative; height: 22px; border-bottom: 1px solid var(--line); cursor: ew-resize; }
 .tl-tick:first-child { padding-left: 10px; }
@@ -881,7 +899,7 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .edit-sources { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .edit-sources[hidden], .edit-seg-controls[hidden], .edit-ov-controls[hidden], .edit-cut-notes[hidden] { display: none; }
 .edit-seg-controls, .edit-ov-controls, .edit-cut-notes { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.edit-sources + .edit-seg-controls, .edit-sources + .edit-ov-controls { padding-top: 14px; border-top: 1px solid var(--line); }
+.edit-sources:not([hidden]) + .edit-seg-controls, .edit-sources:not([hidden]) + .edit-ov-controls { padding-top: 14px; border-top: 1px solid var(--line); }
 .edit-where, .edit-source-tabs, .ov-presets { background: var(--canvas); }
 .edit-where button, .edit-source-tabs button { min-width: 0; padding: 0 6px; font-size: 12.5px; }
 .edit-where button { flex: 1 1 auto; padding: 0 4px; }

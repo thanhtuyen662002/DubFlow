@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   ageGroup, countByKind, fileTitle, filterEntries, fold, folderOf, forgetFile, isVideoPath, MAX_RECENT, mergeEntries, parseLibrary, parseRecent,
-  pathKey, rememberFile, sizeLabel,
+  pathKey, rememberFile, sizeLabel, distinctTitles,
 } from "../src/features/edit/library.ts";
 
 // The host's list keeps only the other pages' videos, well formed.
@@ -50,5 +50,10 @@ assert.equal(fileTitle("D:\\Videos\\Phim hay.final.mp4"), "Phim hay.final");
 assert.equal(folderOf("D:\\Videos\\a.mp4"), "D:\\Videos");
 assert.equal(pathKey("C:/A/b.MP4"), "c:\\a\\b.mp4");
 assert.ok(isVideoPath("x.MKV") && !isVideoPath("x.srt"));
+
+// Same titles get their date; unique ones stay as they are.
+const twins = distinctTitles([{ title: "Nồi · video 1", modified: new Date(2026, 10, 2, 0, 14).getTime() / 1000 },
+  { title: "Nồi · video 1", modified: new Date(2026, 10, 1, 23, 11).getTime() / 1000 }, { title: "Khác", modified: 5 }]);
+assert.deepEqual(twins.map((entry) => entry.title), ["Nồi · video 1 · 02/11 00:14", "Nồi · video 1 · 01/11 23:11", "Khác"]);
 
 console.log("edit library: ok");

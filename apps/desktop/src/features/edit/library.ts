@@ -112,6 +112,20 @@ export function mergeEntries(...lists: ReadonlyArray<readonly LibraryEntry[]>): 
   return [...seen.values()].sort((a, b) => b.modified - a.modified || a.title.localeCompare(b.title, "vi"));
 }
 
+/** Videos with the same title get their date ("· 02/11 00:14") so they can be told apart. */
+export function distinctTitles<T extends { title: string; modified: number }>(entries: readonly T[]): T[] {
+  const counts = new Map<string, number>();
+  for (const entry of entries) counts.set(entry.title, (counts.get(entry.title) ?? 0) + 1);
+  return entries.map((entry) => (counts.get(entry.title) ?? 0) > 1 && entry.modified
+    ? { ...entry, title: `${entry.title} · ${stamp(entry.modified)}` } : entry);
+}
+
+function stamp(seconds: number): string {
+  const when = new Date(seconds * 1000);
+  const two = (value: number): string => String(value).padStart(2, "0");
+  return `${two(when.getDate())}/${two(when.getMonth() + 1)} ${two(when.getHours())}:${two(when.getMinutes())}`;
+}
+
 /** Search ignores case and Vietnamese marks ("bàn" finds "ban"). */
 export function fold(text: string): string {
   return text.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();

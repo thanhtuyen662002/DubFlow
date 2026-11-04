@@ -1,5 +1,5 @@
 import {
-  FILTERS, KIND_LABELS, ageGroup, countByKind, filterEntries, folderOf, forgetFile, isVideoPath, mergeEntries, parseLibrary,
+  FILTERS, KIND_LABELS, distinctTitles, ageGroup, countByKind, filterEntries, folderOf, forgetFile, isVideoPath, mergeEntries, parseLibrary,
   parseRecent, rememberFile, sizeLabel, fileTitle, type LibraryEntry, type LibraryFilter,
 } from "./library.ts";
 import { shortDate } from "../product/model.ts";
@@ -141,7 +141,7 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
   }
 
   function entries(): LibraryEntry[] {
-    return mergeEntries(host.jobs(), found, recent);
+    return distinctTitles(mergeEntries(host.jobs(), found, recent));
   }
 
   function saveRecent(): void {
@@ -160,7 +160,8 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
       button.type = "button";
       button.setAttribute("role", "tab");
       button.setAttribute("aria-selected", String(item.id === filter));
-      if (counts[item.id]) button.append(element("span", "el-count", String(counts[item.id])));
+      // Always shown (dimmed at 0) so the tabs keep their width while searching.
+      if (counts[item.id] || search.value.trim()) button.append(element("span", `el-count${counts[item.id] ? "" : " zero"}`, String(counts[item.id])));
       button.addEventListener("click", () => {
         filter = item.id;
         writeStorage(FILTER_KEY, filter);
