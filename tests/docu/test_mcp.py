@@ -182,7 +182,7 @@ class BoundaryTests(unittest.TestCase):
         self.marker = self.outside / "marker.json"
         self.marker.write_bytes(b'{"keep": "these exact bytes"}\n')
         self.before = _snapshot(self.outside)
-        self.server = Server(mcp_tools.Install(base, Path("ffmpeg"), Path("ffprobe"), base), roots=lambda: [self.root])
+        self.server = Server(mcp_tools.Install(base, Path("ffmpeg"), Path("ffprobe"), base), roots=lambda: [self.root], activity=False)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -309,7 +309,7 @@ class ProtocolTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             run = make_run(Path(temp))
             _planned(run)
-            server = Server(mcp_tools.Install(Path(temp), Path("ffmpeg"), Path("ffprobe"), Path(temp)), roots=lambda: [run.parent.parent])
+            server = Server(mcp_tools.Install(Path(temp), Path("ffmpeg"), Path("ffprobe"), Path(temp)), roots=lambda: [run.parent.parent], activity=False)
             lines = [
                 {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}}},
                 {"jsonrpc": "2.0", "method": "notifications/initialized"},
@@ -340,3 +340,36 @@ class ProtocolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActivityTests(unittest.TestCase):
+    """What the desktop app shows while Claude works over MCP."""
+
+    def test_calls_are_written_for_the_app(self):
+        from engine.dubflow.mcp.activity import Activity, default_path, label
+        with TemporaryDirectory() as temp:
+            run = make_run(Path(temp))
+            _planned(run)
+            path = Path(temp) / "control" / "mcp-activity.json"
+            server = Server(mcp_tools.Install(Path(temp), Path("ffmpeg"), Path("ffprobe"), Path(temp)), roots=lambda: [run.parent.parent],
+                            activity=path)
+            seen = []
+            original = server.call
+
+            def call(name, args):
+                seen.append(json.loads(path.read_text(encoding="utf-8"))["current"])
+                return original(name, args)
+            server.call = call
+            server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "replace_timeline_clip", "arguments": {
+                "project": str(run), "scene_id": "sc_001", "clip_index": 1, "new_source_id": "src_01", "start_time": 12.0}}})
+            self.assertEqual(seen[0]["label"], "Thay lát cắt sc_001 #1 bằng src_01 từ 12.0 s")
+            self.assertEqual(seen[0]["project"], str(run))
+            server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "inspect_timeline_state", "arguments": {"project": "C:/nope"}}})
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIsNone(saved["current"])
+            self.assertEqual([item["state"] for item in saved["recent"]], ["failed", "done"])
+            self.assertIn("Dựng lại bản nháp", saved["recent"][1]["message"])
+            # A new server keeps the history the app shows.
+            self.assertEqual(len(Activity(path).recent), 2)
+        self.assertEqual(default_path(Path(r"D:\Tools\DubFlow\models")), Path(r"D:\Tools\DubFlow\control\mcp-activity.json"))
+        self.assertEqual(label("narrate", {"voice": "am_michael"}), "Tạo lời đọc (giọng am_michael)")

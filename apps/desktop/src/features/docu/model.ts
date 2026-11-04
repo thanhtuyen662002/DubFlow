@@ -347,6 +347,24 @@ export function parseCapcut(value: unknown): CapcutExport | null {
     ? { folder: info.folder, name: info.name, clips: Number(info.clips) || 0, duration: Number(info.duration) || 0, captions: string(info.captions) } : null;
 }
 
+export type McpCall = { tool: string; label: string; project: string | null; started: string; finished?: string; state?: "done" | "failed"; message: string };
+export type McpActivity = { updated: string; current: McpCall | null; recent: McpCall[] };
+
+/** ``control/mcp-activity.json`` from the MCP server: the call running now and the last ones. */
+export function parseMcpActivity(value: unknown): McpActivity | null {
+  const info = obj(value);
+  if (!info || typeof info.updated !== "string") return null;
+  const call = (item: unknown): McpCall | null => {
+    const entry = obj(item);
+    if (!entry || typeof entry.tool !== "string" || typeof entry.label !== "string") return null;
+    return { tool: entry.tool, label: entry.label, project: typeof entry.project === "string" ? entry.project : null,
+      started: typeof entry.started === "string" ? entry.started : "", finished: typeof entry.finished === "string" ? entry.finished : undefined,
+      state: entry.state === "failed" ? "failed" : entry.state === "done" ? "done" : undefined, message: typeof entry.message === "string" ? entry.message : "" };
+  };
+  const recent = Array.isArray(info.recent) ? info.recent.map(call).filter((item): item is McpCall => item !== null).slice(0, 30) : [];
+  return { updated: info.updated, current: call(info.current), recent };
+}
+
 export function parseRenderOptions(value: unknown): RenderOptions {
   const info = obj(value);
   const musicPath = typeof info?.music_path === "string" && info.music_path ? info.music_path : null;

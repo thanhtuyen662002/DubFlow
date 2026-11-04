@@ -12,6 +12,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
+from engine.dubflow.mcp.activity import Activity, default_path
 from engine.dubflow.docu import capcut_draft, intake, mcp_tools, overlays, roughcut, visual
 from engine.dubflow.docu.project import DocuError, load_spec, spec_path
 
@@ -120,13 +121,44 @@ TOOLS = [
 ]
 
 
+def _project_of(content: list[dict[str, Any]]) -> str | None:
+    """The project a call created (create_project returns it)."""
+    try:
+        value = json.loads(content[0]["text"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return value.get("project") if isinstance(value, dict) and isinstance(value.get("project"), str) else None
+
+
+def _summary(tool: str, content: list[dict[str, Any]]) -> str:
+    """A few words on how a call ended, for the app's activity list."""
+    try:
+        value = json.loads(content[0]["text"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return "Đã xong"
+    if isinstance(value, list):
+        return f"{len(value)} kết quả"
+    if not isinstance(value, dict):
+        return "Đã xong"
+    if tool == "discover_videos":
+        return f"{len(value.get('items') or [])} video"
+    if tool == "download_video":
+        return f"Đã tải: {value.get('title') or value.get('video')}"
+    if tool == "save_script":
+        return f"{value.get('scenes')} cảnh, {value.get('words')} từ, {len(value.get('needs_review') or [])} cảnh cần kiểm tra"
+    return str(value.get("message") or value.get("note") or "Đã xong")
+
+
 def _text(value: Any) -> list[dict[str, Any]]:
     return [{"type": "text", "text": json.dumps(value, ensure_ascii=False, indent=1)}]
 
 
 class Server:
-    def __init__(self, install: mcp_tools.Install, *, roots: Callable[[], list[Path]] = mcp_tools.default_roots) -> None:
+    def __init__(self, install: mcp_tools.Install, *, roots: Callable[[], list[Path]] = mcp_tools.default_roots,
+                 activity: Path | None | bool = True) -> None:
         self.install = install
+        # What the desktop app shows while a client works; False/None turns it off (tests).
+        self.activity = Activity(default_path(install.model_root) if activity is True else (activity or None))
         self.roots = roots
         self.chosen: list[Path] = []  # roots passed to list_projects, canonical
 
@@ -252,13 +284,18 @@ class Server:
             name, args = params.get("name"), params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
             if name not in {tool["name"] for tool in TOOLS}:
                 return {"jsonrpc": "2.0", "id": ident, "error": {"code": -32602, "message": f"Unknown tool: {name}"}}
+            self.activity.start(name, args)
             try:
-                return ok({"content": self.call(name, args), "isError": False})
+                content = self.call(name, args)
             except DocuError as error:
+                self.activity.finish(False, error.message)
                 return ok({"content": [{"type": "text", "text": error.message}], "isError": True})
             except Exception as error:  # a tool failing must not end the session
                 traceback.print_exc(file=sys.stderr)
+                self.activity.finish(False, f"{type(error).__name__}: {error}")
                 return ok({"content": [{"type": "text", "text": f"{type(error).__name__}: {error}"}], "isError": True})
+            self.activity.finish(True, _summary(name, content), _project_of(content))
+            return ok({"content": content, "isError": False})
         return {"jsonrpc": "2.0", "id": ident, "error": {"code": -32601, "message": f"Method not found: {method}"}}
 
 

@@ -375,6 +375,19 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_capcut": return { state: "COMPLETED", folder: "C:\\Users\\me\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\DubFlow - Three Gorges",
       name: "DubFlow - Three Gorges", clips: 18, duration: 64.1, captions: "D:\\Videos\\captions_en.srt" } as T;
     case "docu_launch_capcut": return undefined as T;
+    case "docu_mcp_activity": {
+      // A Claude session working over MCP: busy for 12 s, idle for 8 s.
+      const project = [...docuProjects.values()][0];
+      const now = Date.now(), busy = now % 20_000 < 12_000;
+      const at = (ms: number) => new Date(now - ms).toISOString();
+      return { schema_version: 1, updated: at(0),
+        current: busy ? { tool: "render_rough_cut", label: "Dựng bản nháp", project: project?.dir ?? null, started: at(now % 20_000) } : null,
+        recent: [
+          { tool: "set_framing", label: "Đổi khung hình: letterbox_235", project: project?.dir ?? null, started: at(60_000), finished: at(59_000), state: "done", message: "Dựng lại bản nháp (render_rough_cut) để thấy khung mới" },
+          { tool: "replace_timeline_clip", label: "Thay lát cắt sc_022 #2 bằng src_04 từ 112.5 s", project: project?.dir ?? null, started: at(90_000), finished: at(89_500), state: "done", message: "Dựng lại bản nháp (render_rough_cut) để thấy thay đổi" },
+          { tool: "discover_videos", label: "Tìm video trên bilibili: 湖北养猪大楼", project: null, started: at(300_000), finished: at(297_000), state: "failed", message: "bilibili: Platform requires verification in its browser." },
+        ] } as T;
+    }
     case "docu_mcp_connection": return { python: "D:\\Tools\\DubFlow\\versions\\1.1.47\\runtime\\python.exe", app: "D:\\Tools\\DubFlow\\versions\\1.1.47\\app",
       claudeCode: "claude mcp add dubflow --scope user -e PYTHONPATH=\"D:\\Tools\\DubFlow\\versions\\1.1.47\\app\" -- \"D:\\Tools\\DubFlow\\versions\\1.1.47\\runtime\\python.exe\" -B -m engine.dubflow.mcp",
       claudeDesktop: JSON.stringify({ mcpServers: { dubflow: { command: "D:\\Tools\\DubFlow\\versions\\1.1.47\\runtime\\python.exe", args: ["-B", "-m", "engine.dubflow.mcp"],
