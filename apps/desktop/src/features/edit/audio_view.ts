@@ -15,6 +15,9 @@ import {
   removeAudio, setAudioProps, setAudioTime, setMainVolume, type AudioClip, type AudioInfo, type Edit,
 } from "./model.ts";
 
+/** The catalog's category ids as shown ("Bấm/Pop" stays the id in the sound pack). */
+const categoryName = (category: string): string => category === "Bấm/Pop" ? "Bấm, tách" : category;
+
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 export type AudioHost = {
@@ -346,7 +349,7 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
 
   function renderCategories(): void {
     const chips = [null, ...CATEGORIES].map((name) => {
-      const chip = element("button", "au-cat", name === "Bấm/Pop" ? "Bấm, tách" : name ?? "Tất cả");
+      const chip = element("button", "au-cat", name ? categoryName(name) : "Tất cả");
       chip.type = "button";
       chip.setAttribute("role", "radio");
       chip.setAttribute("aria-checked", String(name === category));
@@ -363,7 +366,7 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
     const row = element("li", "au-item");
     row.dataset.key = `sfx:${sound.id}`;
     const text = element("span", "au-text");
-    text.append(element("strong", "", sound.name_vi), element("small", "", `${sound.category} · ${soundLength(sound.duration_ms)}`));
+    text.append(element("strong", "", sound.name_vi), element("small", "", `${categoryName(sound.category)} · ${soundLength(sound.duration_ms)}`));
     text.title = sound.tags.join(", ");
     const add = element("button", "btn au-add", "Thêm");
     add.type = "button";

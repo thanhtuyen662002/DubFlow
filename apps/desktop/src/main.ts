@@ -428,7 +428,7 @@ const STAGE_SHORT: Record<string, string> = {
 
 function selectTab(tab: DetailTab): void {
   detailTab = tab;
-  for (const button of document.querySelectorAll<HTMLButtonElement>(".tabs [data-tab]")) {
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#detail-tabs [data-tab]")) {
     const active = button.dataset.tab === tab;
     button.setAttribute("aria-selected", String(active));
     button.tabIndex = active ? 0 : -1;
@@ -487,11 +487,14 @@ function renderInspector(job: QueueJob | null): void {
   warning.hidden = !(output && status.reason === "completed_partial_dubbing");
   warning.textContent = warning.hidden ? "" : "Một số câu chưa lồng tiếng được (vẫn là tiếng gốc), thường vì câu dịch quá dài. Bấm “Xem & sửa bản dịch” để rút gọn rồi xử lý lại.";
   $("#open-review").classList.toggle("primary", !warning.hidden);
-  $("#result-path").textContent = output ?? "";
+  const resultPath = $("#result-path");
+  resultPath.textContent = output ? shortPath(output) : "";
+  resultPath.title = output ?? "";
   // A link job: where its downloaded video and its results live.
   $("#link-card").hidden = !job.originUrl;
   const linkMedia = $("#link-media");
-  linkMedia.textContent = job.originUrl ? shortPath(job.sourcePath) : "";
+  // The kept download can sit in a hashed store folder: its file name is what reads.
+  linkMedia.textContent = job.originUrl ? job.sourcePath.split(/[\\/]/).filter(Boolean).pop() ?? "" : "";
   linkMedia.title = job.originUrl ? job.sourcePath : "";
   const linkOutput = $("#link-output");
   linkOutput.textContent = job.originUrl ? shortPath(job.outputDir ?? "") : "";
@@ -568,7 +571,9 @@ const editor = mountEditor(invoke, {
   },
   library: () => [
     ...queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
-      .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath!, kind: "job" as const })),
+      .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath!, kind: "job" as const,
+        // Same-named queue videos read apart by when they finished.
+        meta: ["Lồng tiếng", shortDate(Math.floor(Date.parse(job.finishedAt ?? job.createdAt) / 1000))].filter(Boolean).join(" · ") })),
     // The other pages' finished videos (Bán hàng, Tổng hợp, Phim tài liệu), as on the Chỉnh sửa screen.
     ...distinctTitles(editLibrary.found()).map((entry) => ({ id: entry.path, title: entry.title, outputPath: entry.path, kind: entry.kind === "job" ? "file" as const : entry.kind,
       meta: [KIND_LABELS[entry.kind], entry.title.endsWith(shortDate(entry.modified)) ? "" : shortDate(entry.modified)].filter(Boolean).join(" · ") })),
@@ -2427,9 +2432,23 @@ function closeSettings(): void {
 $("#nav-settings").addEventListener("click", openSettings);
 $("#header-update").addEventListener("click", openSettings);
 $("#settings-close").addEventListener("click", closeSettings);
-settingsDialog.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeSettings();
-});
+// Esc closes the topmost dialog: one opened from Cài đặt (keys, versions, cleanup, Douyin) before Cài đặt itself.
+const SETTINGS_CHILDREN = ["versions", "ai-settings", "cleanup", "douyin"];
+function closeTopSettingsChild(): boolean {
+  for (const name of SETTINGS_CHILDREN) {
+    if (!$(`#${name}-dialog`).hidden) {
+      $<HTMLButtonElement>(`#${name}-close`).click();
+      return true;
+    }
+  }
+  return false;
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || settingsDialog.hidden || document.querySelector(".confirm-backdrop")) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!closeTopSettingsChild()) closeSettings();
+}, true);
 settingsDialog.addEventListener("mousedown", (event) => {
   if (event.target === settingsDialog) closeSettings();
 });
@@ -2446,7 +2465,7 @@ rememberToggle.addEventListener("change", () => {
 });
 
 // Right column tabs: Kết quả / Thiết lập / Tạo thêm, with arrow-key movement.
-const tabButtons = [...document.querySelectorAll<HTMLButtonElement>(".tabs [data-tab]")];
+const tabButtons = [...document.querySelectorAll<HTMLButtonElement>("#detail-tabs [data-tab]")];
 for (const button of tabButtons) {
   button.addEventListener("click", () => selectTab(button.dataset.tab as DetailTab));
   button.addEventListener("keydown", (event) => {

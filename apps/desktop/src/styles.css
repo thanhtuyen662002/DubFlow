@@ -727,6 +727,8 @@ button.job.selected { background: var(--select); }
 .product-results li.failed { color: var(--err); }
 /* Bán hàng: two columns (design E), stacking below 1200 px */
 .product-studio { grid-template-columns: minmax(0, 1fr) minmax(340px, 400px); align-items: start; max-width: 1360px; }
+/* Tall windows: the template and its preview stay in view beside the long left column. */
+@media (min-width: 1200px) and (min-height: 900px) { .product-side { position: sticky; top: 0; } }
 .product-voice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin-top: 12px; }
 .product-voice-grid label { display: grid; gap: 4px; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
 .product-voice-grid select { width: 100%; height: 34px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--canvas); color: var(--text); }
@@ -1173,6 +1175,8 @@ button.job.selected { background: var(--select); }
 #cover-color-options[hidden], #cover-mosaic-options[hidden], #cover-feather-row[hidden], #cover-span-field[hidden], #cover-times[hidden],
 #cover-blur-note[hidden], #cover-empty[hidden], #cover-missed[hidden], #cover-fix[hidden], #cover-delete[hidden], #cover-style-row[hidden] { display: none; }
 .cover-pane { display: flex; flex: 1; flex-direction: column; gap: 14px; min-height: 0; padding: 14px 16px 16px; overflow: auto; }
+/* The pane scrolls; its cards keep their height instead of being squeezed and clipped. */
+.cover-pane > *, .cover-list > * { flex-shrink: 0; }
 .cover-options { display: flex; flex-direction: column; gap: 10px; }
 .cover-modes, .cover-direction, .cover-span { background: var(--canvas); }
 .cover-modes button, .cover-span button { min-width: 0; padding: 0 6px; }

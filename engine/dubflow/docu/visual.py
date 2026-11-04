@@ -31,7 +31,7 @@ def _sha256(path: Path) -> str:
 def caption_warning(source_id: str, preset: str) -> str:
     """A caption band framing cannot clear: it is covered by edge stretch; the letterbox would shrink it."""
     covered = f"Phụ đề gốc của {source_id} cao hơn mức phóng 114% che được; phần còn lại được che bằng cách kéo giãn mép ảnh"
-    return covered if preset == "letterbox_235" else f"{covered}. Chọn khung Viền đen điện ảnh 2.35:1 để vùng che nhỏ hơn"
+    return covered if preset == "letterbox_235" else f"{covered}. Chọn khung Viền đen điện ảnh 2,35:1 để vùng che nhỏ hơn"
 
 
 def portrait_warning(source_id: str) -> str:
