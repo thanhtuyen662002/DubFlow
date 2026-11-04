@@ -17,6 +17,7 @@ import traceback
 from typing import Any, Callable, Sequence
 
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
+from . import overlays
 from .narration import _Status
 from .project import DocuError, Spec, script_path, work_dir, write_json
 from .script import CHAPTERS, load_draft
@@ -135,11 +136,14 @@ def card_argv(ffmpeg: Path, ass: str, frames: int, encoder: str, output: Path) -
             "-f", "mp4", str(output)]
 
 
-def mux_argv(ffmpeg: Path, concat: str, narration: Path, seconds: float, output: Path) -> list[str]:
-    return [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", concat,
-            "-i", str(narration), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", "apad",
-            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-t", f"{seconds:.3f}",
-            "-movflags", "+faststart", "-f", "mp4", str(output)]
+def mux_argv(ffmpeg: Path, concat: str, narration: Path, seconds: float, output: Path, bed: Path | None = None) -> list[str]:
+    head = [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", concat, "-i", str(narration)]
+    if bed is None:
+        audio = ["-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", "apad"]
+    else:
+        audio = ["-i", str(bed), "-filter_complex", overlays.ducked_mix(), "-map", "0:v:0", "-map", "[audio]", "-c:v", "copy"]
+    return head + audio + ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-t", f"{seconds:.3f}",
+                           "-movflags", "+faststart", "-f", "mp4", str(output)]
 
 
 def _clock(seconds: float) -> str:
@@ -160,11 +164,13 @@ def load_labels(run_dir: Path) -> list[dict[str, Any]]:
     return [item for item in items if isinstance(item, dict) and isinstance(item.get("text"), str)] if isinstance(items, list) else []
 
 
-def labels_ass(labels: Sequence[dict[str, Any]], seconds: float) -> str:
-    """Dark slate boxes (90 % opaque) with white words, each at its centre, wrapped to its width."""
+def labels_ass(labels: Sequence[dict[str, Any]], seconds: float, overlay: Sequence[str] = (), bar: int = 0) -> str:
+    """Dark slate boxes (90 % opaque) with white words, each at its centre, wrapped to its width; then the
+    slice's number cards, lower-thirds and captions (``overlay``: rows from ``overlays.overlay_rows``)."""
     head = ("[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 0\n\n[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV\n"
-            "Style: Label,Segoe UI,44,&H00FFFFFF,&H192A170F,&H192A170F,1,0,3,14,0,5,0,0,0\n\n[Events]\n"
+            "Style: Label,Segoe UI,44,&H00FFFFFF,&H192A170F,&H192A170F,1,0,3,14,0,5,0,0,0\n"
+            + (overlays.styles(bar) if overlay else "") + "\n[Events]\n"
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
     end = f"0:{int(seconds) // 60:02d}:{seconds % 60:05.2f}"
     rows = []
@@ -172,7 +178,7 @@ def labels_ass(labels: Sequence[dict[str, Any]], seconds: float) -> str:
         x, y, w = float(label["x"]) * WIDTH, float(label["y"]) * HEIGHT, float(label["w"]) * WIDTH
         margin = max(0, round((WIDTH - w) / 2))
         rows.append(f"Dialogue: 0,0:00:00.00,{end},Label,,{margin},{margin},0,,{{\\pos({round(x)},{round(y)})}}{_ass_text(label['text'])}\n")
-    return head + "".join(rows)
+    return head + "".join(rows) + "".join(overlay)
 
 
 def credits(spec: Spec) -> list[dict[str, Any]]:
@@ -267,6 +273,11 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
         pace = load_pacing(run_dir)["ken_burns"]
         push = KEN_BURNS_ZOOM if pace is None else pace
         labels = load_labels(run_dir)
+        options = overlays.load_options(run_dir)
+        # The letterbox is the same for every source; overlays sit inside the picture, above the bars.
+        bar = max((_even(float(item.get("letterbox") or 0.0) * HEIGHT) if item.get("letterbox") else 0 for item in framings.values()),
+                  default=0)
+        events = overlays.all_events(run_dir, script, timeline, options, bar)
         scene_of = {id(piece): (scene["scene_id"], index) for scene in plan["scenes"] for index, piece in enumerate(scene["slices"])}
         encoder = encoders[0]
         parts: list[str] = []
@@ -287,16 +298,17 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
             scene_id, position = scene_of[id(piece)]
             shown = [label for label in labels if label.get("scene_id") == scene_id
                      and label.get("clip_index", position) == position]
+            overlay = overlays.overlay_rows(events, float(piece["at"]), count / FPS)
             ass = None
-            if shown:
+            if shown or overlay:
                 ass = f"slice-{index:04d}.ass"
-                (work / ass).write_text(labels_ass(shown, count / FPS), encoding="utf-8")
+                (work / ass).write_text(labels_ass(shown, count / FPS, overlay, bar), encoding="utf-8")
             graph = video_filter(*sizes[source_id], framings.get(source_id, {}), frames=count,
                                  ken_burns=shot_end - shot_start >= KEN_BURNS_SHOT, zoom_push=push, labels=ass)
             stat = video.stat()
             output = work / name
             key = {"recipe": RECIPE, "video": [str(video), stat.st_size, stat.st_mtime_ns], "start": round(start, 3),
-                   "frames": count, "graph": graph, "labels": shown}
+                   "frames": count, "graph": graph, "labels": shown, "overlay": overlay}
             receipt = work / f"slice-{index:04d}.json"
             saved = _receipt(receipt)
             if not (output.is_file() and saved and saved.get("key") == key):
@@ -316,14 +328,32 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
             parts.append("card.mp4")
             seconds += END_CARD
         (work / "concat.txt").write_text("".join(f"file '{part}'\n" for part in parts), encoding="utf-8")
+        bed = None
+        if options["music"] != "none":
+            status.write(message="Đang tạo nhạc nền…")
+            if options["music"] == "file":
+                music = Path(options["music_path"])
+                if not music.is_file():
+                    raise DocuError(f"Không tìm thấy file nhạc nền: {music.name}")
+                argv = overlays.file_bed_argv(ffmpeg, music, seconds, work / "bed.partial.wav")
+                stat = music.stat()
+                key = {"argv": argv[1:], "music": [stat.st_size, stat.st_mtime_ns]}
+            else:
+                argv = overlays.bed_argv(ffmpeg, overlays.chapter_moods(script, timeline, seconds), seconds, work / "bed.partial.wav")
+                key = {"argv": argv[1:]}
+            bed = work / "bed.wav"
+            if _receipt(work / "bed.json") != {"key": key} or not bed.is_file():
+                ffmpeg_runner(argv, work, cancel.exists)
+                (work / "bed.partial.wav").replace(bed)
+                write_json(work / "bed.json", {"key": key})
         status.write(message="Đang ghép hình với lời đọc…")
         partial = work / "documentary.partial.mp4"
-        ffmpeg_runner(mux_argv(ffmpeg, "concat.txt", narration, seconds, partial), work, cancel.exists)
+        ffmpeg_runner(mux_argv(ffmpeg, "concat.txt", narration, seconds, partial, bed), work, cancel.exists)
         partial.replace(run_dir / VIDEO)
         write_json(run_dir / "source_credit.json", {"schema_version": 1, "sources": credits(spec)})
         (run_dir / "description.txt").write_text(description(script, timeline, spec), encoding="utf-8", newline="\n")
         status.write(state="COMPLETED", done=status.value["total"], message="Đã dựng bản nháp", path=str(run_dir / VIDEO),
-                     duration=round(seconds, 3))
+                     duration=round(seconds, 3), overlays=overlays.describe(options))
         return status.value
     except Cancelled:
         status.write(state="CANCELLED", message="Đã hủy dựng bản nháp")

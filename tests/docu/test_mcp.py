@@ -326,7 +326,7 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual([reply.get("id") for reply in replies], [1, 2, 3, 4, 5, 6, 7, None])
             self.assertEqual(replies[0]["result"]["protocolVersion"], "2024-11-05")
             self.assertEqual({tool["name"] for tool in replies[1]["result"]["tools"]}, {tool["name"] for tool in TOOLS})
-            self.assertEqual(len(TOOLS), 10)
+            self.assertEqual(len(TOOLS), 11)
             self.assertFalse(replies[2]["result"]["isError"])
             self.assertEqual(len(json.loads(replies[2]["result"]["content"][0]["text"])), 1)
             self.assertTrue(replies[3]["result"]["isError"])
