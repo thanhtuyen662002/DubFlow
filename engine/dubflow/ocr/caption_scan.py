@@ -39,6 +39,11 @@ MIN_SPEECH_OVERLAP = 0.3
 FIXED_MIN_PRESENCE = 0.5
 FIXED_MAX_CHANGE = 6.0
 SEGMENT_GAP_S = 0.6
+# Logo scan (documentary B-roll): the whole frame, sparsely; a logo is on screen for most of the video anyway.
+LOGO_FPS = 0.5
+LOGO_MAX_WIDTH = 0.4
+LOGO_MAX_HEIGHT = 0.2
+LOGO_MIN_PRESENCE = 0.6
 # ImageNet normalisation used by PaddleOCR's detector.
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
@@ -165,6 +170,34 @@ def fixed_text(samples: Sequence[Sequence[TextBox]]) -> list[TextBox]:
     return fixed
 
 
+def logo_boxes(samples: Sequence[Sequence[TextBox]]) -> list[TextBox]:
+    """Text that stays in one place for most of a video and is not a caption: channel logos and watermarks.
+
+    Unlike ``fixed_text`` the pixels may change: a semi-transparent logo over moving B-roll changes as much as
+    dialogue does (median grid change 40-45 against 67 for captions in the 2026-11-04 test sources), so only
+    the place counts, and captions are told apart by where they sit.
+    """
+    clusters: list[list[TextBox]] = []
+    for boxes in samples:
+        for box in boxes:
+            for cluster in clusters:
+                if _iou(cluster[-1], box) > 0.5:
+                    cluster.append(box)
+                    break
+            else:
+                clusters.append([box])
+    total = max(1, len(samples))
+    found = []
+    for cluster in clusters:
+        if len(cluster) / total < LOGO_MIN_PRESENCE:
+            continue
+        middle = TextBox(*(sorted(getattr(box, name) for box in cluster)[len(cluster) // 2] for name in ("x", "y", "w", "h")))
+        steady = sum(_iou(box, middle) > 0.6 for box in cluster) / len(cluster)
+        if steady >= 0.8 and not is_caption(middle) and middle.w <= LOGO_MAX_WIDTH and middle.h <= LOGO_MAX_HEIGHT:
+            found.append(middle)
+    return found
+
+
 def is_caption(box: TextBox) -> bool:
     return box.center_y >= CAPTION_MIN_CENTER_Y and abs(box.center_x - 0.5) <= CAPTION_MAX_CENTER_OFFSET and box.w >= box.h * 1.2
 
@@ -243,14 +276,14 @@ class CaptionScanner:
         self.input_name = self.session.get_inputs()[0].name
         self.ffmpeg = ffmpeg_path
 
-    def _frames(self, source: Path) -> Iterator[tuple[float, "np.ndarray"]]:
+    def _frames(self, source: Path, fps: float = SAMPLE_FPS) -> Iterator[tuple[float, "np.ndarray"]]:
         """Sampled frames as RGB arrays, already rotated for display by FFmpeg.
 
         PPM frames carry their own size, so no probe of rotation or sample
         aspect ratio is needed.
         """
         command = [str(self.ffmpeg), "-nostdin", "-v", "error", "-i", str(source), "-an", "-sn", "-dn",
-                   "-vf", f"fps={SAMPLE_FPS},scale={ANALYSIS_WIDTH}:-2", "-c:v", "ppm", "-f", "image2pipe", "pipe:1"]
+                   "-vf", f"fps={fps:g},scale={ANALYSIS_WIDTH}:-2", "-c:v", "ppm", "-f", "image2pipe", "pipe:1"]
         import numpy as np
 
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
@@ -264,7 +297,7 @@ class CaptionScanner:
                 data = process.stdout.read(width * height * 3)
                 if len(data) < width * height * 3:
                     break
-                yield index / SAMPLE_FPS, np.frombuffer(data, np.uint8).reshape(height, width, 3)
+                yield index / fps, np.frombuffer(data, np.uint8).reshape(height, width, 3)
                 index += 1
         finally:
             process.stdout.close()
@@ -282,6 +315,15 @@ class CaptionScanner:
         return [TextBox(left / width, band_top + band_height * top / height, (right - left) / width,
                         band_height * (bottom - top) / height, signature(gray, (left, top, right, bottom)))
                 for left, top, right, bottom in line_boxes(prob)]
+
+    def scan_fixed(self, source: Path, *, duration_s: float, fps: float = LOGO_FPS) -> list[TextBox]:
+        """Logos, watermarks and channel names anywhere in the frame: text that stays put with the same pixels."""
+        samples = []
+        for _, frame in self._frames(source, fps):
+            height = frame.shape[0] // 32 * 32
+            if height >= 32:
+                samples.append(self.detect(frame[:height], 0.0, height / frame.shape[0]))
+        return logo_boxes(samples)
 
     def scan(self, source: Path, *, duration_s: float, speech_ms: Sequence[tuple[int, int]] | None = None,
              progress: Callable[[float], None] | None = None) -> ScanResult:

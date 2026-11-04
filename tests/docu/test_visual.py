@@ -57,6 +57,25 @@ class SafeZoneTests(unittest.TestCase):
         self.assertLessEqual(band.bottom, 0.96)
         self.assertTrue(safezone.framing(band, "letterbox_235").clear)
 
+    def test_logos_are_padded_and_scanned_once(self):
+        from engine.dubflow.ocr.caption_scan import TextBox
+
+        class Scanner:
+            calls = 0
+
+            def scan_fixed(self, video, duration_s):
+                Scanner.calls += 1
+                return [TextBox(0.055, 0.694, 0.128, 0.094), TextBox(0.99, 0.0, 0.01, 0.02)]
+
+        with TemporaryDirectory() as temp:
+            cache = Path(temp) / "logos.json"
+            args = dict(duration=10.0, cache=cache, scanner=Scanner, identity={"recipe": "r"})
+            logos = safezone.scan_logos(Path(temp) / "a.mp4", **args)
+            self.assertEqual(logos[0], [0.043, 0.682, 0.152, 0.118])
+            self.assertEqual(logos[1], [0.978, 0.0, 0.022, 0.032], "kept inside the frame")
+            self.assertEqual(safezone.scan_logos(Path(temp) / "a.mp4", **args), logos)
+            self.assertEqual(Scanner.calls, 1)
+
     def test_two_caption_lines_make_one_band(self):
         rows = [(i / 2, 0.80, 0.85) for i in range(40)] + [(i / 2, 0.86, 0.91) for i in range(40)]
         band = safezone.band_from_rows(rows, 20.0)
@@ -219,7 +238,7 @@ class VisualRunTests(unittest.TestCase):
             self.assertEqual([s["scene_id"] for s in plan["scenes"]], ["sc_001", "sc_002"])
             self.assertEqual(plan["scenes"][0]["start"], 0.0, "the picture starts with the film")
             self.assertEqual(plan["sources"][0]["framing"], {"band": None, "zoom": 1.0, "shift": 0.0, "letterbox": 0.1217, "clear": True,
-                                                             "frame_size": None, "portrait": False})
+                                                             "frame_size": None, "portrait": False, "logos": []})
             self.assertAlmostEqual(sum(s["duration"] for scene in plan["scenes"] for s in scene["slices"]), 9.0, places=2)
 
 

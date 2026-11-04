@@ -131,6 +131,30 @@ def scan_band(video: Path, *, duration: float, speech: Iterable[tuple[float, flo
     return band, size
 
 
+LOGO_RECIPE = "fixed-text-full-frame-v1"
+LOGO_PAD = 0.012
+
+
+def scan_logos(video: Path, *, duration: float, cache: Path, scanner: Callable[[], Any],
+               identity: dict[str, Any]) -> list[list[float]]:
+    """Channel logos and watermarks burned into a source, as padded [x, y, w, h] frame fractions; scanned once."""
+    identity = {**identity, "logos": LOGO_RECIPE}
+    try:
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        if saved.get("identity") == identity and isinstance(saved.get("logos"), list):
+            return saved["logos"]
+    except (OSError, ValueError, TypeError):
+        pass
+    boxes = scanner().scan_fixed(video, duration_s=duration)
+    logos = []
+    for box in boxes:
+        x, y = max(0.0, box.x - LOGO_PAD), max(0.0, box.y - LOGO_PAD)
+        right, bottom = min(1.0, box.x + box.w + LOGO_PAD), min(1.0, box.y + box.h + LOGO_PAD)
+        logos.append([round(x, 4), round(y, 4), round(right - x, 4), round(bottom - y, 4)])
+    write_json(cache, {"schema_version": 1, "identity": identity, "logos": logos})
+    return logos
+
+
 def is_portrait(size: Sequence[int] | None) -> bool:
     """A picture taller than wide (a phone video): a 16:9 frame keeps only a strip of it."""
     return bool(size) and len(size) == 2 and size[1] > size[0]
