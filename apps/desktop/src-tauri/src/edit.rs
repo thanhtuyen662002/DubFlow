@@ -1977,6 +1977,7 @@ pub async fn edit_export(request: ExportRequest) -> Result<Value, String> {
 #[tauri::command]
 pub fn edit_status(output_path: String, kind: String) -> Result<Value, String> {
     let target = edit_target(&output_path, &kind)?;
+    target.confined()?;
     let work = target.work.clone();
     let mut status = fs::read(work.join("status.json")).ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()).filter(Value::is_object);
@@ -2474,6 +2475,15 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         append_export(&opened.work, json!({"path": "x"}));
         assert!(!outside.join("status.json").exists() && !outside.join("exports.json").exists(), "a render's own writes are refused");
         assert!(guarded(&opened.work).is_err() && opened.prepare().is_err(), "an export does not start");
+        unlink_dir(&child);
+        // Swapped for a link to a folder that does not exist yet: it is never created.
+        let missing = outside.join("new");
+        link_dir(&missing, &child);
+        assert!(save_draft(&opened, project).is_err() && opened.prepare().is_err() && opened.confined().is_err());
+        write_status(&opened.work, "FAILED", 0.0, "x", None);
+        append_export(&opened.work, json!({"path": "x"}));
+        assert!(!missing.exists(), "the link's missing target was not created");
+        assert!(resolve_target(&path, "file", &data).is_err());
         unlink_dir(&child);
         assert_eq!(state(&outside), outside_before, "nothing outside the store changed");
         assert_eq!(state(&source), source_before, "nothing beside the video changed");
