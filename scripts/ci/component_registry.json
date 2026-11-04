@@ -1300,6 +1300,104 @@
           "apps/desktop"
         ]
       ]
+    },
+    {
+      "id": "desktop-editor-subtitles",
+      "roots": [
+        "apps/desktop/index.html",
+        "apps/desktop/package.json",
+        "apps/desktop/src/features/edit",
+        "apps/desktop/src/features/sfx",
+        "apps/desktop/src/features/product",
+        "apps/desktop/src/features/compilation",
+        "apps/desktop/src-tauri/src/main.rs",
+        "apps/desktop/src-tauri/src/edit.rs",
+        "apps/desktop/src-tauri/src/sfx.rs",
+        "apps/desktop/src-tauri/src/product.rs",
+        "apps/desktop/src-tauri/src/compilation.rs",
+        "apps/desktop/test",
+        "engine/dubflow/subtitle",
+        "engine/dubflow/media/adapter.py",
+        "engine/dubflow/worker/production_job.py",
+        "tests/subtitle_render",
+        "tests/production/media",
+        "tests/production/worker",
+        "tests/tts"
+      ],
+      "commands": [
+        [
+          "npm",
+          "ci",
+          "--prefix",
+          "apps/desktop"
+        ],
+        [
+          "npm",
+          "test",
+          "--prefix",
+          "apps/desktop"
+        ],
+        [
+          "npm",
+          "run",
+          "build",
+          "--prefix",
+          "apps/desktop"
+        ],
+        [
+          "cargo",
+          "test",
+          "--manifest-path",
+          "apps/desktop/src-tauri/Cargo.toml",
+          "--locked"
+        ],
+        [
+          "python",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/subtitle_render",
+          "-p",
+          "test_*.py"
+        ],
+        [
+          "env",
+          "DUBFLOW_TEST_FFMPEG=/usr/bin/ffmpeg",
+          "python",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/production/media",
+          "-p",
+          "test_*.py"
+        ],
+        [
+          "python",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/production/worker",
+          "-p",
+          "test_*.py"
+        ],
+        [
+          "python",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests/tts",
+          "-p",
+          "test_*.py"
+        ]
+      ]
     }
   ]
 }
