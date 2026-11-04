@@ -557,7 +557,10 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       const meta = document.createElement("span");
       meta.className = "hint";
       meta.textContent = video.meta;
-      item.append(label, meta, ...videoActions(video));
+      const actions = document.createElement("span");
+      actions.className = "product-recent-actions";
+      actions.append(...videoActions(video));
+      item.append(label, meta, actions);
       return item;
     }));
   }
