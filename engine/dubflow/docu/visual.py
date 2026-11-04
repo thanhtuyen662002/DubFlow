@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
 from . import matcher, safezone, shots
-from .project import DocuError, Spec, context_path, script_path, work_dir, write_json
+from .project import FRAMING_PRESETS, DocuError, Spec, context_path, load_spec, script_path, spec_path, work_dir, write_json
 from .script import load_contexts, load_draft
 from .narration import _Status
 
@@ -41,6 +41,89 @@ def portrait_warning(source_id: str) -> str:
 
 PACING = "pacing.json"
 MIN_PACE, MAX_PACE = 2.0, 8.0
+# Slices pointed at other footage by hand (MCP replace_timeline_clip); a new plan keeps them.
+OVERRIDES = "overrides.json"
+
+
+def load_overrides(run_dir: Path) -> dict[str, Any]:
+    try:
+        value = json.loads((work_dir(run_dir) / OVERRIDES).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"schema_version": 1, "script_sha256": None, "slices": {}}
+    slices = value.get("slices") if isinstance(value, dict) and isinstance(value.get("slices"), dict) else {}
+    return {"schema_version": 1, "script_sha256": value.get("script_sha256") if isinstance(value, dict) else None, "slices": slices}
+
+
+def save_override(run_dir: Path, script_sha256: str | None, scene_id: str, index: int, source_id: str, start: float) -> None:
+    saved = load_overrides(run_dir)
+    if saved["script_sha256"] != script_sha256:
+        saved = {"schema_version": 1, "script_sha256": script_sha256, "slices": {}}
+    saved["slices"].setdefault(scene_id, {})[str(index)] = {"source_id": source_id, "start": round(float(start), 3)}
+    write_json(work_dir(run_dir) / OVERRIDES, saved)
+
+
+def apply_overrides(run_dir: Path, plan: dict[str, Any]) -> list[str]:
+    """Put hand-picked footage back into a new plan; the slice keeps the new plan's length. Returns warnings."""
+    saved = load_overrides(run_dir)
+    count = sum(len(items) for items in saved["slices"].values() if isinstance(items, dict))
+    if not count:
+        return []
+    if saved["script_sha256"] != plan.get("script_sha256"):
+        (work_dir(run_dir) / OVERRIDES).unlink(missing_ok=True)
+        return [f"Kịch bản đã đổi nên {count} lát cắt đã thay tay không còn áp dụng"]
+    durations = {source["id"]: float(source["duration"]) for source in plan["sources"]}
+    scenes = {scene["scene_id"]: scene for scene in plan["scenes"]}
+    dropped = 0
+    for scene_id, items in saved["slices"].items():
+        for index, chosen in (items.items() if isinstance(items, dict) else ()):
+            scene = scenes.get(scene_id)
+            position = int(index) if str(index).isdigit() else -1
+            source_id = chosen.get("source_id") if isinstance(chosen, dict) else None
+            if scene is None or not 0 <= position < len(scene["slices"]) or source_id not in durations:
+                dropped += 1
+                continue
+            piece = scene["slices"][position]
+            length = float(piece["end"]) - float(piece["start"])
+            start = min(max(0.0, float(chosen.get("start") or 0.0)), durations[source_id] - length)
+            if start < 0:
+                dropped += 1
+                continue
+            piece.update({"source_id": source_id, "start": round(start, 3), "end": round(start + length, 3), "tier": -1})
+    return [f"{dropped} lát cắt đã thay tay không còn chỗ trong kế hoạch mới"] if dropped else []
+
+
+def source_warnings(sources: list[dict[str, Any]], preset: str) -> list[str]:
+    warnings = [caption_warning(source["id"], preset) for source in sources if not source["framing"].get("clear", True)]
+    return warnings + [portrait_warning(source["id"]) for source in sources if source["framing"].get("portrait")]
+
+
+def reframe(run_dir: Path, preset: str) -> dict[str, Any]:
+    """Change the project's framing; the plan's slices, hand edits and scans stay, only each source's framing is redone."""
+    if preset not in FRAMING_PRESETS:
+        raise DocuError("Khung hình không hợp lệ")
+    path = spec_path(run_dir)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise DocuError("Không đọc được spec.json của phim tài liệu") from error
+    raw["cinematic_framing_preset"] = preset
+    write_json(path, raw)
+    load_spec(path)
+    plan_path = run_dir / PLAN
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"framing": preset, "plan": False, "warnings": []}
+    for source in plan["sources"]:
+        saved = source.get("framing") or {}
+        band = safezone.Band(**saved["band"]) if saved.get("band") else None
+        source["framing"] = {**saved, **safezone.framing(band, preset).to_dict()}
+    plan["cinematic_framing_preset"] = preset
+    others = [note for note in plan.get("warnings", []) if not note.startswith("Phụ đề gốc của") and "là video dọc" not in note]
+    plan["warnings"] = source_warnings(plan["sources"], preset) + others
+    write_json(plan_path, plan)
+    return {"framing": preset, "plan": True, "warnings": plan["warnings"],
+            "sources": [{"source_id": source["id"], "clear": source["framing"]["clear"]} for source in plan["sources"]]}
 
 
 def load_pacing(run_dir: Path) -> dict[str, Any]:
@@ -137,6 +220,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
                        for scene, slices, notes in planned],
             "warnings": warnings,
         }
+        plan["warnings"] += apply_overrides(run_dir, plan)
         write_json(run_dir / PLAN, plan)
         count = sum(len(scene["slices"]) for scene in plan["scenes"])
         status.write(state="COMPLETED", done=status.value["total"], message=f"Đã lập kế hoạch: {count} lát cắt")

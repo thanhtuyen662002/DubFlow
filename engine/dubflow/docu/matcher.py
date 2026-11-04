@@ -5,7 +5,8 @@ Each scene's slot (its narration plus the pause after it) is filled with
 
 * footage the scene cites first, then a few seconds around it, then uncited
   footage (the rest of the cited sources or any other source, ranked equally so
-  interleaving decides); the scene says when it had to look further;
+  interleaving decides, then the closest to the cited ranges); the scene says
+  when it had to look further;
 * consecutive slices alternate sources when the candidates allow it (A/B
   interleaving); two consecutive slices from one source are at least 8 s apart
   in that source, so the cut never jumps within one shot;
@@ -120,6 +121,16 @@ def _snap(source: Source, start: float, length: float) -> float:
     return min(near, key=lambda cut: (abs(cut - planned), cut)) if near else planned
 
 
+def _near(scene: Scene, source_id: str, start: float) -> float:
+    """Seconds from ``start`` to the closest footage this scene cites in that source (its own start when it cites none).
+
+    Footage next to what the narration talks about usually shows the same thing, so uncited filler is taken
+    as close to the cited ranges as the other rules allow instead of from the top of the source.
+    """
+    gaps = [max(0.0, ref.start - start, start - ref.end) for ref in scene.refs if ref.source_id == source_id]
+    return round(min(gaps), 3) if gaps else start
+
+
 def _candidates(scene: Scene, sources: dict[str, Source]) -> list[tuple[int, int, str, float]]:
     """(tier, ref order, source, start) for every place a slice of this scene could start."""
     found: list[tuple[int, int, str, float]] = []
@@ -159,8 +170,8 @@ def plan(scenes: Sequence[Scene], sources: Iterable[Source]) -> list[tuple[Scene
         while remaining > EPSILON:
             length = lengths(remaining, scene.max_slice)[0]
             minimum = shortest(scene.max_slice)
-            choice = _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=False) \
-                or _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=True)
+            choice = _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=False, scene=scene) \
+                or _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=True, scene=scene)
             if choice is None:
                 raise ValueError(f"no footage long enough for {scene.scene_id}")
             tier, source_id, start, end = choice
@@ -176,7 +187,7 @@ def plan(scenes: Sequence[Scene], sources: Iterable[Source]) -> list[tuple[Scene
 
 
 def _choose(candidates, sources: dict[str, Source], used: _Used, previous: Slice | None, length: float, remaining: float,
-            minimum: float, *, reuse: bool) -> tuple[int, str, float, float] | None:
+            minimum: float, *, reuse: bool, scene: Scene) -> tuple[int, str, float, float] | None:
     best: tuple | None = None
     for tier, order, source_id, wanted in candidates:
         source = sources[source_id]
@@ -199,7 +210,8 @@ def _choose(candidates, sources: dict[str, Source], used: _Used, previous: Slice
         rank = REUSED if reuse else min(tier, SAME_SOURCES)
         if source.portrait and not reuse:
             rank = max(rank, SAME_SOURCES)
-        key = (rank, int(source.portrait), int(same), on_cut, order, source_id, start)
+        near = _near(scene, source_id, start) if tier >= SAME_SOURCES else 0.0
+        key = (rank, int(source.portrait), int(same), on_cut, order, near, source_id, start)
         if best is None or key < best[0]:
             best = (key, (REUSED if reuse else tier, source_id, start, end))
     return best[1] if best else None

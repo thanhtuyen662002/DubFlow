@@ -267,7 +267,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
         pace = load_pacing(run_dir)["ken_burns"]
         push = KEN_BURNS_ZOOM if pace is None else pace
         labels = load_labels(run_dir)
-        scene_of = {id(piece): scene["scene_id"] for scene in plan["scenes"] for piece in scene["slices"]}
+        scene_of = {id(piece): (scene["scene_id"], index) for scene in plan["scenes"] for index, piece in enumerate(scene["slices"])}
         encoder = encoders[0]
         parts: list[str] = []
         for index, (piece, count) in enumerate(zip(slices, frames), 1):
@@ -284,7 +284,9 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
             later = [cut for cut in cuts[source_id] if cut > start + 1e-3]
             shot_end = later[0] if later else math.inf
             name = f"slice-{index:04d}.mp4"
-            shown = [label for label in labels if label.get("scene_id") == scene_of[id(piece)]]
+            scene_id, position = scene_of[id(piece)]
+            shown = [label for label in labels if label.get("scene_id") == scene_id
+                     and label.get("clip_index", position) == position]
             ass = None
             if shown:
                 ass = f"slice-{index:04d}.ass"

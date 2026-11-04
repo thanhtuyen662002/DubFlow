@@ -507,6 +507,25 @@ pub fn docu_render_cancel(dir: String) -> Result<(), String> {
     cancel_job(&dir, &RENDER_JOB)
 }
 
+fn reframe_args(dir: &Path, preset: &str) -> Vec<OsString> {
+    vec!["-m".into(), "engine.dubflow.docu".into(), "reframe".into(), "--run-dir".into(), dir.into(), "--preset".into(), preset.into()]
+}
+
+/// Change the framing look after creation: the plan keeps its slices, hand edits and scans; only framing is redone (#477).
+#[tauri::command]
+pub async fn docu_reframe(dir: String, preset: String) -> Result<Value, String> {
+    let dir = docu_dir(&dir)?;
+    if !["none", "letterbox_235", "overscan_108"].contains(&preset.as_str()) { return Err(fail("Kiểu khung hình không hợp lệ")); }
+    for work in [".dubflow-work/visual", ".dubflow-work/render"] {
+        if crate::product::read_small_json(&dir.join(work).join("status.json"), 64 * 1024).is_some_and(|status| status["state"] == "RUNNING") {
+            return Err(fail("Đợi lập kế hoạch hoặc dựng bản nháp xong rồi hãy đổi khung hình"));
+        }
+    }
+    let result = python_json(reframe_args(&dir, &preset), "bộ xử lý phim tài liệu").await?;
+    if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
+    Ok(result)
+}
+
 fn capcut_args(dir: &Path) -> Vec<OsString> {
     vec!["-m".into(), "engine.dubflow.docu".into(), "capcut".into(), "--run-dir".into(), dir.into()]
 }
@@ -703,6 +722,13 @@ mod tests {
         assert_eq!(profile["default_voice_id"], "am_michael");
         assert!(profile["voices"].as_array().unwrap().iter().any(|voice| voice["voice_id"] == "am_michael"));
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn reframe_command_names_the_preset() {
+        let args = reframe_args(Path::new(r"C:\run"), "letterbox_235");
+        let text: Vec<String> = args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(text, ["-m", "engine.dubflow.docu", "reframe", "--run-dir", r"C:\run", "--preset", "letterbox_235"]);
     }
 
     #[test]

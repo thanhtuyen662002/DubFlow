@@ -127,6 +127,26 @@ class RunTests(unittest.TestCase):
             self.assertEqual(stale["state"], "FAILED")
             self.assertIn("cũ", stale["message"])
 
+    def test_a_slice_label_is_drawn_on_that_slice_only(self):
+        with TemporaryDirectory() as temp:
+            run, spec, plan = _project(Path(temp))
+            write_json(run / ".dubflow-work" / roughcut.LABELS, {"schema_version": 1, "labels": [
+                {"id": "l001", "scene_id": "sc_001", "text": "Control room", "x": 0.5, "y": 0.8, "w": 0.3, "clip_index": 1},
+                {"id": "l002", "scene_id": "sc_001", "text": "Ezhou", "x": 0.5, "y": 0.2, "w": 0.3}]})
+            graphs = []
+
+            def runner(argv, cwd, cancelled):
+                if "-filter_complex" in argv:
+                    graphs.append(argv[argv.index("-filter_complex") + 1])
+                Path(cwd, Path(argv[-1]).name).write_bytes(b"mp4")
+            self.assertEqual(roughcut.run(run, spec, ffmpeg=Path("ffmpeg"), probe=lambda video: (1920, 1080), ffmpeg_runner=runner)["state"], "COMPLETED")
+            work = run / ".dubflow-work" / "render"
+            first, second = (work / "slice-0001.ass").read_text(encoding="utf-8"), (work / "slice-0002.ass").read_text(encoding="utf-8")
+            self.assertNotIn("Control room", first)
+            self.assertIn("Control room", second)
+            self.assertIn("Ezhou", first)
+            self.assertIn("Ezhou", second)
+
     @unittest.skipUnless(FFMPEG and FFPROBE, "ffmpeg/ffprobe not available")
     def test_real_render_is_frame_exact(self):
         with TemporaryDirectory() as temp:

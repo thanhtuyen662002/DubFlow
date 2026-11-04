@@ -161,6 +161,14 @@ class MatcherTests(unittest.TestCase):
         self.assertTrue(planned[1][2])
         self.assertEqual(matcher.plan(scenes, sources()), planned, "deterministic")
 
+    def test_uncited_filler_comes_from_next_to_the_cited_footage(self):
+        # 2026-11-04 test: a scene about pig prices got a disinfection cabinet from the top of another source.
+        one = [matcher.Source("src_01", 300.0, tuple(float(t) for t in range(4, 300, 4)))]
+        scene = matcher.Scene("sc_001", 0.0, 20.0, (matcher.Ref("src_01", 200, 204),))
+        pieces = matcher.plan([scene], one)[0][1]
+        self.assertTrue(any(piece.tier >= matcher.SAME_SOURCES for piece in pieces))
+        self.assertTrue(all(abs(piece.start - 202) < 40 for piece in pieces), [piece.start for piece in pieces])
+
     def test_a_portrait_source_is_the_last_resort(self):
         phone = matcher.Source("src_03", 120.0, tuple(float(t) for t in range(5, 120, 5)), portrait=True)
         scenes = [matcher.Scene("sc_001", 0, 12.0, (matcher.Ref("src_03", 10, 40), matcher.Ref("src_01", 10, 30)))]

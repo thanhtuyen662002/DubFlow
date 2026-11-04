@@ -1,4 +1,4 @@
-"""python -m engine.dubflow.docu {context,check,narrate,plan,render,capcut}; the last stdout line is ASCII JSON."""
+"""python -m engine.dubflow.docu {context,check,narrate,plan,reframe,render,capcut}; the last stdout line is ASCII JSON."""
 from __future__ import annotations
 
 import argparse
@@ -71,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     cut = commands.add_parser("render", help="render the visual plan and the narration into documentary.mp4")
     for name in ("run-dir", "ffmpeg", "ffprobe"):
         cut.add_argument(f"--{name}", type=Path, required=True)
+    reframe = commands.add_parser("reframe", help="change the framing look; the plan's slices and scans stay")
+    reframe.add_argument("--run-dir", type=Path, required=True)
+    reframe.add_argument("--preset", required=True)
     capcut = commands.add_parser("capcut", help="write the rough cut as a CapCut draft and list it in CapCut")
     capcut.add_argument("--run-dir", type=Path, required=True)
     capcut.add_argument("--root", type=Path, help="CapCut's draft folder (default: CapCut's own)")
@@ -81,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
             spec = load_spec(args.spec)
             sources = context.build_all(run_dir, spec, lambda path: probe_duration_ms(args.ffprobe, path))
             result: dict[str, object] = {"state": "COMPLETED", "message": "", "sources": sources}
+        elif args.command == "reframe":
+            result = {"state": "COMPLETED", "message": "", **visual.reframe(args.run_dir, args.preset)}
         elif args.command == "capcut":
             exported = capcut_draft.export(args.run_dir, load_spec(spec_path(args.run_dir)), root=args.root or capcut_draft.default_root())
             result = {"state": "COMPLETED", "message": "", **exported}
