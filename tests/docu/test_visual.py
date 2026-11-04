@@ -63,7 +63,7 @@ class SafeZoneTests(unittest.TestCase):
         class Scanner:
             calls = 0
 
-            def scan_frame_text(self, video, duration_s):
+            def scan_frame_text(self, video, duration_s, band_top=None):
                 Scanner.calls += 1
                 return [TextBox(0.055, 0.694, 0.128, 0.094), TextBox(0.99, 0.0, 0.01, 0.02)], [2.0, 4.0, 9.0]
 

@@ -130,6 +130,11 @@ class LogoTests(unittest.TestCase):
         # A news ticker: two lines across the frame (89-93 % wide in BV1Vy4y1Z7C1); one long caption line is not.
         ticker = [(0.0, [TextBox(0.07, 0.74, 0.93, 0.07), TextBox(0.07, 0.81, 0.9, 0.07)]), (2.0, [TextBox(0.05, 0.84, 0.9, 0.07)])]
         self.assertEqual(scan.big_text_times(ticker), [0.0])
+        # Pop-up banners above the caption band: "点赞支持 欢迎关注" (y 0.62) and "搜索 太空记" (y 0.69).
+        popups = [(0.0, [TextBox(0.10, 0.62, 0.14, 0.083), TextBox(0.41, 0.62, 0.08, 0.078)]), (2.0, [TextBox(0.27, 0.69, 0.16, 0.117)]),
+                  (4.0, [TextBox(0.3, 0.84, 0.4, 0.07)]), (6.0, [TextBox(0.07, 0.08, 0.17, 0.072)])]
+        self.assertEqual(scan.big_text_times(popups, band_top=0.86), [0.0, 2.0], "captions and corner tags stay")
+        self.assertEqual(scan.big_text_times(popups), [], "without a caption band these are not big text")
 
 
 MODEL = os.environ.get("DUBFLOW_TEST_OCR_MODEL")

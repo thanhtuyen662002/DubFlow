@@ -131,7 +131,7 @@ def scan_band(video: Path, *, duration: float, speech: Iterable[tuple[float, flo
     return band, size
 
 
-LOGO_RECIPE = "fixed-text-full-frame-v3"
+LOGO_RECIPE = "fixed-text-full-frame-v4"
 # Around each sample with big text (samples are 2 s apart), how much footage to leave out.
 TEXT_PAD = 1.2
 LOGO_PAD = 0.012
@@ -156,16 +156,17 @@ def text_spans(times: Sequence[float], duration: float, pad: float = TEXT_PAD) -
 
 
 def scan_frame_text(video: Path, *, duration: float, cache: Path, scanner: Callable[[], Any],
-                    identity: dict[str, Any]) -> tuple[list[list[float]], list[list[float]]]:
+                    identity: dict[str, Any], band: Band | None = None) -> tuple[list[list[float]], list[list[float]]]:
     """Logos (padded boxes) and the stretches showing big burned-in text, scanned once per source."""
-    identity = {**identity, "logos": LOGO_RECIPE}
+    # Pop-up banners are found relative to the caption band, so the band is part of the identity.
+    identity = {**identity, "logos": LOGO_RECIPE, "band_top": band.top if band else None}
     try:
         saved = json.loads(cache.read_text(encoding="utf-8"))
         if saved.get("identity") == identity and isinstance(saved.get("logos"), list) and isinstance(saved.get("text_spans"), list):
             return saved["logos"], saved["text_spans"]
     except (OSError, ValueError, TypeError):
         pass
-    boxes, times = scanner().scan_frame_text(video, duration_s=duration)
+    boxes, times = scanner().scan_frame_text(video, duration_s=duration, band_top=band.top if band else None)
     logos = []
     for box in boxes:
         x, y = max(0.0, box.x - LOGO_PAD), max(0.0, box.y - LOGO_PAD)
