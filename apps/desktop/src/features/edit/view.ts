@@ -16,7 +16,7 @@ import {
   formatClock, formatSpeed, insertAt, isUnchanged, MAIN, mainLevel, MAX_MEDIA, MAX_OVERLAYS, MAX_SEGMENTS, matchesExport, MIN_SEGMENT,
   MIN_TRANSITION, mediaOf, moveOverlay, outputDuration, outputStarts, outputToSource, overlayHeight, overlayLength,
   overlayPreset, overlayPresetOf, parseClock, parseProject, RECENT_LIMIT, remapCues, remove, removeOverlay, resizeOverlay,
-  samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput,
+  samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput, openingTime,
   SPEED_PRESETS, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
@@ -1905,7 +1905,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const changes = last?.segments && matchesExport(edit, last) ? 0 : project?.changes ?? 0;
       const { project: _, kind: _kind, reviewable, ...facts } = loaded;
       if (status) listStatus = status;
-      const start = video.readyState >= 1 ? sourceToOutput(edit, video.currentTime) ?? 0 : 0;
+      // A queue video goes on from where its player was; any other video starts at its beginning
+      // (the shared player may still hold another video's time).
+      const start = openingTime(target.kind, edit, video.readyState >= 1 ? video.currentTime : null);
       if (!video.paused) video.pause();
       session = {
         target, reviewable: target.kind === "job" && !!target.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,

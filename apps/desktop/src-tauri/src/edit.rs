@@ -278,7 +278,7 @@ fn dubflow_target(video: &Path) -> Option<Target> {
     let video = video.to_path_buf();
     let dir = video.parent()?.to_path_buf();
     let name = video.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-    let (kind, work, captions) = if name == "final_vi.mp4" {
+    let (kind, work, captions) = if name == "final_vi.mp4" && is_job_output(&dir) {
         (Kind::Job, work_dir(&dir), Some(dir.join("captions_vi.srt")))
     } else if let Some((_, number)) = crate::product::product_video(&video) {
         (Kind::Product(number), dir.join(".dubflow-work").join(format!("edit-{number}")), Some(dir.join(format!("captions-{number}.srt"))))
@@ -291,6 +291,13 @@ fn dubflow_target(video: &Path) -> Option<Target> {
         return None;
     };
     Some(Target { kind, main: dir.join(name), dir, work, captions })
+}
+
+/// A dubbing job's results folder: the worker published its manifest (with
+/// the source) beside `final_vi.mp4`. A folder that only happens to be named
+/// like one is a user's folder: its videos open as files (Issue #497).
+fn is_job_output(dir: &Path) -> bool {
+    crate::read_json(&dir.join("job_manifest.json"), 16 * 1024 * 1024).is_ok_and(|manifest| manifest["source"].is_object())
 }
 
 /// Any playable video: its draft is kept below `store`, one folder per file.
@@ -2204,6 +2211,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         fs::create_dir_all(&dir).unwrap();
         let video = dir.join("final_vi.mp4");
         fs::write(&video, b"video").unwrap();
+        fs::write(dir.join("job_manifest.json"), json!({"source": {"path": "C:/clip.mp4"}}).to_string()).unwrap();
         let path = crate::display_path(&video);
         let project = json!({"schema_version": 1, "duration": 10.0, "segments": [{"id": "s1", "start": 0, "end": 10, "speed": 1, "volume": 1}]});
         edit_project_save(path.clone(), project.clone()).unwrap();
@@ -2223,6 +2231,18 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         fs::create_dir_all(outside.parent().unwrap()).unwrap();
         fs::write(&outside, b"video").unwrap();
         assert!(as_file(&outside), "only DubFlow results are jobs");
+        // A user's own folder named like DubFlow's: final_vi.mp4 there is a file, its draft never beside it.
+        let personal = base.join("Videos/DubFlow Output/Personal");
+        fs::create_dir_all(&personal).unwrap();
+        fs::write(personal.join("final_vi.mp4"), b"video").unwrap();
+        assert!(dubflow_target(&personal.join("final_vi.mp4").canonicalize().unwrap()).is_none());
+        let store = base.join("store");
+        let target = file_target(&crate::display_path(&personal.join("final_vi.mp4")), &store).unwrap();
+        assert!(target.kind == Kind::File && target.work.starts_with(&store));
+        fs::write(personal.join("job_manifest.json"), b"not json").unwrap();
+        assert!(dubflow_target(&personal.join("final_vi.mp4").canonicalize().unwrap()).is_none(), "a manifest must be the worker's");
+        assert!(!personal.join(".dubflow-work").exists(), "nothing written beside the user's video");
+        assert_eq!(dubflow_target(&video.canonicalize().unwrap()).map(|target| target.kind), Some(Kind::Job), "a recorded job stays a job");
 
         let work = dir.join(".dubflow-work/edit");
         let exported = base.join("Phim (sửa 1).mp4");

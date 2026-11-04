@@ -220,6 +220,14 @@ export function outputToSource(edit: Edit, t: number): SourcePoint | null {
  * Output time of a time in one media: inside the preferred segment when it
  * holds that time (segments may share ranges), else the first that does.
  */
+/**
+ * Where an edit opens: a queue video from its player's time (the player
+ * showed that video), any other video at its beginning (Issue #497).
+ */
+export function openingTime(kind: string, edit: Edit, playerTime: number | null): number {
+  return kind === "job" && playerTime !== null ? sourceToOutput(edit, playerTime) ?? 0 : 0;
+}
+
 export function sourceToOutput(edit: Edit, sourceTime: number, preferredIndex = -1, mediaId = MAIN): number | null {
   const starts = outputStarts(edit);
   const at = (index: number): number => starts[index] + (sourceTime - edit.segments[index].start) / edit.segments[index].speed;

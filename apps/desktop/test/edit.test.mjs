@@ -4,7 +4,7 @@ import {
   formatSpeed, HISTORY_LIMIT, insertAt, isUnchanged, matchesExport, moveOverlay, outputDuration, outputStarts, outputToSource,
   overlayHeight, overlayLength, overlayPreset, overlayPresetOf, parseClock, parseProject, remapCues, remove, removeOverlay,
   resizeOverlay, retargetEdit, sameEdit, sameSegments, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume,
-  sourceToOutput, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
+  sourceToOutput, openingTime, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
 } from "../src/features/edit/model.ts";
 
 const close = (actual, expected, message, tolerance = 1e-6) => assert.ok(Math.abs(actual - expected) < tolerance, `${message ?? ""} ${actual} != ${expected}`);
@@ -439,3 +439,8 @@ assert.equal(loose.edit.overlays.length, 1, "a bad overlay is dropped");
 }
 
 console.log("edit tests passed");
+
+// Opening: a queue video goes on from its player's time; another video starts at 0 (Issue #497).
+close(openingTime("job", createEdit(100), 45), 45);
+assert.equal(openingTime("job", createEdit(100), null), 0);
+for (const kind of ["file", "product", "compilation", "docu"]) assert.equal(openingTime(kind, createEdit(100), 45), 0, kind);
