@@ -1064,7 +1064,17 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     fs::write(&partial, bytes).and_then(|()| fs::rename(&partial, path))
 }
 
+/// A work folder still in place: neither it nor its parent became a link
+/// (checked again before every write made while a render runs).
+fn unlinked(work: &Path) -> bool {
+    [Some(work), work.parent()].into_iter().flatten()
+        .all(|dir| fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)))
+}
+
 fn write_status(work: &Path, state: &str, percent: f64, message: &str, output: Option<&Path>) {
+    if !unlinked(work) {
+        return;
+    }
     let value = json!({"schema_version": 1, "state": state, "percent": percent.clamp(0.0, 100.0).floor(), "message": message,
         "output_path": output.map(display_path)});
     let _ = write_atomic(&work.join("status.json"), &serde_json::to_vec(&value).unwrap_or_default());
@@ -1080,6 +1090,9 @@ fn read_exports(work: &Path) -> Vec<Value> {
 }
 
 fn append_export(work: &Path, entry: Value) {
+    if !unlinked(work) {
+        return;
+    }
     let mut exports = read_exports(work);
     exports.push(entry);
     let start = exports.len().saturating_sub(EXPORTS_KEPT);
@@ -1743,7 +1756,7 @@ fn progress_percent(out_time_us: i64, seconds: f64) -> f64 {
 fn encode(job: &ExportJob, encoder: &str, running: &Running) -> Result<(), String> {
     let partial = partial_of(&job.target);
     let log_path = job.work.join("ffmpeg.log");
-    let log = fs::File::create(&log_path).map(Stdio::from).unwrap_or_else(|_| Stdio::null());
+    let log = unlinked(&job.work).then(|| fs::File::create(&log_path).ok()).flatten().map_or_else(Stdio::null, Stdio::from);
     let mut command = Command::new(&job.ffmpeg);
     command.args(ffmpeg_args(&job.inputs, &job.script, job.has_audio, encoder, job.bitrate, &job.fps, &partial))
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log);
@@ -2435,6 +2448,9 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         link_dir(&outside, &child);
         assert!(save_draft(&opened, project).is_err());
         assert!(opened.confined().is_err(), "status and cancel writes are refused too");
+        write_status(&opened.work, "FAILED", 0.0, "x", None);
+        append_export(&opened.work, json!({"path": "x"}));
+        assert!(!outside.join("status.json").exists() && !outside.join("exports.json").exists(), "a render's own writes are refused");
         unlink_dir(&child);
         assert_eq!(state(&outside), outside_before, "nothing outside the store changed");
         assert_eq!(state(&source), source_before, "nothing beside the video changed");
