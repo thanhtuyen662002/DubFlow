@@ -11,6 +11,8 @@ Each scene's slot (its narration plus the pause after it) is filled with
   interleaving); two consecutive slices from one source are at least 8 s apart
   in that source, so the cut never jumps within one shot;
 * no source range is used twice in the project;
+* footage showing big burned-in text (a Chinese title card, a giant number)
+  is left out; it is used again only when nothing else can fill the slot;
 * a portrait (phone) source keeps only a strip in 16:9: its footage ranks as
   uncited and after any landscape footage of the same rank;
 * a slice starts on a shot boundary when one is available and ends on a cut
@@ -47,6 +49,8 @@ class Source:
     cuts: tuple[float, ...]
     # A phone video: 16:9 keeps only a strip of it, so it is the last resort.
     portrait: bool = False
+    # Stretches showing big burned-in text (a title card, a giant number): left out unless nothing else fits.
+    text: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -171,7 +175,8 @@ def plan(scenes: Sequence[Scene], sources: Iterable[Source]) -> list[tuple[Scene
             length = lengths(remaining, scene.max_slice)[0]
             minimum = shortest(scene.max_slice)
             choice = _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=False, scene=scene) \
-                or _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=True, scene=scene)
+                or _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=True, scene=scene) \
+                or _choose(candidates, by_id, used, previous, length, remaining, minimum, reuse=True, scene=scene, text_ok=True)
             if choice is None:
                 raise ValueError(f"no footage long enough for {scene.scene_id}")
             tier, source_id, start, end = choice
@@ -187,7 +192,7 @@ def plan(scenes: Sequence[Scene], sources: Iterable[Source]) -> list[tuple[Scene
 
 
 def _choose(candidates, sources: dict[str, Source], used: _Used, previous: Slice | None, length: float, remaining: float,
-            minimum: float, *, reuse: bool, scene: Scene) -> tuple[int, str, float, float] | None:
+            minimum: float, *, reuse: bool, scene: Scene, text_ok: bool = False) -> tuple[int, str, float, float] | None:
     best: tuple | None = None
     for tier, order, source_id, wanted in candidates:
         source = sources[source_id]
@@ -200,6 +205,8 @@ def _choose(candidates, sources: dict[str, Source], used: _Used, previous: Slice
         if end - start > remaining or (remaining - (end - start) < minimum - EPSILON and end - start != remaining):
             end = start + length
         if not reuse and used.overlaps(source_id, start, end):
+            continue
+        if not text_ok and any(start < b and end > a for a, b in source.text):
             continue
         same = previous is not None and previous.source_id == source_id
         if same and (start < previous.end + SAME_SOURCE_GAP and end > previous.start - SAME_SOURCE_GAP):

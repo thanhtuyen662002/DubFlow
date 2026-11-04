@@ -131,28 +131,49 @@ def scan_band(video: Path, *, duration: float, speech: Iterable[tuple[float, flo
     return band, size
 
 
-LOGO_RECIPE = "fixed-text-full-frame-v1"
+LOGO_RECIPE = "fixed-text-full-frame-v2"
+# Around each sample with big text (samples are 2 s apart), how much footage to leave out.
+TEXT_PAD = 1.2
 LOGO_PAD = 0.012
 
 
 def scan_logos(video: Path, *, duration: float, cache: Path, scanner: Callable[[], Any],
                identity: dict[str, Any]) -> list[list[float]]:
     """Channel logos and watermarks burned into a source, as padded [x, y, w, h] frame fractions; scanned once."""
+    return scan_frame_text(video, duration=duration, cache=cache, scanner=scanner, identity=identity)[0]
+
+
+def text_spans(times: Sequence[float], duration: float, pad: float = TEXT_PAD) -> list[list[float]]:
+    """Merged [start, end] stretches around the sample times that showed big text."""
+    spans: list[list[float]] = []
+    for time_s in sorted(times):
+        start, end = max(0.0, time_s - pad), min(duration, time_s + pad)
+        if spans and start <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([start, end])
+    return [[round(a, 3), round(b, 3)] for a, b in spans]
+
+
+def scan_frame_text(video: Path, *, duration: float, cache: Path, scanner: Callable[[], Any],
+                    identity: dict[str, Any]) -> tuple[list[list[float]], list[list[float]]]:
+    """Logos (padded boxes) and the stretches showing big burned-in text, scanned once per source."""
     identity = {**identity, "logos": LOGO_RECIPE}
     try:
         saved = json.loads(cache.read_text(encoding="utf-8"))
-        if saved.get("identity") == identity and isinstance(saved.get("logos"), list):
-            return saved["logos"]
+        if saved.get("identity") == identity and isinstance(saved.get("logos"), list) and isinstance(saved.get("text_spans"), list):
+            return saved["logos"], saved["text_spans"]
     except (OSError, ValueError, TypeError):
         pass
-    boxes = scanner().scan_fixed(video, duration_s=duration)
+    boxes, times = scanner().scan_frame_text(video, duration_s=duration)
     logos = []
     for box in boxes:
         x, y = max(0.0, box.x - LOGO_PAD), max(0.0, box.y - LOGO_PAD)
         right, bottom = min(1.0, box.x + box.w + LOGO_PAD), min(1.0, box.y + box.h + LOGO_PAD)
         logos.append([round(x, 4), round(y, 4), round(right - x, 4), round(bottom - y, 4)])
-    write_json(cache, {"schema_version": 1, "identity": identity, "logos": logos})
-    return logos
+    spans = text_spans(times, duration)
+    write_json(cache, {"schema_version": 2, "identity": identity, "logos": logos, "text_spans": spans})
+    return logos, spans
 
 
 def is_portrait(size: Sequence[int] | None) -> bool:

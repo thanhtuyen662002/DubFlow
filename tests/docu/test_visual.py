@@ -63,9 +63,9 @@ class SafeZoneTests(unittest.TestCase):
         class Scanner:
             calls = 0
 
-            def scan_fixed(self, video, duration_s):
+            def scan_frame_text(self, video, duration_s):
                 Scanner.calls += 1
-                return [TextBox(0.055, 0.694, 0.128, 0.094), TextBox(0.99, 0.0, 0.01, 0.02)]
+                return [TextBox(0.055, 0.694, 0.128, 0.094), TextBox(0.99, 0.0, 0.01, 0.02)], [2.0, 4.0, 9.0]
 
         with TemporaryDirectory() as temp:
             cache = Path(temp) / "logos.json"
@@ -188,6 +188,16 @@ class MatcherTests(unittest.TestCase):
         self.assertTrue(any(piece.tier >= matcher.SAME_SOURCES for piece in pieces))
         self.assertTrue(all(abs(piece.start - 202) < 40 for piece in pieces), [piece.start for piece in pieces])
 
+    def test_footage_with_big_text_is_left_out(self):
+        # Oscar, 2026-11-04: cuts showing big Chinese text should not be used.
+        titled = matcher.Source("src_01", 120.0, tuple(float(t) for t in range(5, 120, 5)), text=((8.0, 22.0),))
+        scene = matcher.Scene("sc_001", 0, 12.0, (matcher.Ref("src_01", 5, 30),))
+        pieces = matcher.plan([scene], [titled])[0][1]
+        self.assertTrue(all(piece.end <= 8.0 or piece.start >= 22.0 for piece in pieces), [(p.start, p.end) for p in pieces])
+        # Nothing else at all: the text footage still fills the slot rather than failing the plan.
+        tiny = matcher.Source("src_01", 6.0, (), text=((0.0, 6.0),))
+        self.assertTrue(matcher.plan([matcher.Scene("sc_001", 0, 4.0, ())], [tiny])[0][1])
+
     def test_a_portrait_source_is_the_last_resort(self):
         phone = matcher.Source("src_03", 120.0, tuple(float(t) for t in range(5, 120, 5)), portrait=True)
         scenes = [matcher.Scene("sc_001", 0, 12.0, (matcher.Ref("src_03", 10, 40), matcher.Ref("src_01", 10, 30)))]
@@ -238,7 +248,7 @@ class VisualRunTests(unittest.TestCase):
             self.assertEqual([s["scene_id"] for s in plan["scenes"]], ["sc_001", "sc_002"])
             self.assertEqual(plan["scenes"][0]["start"], 0.0, "the picture starts with the film")
             self.assertEqual(plan["sources"][0]["framing"], {"band": None, "zoom": 1.0, "shift": 0.0, "letterbox": 0.1217, "clear": True,
-                                                             "frame_size": None, "portrait": False, "logos": []})
+                                                             "frame_size": None, "portrait": False, "logos": [], "text_spans": []})
             self.assertAlmostEqual(sum(s["duration"] for scene in plan["scenes"] for s in scene["slices"]), 9.0, places=2)
 
 
