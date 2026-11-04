@@ -218,7 +218,9 @@ jobs:
         shell: pwsh
         run: |
           python scripts/validate_governance.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release governance validation failed' }
           python -m unittest discover -s tests/release -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Release tests failed' }
           $args = @(
             '-m', 'packaging.release.builder',
             '--source-root', '.',

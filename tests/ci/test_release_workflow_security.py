@@ -191,6 +191,21 @@ class ReleaseWorkflowSecurityTests(unittest.TestCase):
         self.assertIs(evaluate(guard, SCENARIOS["main-stable"]), True)
         self.assertTrue(any("throw" in line for line in first))
 
+    def test_release_validation_fails_closed_before_qualification_build(self) -> None:
+        """A failed native check must stop the step before the next command can reset the exit code."""
+        block = self.steps["build"]["Validate release source and build qualification bundle"]
+        lines = [line.strip() for line in block]
+        guard = "if ($LASTEXITCODE -ne 0) { throw "
+        build = lines.index("python @args")
+        for command in ("python scripts/validate_governance.py",
+                        "python -m unittest discover -s tests/release -p 'test_*.py'"):
+            self.assertEqual(lines.count(command), 1, command)
+            at = lines.index(command)
+            self.assertTrue(lines[at + 1].startswith(guard), f"{command} is not followed by an exit-code guard")
+            self.assertLess(at + 1, build, command)
+        self.assertLess(lines.index("python scripts/validate_governance.py"),
+                        lines.index("python -m unittest discover -s tests/release -p 'test_*.py'"))
+
 
 if __name__ == "__main__":
     unittest.main()

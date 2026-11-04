@@ -1,0 +1,80 @@
+name: PR Release Windows
+
+# Read-only Windows lane for the release test suite (#416). It runs no
+# secrets, signing, tagging, upload or publish step. The push trigger only
+# bootstraps the lane on its own task branch before the file exists on Main.
+on:
+  push:
+    branches: [agent/issue-416-release-tests-fail-closed]
+    paths:
+      - .github/workflows/pr-release-windows.yml
+      - .github/workflows/release.yml
+      - packaging/release/**
+      - scripts/release/**
+      - tests/release/**
+      - tests/ci/test_release_workflow_security.py
+  pull_request:
+    paths:
+      - .github/workflows/pr-release-windows.yml
+      - .github/workflows/release.yml
+      - packaging/release/**
+      - scripts/release/**
+      - tests/release/**
+      - tests/ci/test_release_workflow_security.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-release-windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-tests-windows:
+    name: release-tests-windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.10"
+
+      - name: Record source and runner
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to read checked-out source SHA' }
+          if ($head -ne $env:SOURCE_SHA) { throw "Checked out $head, expected $env:SOURCE_SHA" }
+          Write-Host "Source SHA: $head"
+          Write-Host "Runner: $env:ImageOS $env:ImageVersion ($([System.Environment]::OSVersion.VersionString))"
+          python --version
+          if ($LASTEXITCODE -ne 0) { throw 'Python is not available' }
+
+      - name: Check release workflow fail-closed guards
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests/ci -p 'test_release_workflow_security.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'Release workflow security tests failed' }
+
+      - name: Run full release test suite
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'release-tests.log'
+          python -m unittest discover -s tests/release -p 'test_*.py' -v 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Release tests failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          $ran = [regex]::Match($text, '(?m)^Ran (\d+) tests? in ')
+          if (-not $ran.Success) { throw 'Release test count was not reported' }
+          Write-Host "Release tests run: $($ran.Groups[1].Value)"
+          $interrupted = '(?m)^test_interrupted_copy_reuses_verified_files_missing_from_locked_snapshot \(.*\) \.\.\. ok\s*$'
+          if ($text -notmatch $interrupted) {
+            throw 'Interrupted-copy regression did not run as ok (missing, skipped or failed)'
+          }
+          Write-Host 'Interrupted-copy regression: ok'
