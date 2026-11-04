@@ -4,7 +4,7 @@ import {
   formatSpeed, HISTORY_LIMIT, insertAt, isUnchanged, matchesExport, moveOverlay, outputDuration, outputStarts, outputToSource,
   overlayHeight, overlayLength, overlayPreset, overlayPresetOf, parseClock, parseProject, remapCues, remove, removeOverlay,
   resizeOverlay, retargetEdit, sameEdit, sameSegments, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume,
-  sourceToOutput, openingTime, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
+  sourceToOutput, openingTime, resolveTarget, modeOffered, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
 } from "../src/features/edit/model.ts";
 
 const close = (actual, expected, message, tolerance = 1e-6) => assert.ok(Math.abs(actual - expected) < tolerance, `${message ?? ""} ${actual} != ${expected}`);
@@ -444,3 +444,23 @@ console.log("edit tests passed");
 close(openingTime("job", createEdit(100), 45), 45);
 assert.equal(openingTime("job", createEdit(100), null), 0);
 for (const kind of ["file", "product", "compilation", "docu"]) assert.equal(openingTime(kind, createEdit(100), 45), 0, kind);
+
+// The host's kind wins (Issue #497): a run DubFlow kept no record of opens as a plain file.
+const seed = (edit) => edit;
+for (const kind of ["product", "compilation", "docu", "job"]) {
+  const requested = { id: "D:\\v.mp4", kind, outputPath: "D:\\v.mp4", displayName: "Video", seed, job: kind === "job" ? { id: "j" } : undefined };
+  const opened = resolveTarget(requested, "file");
+  assert.equal(opened.kind, "file", kind);
+  assert.equal(opened.seed, undefined, `${kind}: no documentary first draft`);
+  assert.equal(opened.job, undefined, `${kind}: no queue job`);
+  assert.equal(opened.displayName, "Video");
+  for (const mode of ["template", "subs", "cover"]) assert.equal(modeOffered(mode, opened.kind, true), false, `${kind} as a file: no ${mode}`);
+  for (const mode of ["cut", "insert", "audio", "text"]) assert.equal(modeOffered(mode, opened.kind, false), true, `${kind} as a file: ${mode}`);
+  // A recorded run keeps its kind.
+  assert.equal(resolveTarget(requested, kind), requested);
+}
+assert.equal(modeOffered("template", "product", false), true);
+assert.equal(modeOffered("subs", "job", true), true);
+assert.equal(modeOffered("subs", "job", false), false);
+assert.equal(modeOffered("subs", "docu", true), false);
+console.log("edit target tests passed");

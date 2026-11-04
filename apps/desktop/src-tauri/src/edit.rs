@@ -324,6 +324,11 @@ fn recorded(data: &Path, target: &Target) -> bool {
 
 const MAX_JOB_RECORDS: usize = 5000;
 
+/// `recorded_job` in DubFlow's own data root.
+pub(crate) fn recorded_job_output(video: &Path) -> bool {
+    crate::control_root().is_ok_and(|data| recorded_job(&data, video))
+}
+
 /// A queue job the supervisor finished with `video` as its output: its status
 /// file `<data root>\control\jobs\<id>.json` names it.
 fn recorded_job(data: &Path, video: &Path) -> bool {
@@ -1452,7 +1457,7 @@ fn read_cover(dir: &Path) -> Option<CoverChoice> {
 /// rectangles the render covered.
 #[tauri::command]
 pub fn edit_subtitles_load(output_path: String) -> Result<Value, String> {
-    let dir = crate::review_dir(&output_path)?;
+    let dir = crate::job_review_dir(&output_path)?;
     let cues = crate::review_cues(output_path)?;
     let manifest = crate::read_json(&dir.join("job_manifest.json"), 16 * 1024 * 1024).unwrap_or_else(|_| json!({}));
     let source = manifest["source"]["path"].as_str().map(PathBuf::from)
@@ -1479,7 +1484,7 @@ pub fn edit_subtitles_load(output_path: String) -> Result<Value, String> {
 pub fn edit_subtitles_apply(output_path: String, overrides: std::collections::BTreeMap<String, String>,
     voice: std::collections::BTreeMap<String, String>, revoice: Vec<String>, subtitle_style: SubtitleStyle,
     cover: Option<CoverChoice>) -> Result<String, String> {
-    let dir = crate::review_dir(&output_path)?;
+    let dir = crate::job_review_dir(&output_path)?;
     subtitle_style.validate()?;
     if let Some(cover) = &cover {
         cover.validate()?;
@@ -2478,6 +2483,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
             "segments": [{"id": "s1", "mediaId": "main", "start": 0, "end": 4, "speed": 1, "volume": 1}]}).to_string()).unwrap();
         let dir = PathBuf::from(crate::display_path(&fs::canonicalize(&dir).unwrap()));
         let output = crate::display_path(&dir.join("final_vi.mp4"));
+        let mut records = vec![crate::record_test_job(&dir.join("final_vi.mp4"))];
 
         let loaded = edit_subtitles_load(output.clone()).unwrap();
         assert_eq!(loaded["cues"].as_array().unwrap().len(), 2);
@@ -2517,6 +2523,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert!(read_subtitle_style(&dir).is_none(), "the original is untouched");
         // The new version's lines report what their voices speak.
         fs::write(revision.join("final_vi.mp4"), "video").unwrap();
+        records.push(crate::record_test_job(&revision.join("final_vi.mp4")));
         let again = edit_subtitles_load(crate::display_path(&revision.join("final_vi.mp4"))).unwrap();
         assert_eq!((again["cues"][0]["text"].as_str(), again["cues"][0]["voice_text"].as_str()), (Some("Xin chào"), Some("Chào")));
         assert_eq!(again["style"]["font"], "Candara");
@@ -2526,6 +2533,9 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let written: Value = serde_json::from_slice(&fs::read(revision.join(COVER_FILE)).unwrap()).unwrap();
         assert_eq!(written["schema_version"], 1);
         assert!(read_cover(&dir).is_none(), "the original keeps its cover");
+        for record in records {
+            let _ = fs::remove_file(record);
+        }
         fs::remove_dir_all(base).unwrap();
     }
 

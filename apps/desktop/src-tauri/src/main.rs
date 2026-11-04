@@ -826,6 +826,29 @@ fn review_dir(output_path: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// `review_dir` of a dubbing job the supervisor finished: its status in
+/// `<data root>\control\jobs` names this video. Only such a video is revised
+/// into a sibling "(sửa N)" folder or opened in Phụ đề / Che; a user's folder
+/// merely shaped like a job's (Issue #497) is refused.
+fn job_review_dir(output_path: &str) -> Result<PathBuf, String> {
+    let dir = review_dir(output_path)?;
+    if !edit::recorded_job_output(&output_file(output_path)?) {
+        return Err(fail("Chỉ sửa được video của một việc lồng tiếng DubFlow đã hoàn tất"));
+    }
+    Ok(dir)
+}
+
+/// Tests: the supervisor's completed record of `video`, as a finished job leaves it.
+#[cfg(test)]
+pub(crate) fn record_test_job(video: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let key: String = Sha256::digest(display_path(video).as_bytes()).iter().take(8).map(|byte| format!("{byte:02x}")).collect();
+    let record = control_root().unwrap().join("control").join("jobs").join(format!("test-{key}.json"));
+    fs::write(&record, json!({"schema_version": 1, "job_id": format!("test-{key}"), "status": {"state": "COMPLETED"},
+        "output_path": display_path(video)}).to_string()).unwrap();
+    record
+}
+
 fn read_json(path: &Path, limit: u64) -> Result<Value, String> {
     if fs::metadata(path).map_err(|error| fail(format!("{}: {error}", path.display())))?.len() > limit {
         return Err(fail(format!("{} is too large", path.display())));
@@ -1151,7 +1174,7 @@ fn move_into_reserved(partial: &Path, target: &Path) -> std::io::Result<()> {
 /// it; the caller re-runs the job there. An empty map re-runs the machine text.
 #[tauri::command]
 fn save_review(output_path: String, overrides: std::collections::BTreeMap<String, String>) -> Result<String, String> {
-    let dir = review_dir(&output_path)?;
+    let dir = job_review_dir(&output_path)?;
     check_review_texts(&overrides)?;
     Ok(display_path(&create_revision(&dir, &overrides)?))
 }
@@ -2119,6 +2142,7 @@ mod tests {
         let before = snapshot(&original);
         let output = original.join("final_vi.mp4").to_string_lossy().into_owned();
         let overrides = std::collections::BTreeMap::from([("c1".to_owned(), "Xin chào".to_owned())]);
+        let mut records = vec![record_test_job(&original.join("final_vi.mp4"))];
         // A user's folder that happens to look like an old temporary name must survive every save.
         for stale in ["clip - vi (sửa 1).partial", "clip - vi (sửa 2).partial"] {
             fs::create_dir_all(root.join(stale)).unwrap();
@@ -2154,6 +2178,7 @@ mod tests {
         assert_eq!(PathBuf::from(save_review(output.clone(), std::collections::BTreeMap::new()).unwrap()), root.join("clip - vi (sửa 2)"));
         assert!(!root.join("clip - vi (sửa 2)").join(OVERRIDES_FILE).exists());
         fs::write(first.join("final_vi.mp4"), "revised").unwrap();
+        records.push(record_test_job(&first.join("final_vi.mp4")));
         let again = save_review(first.join("final_vi.mp4").to_string_lossy().into_owned(), overrides.clone()).unwrap();
         assert_eq!(PathBuf::from(again), root.join("clip - vi (sửa 3)"), "a revision of a revision stays a sibling");
         assert!(sentinels_intact(), "pre-existing .partial folders are never removed");
@@ -2201,12 +2226,53 @@ mod tests {
         }
         assert_eq!(snapshot(&original), before, "the original outputs are still byte-identical");
         assert!(sentinels_intact() && temporaries_left() == 0);
+        for record in records {
+            let _ = fs::remove_file(record);
+        }
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
 
         assert_eq!(revision_base("clip - vi (sửa 12)"), "clip - vi");
         for name in ["clip - vi", "clip (sửa )", "clip (sửa x)", "clip (sửa 1) extra", "(sửa 1)x"] {
             assert_eq!(revision_base(name), name);
         }
+    }
+
+    /// A user's own `DubFlow Output` folder shaped like a job's, translation
+    /// data included, is never revised: no sibling folder, nothing changed.
+    #[test]
+    fn review_saves_need_the_supervisors_record_of_a_finished_job() {
+        let base = std::env::temp_dir().join(format!("dubflow-review-fake-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let personal = base.join("Videos/DubFlow Output/Personal");
+        let files = [("final_vi.mp4", "video"), ("job_manifest.json", "{\"source\": {\"path\": \"C:/clip.mp4\"}}"),
+            (".dubflow-work/translation.json", "{\"cues\": [{\"cue_id\": \"c1\", \"text\": \"a\"}]}"), (".dubflow-work/checkpoint.json", "{}"),
+            ("marker.txt", "keep")];
+        for (path, body) in files {
+            fs::create_dir_all(personal.join(path).parent().unwrap()).unwrap();
+            fs::write(personal.join(path), body).unwrap();
+        }
+        let personal = PathBuf::from(display_path(&personal.canonicalize().unwrap()));
+        let state = |dir: &Path| files.map(|(path, _)| (fs::read(dir.join(path)).ok(), fs::metadata(dir.join(path)).and_then(|m| m.modified()).ok()));
+        let listing = || { let mut names: Vec<_> = fs::read_dir(personal.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect(); names.sort(); names };
+        let (before, names) = (state(&personal), listing());
+        let output = display_path(&personal.join("final_vi.mp4"));
+        let overrides = std::collections::BTreeMap::from([("c1".to_owned(), "Xin chào".to_owned())]);
+        assert!(save_review(output.clone(), overrides.clone()).is_err());
+        assert!(edit::edit_subtitles_load(output.clone()).is_err());
+        assert!(edit::edit_subtitles_apply(output.clone(), overrides.clone(), Default::default(), vec![], serde_json::from_value(json!({"font": "Candara", "size": 1.2,
+            "primary": "#FDE047", "outline": "#000000", "box": null, "box_opacity": 0.6, "outline_width": 3, "bold": true, "align": "bottom"})).unwrap(), None).is_err());
+        // An adjacent status naming the video is the user's file, not the app's record.
+        fs::write(personal.join("job.json"), json!({"status": {"state": "COMPLETED"}, "output_path": output}).to_string()).unwrap();
+        assert!(save_review(output.clone(), overrides.clone()).is_err());
+        fs::remove_file(personal.join("job.json")).unwrap();
+        assert_eq!(listing(), names, "no sibling (sửa N) folder");
+        assert_eq!(state(&personal), before, "the user's files are byte- and time-identical");
+        // Once the supervisor recorded it as a finished job, it is revised as usual.
+        let record = record_test_job(&personal.join("final_vi.mp4"));
+        let revision = PathBuf::from(save_review(output.clone(), overrides).unwrap());
+        assert_eq!(revision, personal.parent().unwrap().join("Personal (sửa 1)"));
+        let _ = fs::remove_file(record);
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

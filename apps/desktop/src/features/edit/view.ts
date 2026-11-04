@@ -16,7 +16,7 @@ import {
   formatClock, formatSpeed, insertAt, isUnchanged, MAIN, mainLevel, MAX_MEDIA, MAX_OVERLAYS, MAX_SEGMENTS, matchesExport, MIN_SEGMENT,
   MIN_TRANSITION, mediaOf, moveOverlay, outputDuration, outputStarts, outputToSource, overlayHeight, overlayLength,
   overlayPreset, overlayPresetOf, parseClock, parseProject, RECENT_LIMIT, remapCues, remove, removeOverlay, resizeOverlay,
-  samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput, openingTime,
+  samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput, openingTime, resolveTarget, modeOffered,
   SPEED_PRESETS, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
@@ -1051,9 +1051,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   /** The modes this video has: Mẫu for Bán hàng videos, Phụ đề and Che for dubbing jobs. */
   function offered(next: Mode): boolean {
-    if (next === "template") return session?.target.kind === "product";
-    if (next === "subs" || next === "cover") return !!session?.reviewable;
-    return true;
+    return !!session && modeOffered(next, session.target.kind, session.reviewable);
   }
 
   function renderModes(): void {
@@ -1897,9 +1895,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       ]);
       // The queue selection moved on while a queue video was opening.
       if (ticket !== openTicket || (target.kind === "job" && listJob?.id !== target.id)) return false;
-      const info = { path: outputPath, title: target.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
+      const opened = resolveTarget(target, loaded.kind);
+      const info = { path: outputPath, title: opened.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
       const project = parseProject(loaded.project, loaded.duration, info);
-      const edit = project?.edit ?? (target.seed ?? ((fresh: Edit) => fresh))(createEdit(loaded.duration, info));
+      const edit = project?.edit ?? (opened.seed ?? ((fresh: Edit) => fresh))(createEdit(loaded.duration, info));
       const last = status?.exports.at(-1);
       // Exported in the background after the draft was saved: nothing is pending.
       const changes = last?.segments && matchesExport(edit, last) ? 0 : project?.changes ?? 0;
@@ -1907,10 +1906,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (status) listStatus = status;
       // A queue video goes on from where its player was; any other video starts at its beginning
       // (the shared player may still hold another video's time).
-      const start = openingTime(target.kind, edit, video.readyState >= 1 ? video.currentTime : null);
+      const start = openingTime(opened.kind, edit, video.readyState >= 1 ? video.currentTime : null);
       if (!video.paused) video.pause();
       session = {
-        target, reviewable: target.kind === "job" && !!target.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
+        target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
         outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [],
       };
@@ -1919,12 +1918,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       library = [];
       zoom.value = "0";
       cover.begin();
-      if (session.reviewable && target.job) subs.begin(target.job, outputPath);
+      if (session.reviewable && opened.job) subs.begin(opened.job, outputPath);
       audio.begin();
       textMode.begin();
-      templateMode.begin(target);
+      templateMode.begin(opened);
       // A Bán hàng video opens on its template; modes it does not have fall back to Cắt ghép.
-      if (target.kind === "product") mode = "template";
+      if (opened.kind === "product") mode = "template";
       if (!offered(mode)) mode = "cut";
       $("#edit-save-state").textContent = "";
       $("#edit-hint").textContent = "";
