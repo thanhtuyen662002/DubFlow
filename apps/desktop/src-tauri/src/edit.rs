@@ -272,6 +272,15 @@ impl Target {
         }
     }
 
+    /// The draft folder, ready to write in: a file's is checked (and made
+    /// without following any link); a DubFlow run's is made as before.
+    fn prepare(&self) -> Result<(), String> {
+        if self.store.is_some() {
+            return self.confined();
+        }
+        fs::create_dir_all(&self.work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))
+    }
+
     fn kind_name(&self) -> &'static str {
         match self.kind { Kind::Job => "job", Kind::Product(_) => "product", Kind::Compilation => "compilation", Kind::Docu => "docu", Kind::File => "file" }
     }
@@ -287,8 +296,11 @@ fn edit_target(output_path: &str, kind: &str) -> Result<Target, String> {
     resolve_target(output_path, kind, &crate::control_root()?)
 }
 
+/// Where files' drafts live, below the data root.
+const FILE_STORE: &str = "edit-files";
+
 fn resolve_target(output_path: &str, kind: &str, data: &Path) -> Result<Target, String> {
-    let store = data.join("edit-files");
+    let store = data.join(FILE_STORE);
     match kind {
         "file" => return file_target(output_path, &store),
         "job" | "product" | "compilation" | "docu" => {}
@@ -1064,11 +1076,20 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     fs::write(&partial, bytes).and_then(|()| fs::rename(&partial, path))
 }
 
-/// A work folder still in place: neither it nor its parent became a link
-/// (checked again before every write made while a render runs).
+/// A work folder still in place, checked before every write made while a
+/// render runs: a file's draft folder still confined to the app's store
+/// (`confined_work`); any other neither a link nor inside one.
 fn unlinked(work: &Path) -> bool {
+    if let Some(store) = work.parent().filter(|store| store.file_name().is_some_and(|name| name == FILE_STORE)) {
+        return confined_work(store, work).is_ok();
+    }
     [Some(work), work.parent()].into_iter().flatten()
         .all(|dir| fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)))
+}
+
+/// `unlinked`, as an error to stop on.
+fn guarded(work: &Path) -> Result<(), String> {
+    if unlinked(work) { Ok(()) } else { Err(fail("Thư mục bản nháp của DubFlow không an toàn (là liên kết); hãy xóa nó rồi thử lại")) }
 }
 
 fn write_status(work: &Path, state: &str, percent: f64, message: &str, output: Option<&Path>) {
@@ -1709,8 +1730,7 @@ pub fn edit_project_save(output_path: String, kind: String, project: Value) -> R
 }
 
 fn save_draft(target: &Target, bytes: &[u8]) -> Result<(), String> {
-    fs::create_dir_all(&target.work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))?;
-    target.confined()?;
+    target.prepare()?;
     write_atomic(&target.work.join("project.json"), bytes).map_err(|_| fail("Không lưu được bản nháp chỉnh sửa"))
 }
 
@@ -1903,11 +1923,11 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         return Err(fail("Video này đang được xuất"));
     }
     let work = target.work.clone();
-    fs::create_dir_all(&work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))?;
-    target.confined()?;
+    target.prepare()?;
     let lease = crate::work_lease::take(&work, BUSY)?;
     let cancel = work.join("cancel");
     if cancel.exists() {
+        guarded(&work)?;
         fs::remove_file(cancel).map_err(|_| fail("Không xóa được yêu cầu hủy cũ"))?;
     }
     let target = unique_target(&folder, &name)?;
@@ -1920,11 +1940,13 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         None
     } else {
         let file = work.join(TEXTS_FILE);
+        guarded(&work)?;
         fs::write(&file, texts_ass(&texts, width, height)).map_err(|_| fail("Không ghi được lớp chữ"))?;
         Some(subtitles_filter(&display_path(&file)))
     };
     let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix, layer.as_deref());
     inputs.extend(sound_inputs);
+    guarded(&work)?;
     fs::write(&script, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
     let job = ExportJob {
         work: work.clone(), inputs, media: request.media, script, folder, name, target: target.clone(),
@@ -2451,6 +2473,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         write_status(&opened.work, "FAILED", 0.0, "x", None);
         append_export(&opened.work, json!({"path": "x"}));
         assert!(!outside.join("status.json").exists() && !outside.join("exports.json").exists(), "a render's own writes are refused");
+        assert!(guarded(&opened.work).is_err() && opened.prepare().is_err(), "an export does not start");
         unlink_dir(&child);
         assert_eq!(state(&outside), outside_before, "nothing outside the store changed");
         assert_eq!(state(&source), source_before, "nothing beside the video changed");
