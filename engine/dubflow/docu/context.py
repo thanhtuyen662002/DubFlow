@@ -91,9 +91,11 @@ def build(source: Source, duration_ms: int) -> dict[str, Any]:
              if start < duration_ms]
     width = max(3, len(str(len(lines))))
     segments = []
+    previous = ""
     for index, (start, end, text) in enumerate(lines, 1):
-        quantities = [units.describe(quantity) for quantity in units.extract(text)
+        quantities = [units.describe(quantity) for quantity in units.extract_after(previous, text)
                       if quantity.dimension not in {"count", "year"} or quantity.value >= 10]
+        previous = text
         segments.append({"seg_id": f"{source.id}_seg_{index:0{width}d}", "start": start / 1000, "end": end / 1000,
                          "original_text": text, "extracted_keywords": [item["text"] for item in quantities],
                          "quantities": quantities})

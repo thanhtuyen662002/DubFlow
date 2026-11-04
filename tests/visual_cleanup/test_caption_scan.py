@@ -127,6 +127,9 @@ class LogoTests(unittest.TestCase):
         title = TextBox(0.0, 0.3, 0.98, 0.12)  # "120万头猪要怎么养?" across the frame
         samples = [(0.0, [logo, caption(0)]), (2.0, [logo, title]), (4.0, [logo]), (6.0, [TextBox(0.3, 0.45, 0.3, 0.1)]), (8.0, [TextBox(0.02, 0.04, 0.17, 0.075)])]
         self.assertEqual(scan.big_text_times(samples, [logo]), [2.0, 6.0])
+        # A news ticker: two lines across the frame (89-93 % wide in BV1Vy4y1Z7C1); one long caption line is not.
+        ticker = [(0.0, [TextBox(0.07, 0.74, 0.93, 0.07), TextBox(0.07, 0.81, 0.9, 0.07)]), (2.0, [TextBox(0.05, 0.84, 0.9, 0.07)])]
+        self.assertEqual(scan.big_text_times(ticker), [0.0])
 
 
 MODEL = os.environ.get("DUBFLOW_TEST_OCR_MODEL")

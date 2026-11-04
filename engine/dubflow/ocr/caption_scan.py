@@ -50,6 +50,10 @@ BIG_TEXT_WIDTH = 0.08
 # Taller than any caption line: big text wherever it is. Below this, centred text in the lower part is a caption.
 HUGE_TEXT_HEIGHT = 0.16
 CAPTION_ZONE = 0.75
+# Two text lines this wide in one frame are a news ticker or a paragraph card (BV1Vy4y1Z7C1: 89-93 % wide);
+# a single wide line is a long caption, which framing hides.
+WIDE_TEXT_WIDTH = 0.7
+WIDE_TEXT_HEIGHT = 0.03
 # ImageNet normalisation used by PaddleOCR's detector.
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
@@ -221,7 +225,9 @@ def big_text_times(samples: Sequence[tuple[float, Sequence[TextBox]]], logos: Se
     """
     times = []
     for time_s, boxes in samples:
-        if any(_big(box) and not any(_iou(box, logo) > 0.3 for logo in logos) for box in boxes):
+        wide = [box for box in boxes if box.w >= WIDE_TEXT_WIDTH and box.h >= WIDE_TEXT_HEIGHT]
+        # Two or more lines spanning the frame: a news ticker or a paragraph card. One wide line is a long caption.
+        if len(wide) >= 2 or any(_big(box) and not any(_iou(box, logo) > 0.3 for logo in logos) for box in boxes):
             times.append(round(time_s, 3))
     return times
 

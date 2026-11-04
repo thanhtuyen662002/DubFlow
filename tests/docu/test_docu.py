@@ -79,6 +79,14 @@ class UnitTests(unittest.TestCase):
         self.assertEqual(units.imperial(quantity("5毫米")), "0.197 inches")
         self.assertEqual(units.imperial(quantity("2公斤")), "4.409 pounds")
 
+    def test_a_rate_said_on_the_line_before_still_counts(self):
+        # 2026-11-04: "日处理能力" ended one recognised line, "达1万吨" began the next: compared to 25 Boeing 747s.
+        found = units.extract_after("经过加压输送的日处理能力", "搭1万吨的污水处理中心")
+        self.assertEqual([(q.text, q.rate, q.start) for q in found], [("1万吨", True, 1)])
+        self.assertEqual(units.comparisons(found[0]), [])
+        self.assertFalse(units.extract_after("", "搭1万吨的污水处理中心")[0].rate)
+        self.assertEqual([q.text for q in units.extract_after("总投资40", "亿元")], [], "a number begun on the line before is not counted twice")
+
     def test_ordinary_words_and_benchmark_names_are_not_numbers(self):
         self.assertEqual(units.extract("一些人万一不来，一起去"), [])
         self.assertEqual(units.extract("the 21st century"), [])
