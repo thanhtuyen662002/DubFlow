@@ -485,7 +485,8 @@ fn render_args(dir: &Path, root: &Path) -> Vec<OsString> {
 fn render_info(dir: &Path) -> Value {
     let video = dir.join("documentary.mp4");
     json!({ "video": video.is_file().then(|| display_path(&video)),
-        "status": crate::product::read_small_json(&dir.join(".dubflow-work/render/status.json"), 64 * 1024) })
+        "status": crate::product::read_small_json(&dir.join(".dubflow-work/render/status.json"), 64 * 1024),
+        "options": crate::product::read_small_json(&dir.join(".dubflow-work/render_options.json"), 16 * 1024) })
 }
 
 /// Render the visual plan and the narration into `documentary.mp4` in the background.
@@ -524,6 +525,28 @@ pub async fn docu_reframe(dir: String, preset: String) -> Result<Value, String> 
     let result = python_json(reframe_args(&dir, &preset), "bộ xử lý phim tài liệu").await?;
     if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
     Ok(result)
+}
+
+fn options_args(dir: &Path, graphics: bool, captions: bool, music: &str, music_path: Option<&Path>) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec!["-m".into(), "engine.dubflow.docu".into(), "options".into(), "--run-dir".into(), dir.into(),
+        "--graphics".into(), graphics.to_string().into(), "--captions".into(), captions.to_string().into(), "--music".into(), music.into()];
+    if let Some(path) = music_path { args.extend(["--music-path".into(), path.into()]); }
+    args
+}
+
+/// What the next rough cut draws (number cards, captions) and plays (music bed); saved in the project.
+#[tauri::command]
+pub async fn docu_render_options(dir: String, graphics: bool, captions: bool, music: String, music_path: Option<String>) -> Result<Value, String> {
+    let dir = docu_dir(&dir)?;
+    if !["generated", "file", "none"].contains(&music.as_str()) { return Err(fail("Lựa chọn nhạc nền không hợp lệ")); }
+    let path = match music_path.as_deref().filter(|value| !value.is_empty()) {
+        Some(value) => Some(absolute_file(value, &["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus"], Some(512 * 1024 * 1024))
+            .map_err(|_| fail("Chọn file nhạc MP3, WAV, M4A, AAC, FLAC, OGG hoặc OPUS"))?),
+        None => None,
+    };
+    let result = python_json(options_args(&dir, graphics, captions, &music, path.as_deref()), "bộ xử lý phim tài liệu").await?;
+    if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
+    Ok(result["options"].clone())
 }
 
 fn capcut_args(dir: &Path) -> Vec<OsString> {
@@ -591,6 +614,7 @@ pub fn docu_pick_file(kind: String) -> Result<Option<String>, String> {
     let file = match kind.as_str() {
         "video" => dialog.set_title("Chọn video nguồn").add_filter("Video", &VIDEO_EXTENSIONS).pick_file(),
         "subtitles" => dialog.set_title("Chọn phụ đề SRT").add_filter("Phụ đề SRT", &["srt"]).pick_file(),
+        "music" => dialog.set_title("Chọn file nhạc nền").add_filter("Nhạc", &["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus"]).pick_file(),
         _ => return Err(fail("Loại file phim tài liệu không hợp lệ")),
     };
     Ok(file.map(|path| display_path(&path)))
@@ -722,6 +746,14 @@ mod tests {
         assert_eq!(profile["default_voice_id"], "am_michael");
         assert!(profile["voices"].as_array().unwrap().iter().any(|voice| voice["voice_id"] == "am_michael"));
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn options_command_passes_every_choice() {
+        let args = options_args(Path::new(r"C:\run"), true, false, "file", Some(Path::new(r"C:\music.mp3")));
+        let text: Vec<String> = args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(text, ["-m", "engine.dubflow.docu", "options", "--run-dir", r"C:\run", "--graphics", "true", "--captions", "false",
+            "--music", "file", "--music-path", r"C:\music.mp3"]);
     }
 
     #[test]

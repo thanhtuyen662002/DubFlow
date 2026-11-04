@@ -72,7 +72,9 @@ export type PlanSlice = { source_id: string; start: number; end: number; at: num
 export type PlanScene = { scene_id: string; start: number; end: number; warnings: string[]; slices: PlanSlice[] };
 export type VisualPlan = { script_sha256: string; duration: number; scenes: PlanScene[]; warnings: string[] };
 export type VisualInfo = { plan: VisualPlan | null; status: NarrationStatus | null };
-export type RenderInfo = { video: string | null; status: NarrationStatus | null };
+export type RenderOptions = { graphics: boolean; captions: boolean; music: "generated" | "file" | "none"; music_path: string | null };
+export type RenderStatus = NarrationStatus & { overlays?: { graphics: boolean; captions: boolean; music: string } };
+export type RenderInfo = { video: string | null; status: RenderStatus | null; options: RenderOptions };
 /** The last CapCut export (engine/dubflow/docu/capcut_draft.py). */
 export type CapcutExport = { folder: string; name: string; clips: number; duration: number; captions: string };
 /** An English label box set over MCP (apply_smart_label_overlay): scene, words, normalized centre and width. */
@@ -344,9 +346,19 @@ export function parseCapcut(value: unknown): CapcutExport | null {
     ? { folder: info.folder, name: info.name, clips: Number(info.clips) || 0, duration: Number(info.duration) || 0, captions: string(info.captions) } : null;
 }
 
+export function parseRenderOptions(value: unknown): RenderOptions {
+  const info = obj(value);
+  const musicPath = typeof info?.music_path === "string" && info.music_path ? info.music_path : null;
+  const music = info?.music === "none" ? "none" : info?.music === "file" && musicPath ? "file" : "generated";
+  return { graphics: info?.graphics !== false, captions: info?.captions === true, music, music_path: musicPath };
+}
+
 export function parseRender(value: unknown): RenderInfo {
   const info = obj(value);
-  return { video: typeof info?.video === "string" ? info.video : null, status: parseStatus(info?.status) };
+  const status = parseStatus(info?.status) as RenderStatus | null;
+  const overlays = obj(obj(info?.status)?.overlays);
+  if (status && overlays) status.overlays = { graphics: overlays.graphics === true, captions: overlays.captions === true, music: String(overlays.music ?? "") };
+  return { video: typeof info?.video === "string" ? info.video : null, status, options: parseRenderOptions(info?.options) };
 }
 
 /** A plan made before the script or its narration changed. */
@@ -420,7 +432,8 @@ export const CALLOUT_SECONDS = 5;
  * The script's on-screen graphics as Chữ texts at their scene's narrated time
  * (a little after the scene starts, at most 5 s and never past the scene).
  */
-export function calloutTexts(script: DocuScript | null, timeline: NarrationTimeline | null, labels: readonly DocuLabel[] = []): Callout[] {
+export function calloutTexts(script: DocuScript | null, timeline: NarrationTimeline | null, labels: readonly DocuLabel[] = [],
+  { graphics = true }: { graphics?: boolean } = {}): Callout[] {
   if (!script || !timeline) return [];
   const slots = new Map(timeline.scenes.map(scene => [scene.scene_id, scene]));
   // Labels are burned into the rough cut already; in the editor they are Chữ texts to move or restyle.
@@ -429,7 +442,7 @@ export function calloutTexts(script: DocuScript | null, timeline: NarrationTimel
     return scene ? [{ at: Math.round(scene.start * 1000) / 1000, seconds: Math.max(1, scene.slot_end - scene.start), text: label.text,
       look: { ...CALLOUT_LOOKS.LABEL, x: label.x, y: label.y, w: label.w, animation: "none" } as Partial<TextLook> }] : [];
   });
-  return [...calloutsOf(script, timeline), ...boxes];
+  return [...(graphics ? calloutsOf(script, timeline) : []), ...boxes];
 }
 
 function calloutsOf(script: DocuScript, timeline: NarrationTimeline): Callout[] {

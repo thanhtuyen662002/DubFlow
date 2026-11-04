@@ -10,7 +10,7 @@ import unittest
 import wave
 
 from engine.dubflow.docu import matcher, roughcut, script
-from engine.dubflow.docu.project import load_spec, spec_path, write_json
+from engine.dubflow.docu.project import DocuError, load_spec, spec_path, write_json
 from engine.dubflow.product.job import ProductError
 
 from test_docu import make_run
@@ -126,6 +126,80 @@ class RunTests(unittest.TestCase):
             stale = roughcut.run(run, spec, ffmpeg=Path("ffmpeg"), probe=lambda video: (1920, 1080), ffmpeg_runner=runner)
             self.assertEqual(stale["state"], "FAILED")
             self.assertIn("cũ", stale["message"])
+
+    def test_number_cards_captions_and_music_are_in_the_rough_cut(self):
+        # 2026-11-04 test: the draft had only B-roll and the voice; the script's cards were editor-only.
+        from engine.dubflow.docu import overlays
+        with TemporaryDirectory() as temp:
+            run, spec, plan = _project(Path(temp))
+            draft = json.loads((run / "documentary_script.json").read_text(encoding="utf-8"))
+            draft["chapters"][0]["scenes"][0]["on_screen_graphic"] = {"type": "METRIC_CALLOUT", "title": "Pigs a year", "value": "1.2 million", "subtext": "two towers"}
+            write_json(run / "documentary_script.json", draft)
+            timeline = json.loads((run / "master_audio_timeline.json").read_text(encoding="utf-8"))
+            timeline["scenes"] = [{"scene_id": "sc_001", "start": 0.0, "end": 5.5, "slot_end": 6.0}]
+            write_json(run / "master_audio_timeline.json", timeline)
+            plan["timeline_sha256"] = roughcut._sha256(run / "master_audio_timeline.json")
+            write_json(run / "visual_plan.json", plan)
+            (run / "captions_en.srt").write_text("1\n00:00:00,000 --> 00:00:02,500\nThe dam rises.\n", encoding="utf-8")
+            overlays.save_options(run, captions=True)
+            calls = []
+
+            def runner(argv, cwd, cancelled):
+                calls.append(argv)
+                Path(cwd, Path(argv[-1]).name).write_bytes(b"data")
+            result = roughcut.run(run, spec, ffmpeg=Path("ffmpeg"), probe=lambda video: (1920, 1080), ffmpeg_runner=runner)
+            self.assertEqual(result["state"], "COMPLETED", result)
+            self.assertEqual(result["overlays"], {"graphics": True, "captions": True, "music": "generated", "music_path": None})
+            work = run / ".dubflow-work" / "render"
+            first, second = (work / "slice-0001.ass").read_text(encoding="utf-8"), (work / "slice-0002.ass").read_text(encoding="utf-8")
+            # The card fades in on slice 1 (0.6 s) and out on slice 2 at the scene's end; the caption is on slice 1 only.
+            self.assertIn("Dialogue: 1,0:00:00.60,0:00:03.00,CardValue,,0,0,0,,{\\pos(1810,124)\\fad(250,0)}1.2 million", first)
+            self.assertIn("CardValue,,0,0,0,,{\\pos(1810,124)\\fad(0,250)}1.2 million", second)
+            self.assertIn("Caption,,0,0,0,,{\\fad(250,250)}The dam rises.", first)
+            self.assertNotIn("The dam rises.", second)
+            bed = next(argv for argv in calls if any("aevalsrc" in str(arg) for arg in argv))
+            self.assertTrue(str(bed[-1]).endswith("bed.partial.wav"))
+            mux = calls[-1]
+            self.assertIn("[audio]", mux)
+            self.assertIn("sidechaincompress", mux[mux.index("-filter_complex") + 1])
+            # Off: no bed, the voice alone; no cards, no .ass for these slices.
+            overlays.save_options(run, graphics=False, captions=False, music="none")
+            calls.clear()
+            roughcut.run(run, spec, ffmpeg=Path("ffmpeg"), probe=lambda video: (1920, 1080), ffmpeg_runner=runner)
+            self.assertFalse(any(any("aevalsrc" in str(arg) for arg in argv) for argv in calls))
+            self.assertIn("1:a:0", calls[-1])
+
+    def test_render_options_are_checked(self):
+        from engine.dubflow.docu import overlays
+        with TemporaryDirectory() as temp:
+            run = make_run(Path(temp))
+            self.assertEqual(overlays.load_options(run), overlays.DEFAULTS)
+            with self.assertRaises(DocuError):
+                overlays.save_options(run, music="file")
+            with self.assertRaises(DocuError):
+                overlays.save_options(run, music_path=str(Path(temp) / "missing.mp3"))
+            with self.assertRaises(DocuError):
+                overlays.save_options(run, graphics="yes")
+            song = Path(temp) / "song.mp3"
+            song.write_bytes(b"id3")
+            self.assertEqual(overlays.save_options(run, music_path=str(song))["music"], "file")
+            argv = overlays.file_bed_argv(Path("ffmpeg"), song, 120.0, Path(temp) / "bed.wav")
+            self.assertEqual(argv[argv.index("-stream_loop") + 1], "-1")
+            self.assertIn("afade=t=out:st=116.000", argv[argv.index("-filter_complex") + 1])
+
+    def test_mood_beds_follow_the_chapters(self):
+        from engine.dubflow.docu import overlays
+        script_value = {"chapters": [{"chapter_type": "HOOK", "recommended_bgm_mood": "cinematic_tension_drone"},
+                                     {"chapter_type": "PROBLEM", "recommended_bgm_mood": "dark_suspense"}]}
+        timeline = {"chapters": [{"chapter_type": "HOOK", "start": 0.4, "slot_end": 20.0}, {"chapter_type": "PROBLEM", "start": 20.0, "slot_end": 60.0}]}
+        spans = overlays.chapter_moods(script_value, timeline, 66.0)
+        self.assertEqual(spans, [("cinematic_tension_drone", 0.0, 20.0), ("dark_suspense", 20.0, 66.0)])
+        argv = overlays.bed_argv(Path("ffmpeg"), spans, 66.0, Path("bed.wav"))
+        graph = argv[argv.index("-filter_complex") + 1]
+        self.assertIn("adelay=20000:all=1", graph)
+        self.assertIn("loudnorm=I=-30", graph)
+        self.assertNotEqual(overlays.mood_expression("curious_pulse"), overlays.mood_expression("dark_suspense"))
+        self.assertEqual(overlays.chapter_moods({"chapters": []}, {"chapters": []}, 10.0), [("reflective_ambient", 0.0, 10.0)])
 
     def test_a_slice_label_is_drawn_on_that_slice_only(self):
         with TemporaryDirectory() as temp:

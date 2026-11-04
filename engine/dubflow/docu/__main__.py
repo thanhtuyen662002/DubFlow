@@ -1,4 +1,4 @@
-"""python -m engine.dubflow.docu {context,check,narrate,plan,reframe,render,capcut}; the last stdout line is ASCII JSON."""
+"""python -m engine.dubflow.docu {context,check,narrate,plan,reframe,options,render,capcut}; the last stdout line is ASCII JSON."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from engine.dubflow.product.job import probe_duration_ms
-from . import capcut_draft, context, narration, roughcut, script, visual
+from . import capcut_draft, context, narration, overlays, roughcut, script, visual
 from .project import DocuError, load_spec, script_path, spec_path, write_json
 
 
@@ -74,6 +74,12 @@ def main(argv: list[str] | None = None) -> int:
     reframe = commands.add_parser("reframe", help="change the framing look; the plan's slices and scans stay")
     reframe.add_argument("--run-dir", type=Path, required=True)
     reframe.add_argument("--preset", required=True)
+    options = commands.add_parser("options", help="what the rough cut draws and plays: number cards, captions, music bed")
+    options.add_argument("--run-dir", type=Path, required=True)
+    options.add_argument("--graphics", choices=("true", "false"))
+    options.add_argument("--captions", choices=("true", "false"))
+    options.add_argument("--music", choices=("generated", "file", "none"))
+    options.add_argument("--music-path")
     capcut = commands.add_parser("capcut", help="write the rough cut as a CapCut draft and list it in CapCut")
     capcut.add_argument("--run-dir", type=Path, required=True)
     capcut.add_argument("--root", type=Path, help="CapCut's draft folder (default: CapCut's own)")
@@ -86,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
             result: dict[str, object] = {"state": "COMPLETED", "message": "", "sources": sources}
         elif args.command == "reframe":
             result = {"state": "COMPLETED", "message": "", **visual.reframe(args.run_dir, args.preset)}
+        elif args.command == "options":
+            flag = {"true": True, "false": False, None: None}
+            chosen = overlays.save_options(args.run_dir, graphics=flag[args.graphics], captions=flag[args.captions],
+                                           music_path=args.music_path, music=args.music)
+            result = {"state": "COMPLETED", "message": "", "options": overlays.describe(chosen)}
         elif args.command == "capcut":
             exported = capcut_draft.export(args.run_dir, load_spec(spec_path(args.run_dir)), root=args.root or capcut_draft.default_root())
             result = {"state": "COMPLETED", "message": "", **exported}
