@@ -1356,19 +1356,6 @@
           "test_*.py"
         ],
         [
-          "env",
-          "DUBFLOW_TEST_FFMPEG=/usr/bin/ffmpeg",
-          "python",
-          "-B",
-          "-m",
-          "unittest",
-          "discover",
-          "-s",
-          "tests/production/media",
-          "-p",
-          "test_*.py"
-        ],
-        [
           "python",
           "-B",
           "-m",

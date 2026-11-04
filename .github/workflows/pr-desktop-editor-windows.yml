@@ -16,6 +16,8 @@ on:
       - apps/desktop/src/**
       - apps/desktop/test/**
       - apps/desktop/src-tauri/**
+      - engine/dubflow/media/adapter.py
+      - tests/production/media/**
   pull_request:
     paths:
       - .github/workflows/pr-desktop-editor-windows.yml
@@ -25,6 +27,8 @@ on:
       - apps/desktop/src/**
       - apps/desktop/test/**
       - apps/desktop/src-tauri/**
+      - engine/dubflow/media/adapter.py
+      - tests/production/media/**
 
 permissions:
   contents: read
@@ -49,6 +53,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22.14.0"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.10"
 
       - name: Record source and toolchain
         shell: pwsh
@@ -77,3 +85,30 @@ jobs:
           $text = Get-Content -LiteralPath $log -Raw
           if ($text -notmatch '(?m)^test result: ok\. (\d+) passed; 0 failed;') { throw 'Desktop host test summary missing' }
           Write-Host "Desktop host tests passed: $($Matches[1])"
+
+      - name: Download the app's pinned FFmpeg build
+        shell: pwsh
+        run: |
+          # Same exact build and SHA-256 as release.yml's app-owned runtime.
+          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip'
+          $expected = '6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432'
+          $archive = Join-Path $env:RUNNER_TEMP 'dubflow-ffmpeg.zip'
+          Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "FFmpeg archive hash mismatch: $actual" }
+          $extract = Join-Path $env:RUNNER_TEMP 'dubflow-ffmpeg'
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+          $ffmpeg = Get-ChildItem -LiteralPath $extract -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
+          if ($null -eq $ffmpeg) { throw 'FFmpeg archive did not contain ffmpeg.exe' }
+          "DUBFLOW_TEST_FFMPEG=$($ffmpeg.FullName)" >> $env:GITHUB_ENV
+
+      - name: Run the media adapter tests against real FFmpeg
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'media-tests.log'
+          python -B -m unittest discover -s tests/production/media -p 'test_*.py' -v 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Media adapter tests failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -match '\.\.\. skipped') { throw 'Media adapter tests skipped some cases' }
+          if ($text -notmatch '(?m)^Ran (\d+) tests? in ') { throw 'Media test count missing' }
+          Write-Host "Media adapter tests passed: $($Matches[1]), none skipped"
