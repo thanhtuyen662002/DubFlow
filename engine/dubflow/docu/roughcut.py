@@ -85,11 +85,21 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
     graph: list[str] = []
     band = framing.get("band")
     label = "0:v"
+    # Another channel's logo or watermark: blurred where it sits (the bundled LGPL FFmpeg has no delogo).
+    for number, logo in enumerate(framing.get("logos") or ()):
+        x, y = _even(float(logo[0]) * width) - 2 if logo[0] else 0, _even(float(logo[1]) * height) - 2 if logo[1] else 0
+        x, y = max(0, x), max(0, y)
+        w, h = min(width - x, _even(float(logo[2]) * width)), min(height - y, _even(float(logo[3]) * height))
+        if w < 4 or h < 4:
+            continue
+        graph.append(f"[{label}]split=2[logo{number}base][logo{number}cut];[logo{number}cut]crop={w}:{h}:{x}:{y},gblur=sigma=12[logo{number}blur];"
+                     f"[logo{number}base][logo{number}blur]overlay={x}:{y}[logo{number}]")
+        label = f"logo{number}"
     if band and not framing.get("clear", True):
         # Edge stretch: the two rows just above the captions, stretched down over them.
         top, bottom = _even(band["top"] * height), _even(band["bottom"] * height)
         if 2 <= top < bottom <= height:
-            graph.append(f"[0:v]split=2[base][edge];[edge]crop=iw:2:0:{top - 2},scale=iw:{bottom - top},setsar=1[strip];"
+            graph.append(f"[{label}]split=2[base][edge];[edge]crop=iw:2:0:{top - 2},scale=iw:{bottom - top},setsar=1[strip];"
                          f"[base][strip]overlay=0:{top}[covered]")
             label = "covered"
     zoom, shift = float(framing.get("zoom", 1.0)), float(framing.get("shift", 0.0))
