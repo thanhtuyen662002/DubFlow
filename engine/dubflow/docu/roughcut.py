@@ -19,7 +19,7 @@ from typing import Any, Callable, Sequence
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
 from . import overlays
 from .narration import _Status
-from .project import DocuError, Spec, script_path, work_dir, write_json
+from .project import DocuError, Spec, replace, script_path, work_dir, write_json
 from .script import CHAPTERS, load_draft
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
@@ -359,7 +359,10 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
         status.write(message="Đang ghép hình với lời đọc…")
         partial = work / "documentary.partial.mp4"
         ffmpeg_runner(mux_argv(ffmpeg, "concat.txt", narration, seconds, partial, bed), work, cancel.exists)
-        partial.replace(run_dir / VIDEO)
+        try:
+            replace(partial, run_dir / VIDEO)
+        except PermissionError as error:
+            raise DocuError("documentary.mp4 đang mở ở chỗ khác (trình phát hay trình chỉnh sửa); hãy đóng nó rồi dựng lại") from error
         write_json(run_dir / "source_credit.json", {"schema_version": 1, "sources": credits(spec)})
         (run_dir / "description.txt").write_text(description(script, timeline, spec), encoding="utf-8", newline="\n")
         status.write(state="COMPLETED", done=status.value["total"], message="Đã dựng bản nháp", path=str(run_dir / VIDEO),
