@@ -371,5 +371,5 @@ class ActivityTests(unittest.TestCase):
             self.assertIn("Dựng lại bản nháp", saved["recent"][1]["message"])
             # A new server keeps the history the app shows.
             self.assertEqual(len(Activity(path).recent), 2)
-        self.assertEqual(default_path(Path(r"D:\Tools\DubFlow\models")), Path(r"D:\Tools\DubFlow\control\mcp-activity.json"))
+        self.assertEqual(default_path(Path("data") / "models"), Path("data") / "control" / "mcp-activity.json")
         self.assertEqual(label("narrate", {"voice": "am_michael"}), "Tạo lời đọc (giọng am_michael)")
