@@ -39,16 +39,17 @@ type StatusResponse = { status: ExportStatus | null; exports: ExportEntry[] };
 type MediaResponse = { path: string; title: string; duration: number; width: number; height: number; fps: number; has_audio: boolean };
 
 /** A finished queue video the Chèn panel offers. */
-export type LibraryJob = { id: string; title: string; outputPath: string };
+export type LibraryJob = { id: string; title: string; outputPath: string; meta?: string };
 
 /**
- * A finished video the editor opens: a queue job's `final_vi.mp4`, a Bán
- * hàng video or a compilation (Issue #426).
+ * A video the editor opens: a queue job's `final_vi.mp4`, a Bán hàng video,
+ * a compilation (Issue #426), a documentary or any video file (Issue #497).
  */
 export type EditTarget = {
   /** The queue job's id, else the video's path. */
   id: string;
-  kind: "job" | "product" | "compilation" | "docu";
+  /** "file": any other video on the computer (Issue #497). */
+  kind: "job" | "product" | "compilation" | "docu" | "file";
   outputPath: string;
   displayName: string;
   /** The queue job (kind "job"): Phụ đề and Che re-run it. */
@@ -139,6 +140,8 @@ type Box = { element: HTMLDivElement; video: HTMLVideoElement; path: string };
 
 const PAD = 12;
 const TIMELINE_PX = 170;
+/** The timeline below a 600 px window (styles.css). */
+const SHORT_TIMELINE_PX = 140;
 /** A timeline drop this close to a segment edge goes on the edge, not a sliver away. */
 const DROP_SNAP_PX = 12;
 const THUMB_WIDTH = 76;
@@ -1226,7 +1229,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const statuses = await Promise.all(jobs.map((job) => invoke<StatusResponse>("edit_status", { outputPath: job.outputPath }).catch(() => null)));
     if (token !== libraryToken || !session) return;
     jobs.forEach((job, index) => {
-      items.push({ key: `job:${job.id}`, path: job.outputPath, title: job.title, meta: "Video đã làm trong DubFlow", kind: "job", duration: null });
+      items.push({ key: `job:${job.id}`, path: job.outputPath, title: job.title, meta: job.meta ?? "Video đã làm trong DubFlow", kind: "job", duration: null });
       for (const entry of [...(statuses[index]?.exports ?? [])].reverse()) {
         items.push({ key: `export:${entry.path}`, path: entry.path, title: stem(entry.path), meta: `Bản sửa của ${job.title}`, kind: "job",
           duration: entry.duration > 0 ? entry.duration : null });
@@ -1334,7 +1337,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const audioHeight = audio.renderTrack(audioTrack, mode === "audio", PAD);
     content.classList.toggle("with-audio", audioHeight > 0 || textHeight > 0);
     const rows = 22 + (edit.overlays.length ? 30 : 0) + 48 + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + 16;
-    timeline.style.height = audioHeight || textHeight ? `${Math.max(TIMELINE_PX, 36 + rows)}px` : "";
+    // At most 40% of the window: further rows scroll, the video keeps its room.
+    // Never lower than the timeline without rows (lower in short windows, see styles.css), so it does not jump.
+    const least = window.innerHeight <= 600 ? SHORT_TIMELINE_PX : TIMELINE_PX;
+    const most = Math.max(least, Math.round(window.innerHeight * 0.4));
+    timeline.style.height = audioHeight || textHeight ? `${Math.min(most, Math.max(least, 36 + rows))}px` : "";
     renderThumbs();
     renderPlayhead();
     const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;

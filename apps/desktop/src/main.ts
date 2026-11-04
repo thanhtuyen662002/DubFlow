@@ -26,7 +26,10 @@ import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
 import { mountDocu } from "./features/docu/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
-import { mountEditor, type EditTarget } from "./features/edit/view.ts";
+import { shortDate } from "./features/product/model.ts";
+import { jobTarget, mountEditor, type EditTarget } from "./features/edit/view.ts";
+import { mountEditLibrary } from "./features/edit/library_view.ts";
+import { KIND_LABELS, distinctTitles, type LibraryEntry } from "./features/edit/library.ts";
 import { createSfxLibrary } from "./features/sfx/library.ts";
 import { mountSfxSettings } from "./features/sfx/settings.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
@@ -511,6 +514,8 @@ const editor = mountEditor(invoke, {
   video: playerVideo,
   confirm: confirmDialog,
   refresh: () => {
+    // Every edit happens on the Chỉnh sửa screen (Issue #497).
+    if (editor.target && currentView === "queue") showView("queue", "edit");
     if (lastModel) render(lastModel);
     else if (editor.target && editor.target.kind !== "job") renderEditedStage(editor.target);
   },
@@ -530,6 +535,9 @@ const editor = mountEditor(invoke, {
   library: () => [
     ...queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
       .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath! })),
+    // The other pages' finished videos (Bán hàng, Tổng hợp, Phim tài liệu), as on the Chỉnh sửa screen.
+    ...distinctTitles(editLibrary.found()).map((entry) => ({ id: entry.path, title: entry.title, outputPath: entry.path,
+      meta: [KIND_LABELS[entry.kind], entry.title.endsWith(shortDate(entry.modified)) ? "" : shortDate(entry.modified)].filter(Boolean).join(" · ") })),
     // The browser preview has no finished jobs of its own to insert.
     ...(isTauri ? [] : PREVIEW_EDIT_LIBRARY),
   ],
@@ -543,27 +551,32 @@ const editor = mountEditor(invoke, {
   ai: claudeKey,
   openAiSettings: () => aiSettings.open(),
   cpuOnly: () => cpuOnly(),
-  // A Bán hàng video or a compilation goes back to its page.
-  left: (target) => {
-    if (target.kind === "job" || !editOrigin) return;
-    const origin = editOrigin;
+  // Back to the page the video was opened from: the Chỉnh sửa list, the queue or another page.
+  left: () => {
+    const origin = editOrigin ?? "queue";
     editOrigin = null;
     showView(origin);
   },
 });
-/** The page a Bán hàng video or a compilation was opened from (Issue #426). */
+/** The page the open video was opened from (Issue #426); closing the edit goes back there. */
 let editOrigin: View | null = null;
 
-/** Open a Bán hàng video or a compilation in the editor, on the queue screen. */
-async function editVideo(target: EditTarget, origin: View): Promise<void> {
+/** Open a video in the editor, on the Chỉnh sửa screen (Issue #497); false when it did not open. */
+async function editVideo(target: EditTarget, origin: View): Promise<boolean> {
   const previous = editOrigin;
   editOrigin = origin;
-  showView("queue", origin);
-  if (await editor.openTarget(target)) return;
+  if (target.kind === "job" && target.job) {
+    // The editor follows the queue's selection for a queue video.
+    selectedFetchId = null;
+    if (selectedJob()?.id !== target.job.id) queue.selectJob(target.job.id);
+  }
+  showView("queue", "edit");
+  if (await editor.openTarget(target)) return true;
   // Not opened: the edit that stayed open, else the page it came from.
   editOrigin = previous;
-  if (editor.target) showView("queue", editor.target.kind === "job" ? "queue" : previous ?? "queue");
+  if (editor.target) showView("queue", "edit");
   else showView(origin);
+  return false;
 }
 
 /** The middle column while another page's video is being edited. */
@@ -1581,16 +1594,39 @@ const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs
     $("#nav-docu").title = label ? `Claude đang làm: ${label}` : "";
   },
 });
-type View = "queue" | "discover" | "product" | "compilation" | "docu";
+/** The Chỉnh sửa screen's list: finished videos of every page and videos on the computer (Issue #497). */
+const editLibrary = mountEditLibrary(invoke, {
+  jobs: () => queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
+    .map((job): LibraryEntry => ({ path: job.outputPath!, title: job.displayName, kind: "job", jobId: job.id,
+      modified: Math.floor(Date.parse(job.finishedAt ?? job.createdAt) / 1000) || 0 }))
+    // The browser preview has no finished jobs of its own.
+    .concat(isTauri ? [] : PREVIEW_EDIT_LIBRARY.map((item, index): LibraryEntry => ({ path: item.outputPath, title: item.title, kind: "job",
+      modified: Math.floor(Date.now() / 1000) - 1_800 * (index + 1), sizeBytes: 46_000_000 }))),
+  roots: outputRoots,
+  open: (entry) => {
+    const job = entry.jobId ? queue.getSnapshot().jobs.find((candidate) => candidate.id === entry.jobId) : undefined;
+    const target: EditTarget = job ? jobTarget(job) : { id: entry.path, kind: entry.kind === "job" ? "file" : entry.kind, outputPath: entry.path, displayName: entry.title };
+    return editVideo(target, "edit");
+  },
+  showError,
+});
+type View = "queue" | "discover" | "product" | "compilation" | "docu" | "edit";
 const VIEW_HEADINGS: Record<View, [string, string]> = {
   queue: ["Hàng đợi", ""],
   discover: ["Khám phá", "Douyin, Bilibili, Kuaishou"],
   product: ["Video bán hàng", "Từ mô tả hoặc ảnh"],
   compilation: ["Tổng hợp", "Ghép các video đã xong"],
   docu: ["Phim tài liệu", "Kịch bản phim tài liệu tiếng Anh"],
+  edit: ["Chỉnh sửa", "Chọn một video, hoặc kéo thả video vào cửa sổ"],
 };
+/** The page shown (the queue screen also hosts the editor). */
+let currentView: View = "queue";
 /** Show a page; `highlight` is the rail item lit (the page an edited video came from). */
 function showView(view: View, highlight: View = view): void {
+  currentView = view;
+  // Chỉnh sửa has its own "Mở video trên máy"; the queue's link bar and "Thêm từ máy" would only confuse it.
+  document.body.dataset.page = highlight;
+  $("#edit-view").hidden = view !== "edit";
   $("#compilation-view").hidden = view !== "compilation";
   $("#docu-view").hidden = view !== "docu";
   $("#discover-view").hidden = view !== "discover";
@@ -1600,9 +1636,10 @@ function showView(view: View, highlight: View = view): void {
   $("#page-title").textContent = title;
   $("#queue-summary").hidden = highlight !== "queue";
   $("#page-meta").hidden = highlight === "queue";
-  $("#page-meta").textContent = meta;
+  // While editing, the header names the video.
+  $("#page-meta").textContent = view === "queue" && highlight === "edit" && editor.target ? editor.target.displayName : meta;
   if (view !== "queue") setListOpen(false);
-  for (const [id, active] of [["#nav-queue", highlight === "queue"], ["#nav-discover", highlight === "discover"], ["#nav-product", highlight === "product"], ["#nav-compilation", highlight === "compilation"], ["#nav-docu", highlight === "docu"]] as const) {
+  for (const [id, active] of [["#nav-queue", highlight === "queue"], ["#nav-discover", highlight === "discover"], ["#nav-product", highlight === "product"], ["#nav-compilation", highlight === "compilation"], ["#nav-docu", highlight === "docu"], ["#nav-edit", highlight === "edit"]] as const) {
     $(id).classList.toggle("active", active);
     if (active) $(id).setAttribute("aria-current", "page");
     else $(id).removeAttribute("aria-current");
@@ -1612,21 +1649,24 @@ function showView(view: View, highlight: View = view): void {
   if (view === "product") productStudio.show();
   if (view === "compilation") compilation.show();
   if (view === "docu") docu.show();
+  if (view === "edit") editLibrary.show();
 }
 /** Go to a page; editing another page's video ends first (asking when something is not saved). */
 async function navigate(view: View): Promise<void> {
-  const edited = editor.target;
-  if (edited && edited.kind !== "job") {
-    if (editOrigin === view) return;
-    editOrigin = null;
+  if (editor.target) {
+    // "Chỉnh sửa" shows the open edit; another page ends it first.
+    if (view === "edit") return showView("queue", "edit");
+    const origin = editOrigin;
+    editOrigin = view;
     if (!(await editor.close(true))) {
-      editOrigin = edited.kind;
+      editOrigin = origin;
       return;
     }
+    return;
   }
   showView(view);
 }
-for (const [id, view] of [["#nav-queue", "queue"], ["#nav-discover", "discover"], ["#nav-product", "product"], ["#nav-compilation", "compilation"], ["#nav-docu", "docu"]] as const) {
+for (const [id, view] of [["#nav-queue", "queue"], ["#nav-discover", "discover"], ["#nav-product", "product"], ["#nav-compilation", "compilation"], ["#nav-docu", "docu"], ["#nav-edit", "edit"]] as const) {
   $(id).addEventListener("click", (event) => {
     event.preventDefault();
     void navigate(view);
@@ -2445,11 +2485,13 @@ if (isTauri) {
   type DropEvent = { payload: { type: "enter" | "over" | "drop" | "leave"; paths?: string[]; position?: { x: number; y: number } } };
   void getCurrentWebview().onDragDropEvent((event: DropEvent) => {
     const overlay = $("#drag-overlay");
-    // While editing, dropped videos are inserted into the edit instead of joining the queue.
+    // While editing, dropped videos are inserted into the edit instead of joining the queue;
+    // on the Chỉnh sửa list one opens for editing.
     const editing = editor.target !== null;
+    const picking = !editing && currentView === "edit";
       if (event.payload.type === "enter" || event.payload.type === "over") {
         overlay.hidden = false;
-        $("#drag-overlay-text").textContent = editing ? "Thả để chèn vào video đang sửa" : "Thả để thêm video";
+        $("#drag-overlay-text").textContent = editing ? "Thả để chèn vào video đang sửa" : picking ? "Thả để mở video và chỉnh sửa" : "Thả để thêm video";
         dropZone.classList.add("hover");
       } else {
         overlay.hidden = true;
@@ -2460,6 +2502,7 @@ if (isTauri) {
         // Tauri reports physical pixels.
         const point = position ? { x: position.x / window.devicePixelRatio, y: position.y / window.devicePixelRatio } : null;
         if (editing) editor.drop(paths, point);
+        else if (picking) editLibrary.drop(paths);
         else void addDropped(paths);
       }
   }).catch(() => undefined);
