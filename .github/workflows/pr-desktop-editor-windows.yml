@@ -1,0 +1,79 @@
+name: PR Desktop Editor Windows
+
+# The desktop host is a Windows product: its Rust tests use Windows paths,
+# LOCALAPPDATA/USERPROFILE and drive APIs, so they run here rather than in
+# the Linux PR Integration job (#417). Read-only: no secrets, signing,
+# release, upload or publish step. The push trigger only bootstraps the lane
+# on its own task branch before the file exists on Main.
+on:
+  push:
+    branches: [agent/issue-417-desktop-editor-subtitles-ci]
+    paths:
+      - .github/workflows/pr-desktop-editor-windows.yml
+      - apps/desktop/index.html
+      - apps/desktop/package.json
+      - apps/desktop/package-lock.json
+      - apps/desktop/src/**
+      - apps/desktop/test/**
+      - apps/desktop/src-tauri/**
+  pull_request:
+    paths:
+      - .github/workflows/pr-desktop-editor-windows.yml
+      - apps/desktop/index.html
+      - apps/desktop/package.json
+      - apps/desktop/package-lock.json
+      - apps/desktop/src/**
+      - apps/desktop/test/**
+      - apps/desktop/src-tauri/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-desktop-editor-windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-editor-windows:
+    name: desktop-editor-windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.14.0"
+
+      - name: Record source and toolchain
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to read checked-out source SHA' }
+          if ($head -ne $env:SOURCE_SHA) { throw "Checked out $head, expected $env:SOURCE_SHA" }
+          Write-Host "Source SHA: $head"
+          Write-Host "Runner: $env:ImageOS $env:ImageVersion ($([System.Environment]::OSVersion.VersionString))"
+          node --version
+          rustc --version
+          if ($LASTEXITCODE -ne 0) { throw 'rustc is not available' }
+
+      - name: Build the editor and run the desktop host tests
+        shell: pwsh
+        run: |
+          npm ci --prefix apps/desktop
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          npm test --prefix apps/desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop editor tests failed' }
+          npm run build --prefix apps/desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop editor build failed' }
+          $log = Join-Path $env:RUNNER_TEMP 'desktop-host-tests.log'
+          cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop host tests failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -notmatch '(?m)^test result: ok\. (\d+) passed; 0 failed;') { throw 'Desktop host test summary missing' }
+          Write-Host "Desktop host tests passed: $($Matches[1])"

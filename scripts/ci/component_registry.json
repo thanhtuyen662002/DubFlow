@@ -1345,13 +1345,6 @@
           "apps/desktop"
         ],
         [
-          "cargo",
-          "test",
-          "--manifest-path",
-          "apps/desktop/src-tauri/Cargo.toml",
-          "--locked"
-        ],
-        [
           "python",
           "-B",
           "-m",
