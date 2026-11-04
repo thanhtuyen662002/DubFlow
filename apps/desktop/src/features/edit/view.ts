@@ -42,13 +42,14 @@ type MediaResponse = { path: string; title: string; duration: number; width: num
 export type LibraryJob = { id: string; title: string; outputPath: string };
 
 /**
- * A finished video the editor opens: a queue job's `final_vi.mp4`, a Bán
- * hàng video or a compilation (Issue #426).
+ * A video the editor opens: a queue job's `final_vi.mp4`, a Bán hàng video,
+ * a compilation (Issue #426), a documentary or any video file (Issue #497).
  */
 export type EditTarget = {
   /** The queue job's id, else the video's path. */
   id: string;
-  kind: "job" | "product" | "compilation" | "docu";
+  /** "file": any other video on the computer (Issue #497). */
+  kind: "job" | "product" | "compilation" | "docu" | "file";
   outputPath: string;
   displayName: string;
   /** The queue job (kind "job"): Phụ đề and Che re-run it. */
