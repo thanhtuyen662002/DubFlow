@@ -14,7 +14,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -56,6 +56,12 @@ pub struct Sources {
     launch: Mutex<Option<(PathBuf, PathBuf, PathBuf)>>,
     /// Latest `source_session` / `source_session_error` event.
     session: Mutex<Option<Value>>,
+    /// One session save at a time: the service runs one and refuses another,
+    /// and a receipt names no caller.
+    session_gate: Mutex<()>,
+    /// A session save is waiting for its receipt; a rejection naming no scan
+    /// then belongs to it.
+    session_waiting: AtomicBool,
     /// Automatic resumes per link after a dropped connection.
     resumes: Mutex<HashMap<String, Resumes>>,
     /// A cancelled running link whose stop request is not answered yet; a
@@ -272,7 +278,14 @@ impl Sources {
     }
 
     fn on_event(self: &Arc<Self>, event: &Value) {
-        if matches!(event["event"].as_str(), Some("source_session" | "source_session_error")) {
+        // A rejected request names no scan. While a session save waits and no
+        // link is starting or being stopped, the rejection is the save's.
+        let link_preparing = || self.queue.lock().ok().and_then(|queue| queue.current.clone())
+            .is_some_and(|scan| self.status(&scan).is_some_and(|s| s.state == "preparing"));
+        let session_rejected = event["event"] == "source_error" && event["scan_id"].is_null()
+            && self.session_waiting.load(Ordering::SeqCst) && !link_preparing()
+            && self.cancelling.lock().map(|cancelling| cancelling.is_none()).unwrap_or(false);
+        if session_rejected || matches!(event["event"].as_str(), Some("source_session" | "source_session_error")) {
             if let Ok(mut slot) = self.session.lock() {
                 *slot = Some(event.clone());
             }
@@ -513,21 +526,46 @@ impl Sources {
         true
     }
 
+    /// Start the service now, without waiting for it: its first start checks
+    /// the whole install, which can take a minute on a cold disk.
+    pub fn warm_up(self: &Arc<Self>, supervisor: &Path, root: &Path, data: &Path) -> Result<(), String> {
+        self.ensure_started(supervisor, root, data)
+    }
+
+    /// A link the service is running right now.
+    fn link_running(&self) -> bool {
+        self.queue.lock().ok().and_then(|queue| queue.current.clone())
+            .is_some_and(|scan| self.status(&scan).is_some_and(|s| !finished(&s.state)))
+    }
+
     /// Store a provider session in the service's protected (DPAPI) store and
     /// wait for its receipt. Blocking: call from a worker thread.
     pub fn save_session(self: &Arc<Self>, provider: &str, cookie: String, expires_at: u64,
                         supervisor: &Path, root: &Path, data: &Path) -> Result<(), String> {
+        let _one_at_a_time = self.session_gate.lock().map_err(|_| fail("session gate poisoned"))?;
+        // The service refuses session work while a link runs.
+        if self.link_running() {
+            return Err(fail("Đang tải một link nên chưa lưu được phiên. Hãy đợi link tải xong rồi bấm lại."));
+        }
         self.ensure_started(supervisor, root, data)?;
         *self.session.lock().map_err(|_| fail("session lock poisoned"))? = None;
-        self.send(json!({"command":"session_save", "provider_id":provider, "headers":{"Cookie":cookie}, "expires_at":expires_at}))?;
+        self.session_waiting.store(true, Ordering::SeqCst);
+        let result = self.send(json!({"command":"session_save", "provider_id":provider, "headers":{"Cookie":cookie}, "expires_at":expires_at}))
+            .and_then(|_| self.session_receipt(provider));
+        self.session_waiting.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn session_receipt(&self, provider: &str) -> Result<(), String> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
         while std::time::Instant::now() < deadline {
             if let Some(event) = self.session.lock().map_err(|_| fail("session lock poisoned"))?.take() {
-                return if event["event"] == "source_session" && event["state"] == "ready" {
-                    Ok(())
-                } else {
-                    Err(fail(format!("Không lưu được phiên {provider} ({}).", event["code"].as_str().unwrap_or("SESSION_FAILED"))))
-                };
+                return session_result(provider, &event);
+            }
+            let stopped = self.service.lock().map(|mut service| service.as_mut()
+                .is_none_or(|service| !matches!(service.child.try_wait(), Ok(None)))).unwrap_or(true);
+            if stopped {
+                return Err(fail("Dịch vụ tải link đã dừng; hãy thử lại."));
             }
             thread::sleep(std::time::Duration::from_millis(300));
         }
@@ -548,6 +586,17 @@ impl Sources {
             }
         }
     }
+}
+
+/// What a session save's answer from the service means for the user.
+fn session_result(provider: &str, event: &Value) -> Result<(), String> {
+    if event["event"] == "source_session" && event["state"] == "ready" {
+        return Ok(());
+    }
+    if event["event"] == "source_error" {
+        return Err(fail("Dịch vụ tải đang bận nên chưa lưu được phiên. Hãy đợi vài giây rồi bấm lại."));
+    }
+    Err(fail(format!("Không lưu được phiên {provider} ({}).", event["code"].as_str().unwrap_or("SESSION_FAILED"))))
 }
 
 /// `Videos\DubFlow Output\<name> - vi\<scan>` so finished link jobs are easy
@@ -618,6 +667,32 @@ mod tests {
         assert_eq!(provider_for("https://user@www.bilibili.com:443/video/x").unwrap(), "bilibili");
         assert!(provider_for("ftp://example.com/a.mp4").is_err());
         assert!(provider_for("https://example.com/a b.mp4").is_err());
+    }
+
+    #[test]
+    fn a_rejected_session_save_fails_at_once_instead_of_waiting() {
+        let sources = Arc::new(Sources::default());
+        sources.session_waiting.store(true, Ordering::SeqCst);
+        sources.on_event(&json!({"event":"source_error", "code":"SOURCE_REQUEST_REJECTED", "retryable":false}));
+        let event = sources.session.lock().unwrap().take().expect("rejection reaches the waiting save");
+        let error = session_result("douyin", &event).unwrap_err();
+        assert!(error.contains("bận"), "{error}");
+        // Nobody waiting: a stray rejection is not kept for a later save.
+        sources.session_waiting.store(false, Ordering::SeqCst);
+        sources.on_event(&json!({"event":"source_error", "code":"SOURCE_REQUEST_REJECTED", "retryable":false}));
+        assert!(sources.session.lock().unwrap().is_none());
+        assert!(session_result("douyin", &json!({"event":"source_session", "state":"ready"})).is_ok());
+    }
+
+    #[test]
+    fn a_session_save_is_refused_while_a_link_runs() {
+        let sources = Arc::new(Sources::default());
+        sources.fetches.lock().unwrap().insert("link-1".into(), FetchStatus { scan_id: "link-1".into(), url: "https://v.douyin.com/x/".into(),
+            provider: "douyin".into(), title: None, state: "downloading".into(), detail: None, queue_position: None, started_at_ms: None,
+            downloaded_bytes: 0, total_bytes: None, media_path: None, error: None, error_code: None });
+        sources.queue.lock().unwrap().current = Some("link-1".into());
+        let error = sources.save_session("douyin", "ttwid=1".into(), 1, Path::new("missing"), Path::new("missing"), Path::new("missing")).unwrap_err();
+        assert!(error.contains("link"), "{error}");
     }
 
     /// Real service run against a release-shaped root:
