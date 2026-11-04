@@ -36,6 +36,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libxdo-dev ffmpeg
+      - name: Provide the Linux window icon the Tauri build context reads
+        # Only icon.ico is committed (Windows product); this untracked copy
+        # lets the host compile on Linux and never enters a diff or bundle.
+        run: |
+          icon=apps/desktop/src-tauri/icons/icon.png
+          test -f "$icon" || ffmpeg -loglevel error -i apps/desktop/src-tauri/icons/icon.ico -frames:v 1 -pix_fmt rgba "$icon"
       - name: Install pinned runtime packages the integration tests import
         # Same pins as packaging/runtime/requirements-windows-x64.txt.
         run: python -m pip install --disable-pip-version-check --no-cache-dir cryptography==46.0.1
