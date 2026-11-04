@@ -302,7 +302,7 @@ assert.equal(parseMcpActivity({ updated: "x", current: null, recent: [] }).curre
 }
 {
   const { readable } = await import("../src/features/docu/model.ts");
-  assert.equal(readable("Đổi khung hình: letterbox_235"), "Đổi khung hình: Viền đen điện ảnh 2.35:1");
+  assert.equal(readable("Đổi khung hình: letterbox_235"), "Đổi khung hình: Viền đen điện ảnh 2,35:1");
   assert.equal(readable("Thay lát cắt sc_022 #2 bằng src_04 từ 112.5 s"), "Thay lát cắt cảnh 22 #2 bằng nguồn 4 từ 112,5 giây");
   assert.equal(readable("Dựng lại bản nháp (render_rough_cut) để thấy khung mới"), "Dựng lại bản nháp để thấy khung mới");
   assert.equal(readable("Lỗi: bilibili: Platform requires verification in its browser."), "Lỗi: bilibili: Nền tảng yêu cầu xác minh trong trình duyệt.");

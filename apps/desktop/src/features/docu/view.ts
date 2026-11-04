@@ -108,7 +108,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
               </section>
               <section class="docu-card" aria-labelledby="docu-look-title">
                 <h3 id="docu-look-title">Hình thức</h3>
-                <label>Khung hình<select id="docu-framing"><option value="none">Không</option><option value="letterbox_235">Viền đen điện ảnh 2.35:1</option><option value="overscan_108">Phóng nhẹ 108% (cắt mép)</option></select></label>
+                <label>Khung hình<select id="docu-framing"><option value="none">Không</option><option value="letterbox_235">Viền đen điện ảnh 2,35:1</option><option value="overscan_108">Phóng nhẹ 108% (cắt mép)</option></select></label>
                 <label class="docu-check"><input id="docu-credits" type="checkbox" /> Chèn màn hình credit cuối video</label>
                 <label>Thư mục lưu<input id="docu-output-root" readonly /></label>
               </section>
@@ -339,7 +339,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const spec = selected?.spec;
     $("#docu-project-view").hidden = !spec;
     $("#docu-project-fields").hidden = Boolean(spec);
-    const framing: Record<string, string> = { none: "Không", letterbox_235: "Viền đen điện ảnh 2.35:1", overscan_108: "Phóng nhẹ 108% (cắt mép)" };
+    const framing: Record<string, string> = { none: "Không", letterbox_235: "Viền đen điện ảnh 2,35:1", overscan_108: "Phóng nhẹ 108% (cắt mép)" };
     $("#docu-project-info").innerHTML = spec ? `<dt>Nguồn</dt><dd>${spec.sources.map(source => `${escapeHtml(sourceName(source.id))} · ${escapeHtml(source.title)}`).join("<br>")}</dd>
       <dt>Mục tiêu</dt><dd>${spec.target_minutes} phút</dd><dt>Khung hình</dt><dd><select id="docu-framing-change" aria-label="Đổi khung hình">${Object.entries(framing).map(([value, name]) => `<option value="${value}" ${spec.cinematic_framing_preset === value ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select><small id="docu-framing-state" class="hint" role="status"></small></dd>
       <dt>Ghi nguồn cuối video</dt><dd>${spec.burn_end_credits ? "Có" : "Không (chỉ ghi trong mô tả)"}</dd>` : "";

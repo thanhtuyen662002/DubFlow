@@ -64,7 +64,7 @@ export function sceneName(sceneId: string): string {
   const number = /^sc_0*(\d+)$/.exec(sceneId)?.[1];
   return number ? `Cảnh ${number}` : sceneId;
 }
-const FRAMING_NAMES: Record<string, string> = { none: "Không", letterbox_235: "Viền đen điện ảnh 2.35:1", overscan_108: "Phóng nhẹ 108% (cắt mép)" };
+const FRAMING_NAMES: Record<string, string> = { none: "Không", letterbox_235: "Viền đen điện ảnh 2,35:1", overscan_108: "Phóng nhẹ 108% (cắt mép)" };
 /**
  * What Claude did over MCP, as the user reads it: scene and source ids as
  * "Cảnh 22" / "Nguồn 4", framing presets by name, tool names (meant for
