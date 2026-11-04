@@ -83,6 +83,49 @@ class ToolTests(unittest.TestCase):
         with self.assertRaises(DocuError):
             mcp_tools.remove_label(self.run, "l001")
 
+    def test_hand_picked_slices_survive_a_new_plan(self):
+        mcp_tools.replace_clip(self.run, "sc_001", 1, "src_01", 12.0)
+        plan = json.loads((self.run / "visual_plan.json").read_text(encoding="utf-8"))
+        # A new plan (pacing, framing, rescan) cuts the scene differently: the choice stays, at the new length.
+        plan["scenes"][0]["slices"] = [{"source_id": "src_02", "start": 0.0, "end": 2.5, "at": 0.0, "tier": 0},
+                                       {"source_id": "src_02", "start": 5.0, "end": 8.0, "at": 2.5, "tier": 0},
+                                       {"source_id": "src_01", "start": 2.0, "end": 4.5, "at": 5.5, "tier": 0}]
+        self.assertEqual(visual.apply_overrides(self.run, plan), [])
+        self.assertEqual(plan["scenes"][0]["slices"][1], {"source_id": "src_01", "start": 12.0, "end": 15.0, "at": 2.5, "tier": -1})
+        # Fewer slices than the remembered index: said, not silently lost.
+        plan["scenes"][0]["slices"] = plan["scenes"][0]["slices"][:1]
+        self.assertIn("không còn chỗ", visual.apply_overrides(self.run, plan)[0])
+        # A changed script drops them, and says so.
+        plan["script_sha256"] = "other"
+        self.assertIn("Kịch bản đã đổi", visual.apply_overrides(self.run, plan)[0])
+        self.assertFalse((work_dir(self.run) / visual.OVERRIDES).exists())
+
+    def test_framing_changes_without_a_new_plan(self):
+        plan = json.loads((self.run / "visual_plan.json").read_text(encoding="utf-8"))
+        band = {"top": 0.86, "bottom": 0.93, "share": 0.9}
+        plan["sources"][0]["framing"] = {"band": band, "zoom": 1.14, "shift": 0.0614, "letterbox": 0.0, "clear": False}
+        plan["sources"][1]["framing"] = {"band": None, "zoom": 1.0, "shift": 0.0, "letterbox": 0.0, "clear": True, "portrait": True}
+        plan["warnings"] = [visual.caption_warning("src_01", "none"), visual.portrait_warning("src_02"), "Kế hoạch khác"]
+        write_json(self.run / "visual_plan.json", plan)
+        slices = plan["scenes"]
+        result = visual.reframe(self.run, "letterbox_235")
+        self.assertEqual(result["sources"], [{"source_id": "src_01", "clear": True}, {"source_id": "src_02", "clear": True}])
+        saved = json.loads((self.run / "visual_plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["scenes"], slices)
+        self.assertEqual(saved["sources"][0]["framing"]["band"], band)
+        self.assertAlmostEqual(saved["sources"][0]["framing"]["letterbox"], 0.1217, places=3)
+        self.assertEqual(saved["warnings"], [visual.portrait_warning("src_02"), "Kế hoạch khác"])
+        self.assertEqual(json.loads((work_dir(self.run) / "spec.json").read_text(encoding="utf-8"))["cinematic_framing_preset"], "letterbox_235")
+        with self.assertRaises(DocuError):
+            visual.reframe(self.run, "wide")
+
+    def test_a_label_can_cover_one_slice_only(self):
+        label = mcp_tools.apply_label(self.run, "sc_001", "Disinfection room", 0.6, 0.8, 0.25, 1)["label"]
+        self.assertEqual(label["clip_index"], 1)
+        for bad in (2, -1, "1"):
+            with self.subTest(bad), self.assertRaises(DocuError):
+                mcp_tools.apply_label(self.run, "sc_001", "x", 0.5, 0.5, 0.3, bad)
+
     def test_pacing_is_saved_then_the_plan_rebuilt(self):
         replans = []
 
@@ -283,7 +326,7 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual([reply.get("id") for reply in replies], [1, 2, 3, 4, 5, 6, 7, None])
             self.assertEqual(replies[0]["result"]["protocolVersion"], "2024-11-05")
             self.assertEqual({tool["name"] for tool in replies[1]["result"]["tools"]}, {tool["name"] for tool in TOOLS})
-            self.assertEqual(len(TOOLS), 9)
+            self.assertEqual(len(TOOLS), 10)
             self.assertFalse(replies[2]["result"]["isError"])
             self.assertEqual(len(json.loads(replies[2]["result"]["content"][0]["text"])), 1)
             self.assertTrue(replies[3]["result"]["isError"])

@@ -5,7 +5,7 @@ import {
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
   hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseRender, parseRuns, parseVisual, parseVoices, planStale,
   calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
-  type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
+  type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
 import { addText, type Edit } from "../edit/model.ts";
@@ -240,8 +240,30 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const spec = selected?.spec;
     const framing: Record<string, string> = { none: "Không", letterbox_235: "Letterbox 2.35:1", overscan_108: "Tight overscan 108%" };
     $("#docu-project-info").innerHTML = spec ? `<dt>Nguồn</dt><dd>${spec.sources.map(source => `${escapeHtml(source.id)} · ${escapeHtml(source.title)}`).join("<br>")}</dd>
-      <dt>Mục tiêu</dt><dd>${spec.target_minutes} phút</dd><dt>Khung hình</dt><dd>${escapeHtml(framing[spec.cinematic_framing_preset] ?? spec.cinematic_framing_preset)}</dd>
+      <dt>Mục tiêu</dt><dd>${spec.target_minutes} phút</dd><dt>Khung hình</dt><dd><select id="docu-framing-change" aria-label="Đổi khung hình">${Object.entries(framing).map(([value, name]) => `<option value="${value}" ${spec.cinematic_framing_preset === value ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select><small id="docu-framing-state" class="hint" role="status"></small></dd>
       <dt>Credit cuối video</dt><dd>${spec.burn_end_credits ? "Có" : "Không (chỉ ghi trong mô tả)"}</dd>` : "";
+  }
+
+  /** Change the framing look in place: slices, hand edits and caption scans stay; re-render to see it. */
+  async function changeFraming(preset: string): Promise<void> {
+    if (!selected) return;
+    const dir = selected.dir;
+    const state = $("#docu-framing-state");
+    state.textContent = "Đang đổi khung hình…";
+    try {
+      const result = await invoke("docu_reframe", { dir, preset }) as { plan?: boolean; sources?: { source_id: string; clear: boolean }[] };
+      if (selected?.dir !== dir) return;
+      selected.spec.cinematic_framing_preset = preset as FramingPreset;
+      visual = parseVisual(await invoke("docu_plan_status", { dir }));
+      renderVisual();
+      const covered = (result.sources ?? []).filter(source => !source.clear).map(source => source.source_id);
+      state.textContent = !result.plan ? "Đã đổi khung hình." : covered.length
+        ? `Đã đổi. ${covered.join(", ")} vẫn phải kéo giãn mép ảnh để che phụ đề gốc. Dựng lại bản nháp để thấy khung mới.`
+        : "Đã đổi; mọi nguồn che được phụ đề gốc. Dựng lại bản nháp để thấy khung mới.";
+    } catch (error) {
+      state.textContent = error instanceof Error ? error.message : String(error);
+      renderProjectInfo();
+    }
   }
 
   function renderProvider(): void {
@@ -657,6 +679,10 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-render-reveal").addEventListener("click", () => { if (render.video) void invoke("reveal_path", { path: render.video }).catch(() => undefined); });
   $("#docu-plan-cancel").addEventListener("click", () => { if (selected) void invoke("docu_plan_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-narration-cancel").addEventListener("click", () => { if (selected) void invoke("docu_narration_cancel", { dir: selected.dir }).catch(() => undefined); });
+  $("#docu-project-info").addEventListener("change", event => {
+    const target = event.target as HTMLElement;
+    if (target.id === "docu-framing-change") void changeFraming((target as HTMLSelectElement).value);
+  });
   $("#docu-player-source").addEventListener("change", () => void setPlayerSource(($("#docu-player-source") as HTMLSelectElement).value));
   video.addEventListener("timeupdate", () => {
     if (stoppingAt !== null && video.currentTime >= stoppingAt) { video.pause(); stoppingAt = null; }

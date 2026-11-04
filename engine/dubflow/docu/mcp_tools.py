@@ -212,13 +212,20 @@ def replace_clip(run: Path, scene_id: str, slice_index: int, source_id: str, sta
         raise DocuError(f"Đoạn {start}–{start + length:.3f} s nằm ngoài video {source_id} ({source['duration']} s)")
     piece.update({"source_id": source_id, "start": round(float(start), 3), "end": round(float(start) + length, 3), "tier": -1})
     _publish(plan_path, plan)
-    return {"scene_id": scene_id, "slice": piece, "note": "Dựng lại bản nháp (render_rough_cut) để thấy thay đổi"}
+    # Remembered, so a new plan (pacing, framing, a fresh scan) keeps the choice.
+    work_dir(run).joinpath(visual.OVERRIDES + ".partial").unlink(missing_ok=True)
+    visual.save_override(run, plan.get("script_sha256"), scene_id, slice_index, source_id, float(start))
+    return {"scene_id": scene_id, "slice": piece, "note": "Dựng lại bản nháp (render_rough_cut) để thấy thay đổi; "
+            "lập lại kế hoạch vẫn giữ lựa chọn này"}
 
 
-def apply_label(run: Path, scene_id: str, text: str, x: float, y: float, width: float) -> dict[str, Any]:
+def apply_label(run: Path, scene_id: str, text: str, x: float, y: float, width: float, clip_index: int | None = None) -> dict[str, Any]:
     plan = _json(run / "visual_plan.json") or {}
-    if scene_id not in {scene["scene_id"] for scene in plan.get("scenes", [])}:
+    scene = next((item for item in plan.get("scenes", []) if item["scene_id"] == scene_id), None)
+    if scene is None:
         raise DocuError(f"Không có cảnh {scene_id} trong kế hoạch hình ảnh")
+    if clip_index is not None and (type(clip_index) is not int or not 0 <= clip_index < len(scene["slices"])):
+        raise DocuError(f"clip_index phải từ 0 đến {len(scene['slices']) - 1} (lát cắt của cảnh)")
     words = " ".join(str(text or "").replace("\r", "").split(" ")).strip()
     if not words or len(words) > MAX_LABEL_TEXT or any(ord(c) < 32 and c != "\n" for c in words):
         raise DocuError(f"Nhãn cần 1–{MAX_LABEL_TEXT} ký tự")
@@ -230,6 +237,9 @@ def apply_label(run: Path, scene_id: str, text: str, x: float, y: float, width: 
         raise DocuError(f"Tối đa {MAX_LABELS} nhãn mỗi dự án")
     label = {"id": f"l{len(labels) + 1:03d}", "scene_id": scene_id, "text": words, "x": round(float(x), 4), "y": round(float(y), 4),
              "w": round(float(width), 4)}
+    if clip_index is not None:
+        # Only while that slice is on screen: the foreign text belongs to one shot, not the whole scene.
+        label["clip_index"] = clip_index
     _publish(work_dir(run) / roughcut.LABELS, {"schema_version": 1, "labels": labels + [label]})
     return {"label": label, "note": "Dựng lại bản nháp (render_rough_cut) để thấy nhãn"}
 

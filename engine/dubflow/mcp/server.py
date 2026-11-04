@@ -19,7 +19,7 @@ PROTOCOL = "2025-06-18"
 SUPPORTED = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER = {"name": "dubflow", "title": "DubFlow Phim tài liệu", "version": "1"}
 INSTRUCTIONS = ("Tools for DubFlow documentary projects (Phim tài liệu). Start with list_projects, then inspect_timeline_state. "
-                "Plan edits (replace_timeline_clip, apply_smart_label_overlay, adjust_pacing_and_transitions) take effect after "
+                "Plan edits (replace_timeline_clip, apply_smart_label_overlay, adjust_pacing_and_transitions, set_framing) take effect after "
                 "render_rough_cut. Use get_frame to look at a moment, e.g. to read a foreign label before covering it.")
 
 _PROJECT = {"type": "string", "description": "The project's run folder (…\\Phim tai lieu - <title>\\run-<id>), from list_projects; "
@@ -41,15 +41,18 @@ TOOLS = [
           "labels, plan warnings (e.g. burned-in captions), review flags, pacing and the rough cut / CapCut state.",
           {"project": _PROJECT}, ["project"], read_only=True),
     _tool("replace_timeline_clip", "Point one B-roll slice of a scene at other footage (another source or time). The slice keeps its "
-          "length, set by the narration. Re-render to see it.",
+          "length, set by the narration. The choice survives a new plan (pacing, framing). Re-render to see it.",
           {"project": _PROJECT, "scene_id": {"type": "string"}, "clip_index": {"type": "integer", "minimum": 0},
            "new_source_id": {"type": "string", "description": "src_01…"},
            "start_time": {"type": "number", "minimum": 0, "description": "Seconds into the source"}},
           ["project", "scene_id", "clip_index", "new_source_id", "start_time"]),
-    _tool("apply_smart_label_overlay", "Put an English label box (dark slate, white words) over the picture during a scene, e.g. over a "
-          "Chinese label in a technical graphic. Positions are fractions of the 16:9 frame (centre x/y, width). Burned into the rough cut "
-          "on the next render and offered in the editor's first draft.",
-          {"project": _PROJECT, "scene_id": {"type": "string"}, "text_en": {"type": "string", "maxLength": 160},
+    _tool("apply_smart_label_overlay", "Put an English label box (dark slate, white words) over the picture during one B-roll slice "
+          "(clip_index) or the whole scene, e.g. over a Chinese label in a technical graphic. Positions are fractions of the 16:9 output "
+          "frame (centre x/y, width): check them with get_frame on the rough cut. Burned into the rough cut on the next render and "
+          "offered in the editor's first draft.",
+          {"project": _PROJECT, "scene_id": {"type": "string"},
+           "clip_index": {"type": "integer", "minimum": 0, "description": "Only during this slice of the scene (recommended); omit for the whole scene"},
+           "text_en": {"type": "string", "maxLength": 160},
            "pos_x": {"type": "number", "minimum": 0, "maximum": 1}, "pos_y": {"type": "number", "minimum": 0, "maximum": 1},
            "width": {"type": "number", "minimum": 0.05, "maximum": 1}},
           ["project", "scene_id", "text_en", "pos_x", "pos_y", "width"]),
@@ -61,6 +64,10 @@ TOOLS = [
            "max_clip_duration": {"type": "number", "minimum": 2, "maximum": 8},
            "ken_burns_intensity": {"type": "number", "minimum": 0, "maximum": 0.1, "description": "0 turns it off; 0.04 is the default"}},
           ["project"]),
+    _tool("set_framing", "Change the project's framing look without redoing narration, scans or hand-picked slices: none, "
+          "letterbox_235 (2.35:1 bars, hides low captions best) or overscan_108. Returns which sources still need edge stretch "
+          "over their burned-in captions. Re-render to see it.",
+          {"project": _PROJECT, "preset": {"type": "string", "enum": ["none", "letterbox_235", "overscan_108"]}}, ["project", "preset"]),
     _tool("render_rough_cut", "Render documentary.mp4 from the plan and narration (unchanged slices are reused). Can take minutes.",
           {"project": _PROJECT}, ["project"]),
     _tool("sync_to_capcut_draft", "Write the rough cut as a CapCut PC draft (one clip per slice plus the narration) and list it first in "
@@ -123,7 +130,10 @@ class Server:
         if name == "replace_timeline_clip":
             return _text(mcp_tools.replace_clip(run, args.get("scene_id"), args.get("clip_index"), args.get("new_source_id"), args.get("start_time")))
         if name == "apply_smart_label_overlay":
-            return _text(mcp_tools.apply_label(run, args.get("scene_id"), args.get("text_en"), args.get("pos_x"), args.get("pos_y"), args.get("width")))
+            return _text(mcp_tools.apply_label(run, args.get("scene_id"), args.get("text_en"), args.get("pos_x"), args.get("pos_y"),
+                                               args.get("width"), args.get("clip_index")))
+        if name == "set_framing":
+            return _text({**visual.reframe(run, args.get("preset")), "note": "Dựng lại bản nháp (render_rough_cut) để thấy khung mới"})
         if name == "remove_label":
             return _text(mcp_tools.remove_label(run, args.get("label_id")))
         if name == "adjust_pacing_and_transitions":
