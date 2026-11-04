@@ -10,6 +10,8 @@ Each scene's slot (its narration plus the pause after it) is filled with
   interleaving); two consecutive slices from one source are at least 8 s apart
   in that source, so the cut never jumps within one shot;
 * no source range is used twice in the project;
+* a portrait (phone) source keeps only a strip in 16:9: its footage ranks as
+  uncited and after any landscape footage of the same rank;
 * a slice starts on a shot boundary when one is available and ends on a cut
   near its planned end, so a cut never lands inside a camera transition.
 
@@ -42,6 +44,8 @@ class Source:
     id: str
     duration: float
     cuts: tuple[float, ...]
+    # A phone video: 16:9 keeps only a strip of it, so it is the last resort.
+    portrait: bool = False
 
 
 @dataclass(frozen=True)
@@ -193,7 +197,9 @@ def _choose(candidates, sources: dict[str, Source], used: _Used, previous: Slice
         # Uncited footage is uncited wherever it comes from: between the rest of a cited
         # source and another source, the A/B interleaving decides (#450).
         rank = REUSED if reuse else min(tier, SAME_SOURCES)
-        key = (rank, int(same), on_cut, order, source_id, start)
+        if source.portrait and not reuse:
+            rank = max(rank, SAME_SOURCES)
+        key = (rank, int(source.portrait), int(same), on_cut, order, source_id, start)
         if best is None or key < best[0]:
             best = (key, (REUSED if reuse else tier, source_id, start, end))
     return best[1] if best else None
