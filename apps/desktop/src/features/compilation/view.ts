@@ -567,7 +567,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     if (!path) { section.hidden = true; return; }
     let response: { status: { state: string; percent: number } | null; exports: ExportEntry[] } | null = null;
     try {
-      response = await invoke("edit_status", { outputPath: path });
+      response = await invoke("edit_status", { outputPath: path, kind: "compilation" });
     } catch {
       response = null;
     }

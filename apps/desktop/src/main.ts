@@ -534,12 +534,12 @@ const editor = mountEditor(invoke, {
   },
   library: () => [
     ...queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
-      .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath! })),
+      .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath!, kind: "job" as const })),
     // The other pages' finished videos (Bán hàng, Tổng hợp, Phim tài liệu), as on the Chỉnh sửa screen.
-    ...distinctTitles(editLibrary.found()).map((entry) => ({ id: entry.path, title: entry.title, outputPath: entry.path,
+    ...distinctTitles(editLibrary.found()).map((entry) => ({ id: entry.path, title: entry.title, outputPath: entry.path, kind: entry.kind === "job" ? "file" as const : entry.kind,
       meta: [KIND_LABELS[entry.kind], entry.title.endsWith(shortDate(entry.modified)) ? "" : shortDate(entry.modified)].filter(Boolean).join(" · ") })),
     // The browser preview has no finished jobs of its own to insert.
-    ...(isTauri ? [] : PREVIEW_EDIT_LIBRARY),
+    ...(isTauri ? [] : PREVIEW_EDIT_LIBRARY.map((item) => ({ ...item, kind: "job" as const }))),
   ],
   revise: async (job, outputDir) => {
     const revisionId = queue.reviseJob(job.id, outputDir);

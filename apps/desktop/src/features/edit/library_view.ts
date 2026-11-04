@@ -326,8 +326,8 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
       return;
     }
     for (const path of videos.slice(1).reverse()) remember(path);
-    const known = entries().find((entry) => entry.path.toLowerCase() === videos[0].toLowerCase());
-    void openEntry(known ?? { path: videos[0], kind: "file", title: fileTitle(videos[0]), modified: Math.floor(Date.now() / 1000) });
+    // Picked or dropped: always a video on the computer, its draft kept in DubFlow's own store.
+    void openEntry({ path: videos[0], kind: "file", title: fileTitle(videos[0]), modified: Math.floor(Date.now() / 1000) });
   }
 
   async function pickFile(): Promise<void> {

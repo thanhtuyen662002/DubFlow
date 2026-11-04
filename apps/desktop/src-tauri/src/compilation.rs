@@ -132,6 +132,7 @@ pub fn compilation_render(request: CompilationRequest) -> Result<String, String>
     let output = compilation_output(&base, &request.title, &format!("{started}:{}:{}", std::process::id(), request.title));
     fs::create_dir_all(output.parent().unwrap()).map_err(|_| fail("Không tạo được thư mục tổng hợp"))?;
     fs::create_dir(&output).map_err(|_| fail("Không tạo được phiên tổng hợp mới"))?;
+    crate::edit::record_run("compilation", &output);
     let work = output.join(".dubflow-work");
     fs::create_dir(&work).map_err(|_| fail("Không tạo được thư mục làm việc"))?;
     let items: Vec<Value> = request.items.iter().zip(videos).map(|(item, video)| json!({

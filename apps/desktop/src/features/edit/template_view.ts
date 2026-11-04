@@ -349,13 +349,13 @@ export function mountTemplate(invoke: Invoke, context: TemplateContext): Templat
     const next: TemplateTarget = { kind: "product", outputPath: path, displayName: `${name} · video 1` };
     let warning = "";
     try {
-      const loaded = await invoke<{ duration: number; width: number; height: number; fps?: number; has_audio: boolean }>("edit_project_load", { outputPath: path });
+      const loaded = await invoke<{ duration: number; width: number; height: number; fps?: number; has_audio: boolean }>("edit_project_load", { outputPath: path, kind: "product" });
       if (draft) {
         const before = outputDuration(draft.edit);
         const { edit, trimmed } = retargetEdit(draft.edit, loaded.duration, {
           path, title: next.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio,
         });
-        await invoke("edit_project_save", { outputPath: path, project: serializeProject(edit, draft.changes, draft.selected, draft.recent) });
+        await invoke("edit_project_save", { outputPath: path, kind: "product", project: serializeProject(edit, draft.changes, draft.selected, draft.recent) });
         if (Math.abs(loaded.duration - draft.edit.duration) > 0.05) {
           warning = ` Video mới dài ${formatClock(loaded.duration)} (trước ${formatClock(draft.edit.duration)})`
             + (trimmed ? `: ${trimmed} phần cắt ghép, chèn, âm thanh hoặc chữ nằm ngoài độ dài mới đã được cắt bớt hoặc bỏ — hãy xem lại.` : `; bản sửa dài ${formatClock(outputDuration(edit))} (trước ${formatClock(before)}).`);

@@ -39,7 +39,7 @@ type StatusResponse = { status: ExportStatus | null; exports: ExportEntry[] };
 type MediaResponse = { path: string; title: string; duration: number; width: number; height: number; fps: number; has_audio: boolean };
 
 /** A finished queue video the Chèn panel offers. */
-export type LibraryJob = { id: string; title: string; outputPath: string; meta?: string };
+export type LibraryJob = { id: string; title: string; outputPath: string; kind: EditTarget["kind"]; meta?: string };
 
 /**
  * A video the editor opens: a queue job's `final_vi.mp4`, a Bán hàng video,
@@ -781,9 +781,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   async function save(): Promise<void> {
     if (!session) return;
-    const { outputPath, history, selected, recent } = session;
+    const { outputPath, history, selected, recent, target: { kind } } = session;
     try {
-      await invoke("edit_project_save", { outputPath, project: serializeProject(history.current, history.changes, selected, recent) });
+      await invoke("edit_project_save", { outputPath, kind, project: serializeProject(history.current, history.changes, selected, recent) });
       $("#edit-save-state").textContent = "";
     } catch (error) {
       $("#edit-save-state").textContent = `Chưa lưu được bản nháp: ${String(error).slice(0, 140)}`;
@@ -1226,7 +1226,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const token = ++libraryToken;
     const jobs = host.library().filter((job) => job.id !== session!.target.id && job.outputPath);
     const items: LibraryItem[] = [];
-    const statuses = await Promise.all(jobs.map((job) => invoke<StatusResponse>("edit_status", { outputPath: job.outputPath }).catch(() => null)));
+    const statuses = await Promise.all(jobs.map((job) => invoke<StatusResponse>("edit_status", { outputPath: job.outputPath, kind: job.kind }).catch(() => null)));
     if (token !== libraryToken || !session) return;
     jobs.forEach((job, index) => {
       items.push({ key: `job:${job.id}`, path: job.outputPath, title: job.title, meta: job.meta ?? "Video đã làm trong DubFlow", kind: "job", duration: null });
@@ -1892,8 +1892,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     openButton.disabled = true;
     try {
       const [loaded, status] = await Promise.all([
-        invoke<LoadResponse>("edit_project_load", { outputPath }),
-        invoke<StatusResponse>("edit_status", { outputPath }).catch(() => null),
+        invoke<LoadResponse>("edit_project_load", { outputPath, kind: target.kind }),
+        invoke<StatusResponse>("edit_status", { outputPath, kind: target.kind }).catch(() => null),
       ]);
       // The queue selection moved on while a queue video was opening.
       if (ticket !== openTicket || (target.kind === "job" && listJob?.id !== target.id)) return false;
@@ -2010,9 +2010,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   /** Whose renders the status follows: the open video, else the queue's finished selection. */
-  function subject(): { id: string; outputPath: string } | null {
-    if (session) return { id: session.target.id, outputPath: session.outputPath };
-    return listJob?.outputPath ? { id: listJob.id, outputPath: listJob.outputPath } : null;
+  function subject(): { id: string; outputPath: string; kind: EditTarget["kind"] } | null {
+    if (session) return { id: session.target.id, outputPath: session.outputPath, kind: session.target.kind };
+    return listJob?.outputPath ? { id: listJob.id, outputPath: listJob.outputPath, kind: "job" } : null;
   }
 
   async function poll(token: number): Promise<void> {
@@ -2021,7 +2021,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const previous = listStatus?.status?.state;
     let response: StatusResponse;
     try {
-      response = await invoke<StatusResponse>("edit_status", { outputPath: job.outputPath });
+      response = await invoke<StatusResponse>("edit_status", { outputPath: job.outputPath, kind: job.kind });
     } catch {
       if (token === pollToken && previous === "RUNNING") schedulePoll(2000);
       return;
@@ -2112,7 +2112,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const job = subject();
     if (!job?.outputPath) return;
     try {
-      await invoke("edit_cancel", { outputPath: job.outputPath });
+      await invoke("edit_cancel", { outputPath: job.outputPath, kind: job.kind });
     } catch (error) {
       host.showError(`Không hủy được: ${String(error).slice(0, 160)}`);
     }
@@ -2201,7 +2201,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   async function startExport(): Promise<void> {
     if (!session) return;
     const edit = current();
-    const outputPath = session.outputPath;
+    const { outputPath, target: { kind } } = session;
     const cues = remapCues(session.facts.cues, edit).filter((cue) => cue.end_ms > cue.start_ms);
     const start = $<HTMLButtonElement>("#export-start");
     const error = $("#export-error");
@@ -2209,7 +2209,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     error.hidden = true;
     try {
       await flush();
-      await invoke("edit_export", { request: { outputPath, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit) } });
+      await invoke("edit_export", { request: { outputPath, kind, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit) } });
       if (session?.outputPath !== outputPath) return;
       session.exporting = edit;
       dialogWaiting = true;
