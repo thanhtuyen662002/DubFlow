@@ -255,7 +255,7 @@ export function mountTemplate(invoke: Invoke, context: TemplateContext): Templat
       select.replaceChildren(...catalog.voices.map((voice) => {
         const option = document.createElement("option");
         option.value = voice.voice_id;
-        option.textContent = `${voice.name} · ${voice.gender} · ${voice.accent} · ${voice.style}`;
+        option.textContent = `${voice.name} · ${voice.gender} · miền ${voice.accent} · ${voice.style}`;
         return option;
       }));
     } catch (error) {

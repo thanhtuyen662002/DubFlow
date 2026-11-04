@@ -38,7 +38,7 @@ export type SourceContext = { schema_version?: number; source_id: string; title:
 export type SourceRef = { source_id: string; start: number; end: number };
 export const GRAPHIC_TYPES = ["METRIC_CALLOUT", "LOWER_THIRD", "LABEL"] as const;
 export type GraphicType = typeof GRAPHIC_TYPES[number];
-export const GRAPHIC_NAMES: Record<GraphicType, string> = { METRIC_CALLOUT: "Thẻ số liệu", LOWER_THIRD: "Lower third", LABEL: "Nhãn" };
+export const GRAPHIC_NAMES: Record<GraphicType, string> = { METRIC_CALLOUT: "Thẻ số liệu", LOWER_THIRD: "Dòng chú thích dưới", LABEL: "Nhãn" };
 export type OnScreenGraphic = { type: GraphicType; title: string; value: string; subtext: string } | null;
 export type DocuScene = {
   scene_id: string; narration_text: string; matched_source_refs: SourceRef[]; visual_search_tags: string[];
@@ -70,8 +70,9 @@ const FRAMING_NAMES: Record<string, string> = { none: "Không", letterbox_235: "
  * "Cảnh 22" / "Nguồn 4", framing presets by name, tool names (meant for
  * Claude, in parentheses) left out, decimals with a comma.
  */
-export function readable(text: string): string {
+export function readable(text: string, voiceName: (voiceId: string) => string | undefined = () => undefined): string {
   return text
+    .replace(/\bgiọng ([a-z]{2}_[a-z]+)\b/g, (whole, id: string) => { const name = voiceName(id); return name ? `giọng ${name}` : whole; })
     .replace(/\s*\((?:[a-z]+_)+[a-z]+\)/g, "")
     .replace(/\bsc_0*(\d+)\b/g, "cảnh $1")
     .replace(/\bsrc_0*(\d+)\b/g, "nguồn $1")

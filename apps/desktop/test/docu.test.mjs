@@ -307,5 +307,7 @@ assert.equal(parseMcpActivity({ updated: "x", current: null, recent: [] }).curre
   assert.equal(readable("Dựng lại bản nháp (render_rough_cut) để thấy khung mới"), "Dựng lại bản nháp để thấy khung mới");
   assert.equal(readable("Lỗi: bilibili: Platform requires verification in its browser."), "Lỗi: bilibili: Nền tảng yêu cầu xác minh trong trình duyệt.");
   assert.equal(readable("Tìm video trên bilibili: 湖北养猪大楼"), "Tìm video trên bilibili: 湖北养猪大楼");
+  assert.equal(readable("Tạo lời đọc (giọng am_michael)", (id) => id === "am_michael" ? "Michael" : undefined), "Tạo lời đọc (giọng Michael)");
+  assert.equal(readable("Tạo lời đọc (giọng am_unknown)"), "Tạo lời đọc (giọng am_unknown)");
   console.log("docu activity text tests passed");
 }

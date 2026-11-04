@@ -346,7 +346,7 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
 
   function renderCategories(): void {
     const chips = [null, ...CATEGORIES].map((name) => {
-      const chip = element("button", "au-cat", name ?? "Tất cả");
+      const chip = element("button", "au-cat", name === "Bấm/Pop" ? "Bấm, tách" : name ?? "Tất cả");
       chip.type = "button";
       chip.setAttribute("role", "radio");
       chip.setAttribute("aria-checked", String(name === category));

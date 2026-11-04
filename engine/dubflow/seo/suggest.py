@@ -227,6 +227,14 @@ def _hashtags(cues: list[str], title: str, tags: list[str], keywords: list[str])
     return result
 
 
+# A link's tail used as a name (BV1ckx16aEBz, a Douyin/Kuaishou number) says nothing to a viewer.
+_PLATFORM_ID = re.compile(r"(?:BV[0-9A-Za-z]{10}|av\d{3,}|\d{8,}|(?=[^ ]*\d)(?=[^ ]*[A-Za-z])[0-9a-zA-Z_-]{11})")
+
+
+def _human_title(title: str) -> str:
+    return "" if _PLATFORM_ID.fullmatch(title.strip()) and not re.search(r"\s", title.strip()) else title
+
+
 def suggest_post(
     cues: list[str],
     *,
@@ -240,7 +248,7 @@ def suggest_post(
     text ranking or imply a genre. Output order is deterministic.
     """
     lines = [line for cue in cues if (line := _clean(cue))]
-    title = _clean(source_title)
+    title = _human_title(_clean(source_title))
     tags = [_clean(tag) for tag in source_tags]
     keywords = _keywords(lines, title, tags)
     return {

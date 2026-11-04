@@ -520,12 +520,12 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   function videoActions(video: ProductVideo): HTMLElement[] {
     const watch = document.createElement("button");
     watch.type = "button";
-    watch.className = "link";
+    watch.className = "btn";
     watch.textContent = "Xem";
     watch.addEventListener("click", () => void play(video));
     const edit = document.createElement("button");
     edit.type = "button";
-    edit.className = "link";
+    edit.className = "btn";
     edit.textContent = "Chỉnh sửa";
     edit.title = "Mở trong trình chỉnh sửa: cắt ghép, chèn, âm thanh, chữ và đổi mẫu";
     edit.addEventListener("click", () => settings.edit(video));
@@ -582,7 +582,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
         const name = `${info().name || "Video bán hàng"} · video ${video.index}`;
         const open = document.createElement("button");
         open.type = "button";
-        open.className = "link";
+        open.className = "btn";
         open.textContent = "Mở";
         open.title = "Mở bằng trình phát của máy";
         open.addEventListener("click", () => void invoke("open_path", { path }).catch(() => undefined));
@@ -677,7 +677,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       voiceSelect.replaceChildren(...catalog.voices.map((voice) => {
         const option = document.createElement("option");
         option.value = voice.voice_id;
-        option.textContent = `${voice.name} · ${voice.gender} · ${voice.accent} · ${voice.style}`;
+        option.textContent = `${voice.name} · ${voice.gender} · miền ${voice.accent} · ${voice.style}`;
         option.selected = voice.voice_id === catalog.default_voice_id;
         return option;
       }));
@@ -701,11 +701,13 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     music = picked;
     $("#product-music-name").textContent = fileName(picked);
     $("#product-music-clear").hidden = false;
+    $("#product-volume-row").hidden = false;
   });
   $("#product-music-clear").addEventListener("click", () => {
     music = null;
     $("#product-music-name").textContent = "Không có";
     $("#product-music-clear").hidden = true;
+    $("#product-volume-row").hidden = true;
   });
   $("#product-read").addEventListener("click", () => withKey(readSource));
   $("#product-write").addEventListener("click", () => withKey(write));

@@ -425,6 +425,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
         cues: reviewCues.map(({ cue_id, start_ms, end_ms, machine_text }) => ({ start_ms, end_ms, text: savedOverrides[cue_id] ?? machine_text })),
       } as T;
     }
+    case "edit_file_sizes": return (args.paths as string[]).map(() => 46_000_000) as T;
     case "edit_library": {
       // The other pages' finished videos, with made-up dates so the list has its groups.
       const now = Math.floor(Date.now() / 1000);

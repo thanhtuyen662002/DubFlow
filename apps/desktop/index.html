@@ -231,7 +231,7 @@
                       <select id="product-seconds"><option value="20">20 giây</option><option value="30" selected>30 giây</option><option value="45">45 giây</option><option value="60">60 giây</option></select>
                     </label>
                     <label>Giọng điệu
-                      <select id="product-tone"><option>tự nhiên, thân thiện</option><option>hào hứng, chốt đơn nhanh</option><option>chuyên nghiệp, đáng tin cậy</option><option>hài hước, gần gũi</option></select>
+                      <select id="product-tone"><option value="tự nhiên, thân thiện">Tự nhiên, thân thiện</option><option value="hào hứng, chốt đơn nhanh">Hào hứng, chốt đơn nhanh</option><option value="chuyên nghiệp, đáng tin cậy">Chuyên nghiệp, đáng tin cậy</option><option value="hài hước, gần gũi">Hài hước, gần gũi</option></select>
                     </label>
                     <button id="product-write" class="btn primary" type="button">Viết kịch bản bằng AI</button>
                   </div>
@@ -239,6 +239,34 @@
                   <p id="product-scripts-empty" class="hint">Chưa có kịch bản. Bấm “Viết kịch bản bằng AI” hoặc tự viết.</p>
                   <ol id="product-scripts" class="product-scripts"></ol>
                   <p class="hint">Đọc lại và sửa cho đúng sản phẩm trước khi tạo video. Mỗi kịch bản được chọn thành một video.</p>
+                </section>
+                <section id="product-create-card" class="product-card">
+                  <h2><b>5</b> Giọng đọc và tạo video</h2>
+                  <div class="product-voice-grid">
+                    <label class="product-voice-wide">Giọng đọc <select id="product-voice"></select></label>
+                    <label>Tốc độ đọc
+                      <select id="product-speed"><option value="1" selected>Bình thường</option><option value="1.1">Hơi nhanh</option><option value="1.2">Nhanh</option></select>
+                    </label>
+                    <div class="product-music-field">
+                      <span>Nhạc nền</span>
+                      <span class="product-music"><span id="product-music-name">Không có</span>
+                        <button id="product-music" class="btn" type="button">Chọn nhạc…</button>
+                        <button id="product-music-clear" class="link" type="button" hidden>Bỏ</button>
+                      </span>
+                    </div>
+                    <label id="product-volume-row" class="product-voice-wide" hidden>Âm lượng nhạc <input id="product-volume" type="range" min="0" max="50" value="15" /></label>
+                  </div>
+                  <div class="product-actions product-create-actions">
+                    <button id="product-render" class="btn primary block" type="button">Tạo video</button>
+                    <button id="product-cancel" class="btn danger" type="button" hidden>Hủy</button>
+                    <p id="product-render-state" class="discover-state" role="status"></p>
+                  </div>
+                  <ul id="product-results" class="product-results"></ul>
+                  <div id="product-recent" class="product-recent" hidden>
+                    <h3 class="product-label">Video đã tạo</h3>
+                    <ul id="product-recent-list" class="product-results product-recent-list" aria-label="Video bán hàng đã tạo"></ul>
+                  </div>
+                  <p class="hint">Chỉ dùng ảnh, clip và nhạc bạn có quyền sử dụng. Video lưu trong thư mục “DubFlow Output”.</p>
                 </section>
               </div>
               <div class="product-col product-side">
@@ -285,31 +313,6 @@
                       </div>
                     </figure>
                   </div>
-                </section>
-                <section class="product-card">
-                  <h2><b>5</b> Giọng đọc và tạo video</h2>
-                  <div class="product-options">
-                    <label>Giọng đọc <select id="product-voice"></select></label>
-                    <label>Tốc độ đọc
-                      <select id="product-speed"><option value="1" selected>Bình thường</option><option value="1.1">Hơi nhanh</option><option value="1.2">Nhanh</option></select>
-                    </label>
-                    <span class="product-music">Nhạc nền: <span id="product-music-name">Không có</span>
-                      <button id="product-music" class="link" type="button">Chọn…</button>
-                      <button id="product-music-clear" class="link" type="button" hidden>Bỏ</button>
-                    </span>
-                    <label>Âm lượng nhạc <input id="product-volume" type="range" min="0" max="50" value="15" /></label>
-                  </div>
-                  <div class="product-actions">
-                    <button id="product-render" class="btn primary" type="button">Tạo video</button>
-                    <button id="product-cancel" class="btn danger" type="button" hidden>Hủy</button>
-                    <p id="product-render-state" class="discover-state" role="status"></p>
-                  </div>
-                  <ul id="product-results" class="product-results"></ul>
-                  <div id="product-recent" class="product-recent" hidden>
-                    <h3 class="product-label">Video đã tạo</h3>
-                    <ul id="product-recent-list" class="product-results product-recent-list" aria-label="Video bán hàng đã tạo"></ul>
-                  </div>
-                  <p class="hint">Chỉ dùng ảnh, clip và nhạc bạn có quyền sử dụng. Video lưu trong thư mục “DubFlow Output”.</p>
                 </section>
               </div>
             </div>
@@ -522,7 +525,7 @@
                   </form>
 
                   <div class="source-info">
-                    <p class="path-label">Video gốc</p>
+                    <p id="detail-path-label" class="path-label">Video gốc</p>
                     <p id="detail-path" class="path"></p>
                     <button id="create-report-done" class="link" type="button" hidden title="Tạo file .zip nhỏ (chỉ báo cáo và thông tin máy, không có video hay âm thanh) trên Desktop để gửi cho người hỗ trợ.">Gửi báo cáo lỗi</button>
                   </div>
@@ -675,7 +678,7 @@
                             </label>
                             <label>Tốc độ đọc
                               <select id="package-speed">
-                                <option value="1.0">1.0×</option><option value="1.1">1.1×</option><option value="1.2">1.2×</option>
+                                <option value="1.0">1,0×</option><option value="1.1">1,1×</option><option value="1.2">1,2×</option>
                               </select>
                             </label>
                             <button class="btn primary block" type="submit">Tạo video đóng gói</button>
@@ -1002,7 +1005,7 @@
                 </section>
                 <section id="edit-audio" class="edit-audio" aria-label="Âm thanh" hidden>
                   <label class="edit-field">
-                    <span class="edit-label">Âm thanh gốc <output id="au-main-value">100%</output></span>
+                    <span class="edit-label">Âm lượng cả video <output id="au-main-value">100%</output></span>
                     <input id="au-main" type="range" min="0" max="200" step="5" value="100" aria-describedby="au-main-hint" />
                     <small id="au-main-hint" class="edit-note">Âm lượng của cả video (lời lồng tiếng, nhạc nền, đoạn chèn).</small>
                     <small id="au-main-note" class="edit-note" hidden>Trên 100% chỉ nghe được sau khi xuất video.</small>
@@ -1212,6 +1215,7 @@
           </button>
         </header>
         <dl class="settings-list">
+          <div class="settings-group" role="presentation"><h3>Xử lý video</h3></div>
           <div class="settings-row">
             <div class="settings-text">
               <dt><label for="remember-defaults">Ghi nhớ thiết lập lần trước</label></dt>
@@ -1221,8 +1225,16 @@
           </div>
           <div class="settings-row">
             <div class="settings-text">
+              <dt><label for="cpu-only">Chỉ dùng CPU</label></dt>
+              <dd>Tắt thì DubFlow tự dùng card đồ họa NVIDIA phù hợp để nhận dạng lời thoại nhanh hơn. Thiết bị đang dùng hiện trong trạng thái xử lý.</dd>
+            </div>
+            <input id="cpu-only" class="switch" type="checkbox" role="switch" />
+          </div>
+          <div class="settings-group" role="presentation"><h3>Tài khoản</h3></div>
+          <div class="settings-row">
+            <div class="settings-text">
               <dt>Tài khoản AI</dt>
-              <dd>Khóa Claude hoặc Gemini dùng cho gợi ý đăng bài, cắt Shorts, thuyết minh và video bán hàng.</dd>
+              <dd>Khóa Claude hoặc Gemini dùng cho gợi ý đăng bài, Shorts, video bán hàng, tổng hợp và phim tài liệu.</dd>
             </div>
             <button id="open-ai-settings" class="btn" type="button">Quản lý khóa</button>
           </div>
@@ -1236,10 +1248,11 @@
               <button id="douyin-logout" class="btn" type="button" hidden>Đăng xuất</button>
             </div>
           </div>
+          <div class="settings-group" role="presentation"><h3>Thư mục</h3></div>
           <div class="settings-row">
             <div class="settings-text">
-              <dt>Thư mục lưu</dt>
-              <dd>Kết quả: <span id="output-root-label" title="">Cạnh video gốc</span></dd>
+              <dt>Thư mục lưu kết quả</dt>
+              <dd><span id="output-root-label" class="settings-path" title="">Cạnh video gốc</span></dd>
               <dd><button id="reset-output-root" class="link" type="button" hidden>Lưu cạnh video gốc</button></dd>
             </div>
             <button id="choose-output-root" class="btn" type="button">Đổi thư mục</button>
@@ -1254,6 +1267,7 @@
               <button id="choose-download-dir" class="btn" type="button">Đổi thư mục</button>
             </div>
           </div>
+          <div class="settings-group" role="presentation"><h3>Âm thanh khi chỉnh sửa</h3></div>
           <div class="settings-row">
             <div class="settings-text">
               <dt>Kho hiệu ứng âm thanh</dt>
@@ -1272,6 +1286,7 @@
               <button id="choose-audio-folder" class="btn" type="button">Chọn thư mục</button>
             </div>
           </div>
+          <div class="settings-group" role="presentation"><h3>Ứng dụng</h3></div>
           <div id="settings-update" class="settings-row">
             <div class="settings-text">
               <dt>Cập nhật</dt>
@@ -1286,13 +1301,6 @@
               </div>
             </div>
             <button id="update-check" class="btn" type="button">Kiểm tra cập nhật</button>
-          </div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt><label for="cpu-only">Chỉ dùng CPU</label></dt>
-              <dd>Tắt thì DubFlow tự dùng card đồ họa NVIDIA phù hợp để nhận dạng lời thoại nhanh hơn. Thiết bị đang dùng hiện trong trạng thái xử lý.</dd>
-            </div>
-            <input id="cpu-only" class="switch" type="checkbox" role="switch" />
           </div>
           <div class="settings-row">
             <div class="settings-text">

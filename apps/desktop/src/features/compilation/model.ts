@@ -1,6 +1,6 @@
 import type { QueueJob } from "../queue/model.ts";
 
-export type CompletedVideo = Pick<QueueJob, "id" | "displayName" | "outputPath" | "status"> & { durationMs?: number };
+export type CompletedVideo = Pick<QueueJob, "id" | "displayName" | "outputPath" | "status"> & Partial<Pick<QueueJob, "finishedAt" | "createdAt">> & { durationMs?: number };
 export type ItemForm = {
   id: string; video: string; title: string; lead: string; score: string; pros: string; cons: string; start: string; end: string;
 };

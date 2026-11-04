@@ -32,7 +32,7 @@ export function mountShorts(invoke: Invoke, session: AiSession): { select(job: J
     list.replaceChildren();
     rows.forEach((row, index) => {
       const block = document.createElement("div");
-      block.className = "settings";
+      block.className = "settings shorts-row";
       const selected = document.createElement("input");
       selected.type = "checkbox"; selected.checked = row.selected; selected.ariaLabel = `Chọn đoạn ${index + 1}`;
       selected.addEventListener("change", () => { row.selected = selected.checked; });
@@ -70,7 +70,9 @@ export function mountShorts(invoke: Invoke, session: AiSession): { select(job: J
     controls();
     results.replaceChildren();
     for (const output of status.outputs) {
-      const block = document.createElement("div"), title = document.createElement("p");
+      const block = document.createElement("div"), title = document.createElement("p"), actions = document.createElement("div");
+      block.className = "shorts-result";
+      actions.className = "result-actions";
       title.textContent = output.title;
       const open = document.createElement("button"), copy = document.createElement("button");
       open.type = copy.type = "button"; open.className = copy.className = "btn";
@@ -80,7 +82,8 @@ export function mountShorts(invoke: Invoke, session: AiSession): { select(job: J
         void navigator.clipboard.writeText(output.text).then(() => { copy.textContent = "Đã sao chép"; })
           .catch(() => { copy.textContent = "Chưa sao chép được"; });
       });
-      block.append(title, open, copy); results.append(block);
+      actions.append(open, copy);
+      block.append(title, actions); results.append(block);
     }
     if (!busy) { window.clearInterval(timer); timer = 0; }
   }

@@ -5,6 +5,7 @@ import {
 } from "./model.ts";
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { parseVoiceCatalog } from "../voices/model.ts";
+import { closeDrawerOutside } from "../../shell/drawer.ts";
 import { fileName, shortDate } from "../product/model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -186,7 +187,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   function lock(value: boolean): void {
     busy = value;
     $<HTMLFieldSetElement>("fields").disabled = value;
-    $<HTMLButtonElement>("render").disabled = value;
+    $<HTMLButtonElement>("render").disabled = value || selected.length < 2;
   }
 
   function button(text: string, action: () => void, label: string): HTMLButtonElement {
@@ -212,9 +213,24 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
         renderSelection(); renderEditors(); renderPreview();
       });
       const duration = job.durationMs ?? durations.get(job.id);
-      label.append(check, ` ${job.displayName}${duration ? ` · ${job.durationMs ? "" : "~"}${Math.round(duration / 1000)} giây` : ""}`);
+      // Same-named videos (several links of one channel) read apart by when they finished and how long they are.
+      const name = document.createElement("span"), meta = document.createElement("small");
+      name.className = "compilation-pick-name"; name.textContent = job.displayName;
+      meta.className = "hint";
+      const finished = Date.parse(job.finishedAt ?? job.createdAt ?? "");
+      meta.textContent = [Number.isFinite(finished) ? `Xong ${shortDate(Math.floor(finished / 1000))}` : "",
+        duration ? `${job.durationMs ? "" : "~"}${Math.round(duration / 1000)} giây` : ""].filter(Boolean).join(" · ");
+      const text = document.createElement("span");
+      text.className = "compilation-pick-text";
+      text.append(name, meta);
+      label.className = "compilation-pick";
+      label.title = job.outputPath ?? "";
+      label.append(check, text);
       li.append(label); return li;
     }));
+    const render = $<HTMLButtonElement>("render");
+    render.disabled = busy || selected.length < 2;
+    render.title = selected.length < 2 ? "Chọn ít nhất 2 video ở mục Chọn video" : "";
     $("order").replaceChildren(...selected.map((item, index) => {
       const li = document.createElement("li"), name = document.createElement("span");
       name.textContent = `Phần ${index + 1}: ${item.title}`;
@@ -685,7 +701,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
       const catalog = parseVoiceCatalog(await invoke("voice_catalog"));
       select.replaceChildren(...catalog.voices.map(voice => {
         const option = document.createElement("option"); option.value = voice.voice_id;
-        option.textContent = `${voice.name} · ${voice.gender} · ${voice.accent} · ${voice.style}`;
+        option.textContent = `${voice.name} · ${voice.gender} · miền ${voice.accent} · ${voice.style}`;
         option.selected = voice.voice_id === catalog.default_voice_id; return option;
       }));
     } catch (error) { $("state").textContent = message(error); }
@@ -713,6 +729,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   $("edit").addEventListener("click", editSelected);
   $("result-edit").addEventListener("click", editSelected);
   $("list-toggle").addEventListener("click", () => setListOpen(!$("screen").classList.contains("list-open")));
+  closeDrawerOutside($("screen"), $("col"), $("list-toggle"), () => setListOpen(false));
   field("layout").addEventListener("change", renderPreview);
   field("intro").addEventListener("input", renderPreview);
   for (const button of root.querySelectorAll<HTMLButtonElement>(".compilation-inspector [data-tab]")) {
