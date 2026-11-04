@@ -15,6 +15,8 @@ work_graph_source: open_leaf_issues_plus_roadmap
 foundation_epic: 2
 ci_infrastructure_issue: 10
 ci_infrastructure_status: delivered
+# #175 (final production qualification) stays open and not accepted; #291
+# (2-6 h continuous recording) is its open soft-dependency evidence leaf.
 critical_path: []
 first_integration_gate: 14
 first_user_value_gate: 56
@@ -22,9 +24,14 @@ baseline_dubbing_gate: 45
 administrative_risks: []
 ruleset_required: true
 direct_main_push_allowed: false
-state_validated_base_sha: a5d5e0cb740aa21c514618edbe112d8fa13248a6
-last_full_integration_run: 36726608390
-last_full_integration_sha: d18084f362b22a36514116f87133e35897bac7ae
+# Observed against live GitHub on 2026-11-04 at Main bc801585 (#463); this is
+# a dated observation, not permanent truth. Ruleset protect-main-dubflow is
+# active (PR-only, required check: governance, no bypass actors).
+state_validated_base_sha: bc801585b65c893db2269b525e75d9fb155e2aaa
+# Full 59/59 registry, no base and no filter, on 713bd23 (#250, PR #470).
+last_full_integration_run: 41780693790
+last_full_integration_sha: 713bd2365db313f0f4ffb662e2190e5c6a5b2394
+# Historical: the last Release / Soak ran on d18084f, not on current Main.
 last_release_soak_run: 36726668924
 last_release_soak_sha: d18084f362b22a36514116f87133e35897bac7ae
 release_qualification:
