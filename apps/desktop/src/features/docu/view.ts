@@ -1,7 +1,7 @@
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import {
-  AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
+  AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES, SFX_NAMES, readable, sceneName, sourceName,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
   hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
   calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
@@ -107,7 +107,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
               </section>
               <section class="docu-card" aria-labelledby="docu-look-title">
                 <h3 id="docu-look-title">Hình thức</h3>
-                <label>Khung hình<select id="docu-framing"><option value="none">Không</option><option value="letterbox_235">Letterbox 2.35:1</option><option value="overscan_108">Tight overscan 108%</option></select></label>
+                <label>Khung hình<select id="docu-framing"><option value="none">Không</option><option value="letterbox_235">Viền đen điện ảnh 2.35:1</option><option value="overscan_108">Phóng nhẹ 108% (cắt mép)</option></select></label>
                 <label class="docu-check"><input id="docu-credits" type="checkbox" /> Chèn màn hình credit cuối video</label>
                 <label>Thư mục lưu<input id="docu-output-root" readonly /></label>
               </section>
@@ -338,7 +338,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const spec = selected?.spec;
     $("#docu-project-view").hidden = !spec;
     $("#docu-project-fields").hidden = Boolean(spec);
-    const framing: Record<string, string> = { none: "Không", letterbox_235: "Letterbox 2.35:1", overscan_108: "Tight overscan 108%" };
+    const framing: Record<string, string> = { none: "Không", letterbox_235: "Viền đen điện ảnh 2.35:1", overscan_108: "Phóng nhẹ 108% (cắt mép)" };
     $("#docu-project-info").innerHTML = spec ? `<dt>Nguồn</dt><dd>${spec.sources.map(source => `${escapeHtml(source.id)} · ${escapeHtml(source.title)}`).join("<br>")}</dd>
       <dt>Mục tiêu</dt><dd>${spec.target_minutes} phút</dd><dt>Khung hình</dt><dd><select id="docu-framing-change" aria-label="Đổi khung hình">${Object.entries(framing).map(([value, name]) => `<option value="${value}" ${spec.cinematic_framing_preset === value ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select><small id="docu-framing-state" class="hint" role="status"></small></dd>
       <dt>Credit cuối video</dt><dd>${spec.burn_end_credits ? "Có" : "Không (chỉ ghi trong mô tả)"}</dd>` : "";
@@ -379,7 +379,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   }
 
   function refsHtml(scene: DocuScene, chapterIndex: number, sceneIndex: number): string {
-    return scene.matched_source_refs.map((ref, index) => `<span class="docu-ref-wrap"><button type="button" class="docu-ref" data-seek-source="${escapeHtml(ref.source_id)}" data-seek-start="${ref.start}" data-seek-end="${ref.end}" aria-label="Xem ${escapeHtml(ref.source_id)} từ ${ref.start.toFixed(1)} đến ${ref.end.toFixed(1)} giây">${escapeHtml(ref.source_id)} ${ref.start.toFixed(1)}–${ref.end.toFixed(1)}</button><button type="button" class="docu-ref-remove" data-remove-ref="${index}" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" aria-label="Bỏ nguồn dẫn ${index + 1}">×</button></span>`).join("") || `<span class="hint">Chưa có nguồn dẫn</span>`;
+    return scene.matched_source_refs.map((ref, index) => `<span class="docu-ref-wrap"><button type="button" class="docu-ref" data-seek-source="${escapeHtml(ref.source_id)}" data-seek-start="${ref.start}" data-seek-end="${ref.end}" aria-label="Xem ${escapeHtml(sourceName(ref.source_id))} từ ${ref.start.toFixed(1)} đến ${ref.end.toFixed(1)} giây">${escapeHtml(sourceName(ref.source_id))} · ${ref.start.toFixed(1).replace(".", ",")}–${ref.end.toFixed(1).replace(".", ",")} s</button><button type="button" class="docu-ref-remove" data-remove-ref="${index}" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" aria-label="Bỏ nguồn dẫn ${index + 1}">×</button></span>`).join("") || `<span class="hint">Chưa có nguồn dẫn</span>`;
   }
 
   function renderEditor(): void {
@@ -397,14 +397,14 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function sceneCard(scene: DocuScene, chapterIndex: number, sceneIndex: number): string {
     const graphic = scene.on_screen_graphic;
     return `<article class="docu-scene" data-scene-card="${escapeHtml(scene.scene_id)}" data-chapter="${chapterIndex}" data-scene="${sceneIndex}">
-      <header><strong>${escapeHtml(scene.scene_id)}</strong><span class="docu-scene-time">${sceneTime(scene)}</span><button type="button" class="quiet-btn" data-add-scene="${chapterIndex}" data-after="${sceneIndex}">Thêm sau</button><button type="button" class="quiet-btn" data-delete-scene="${chapterIndex}" data-scene="${sceneIndex}">Xóa cảnh</button></header>
+      <header><strong>${escapeHtml(sceneName(scene.scene_id))}</strong><span class="docu-scene-time">${sceneTime(scene)}</span><button type="button" class="quiet-btn" data-add-scene="${chapterIndex}" data-after="${sceneIndex}">Thêm sau</button><button type="button" class="quiet-btn" data-delete-scene="${chapterIndex}" data-scene="${sceneIndex}">Xóa cảnh</button></header>
       <label>Lời dẫn<textarea data-field="narration_text" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" maxlength="${MAX_NARRATION}" rows="4">${escapeHtml(scene.narration_text)}</textarea></label>
       <p class="docu-word-count"><span>${wordCount(scene.narration_text)} từ</span><span>Ước tính ${estimatedSeconds(scene.narration_text)} giây</span></p>
       <div class="docu-refs" aria-label="Nguồn dẫn">${refsHtml(scene, chapterIndex, sceneIndex)}</div>
       <div class="docu-slices" data-slices="${escapeHtml(scene.scene_id)}">${slicesHtml(scene)}</div>
       <label>Đồ họa trên màn hình<select data-field="graphic_type" data-chapter="${chapterIndex}" data-scene="${sceneIndex}"><option value="">Không có</option>${GRAPHIC_TYPES.map(type => `<option value="${type}" ${graphic?.type === type ? "selected" : ""}>${GRAPHIC_NAMES[type]}</option>`).join("")}</select></label>
       <div class="docu-graphic-fields" ${graphic ? "" : "hidden"}><label>Tiêu đề<input data-field="graphic_title" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" value="${escapeHtml(graphic?.title ?? "")}" maxlength="60" /></label><label>Giá trị<input data-field="graphic_value" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" value="${escapeHtml(graphic?.value ?? "")}" maxlength="60" /></label><label>Chú thích<input data-field="graphic_subtext" data-chapter="${chapterIndex}" data-scene="${sceneIndex}" value="${escapeHtml(graphic?.subtext ?? "")}" maxlength="120" /></label></div>
-      <label>Âm thanh nền<select data-field="ambient_sfx_tag" data-chapter="${chapterIndex}" data-scene="${sceneIndex}"><option value="">Không có</option>${AMBIENT_SFX.map(tag => `<option value="${tag}" ${scene.ambient_sfx_tag === tag ? "selected" : ""}>${tag}</option>`).join("")}</select></label>
+      <label>Âm thanh nền<select data-field="ambient_sfx_tag" data-chapter="${chapterIndex}" data-scene="${sceneIndex}"><option value="">Không có</option>${AMBIENT_SFX.map(tag => `<option value="${tag}" ${scene.ambient_sfx_tag === tag ? "selected" : ""}>${SFX_NAMES[tag]}</option>`).join("")}</select></label>
       ${reviewHtml(scene, chapterIndex, sceneIndex)}
     </article>`;
   }
@@ -753,7 +753,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const current = activity?.current ?? null;
     settings.mcpBusy?.(current ? current.label : null);
     $("#docu-mcp-chip").hidden = !current;
-    $("#docu-mcp-chip-text").textContent = current ? `Claude đang làm: ${current.label}` : "";
+    $("#docu-mcp-chip-text").textContent = current ? `Claude đang làm: ${readable(current.label)}` : "";
     if (!activity) return;
     let progress = "";
     const command = current?.project ? MCP_PROGRESS[current.tool] : undefined;
@@ -764,12 +764,12 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
         if (status?.total) progress = ` · ${status.message ?? ""} (${status.done ?? 0}/${status.total})`;
       } catch { /* the project may not be readable yet */ }
     }
-    $("#docu-mcp-current").textContent = current ? `Đang làm: ${current.label}${progress}` : "Không làm gì lúc này.";
+    $("#docu-mcp-current").textContent = current ? `Đang làm: ${readable(current.label)}${progress}` : "Không làm gì lúc này.";
     $("#docu-mcp-current").classList.toggle("busy", Boolean(current));
     const target = current?.project ?? activity.recent[0]?.project ?? null;
     $("#docu-mcp-open").hidden = !target || sameDir(target, selected?.dir);
     $("#docu-mcp-open").dataset.dir = target ?? "";
-    $("#docu-mcp-recent").innerHTML = activity.recent.slice(0, 6).map(item => `<li class="${item.state === "failed" ? "failed" : ""}"><time>${escapeHtml(timeOf(item.finished))}</time> ${escapeHtml(item.label)}<small>${escapeHtml(item.state === "failed" ? `Lỗi: ${item.message}` : item.message)}</small></li>`).join("");
+    $("#docu-mcp-recent").innerHTML = activity.recent.slice(0, 6).map(item => `<li class="${item.state === "failed" ? "failed" : ""}"><time>${escapeHtml(timeOf(item.finished))}</time> ${escapeHtml(readable(item.label))}<small>${escapeHtml(readable(item.state === "failed" ? `Lỗi: ${item.message}` : item.message))}</small></li>`).join("");
     // Follow: open the project Claude works on, and reload it when a call on it finishes.
     const follow = $<HTMLInputElement>("#docu-mcp-follow").checked && !root.hidden;
     const newest = activity.recent[0];

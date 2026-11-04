@@ -141,7 +141,7 @@ class WarningTests(unittest.TestCase):
         boxed = visual.caption_warning("src_01", "letterbox_235")
         self.assertIn("kéo giãn mép ảnh", boxed)
         self.assertNotIn("Chọn khung Letterbox", boxed)
-        self.assertIn("Chọn khung Letterbox 2.35:1", visual.caption_warning("src_01", "none"))
+        self.assertIn("Chọn khung Viền đen điện ảnh 2.35:1", visual.caption_warning("src_01", "none"))
 
 
 class MatcherTests(unittest.TestCase):

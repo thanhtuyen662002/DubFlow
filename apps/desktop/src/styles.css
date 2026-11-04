@@ -200,6 +200,10 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .job { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 8px; color: var(--text); cursor: pointer; }
 .job:hover { background: var(--raised); }
 .job.selected { background: var(--select); }
+/* A list row that is a <button> (Phim tài liệu) looks like the others: full width, no native border. */
+button.job { width: 100%; border: 0; background: none; font: inherit; text-align: left; }
+button.job:hover { background: var(--raised); }
+button.job.selected { background: var(--select); }
 .job:focus-visible { outline-offset: -2px; }
 .job-thumb { position: relative; display: grid; flex: none; place-items: center; width: 72px; height: 44px; border-radius: 5px; color: oklch(0.95 0.005 275 / .4); }
 .job-dur { position: absolute; right: 4px; bottom: 3px; padding: 0 4px; border-radius: 3px; background: oklch(0 0 0 / .72); color: #fff; font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; }
@@ -1355,6 +1359,8 @@ body[data-page="edit"] .header-title .header-meta { display: block; }
 .compilation-facts dd { margin: 0; overflow-wrap: anywhere; white-space: pre-line; }
 .compilation-past-parts { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--text-2); font-size: 13px; }
 .compilation-inspector .tab-foot { display: grid; gap: 8px; }
+/* The Dự án tab's main action stays in reach while its long form scrolls. */
+#docu-create { position: sticky; bottom: 12px; z-index: 1; box-shadow: 0 0 0 12px var(--surface); }
 .compilation-inspector .tab-foot .hint:empty { display: none; }
 
 /* Phim tài liệu (Issue #440): source player, editable script and project settings. */
