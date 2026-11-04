@@ -82,6 +82,10 @@ export function mountDouyinLogin(invoke: Invoke, onWindowMoved: (listener: () =>
     done.disabled = true;
     done.textContent = "Đang lưu…";
     state.textContent = "";
+    // The first save after starting DubFlow waits for the link service to check the install.
+    const slow = setTimeout(() => {
+      state.textContent = "Lần lưu đầu tiên sau khi mở DubFlow có thể mất khoảng 1–2 phút vì dịch vụ tải đang kiểm tra bản cài đặt…";
+    }, 8000);
     try {
       await invoke<number>("save_douyin_session");
       finish(true);
@@ -89,6 +93,8 @@ export function mountDouyinLogin(invoke: Invoke, onWindowMoved: (listener: () =>
       state.textContent = String(error).slice(0, 200);
       done.disabled = false;
       done.textContent = "Xong";
+    } finally {
+      clearTimeout(slow);
     }
   });
   close.addEventListener("click", () => finish(false));

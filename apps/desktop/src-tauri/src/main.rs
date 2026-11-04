@@ -1782,9 +1782,19 @@ fn open_embedded(app: &tauri::AppHandle, embed: Embed, url: tauri::Url, navigate
 /// Show douyin.com inside the "Đăng nhập Douyin" dialog at `x, y, width,
 /// height` (CSS pixels of the main window).
 #[tauri::command]
-async fn douyin_view_open(app: tauri::AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+async fn douyin_view_open(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
     let bounds = ViewBounds::new(x, y, width, height)?;
-    open_embedded(&app, DOUYIN_EMBED, douyin_home()?, false, bounds)
+    open_embedded(&app, DOUYIN_EMBED, douyin_home()?, false, bounds)?;
+    // The link service's first start checks the whole install (a minute or
+    // more on a cold disk); start it while the user logs in so "Xong" saves
+    // at once. A failure here shows up again, with its message, on "Xong".
+    if let (Ok(root), Ok(data)) = (version_root(), control_root()) {
+        if let Ok(supervisor) = supervisor_binary(&root) {
+            let sources = std::sync::Arc::clone(&sources);
+            tauri::async_runtime::spawn_blocking(move || { let _ = sources.warm_up(&supervisor, &root, &data); });
+        }
+    }
+    Ok(())
 }
 
 /// Keep the login page over the dialog's box when the window changes.
