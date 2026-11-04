@@ -258,9 +258,20 @@ struct Target {
     main: PathBuf,
     work: PathBuf,
     captions: Option<PathBuf>,
+    /// A file's: the app-owned `edit-files` store its `work` must stay in.
+    store: Option<PathBuf>,
 }
 
 impl Target {
+    /// Checked again right before each durable write: a file's draft folder
+    /// is still a plain folder directly inside the app's plain store.
+    fn confined(&self) -> Result<(), String> {
+        match &self.store {
+            Some(store) => confined_work(store, &self.work).map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
     fn kind_name(&self) -> &'static str {
         match self.kind { Kind::Job => "job", Kind::Product(_) => "product", Kind::Compilation => "compilation", Kind::Docu => "docu", Kind::File => "file" }
     }
@@ -308,7 +319,7 @@ fn shaped_target(video: &Path) -> Option<Target> {
     } else {
         return None;
     };
-    Some(Target { kind, main: dir.join(name), dir, work, captions })
+    Some(Target { kind, main: dir.join(name), dir, work, captions, store: None })
 }
 
 /// Whether DubFlow's own records, below the data root, say it made `target`.
@@ -374,7 +385,59 @@ fn recorded_run(data: &Path, kind: &str, dir: &Path) -> bool {
 fn file_target(path: &str, store: &Path) -> Result<Target, String> {
     let main = crate::playable_media(path)?;
     let dir = main.parent().ok_or_else(|| fail("Không tìm thấy thư mục của video"))?.to_path_buf();
-    Ok(Target { kind: Kind::File, work: store.join(file_key(&main)), main, dir, captions: None })
+    let work = confined_work(store, &store.join(file_key(&main)))?;
+    Ok(Target { kind: Kind::File, work, main, dir, captions: None, store: Some(store.to_path_buf()) })
+}
+
+/// A symlink, junction or any other reparse point.
+fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    metadata.file_type().is_symlink()
+}
+
+/// `dir` as a plain folder: made if missing (never through a link), refused
+/// when it is a link, a junction or not a folder.
+fn plain_folder(dir: &Path) -> Result<(), String> {
+    const ESCAPE: &str = "Thư mục bản nháp của DubFlow không an toàn (là liên kết); hãy xóa nó rồi thử lại";
+    match fs::symlink_metadata(dir) {
+        Ok(metadata) if is_link(&metadata) || !metadata.is_dir() => Err(fail(ESCAPE)),
+        Ok(_) => Ok(()),
+        Err(_) => {
+            match fs::create_dir(dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err(fail("Không tạo được thư mục chỉnh sửa")),
+            }
+            let metadata = fs::symlink_metadata(dir).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))?;
+            if is_link(&metadata) || !metadata.is_dir() { Err(fail(ESCAPE)) } else { Ok(()) }
+        }
+    }
+}
+
+/// A file's draft folder `work`, directly inside the app-owned `store`
+/// (`<data root>\edit-files`): both plain folders, neither a link, and `work`
+/// resolving to a child of the store as it resolves (Issue #497).
+fn confined_work(store: &Path, work: &Path) -> Result<PathBuf, String> {
+    let data = store.parent().ok_or_else(|| fail("Không tìm thấy thư mục dữ liệu"))?;
+    if work.parent() != Some(store) {
+        return Err(fail("Thư mục bản nháp không hợp lệ"));
+    }
+    plain_folder(store)?;
+    plain_folder(work)?;
+    let (Ok(data), Ok(real_store), Ok(real_work)) = (data.canonicalize(), store.canonicalize(), work.canonicalize()) else {
+        return Err(fail("Không tìm thấy thư mục chỉnh sửa"));
+    };
+    if real_store != data.join(store.file_name().unwrap_or_default()) || real_work.parent() != Some(real_store.as_path()) {
+        return Err(fail("Thư mục bản nháp của DubFlow không an toàn (là liên kết); hãy xóa nó rồi thử lại"));
+    }
+    Ok(work.to_path_buf())
 }
 
 /// The same file always has the same draft (Windows paths ignore case).
@@ -1629,9 +1692,13 @@ pub fn edit_library(roots: Vec<String>) -> Vec<Value> {
 #[tauri::command]
 pub fn edit_project_save(output_path: String, kind: String, project: Value) -> Result<(), String> {
     let bytes = check_project(&project)?;
-    let work = edit_target(&output_path, &kind)?.work;
-    fs::create_dir_all(&work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))?;
-    write_atomic(&work.join("project.json"), &bytes).map_err(|_| fail("Không lưu được bản nháp chỉnh sửa"))
+    save_draft(&edit_target(&output_path, &kind)?, &bytes)
+}
+
+fn save_draft(target: &Target, bytes: &[u8]) -> Result<(), String> {
+    fs::create_dir_all(&target.work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))?;
+    target.confined()?;
+    write_atomic(&target.work.join("project.json"), bytes).map_err(|_| fail("Không lưu được bản nháp chỉnh sửa"))
 }
 
 struct ExportJob {
@@ -1824,6 +1891,7 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     }
     let work = target.work.clone();
     fs::create_dir_all(&work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))?;
+    target.confined()?;
     let lease = crate::work_lease::take(&work, BUSY)?;
     let cancel = work.join("cancel");
     if cancel.exists() {
@@ -1873,13 +1941,14 @@ pub async fn edit_export(request: ExportRequest) -> Result<Value, String> {
 /// The current or last render, and the finished exports that still exist.
 #[tauri::command]
 pub fn edit_status(output_path: String, kind: String) -> Result<Value, String> {
-    let work = edit_target(&output_path, &kind)?.work;
+    let target = edit_target(&output_path, &kind)?;
+    let work = target.work.clone();
     let mut status = fs::read(work.join("status.json")).ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()).filter(Value::is_object);
     let ours = RUNNING.lock().is_ok_and(|running| running.contains_key(&work));
     if let Some(value) = status.as_mut().filter(|value| value["state"] == "RUNNING" && !ours) {
         // A free lease means no window is rendering: the app closed mid-export.
-        if let Ok(lease) = crate::work_lease::take(&work, BUSY) {
+        if let Some(lease) = target.confined().ok().and_then(|()| crate::work_lease::take(&work, BUSY).ok()) {
             if let Some(target) = value["output_path"].as_str() {
                 let _ = fs::remove_file(partial_of(Path::new(target)));
             }
@@ -1895,8 +1964,9 @@ pub fn edit_status(output_path: String, kind: String) -> Result<Value, String> {
 
 #[tauri::command]
 pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
-    let work = edit_target(&output_path, &kind)?.work;
-    if work.is_dir() {
+    let target = edit_target(&output_path, &kind)?;
+    let work = target.work.clone();
+    if work.is_dir() && target.confined().is_ok() {
         fs::write(work.join("cancel"), b"").map_err(|_| fail("Không hủy được xuất video"))?;
     }
     if let Some(entry) = RUNNING.lock().ok().and_then(|running| running.get(&work).cloned()) {
@@ -2229,6 +2299,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let base = std::env::temp_dir().join(format!("dubflow-edit-targets-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let data = base.join("data");
+        fs::create_dir_all(&data).unwrap();
         let product = base.join("DubFlow Output/Ban hang - Nồi chiên/run-0123456789ab");
         let compilation = base.join("DubFlow Output/Tong hop - Top 3/run-0123456789ab");
         for dir in [&product, &compilation] {
@@ -2288,6 +2359,90 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         fs::remove_file(product.join(".dubflow-work/spec.json")).unwrap();
         assert!(shaped_target(&product.join("video-1.mp4").canonicalize().unwrap()).is_none());
         fs::write(product.join(".dubflow-work/spec.json"), b"{}").unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A directory link: an NTFS junction (reparse point) on Windows, a symlink elsewhere.
+    fn link_dir(target: &Path, link: &Path) {
+        #[cfg(windows)]
+        {
+            let status = Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target)
+                .stdout(Stdio::null()).status().unwrap();
+            assert!(status.success(), "mklink /J failed");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    fn unlink_dir(link: &Path) {
+        // A junction is removed as a folder, a symlink as a file; neither touches its target.
+        if fs::remove_dir(link).is_err() {
+            fs::remove_file(link).unwrap();
+        }
+    }
+
+    /// The app's draft store and a file's own draft folder never lead out
+    /// through a link or junction: saving fails before anything outside changes.
+    #[test]
+    fn file_drafts_never_follow_a_link_out_of_the_app_store() {
+        use sha2::{Digest, Sha256};
+        let base = std::env::temp_dir().join(format!("dubflow-edit-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let data = base.join("data");
+        let source = base.join("Videos");
+        let outside = base.join("outside");
+        for dir in [&data, &source, &outside] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let video = source.join("clip.mp4");
+        fs::write(&video, b"video").unwrap();
+        fs::write(outside.join("marker.txt"), b"keep").unwrap();
+        fs::write(outside.join("project.json"), b"{\"theirs\":true}").unwrap();
+        let state = |dir: &Path| {
+            let mut entries: Vec<_> = fs::read_dir(dir).unwrap().map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = fs::read(&path).unwrap_or_default();
+                (path.file_name().unwrap().to_owned(), format!("{:x}", Sha256::digest(&bytes)), fs::metadata(&path).unwrap().modified().unwrap())
+            }).collect();
+            entries.sort();
+            entries
+        };
+        let (outside_before, source_before) = (state(&outside), state(&source));
+        let path = crate::display_path(&video);
+        let store = data.join("edit-files");
+        let project = br#"{"schema_version":1}"#;
+
+        // The store itself is a link to the user's folder.
+        link_dir(&outside, &store);
+        assert!(resolve_target(&path, "file", &data).is_err());
+        unlink_dir(&store);
+        // The store is a link to the video's own folder.
+        link_dir(&source, &store);
+        assert!(resolve_target(&path, "file", &data).is_err());
+        unlink_dir(&store);
+        // The file's own draft folder is a link (to elsewhere, or beside the video).
+        fs::create_dir(&store).unwrap();
+        let child = store.join(file_key(&video.canonicalize().unwrap()));
+        for target in [&outside, &source] {
+            link_dir(target, &child);
+            assert!(resolve_target(&path, "file", &data).is_err());
+            unlink_dir(&child);
+        }
+        // Swapped for a link after it was checked: the save right after fails closed.
+        let opened = resolve_target(&path, "file", &data).unwrap();
+        assert_eq!(opened.work, child);
+        fs::remove_dir(&child).unwrap();
+        link_dir(&outside, &child);
+        assert!(save_draft(&opened, project).is_err());
+        assert!(opened.confined().is_err(), "status and cancel writes are refused too");
+        unlink_dir(&child);
+        assert_eq!(state(&outside), outside_before, "nothing outside the store changed");
+        assert_eq!(state(&source), source_before, "nothing beside the video changed");
+        // The ordinary store still works.
+        let opened = resolve_target(&path, "file", &data).unwrap();
+        save_draft(&opened, project).unwrap();
+        assert_eq!(fs::read(child.join("project.json")).unwrap(), project);
+        assert_eq!(state(&outside), outside_before);
         fs::remove_dir_all(base).unwrap();
     }
 
