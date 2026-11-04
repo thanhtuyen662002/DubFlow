@@ -7,6 +7,7 @@ from pathlib import Path
 import struct
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+import importlib.util
 import unittest
 from unittest.mock import Mock, patch
 import wave
@@ -33,6 +34,8 @@ def write_wav(path, *, rate=48000, channels=2, value=500):
 
 
 class SeparationWorkerTests(unittest.TestCase):
+    # numpy ships in the app runtime; the Linux Integration lane has none (other numpy tests skip the same way).
+    @unittest.skipUnless(importlib.util.find_spec("numpy"), "needs numpy")
     def test_source_restore_streams_unioned_windows_with_short_fades(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
