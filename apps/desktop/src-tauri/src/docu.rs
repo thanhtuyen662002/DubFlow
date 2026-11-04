@@ -286,6 +286,7 @@ pub async fn docu_create(request: DocuRequest) -> Result<Value, String> {
         .map_err(|_| fail("Không tạo được thư mục phim tài liệu"))?;
     outside_source_store(&output, &store)?;
     fs::create_dir(&output).map_err(|_| fail("Không tạo được phiên phim tài liệu mới"))?;
+    crate::edit::record_run("docu", &output);
     let work = output.join(".dubflow-work");
     fs::create_dir(&work).map_err(|_| fail("Không tạo được thư mục làm việc phim tài liệu"))?;
     let mut sources = sources;

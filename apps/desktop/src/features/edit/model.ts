@@ -220,6 +220,32 @@ export function outputToSource(edit: Edit, t: number): SourcePoint | null {
  * Output time of a time in one media: inside the preferred segment when it
  * holds that time (segments may share ranges), else the first that does.
  */
+/**
+ * Where an edit opens: a queue video from its player's time (the player
+ * showed that video), any other video at its beginning (Issue #497).
+ */
+/**
+ * What the editor opens a video as: the host's answer wins. A page's kind
+ * the host could not prove (a run DubFlow kept no record of) opens as a plain
+ * file, without the job, template or documentary behaviour (Issue #497).
+ */
+export function resolveTarget<T extends { kind: string; job?: unknown; seed?: unknown }>(target: T, hostKind: unknown): T {
+  if (hostKind !== "file" || target.kind === "file") return target;
+  const { job: _job, seed: _seed, ...rest } = target;
+  return { ...rest, kind: "file" } as unknown as T;
+}
+
+/** The editor modes a video has: Mẫu for Bán hàng videos, Phụ đề and Che for dubbing jobs that can be re-run. */
+export function modeOffered(mode: string, kind: string, reviewable: boolean): boolean {
+  if (mode === "template") return kind === "product";
+  if (mode === "subs" || mode === "cover") return kind === "job" && reviewable;
+  return true;
+}
+
+export function openingTime(kind: string, edit: Edit, playerTime: number | null): number {
+  return kind === "job" && playerTime !== null ? sourceToOutput(edit, playerTime) ?? 0 : 0;
+}
+
 export function sourceToOutput(edit: Edit, sourceTime: number, preferredIndex = -1, mediaId = MAIN): number | null {
   const starts = outputStarts(edit);
   const at = (index: number): number => starts[index] + (sourceTime - edit.segments[index].start) / edit.segments[index].speed;

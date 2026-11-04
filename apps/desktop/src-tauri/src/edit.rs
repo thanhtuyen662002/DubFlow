@@ -12,6 +12,9 @@
 //! Issue #426 opens Bán hàng videos (`video-<n>.mp4` of a product run, one
 //! draft per video in `.dubflow-work\edit-<n>`) and compilations
 //! (`compilation.mp4`) in the same editor.
+//! Issue #497 opens any video on the computer too (the Chỉnh sửa screen):
+//! its draft and renders live in `<data root>\\edit-files\\<hash>`, never
+//! beside the user's file, and `edit_library` lists the finished videos.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -172,6 +175,8 @@ pub struct Cue {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExportRequest {
     output_path: String,
+    /// What the page opened the video as (see `edit_target`).
+    kind: String,
     /// Other video files the edit uses (schema 2); media index i + 1.
     #[serde(default)]
     media: Vec<String>,
@@ -240,6 +245,8 @@ enum Kind {
     Compilation,
     /// A Phim tài liệu run's rough cut, `documentary.mp4` (ADR-0049).
     Docu,
+    /// Any other video on the computer (Issue #497).
+    File,
 }
 
 /// A finished video below "DubFlow Output" that the editor may open: the
@@ -251,18 +258,66 @@ struct Target {
     main: PathBuf,
     work: PathBuf,
     captions: Option<PathBuf>,
+    /// A file's: the app-owned `edit-files` store its `work` must stay in.
+    store: Option<PathBuf>,
 }
 
 impl Target {
+    /// Checked again right before each durable write: a file's draft folder
+    /// is still a plain folder directly inside the app's plain store.
+    fn confined(&self) -> Result<(), String> {
+        match &self.store {
+            Some(store) => confined_work(store, &self.work).map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
+    /// The draft folder, ready to write in: a file's is checked (and made
+    /// without following any link); a DubFlow run's is made as before.
+    fn prepare(&self) -> Result<(), String> {
+        if self.store.is_some() {
+            return self.confined();
+        }
+        fs::create_dir_all(&self.work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))
+    }
+
     fn kind_name(&self) -> &'static str {
-        match self.kind { Kind::Job => "job", Kind::Product(_) => "product", Kind::Compilation => "compilation", Kind::Docu => "docu" }
+        match self.kind { Kind::Job => "job", Kind::Product(_) => "product", Kind::Compilation => "compilation", Kind::Docu => "docu", Kind::File => "file" }
     }
 }
 
-/// A finished job's `final_vi.mp4`, a product video, a compilation or a documentary rough cut, below "DubFlow Output".
-fn edit_target(output_path: &str) -> Result<Target, String> {
-    let video = output_file(output_path)?;
-    let dir = video.parent().ok_or_else(|| fail("output has no directory"))?.to_path_buf();
+/// The video `output_path` as the editor treats it. `kind` is what the page
+/// opened it as: "file" (picked or dropped from the computer) always keeps
+/// its draft in the app's own store. Otherwise the video is DubFlow's only
+/// when an app-owned record proves it (a completed queue job's status, or a
+/// run DubFlow started); anything else, a folder merely shaped like
+/// DubFlow's included, is a file too (Issue #497).
+fn edit_target(output_path: &str, kind: &str) -> Result<Target, String> {
+    resolve_target(output_path, kind, &crate::control_root()?)
+}
+
+/// Where files' drafts live, below the data root.
+const FILE_STORE: &str = "edit-files";
+
+fn resolve_target(output_path: &str, kind: &str, data: &Path) -> Result<Target, String> {
+    let store = data.join(FILE_STORE);
+    match kind {
+        "file" => return file_target(output_path, &store),
+        "job" | "product" | "compilation" | "docu" => {}
+        _ => return Err(fail("Loại video không hợp lệ")),
+    }
+    match output_file(output_path).ok().and_then(|video| shaped_target(&video)).filter(|target| recorded(data, target)) {
+        Some(target) if target.kind_name() == kind => Ok(target),
+        Some(_) => Err(fail("Video này không khớp với loại đã chọn")),
+        None => file_target(output_path, &store),
+    }
+}
+
+/// Where a video DubFlow made would keep its draft, by its name and folder
+/// alone. Not proof: `recorded` decides whether it is DubFlow's.
+fn shaped_target(video: &Path) -> Option<Target> {
+    let video = video.to_path_buf();
+    let dir = video.parent()?.to_path_buf();
     let name = video.file_name().and_then(|name| name.to_str()).unwrap_or_default();
     let (kind, work, captions) = if name == "final_vi.mp4" {
         (Kind::Job, work_dir(&dir), Some(dir.join("captions_vi.srt")))
@@ -274,9 +329,134 @@ fn edit_target(output_path: &str) -> Result<Target, String> {
         // Its English captions are the Phụ đề track.
         (Kind::Docu, work_dir(&dir), Some(dir.join("captions_en.srt")))
     } else {
-        return Err(fail("Chỉ chỉnh sửa được video DubFlow đã hoàn tất"));
+        return None;
     };
-    Ok(Target { kind, main: dir.join(name), dir, work, captions })
+    Some(Target { kind, main: dir.join(name), dir, work, captions, store: None })
+}
+
+/// Whether DubFlow's own records, below the data root, say it made `target`.
+fn recorded(data: &Path, target: &Target) -> bool {
+    match target.kind {
+        Kind::Job => recorded_job(data, &target.main),
+        Kind::Product(_) => recorded_run(data, "product", &target.dir),
+        Kind::Compilation => recorded_run(data, "compilation", &target.dir),
+        Kind::Docu => recorded_run(data, "docu", &target.dir),
+        Kind::File => false,
+    }
+}
+
+const MAX_JOB_RECORDS: usize = 5000;
+
+/// `recorded_job` in DubFlow's own data root.
+pub(crate) fn recorded_job_output(video: &Path) -> bool {
+    crate::control_root().is_ok_and(|data| recorded_job(&data, video))
+}
+
+/// A queue job the supervisor finished with `video` as its output: its status
+/// file `<data root>\control\jobs\<id>.json` names it.
+fn recorded_job(data: &Path, video: &Path) -> bool {
+    let Ok(video) = video.canonicalize() else { return false };
+    let Ok(entries) = fs::read_dir(data.join("control").join("jobs")) else { return false };
+    entries.flatten().take(MAX_JOB_RECORDS)
+        .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
+        .filter_map(|entry| crate::read_json(&entry.path(), 1024 * 1024).ok())
+        .any(|record| record["status"]["state"] == "COMPLETED"
+            && record["output_path"].as_str().and_then(|path| Path::new(path).canonicalize().ok()).is_some_and(|path| path == video))
+}
+
+/// The app-owned record of a run DubFlow started: one small file per run,
+/// `<data root>\control\runs\<key>.json`, keyed by the run's folder.
+fn run_record(data: &Path, dir: &Path) -> Option<PathBuf> {
+    let dir = dir.canonicalize().ok()?;
+    Some(data.join("control").join("runs").join(format!("{}.json", file_key(&dir))))
+}
+
+/// Remember that DubFlow started the `kind` run in `dir` ("product",
+/// "compilation" or "docu"), so the editor may keep drafts beside it.
+pub(crate) fn record_run(kind: &str, dir: &Path) {
+    if let Ok(data) = crate::control_root() {
+        let _ = record_run_in(&data, kind, dir);
+    }
+}
+
+fn record_run_in(data: &Path, kind: &str, dir: &Path) -> Result<(), String> {
+    let path = run_record(data, dir).ok_or_else(|| fail("Không tìm thấy thư mục kết quả"))?;
+    let canonical = dir.canonicalize().map_err(|_| fail("Không tìm thấy thư mục kết quả"))?;
+    let record = json!({"schema_version": 1, "kind": kind, "dir": display_path(&canonical)});
+    fs::create_dir_all(path.parent().unwrap_or(data)).and_then(|()| write_atomic(&path, record.to_string().as_bytes()))
+        .map_err(|_| fail("Không ghi được hồ sơ phiên"))
+}
+
+fn recorded_run(data: &Path, kind: &str, dir: &Path) -> bool {
+    let (Some(path), Ok(dir)) = (run_record(data, dir), dir.canonicalize()) else { return false };
+    crate::read_json(&path, 64 * 1024).is_ok_and(|record| record["schema_version"] == 1 && record["kind"] == kind
+        && record["dir"].as_str().and_then(|recorded| Path::new(recorded).canonicalize().ok()).is_some_and(|recorded| recorded == dir))
+}
+
+/// Any playable video: its draft is kept below `store`, one folder per file.
+fn file_target(path: &str, store: &Path) -> Result<Target, String> {
+    let main = crate::playable_media(path)?;
+    let dir = main.parent().ok_or_else(|| fail("Không tìm thấy thư mục của video"))?.to_path_buf();
+    let work = confined_work(store, &store.join(file_key(&main)))?;
+    Ok(Target { kind: Kind::File, work, main, dir, captions: None, store: Some(store.to_path_buf()) })
+}
+
+/// A symlink, junction or any other reparse point.
+fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    metadata.file_type().is_symlink()
+}
+
+/// `dir` as a plain folder: made if missing (never through a link), refused
+/// when it is a link, a junction or not a folder.
+fn plain_folder(dir: &Path) -> Result<(), String> {
+    const ESCAPE: &str = "Thư mục bản nháp của DubFlow không an toàn (là liên kết); hãy xóa nó rồi thử lại";
+    match fs::symlink_metadata(dir) {
+        Ok(metadata) if is_link(&metadata) || !metadata.is_dir() => Err(fail(ESCAPE)),
+        Ok(_) => Ok(()),
+        Err(_) => {
+            match fs::create_dir(dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err(fail("Không tạo được thư mục chỉnh sửa")),
+            }
+            let metadata = fs::symlink_metadata(dir).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))?;
+            if is_link(&metadata) || !metadata.is_dir() { Err(fail(ESCAPE)) } else { Ok(()) }
+        }
+    }
+}
+
+/// A file's draft folder `work`, directly inside the app-owned `store`
+/// (`<data root>\edit-files`): both plain folders, neither a link, and `work`
+/// resolving to a child of the store as it resolves (Issue #497).
+fn confined_work(store: &Path, work: &Path) -> Result<PathBuf, String> {
+    let data = store.parent().ok_or_else(|| fail("Không tìm thấy thư mục dữ liệu"))?;
+    if work.parent() != Some(store) {
+        return Err(fail("Thư mục bản nháp không hợp lệ"));
+    }
+    plain_folder(store)?;
+    plain_folder(work)?;
+    let (Ok(data), Ok(real_store), Ok(real_work)) = (data.canonicalize(), store.canonicalize(), work.canonicalize()) else {
+        return Err(fail("Không tìm thấy thư mục chỉnh sửa"));
+    };
+    if real_store != data.join(store.file_name().unwrap_or_default()) || real_work.parent() != Some(real_store.as_path()) {
+        return Err(fail("Thư mục bản nháp của DubFlow không an toàn (là liên kết); hãy xóa nó rồi thử lại"));
+    }
+    Ok(work.to_path_buf())
+}
+
+/// The same file always has the same draft (Windows paths ignore case).
+fn file_key(video: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(display_path(video).to_lowercase().as_bytes());
+    digest.iter().take(10).map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// `<…>\DubFlow Output\Tong hop - <title>\run-<id>` that kept its request.
@@ -896,7 +1076,26 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     fs::write(&partial, bytes).and_then(|()| fs::rename(&partial, path))
 }
 
+/// A work folder still in place, checked before every write made while a
+/// render runs: a file's draft folder still confined to the app's store
+/// (`confined_work`); any other neither a link nor inside one.
+fn unlinked(work: &Path) -> bool {
+    if let Some(store) = work.parent().filter(|store| store.file_name().is_some_and(|name| name == FILE_STORE)) {
+        return confined_work(store, work).is_ok();
+    }
+    [Some(work), work.parent()].into_iter().flatten()
+        .all(|dir| fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)))
+}
+
+/// `unlinked`, as an error to stop on.
+fn guarded(work: &Path) -> Result<(), String> {
+    if unlinked(work) { Ok(()) } else { Err(fail("Thư mục bản nháp của DubFlow không an toàn (là liên kết); hãy xóa nó rồi thử lại")) }
+}
+
 fn write_status(work: &Path, state: &str, percent: f64, message: &str, output: Option<&Path>) {
+    if !unlinked(work) {
+        return;
+    }
     let value = json!({"schema_version": 1, "state": state, "percent": percent.clamp(0.0, 100.0).floor(), "message": message,
         "output_path": output.map(display_path)});
     let _ = write_atomic(&work.join("status.json"), &serde_json::to_vec(&value).unwrap_or_default());
@@ -912,6 +1111,9 @@ fn read_exports(work: &Path) -> Vec<Value> {
 }
 
 fn append_export(work: &Path, entry: Value) {
+    if !unlinked(work) {
+        return;
+    }
     let mut exports = read_exports(work);
     exports.push(entry);
     let start = exports.len().saturating_sub(EXPORTS_KEPT);
@@ -1352,7 +1554,7 @@ fn read_cover(dir: &Path) -> Option<CoverChoice> {
 /// rectangles the render covered.
 #[tauri::command]
 pub fn edit_subtitles_load(output_path: String) -> Result<Value, String> {
-    let dir = crate::review_dir(&output_path)?;
+    let dir = crate::job_review_dir(&output_path)?;
     let cues = crate::review_cues(output_path)?;
     let manifest = crate::read_json(&dir.join("job_manifest.json"), 16 * 1024 * 1024).unwrap_or_else(|_| json!({}));
     let source = manifest["source"]["path"].as_str().map(PathBuf::from)
@@ -1379,7 +1581,7 @@ pub fn edit_subtitles_load(output_path: String) -> Result<Value, String> {
 pub fn edit_subtitles_apply(output_path: String, overrides: std::collections::BTreeMap<String, String>,
     voice: std::collections::BTreeMap<String, String>, revoice: Vec<String>, subtitle_style: SubtitleStyle,
     cover: Option<CoverChoice>) -> Result<String, String> {
-    let dir = crate::review_dir(&output_path)?;
+    let dir = crate::job_review_dir(&output_path)?;
     subtitle_style.validate()?;
     if let Some(cover) = &cover {
         cover.validate()?;
@@ -1419,10 +1621,17 @@ pub(crate) fn carry_draft(original: &Path, target: &Path) {
 
 /// The draft for this video, its facts and its subtitles.
 #[tauri::command]
-pub async fn edit_project_load(output_path: String) -> Result<Value, String> {
-    let target = edit_target(&output_path)?;
+pub async fn edit_project_load(output_path: String, kind: String) -> Result<Value, String> {
+    let target = edit_target(&output_path, &kind)?;
     let facts = probe(&target.main)?;
-    let project_path = target.work.join("project.json");
+    let mut project_path = target.work.join("project.json");
+    if target.kind == Kind::File && kind != "file" && !project_path.is_file() {
+        // A run made before DubFlow kept its records: its earlier draft is
+        // read from beside it once; saving puts it in the app's store.
+        if let Some(earlier) = output_file(&output_path).ok().and_then(|video| shaped_target(&video)) {
+            project_path = earlier.work.join("project.json");
+        }
+    }
     let project = fs::metadata(&project_path).ok().filter(|metadata| metadata.len() as usize <= PROJECT_LIMIT)
         .and_then(|_| fs::read(&project_path).ok())
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -1475,12 +1684,54 @@ fn check_project(project: &Value) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The finished Bán hàng videos, compilations and documentary rough cuts below
+/// the given folders, newest first, for the Chỉnh sửa screen (Issue #497).
+/// Queue videos are known to the page already.
 #[tauri::command]
-pub fn edit_project_save(output_path: String, project: Value) -> Result<(), String> {
+pub fn edit_library(roots: Vec<String>) -> Vec<Value> {
+    let mut items: Vec<(u64, Value)> = Vec::new();
+    let mut add = |video: PathBuf, kind: &str, title: String| {
+        let Ok(metadata) = fs::metadata(&video) else { return };
+        if !metadata.is_file() {
+            return;
+        }
+        let modified = metadata.modified().ok().and_then(|time| time.duration_since(UNIX_EPOCH).ok()).map_or(0, |time| time.as_secs());
+        items.push((modified, json!({"path": display_path(&video), "kind": kind, "title": title, "modified": modified, "size_bytes": metadata.len()})));
+    };
+    let text = |value: &Value| value.as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
+    for run in crate::product::product_runs(roots.clone()) {
+        let Some(dir) = run["dir"].as_str().map(PathBuf::from) else { continue };
+        let name = text(&run["name"]).unwrap_or_else(|| "Video bán hàng".into());
+        let videos = run["status"]["videos"].as_array().cloned().unwrap_or_default();
+        for video in videos.iter().filter(|video| video["ok"] == true) {
+            if let Some(index) = video["index"].as_u64().filter(|index| (1..=99).contains(index)) {
+                add(dir.join(format!("video-{index}.mp4")), "product", format!("{name} · video {index}"));
+            }
+        }
+    }
+    for run in crate::compilation::compilation_runs(roots.clone()) {
+        if let Some(video) = run["video"].as_str() {
+            add(PathBuf::from(video), "compilation", text(&run["spec"]["title"]).unwrap_or_else(|| "Video tổng hợp".into()));
+        }
+    }
+    for run in crate::docu::docu_runs(roots) {
+        if let Some(dir) = run["dir"].as_str() {
+            add(Path::new(dir).join("documentary.mp4"), "docu", text(&run["spec"]["title"]).unwrap_or_else(|| "Phim tài liệu".into()));
+        }
+    }
+    items.sort_by(|a, b| b.0.cmp(&a.0));
+    items.into_iter().map(|(_, item)| item).collect()
+}
+
+#[tauri::command]
+pub fn edit_project_save(output_path: String, kind: String, project: Value) -> Result<(), String> {
     let bytes = check_project(&project)?;
-    let work = edit_target(&output_path)?.work;
-    fs::create_dir_all(&work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))?;
-    write_atomic(&work.join("project.json"), &bytes).map_err(|_| fail("Không lưu được bản nháp chỉnh sửa"))
+    save_draft(&edit_target(&output_path, &kind)?, &bytes)
+}
+
+fn save_draft(target: &Target, bytes: &[u8]) -> Result<(), String> {
+    target.prepare()?;
+    write_atomic(&target.work.join("project.json"), bytes).map_err(|_| fail("Không lưu được bản nháp chỉnh sửa"))
 }
 
 struct ExportJob {
@@ -1525,7 +1776,7 @@ fn progress_percent(out_time_us: i64, seconds: f64) -> f64 {
 fn encode(job: &ExportJob, encoder: &str, running: &Running) -> Result<(), String> {
     let partial = partial_of(&job.target);
     let log_path = job.work.join("ffmpeg.log");
-    let log = fs::File::create(&log_path).map(Stdio::from).unwrap_or_else(|_| Stdio::null());
+    let log = unlinked(&job.work).then(|| fs::File::create(&log_path).ok()).flatten().map_or_else(Stdio::null, Stdio::from);
     let mut command = Command::new(&job.ffmpeg);
     command.args(ffmpeg_args(&job.inputs, &job.script, job.has_audio, encoder, job.bitrate, &job.fps, &partial))
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log);
@@ -1622,7 +1873,7 @@ fn run_export(job: &ExportJob, running: &Running) {
 }
 
 fn start_export(request: ExportRequest) -> Result<Value, String> {
-    let target = edit_target(&request.output_path)?;
+    let target = edit_target(&request.output_path, &request.kind)?;
     let main = target.main.clone();
     let facts = probe(&main)?;
     if request.media.len() + 1 > MAX_MEDIA {
@@ -1672,10 +1923,11 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         return Err(fail("Video này đang được xuất"));
     }
     let work = target.work.clone();
-    fs::create_dir_all(&work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))?;
+    target.prepare()?;
     let lease = crate::work_lease::take(&work, BUSY)?;
     let cancel = work.join("cancel");
     if cancel.exists() {
+        guarded(&work)?;
         fs::remove_file(cancel).map_err(|_| fail("Không xóa được yêu cầu hủy cũ"))?;
     }
     let target = unique_target(&folder, &name)?;
@@ -1688,11 +1940,13 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         None
     } else {
         let file = work.join(TEXTS_FILE);
+        guarded(&work)?;
         fs::write(&file, texts_ass(&texts, width, height)).map_err(|_| fail("Không ghi được lớp chữ"))?;
         Some(subtitles_filter(&display_path(&file)))
     };
     let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix, layer.as_deref());
     inputs.extend(sound_inputs);
+    guarded(&work)?;
     fs::write(&script, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
     let job = ExportJob {
         work: work.clone(), inputs, media: request.media, script, folder, name, target: target.clone(),
@@ -1721,14 +1975,16 @@ pub async fn edit_export(request: ExportRequest) -> Result<Value, String> {
 
 /// The current or last render, and the finished exports that still exist.
 #[tauri::command]
-pub fn edit_status(output_path: String) -> Result<Value, String> {
-    let work = edit_target(&output_path)?.work;
+pub fn edit_status(output_path: String, kind: String) -> Result<Value, String> {
+    let target = edit_target(&output_path, &kind)?;
+    target.confined()?;
+    let work = target.work.clone();
     let mut status = fs::read(work.join("status.json")).ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()).filter(Value::is_object);
     let ours = RUNNING.lock().is_ok_and(|running| running.contains_key(&work));
     if let Some(value) = status.as_mut().filter(|value| value["state"] == "RUNNING" && !ours) {
         // A free lease means no window is rendering: the app closed mid-export.
-        if let Ok(lease) = crate::work_lease::take(&work, BUSY) {
+        if let Some(lease) = target.confined().ok().and_then(|()| crate::work_lease::take(&work, BUSY).ok()) {
             if let Some(target) = value["output_path"].as_str() {
                 let _ = fs::remove_file(partial_of(Path::new(target)));
             }
@@ -1743,9 +1999,10 @@ pub fn edit_status(output_path: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn edit_cancel(output_path: String) -> Result<(), String> {
-    let work = edit_target(&output_path)?.work;
-    if work.is_dir() {
+pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
+    let target = edit_target(&output_path, &kind)?;
+    let work = target.work.clone();
+    if work.is_dir() && target.confined().is_ok() {
         fs::write(work.join("cancel"), b"").map_err(|_| fail("Không hủy được xuất video"))?;
     }
     if let Some(entry) = RUNNING.lock().ok().and_then(|running| running.get(&work).cloned()) {
@@ -1771,7 +2028,7 @@ mod tests {
     }
 
     fn request(segments: Vec<Segment>) -> ExportRequest {
-        ExportRequest { output_path: "unused".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
+        ExportRequest { output_path: "unused".into(), kind: "file".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
             texts: vec![], quality: "source".into(),
             folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }] }
     }
@@ -1906,7 +2163,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         crowded.media = vec!["x.mp4".into(); 20];
         assert!(validate(&crowded, &[30.0; 21]).is_err(), "at most 20 media with the main video");
         assert!(validate(&ok, &[30.0]).is_err(), "every listed media is probed");
-        let parsed: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "media": [r"D:\a.mp4"], "quality": "source", "folder": "x",
+        let parsed: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "kind": "file", "media": [r"D:\a.mp4"], "quality": "source", "folder": "x",
             "fileName": "x", "cues": [], "segments": [{"media": 1, "start": 0, "end": 1, "speed": 1, "volume": 1}],
             "transitions": [{"after": 0, "type": "dissolve", "duration": 0.5}],
             "overlays": [{"media": 1, "at": 0, "start": 0, "end": 1, "x": 0, "y": 0, "w": 0.5, "volume": 1}]})).unwrap();
@@ -1954,7 +2211,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let mut value = request(vec![segment(0.0, 10.0, 1.0, 1.0)]);
         value.cues = vec![Cue { start_ms: 9000, end_ms: 11_000, text: "dòng 1\ndòng 2".into() }];
         assert!(validate(&value, &[30.0]).is_ok(), "a last cue may run up to a second past the end");
-        assert!(serde_json::from_value::<ExportRequest>(json!({"outputPath": "x", "segments": [], "quality": "source",
+        assert!(serde_json::from_value::<ExportRequest>(json!({"outputPath": "x", "kind": "file", "segments": [], "quality": "source",
             "folder": "x", "fileName": "x", "cues": [], "overwrite": true})).is_err(), "no overwrite option");
         assert!(serde_json::from_value::<Segment>(json!({"start": 0, "end": 1, "speed": 1, "volume": 1, "id": "s1"})).is_err());
     }
@@ -2077,6 +2334,8 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     fn product_videos_and_compilations_have_their_own_drafts() {
         let base = std::env::temp_dir().join(format!("dubflow-edit-targets-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
+        let data = base.join("data");
+        fs::create_dir_all(&data).unwrap();
         let product = base.join("DubFlow Output/Ban hang - Nồi chiên/run-0123456789ab");
         let compilation = base.join("DubFlow Output/Tong hop - Top 3/run-0123456789ab");
         for dir in [&product, &compilation] {
@@ -2087,38 +2346,208 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
             fs::write(product.join(name), b"video").unwrap();
         }
         fs::write(compilation.join("compilation.mp4"), b"video").unwrap();
-        let first = edit_target(&crate::display_path(&product.join("video-1.mp4"))).unwrap();
-        let second = edit_target(&crate::display_path(&product.join("video-2.mp4"))).unwrap();
-        assert_eq!((first.kind, second.kind), (Kind::Product(1), Kind::Product(2)));
-        assert!(first.work.ends_with(".dubflow-work/edit-1") && second.work.ends_with(".dubflow-work/edit-2"), "one draft per video");
-        assert!(first.captions.as_ref().unwrap().ends_with("captions-1.srt"));
-        // A documentary run's rough cut, with its English captions; not the same name in another folder.
         let docu = base.join("DubFlow Output/Phim tai lieu - Đập/run-000000000001");
         fs::create_dir_all(docu.join(".dubflow-work")).unwrap();
         fs::write(docu.join(".dubflow-work/spec.json"), b"{\"schema_version\":1}").unwrap();
         fs::write(docu.join("documentary.mp4"), b"video").unwrap();
-        let film = edit_target(&crate::display_path(&docu.join("documentary.mp4"))).unwrap();
+        let open = |path: &Path, kind: &str| resolve_target(&crate::display_path(path), kind, &data);
+        let store = data.join("edit-files");
+        // Shaped like DubFlow's runs but not recorded by the app: files, drafts in the app's store.
+        for (video, kind) in [(product.join("video-1.mp4"), "product"), (compilation.join("compilation.mp4"), "compilation"), (docu.join("documentary.mp4"), "docu")] {
+            let target = open(&video, kind).unwrap();
+            assert!(target.kind == Kind::File && target.work.starts_with(&store), "{kind} without a record");
+        }
+        record_run_in(&data, "product", &product).unwrap();
+        record_run_in(&data, "compilation", &compilation).unwrap();
+        record_run_in(&data, "docu", &docu).unwrap();
+        let first = open(&product.join("video-1.mp4"), "product").unwrap();
+        let second = open(&product.join("video-2.mp4"), "product").unwrap();
+        assert_eq!((first.kind, second.kind), (Kind::Product(1), Kind::Product(2)));
+        assert!(first.work.ends_with(".dubflow-work/edit-1") && second.work.ends_with(".dubflow-work/edit-2"), "one draft per video");
+        assert!(first.captions.as_ref().unwrap().ends_with("captions-1.srt"));
+        // Picked or dropped from the computer: always a file, even a recorded run's video.
+        let picked = open(&product.join("video-1.mp4"), "file").unwrap();
+        assert!(picked.kind == Kind::File && picked.work.starts_with(&store));
+        assert!(open(&product.join("video-1.mp4"), "compilation").is_err(), "the page's kind must match the record");
+        assert!(open(&product.join("video-1.mp4"), "other").is_err());
+        // A record of another kind proves nothing.
+        assert!(!recorded_run(&data, "docu", &product));
+        // A documentary run's rough cut, with its English captions; not the same name in another folder.
+        let film = open(&docu.join("documentary.mp4"), "docu").unwrap();
         assert_eq!(film.kind, Kind::Docu);
         assert!(film.captions.as_ref().unwrap().ends_with("captions_en.srt") && film.work.ends_with(".dubflow-work/edit"));
         fs::write(compilation.join("documentary.mp4"), b"video").unwrap();
-        assert!(edit_target(&crate::display_path(&compilation.join("documentary.mp4"))).is_err());
-        let joined = edit_target(&crate::display_path(&compilation.join("compilation.mp4"))).unwrap();
+        let elsewhere = compilation.join("documentary.mp4").canonicalize().unwrap();
+        assert!(shaped_target(&elsewhere).is_none());
+        // Any other video opens as a file, its draft kept in the app's store, not beside it.
+        let file = file_target(&crate::display_path(&elsewhere), &store).unwrap();
+        assert_eq!((file.kind, file.captions.is_none(), file.work.parent()), (Kind::File, true, Some(store.as_path())));
+        assert_eq!(file_key(Path::new(r"C:\Videos\Clip.mp4")), file_key(Path::new(r"c:\videos\clip.MP4")));
+        assert_ne!(file_key(Path::new(r"C:\Videos\a.mp4")), file_key(Path::new(r"C:\Videos\b.mp4")));
+        assert!(file_target(&crate::display_path(&compilation.join(".dubflow-work/spec.json")), &store).is_err(), "not a video");
+        let joined = open(&compilation.join("compilation.mp4"), "compilation").unwrap();
         assert_eq!((joined.kind, joined.captions.is_none()), (Kind::Compilation, true));
         assert!(joined.work.ends_with(".dubflow-work/edit"));
         for name in ["video-x.mp4", "final.mp4"] {
-            assert!(edit_target(&crate::display_path(&product.join(name))).is_err(), "{name}");
+            assert!(shaped_target(&product.join(name).canonicalize().unwrap()).is_none(), "{name}");
         }
         // Without its request a run is not a product run.
         fs::remove_file(product.join(".dubflow-work/spec.json")).unwrap();
-        assert!(edit_target(&crate::display_path(&product.join("video-1.mp4"))).is_err());
+        assert!(shaped_target(&product.join("video-1.mp4").canonicalize().unwrap()).is_none());
         fs::write(product.join(".dubflow-work/spec.json"), b"{}").unwrap();
-        let project = json!({"schema_version": 4, "duration": 10.0, "segments": [{"id": "s1", "start": 0, "end": 10, "speed": 1, "volume": 1}], "texts": []});
-        edit_project_save(crate::display_path(&product.join("video-2.mp4")), project.clone()).unwrap();
-        assert!(product.join(".dubflow-work/edit-2/project.json").is_file());
-        assert!(!product.join(".dubflow-work/edit-1").exists());
-        edit_project_save(crate::display_path(&compilation.join("compilation.mp4")), project).unwrap();
-        assert!(compilation.join(".dubflow-work/edit/project.json").is_file());
-        assert_eq!(edit_status(crate::display_path(&product.join("video-1.mp4"))).unwrap()["exports"], json!([]));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A directory link: an NTFS junction (reparse point) on Windows, a symlink elsewhere.
+    fn link_dir(target: &Path, link: &Path) {
+        #[cfg(windows)]
+        {
+            let status = Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target)
+                .stdout(Stdio::null()).status().unwrap();
+            assert!(status.success(), "mklink /J failed");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    fn unlink_dir(link: &Path) {
+        // A junction is removed as a folder, a symlink as a file; neither touches its target.
+        if fs::remove_dir(link).is_err() {
+            fs::remove_file(link).unwrap();
+        }
+    }
+
+    /// The app's draft store and a file's own draft folder never lead out
+    /// through a link or junction: saving fails before anything outside changes.
+    #[test]
+    fn file_drafts_never_follow_a_link_out_of_the_app_store() {
+        use sha2::{Digest, Sha256};
+        let base = std::env::temp_dir().join(format!("dubflow-edit-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let data = base.join("data");
+        let source = base.join("Videos");
+        let outside = base.join("outside");
+        for dir in [&data, &source, &outside] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let video = source.join("clip.mp4");
+        fs::write(&video, b"video").unwrap();
+        fs::write(outside.join("marker.txt"), b"keep").unwrap();
+        fs::write(outside.join("project.json"), b"{\"theirs\":true}").unwrap();
+        let state = |dir: &Path| {
+            let mut entries: Vec<_> = fs::read_dir(dir).unwrap().map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = fs::read(&path).unwrap_or_default();
+                (path.file_name().unwrap().to_owned(), format!("{:x}", Sha256::digest(&bytes)), fs::metadata(&path).unwrap().modified().unwrap())
+            }).collect();
+            entries.sort();
+            entries
+        };
+        let (outside_before, source_before) = (state(&outside), state(&source));
+        let path = crate::display_path(&video);
+        let store = data.join("edit-files");
+        let project = br#"{"schema_version":1}"#;
+
+        // The store itself is a link to the user's folder.
+        link_dir(&outside, &store);
+        assert!(resolve_target(&path, "file", &data).is_err());
+        unlink_dir(&store);
+        // The store is a link to the video's own folder.
+        link_dir(&source, &store);
+        assert!(resolve_target(&path, "file", &data).is_err());
+        unlink_dir(&store);
+        // The file's own draft folder is a link (to elsewhere, or beside the video).
+        fs::create_dir(&store).unwrap();
+        let child = store.join(file_key(&video.canonicalize().unwrap()));
+        for target in [&outside, &source] {
+            link_dir(target, &child);
+            assert!(resolve_target(&path, "file", &data).is_err());
+            unlink_dir(&child);
+        }
+        // Swapped for a link after it was checked: the save right after fails closed.
+        let opened = resolve_target(&path, "file", &data).unwrap();
+        assert_eq!(opened.work, child);
+        fs::remove_dir(&child).unwrap();
+        link_dir(&outside, &child);
+        assert!(save_draft(&opened, project).is_err());
+        assert!(opened.confined().is_err(), "status and cancel writes are refused too");
+        write_status(&opened.work, "FAILED", 0.0, "x", None);
+        append_export(&opened.work, json!({"path": "x"}));
+        assert!(!outside.join("status.json").exists() && !outside.join("exports.json").exists(), "a render's own writes are refused");
+        assert!(guarded(&opened.work).is_err() && opened.prepare().is_err(), "an export does not start");
+        unlink_dir(&child);
+        // Swapped for a link to a folder that does not exist yet: it is never created.
+        let missing = outside.join("new");
+        link_dir(&missing, &child);
+        assert!(save_draft(&opened, project).is_err() && opened.prepare().is_err() && opened.confined().is_err());
+        write_status(&opened.work, "FAILED", 0.0, "x", None);
+        append_export(&opened.work, json!({"path": "x"}));
+        assert!(!missing.exists(), "the link's missing target was not created");
+        assert!(resolve_target(&path, "file", &data).is_err());
+        unlink_dir(&child);
+        assert_eq!(state(&outside), outside_before, "nothing outside the store changed");
+        assert_eq!(state(&source), source_before, "nothing beside the video changed");
+        // The ordinary store still works.
+        let opened = resolve_target(&path, "file", &data).unwrap();
+        save_draft(&opened, project).unwrap();
+        assert_eq!(fs::read(child.join("project.json")).unwrap(), project);
+        assert_eq!(state(&outside), outside_before);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A user's own `DubFlow Output` tree holding metadata of every valid
+    /// shape (a worker manifest, a completed-looking status, run requests)
+    /// is still the user's: nothing is written beside those videos.
+    #[test]
+    fn valid_looking_metadata_in_a_users_folder_is_not_dubflows() {
+        let base = std::env::temp_dir().join(format!("dubflow-edit-fake-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let data = base.join("data");
+        fs::create_dir_all(data.join("control/jobs")).unwrap();
+        let output = base.join("Videos/DubFlow Output");
+        let job = output.join("clip - vi/run-1");
+        let product = output.join("Ban hang - x/run-0123456789ab");
+        let compilation = output.join("Tong hop - x/run-0123456789ab");
+        let docu = output.join("Phim tai lieu - x/run-0123456789ab");
+        for dir in [&job, &product, &compilation, &docu] {
+            fs::create_dir_all(dir.join(".dubflow-work")).unwrap();
+            fs::write(dir.join(".dubflow-work/spec.json"), json!({"schema_version": 1, "sources": []}).to_string()).unwrap();
+            fs::write(dir.join(".dubflow-work/status.json"), json!({"schema_version": 1, "state": "COMPLETED", "videos": [{"index": 1, "ok": true}]}).to_string()).unwrap();
+        }
+        fs::write(job.join("job_manifest.json"), json!({"source": {"path": "C:/clip.mp4"}, "audio": {"mode": "dubbed"}}).to_string()).unwrap();
+        fs::write(job.join(".dubflow-work/translation.json"), b"{}").unwrap();
+        // A status file beside the video naming it is not the app's record.
+        fs::write(job.join("job.json"), json!({"status": {"state": "COMPLETED"}, "output_path": crate::display_path(&job.join("final_vi.mp4"))}).to_string()).unwrap();
+        let videos = [(job.join("final_vi.mp4"), "job"), (product.join("video-1.mp4"), "product"),
+            (compilation.join("compilation.mp4"), "compilation"), (docu.join("documentary.mp4"), "docu")];
+        for (video, _) in &videos {
+            fs::write(video, b"video").unwrap();
+        }
+        let store = data.join("edit-files");
+        for (video, kind) in &videos {
+            assert!(shaped_target(&video.canonicalize().unwrap()).is_some(), "{kind} is shaped like DubFlow's");
+            for asked in [*kind, "file"] {
+                let target = resolve_target(&crate::display_path(video), asked, &data).unwrap();
+                assert!(target.kind == Kind::File && target.work.starts_with(&store), "{kind} opened as {asked}");
+            }
+        }
+        // A job record that names another video proves nothing for this one.
+        fs::write(data.join("control/jobs/job_1.json"), json!({"status": {"state": "COMPLETED"},
+            "output_path": crate::display_path(&base.join("elsewhere/final_vi.mp4"))}).to_string()).unwrap();
+        assert!(!recorded_job(&data, &job.join("final_vi.mp4")));
+        // Nor does a record of a job that has not finished.
+        fs::write(data.join("control/jobs/job_2.json"), json!({"status": {"state": "RUNNING"},
+            "output_path": crate::display_path(&job.join("final_vi.mp4"))}).to_string()).unwrap();
+        assert!(!recorded_job(&data, &job.join("final_vi.mp4")));
+        for (video, _) in &videos {
+            assert!(!video.parent().unwrap().join(".dubflow-work/edit").exists() && !video.parent().unwrap().join(".dubflow-work/edit-1").exists());
+        }
+        // The supervisor's completed record makes it the job's.
+        fs::write(data.join("control/jobs/job_3.json"), json!({"schema_version": 1, "job_id": "job_3", "status": {"state": "COMPLETED"},
+            "output_path": crate::display_path(&job.join("final_vi.mp4"))}).to_string()).unwrap();
+        let recorded = resolve_target(&crate::display_path(&job.join("final_vi.mp4")), "job", &data).unwrap();
+        assert!(recorded.kind == Kind::Job && recorded.work.ends_with(".dubflow-work/edit"));
+        assert_eq!(resolve_target(&crate::display_path(&job.join("final_vi.mp4")), "file", &data).unwrap().kind, Kind::File);
         fs::remove_dir_all(base).unwrap();
     }
 
@@ -2130,22 +2559,41 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let video = dir.join("final_vi.mp4");
         fs::write(&video, b"video").unwrap();
         let path = crate::display_path(&video);
+        // The supervisor's record of the finished job, in the app's data root.
+        let record = crate::control_root().unwrap().join(format!("control/jobs/edit-test-{}.json", std::process::id()));
+        fs::write(&record, json!({"schema_version": 1, "job_id": "edit-test", "status": {"state": "COMPLETED"}, "output_path": path}).to_string()).unwrap();
         let project = json!({"schema_version": 1, "duration": 10.0, "segments": [{"id": "s1", "start": 0, "end": 10, "speed": 1, "volume": 1}]});
-        edit_project_save(path.clone(), project.clone()).unwrap();
+        edit_project_save(path.clone(), "job".into(), project.clone()).unwrap();
         let saved: Value = serde_json::from_slice(&fs::read(dir.join(".dubflow-work/edit/project.json")).unwrap()).unwrap();
         assert_eq!(saved, project);
-        assert!(edit_project_save(path.clone(), json!({"schema_version": 5, "segments": [{}]})).is_err());
-        assert!(edit_project_save(path.clone(), json!({"schema_version": 3, "segments": [{}], "audio": [], "main_volume": 1})).is_ok(), "4e drafts");
-        assert!(edit_project_save(path.clone(), json!({"schema_version": 4, "segments": [{}], "texts": []})).is_ok(), "4f drafts");
-        assert!(edit_project_save(path.clone(), json!({"schema_version": 1, "segments": []})).is_err());
-        assert!(edit_project_save(path.clone(), json!({"schema_version": 1, "segments": [{}], "pad": "x".repeat(PROJECT_LIMIT)})).is_err());
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 5, "segments": [{}]})).is_err());
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 3, "segments": [{}], "audio": [], "main_volume": 1})).is_ok(), "4e drafts");
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 4, "segments": [{}], "texts": []})).is_ok(), "4f drafts");
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 1, "segments": []})).is_err());
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 1, "segments": [{}], "pad": "x".repeat(PROJECT_LIMIT)})).is_err());
         fs::write(dir.join("other.mp4"), b"video").unwrap();
-        assert!(edit_project_save(crate::display_path(&dir.join("other.mp4")), project.clone()).is_err(), "only final_vi.mp4");
-        assert!(edit_project_save("relative/final_vi.mp4".into(), project.clone()).is_err());
+        // Any other video is a file (Issue #497): its draft never goes beside it or into the job's folder.
+        let as_file = |path: &Path| edit_target(&crate::display_path(path), "job").map_or(true, |target| target.kind == Kind::File && !target.work.starts_with(&base));
+        assert!(as_file(&dir.join("other.mp4")), "only final_vi.mp4 is the job's");
+        assert!(edit_project_save("relative/final_vi.mp4".into(), "job".into(), project.clone()).is_err());
         let outside = base.join("elsewhere/final_vi.mp4");
         fs::create_dir_all(outside.parent().unwrap()).unwrap();
         fs::write(&outside, b"video").unwrap();
-        assert!(edit_project_save(crate::display_path(&outside), project).is_err(), "only DubFlow results");
+        assert!(as_file(&outside), "only DubFlow results are jobs");
+        // A user's own folder named like DubFlow's: final_vi.mp4 there is a file, its draft never beside it.
+        let personal = base.join("Videos/DubFlow Output/Personal");
+        fs::create_dir_all(&personal).unwrap();
+        fs::write(personal.join("final_vi.mp4"), b"video").unwrap();
+        assert!(edit_target(&crate::display_path(&personal.join("final_vi.mp4")), "job").unwrap().kind == Kind::File);
+        let store = base.join("store");
+        let target = file_target(&crate::display_path(&personal.join("final_vi.mp4")), &store).unwrap();
+        assert!(target.kind == Kind::File && target.work.starts_with(&store));
+        fs::write(personal.join("job_manifest.json"), json!({"source": {"path": "C:/clip.mp4"}}).to_string()).unwrap();
+        edit_project_save(crate::display_path(&personal.join("final_vi.mp4")), "job".into(), project.clone()).unwrap();
+        assert!(edit_target(&crate::display_path(&personal.join("final_vi.mp4")), "job").unwrap().kind == Kind::File, "a manifest is not the app's record");
+        assert!(!personal.join(".dubflow-work").exists(), "nothing written beside the user's video");
+        assert_eq!(edit_target(&path, "job").unwrap().kind, Kind::Job, "a recorded job stays a job");
+        assert_eq!(edit_target(&path, "file").unwrap().kind, Kind::File, "picked from the computer it is a file");
 
         let work = dir.join(".dubflow-work/edit");
         let exported = base.join("Phim (sửa 1).mp4");
@@ -2155,7 +2603,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         // A render left RUNNING by a closed app is reported as interrupted.
         write_status(&work, "RUNNING", 40.0, "Đang xuất video… 40%", Some(&base.join("Phim (sửa 2).mp4")));
         fs::write(base.join("Phim (sửa 2).mp4.partial"), b"half").unwrap();
-        let status = edit_status(path.clone()).unwrap();
+        let status = edit_status(path.clone(), "job".into()).unwrap();
         assert_eq!(status["exports"].as_array().unwrap().len(), 1);
         assert_eq!(status["status"]["state"], "FAILED");
         assert!(!base.join("Phim (sửa 2).mp4.partial").exists());
@@ -2163,11 +2611,13 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         if cfg!(windows) {
             write_status(&work, "RUNNING", 10.0, "x", None);
             let lease = crate::work_lease::take(&work, BUSY).unwrap();
-            assert_eq!(edit_status(path.clone()).unwrap()["status"]["state"], "RUNNING");
+            assert_eq!(edit_status(path.clone(), "job".into()).unwrap()["status"]["state"], "RUNNING");
             drop(lease);
         }
-        edit_cancel(path).unwrap();
+        edit_cancel(path, "job".into()).unwrap();
         assert!(work.join("cancel").is_file());
+        let _ = fs::remove_file(record);
+        let _ = fs::remove_dir_all(edit_target(&crate::display_path(&personal.join("final_vi.mp4")), "file").unwrap().work);
         fs::remove_dir_all(base).unwrap();
     }
 
@@ -2237,6 +2687,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
             "segments": [{"id": "s1", "mediaId": "main", "start": 0, "end": 4, "speed": 1, "volume": 1}]}).to_string()).unwrap();
         let dir = PathBuf::from(crate::display_path(&fs::canonicalize(&dir).unwrap()));
         let output = crate::display_path(&dir.join("final_vi.mp4"));
+        let mut records = vec![crate::record_test_job(&dir.join("final_vi.mp4"))];
 
         let loaded = edit_subtitles_load(output.clone()).unwrap();
         assert_eq!(loaded["cues"].as_array().unwrap().len(), 2);
@@ -2276,6 +2727,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert!(read_subtitle_style(&dir).is_none(), "the original is untouched");
         // The new version's lines report what their voices speak.
         fs::write(revision.join("final_vi.mp4"), "video").unwrap();
+        records.push(crate::record_test_job(&revision.join("final_vi.mp4")));
         let again = edit_subtitles_load(crate::display_path(&revision.join("final_vi.mp4"))).unwrap();
         assert_eq!((again["cues"][0]["text"].as_str(), again["cues"][0]["voice_text"].as_str()), (Some("Xin chào"), Some("Chào")));
         assert_eq!(again["style"]["font"], "Candara");
@@ -2285,6 +2737,9 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let written: Value = serde_json::from_slice(&fs::read(revision.join(COVER_FILE)).unwrap()).unwrap();
         assert_eq!(written["schema_version"], 1);
         assert!(read_cover(&dir).is_none(), "the original keeps its cover");
+        for record in records {
+            let _ = fs::remove_file(record);
+        }
         fs::remove_dir_all(base).unwrap();
     }
 
@@ -2362,12 +2817,12 @@ anullsrc=r=48000:cl=stereo,atrim=duration=10[am];
         assert!(validate_mix(&[SoundClip { duck_db: 30.0, ..clip(1.0, 0.5) }], &[0], &[0.6], 1.0, 10.0).is_err());
         assert!(validate_mix(&[SoundClip { volume: f64::NAN, ..clip(1.0, 0.5) }], &[0], &[0.6], 1.0, 10.0).is_err());
         assert!(validate_mix(&[], &[], &[], 2.5, 10.0).is_err());
-        let request: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "segments": [{"start": 0, "end": 1, "speed": 1, "volume": 1}],
+        let request: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "kind": "file", "segments": [{"start": 0, "end": 1, "speed": 1, "volume": 1}],
             "quality": "source", "folder": "x", "fileName": "a", "cues": [], "mainVolume": 0.8,
             "audio": [{"source": {"kind": "file", "path": "D:\\a.mp3"}, "at": 0, "start": 0, "end": 1, "volume": 1, "fade_in": 0, "fade_out": 0, "duck_db": 6}]})).unwrap();
         assert_eq!(request.main_volume, 0.8);
         assert_eq!(request.audio[0].source, SoundSource::File { path: "D:\\a.mp3".into() });
-        let old: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "segments": [], "quality": "source", "folder": "x", "fileName": "a", "cues": []})).unwrap();
+        let old: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "kind": "file", "segments": [], "quality": "source", "folder": "x", "fileName": "a", "cues": []})).unwrap();
         assert!(old.audio.is_empty() && old.main_volume == 1.0, "4a–4d requests");
         assert_eq!(draft_sounds(&json!({"audio": [{"source": {"kind": "sfx", "id": "pop-01"}}, {"source": {"kind": "file", "path": "relative.mp3"}}]})).len(), 0);
     }
@@ -2474,7 +2929,7 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
         }
         assert!(validate_texts(&[text(&"đ".repeat(300), json!({}))], 10.0).is_ok());
         assert!(serde_json::from_value::<TextClip>(json!({"text": "x"})).is_err());
-        let request: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "segments": [], "quality": "source", "folder": "x",
+        let request: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "kind": "file", "segments": [], "quality": "source", "folder": "x",
             "fileName": "a", "cues": [], "texts": [serde_json::to_value(&ok).unwrap()]})).unwrap();
         assert_eq!(request.texts, vec![ok]);
     }

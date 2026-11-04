@@ -199,6 +199,7 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     let output = product_output(&base, &request.name, &format!("{started}:{}", request.name));
     let work = output.join(".dubflow-work");
     fs::create_dir_all(&work).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
+    crate::edit::record_run("product", &output);
     let spec = json!({
         "schema_version": 1, "name": request.name, "price": request.price, "voice_id": request.voice_id,
         "variants": request.variants, "visuals": visuals, "music": music, "music_volume": request.music_volume, "background": background,

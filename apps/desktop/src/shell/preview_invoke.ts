@@ -410,11 +410,31 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
         return { duration: 202.5, width: 1920, height: 1080, fps: 30, size_bytes: 88_000_000, has_audio: true, project: editProjects.get(path) ?? null,
           kind: "compilation", reviewable: false, variant: null, cues: [] } as T;
       }
+      if (/[\\/]documentary\.mp4$/i.test(path)) {
+        return { duration: 640.4, width: 1920, height: 1080, fps: 30, size_bytes: 412_000_000, has_audio: true, project: editProjects.get(path) ?? null,
+          kind: "docu", reviewable: false, variant: null, cues: [] } as T;
+      }
+      if (!/[\\/]final_vi\.mp4$/i.test(path)) {
+        // Chỉnh sửa › Mở video trên máy: any video.
+        return { duration: 96.8, width: 1920, height: 1080, fps: 30, size_bytes: 61_000_000, has_audio: true, project: editProjects.get(path) ?? null,
+          kind: "file", reviewable: false, variant: null, cues: [] } as T;
+      }
       return {
         duration: 154.2, width: 1024, height: 576, fps: 25, size_bytes: 46_000_000, has_audio: true,
         project: editProjects.get(path) ?? null, kind: "job", reviewable: true, variant: null,
         cues: reviewCues.map(({ cue_id, start_ms, end_ms, machine_text }) => ({ start_ms, end_ms, text: savedOverrides[cue_id] ?? machine_text })),
       } as T;
+    }
+    case "edit_library": {
+      // The other pages' finished videos, with made-up dates so the list has its groups.
+      const now = Math.floor(Date.now() / 1000);
+      const products = previewProductRuns().flatMap((run, runIndex) => (run.status?.videos ?? []).map((video: { index: number }) => ({
+        path: `${run.dir}\\video-${video.index}.mp4`, kind: "product", title: `${run.name} · video ${video.index}`, modified: now - 3_600 * (2 + runIndex) - video.index * 60, size_bytes: 9_800_000 })));
+      const compilations = previewCompilationRuns().filter((run) => run.video).map((run, index) => ({
+        path: run.video!, kind: "compilation", title: run.spec.title, modified: now - 86_400 * (1 + index * 3), size_bytes: 88_000_000 }));
+      const films = [...docuProjects.values()].map((project, index) => ({
+        path: `${project.dir}\\documentary.mp4`, kind: "docu", title: project.spec.title, modified: now - 86_400 * (9 + index), size_bytes: 412_000_000 }));
+      return [...products, ...compilations, ...films] as T;
     }
     case "edit_project_save": editProjects.set(String(args.outputPath), JSON.parse(JSON.stringify(args.project))); return null as T;
     case "edit_export": {

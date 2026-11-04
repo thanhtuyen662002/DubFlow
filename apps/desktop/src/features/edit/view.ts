@@ -16,7 +16,7 @@ import {
   formatClock, formatSpeed, insertAt, isUnchanged, MAIN, mainLevel, MAX_MEDIA, MAX_OVERLAYS, MAX_SEGMENTS, matchesExport, MIN_SEGMENT,
   MIN_TRANSITION, mediaOf, moveOverlay, outputDuration, outputStarts, outputToSource, overlayHeight, overlayLength,
   overlayPreset, overlayPresetOf, parseClock, parseProject, RECENT_LIMIT, remapCues, remove, removeOverlay, resizeOverlay,
-  samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput,
+  samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput, openingTime, resolveTarget, modeOffered,
   SPEED_PRESETS, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
@@ -39,16 +39,17 @@ type StatusResponse = { status: ExportStatus | null; exports: ExportEntry[] };
 type MediaResponse = { path: string; title: string; duration: number; width: number; height: number; fps: number; has_audio: boolean };
 
 /** A finished queue video the Chèn panel offers. */
-export type LibraryJob = { id: string; title: string; outputPath: string };
+export type LibraryJob = { id: string; title: string; outputPath: string; kind: EditTarget["kind"]; meta?: string };
 
 /**
- * A finished video the editor opens: a queue job's `final_vi.mp4`, a Bán
- * hàng video or a compilation (Issue #426).
+ * A video the editor opens: a queue job's `final_vi.mp4`, a Bán hàng video,
+ * a compilation (Issue #426), a documentary or any video file (Issue #497).
  */
 export type EditTarget = {
   /** The queue job's id, else the video's path. */
   id: string;
-  kind: "job" | "product" | "compilation" | "docu";
+  /** "file": any other video on the computer (Issue #497). */
+  kind: "job" | "product" | "compilation" | "docu" | "file";
   outputPath: string;
   displayName: string;
   /** The queue job (kind "job"): Phụ đề and Che re-run it. */
@@ -139,6 +140,8 @@ type Box = { element: HTMLDivElement; video: HTMLVideoElement; path: string };
 
 const PAD = 12;
 const TIMELINE_PX = 170;
+/** The timeline below a 600 px window (styles.css). */
+const SHORT_TIMELINE_PX = 140;
 /** A timeline drop this close to a segment edge goes on the edge, not a sliver away. */
 const DROP_SNAP_PX = 12;
 const THUMB_WIDTH = 76;
@@ -778,9 +781,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   async function save(): Promise<void> {
     if (!session) return;
-    const { outputPath, history, selected, recent } = session;
+    const { outputPath, history, selected, recent, target: { kind } } = session;
     try {
-      await invoke("edit_project_save", { outputPath, project: serializeProject(history.current, history.changes, selected, recent) });
+      await invoke("edit_project_save", { outputPath, kind, project: serializeProject(history.current, history.changes, selected, recent) });
       $("#edit-save-state").textContent = "";
     } catch (error) {
       $("#edit-save-state").textContent = `Chưa lưu được bản nháp: ${String(error).slice(0, 140)}`;
@@ -1048,9 +1051,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   /** The modes this video has: Mẫu for Bán hàng videos, Phụ đề and Che for dubbing jobs. */
   function offered(next: Mode): boolean {
-    if (next === "template") return session?.target.kind === "product";
-    if (next === "subs" || next === "cover") return !!session?.reviewable;
-    return true;
+    return !!session && modeOffered(next, session.target.kind, session.reviewable);
   }
 
   function renderModes(): void {
@@ -1223,10 +1224,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const token = ++libraryToken;
     const jobs = host.library().filter((job) => job.id !== session!.target.id && job.outputPath);
     const items: LibraryItem[] = [];
-    const statuses = await Promise.all(jobs.map((job) => invoke<StatusResponse>("edit_status", { outputPath: job.outputPath }).catch(() => null)));
+    const statuses = await Promise.all(jobs.map((job) => invoke<StatusResponse>("edit_status", { outputPath: job.outputPath, kind: job.kind }).catch(() => null)));
     if (token !== libraryToken || !session) return;
     jobs.forEach((job, index) => {
-      items.push({ key: `job:${job.id}`, path: job.outputPath, title: job.title, meta: "Video đã làm trong DubFlow", kind: "job", duration: null });
+      items.push({ key: `job:${job.id}`, path: job.outputPath, title: job.title, meta: job.meta ?? "Video đã làm trong DubFlow", kind: "job", duration: null });
       for (const entry of [...(statuses[index]?.exports ?? [])].reverse()) {
         items.push({ key: `export:${entry.path}`, path: entry.path, title: stem(entry.path), meta: `Bản sửa của ${job.title}`, kind: "job",
           duration: entry.duration > 0 ? entry.duration : null });
@@ -1334,7 +1335,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const audioHeight = audio.renderTrack(audioTrack, mode === "audio", PAD);
     content.classList.toggle("with-audio", audioHeight > 0 || textHeight > 0);
     const rows = 22 + (edit.overlays.length ? 30 : 0) + 48 + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + 16;
-    timeline.style.height = audioHeight || textHeight ? `${Math.max(TIMELINE_PX, 36 + rows)}px` : "";
+    // At most 40% of the window: further rows scroll, the video keeps its room.
+    // Never lower than the timeline without rows (lower in short windows, see styles.css), so it does not jump.
+    const least = window.innerHeight <= 600 ? SHORT_TIMELINE_PX : TIMELINE_PX;
+    const most = Math.max(least, Math.round(window.innerHeight * 0.4));
+    timeline.style.height = audioHeight || textHeight ? `${Math.min(most, Math.max(least, 36 + rows))}px` : "";
     renderThumbs();
     renderPlayhead();
     const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;
@@ -1885,23 +1890,26 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     openButton.disabled = true;
     try {
       const [loaded, status] = await Promise.all([
-        invoke<LoadResponse>("edit_project_load", { outputPath }),
-        invoke<StatusResponse>("edit_status", { outputPath }).catch(() => null),
+        invoke<LoadResponse>("edit_project_load", { outputPath, kind: target.kind }),
+        invoke<StatusResponse>("edit_status", { outputPath, kind: target.kind }).catch(() => null),
       ]);
       // The queue selection moved on while a queue video was opening.
       if (ticket !== openTicket || (target.kind === "job" && listJob?.id !== target.id)) return false;
-      const info = { path: outputPath, title: target.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
+      const opened = resolveTarget(target, loaded.kind);
+      const info = { path: outputPath, title: opened.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
       const project = parseProject(loaded.project, loaded.duration, info);
-      const edit = project?.edit ?? (target.seed ?? ((fresh: Edit) => fresh))(createEdit(loaded.duration, info));
+      const edit = project?.edit ?? (opened.seed ?? ((fresh: Edit) => fresh))(createEdit(loaded.duration, info));
       const last = status?.exports.at(-1);
       // Exported in the background after the draft was saved: nothing is pending.
       const changes = last?.segments && matchesExport(edit, last) ? 0 : project?.changes ?? 0;
       const { project: _, kind: _kind, reviewable, ...facts } = loaded;
       if (status) listStatus = status;
-      const start = video.readyState >= 1 ? sourceToOutput(edit, video.currentTime) ?? 0 : 0;
+      // A queue video goes on from where its player was; any other video starts at its beginning
+      // (the shared player may still hold another video's time).
+      const start = openingTime(opened.kind, edit, video.readyState >= 1 ? video.currentTime : null);
       if (!video.paused) video.pause();
       session = {
-        target, reviewable: target.kind === "job" && !!target.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
+        target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
         outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [],
       };
@@ -1910,12 +1918,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       library = [];
       zoom.value = "0";
       cover.begin();
-      if (session.reviewable && target.job) subs.begin(target.job, outputPath);
+      if (session.reviewable && opened.job) subs.begin(opened.job, outputPath);
       audio.begin();
       textMode.begin();
-      templateMode.begin(target);
+      templateMode.begin(opened);
       // A Bán hàng video opens on its template; modes it does not have fall back to Cắt ghép.
-      if (target.kind === "product") mode = "template";
+      if (opened.kind === "product") mode = "template";
       if (!offered(mode)) mode = "cut";
       $("#edit-save-state").textContent = "";
       $("#edit-hint").textContent = "";
@@ -2001,9 +2009,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   /** Whose renders the status follows: the open video, else the queue's finished selection. */
-  function subject(): { id: string; outputPath: string } | null {
-    if (session) return { id: session.target.id, outputPath: session.outputPath };
-    return listJob?.outputPath ? { id: listJob.id, outputPath: listJob.outputPath } : null;
+  function subject(): { id: string; outputPath: string; kind: EditTarget["kind"] } | null {
+    if (session) return { id: session.target.id, outputPath: session.outputPath, kind: session.target.kind };
+    return listJob?.outputPath ? { id: listJob.id, outputPath: listJob.outputPath, kind: "job" } : null;
   }
 
   async function poll(token: number): Promise<void> {
@@ -2012,7 +2020,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const previous = listStatus?.status?.state;
     let response: StatusResponse;
     try {
-      response = await invoke<StatusResponse>("edit_status", { outputPath: job.outputPath });
+      response = await invoke<StatusResponse>("edit_status", { outputPath: job.outputPath, kind: job.kind });
     } catch {
       if (token === pollToken && previous === "RUNNING") schedulePoll(2000);
       return;
@@ -2103,7 +2111,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const job = subject();
     if (!job?.outputPath) return;
     try {
-      await invoke("edit_cancel", { outputPath: job.outputPath });
+      await invoke("edit_cancel", { outputPath: job.outputPath, kind: job.kind });
     } catch (error) {
       host.showError(`Không hủy được: ${String(error).slice(0, 160)}`);
     }
@@ -2192,7 +2200,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   async function startExport(): Promise<void> {
     if (!session) return;
     const edit = current();
-    const outputPath = session.outputPath;
+    const { outputPath, target: { kind } } = session;
     const cues = remapCues(session.facts.cues, edit).filter((cue) => cue.end_ms > cue.start_ms);
     const start = $<HTMLButtonElement>("#export-start");
     const error = $("#export-error");
@@ -2200,7 +2208,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     error.hidden = true;
     try {
       await flush();
-      await invoke("edit_export", { request: { outputPath, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit) } });
+      await invoke("edit_export", { request: { outputPath, kind, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit) } });
       if (session?.outputPath !== outputPath) return;
       session.exporting = edit;
       dialogWaiting = true;
