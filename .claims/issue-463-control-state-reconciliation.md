@@ -8,4 +8,6 @@ Expected-Paths: .claims/issue-463-control-state-reconciliation.md,docs/PROJECT_S
 Required-CI: PR Fast
 
 ## Status
-Claude (owner: do all remaining issues). Reconciled with live GitHub at Main bc80158.
+INTEGRATED / ACCEPTED / RELEASED at PR #471, merge f76b602ea879cfc41712c1b0879ce821c8975d79.
+Claude owned only #463 (reconcile PROJECT_STATE.yaml and ROADMAP.md); this lease covered no broader task.
+Tested-Base-SHA bc801585b65c893db2269b525e75d9fb155e2aaa above is historical.
