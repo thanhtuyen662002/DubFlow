@@ -5,7 +5,7 @@ import {
 } from "../src/features/docu/model.ts";
 import { writeChapter, writeScript } from "../src/features/docu/ai.ts";
 import { addText, createEdit } from "../src/features/edit/model.ts";
-import { calloutTexts } from "../src/features/docu/model.ts";
+import { calloutTexts, parseRenderOptions } from "../src/features/docu/model.ts";
 
 const path = name => `D:\\Documentary\\${name}`;
 const form = { title: "Three Gorges Dam", topic: "Engineering and community impact", targetMinutes: 11,
@@ -178,9 +178,16 @@ assert.equal(planStale({ chapters: [], script_sha256: "abc" }, null, visualInfo.
 assert.equal(planStale({ chapters: [] }, timed, null), false, "no plan is not stale");
 
 // Rough cut (phase 2b-2).
+const defaultOptions = { graphics: true, captions: false, music: "generated", music_path: null };
 assert.deepEqual(parseRender({ video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok" } }),
-  { video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok" } });
-assert.deepEqual(parseRender({ video: 5, status: { state: "?" } }), { video: null, status: null });
+  { video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok" }, options: defaultOptions });
+assert.deepEqual(parseRender({ video: 5, status: { state: "?" } }), { video: null, status: null, options: defaultOptions });
+// What the last render burned in, and the options for the next one.
+const burned = parseRender({ video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok", overlays: { graphics: true, captions: false, music: "generated" } },
+  options: { schema_version: 1, graphics: false, captions: true, music: "file", music_path: "D:/music/bed.mp3" } });
+assert.deepEqual(burned.status.overlays, { graphics: true, captions: false, music: "generated" });
+assert.deepEqual(burned.options, { graphics: false, captions: true, music: "file", music_path: "D:/music/bed.mp3" });
+assert.deepEqual(parseRenderOptions({ music: "file" }), defaultOptions, "a file choice without a file falls back to the generated bed");
 assert.equal(parseOpen({ dir: "D:/run", spec: { schema_version: 1, sources: [] }, contexts, script: null }).render.video, null);
 
 // Editor (phase 3a): the script's graphics become Chữ texts at their scene's narrated time.
@@ -199,6 +206,8 @@ assert.deepEqual(callouts.map(c => [c.at, Math.round(c.seconds * 10) / 10, c.tex
 assert.equal(callouts[0].look.box, "#0F172A");
 assert.equal(callouts[1].look.animation, "slide-up");
 assert.deepEqual(calloutTexts(withGraphics, null), []);
+// A rough cut that burned the number cards already: the editor's first draft does not add them again.
+assert.deepEqual(calloutTexts(withGraphics, timedScenes, [], { graphics: false }), []);
 const draft = callouts.reduce((edit, c) => addText(edit, c.at, c.text, c.look, c.seconds), createEdit(20, { path: "D:/run/documentary.mp4", title: "T", width: 1920, height: 1080, fps: 30, hasAudio: true }));
 assert.equal(draft.texts.length, 2);
 assert.equal(draft.texts[0].box_opacity, 0.9);

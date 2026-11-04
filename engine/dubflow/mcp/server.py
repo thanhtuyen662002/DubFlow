@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from engine.dubflow.docu import capcut_draft, mcp_tools, roughcut, visual
+from engine.dubflow.docu import capcut_draft, mcp_tools, overlays, roughcut, visual
 from engine.dubflow.docu.project import DocuError, load_spec, spec_path
 
 PROTOCOL = "2025-06-18"
@@ -68,6 +68,13 @@ TOOLS = [
           "letterbox_235 (2.35:1 bars, hides low captions best) or overscan_108. Returns which sources still need edge stretch "
           "over their burned-in captions. Re-render to see it.",
           {"project": _PROJECT, "preset": {"type": "string", "enum": ["none", "letterbox_235", "overscan_108"]}}, ["project", "preset"]),
+    _tool("set_render_options", "What the next render_rough_cut draws and plays: the script's number cards and lower-thirds "
+          "(graphics, on by default), English captions burned in (captions, off by default: YouTube takes captions_en.srt), "
+          "and the music bed (music: generated per chapter mood, file with music_path, or none), ducked under the narration.",
+          {"project": _PROJECT, "graphics": {"type": "boolean"}, "captions": {"type": "boolean"},
+           "music": {"type": "string", "enum": ["generated", "file", "none"]},
+           "music_path": {"type": "string", "description": "Absolute path of the user's own music file (MP3, WAV, M4A, AAC, FLAC, OGG, OPUS)"}},
+          ["project"]),
     _tool("render_rough_cut", "Render documentary.mp4 from the plan and narration (unchanged slices are reused). Can take minutes.",
           {"project": _PROJECT}, ["project"]),
     _tool("sync_to_capcut_draft", "Write the rough cut as a CapCut PC draft (one clip per slice plus the narration) and list it first in "
@@ -132,6 +139,10 @@ class Server:
         if name == "apply_smart_label_overlay":
             return _text(mcp_tools.apply_label(run, args.get("scene_id"), args.get("text_en"), args.get("pos_x"), args.get("pos_y"),
                                                args.get("width"), args.get("clip_index")))
+        if name == "set_render_options":
+            chosen = overlays.save_options(run, graphics=args.get("graphics"), captions=args.get("captions"),
+                                           music_path=args.get("music_path"), music=args.get("music"))
+            return _text({"options": overlays.describe(chosen), "note": "Dựng lại bản nháp (render_rough_cut) để áp dụng"})
         if name == "set_framing":
             return _text({**visual.reframe(run, args.get("preset")), "note": "Dựng lại bản nháp (render_rough_cut) để thấy khung mới"})
         if name == "remove_label":

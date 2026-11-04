@@ -3,7 +3,7 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
-  hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseRender, parseRuns, parseVisual, parseVoices, planStale,
+  hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
   calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
@@ -109,6 +109,12 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
             <section class="docu-narration docu-render" aria-labelledby="docu-render-title">
               <h3 id="docu-render-title">Bản nháp</h3>
               <p class="hint">Dựng hình theo kế hoạch với lời đọc thành <code>documentary.mp4</code> (1080p, 30 fps, bỏ tiếng gốc), kèm <code>description.txt</code> có chương và nguồn.</p>
+              <div class="docu-render-options" role="group" aria-label="Trong bản nháp">
+                <label><input id="docu-opt-graphics" type="checkbox" checked /> Thẻ số liệu và tên địa điểm</label>
+                <label><input id="docu-opt-captions" type="checkbox" /> In phụ đề tiếng Anh lên hình</label>
+                <label>Nhạc nền<select id="docu-opt-music"><option value="generated">Tự tạo theo không khí từng chương</option><option value="none">Không có</option><option value="file" hidden>File nhạc đã chọn</option></select></label>
+                <button id="docu-opt-music-file" class="quiet-btn" type="button">Chọn file nhạc…</button>
+              </div>
               <button id="docu-render" class="btn primary block" type="button">Dựng bản nháp</button>
               <div id="docu-render-progress" class="docu-narration-progress" hidden>
                 <div class="bar busy-bar"><span id="docu-render-bar"></span></div>
@@ -154,7 +160,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   let narrationAudio: string | null = null;
   let visual: VisualInfo = { plan: null, status: null };
   let visualTimer: ReturnType<typeof setInterval> | undefined;
-  let render: RenderInfo = { video: null, status: null };
+  let render: RenderInfo = { video: null, status: null, options: parseRenderOptions(null) };
   let capcut: CapcutExport | null = null;
   let labels: DocuLabel[] = [];
   let renderTimer: ReturnType<typeof setInterval> | undefined;
@@ -354,6 +360,30 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     $("#docu-capcut").hidden = !render.video || running;
     renderCapcut();
     $("#docu-render-edit").hidden = !settings.edit;
+    const options = render.options;
+    $<HTMLInputElement>("#docu-opt-graphics").checked = options.graphics;
+    $<HTMLInputElement>("#docu-opt-captions").checked = options.captions;
+    const music = $<HTMLSelectElement>("#docu-opt-music");
+    const fileOption = music.querySelector("option[value=file]") as HTMLOptionElement;
+    fileOption.hidden = !options.music_path;
+    fileOption.textContent = options.music_path ? `File: ${options.music_path.split(/[\\/]/).pop()}` : "File nhạc đã chọn";
+    music.value = options.music;
+    for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music", "#docu-opt-music-file"]) $<HTMLInputElement>(id).disabled = running || !selected;
+  }
+
+  /** What the next render draws and plays; saved in the project, applied on "Dựng lại bản nháp". */
+  async function saveRenderOptions(musicPath?: string): Promise<void> {
+    if (!selected) return;
+    const dir = selected.dir;
+    try {
+      const saved = await invoke("docu_render_options", { dir, graphics: $<HTMLInputElement>("#docu-opt-graphics").checked,
+        captions: $<HTMLInputElement>("#docu-opt-captions").checked, music: musicPath ? "file" : $<HTMLSelectElement>("#docu-opt-music").value,
+        musicPath: musicPath ?? null });
+      if (selected?.dir !== dir) return;
+      render = { ...render, options: parseRenderOptions(saved) };
+      renderRough();
+      if (render.video) $("#docu-render-state").textContent = "Đã lưu; dựng lại bản nháp để áp dụng.";
+    } catch (error) { $("#docu-render-state").textContent = error instanceof Error ? error.message : String(error); renderRough(); }
   }
 
   function renderCapcut(message?: string): void {
@@ -600,7 +630,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function newProject(): void {
     selected = null; currentScript = null; sourceForms = []; narration = { audio: null, timeline: null, status: null }; clearInterval(narrationTimer);
     visual = { plan: null, status: null }; clearInterval(visualTimer);
-    render = { video: null, status: null }; clearInterval(renderTimer); capcut = null; labels = [];
+    render = { video: null, status: null, options: parseRenderOptions(null) }; clearInterval(renderTimer); capcut = null; labels = [];
     $("#docu-project-name").textContent = "Tạo dự án mới";
     $("#docu-title").value = ""; $("#docu-topic").value = ""; $("#docu-minutes").value = "11";
     $("#docu-framing").value = "none"; $("#docu-credits").checked = false; $("#docu-setup-state").textContent = "";
@@ -653,12 +683,18 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-narrate").addEventListener("click", () => void narrate());
   $("#docu-plan").addEventListener("click", () => void makePlan());
   $("#docu-render").addEventListener("click", () => void makeRoughCut());
+  for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music"]) $(id).addEventListener("change", () => void saveRenderOptions());
+  $("#docu-opt-music-file").addEventListener("click", async () => {
+    const path = await invoke("docu_pick_file", { kind: "music" }).catch(() => null) as string | null;
+    if (path) void saveRenderOptions(path);
+  });
   $("#docu-render-cancel").addEventListener("click", () => { if (selected) void invoke("docu_render_cancel", { dir: selected.dir }).catch(() => undefined); });
   $("#docu-render-watch").addEventListener("click", () => { $<HTMLSelectElement>("#docu-player-source").value = ROUGH_CUT; void setPlayerSource(ROUGH_CUT, 0); });
   $("#docu-render-edit").addEventListener("click", () => {
     if (!render.video || !settings.edit) return;
     // The first draft gets the script's on-screen graphics; a saved draft is kept as it is.
-    const callouts = calloutTexts(currentScript, narration.timeline, labels);
+    // A rough cut that already burns the number cards gets none again in the editor's first draft.
+    const callouts = calloutTexts(currentScript, narration.timeline, labels, { graphics: !render.status?.overlays?.graphics });
     settings.edit({ outputPath: render.video, displayName: currentScript?.project_title || selected?.spec.title || "documentary.mp4" },
       edit => callouts.reduce((draft, callout) => addText(draft, callout.at, callout.text, callout.look, callout.seconds), edit));
   });
