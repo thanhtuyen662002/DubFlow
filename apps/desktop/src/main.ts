@@ -537,7 +537,7 @@ const editor = mountEditor(invoke, {
       .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath! })),
     // The other pages' finished videos (Bán hàng, Tổng hợp, Phim tài liệu), as on the Chỉnh sửa screen.
     ...distinctTitles(editLibrary.found()).map((entry) => ({ id: entry.path, title: entry.title, outputPath: entry.path,
-      meta: [KIND_LABELS[entry.kind], shortDate(entry.modified)].filter(Boolean).join(" · ") })),
+      meta: [KIND_LABELS[entry.kind], entry.title.endsWith(shortDate(entry.modified)) ? "" : shortDate(entry.modified)].filter(Boolean).join(" · ") })),
     // The browser preview has no finished jobs of its own to insert.
     ...(isTauri ? [] : PREVIEW_EDIT_LIBRARY),
   ],

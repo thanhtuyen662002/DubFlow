@@ -140,6 +140,8 @@ type Box = { element: HTMLDivElement; video: HTMLVideoElement; path: string };
 
 const PAD = 12;
 const TIMELINE_PX = 170;
+/** The timeline below a 600 px window (styles.css). */
+const SHORT_TIMELINE_PX = 140;
 /** A timeline drop this close to a segment edge goes on the edge, not a sliver away. */
 const DROP_SNAP_PX = 12;
 const THUMB_WIDTH = 76;
@@ -1336,8 +1338,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     content.classList.toggle("with-audio", audioHeight > 0 || textHeight > 0);
     const rows = 22 + (edit.overlays.length ? 30 : 0) + 48 + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + 16;
     // At most 40% of the window: further rows scroll, the video keeps its room.
-    const most = Math.max(TIMELINE_PX, Math.round(window.innerHeight * 0.4));
-    timeline.style.height = audioHeight || textHeight ? `${Math.min(most, Math.max(TIMELINE_PX, 36 + rows))}px` : "";
+    // Never lower than the timeline without rows (lower in short windows, see styles.css), so it does not jump.
+    const least = window.innerHeight <= 600 ? SHORT_TIMELINE_PX : TIMELINE_PX;
+    const most = Math.max(least, Math.round(window.innerHeight * 0.4));
+    timeline.style.height = audioHeight || textHeight ? `${Math.min(most, Math.max(least, 36 + rows))}px` : "";
     renderThumbs();
     renderPlayhead();
     const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;

@@ -188,7 +188,9 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
     else queueThumb(entry.path, image);
     const info = element("div", "el-info");
     info.append(element("div", "el-title", entry.title));
-    const meta = [shortDate(entry.modified), sizeLabel(entry.sizeBytes)].filter(Boolean).join(" · ");
+    // A title that already carries its date (same-titled videos) does not repeat it.
+    const dated = entry.modified > 0 && entry.title.endsWith(shortDate(entry.modified));
+    const meta = [dated ? "" : shortDate(entry.modified), sizeLabel(entry.sizeBytes)].filter(Boolean).join(" · ");
     const line = element("div", "el-meta", entry.kind === "file" ? (meta ? `Mở lúc ${meta}` : folderOf(entry.path)) : meta);
     info.append(line);
     node.append(image, info);
