@@ -37,6 +37,8 @@ class Quantity:
     benchmark: str | None = None
     # Converted from yuan.
     from_cny: bool = False
+    # A throughput (per day, per year): no single-object comparison applies.
+    rate: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,7 +118,8 @@ _ZH_UNITS: dict[str, tuple[str, float]] = {
     "年": ("year", 1.0),
     "名": ("count", 1.0), "人": ("count", 1.0), "位": ("count", 1.0), "台": ("count", 1.0), "座": ("count", 1.0),
     "辆": ("count", 1.0), "艘": ("count", 1.0), "架": ("count", 1.0), "根": ("count", 1.0), "个": ("count", 1.0),
-    "层": ("count", 1.0), "条": ("count", 1.0), "公里/小时": ("speed", 1 / 3.6), "千米/小时": ("speed", 1 / 3.6),
+    "层": ("count", 1.0), "条": ("count", 1.0), "头": ("count", 1.0), "只": ("count", 1.0), "栋": ("count", 1.0),
+    "部": ("count", 1.0), "家": ("count", 1.0), "公里/小时": ("speed", 1 / 3.6), "千米/小时": ("speed", 1 / 3.6),
     "公里每小时": ("speed", 1 / 3.6), "千米每小时": ("speed", 1 / 3.6),
 }
 _ZH_UNIT_ORDER = sorted(_ZH_UNITS, key=len, reverse=True)
@@ -174,10 +177,22 @@ _ZH_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四":
 _ZH_SMALL = {"十": 10, "百": 100, "千": 1000}
 _ZH_BIG = {"万": 1e4, "亿": 1e8}
 _ZH_CHARS = "零〇一二两三四五六七八九十百千万亿"
+# Speech recognition writes Traditional characters for some speakers (Taiwan, Hong Kong, or just the model's
+# choice). One character for one character, so positions stay the same.
+_TRADITIONAL = str.maketrans({
+    "萬": "万", "億": "亿", "兩": "两", "點": "点", "噸": "吨", "畝": "亩", "頃": "顷", "釐": "厘", "時": "时",
+    "攝": "摄", "幣": "币", "圓": "元", "臺": "台", "個": "个", "層": "层", "輛": "辆", "條": "条", "頭": "头",
+    "隻": "只", "棟": "栋", "車": "车", "電": "电", "處": "处", "產": "产", "欄": "栏", "數": "数",
+})
+# 七点八八 -> 7.88: a Chinese numeral with a decimal part.
+_ZH_DECIMAL = "点"
 
 _NUMBER = re.compile(
     r"(?P<dollar>\$\s?)?(?P<num>(?<![A-Za-z0-9_.])\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?<![A-Za-z0-9_.,])\d+(?:\.\d+)?)"
-    r"|(?P<zh>[" + _ZH_CHARS + r"]+)")
+    r"|(?P<zh>[" + _ZH_CHARS + r"]+(?:点[零〇一二两三四五六七八九]+)?)")
+# A quantity per day or year (wastewater treated daily, pigs sold yearly) is a rate, not an object to compare.
+_RATE_BEFORE = ("每天", "每日", "日处理", "日产", "每年", "年产", "年出栏", "年处理", "每小时", "一年", "一天", "日均", "年均")
+_RATE_AFTER = ("/天", "/日", "/年", "每天", "每日", "每年", "一天", "一年")
 _ZH_SCALE = re.compile(r"[十百千万亿]+")
 _ORDINAL = re.compile(r"(?:st|nd|rd|th)\b", re.IGNORECASE)
 _PLACEHOLDER = re.compile(r"⟦B:([a-z_0-9]+)⟧")
@@ -185,7 +200,13 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+|(?<=[。！？])")
 
 
 def chinese_number(text: str) -> float | None:
-    """一亿三千万 -> 130000000; None when the characters are not a number."""
+    """一亿三千万 -> 130000000, 七点八八 -> 7.88; None when the characters are not a number."""
+    if _ZH_DECIMAL in text:
+        whole, _, fraction = text.partition(_ZH_DECIMAL)
+        integer = chinese_number(whole) if whole else None
+        if integer is None or not fraction or any(char not in _ZH_DIGITS for char in fraction):
+            return None
+        return integer + float("0." + "".join(str(_ZH_DIGITS[char]) for char in fraction))
     total, section, number, seen = 0.0, 0.0, 0.0, False
     for char in text:
         if char in _ZH_DIGITS:
@@ -242,9 +263,19 @@ def _make(text: str, value: float, dimension: str, start: int, end: int, benchma
     return Quantity(text, value, dimension, start, end, benchmark)
 
 
+def _rated(quantity: Quantity, text: str) -> Quantity:
+    """Mark a Chinese quantity said per day or per year."""
+    before = text[max(0, quantity.start - 12):quantity.start]
+    after = text[quantity.end:quantity.end + 3]
+    if any(word in before for word in _RATE_BEFORE) or after.startswith(_RATE_AFTER):
+        return Quantity(quantity.text, quantity.value, quantity.dimension, quantity.start, quantity.end,
+                        quantity.benchmark, quantity.from_cny, True)
+    return quantity
+
+
 def extract(text: str) -> list[Quantity]:
     """Every number in ``text`` with its unit, scale and dimension (Chinese or English)."""
-    masked = _mask_benchmarks(text)
+    masked = _mask_benchmarks(text).translate(_TRADITIONAL)
     found: list[Quantity] = []
     consumed = 0
     for match in _NUMBER.finditer(masked):
@@ -273,7 +304,7 @@ def extract(text: str) -> list[Quantity]:
                 dimension, factor = "speed", factor / 3600
             if "零下" in prefix and dimension == "temperature":
                 value = -value
-            found.append(_make(masked[start:end + len(unit)], value * factor, dimension, start, end + len(unit)))
+            found.append(_rated(_make(masked[start:end + len(unit)], value * factor, dimension, start, end + len(unit)), masked))
             continue
         number = float(match.group("num").replace(",", ""))
         dollar = bool(match.group("dollar"))
@@ -309,7 +340,7 @@ def extract(text: str) -> list[Quantity]:
                 dimension, factor = "speed", factor / 3600
             if "零下" in prefix and dimension == "temperature":
                 number = -number
-            found.append(_make(masked[start:cursor + len(unit)], number * factor, dimension, start, cursor + len(unit)))
+            found.append(_rated(_make(masked[start:cursor + len(unit)], number * factor, dimension, start, cursor + len(unit)), masked))
             continue
         benchmark = re.match(r"\s*(?:times\s+(?:as\s+\w+\s+as\s+|the\s+\w+\s+of\s+|\w+\s+than\s+)?)?(?:an?\s+|the\s+)?⟦B:([a-z_0-9]+)⟧", rest)
         if benchmark:
@@ -361,6 +392,8 @@ def imperial(quantity: Quantity) -> str | None:
     """The US way to say a quantity: "282.5 million cubic feet", "$4.76 billion"."""
     value, dimension = quantity.value, quantity.dimension
     if dimension == "length":
+        if value < 0.3048:
+            return f"{_figure(value / 0.0254)} inches"
         return f"{_big(value / 0.3048)} feet" if value < 1609.344 else f"{_big(value / 1609.344)} miles"
     if dimension == "area":
         if value < 40_000:
@@ -371,6 +404,8 @@ def imperial(quantity: Quantity) -> str | None:
     if dimension == "volume":
         return f"{_big(value / 0.028316846592)} cubic feet"
     if dimension == "mass":
+        if value < 0.45359237:
+            return f"{_figure(value / 0.028349523125)} ounces"
         return f"{_big(value / 0.45359237)} pounds" if value < 907.18474 else f"{_big(value / 907.18474)} tons"
     if dimension == "power":
         for scale, unit in ((1e9, "gigawatts"), (1e6, "megawatts"), (1e3, "kilowatts")):
@@ -394,6 +429,9 @@ def imperial(quantity: Quantity) -> str | None:
 def comparisons(quantity: Quantity, limit: int = 2) -> list[str]:
     """Benchmark comparisons of one quantity, the most graspable ratios first."""
     found: list[tuple[float, str]] = []
+    if quantity.rate:
+        # "10,000 tons of wastewater a day" is not 25 jumbo jets.
+        return []
     for benchmark in BENCHMARKS:
         entry = benchmark.values.get(quantity.dimension)
         if not entry or quantity.value <= 0:
