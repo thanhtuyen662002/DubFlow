@@ -82,6 +82,9 @@ class TemplateTests(unittest.TestCase):
             self.assertEqual(capcut_draft.folder_name('A: "dam"?', root), "DubFlow - A dam")
             (root / "DubFlow - A dam").mkdir()
             self.assertEqual(capcut_draft.folder_name('A: "dam"?', root), "DubFlow - A dam (2)")
+            # A long title ends on a whole word (it ended "... Pigs in a" in the 2026-11-04 test).
+            long = capcut_draft.folder_name("China's 26-Storey Pig Skyscraper: How Do You Farm 1.2 Million Pigs in a Tower?", root)
+            self.assertEqual(long, "DubFlow - China's 26-Storey Pig Skyscraper How Do You Farm 1.2 Million Pigs")
 
 
 class ExportTests(unittest.TestCase):
