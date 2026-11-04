@@ -22,12 +22,15 @@ export type EditLibrary = {
   drop(paths: string[]): void;
   /** Remember a video opened from the computer. */
   remember(path: string, title?: string): void;
+  /** The other pages' finished videos last found (Chèn › Từ DubFlow offers them too). */
+  found(): readonly LibraryEntry[];
 };
 
 const RECENT_KEY = "dubflow.edit.recentFiles";
 const FILTER_KEY = "dubflow.edit.libraryFilter";
 const THUMB_PX = 384;
 const THUMB_WORKERS = 3;
+const GROUP_FROM = 12;
 const ICON_PLUS = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const ICON_SEARCH = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM16 16l4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>';
 const ICON_EDIT = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
@@ -75,7 +78,7 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
       </div>
     </div>
     <div id="el-body" class="el-body" aria-live="polite"></div>
-    <p class="el-foot">Kéo thả một video vào cửa sổ để mở chỉnh sửa. Bản nháp được lưu tự động, video gốc không bị thay đổi.</p>`;
+`;
   const filtersBox = root.querySelector<HTMLElement>(".el-filters")!;
   const search = root.querySelector<HTMLInputElement>("#el-search")!;
   const body = root.querySelector<HTMLElement>("#el-body")!;
@@ -105,7 +108,8 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
     if (url === undefined) return;
     image.classList.toggle("none", url === null);
     image.classList.remove("loading");
-    if (url) image.style.backgroundImage = `url("${url}")`;
+    // A vertical video sits on a blurred copy of itself instead of black bars.
+    if (url) image.style.setProperty("--thumb", `url("${url}")`);
   }
 
   function queueThumb(path: string, image: HTMLElement): void {
@@ -145,9 +149,14 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
   }
 
   function renderFilters(all: readonly LibraryEntry[]): void {
-    const counts = countByKind(all);
+    // The counts follow the search.
+    const counts = countByKind(filterEntries(all, "all", search.value));
     filtersBox.replaceChildren(...FILTERS.map((item) => {
-      const button = element("button", "", item.label);
+      const button = element("button");
+      // The label's bold width is reserved so the tabs do not shift when one is selected.
+      const label = element("span", "el-tab-label", item.label);
+      label.dataset.label = item.label;
+      button.append(label);
       button.type = "button";
       button.setAttribute("role", "tab");
       button.setAttribute("aria-selected", String(item.id === filter));
@@ -179,7 +188,7 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
     const info = element("div", "el-info");
     info.append(element("div", "el-title", entry.title));
     const meta = [shortDate(entry.modified), sizeLabel(entry.sizeBytes)].filter(Boolean).join(" · ");
-    const line = element("div", "el-meta", entry.kind === "file" ? [meta ? `Mở ${meta}` : "", folderOf(entry.path)].filter(Boolean).join(" · ") : meta);
+    const line = element("div", "el-meta", entry.kind === "file" ? (meta ? `Mở lúc ${meta}` : folderOf(entry.path)) : meta);
     info.append(line);
     node.append(image, info);
     if (entry.kind === "file") {
@@ -214,11 +223,20 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
     const title = searching ? "Không tìm thấy video phù hợp"
       : !all.length ? (loading ? "Đang tìm các video đã làm…" : "Chưa có video nào để chỉnh sửa")
       : filter === "file" ? "Chưa mở video nào từ máy" : `Chưa có video ${KIND_LABELS[filter as Exclude<LibraryFilter, "all">].toLowerCase()} đã xong`;
-    const hint = searching ? "Thử từ khóa khác hoặc chọn “Tất cả”."
+    const hint = searching ? (filter === "all" ? "Thử từ khóa khác." : "Thử từ khóa khác hoặc xem “Tất cả”.")
       : filter === "file" ? "Bấm “Mở video trên máy” hoặc kéo thả một video vào cửa sổ. Video đã mở được nhớ ở đây."
       : "Video đã xong ở Lồng tiếng, Bán hàng, Tổng hợp và Phim tài liệu sẽ hiện ở đây. Bạn cũng có thể mở bất kỳ video nào trên máy.";
     box.append(icon, element("p", "el-empty-title", title), element("p", "el-empty-hint", hint));
-    if (!searching) {
+    if (searching) {
+      const clear = element("button", "btn", "Xóa tìm kiếm");
+      clear.type = "button";
+      clear.addEventListener("click", () => {
+        search.value = "";
+        render();
+        search.focus();
+      });
+      box.append(clear);
+    } else {
       const pick = element("button", "btn primary");
       pick.type = "button";
       pick.innerHTML = `${ICON_PLUS}<span>Mở video trên máy</span>`;
@@ -234,6 +252,13 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
     const shown = filterEntries(all, filter, search.value);
     if (!shown.length) {
       body.replaceChildren(empty(all));
+      return;
+    }
+    // A short list is one grid; a long one is grouped by age.
+    if (shown.length <= GROUP_FROM) {
+      const grid = element("div", "el-grid el-flat");
+      grid.append(...shown.map(card));
+      body.replaceChildren(grid);
       return;
     }
     const now = new Date();
@@ -315,6 +340,8 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
   }
 
   pickButton.addEventListener("click", () => void pickFile());
+  // Found once at start, so Chèn can offer them before the screen is opened.
+  void load();
   search.addEventListener("input", render);
   search.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && search.value) {
@@ -330,5 +357,6 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
     },
     drop: (paths) => openPaths(paths),
     remember,
+    found: () => found,
   };
 }

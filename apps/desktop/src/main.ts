@@ -534,6 +534,8 @@ const editor = mountEditor(invoke, {
   library: () => [
     ...queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
       .map((job) => ({ id: job.id, title: job.displayName, outputPath: job.outputPath! })),
+    // The other pages' finished videos (Bán hàng, Tổng hợp, Phim tài liệu), as on the Chỉnh sửa screen.
+    ...editLibrary.found().map((entry) => ({ id: entry.path, title: entry.title, outputPath: entry.path })),
     // The browser preview has no finished jobs of its own to insert.
     ...(isTauri ? [] : PREVIEW_EDIT_LIBRARY),
   ],
@@ -1613,7 +1615,7 @@ const VIEW_HEADINGS: Record<View, [string, string]> = {
   product: ["Video bán hàng", "Từ mô tả hoặc ảnh"],
   compilation: ["Tổng hợp", "Ghép các video đã xong"],
   docu: ["Phim tài liệu", "Kịch bản phim tài liệu tiếng Anh"],
-  edit: ["Chỉnh sửa", "Chọn video để sửa"],
+  edit: ["Chỉnh sửa", "Chọn một video, hoặc kéo thả video vào cửa sổ"],
 };
 /** The page shown (the queue screen also hosts the editor). */
 let currentView: View = "queue";
