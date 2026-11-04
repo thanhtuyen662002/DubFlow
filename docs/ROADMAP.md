@@ -1,7 +1,16 @@
 # DubFlow Foundation Roadmap
 
 ## Current phase
-Foundation is ready to be claimed through leaf Issues. Main CI is green. Main is still technically unprotected; Issue #11 remains an S5 administrative risk until a repository ruleset/branch protection is enabled.
+Foundation is ready to be claimed through leaf Issues. Main CI is green.
+
+**Live snapshot, observed 2026-11-04 at Main `bc801585` (#463).** Re-check GitHub before acting on it; GitHub Issues remain the live work graph.
+- Main is protected by the active ruleset `protect-main-dubflow`: PR-only, no deletion or force-push, strict required check `governance`, 0 required approvals, no bypass actors. Issue #11 is completed. PR Fast and PR Integration also run on every PR, but only `governance` is ruleset-required.
+- Full deterministic Integration registry: 59/59 components passed with no base and no filter on `713bd23` (run 41780693790, #250). Main push Integration is selective and can select zero components; it is not full-registry evidence.
+- Windows-only suites run on their own read-only PR lanes: `release-tests-windows` (#416), `documentary-windows` (#464) and `desktop-editor-windows` (#417).
+- Latest published stable release: v1.1.49 (2026-11-03), built from an earlier Main.
+- Still open: #175 (final production qualification, not accepted) and #291 (one continuous 2–6 h real recording on a current-Main build; earlier 1.1.6 evidence needed a manual state reset after a shutdown, so it is not accepted). Also open: #323 (NVIDIA GPU; only the real-hardware run remains) and #382 (16:9 reframe; see below).
+- #439 accepted one Chinese→Vietnamese desktop review/revision leaf only; it does not accept #175.
+- Residual risk, owner decision: accepted ADR-0008 describes supervisor-owned project DB/artifact/temp locking. #384 was closed with a narrower per-work-folder lease (`work_lease.rs`), so reframe/package/shorts still spawn their Python workers from the desktop host. This is a scope gap against the ADR, not a confirmed data-loss incident; #382's acceptance text still names the stronger supervisor-owned API.
 
 Capability tiers, promotion gates, and fallback semantics are defined in [`docs/CAPABILITY_LADDER.md`](CAPABILITY_LADDER.md). This roadmap keeps the delivery gates and dependency order; GitHub Issues remain the authoritative live work graph.
 
@@ -51,7 +60,7 @@ The watchdog is never a universal required check or product dependency.
 ## Administrative control
 - #11 — Protect main with PR + required status checks.
 
-This remains the highest GitHub integrity risk while API state reports `protected=false` and no active rulesets.
+Completed. The ruleset `protect-main-dubflow` (id 24152712) is active, PR-only and strict, with required check `governance` and no bypass actors (observed 2026-11-04).
 
 ## Hard dependency graph
 
