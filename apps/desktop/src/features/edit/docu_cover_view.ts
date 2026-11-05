@@ -5,7 +5,7 @@
  */
 import { dragRegion, type DragHandle } from "../blur/region.ts";
 import { sourceName } from "../docu/model.ts";
-import { clampBand, coverRequest, docuDir, sameCover, sourceCovers, type Logo, type SourceCover } from "./docu_cover.ts";
+import { applyButton, clampBand, coverRequest, docuDir, sameCover, sourceCovers, type Logo, type SourceCover } from "./docu_cover.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -48,15 +48,17 @@ export function mountDocuCover(invoke: Invoke, context: DocuCoverContext): DocuC
   let covers: SourceCover[] = [];
   let frames = new Map<string, string>();
   let rendering = false;
+  /** Cover edits saved for a render that has not completed (it failed or was cancelled). */
+  let unrendered = false;
   let timer = 0;
 
   const changed = (): SourceCover[] => covers.filter((cover, index) => !sameCover(cover, base[index]));
 
   function renderFoot(): void {
-    const count = changed().length;
-    apply.disabled = rendering || count === 0;
-    apply.textContent = rendering ? "Đang dựng lại phim…" : "Dựng lại phim với vùng che mới";
-    if (!rendering) state.textContent = count ? `${count} nguồn có vùng che mới, chưa dựng lại.` : "";
+    const button = applyButton(changed().length, unrendered, rendering);
+    apply.disabled = !button.enabled;
+    apply.textContent = button.label;
+    if (!rendering && button.state) state.textContent = button.state;
   }
 
   function card(cover: SourceCover, index: number): HTMLElement {
@@ -194,23 +196,24 @@ export function mountDocuCover(invoke: Invoke, context: DocuCoverContext): DocuC
       }
       rendering = false;
       if (status?.state === "COMPLETED") {
+        unrendered = false;
         state.textContent = "Đã dựng lại phim với vùng che mới.";
         context.note("Đã dựng lại phim với vùng che mới");
         await context.reload();
       } else {
-        state.textContent = status?.message || "Không dựng lại được phim.";
         renderFoot();
+        state.textContent = `${status?.message || "Không dựng lại được phim."} Bấm Dựng lại phim để thử lại.`;
       }
     } catch (error) {
       rendering = false;
-      state.textContent = String(error).slice(0, 200);
       renderFoot();
+      state.textContent = String(error).slice(0, 200);
     }
   }
 
   apply.addEventListener("click", async () => {
     const edits = changed();
-    if (!edits.length || rendering) return;
+    if ((!edits.length && !unrendered) || rendering) return;
     const ok = await context.confirm({
       title: "Dựng lại phim với vùng che mới?",
       message: "Phim tài liệu sẽ được dựng lại từ các nguồn với dải che và vùng logo mới, thường mất vài phút. Bản nháp chỉnh sửa (cắt ghép, chữ, âm thanh) vẫn được giữ.",
@@ -223,12 +226,14 @@ export function mountDocuCover(invoke: Invoke, context: DocuCoverContext): DocuC
     try {
       for (const cover of edits) await invoke("docu_cover", coverRequest(dir, cover));
       base = structuredClone(covers);
+      // Saved: until the render completes, the button offers to render them again.
+      unrendered = true;
       await invoke("docu_render", { dir });
       void follow();
     } catch (error) {
       rendering = false;
-      state.textContent = String(error).slice(0, 200);
       renderFoot();
+      state.textContent = String(error).slice(0, 200);
     }
   });
 
@@ -238,6 +243,7 @@ export function mountDocuCover(invoke: Invoke, context: DocuCoverContext): DocuC
     begin(outputPath, kind) {
       window.clearTimeout(timer);
       rendering = false;
+      unrendered = false;
       state.textContent = "";
       if (kind !== "docu") {
         ticket += 1;
