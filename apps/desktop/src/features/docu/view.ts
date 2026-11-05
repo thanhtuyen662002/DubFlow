@@ -4,7 +4,7 @@ import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES, SFX_NAMES, readable, sceneName, sourceName, sourceNames,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
   hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
-  calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
+  calloutTexts, midrollHint, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type McpActivity, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
@@ -97,6 +97,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
                 <label>Tiêu đề dự án<input id="docu-title" maxlength="120" /></label>
                 <label>Chủ đề hoặc ghi chú<textarea id="docu-topic" rows="3" maxlength="600"></textarea></label>
                 <label>Thời lượng mục tiêu<select id="docu-minutes">${Array.from({ length: 18 }, (_, i) => `<option value="${i + 3}" ${i === 8 ? "selected" : ""}>${i + 3} phút</option>`).join("")}</select></label>
+                <p id="docu-minutes-hint" class="hint" role="status" hidden></p>
               </section>
               <section class="docu-card docu-source-picker" aria-labelledby="docu-source-title">
                 <h3 id="docu-source-title">Nguồn (2–5)</h3>
@@ -359,7 +360,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       renderVisual();
       const covered = (result.sources ?? []).filter(source => !source.clear).map(source => source.source_id);
       state.textContent = !result.plan ? "Đã đổi khung hình." : covered.length
-        ? `Đã đổi. ${covered.join(", ")} vẫn phải kéo giãn mép ảnh để che phụ đề gốc. Dựng lại bản nháp để thấy khung mới.`
+        ? `Đã đổi. ${covered.join(", ")} vẫn còn một phần phụ đề gốc, được làm mờ và phủ dải tối. Dựng lại bản nháp để thấy khung mới.`
         : "Đã đổi; mọi nguồn che được phụ đề gốc. Dựng lại bản nháp để thấy khung mới.";
     } catch (error) {
       state.textContent = error instanceof Error ? error.message : String(error);
@@ -796,12 +797,19 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   setInterval(() => void pollMcp(), 2000);
   void pollMcp();
 
+  /** Under 8 minutes: a quiet tip about YouTube mid-roll ads; it never blocks creating the project. */
+  function showMidrollHint(): void {
+    const hint = $("#docu-minutes-hint");
+    hint.textContent = midrollHint($("#docu-minutes").value);
+    hint.hidden = !hint.textContent;
+  }
+
   function newProject(): void {
     selected = null; playerMode = "source"; currentScript = null; sourceForms = []; narration = { audio: null, timeline: null, status: null }; clearInterval(narrationTimer);
     visual = { plan: null, status: null }; clearInterval(visualTimer);
     render = { video: null, status: null, options: parseRenderOptions(null) }; clearInterval(renderTimer); capcut = null; labels = [];
     $("#docu-project-name").textContent = "Tạo dự án mới";
-    $("#docu-title").value = ""; $("#docu-topic").value = ""; $("#docu-minutes").value = "11";
+    $("#docu-title").value = ""; $("#docu-topic").value = ""; $("#docu-minutes").value = "11"; showMidrollHint();
     $("#docu-framing").value = "none"; $("#docu-credits").checked = false; $("#docu-setup-state").textContent = "";
     $("#docu-output-root").value = settings.outputRoot() ?? "%USERPROFILE%\\Videos";
     renderSourcePicker(); renderRuns(); renderContexts(); renderEditor(); renderProjectInfo(); renderNarration(); setTab("setup");
@@ -828,6 +836,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   }
 
   $("#docu-refresh").addEventListener("click", () => void refreshRuns());
+  $("#docu-minutes").addEventListener("change", showMidrollHint);
   $("#docu-mcp-open").addEventListener("click", () => { const dir = $("#docu-mcp-open").dataset.dir; if (dir) void openRun(dir); });
   $("#docu-new").addEventListener("click", () => { setListOpen(false); newProject(); });
   const setListOpen = (open: boolean) => {

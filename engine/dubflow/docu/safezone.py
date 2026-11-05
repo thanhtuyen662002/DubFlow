@@ -5,6 +5,12 @@ logos and channel names are "fixed text" it keeps) gives the band where a
 source's captions sit. Framing then zooms at most 114% and shifts the picture
 up so the band leaves the frame; the project's look (letterbox or overscan)
 applies to every source the same way.
+
+When 114% is not enough, what is left of the band is covered in place
+(Tier-2, #548): the band is blurred hard (``gblur`` sigma 20, 3 steps) and
+darkened 25%, a cinematic dark strip whose top edge fades into the picture
+over a short feather, so it reads as a gradient band under the English
+captions or a lower-third instead of the old stretched rows of pixels.
 """
 from __future__ import annotations
 
@@ -29,6 +35,11 @@ ROW_WINDOW = 0.12
 # A second caption line sits about one line height (0.05–0.07) from the first; text further away is not a caption.
 ROW_REACH = 0.08
 SAMPLE_FPS = 2.0
+# Covering a band framing cannot clear: blur, darkening and the soft top edge (a share of the picture height).
+COVER_SIGMA = 20
+COVER_STEPS = 3
+COVER_DARKEN = 0.25
+COVER_FEATHER = 0.035
 
 
 @dataclass(frozen=True)
@@ -105,6 +116,17 @@ def framing(band: Band | None, preset: str) -> Framing:
             return Framing(zoom, shift, letterbox)
     zoom = max(base, MAX_ZOOM)
     return Framing(zoom, (1 - 1 / zoom) / 2, letterbox, clear=False)
+
+
+def cover_box(band: Band, height: int) -> tuple[int, int, int] | None:
+    """(top, feather, height) in pixels of the strip that covers ``band`` in a picture ``height`` tall, all even:
+    the strip starts ``feather`` above the band, where its fade into the picture begins, and ends at the band's bottom."""
+    even = lambda value: max(0, int(round(value / 2)) * 2)  # noqa: E731
+    top, bottom = even(band.top * height), min(height, even(band.bottom * height))
+    if not 2 <= top < bottom:
+        return None
+    feather = min(top, max(2, even(COVER_FEATHER * height)))
+    return top - feather, feather, bottom - top + feather
 
 
 def scan_band(video: Path, *, duration: float, speech: Iterable[tuple[float, float]], cache: Path,

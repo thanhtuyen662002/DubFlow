@@ -17,7 +17,7 @@ import traceback
 from typing import Any, Callable, Sequence
 
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
-from . import overlays
+from . import overlays, safezone, soundscape
 from .narration import _Status
 from .project import DocuError, Spec, replace, script_path, work_dir, write_json
 from .script import CHAPTERS, load_draft
@@ -25,7 +25,7 @@ from .script import CHAPTERS, load_draft
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 ENCODERS = ("h264_mf", "libopenh264")
 VIDEO_BITRATE = "8M"
-RECIPE = "docu-roughcut-v1"
+RECIPE = "docu-roughcut-v2"
 # The bundled LGPL FFmpeg has no `eq`: a gentle S-curve for contrast and +8 % saturation, the same on every source.
 LOOK = "curves=all='0/0 0.25/0.235 0.75/0.77 1/1',huesaturation=saturation=0.08"
 KEN_BURNS_SHOT = 6.0
@@ -96,11 +96,15 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
                      f"[logo{number}base][logo{number}blur]overlay={x}:{y}[logo{number}]")
         label = f"logo{number}"
     if band and not framing.get("clear", True):
-        # Edge stretch: the two rows just above the captions, stretched down over them.
-        top, bottom = _even(band["top"] * height), _even(band["bottom"] * height)
-        if 2 <= top < bottom <= height:
-            graph.append(f"[{label}]split=2[base][edge];[edge]crop=iw:2:0:{top - 2},scale=iw:{bottom - top},setsar=1[strip];"
-                         f"[base][strip]overlay=0:{top}[covered]")
+        # What framing cannot clear: blurred and darkened in place, its top edge feathered into the picture (#548).
+        box = safezone.cover_box(safezone.Band(float(band["top"]), float(band["bottom"]), float(band.get("share", 1.0))), height)
+        if box:
+            top, feather, strip = box
+            graph.append(f"[{label}]split=2[base][band];[band]crop=iw:{strip}:0:{top},"
+                         f"gblur=sigma={safezone.COVER_SIGMA}:steps={safezone.COVER_STEPS},"
+                         f"curves=all='0/0 1/{1 - safezone.COVER_DARKEN:g}',format=yuva420p[soft];"
+                         f"gradients=s={width}x{strip}:c0=black:c1=white:x0=0:y0=0:x1=0:y1={feather}:d=0.1:r=10,format=gray[mask];"
+                         f"[soft][mask]alphamerge[strip];[base][strip]overlay=0:{top}[covered]")
             label = "covered"
     zoom, shift = float(framing.get("zoom", 1.0)), float(framing.get("shift", 0.0))
     crop_w, crop_h = _even(width / zoom), _even(height / zoom)
@@ -146,12 +150,18 @@ def card_argv(ffmpeg: Path, ass: str, frames: int, encoder: str, output: Path) -
             "-f", "mp4", str(output)]
 
 
-def mux_argv(ffmpeg: Path, concat: str, narration: Path, seconds: float, output: Path, bed: Path | None = None) -> list[str]:
+def mux_argv(ffmpeg: Path, concat: str, narration: Path, seconds: float, output: Path, bed: Path | None = None,
+             ambience: Path | None = None) -> list[str]:
+    """Picture, narration and, when given, the ducked music bed and the scenes' room tone with the act hits."""
     head = [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", concat, "-i", str(narration)]
-    if bed is None:
+    if bed is None and ambience is None:
         audio = ["-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", "apad"]
     else:
-        audio = ["-i", str(bed), "-filter_complex", overlays.ducked_mix(), "-map", "0:v:0", "-map", "[audio]", "-c:v", "copy"]
+        inputs = [path for path in (bed, ambience) if path is not None]
+        for path in inputs:
+            head += ["-i", str(path)]
+        audio = ["-filter_complex", overlays.ducked_mix(bed=bed is not None, ambience=(2 + int(bed is not None)) if ambience else None),
+                 "-map", "0:v:0", "-map", "[audio]", "-c:v", "copy"]
     return head + audio + ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-t", f"{seconds:.3f}",
                            "-movflags", "+faststart", "-f", "mp4", str(output)]
 
@@ -356,9 +366,22 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
                 ffmpeg_runner(argv, work, cancel.exists)
                 (work / "bed.partial.wav").replace(bed)
                 write_json(work / "bed.json", {"key": key})
+        ambience = None
+        if options["sfx"]:
+            built = soundscape.ambience_argv(ffmpeg, script, timeline, seconds, work / "ambience.partial.wav",
+                                             soundscape.folders(run_dir))
+            if built is not None:
+                status.write(message="Đang tạo âm thanh môi trường…")
+                argv, files = built
+                key = {"argv": argv[1:], "files": [[str(path), path.stat().st_size, path.stat().st_mtime_ns] for path in files]}
+                ambience = work / "ambience.wav"
+                if _receipt(work / "ambience.json") != {"key": key} or not ambience.is_file():
+                    ffmpeg_runner(argv, work, cancel.exists)
+                    (work / "ambience.partial.wav").replace(ambience)
+                    write_json(work / "ambience.json", {"key": key})
         status.write(message="Đang ghép hình với lời đọc…")
         partial = work / "documentary.partial.mp4"
-        ffmpeg_runner(mux_argv(ffmpeg, "concat.txt", narration, seconds, partial, bed), work, cancel.exists)
+        ffmpeg_runner(mux_argv(ffmpeg, "concat.txt", narration, seconds, partial, bed, ambience), work, cancel.exists)
         try:
             replace(partial, run_dir / VIDEO)
         except PermissionError as error:

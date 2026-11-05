@@ -100,13 +100,14 @@ TOOLS = [
            "ken_burns_intensity": {"type": "number", "minimum": 0, "maximum": 0.1, "description": "0 turns it off; 0.04 is the default"}},
           ["project"]),
     _tool("set_framing", "Change the project's framing look without redoing narration, scans or hand-picked slices: none, "
-          "letterbox_235 (2.35:1 bars, hides low captions best) or overscan_108. Returns which sources still need edge stretch "
-          "over their burned-in captions. Re-render to see it.",
+          "letterbox_235 (2.35:1 bars, hides low captions best) or overscan_108. Returns which sources still need their caption band "
+          "blurred and darkened in place. Re-render to see it.",
           {"project": _PROJECT, "preset": {"type": "string", "enum": ["none", "letterbox_235", "overscan_108"]}}, ["project", "preset"]),
     _tool("set_render_options", "What the next render_rough_cut draws and plays: the script's number cards and lower-thirds "
           "(graphics, on by default), English captions burned in (captions, off by default: YouTube takes captions_en.srt), "
-          "and the music bed (music: generated per chapter mood, file with music_path, or none), ducked under the narration.",
-          {"project": _PROJECT, "graphics": {"type": "boolean"}, "captions": {"type": "boolean"},
+          "the music bed (music: generated per chapter mood, file with music_path, or none), ducked under the narration, "
+          "and each scene's ambient sound with a hit between acts (sfx, on by default).",
+          {"project": _PROJECT, "graphics": {"type": "boolean"}, "captions": {"type": "boolean"}, "sfx": {"type": "boolean"},
            "music": {"type": "string", "enum": ["generated", "file", "none"]},
            "music_path": {"type": "string", "description": "Absolute path of the user's own music file (MP3, WAV, M4A, AAC, FLAC, OGG, OPUS)"}},
           ["project"]),
@@ -237,7 +238,7 @@ class Server:
                                                args.get("width"), args.get("clip_index")))
         if name == "set_render_options":
             chosen = overlays.save_options(run, graphics=args.get("graphics"), captions=args.get("captions"),
-                                           music_path=args.get("music_path"), music=args.get("music"))
+                                           music_path=args.get("music_path"), music=args.get("music"), sfx=args.get("sfx"))
             return _text({"options": overlays.describe(chosen), "note": "Dựng lại bản nháp (render_rough_cut) để áp dụng"})
         if name == "set_framing":
             return _text({**visual.reframe(run, args.get("preset")), "note": "Dựng lại bản nháp (render_rough_cut) để thấy khung mới"})

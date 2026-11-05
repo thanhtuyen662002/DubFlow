@@ -34,6 +34,13 @@ MAX_ACKNOWLEDGED = 30
 MIN_REF_SECONDS = 0.5
 SCRIPT_LIMIT = 4 * 1024 * 1024
 CONTEXT_LIMIT = 64 * 1024 * 1024
+# Stock AI phrasing the prompt bans (features/docu/ai.ts STORY_RULES); a scene that still uses it is marked for review.
+_CLICHES = re.compile(r"\b(delv(?:e|es|ed|ing)|testament|marvel(?:s|ed|ous)?|tapestry|in conclusion|to sum up|in summary)\b", re.IGNORECASE)
+
+
+def cliches(text: str) -> list[str]:
+    """The banned stock phrases in a narration, lower-cased, each once, in order."""
+    return list(dict.fromkeys(match.group(1).casefold() for match in _CLICHES.finditer(text)))
 
 
 def _text(value: Any, limit: int) -> str:
@@ -172,6 +179,9 @@ def check(draft: Any, spec: Spec, contexts: dict[str, dict[str, Any]]) -> dict[s
                 scene_notes.append(f"Số liệu “{number}” không thấy trong nguồn hay bảng quy đổi; hãy kiểm tra")
             if not is_english(narration):
                 scene_notes.append("Lời đọc không phải tiếng Anh; hãy viết lại cảnh này bằng tiếng Anh")
+            stock = cliches(narration)
+            if stock:
+                scene_notes.append("Lời đọc có từ sáo rỗng (" + ", ".join(stock) + "); hãy viết lại tự nhiên hơn")
             metric = units.metric_units(narration)
             if metric:
                 scene_notes.append("Còn đơn vị hệ mét (" + ", ".join(metric) + "); khán giả Mỹ quen feet, miles, pounds")

@@ -313,3 +313,17 @@ assert.equal(parseMcpActivity({ updated: "x", current: null, recent: [] }).curre
   assert.equal(readable("Tạo lời đọc (giọng am_unknown)"), "Tạo lời đọc (giọng am_unknown)");
   console.log("docu activity text tests passed");
 }
+
+// Tier-2 (#548): story rules in every act's prompt, and the mid-roll hint under 8 minutes.
+{
+  const { midrollHint, MIDROLL_HINT } = await import("../src/features/docu/model.ts");
+  const { chapterRequest, STORY_RULES } = await import("../src/features/docu/ai.ts");
+  assert.equal(midrollHint("7"), MIDROLL_HINT);
+  assert.equal(midrollHint(8), "");
+  assert.equal(midrollHint("11"), "");
+  const request = chapterRequest({ title: "T", topic: "", targetMinutes: 11 }, "ENGINEERING_SOLUTION", [], []);
+  for (const rule of STORY_RULES) assert.ok(request.system.includes(rule));
+  assert.match(request.system, /Therefore\/But rule/);
+  assert.match(JSON.parse(request.parts[0].text).chapter.purpose, /3A Structure[\s\S]*3B Automation[\s\S]*3C Containment/);
+  console.log("docu tier-2 prompt and hint tests passed");
+}

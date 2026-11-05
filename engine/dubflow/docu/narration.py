@@ -2,8 +2,13 @@
 
 Every sentence is synthesised once and cached by its text, voice and speed, so
 a cancelled or edited run only speaks what changed. The pieces are joined with
-fixed pauses into one PCM track whose sample positions are the timeline;
+short pauses into one PCM track whose sample positions are the timeline;
 loudness normalisation afterwards is linear and keeps every time.
+
+The pauses keep the story moving (Tier-2, #548): 0.22 s between sentences
+(0.35 s after a question or an exclamation, so it lands), 0.40 s between
+scenes and 1.0 s between acts, where the rough cut puts its transition hit.
+Each piece ends on a 20 ms fade so a cut-off Kokoro tail never clicks.
 """
 from __future__ import annotations
 
@@ -23,10 +28,14 @@ from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
 from .project import DocuError, work_dir, write_json
 from .script import CHAPTERS, is_english, script_sha256
 
-SENTENCE_PAUSE = 0.4
-SCENE_PAUSE = 0.8
-# Longer, so the music can rise between acts (phase 2b).
-CHAPTER_PAUSE = 1.6
+SENTENCE_PAUSE = 0.22
+# After a sentence ending in "?" or "!": a beat longer, so it lands.
+EMPHATIC_PAUSE = 0.35
+SCENE_PAUSE = 0.40
+# Longer, so the music can rise and the act transition hit can play (roughcut).
+CHAPTER_PAUSE = 1.0
+# Fade at the end of every piece: removes the click of a TTS tail that stops above zero.
+TAIL_FADE = 0.020
 # Between the pieces of a sentence too long for one request.
 CLAUSE_PAUSE = 0.12
 MAX_PIECE = 280
@@ -98,6 +107,24 @@ def _pieces_of(sentence: str) -> list[str]:
     return result
 
 
+def sentence_pause(sentence: str) -> float:
+    """The pause after a sentence inside a scene: longer after a question or an exclamation."""
+    return EMPHATIC_PAUSE if re.search(r"[?!][\"'”’)\]]*$", sentence.strip()) else SENTENCE_PAUSE
+
+
+def fade_tail(frames: bytes, rate: int, seconds: float = TAIL_FADE) -> bytes:
+    """16-bit mono PCM with its last ``seconds`` faded linearly to silence."""
+    samples = array("h")
+    samples.frombytes(frames)
+    count = min(len(samples), round(rate * seconds))
+    if count <= 1:
+        return frames
+    first = len(samples) - count
+    for offset in range(count):
+        samples[first + offset] = round(samples[first + offset] * (count - 1 - offset) / (count - 1))
+    return samples.tobytes()
+
+
 def plan(script: dict[str, Any]) -> list[Piece]:
     pieces: list[Piece] = []
     chapters = [chapter for chapter in script.get("chapters", []) if chapter.get("chapter_type") in CHAPTERS]
@@ -111,7 +138,7 @@ def plan(script: dict[str, Any]) -> list[Piece]:
                     if part_index < len(parts) - 1:
                         pause = CLAUSE_PAUSE
                     elif sentence_index < len(spoken) - 1:
-                        pause = SENTENCE_PAUSE
+                        pause = sentence_pause(sentence)
                     elif scene_index < len(scenes) - 1:
                         pause = SCENE_PAUSE
                     elif chapter_index < len(chapters) - 1:
@@ -254,7 +281,8 @@ def run(run_dir: Path, script: dict[str, Any], *, speaker: Callable[[Callable[[s
         timeline = {"schema_version": 1, "script_sha256": script_sha256(script), "voice_id": voice_id, "speed": speed,
                     "producer": producer, "sample_rate": OUTPUT_RATE, "duration": round(duration, 3),
                     "loudness": {"target_lufs": TARGET_LUFS, "true_peak_db": TRUE_PEAK, "measured_lufs": _number(measured["input_i"])},
-                    "pauses": {"sentence": SENTENCE_PAUSE, "scene": SCENE_PAUSE, "chapter": CHAPTER_PAUSE},
+                    "pauses": {"sentence": SENTENCE_PAUSE, "emphatic": EMPHATIC_PAUSE, "scene": SCENE_PAUSE, "chapter": CHAPTER_PAUSE,
+                               "tail_fade_ms": round(TAIL_FADE * 1000)},
                     "chapters": chapters, "scenes": scenes}
         write_json(run_dir / "master_audio_timeline.json", timeline)
         (run_dir / "captions_en.srt").write_text(captions(scenes), encoding="utf-8", newline="\n")
@@ -300,7 +328,7 @@ def _join(pieces: Sequence[Piece], audio: Sequence[Path], output: Path) -> tuple
                     out.setframerate(rate)
                 if handle.getframerate() != rate or handle.getnchannels() != 1 or handle.getsampwidth() != 2:
                     raise DocuError("Các câu đọc không cùng định dạng; hãy xóa bộ đệm lời đọc rồi thử lại")
-                frames = handle.readframes(handle.getnframes())
+                frames = fade_tail(handle.readframes(handle.getnframes()), rate)
             start = position
             out.writeframes(frames)
             position += len(frames) // 2

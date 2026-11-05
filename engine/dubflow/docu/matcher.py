@@ -16,7 +16,12 @@ Each scene's slot (its narration plus the pause after it) is filled with
 * a portrait (phone) source keeps only a strip in 16:9: its footage ranks as
   uncited and after any landscape footage of the same rank;
 * a slice starts on a shot boundary when one is available and ends on a cut
-  near its planned end, so a cut never lands inside a camera transition.
+  near its planned end, so a cut never lands inside a camera transition;
+* uncited filler (the rest of a cited source, another source, reused footage)
+  goes first to footage whose source lines talk about what the scene does:
+  the scene's ``visual_search_tags`` and narration against the lines spoken
+  over each candidate, in shared concepts and numbers (``keywords``), so a
+  scene about biogas gets footage about manure and gas, not the control room.
 
 Everything is deterministic: the same inputs give the same plan.
 """
@@ -24,13 +29,18 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from dataclasses import dataclass
+from functools import cached_property
 import math
 from typing import Iterable, Sequence
+
+from . import keywords
 
 MIN_SLICE, MAX_SLICE = 3.0, 4.5
 SAME_SOURCE_GAP = 8.0
 SNAP = 0.4
 WIDEN = 6.0
+# The lines that count for a candidate slice: those spoken over it, give or take this much (speech and picture drift).
+LINE_REACH = 1.0
 EPSILON = 0.05
 # Tiers, best first.
 CITED, AROUND, SAME_SOURCES, ANY_SOURCE, REUSED = range(5)
@@ -51,6 +61,23 @@ class Source:
     portrait: bool = False
     # Stretches showing big burned-in text (a title card, a giant number): left out unless nothing else fits.
     text: tuple[tuple[float, float], ...] = ()
+    # (start, end, concepts) of each source line, in time order (``keywords.concepts`` of its text).
+    lines: tuple[tuple[float, float, frozenset[str]], ...] = ()
+
+    @cached_property
+    def _line_starts(self) -> tuple[list[float], float]:
+        return [line[0] for line in self.lines], max((b - a for a, b, _ in self.lines), default=0.0)
+
+    def concepts_between(self, start: float, end: float) -> frozenset[str]:
+        """The concepts of the lines spoken over [start, end], give or take ``LINE_REACH``."""
+        starts, longest = self._line_starts
+        found: set[str] = set()
+        for line_start, line_end, concepts in self.lines[bisect_left(starts, start - LINE_REACH - longest):]:
+            if line_start > end + LINE_REACH:
+                break
+            if line_end >= start - LINE_REACH:
+                found |= concepts
+        return frozenset(found)
 
 
 @dataclass(frozen=True)
@@ -68,6 +95,8 @@ class Scene:
     refs: tuple[Ref, ...]
     # Longest slice for this scene (its chapter's pacing, adjusted over MCP).
     max_slice: float = MAX_SLICE
+    # (concept, weight) of what the scene is about: its visual tags and narration (``keywords.scene_terms``).
+    terms: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -217,8 +246,11 @@ def _choose(candidates, sources: dict[str, Source], used: _Used, previous: Slice
         rank = REUSED if reuse else min(tier, SAME_SOURCES)
         if source.portrait and not reuse:
             rank = max(rank, SAME_SOURCES)
-        near = _near(scene, source_id, start) if tier >= SAME_SOURCES else 0.0
-        key = (rank, int(source.portrait), int(same), on_cut, order, near, source_id, start)
+        uncited = tier >= SAME_SOURCES or reuse
+        near = _near(scene, source_id, start) if uncited else 0.0
+        # Filler that talks about the scene's subject first; cited footage is already on topic.
+        relevance = keywords.score(scene.terms, source.concepts_between(start, end)) if uncited and scene.terms and source.lines else 0
+        key = (rank, int(source.portrait), int(same), -relevance, on_cut, order, near, source_id, start)
         if best is None or key < best[0]:
             best = (key, (REUSED if reuse else tier, source_id, start, end))
     return best[1] if best else None
