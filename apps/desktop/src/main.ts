@@ -3,6 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
+import { mountLayoutPanels, refitPanels } from "./shell/layout_panels.ts";
 import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import {
@@ -1713,6 +1714,8 @@ const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs
     $("#nav-docu").title = label ? `Claude đang làm: ${label}` : "";
   },
 });
+// Every page's side panels: drag to resize, fold into a strip, sizes remembered.
+mountLayoutPanels();
 /** The Chỉnh sửa screen's list: finished videos of every page and videos on the computer (Issue #497). */
 const editLibrary = mountEditLibrary(invoke, {
   jobs: () => queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
@@ -1769,6 +1772,8 @@ function showView(view: View, highlight: View = view): void {
   if (view === "compilation") compilation.show();
   if (view === "docu") docu.show();
   if (view === "edit") editLibrary.show();
+  // A page shown again re-checks its panels against the window it now has.
+  refitPanels();
 }
 /** Go to a page; editing another page's video ends first (asking when something is not saved). */
 async function navigate(view: View): Promise<void> {
