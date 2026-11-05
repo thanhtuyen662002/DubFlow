@@ -186,16 +186,27 @@ fn focus_other() {
     }
 }
 
+/// Which of the windows titled like DubFlow's to bring forward: one of a
+/// process started from this same program first (an older DubFlow without
+/// the claim may still run alongside), else the topmost one.
+pub fn pick_window<T: Copy>(candidates: &[(T, Option<std::path::PathBuf>)], own: Option<&std::path::Path>) -> Option<T> {
+    let same = |path: &Option<std::path::PathBuf>| match (path, own) {
+        (Some(path), Some(own)) => path.as_os_str().eq_ignore_ascii_case(own.as_os_str()),
+        _ => false,
+    };
+    candidates.iter().find(|(_, path)| same(path)).or_else(|| candidates.first()).map(|(window, _)| *window)
+}
+
 /// A top-level window of another process with exactly this title.
 #[cfg(windows)]
 fn other_window(title: &str) -> Option<windows_sys::Win32::Foundation::HWND> {
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
-    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, GetWindowThreadProcessId};
 
     struct Search<'a> {
         title: &'a str,
-        found: HWND,
+        found: Vec<(HWND, u32)>,
     }
     unsafe extern "system" fn visit(window: HWND, search: LPARAM) -> BOOL {
         let search = &mut *(search as *mut Search);
@@ -204,14 +215,27 @@ fn other_window(title: &str) -> Option<windows_sys::Win32::Foundation::HWND> {
         let mut pid = 0u32;
         GetWindowThreadProcessId(window, &mut pid);
         if length > 0 && pid != GetCurrentProcessId() && String::from_utf16_lossy(&text[..length as usize]) == search.title {
-            search.found = window;
-            return 0;
+            search.found.push((window, pid));
         }
         1
     }
-    let mut search = Search { title, found: std::ptr::null_mut() };
+    fn image(pid: u32) -> Option<std::path::PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return None;
+        }
+        let mut buffer = [0u16; 1024];
+        let mut length = buffer.len() as u32;
+        let ok = unsafe { QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut length) };
+        unsafe { CloseHandle(process) };
+        (ok != 0).then(|| std::ffi::OsString::from_wide(&buffer[..length as usize]).into())
+    }
+    let mut search = Search { title, found: Vec::new() };
     unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
-    (!search.found.is_null()).then_some(search.found)
+    let candidates: Vec<(HWND, Option<std::path::PathBuf>)> = search.found.iter().map(|&(window, pid)| (window, image(pid))).collect();
+    let own = std::env::current_exe().ok();
+    pick_window(&candidates, own.as_deref())
 }
 
 #[cfg(test)]
@@ -240,6 +264,18 @@ mod tests {
     fn a_plain_launch_takes_a_claim_whose_host_has_just_quit() {
         // The old host quit between this launch opening the claim and looking at it.
         assert_eq!(decide(Claim::Taken, false, 90, |ms| if ms == 0 { Wait::Acquired } else { Wait::Busy }), Launch::Run);
+    }
+
+    #[test]
+    fn the_window_of_this_same_program_wins_over_an_older_dubflow() {
+        use std::path::{Path, PathBuf};
+        let own = Path::new(r"C:\DubFlow\versions\1.1.71\app\bin\DubFlow.exe");
+        let old = Some(PathBuf::from(r"C:\DubFlow\versions\1.1.70\app\bin\DubFlow.exe"));
+        let same = Some(PathBuf::from(r"c:\dubflow\VERSIONS\1.1.71\app\bin\dubflow.exe"));
+        assert_eq!(pick_window(&[(1, old.clone()), (2, same), (3, None)], Some(own)), Some(2), "same program, any letter case");
+        assert_eq!(pick_window(&[(1, old.clone()), (3, None)], Some(own)), Some(1), "else the topmost");
+        assert_eq!(pick_window(&[(1, old)], None), Some(1));
+        assert_eq!(pick_window::<u8>(&[], Some(own)), None);
     }
 
     #[test]

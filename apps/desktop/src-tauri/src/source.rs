@@ -67,7 +67,13 @@ pub struct Sources {
     /// A cancelled running link whose stop request is not answered yet; a
     /// rejection naming no scan belongs to it, not to the next link.
     cancelling: Mutex<Option<String>>,
+    /// A start waits for a session save to finish (the service refuses
+    /// every request while it saves); one waiter at a time.
+    start_deferred: AtomicBool,
 }
+
+/// Longest wait for a session save before the next link starts anyway.
+const SESSION_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(250);
 
 /// The service allows two retries in a row that bring no new bytes; each
 /// resumes the part already downloaded.
@@ -521,6 +527,22 @@ impl Sources {
 
     /// Start the next waiting link once the running one has finished.
     fn pump(self: &Arc<Self>) {
+        // The service refuses a start while it saves a session, so the next
+        // link waits for the save (a Douyin link starts one alongside).
+        if self.session_waiting.load(Ordering::SeqCst) {
+            if !self.start_deferred.swap(true, Ordering::SeqCst) {
+                let sources = Arc::clone(self);
+                thread::spawn(move || {
+                    let deadline = std::time::Instant::now() + SESSION_SAVE_WAIT;
+                    while sources.session_waiting.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                        thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                    sources.start_deferred.store(false, Ordering::SeqCst);
+                    sources.pump();
+                });
+            }
+            return;
+        }
         loop {
             // Lock order everywhere: fetches, then queue.
             let (next, status) = {
@@ -981,6 +1003,26 @@ mod tests {
         *sources.cancelling.lock().unwrap() = Some("running".into());
         sources.on_event(&json!({"event":"source_error", "code":"SOURCE_REQUEST_REJECTED"}));
         assert_eq!(sources.status("third").unwrap().state, "preparing");
+    }
+
+    #[test]
+    fn a_link_waits_for_a_session_save_before_it_starts() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "next", "queued");
+        sources.queue.lock().unwrap().waiting.push_back("next".into());
+        sources.session_waiting.store(true, Ordering::SeqCst);
+        sources.pump();
+        sources.pump();
+        assert_eq!(sources.status("next").unwrap().state, "queued", "nothing starts while the session is saved");
+        assert!(sources.start_deferred.load(Ordering::SeqCst));
+        sources.session_waiting.store(false, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while sources.status("next").unwrap().started_at_ms.is_none() && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // Started once the save ended (and fails here: no service runs in a test).
+        assert!(sources.status("next").unwrap().started_at_ms.is_some());
+        assert!(!sources.start_deferred.load(Ordering::SeqCst));
     }
 
     #[test]
