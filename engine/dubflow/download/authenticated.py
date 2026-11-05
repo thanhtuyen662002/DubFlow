@@ -93,6 +93,9 @@ class AuthenticatedYtDlpTransport:
     def inspect_url(self, url: str, *, provider_id: str, headers: Mapping[str, str] | None = None):
         request = {"schema_version": 1, "provider_id": provider_id, "url": url,
                    "headers": validated_session_headers(headers, provider=provider_id) if headers else {}}
+        if provider_id == "douyin" and {"douyin_creator", "douyin_signer"}.issubset(self.paths):
+            # Signed detail request; the SDK's unsigned one is refused by Douyin.
+            request["douyin_modules"] = {"creator": self.pins["douyin_creator"], "signature": self.pins["douyin_signer"]}
         return self._invoke(request, provider_id=provider_id)
 
     def health_check(self, *, expected_sdk_version: str):

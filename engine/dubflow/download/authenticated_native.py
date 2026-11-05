@@ -91,17 +91,50 @@ def inspect(request, youtube_dl):
     with youtube_dl(downloader_options()) as downloader:
         for cookie in cookies:
             downloader.cookiejar.set_cookie(cookie)
-        try:
-            raw = downloader.extract_info(url, download=False)
-        except Exception as error:
-            # Bilibili renders video pages client-side behind risk control, so
-            # the SDK page extractor can fail while the public JSON API works.
-            if provider != "bilibili":
-                raise
-            raw = bilibili_api_metadata(downloader, url, error)
+        if provider == "douyin" and request.get("douyin_modules") is not None:
+            raw = douyin_signed_metadata(downloader, url, request["douyin_modules"])
+        else:
+            try:
+                raw = downloader.extract_info(url, download=False)
+            except Exception as error:
+                # Bilibili renders video pages client-side behind risk control, so
+                # the SDK page extractor can fail while the public JSON API works.
+                if provider != "bilibili":
+                    raise
+                raw = bilibili_api_metadata(downloader, url, error)
         if not isinstance(raw, dict) or raw.get("_type") in {"playlist", "multi_video"}:
             raise ValueError("unexpected provider metadata")
         return public_metadata(raw, generic=provider == "generic")
+
+
+def douyin_signed_metadata(downloader, url, pins):
+    """Douyin video metadata from a signed web detail request.
+
+    The SDK's Douyin extractor sends the detail request unsigned; Douyin now
+    answers it with an empty body and the SDK reports "fresh cookies are
+    needed", which surfaced as a login prompt even for logged-in users. The
+    SDK still parses the signed response, so formats keep their usual shape.
+    The SDK extractor remains the fallback when the signed request fails.
+    """
+    modules = load_douyin_modules(pins)
+    native = modules["creator"]
+    try:
+        aweme_id = native.aweme_id_from_url(url, downloader)
+        if aweme_id is None:
+            raise native.ProviderPageError(5, "Douyin link has no video id")
+        detail = native.fetch_detail(downloader, aweme_id, signer=modules["signature"].ABogus)
+        extractor = downloader.get_info_extractor("Douyin")
+        info = extractor._parse_aweme_video_app(detail)
+        info.setdefault("webpage_url", f"https://www.douyin.com/video/{aweme_id}")
+        downloader.add_default_extra_info(info, extractor, info["webpage_url"])
+        return downloader.process_ie_result(info, download=False)
+    except Exception as signed_error:
+        try:
+            return downloader.extract_info(url, download=False)
+        except Exception:
+            # The signed request's classification is the accurate one: the
+            # SDK's unsigned failure always reads as a cookie problem.
+            raise signed_error from None
 
 
 class ProviderError(Exception):
@@ -245,12 +278,9 @@ def bilibili_api_metadata(downloader, url, original_error):
             "duration": selected.get("duration") or view.get("duration"), "formats": formats, "subtitles": {}}
 
 
-def douyin_creator_page(request, youtube_dl):
-    if set(request) != {"schema_version", "operation", "provider_id", "url", "position", "page_size", "headers", "douyin_modules"}:
-        raise ValueError("invalid Douyin creator request schema")
+def load_douyin_modules(pins):
     # Fixed provider modules, verified bytes executed from memory. No import
     # path supplied by stdin can grant code execution or system dependencies.
-    pins = request.get("douyin_modules")
     if not isinstance(pins, dict) or set(pins) != {"creator", "signature"}:
         raise NotImplementedError("missing owned Douyin provider pins")
     modules = {}
@@ -273,6 +303,13 @@ def douyin_creator_page(request, youtube_dl):
         module = types.ModuleType("dubflow_pinned_douyin_" + key)
         exec(compile(data, str(path), "exec"), module.__dict__)
         modules[key] = module
+    return modules
+
+
+def douyin_creator_page(request, youtube_dl):
+    if set(request) != {"schema_version", "operation", "provider_id", "url", "position", "page_size", "headers", "douyin_modules"}:
+        raise ValueError("invalid Douyin creator request schema")
+    modules = load_douyin_modules(request.get("douyin_modules"))
     provider, url, cookies = provider_request(request)
     if provider != "douyin":
         raise ValueError("Douyin creator operation requires its provider")

@@ -138,3 +138,102 @@ def fetch_page(downloader, url: str, *, position: int, page_size: int, signer):
     if result["has_more"] and position > 0 and result["max_cursor"] >= position:
         raise ProviderPageError(5, "Douyin creator cursor did not advance")
     return result
+
+
+DETAIL_ENDPOINT = "https://www.douyin.com/aweme/v1/web/aweme/detail/"
+_AWEME_PATH = re.compile(r"/(?:video|note|share/video|share/note)/([0-9]{6,32})(?:[/?#]|$)")
+
+
+def aweme_id_from_url(url: str, downloader=None):
+    """The aweme id of a www.douyin.com video URL, resolving one short-link hop."""
+    if not isinstance(url, str) or len(url) > 1024:
+        return None
+    match = re.match(r"https://(?:www\.)?douyin\.com(/[^?#]*)", url)
+    if match:
+        found = _AWEME_PATH.search(match[1] + "/")
+        if found:
+            return found[1]
+        query = re.search(r"[?&](?:modal_id|vid)=([0-9]{6,32})(?:&|$)", url)
+        return query[1] if query else None
+    if downloader is None or not re.match(r"https://(?:v\.douyin\.com|www\.iesdouyin\.com)/", url):
+        return None
+    opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPCookieProcessor(downloader.cookiejar))
+    try:
+        with opener.open(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}), timeout=30) as response:
+            location = response.headers.get("Location") or ""
+    except urllib.error.HTTPError as error:
+        location = (error.headers.get("Location") or "") if error.code in {301, 302, 303, 307, 308} else ""
+        error.close()
+    except Exception:
+        return None
+    found = _AWEME_PATH.search(location.split("?", 1)[0] + "/") if isinstance(location, str) else None
+    return found[1] if found else None
+
+
+def fetch_detail(downloader, aweme_id: str, *, signer):
+    """One signed web detail request; returns the provider's aweme_detail object.
+
+    The pinned SDK's own Douyin extractor sends this request unsigned and
+    Douyin now answers that with an empty body, which the SDK reports as
+    "fresh cookies are needed" even for a logged-in session.
+    """
+    if not isinstance(aweme_id, str) or not re.fullmatch(r"[0-9]{6,32}", aweme_id):
+        raise ProviderPageError(5, "invalid Douyin video id")
+    params = {"device_platform": "webapp", "aid": "6383", "channel": "channel_pc_web",
+        "aweme_id": aweme_id, "update_version_code": "170400", "pc_client_type": 1,
+        "pc_libra_divert": "Windows", "support_h265": 1, "support_dash": 0,
+        "version_code": "290100", "version_name": "29.1.0", "cookie_enabled": "true",
+        "screen_width": 1920, "screen_height": 1080, "browser_language": "zh-CN",
+        "browser_platform": "Win32", "browser_name": "Edge", "browser_version": "131.0.0.0",
+        "browser_online": "true", "engine_name": "Blink", "engine_version": "131.0.0.0",
+        "os_name": "Windows", "os_version": "10", "cpu_core_num": 12, "device_memory": 8,
+        "platform": "PC", "downlink": 10, "effective_type": "4g", "round_trip_time": 50}
+    for cookie in downloader.cookiejar:
+        if cookie.name == "msToken" and cookie.domain.lstrip(".") == "douyin.com":
+            params["msToken"] = cookie.value
+            break
+    try:
+        signed = signer(user_agent=USER_AGENT).generate_abogus(urlencode(params))[0]
+        opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPCookieProcessor(downloader.cookiejar))
+        with opener.open(urllib.request.Request(DETAIL_ENDPOINT + "?" + signed, headers={"User-Agent": USER_AGENT,
+                "Referer": "https://www.douyin.com/video/" + aweme_id, "Accept-Encoding": "identity"}), timeout=30) as response:
+            if response.status != 200:
+                _http_failure(response.status)
+            if response.geturl() != DETAIL_ENDPOINT + "?" + signed:
+                raise ProviderPageError(5, "Douyin detail endpoint redirected")
+            data = response.read(MAX_RESPONSE_BYTES + 1)
+    except ProviderPageError:
+        raise
+    except NotImplementedError:
+        raise ProviderPageError(7, "owned Douyin request signer is unavailable") from None
+    except Exception as error:
+        if isinstance(error, urllib.error.HTTPError):
+            error.close()
+            _http_failure(error.code)
+        raise ProviderPageError(6, "Douyin detail network request failed") from None
+    return parse_detail(data, aweme_id)
+
+
+def parse_detail(data: bytes, aweme_id: str):
+    if not isinstance(data, bytes) or len(data) > MAX_RESPONSE_BYTES:
+        raise ProviderPageError(5, "Douyin detail response exceeds the bound")
+    if not data.strip():
+        # Douyin answers a request it does not trust with an empty 200.
+        raise ProviderPageError(5, "Douyin detail response is empty")
+    try:
+        value = json.loads(data, object_pairs_hook=_unique_object)
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        raise ProviderPageError(5, "Douyin detail response is not bounded JSON") from None
+    if not isinstance(value, dict) or type(value.get("status_code")) is not int:
+        raise ProviderPageError(5, "Douyin detail response has no explicit provider status")
+    if value["status_code"] != 0:
+        message = str(value.get("status_msg", ""))[:2048].lower()
+        code = 2 if any(word in message for word in ("login", "auth", "captcha", "challenge", "登录", "验证")) else 3 if any(word in message for word in ("rate", "too many", "频繁")) else 4 if any(word in message for word in ("not found", "不存在", "删除")) else 5
+        raise ProviderPageError(code, "Douyin detail returned an unsuccessful provider status")
+    detail = value.get("aweme_detail")
+    if not isinstance(detail, dict):
+        # filter_detail explains a removed, private or region-locked video.
+        raise ProviderPageError(4, "Douyin video is unavailable")
+    if detail.get("aweme_id") != aweme_id or not isinstance(detail.get("video"), dict):
+        raise ProviderPageError(5, "Douyin detail does not describe the requested video")
+    return detail
