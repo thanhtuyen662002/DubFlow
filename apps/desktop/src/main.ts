@@ -147,7 +147,7 @@ let voiceJobId: string | null = null;
 let queueFilter: QueueFilter = "all";
 /** A link still downloading (or failed) shown in the player instead of a job. */
 let selectedFetchId: string | null = null;
-type DetailTab = "result" | "setup" | "more";
+type DetailTab = "result" | "setup";
 let detailTab: DetailTab = "result";
 /** The job and phase the current tab was chosen for; a new one picks the default tab again. */
 let detailTabKey = "";
@@ -435,7 +435,6 @@ function selectTab(tab: DetailTab): void {
   }
   $("#tab-result").hidden = tab !== "result";
   $("#tab-setup").hidden = tab !== "setup";
-  $("#tab-more").hidden = tab !== "more";
 }
 
 /** How a kept download reads: its file name, unless that is a hashed store name. */
@@ -488,14 +487,13 @@ function renderInspector(job: QueueJob | null): void {
       ? "Lần xử lý này chưa tạo ra video. Nguyên nhân và cách thử lại hiện trên khung video."
       : "Video lồng tiếng, Shorts và bản đóng gói sẽ hiện ở đây khi xử lý xong.";
   $("#open-post").hidden = !output;
-  $("#more-empty").hidden = !!output;
   $("#result-title").textContent = finishedLabel(job);
   $("#result-card").hidden = !output;
   // Partial dubbing keeps the original voice for some lines; say so and point
   // to the review dialog, whose filter starts on those lines.
   const warning = $("#result-warning");
   warning.hidden = !(output && status.reason === "completed_partial_dubbing");
-  warning.textContent = warning.hidden ? "" : "Một số câu chưa lồng tiếng được (vẫn là tiếng gốc), thường vì câu dịch quá dài. Bấm “Xem & sửa bản dịch” để rút gọn rồi xử lý lại.";
+  warning.textContent = warning.hidden ? "" : "Một số câu chưa lồng tiếng được (vẫn là tiếng gốc), thường vì câu dịch quá dài. Bấm “Sửa phụ đề & giọng đọc” để rút gọn rồi áp dụng lại.";
   $("#open-review").classList.toggle("primary", !warning.hidden);
   const resultPath = $("#result-path");
   resultPath.textContent = output ? shortPath(output) : "";
@@ -599,6 +597,7 @@ const editor = mountEditor(invoke, {
   sfx: sfxLibrary,
   ai: claudeKey,
   openAiSettings: () => aiSettings.open(),
+  openReview: () => void openReview(),
   cpuOnly: () => cpuOnly(),
   // Back to the page the video was opened from: the Chỉnh sửa list, the queue or another page.
   left: () => {
@@ -2073,7 +2072,16 @@ reviewApply.addEventListener("click", async () => {
     updateReviewControls();
   }
 });
-$("#open-review").addEventListener("click", () => void openReview());
+/** Kết quả › "Sửa phụ đề & giọng đọc" / "Đóng gói, Shorts, đổi khung": the job's tools live in Chỉnh sửa. */
+async function editJobAt(mode: "subs" | "more"): Promise<void> {
+  const job = selectedJob();
+  if (!job?.outputPath || job.status.state !== "COMPLETED") return;
+  if (!(await editVideo(jobTarget(job), "queue"))) return;
+  // A job without its translation has no Phụ đề: the full review still opens.
+  if (!editor.show(mode) && mode === "subs") void openReview();
+}
+$("#open-review").addEventListener("click", () => void editJobAt("subs"));
+$("#open-more").addEventListener("click", () => void editJobAt("more"));
 
 // "Viết lại kiểu thuyết minh": the AI retells each cue in the narrator's voice,
 // sized to the cue; one undo restores the previous drafts.

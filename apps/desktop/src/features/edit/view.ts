@@ -77,6 +77,8 @@ export type EditorHost = {
   mediaUrl: (path: string) => Promise<string | null>;
   /** Finished videos in the queue, for "Từ DubFlow". */
   library: () => LibraryJob[];
+  /** The full translation review (speakers, lines to look at), over the editor. */
+  openReview: () => void;
   /** Phụ đề "Áp dụng": queue the new version prepared in `outputDir` and start it; its job id. */
   revise: (job: QueueJob, outputDir: string) => Promise<string | null>;
   /** Âm thanh: the sound-effect pack and the user's sound folder. */
@@ -108,6 +110,8 @@ export type Editor = {
   togglePlay(): void;
   /** Write a pending autosave now. */
   flush(): Promise<void>;
+  /** Switch the open edit to a tool tab; false when this video does not have it. */
+  show(mode: "subs" | "more"): boolean;
   /** Files dropped on the window while editing, at a point in client pixels (null when unknown). */
   drop(paths: string[], point: { x: number; y: number } | null): void;
 };
@@ -136,7 +140,7 @@ type Session = {
   plainCover: boolean;
 };
 
-type Mode = "template" | "cut" | "insert" | "subs" | "cover" | "audio" | "text";
+type Mode = "template" | "cut" | "insert" | "subs" | "cover" | "audio" | "text" | "more";
 type Where = "playhead" | "end" | "overlay";
 type LibraryItem = { key: string; path: string; title: string; meta: string; kind: "job" | "file"; duration: number | null };
 type Box = { element: HTMLDivElement; video: HTMLVideoElement; path: string };
@@ -1120,7 +1124,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     changesBadge.title = `${history.changes} thay đổi chưa xuất · bản nháp được tự lưu`;
     exportButton.disabled = isUnchanged(edit, facts.duration) && !(session.plainCover && cover.document());
     exportButton.title = exportButton.disabled ? "Chưa có thay đổi để xuất" : "Xuất bản đã chỉnh sửa thành file video mới";
-    const panelMode = mode === "subs" || mode === "cover" || mode === "audio" || mode === "text" || mode === "template";
+    const panelMode = mode === "subs" || mode === "cover" || mode === "audio" || mode === "text" || mode === "template" || mode === "more";
+    $("#edit-more").hidden = mode !== "more";
     const overlay = panelMode ? undefined : selectedOverlay();
     const segment = selectedSegment();
     const inserted = !!segment && segment.mediaId !== MAIN;
@@ -1766,7 +1771,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   for (const tab of modeTabs) {
     tab.addEventListener("click", () => {
       const next = tab.dataset.mode;
-      setMode(next === "insert" || next === "subs" || next === "cover" || next === "audio" || next === "text" || next === "template" ? next : "cut");
+      setMode(next === "insert" || next === "subs" || next === "cover" || next === "audio" || next === "text" || next === "template" || next === "more" ? next : "cut");
     });
   }
   for (const button of whereButtons) {
@@ -1883,6 +1888,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     revisionReady.hidden = true;
   });
   openButton.addEventListener("click", () => { if (listJob) void open(jobTarget(listJob)); });
+  $("#subs-full-review").addEventListener("click", () => host.openReview());
   exportButton.addEventListener("click", openDialog);
 
   document.addEventListener("keydown", (event) => {
@@ -2341,6 +2347,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     isPlaying: () => session ? session.playing : null,
     togglePlay,
     flush,
+    show(next) {
+      if (!session || !offered(next)) return false;
+      setMode(next);
+      return true;
+    },
     drop: (paths, point) => void dropFiles(paths, point),
   };
 }
