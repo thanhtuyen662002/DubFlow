@@ -327,7 +327,10 @@ class LogoBlurTests(unittest.TestCase):
         width = int(re.search(r"color=c=black:s=(\d+)x", graph).group(1))
         middle = mask[(len(mask) // width // 2) * width:][:width]
         fade = [x for x in range(width) if 10 < middle[x] < 245]
-        self.assertGreater(len(fade), 120, len(fade))
+        self.assertGreater(len(fade), 100, len(fade))
+        # ...but the whole box stays fully covered: the triangle apex at y 0.637 (t 346.5 of the tier-2 film).
+        top = int(re.search(r"crop=\d+:\d+:\d+:(\d+),gblur", graph).group(1))
+        self.assertGreaterEqual(mask[(int(0.637 * 1080) - top) * width + width // 3], 250)
 
 
 if __name__ == "__main__":
