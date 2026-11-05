@@ -319,6 +319,15 @@ class LogoBlurTests(unittest.TestCase):
         column = [pixel(200, y) for y in range(560, 760)]
         self.assertLess(max(abs(a - b) for a, b in zip(row, row[1:])), 4)
         self.assertLess(max(abs(a - b) for a, b in zip(column, column[1:])), 4)
+        # Over a busy background the patch must not end on a visible edge either (0:30 of the tier-2 film): the fade
+        # from blurred to sharp spans well over 100 px.
+        mask = subprocess.run([FFMPEG, "-v", "error", "-f", "lavfi", "-i", graph.split("[logo0mask]")[0].split(";")[-1]
+                               .replace("format=gray", "format=gray"), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                              capture_output=True, check=True).stdout
+        width = int(re.search(r"color=c=black:s=(\d+)x", graph).group(1))
+        middle = mask[(len(mask) // width // 2) * width:][:width]
+        fade = [x for x in range(width) if 10 < middle[x] < 245]
+        self.assertGreater(len(fade), 120, len(fade))
 
 
 if __name__ == "__main__":
