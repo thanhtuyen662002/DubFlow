@@ -72,6 +72,16 @@ pub struct Sources {
     start_deferred: AtomicBool,
 }
 
+/// What `claim_next` found.
+enum Claimed {
+    /// This link was claimed; start it.
+    Start(String, FetchStatus),
+    /// A link runs, or none waits.
+    Idle,
+    /// A link waits for a session save to end.
+    AfterSave,
+}
+
 /// Longest wait for a session save before the next link starts anyway.
 const SESSION_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(250);
 
@@ -526,44 +536,79 @@ impl Sources {
     }
 
     /// Start the next waiting link once the running one has finished.
-    fn pump(self: &Arc<Self>) {
-        // The service refuses a start while it saves a session, so the next
-        // link waits for the save (a Douyin link starts one alongside).
+    /// Claim the next waiting link for a start, under the fetch and queue
+    /// locks. A session save claims the service under the same locks
+    /// (`begin_session_save`), so a start and a save never overlap: the
+    /// service refuses every request while it saves.
+    fn claim_next(&self) -> Claimed {
+        // Lock order everywhere: fetches, then queue.
+        let Ok(mut fetches) = self.fetches.lock() else { return Claimed::Idle };
+        let Ok(mut queue) = self.queue.lock() else { return Claimed::Idle };
+        if queue.current.as_ref().and_then(|scan| fetches.get(scan)).is_some_and(|s| !finished(&s.state)) {
+            return Claimed::Idle;
+        }
+        if queue.waiting.is_empty() {
+            queue.current = None;
+            return Claimed::Idle;
+        }
         if self.session_waiting.load(Ordering::SeqCst) {
-            if !self.start_deferred.swap(true, Ordering::SeqCst) {
-                let sources = Arc::clone(self);
-                thread::spawn(move || {
-                    let deadline = std::time::Instant::now() + SESSION_SAVE_WAIT;
-                    while sources.session_waiting.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
-                        thread::sleep(std::time::Duration::from_millis(200));
-                    }
-                    sources.start_deferred.store(false, Ordering::SeqCst);
-                    sources.pump();
-                });
-            }
-            return;
+            return Claimed::AfterSave;
         }
         loop {
-            // Lock order everywhere: fetches, then queue.
-            let (next, status) = {
-                let Ok(mut fetches) = self.fetches.lock() else { return };
-                let Ok(mut queue) = self.queue.lock() else { return };
-                if queue.current.as_ref().and_then(|scan| fetches.get(scan)).is_some_and(|s| !finished(&s.state)) {
+            queue.current = queue.waiting.pop_front();
+            let Some(next) = queue.current.clone() else { return Claimed::Idle };
+            for (place, scan) in queue.waiting.iter().enumerate() {
+                if let Some(status) = fetches.get_mut(scan) {
+                    status.queue_position = Some(place + 1);
+                }
+            }
+            let Some(status) = fetches.get_mut(&next) else { continue };
+            status.state = "preparing".into();
+            status.queue_position = None;
+            status.detail = Some("Đang khởi động dịch vụ tải…".into());
+            status.started_at_ms = Some(now_ms());
+            return Claimed::Start(next, status.clone());
+        }
+    }
+
+    /// Claim the service for a session save, unless a link holds it.
+    fn begin_session_save(&self) -> Result<(), String> {
+        let fetches = self.fetches.lock().map_err(|_| fail("fetch table lock poisoned"))?;
+        let queue = self.queue.lock().map_err(|_| fail("link queue lock poisoned"))?;
+        if queue.current.as_ref().and_then(|scan| fetches.get(scan)).is_some_and(|s| !finished(&s.state)) {
+            return Err(fail("Đang tải một link nên chưa lưu được phiên. Hãy đợi link tải xong rồi bấm lại."));
+        }
+        self.session_waiting.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Let the service go after a session save; a link that waited for it starts.
+    fn end_session_save(self: &Arc<Self>) {
+        self.session_waiting.store(false, Ordering::SeqCst);
+        self.pump();
+    }
+
+    fn pump(self: &Arc<Self>) {
+        loop {
+            let (next, status) = match self.claim_next() {
+                Claimed::Start(next, status) => (next, status),
+                Claimed::Idle => return,
+                Claimed::AfterSave => {
+                    // Normally the save's end starts the link; this waiter is
+                    // the bound in case the save never reports back.
+                    if !self.start_deferred.swap(true, Ordering::SeqCst) {
+                        let sources = Arc::clone(self);
+                        thread::spawn(move || {
+                            let deadline = std::time::Instant::now() + SESSION_SAVE_WAIT;
+                            while sources.session_waiting.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                                thread::sleep(std::time::Duration::from_millis(200));
+                            }
+                            sources.start_deferred.store(false, Ordering::SeqCst);
+                            sources.pump();
+                        });
+                    }
                     return;
                 }
-                queue.current = queue.waiting.pop_front();
-                let Some(next) = queue.current.clone() else { return };
-                for (place, scan) in queue.waiting.iter().enumerate() {
-                    if let Some(status) = fetches.get_mut(scan) {
-                        status.queue_position = Some(place + 1);
-                    }
-                }
-                let Some(status) = fetches.get_mut(&next) else { continue };
-                status.state = "preparing".into();
-                status.queue_position = None;
-                status.detail = Some("Đang khởi động dịch vụ tải…".into());
-                status.started_at_ms = Some(now_ms());
-                (next, status.clone())
             };
             let launch = self.launch.lock().ok().and_then(|launch| launch.clone());
             let started = match launch {
@@ -652,27 +697,22 @@ impl Sources {
         self.ensure_started(supervisor, root, data)
     }
 
-    /// A link the service is running right now.
-    fn link_running(&self) -> bool {
-        self.queue.lock().ok().and_then(|queue| queue.current.clone())
-            .is_some_and(|scan| self.status(&scan).is_some_and(|s| !finished(&s.state)))
-    }
-
     /// Store a provider session in the service's protected (DPAPI) store and
     /// wait for its receipt. Blocking: call from a worker thread.
     pub fn save_session(self: &Arc<Self>, provider: &str, cookie: String, expires_at: u64,
                         supervisor: &Path, root: &Path, data: &Path) -> Result<(), String> {
         let _one_at_a_time = self.session_gate.lock().map_err(|_| fail("session gate poisoned"))?;
-        // The service refuses session work while a link runs.
-        if self.link_running() {
-            return Err(fail("Đang tải một link nên chưa lưu được phiên. Hãy đợi link tải xong rồi bấm lại."));
-        }
-        self.ensure_started(supervisor, root, data)?;
-        *self.session.lock().map_err(|_| fail("session lock poisoned"))? = None;
-        self.session_waiting.store(true, Ordering::SeqCst);
-        let result = self.send(json!({"command":"session_save", "provider_id":provider, "headers":{"Cookie":cookie}, "expires_at":expires_at}))
+        // The service refuses session work while a link runs, and every
+        // request while it saves: the claim keeps links from starting.
+        self.begin_session_save()?;
+        let result = self.ensure_started(supervisor, root, data)
+            .and_then(|_| {
+                *self.session.lock().map_err(|_| fail("session lock poisoned"))? = None;
+                Ok(())
+            })
+            .and_then(|_| self.send(json!({"command":"session_save", "provider_id":provider, "headers":{"Cookie":cookie}, "expires_at":expires_at})))
             .and_then(|_| self.session_receipt(provider));
-        self.session_waiting.store(false, Ordering::SeqCst);
+        self.end_session_save();
         result
     }
 
@@ -1010,19 +1050,52 @@ mod tests {
         let sources = Arc::new(Sources::default());
         queued(&sources, "next", "queued");
         sources.queue.lock().unwrap().waiting.push_back("next".into());
-        sources.session_waiting.store(true, Ordering::SeqCst);
+        // A save that begins first keeps the link from starting.
+        sources.begin_session_save().unwrap();
         sources.pump();
         sources.pump();
         assert_eq!(sources.status("next").unwrap().state, "queued", "nothing starts while the session is saved");
-        assert!(sources.start_deferred.load(Ordering::SeqCst));
-        sources.session_waiting.store(false, Ordering::SeqCst);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while sources.status("next").unwrap().started_at_ms.is_none() && std::time::Instant::now() < deadline {
-            thread::sleep(std::time::Duration::from_millis(50));
-        }
-        // Started once the save ended (and fails here: no service runs in a test).
+        assert!(sources.queue.lock().unwrap().current.is_none());
+        // The save's end starts it (and it fails here: no service runs in a test).
+        sources.end_session_save();
         assert!(sources.status("next").unwrap().started_at_ms.is_some());
-        assert!(!sources.start_deferred.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_save_never_begins_once_a_link_has_been_claimed() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "next", "queued");
+        sources.queue.lock().unwrap().waiting.push_back("next".into());
+        // pump's claim happens first (a save that starts after pump's check).
+        assert!(matches!(sources.claim_next(), Claimed::Start(scan, _) if scan == "next"));
+        assert!(sources.begin_session_save().is_err(), "the claimed link holds the service");
+        assert!(!sources.session_waiting.load(Ordering::SeqCst));
+        // Once it has finished, a save may begin, and then nothing else is claimed.
+        sources.update("next", |s| s.state = "done".into());
+        queued(&sources, "later", "queued");
+        sources.queue.lock().unwrap().waiting.push_back("later".into());
+        sources.begin_session_save().unwrap();
+        assert!(matches!(sources.claim_next(), Claimed::AfterSave));
+    }
+
+    #[test]
+    fn a_start_and_a_save_racing_never_both_win() {
+        for round in 0..500 {
+            let sources = Arc::new(Sources::default());
+            let scan = format!("r{round}");
+            queued(&sources, &scan, "queued");
+            sources.queue.lock().unwrap().waiting.push_back(scan.clone());
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let (a, b) = (Arc::clone(&sources), Arc::clone(&barrier));
+            let starter = thread::spawn(move || {
+                b.wait();
+                matches!(a.claim_next(), Claimed::Start(..))
+            });
+            barrier.wait();
+            let saved = sources.begin_session_save().is_ok();
+            let started = starter.join().unwrap();
+            assert!(started != saved, "round {round}: exactly one of start ({started}) and save ({saved}) wins");
+        }
     }
 
     #[test]
