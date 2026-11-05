@@ -60,3 +60,5 @@ for label, use in (("with saved session", headers), ("visitor (no cookies)", Non
                 print("CDN media:", r.status, r.headers.get("Content-Type"), len(r.read()), "bytes")
         except Exception as error:
             print("SIGNED DETAIL: FAILED:", type(error).__name__, getattr(error, "native_exit_code", ""), str(error)[:200])
+            cause = error.__context__
+            print("  cause:", type(cause).__name__ if cause else None, getattr(cause, "code", ""), str(cause)[:120] if cause else "")
