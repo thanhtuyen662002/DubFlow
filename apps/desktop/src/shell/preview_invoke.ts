@@ -703,6 +703,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       return { status: fetchStatus(scanId), output_dir: `D:/Videos/DubFlow Output/${title ?? scanId} - vi/${scanId}` } as T;
     }
     case "fetch_status": return fetchStatus(String(args.scanId)) as T;
+    case "link_titled_output": return String(args.outputDir) as T;
     case "withdraw_fetch": case "cancel_fetch": return linkFetches.delete(String(args.scanId)) as T;
     case "default_download_dir": return "D:/Videos/DubFlow Downloads" as T;
     case "keep_download": {

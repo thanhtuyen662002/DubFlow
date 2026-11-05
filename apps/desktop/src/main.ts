@@ -1664,9 +1664,15 @@ async function finishFetch(entry: FetchEntry, mediaPath: string): Promise<void> 
       showError(`Không chép được video vào thư mục tải về; dùng bản trong kho của DubFlow. ${String(error).slice(0, 160)}`);
     }
   }
+  // A pasted link learns its title while it downloads; its results folder follows.
+  let outputDir = entry.outputDir;
+  if (status.title?.trim()) {
+    outputDir = await invoke<string>("link_titled_output", { outputDir, url: status.url, title: status.title, scanId: status.scan_id }).catch(() => outputDir);
+    entry.outputDir = outputDir;
+  }
   fetches.delete(status.scan_id);
   try {
-    const linkJob = queue.addLinkJob(path, status.url, title, entry.outputDir);
+    const linkJob = queue.addLinkJob(path, status.url, title, outputDir);
     if (linkJob) applyDefaults([linkJob]);
   } catch (error) {
     showError(`Không thêm được video vào danh sách: ${String(error).slice(0, 160)}`);

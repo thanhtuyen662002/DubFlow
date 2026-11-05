@@ -704,6 +704,39 @@ pub fn link_output_dir(url: &str, title: Option<&str>, scan: &str) -> Result<Pat
     Ok(PathBuf::from(profile).join("Videos").join("DubFlow Output").join(format!("{} - vi", link_folder_name(url, title))).join(scan))
 }
 
+/// The results folder of a link that only learned its title while it
+/// downloaded: its untitled folder (still empty) moves to the titled name.
+/// Any other folder (already titled, chosen elsewhere, or with files in it)
+/// stays where it is.
+pub fn retitled_output_dir(current: &Path, url: &str, title: &str, scan: &str) -> Result<PathBuf, String> {
+    let profile = std::env::var_os("USERPROFILE").ok_or_else(|| fail("USERPROFILE is unavailable"))?;
+    retitled_output_in(&PathBuf::from(profile).join("Videos").join("DubFlow Output"), current, url, title, scan)
+}
+
+fn retitled_output_in(output: &Path, current: &Path, url: &str, title: &str, scan: &str) -> Result<PathBuf, String> {
+    let named = |title: Option<&str>| output.join(format!("{} - vi", link_folder_name(url, title))).join(scan);
+    let (untitled, titled) = (named(None), named(Some(title)));
+    if current != untitled || titled == untitled || titled.exists() {
+        return Ok(current.to_path_buf());
+    }
+    let empty = fs::read_dir(current).map(|mut entries| entries.next().is_none()).unwrap_or(true);
+    if !empty {
+        return Ok(current.to_path_buf());
+    }
+    let parent = titled.parent().ok_or_else(|| fail("results folder has no parent"))?;
+    fs::create_dir_all(parent).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
+    if current.exists() {
+        fs::rename(current, &titled).map_err(|error| fail(format!("Không đổi tên được thư mục kết quả: {error}")))?;
+        // The untitled `<id> - vi` folder goes too once nothing else is in it.
+        if let Some(old) = current.parent() {
+            let _ = fs::remove_dir(old);
+        }
+    } else {
+        fs::create_dir_all(&titled).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
+    }
+    Ok(titled)
+}
+
 fn link_folder_name(url: &str, title: Option<&str>) -> String {
     let tail = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/').rsplit('/').next().unwrap_or("video");
     let stem = tail.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(tail);
@@ -965,6 +998,39 @@ mod tests {
         sources.on_event(&json!({"event":"source_items", "scan_id":"untitled", "items":[{"identity_key":"bilibili:y", "title":null}]}));
         let status = sources.status("untitled").unwrap();
         assert_eq!((status.state.as_str(), status.title), ("downloading", None));
+    }
+
+    #[test]
+    fn an_untitled_results_folder_takes_the_title_once_known() {
+        let output = std::env::temp_dir().join(format!("dubflow-retitle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        let url = "https://www.bilibili.com/video/BV1LHxQ6gELU";
+        let untitled = output.join("BV1LHxQ6gELU - vi").join("link-1");
+        fs::create_dir_all(&untitled).unwrap();
+        let moved = retitled_output_in(&output, &untitled, url, "Video hay: tập 1", "link-1").unwrap();
+        assert_eq!(moved, output.join("Video-hay-tập-1 - vi").join("link-1"));
+        assert!(moved.is_dir() && !untitled.exists());
+        assert!(!output.join("BV1LHxQ6gELU - vi").exists(), "the empty untitled folder is gone");
+        // Already titled: nothing moves.
+        assert_eq!(retitled_output_in(&output, &moved, url, "Tên khác", "link-1").unwrap(), moved);
+        // An untitled folder that already holds files stays, and so do its siblings.
+        let busy = output.join("BV1LHxQ6gELU - vi").join("link-2");
+        fs::create_dir_all(&busy).unwrap();
+        fs::write(busy.join("ket-qua.mp4"), "x").unwrap();
+        fs::create_dir_all(output.join("BV1LHxQ6gELU - vi").join("link-3")).unwrap();
+        assert_eq!(retitled_output_in(&output, &busy, url, "Video hay", "link-2").unwrap(), busy);
+        let third = output.join("BV1LHxQ6gELU - vi").join("link-3");
+        let moved3 = retitled_output_in(&output, &third, url, "Video hay", "link-3").unwrap();
+        assert_eq!(moved3, output.join("Video-hay - vi").join("link-3"));
+        assert!(busy.join("ket-qua.mp4").is_file(), "the shared untitled folder keeps other links");
+        // A folder that is missing is created under the titled name.
+        let gone = output.join("BV1LHxQ6gELU - vi").join("link-4");
+        let made = retitled_output_in(&output, &gone, url, "Video hay", "link-4").unwrap();
+        assert!(made.is_dir() && made.ends_with(Path::new("Video-hay - vi").join("link-4")));
+        // A title that names the folder the same way changes nothing.
+        let same = output.join("BV1LHxQ6gELU - vi").join("link-5");
+        assert_eq!(retitled_output_in(&output, &same, url, "  ", "link-5").unwrap(), same);
+        fs::remove_dir_all(&output).unwrap();
     }
 
     #[test]
