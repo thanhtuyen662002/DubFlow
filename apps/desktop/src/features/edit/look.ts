@@ -27,6 +27,8 @@ export type SegmentLook = {
   /** Sound fades of the segment, in output seconds. */
   readonly fadeIn: number;
   readonly fadeOut: number;
+  /** LUT màu (Issue #531): a .cube file on this computer, applied after the colour; null = none. */
+  readonly lut?: string | null;
 };
 
 export const DEFAULT_LOOK: SegmentLook = {
@@ -114,13 +116,14 @@ export function normalizeLook(raw: unknown): SegmentLook | null {
     crop: cleanCrop(value.crop), rotate, flipH: value.flipH === true, flipV: value.flipV === true, zoom: cleanZoom(value.zoom),
     color: cleanColor(value.color), reverse: freeze === null && value.reverse === true, freeze,
     fadeIn: freeze === null ? fade("fadeIn") : 0, fadeOut: freeze === null ? fade("fadeOut") : 0,
+    ...(isLutPath(value.lut) ? { lut: value.lut } : {}),
   };
   return isDefaultLook(look) ? null : look;
 }
 
 export function isDefaultLook(look: SegmentLook | null | undefined): boolean {
   return !look || (!look.crop && look.rotate === 0 && !look.flipH && !look.flipV && !look.zoom && !look.color && !look.reverse
-    && look.freeze === null && look.fadeIn === 0 && look.fadeOut === 0);
+    && look.freeze === null && look.fadeIn === 0 && look.fadeOut === 0 && !look.lut);
 }
 
 export function sameLook(a: SegmentLook | null | undefined, b: SegmentLook | null | undefined): boolean {
@@ -142,10 +145,21 @@ export function planLook(look: SegmentLook | null | undefined): Record<string, u
   if (clean.freeze !== null) plan.freeze = clean.freeze;
   if (clean.fadeIn) plan.fade_in = clean.fadeIn;
   if (clean.fadeOut) plan.fade_out = clean.fadeOut;
+  if (clean.lut) plan.lut = clean.lut;
   return plan;
 }
 
 export const LOOK_PLAN_KEYS = ["crop", "rotate", "flip_h", "flip_v", "zoom", "color", "reverse", "freeze", "fade_in", "fade_out"] as const;
+
+/** An absolute path to a .cube file (Windows or POSIX). */
+export function isLutPath(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 1024 && /\.cube$/i.test(value) && /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(value);
+}
+
+/** The file name of a LUT path, for labels. */
+export function lutName(path: string): string {
+  return path.split(/[\\/]/).pop()?.replace(/\.cube$/i, "") ?? path;
+}
 
 /** A centred crop of `ratio` (width / height) on a `width` × `height` picture, as large as fits. */
 export function cropForRatio(width: number, height: number, ratio: number): Crop | null {
@@ -191,6 +205,7 @@ export function lookBadges(look: SegmentLook | null | undefined): string[] {
   if (look.freeze !== null) badges.push("Dừng hình");
   if (look.reverse) badges.push("Tua ngược");
   if (look.color) badges.push(COLOR_PRESETS.find((preset) => sameColor(preset.color, look.color))?.name ?? "Màu");
+  if (look.lut) badges.push("LUT");
   if (look.crop || look.rotate || look.flipH || look.flipV) badges.push("Khung");
   if (look.zoom) badges.push("Zoom");
   return badges;

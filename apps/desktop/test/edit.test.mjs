@@ -368,7 +368,7 @@ assert.deepEqual(plan, {
   ],
   transitions: [{ after: 0, type: "dissolve", duration: 1 }, { after: 2, type: "fade", duration: 0.8 }],
   overlays: [{ media: 1, at: 5, start: 0, end: 10, x: 0.62, y: 0.03, w: 0.35, volume: 1 }],
-  audio: [], mainVolume: 1, texts: [],
+  audio: [], mainVolume: 1, texts: [], luts: [],
 });
 assert.ok(matchesExport(full, JSON.parse(JSON.stringify(plan))));
 assert.ok(!matchesExport(setOverlayVolume(full, full.overlays[0].id, 0.5), plan));

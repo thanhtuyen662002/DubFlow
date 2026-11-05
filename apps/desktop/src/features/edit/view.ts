@@ -20,7 +20,7 @@ import {
   SPEED_PRESETS, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
   addMarker, copySegment, duplicateSegment, keepRange, moveSegment, nearbyPoint, pasteSegment, removeMarker, removeRange, segmentLength,
   setMarker, snapPoints, snapTime, MAX_MARKERS, type SegmentClip, lookOf, playsForward, sourceAt,
-  isStillPath, overlaps, overlayStyle, setOverlayStyle, rangeEdit, overlayAt, placementOf, setOverlayFades, setOverlayMotion,
+  isStillPath, overlayLanes, moveOverlayLayer, overlaps, overlayStyle, setOverlayStyle, rangeEdit, overlayAt, placementOf, setOverlayFades, setOverlayMotion,
   type OverlayKey,
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
@@ -168,6 +168,8 @@ type LibraryItem = { key: string; path: string; title: string; meta: string; kin
 type Box = { element: HTMLDivElement; video: HTMLVideoElement; image: HTMLImageElement; path: string };
 
 const PAD = 12;
+/** Height of one overlay row on the timeline (overlapping overlays take more rows). */
+const OV_ROW = 28;
 const TIMELINE_PX = 170;
 /** The timeline below a 600 px window (styles.css). */
 const SHORT_TIMELINE_PX = 140;
@@ -277,6 +279,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const ovEnd = $<HTMLInputElement>("#ov-end");
   const ovOpacity = $<HTMLInputElement>("#ov-opacity");
   const ovRadius = $<HTMLInputElement>("#ov-radius");
+  const shapeButtons = [...document.querySelectorAll<HTMLButtonElement>("#ov-shape [data-shape]")];
   const ovBorder = $<HTMLInputElement>("#ov-border");
   const ovBorderColor = $<HTMLInputElement>("#ov-border-color");
   const ovMotion = $<HTMLInputElement>("#ov-motion");
@@ -732,7 +735,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const total = outputDuration(edit);
     const level = mainLevel(edit, time, total);
     const seen = new Set<string>();
-    for (const overlay of edit.overlays) {
+    for (const [layer, overlay] of edit.overlays.entries()) {
       seen.add(overlay.id);
       const length = overlayLength(edit, overlay, total);
       const on = time >= overlay.at && time < overlay.at + length;
@@ -762,6 +765,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         }).catch(() => undefined);
       }
       box.element.hidden = false;
+      // Later overlays are drawn on top (Lớp), as the export lays them.
+      box.element.style.zIndex = String(layer + 1);
       box.element.classList.toggle("selected", selected);
       box.element.classList.toggle("idle", !on);
       box.element.title = `${media?.title || (still ? "Ảnh chồng" : "Video chồng")} · kéo để đổi chỗ`;
@@ -781,7 +786,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const border = look.border ? Math.max(1, look.border * Math.min(rect.width, rect.height) / 1080) : 0;
       Object.assign((still ? box.image : box.video).style, {
         opacity: look.opacity === 1 ? "" : String(look.opacity),
-        borderRadius: look.radius ? `${(look.radius * Math.min(boxWidth, boxHeight)).toFixed(1)}px` : "",
+        borderRadius: look.shape === "ellipse" ? "50%" : look.radius ? `${(look.radius * Math.min(boxWidth, boxHeight)).toFixed(1)}px` : "",
         border: border ? `${border.toFixed(1)}px solid ${look.borderColor}` : "",
       });
       const player = box.video;
@@ -1023,6 +1028,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     selected: () => selectedSegment(),
     outputTime: () => session?.outputTime ?? 0,
     note,
+    pickLut: () => invoke<string | null>("pick_lut"),
+    lutFrame: async (segment, lut) => {
+      const edit = current();
+      const media = mediaOf(edit, segment.mediaId);
+      if (!media) throw new Error("Không tìm thấy video của đoạn này.");
+      // The playhead's frame when it is in this segment, else the segment's first.
+      const point = outputToSource(edit, session?.outputTime ?? 0);
+      const time = point?.segment.id === segment.id ? point.sourceTime : segment.start;
+      const bytes = await invoke<ArrayBuffer>("edit_lut_frame", { path: mediaPath(media), time, lut });
+      return URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    },
   });
   const templateMode = mountTemplate(invoke, {
     draft: () => session ? { edit: session.history.current, changes: session.history.changes, selected: session.selected, recent: session.recent } : null,
@@ -1677,6 +1693,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (document.activeElement !== input) input.value = String(Math.round(value));
       $(`#${input.id}-value`).textContent = text;
     }
+    for (const button of shapeButtons) button.setAttribute("aria-checked", String(button.dataset.shape === look.shape));
+    $("#ov-radius-field").hidden = look.shape === "ellipse";
+    const layer = edit.overlays.indexOf(overlay);
+    $("#ov-layer-value").textContent = edit.overlays.length > 1 ? `${layer + 1}/${edit.overlays.length} (${layer === edit.overlays.length - 1 ? "trên cùng" : layer === 0 ? "dưới cùng" : "giữa"})` : "chỉ có 1 lớp";
+    $<HTMLButtonElement>("#ov-layer-up").disabled = layer >= edit.overlays.length - 1;
+    $<HTMLButtonElement>("#ov-layer-down").disabled = layer <= 0;
     if (document.activeElement !== ovBorderColor) ovBorderColor.value = look.borderColor.toLowerCase();
     ovBorderColor.disabled = !look.border;
     title.title = media?.path ?? "";
@@ -1883,13 +1905,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     // Overlay row.
     overlayTrack.hidden = !edit.overlays.length;
     content.classList.toggle("with-overlays", edit.overlays.length > 0);
-    overlayTrack.replaceChildren(...edit.overlays.map((overlay) => {
+    const ovLanes = overlayLanes(edit, total);
+    const ovRows = Math.max(1, ...[...ovLanes.values()].map((lane) => lane + 1));
+    overlayTrack.style.height = `${ovRows * OV_ROW - 4}px`;
+    overlayTrack.replaceChildren(...edit.overlays.map((overlay, layer) => {
       const media = mediaOf(edit, overlay.mediaId);
       const block = element("div", `tl-ov${overlay.id === session!.overlay ? " selected" : ""}`);
       block.dataset.id = overlay.id;
+      block.style.top = `${(ovLanes.get(overlay.id) ?? 0) * OV_ROW}px`;
+      block.style.height = `${OV_ROW - 4}px`;
+      block.style.zIndex = String(layer + 1);
       block.style.left = `${PAD + overlay.at * pps}px`;
       block.style.width = `${Math.max(6, overlayLength(edit, overlay, total) * pps)}px`;
-      block.title = `Video chồng: ${media?.title ?? ""} · ${formatClock(overlay.at, true)} – ${formatClock(overlay.at + overlayLength(edit, overlay, total), true)}`;
+      block.title = `${media && isStillPath(media.path) ? "Ảnh chồng" : "Video chồng"} · lớp ${layer + 1}/${edit.overlays.length}: ${media?.title ?? ""} · ${formatClock(overlay.at, true)} – ${formatClock(overlay.at + overlayLength(edit, overlay, total), true)}`;
       const name = element("span", "tl-ov-name", media?.title || "Video chồng");
       const startHandle = element("span", "tl-handle start");
       startHandle.dataset.edge = "start";
@@ -1904,12 +1932,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const textHeight = textMode.renderTrack(textTrack, mode === "text", PAD) + (subsHeight ? 6 + subsHeight : 0);
     const audioHeight = audio.renderTrack(audioTrack, mode === "audio", PAD);
     content.classList.toggle("with-audio", audioHeight > 0 || textHeight > 0);
-    const rows = 22 + (edit.overlays.length ? 30 : 0) + 48 + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + 16;
+    const rows = 22 + (edit.overlays.length ? ovRows * OV_ROW + 2 : 0) + 48 + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + 16;
     // At most 40% of the window: further rows scroll, the video keeps its room.
     // Never lower than the timeline without rows (lower in short windows, see styles.css), so it does not jump.
     const least = window.innerHeight <= 600 ? SHORT_TIMELINE_PX : TIMELINE_PX;
     const most = Math.max(least, Math.round(window.innerHeight * 0.4));
-    timeline.style.height = audioHeight || textHeight ? `${Math.min(most, Math.max(least, 36 + rows))}px` : "";
+    timeline.style.height = audioHeight || textHeight || ovRows > 1 ? `${Math.min(most, Math.max(least, 36 + rows))}px` : "";
     renderThumbs();
     renderPlayhead();
     const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;
@@ -2598,6 +2626,18 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session.draft = setOverlayStyle(session.history.current, overlay.id, change(Number(input.value)));
       renderPanel();
       renderEffects();
+    });
+  }
+  for (const button of shapeButtons) {
+    button.addEventListener("click", () => {
+      const overlay = selectedOverlay();
+      if (session && overlay) commit(setOverlayStyle(session.history.current, overlay.id, { shape: button.dataset.shape === "ellipse" ? "ellipse" : "rect" }));
+    });
+  }
+  for (const [id, step] of [["#ov-layer-up", 1], ["#ov-layer-down", -1]] as const) {
+    $(id).addEventListener("click", () => {
+      const overlay = selectedOverlay();
+      if (session && overlay) commit(moveOverlayLayer(session.history.current, overlay.id, step));
     });
   }
   ovBorderColor.addEventListener("input", () => {

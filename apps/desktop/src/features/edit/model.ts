@@ -100,6 +100,8 @@ export type Overlay = {
   readonly id: string; readonly mediaId: string; readonly at: number; readonly start: number; readonly end: number;
   readonly x: number; readonly y: number; readonly w: number; readonly volume: number;
   readonly opacity?: number; readonly radius?: number; readonly border?: number; readonly borderColor?: string;
+  /** Hình tròn (Issue #531): an ellipse filling its box instead of a rectangle; the radius is then unused. */
+  readonly shape?: "ellipse";
   /** Hiện dần / tắt dần in seconds (Issue #526); absent = 0. */
   readonly fadeIn?: number; readonly fadeOut?: number;
   /** Chuyển động: where it ends; it moves and resizes evenly from x, y, w over its shown time. */
@@ -108,7 +110,8 @@ export type Overlay = {
 export type Placement = { readonly x: number; readonly y: number; readonly w: number };
 /** Which placement drag and presets change: where it starts, or (with Chuyển động) where it ends. */
 export type OverlayKey = "start" | "end";
-export type OverlayStyle = { opacity: number; radius: number; border: number; borderColor: string };
+export type OverlayShape = "rect" | "ellipse";
+export type OverlayStyle = { opacity: number; radius: number; border: number; borderColor: string; shape: OverlayShape };
 export type AudioSource = { readonly kind: "sfx"; readonly id: string } | { readonly kind: "file"; readonly path: string };
 /**
  * A sound over the output: `at` is output time, `start`/`end` its own seconds
@@ -856,22 +859,25 @@ export function setOverlayVolume(edit: Edit, id: string, volume: number): Edit {
 }
 
 export function overlayStyle(overlay: Overlay): OverlayStyle {
-  return { opacity: overlay.opacity ?? 1, radius: overlay.radius ?? 0, border: overlay.border ?? 0, borderColor: overlay.borderColor ?? DEFAULT_BORDER_COLOR };
+  return { opacity: overlay.opacity ?? 1, radius: overlay.radius ?? 0, border: overlay.border ?? 0, borderColor: overlay.borderColor ?? DEFAULT_BORDER_COLOR,
+    shape: overlay.shape ?? "rect" };
 }
 
 /** The style an overlay keeps: values clamped, defaults left out. */
 function styled(overlay: Overlay, style: OverlayStyle): Overlay {
-  const { opacity: _o, radius: _r, border: _b, borderColor: _c, ...plain } = overlay;
+  const { opacity: _o, radius: _r, border: _b, borderColor: _c, shape: _s, ...plain } = overlay;
+  const ellipse = style.shape === "ellipse";
   const opacity = Math.round(clamp(style.opacity, MIN_OVERLAY_OPACITY, 1) * 100) / 100;
   const radius = Math.round(clamp(style.radius, 0, 0.5) * 100) / 100;
   const border = Math.round(clamp(style.border, 0, MAX_OVERLAY_BORDER));
-  return { ...plain, ...(opacity !== 1 ? { opacity } : {}), ...(radius ? { radius } : {}),
+  return { ...plain, ...(opacity !== 1 ? { opacity } : {}), ...(radius && !ellipse ? { radius } : {}), ...(ellipse ? { shape: "ellipse" as const } : {}),
     ...(border ? { border, borderColor: isHex(style.borderColor) ? style.borderColor.toUpperCase() : DEFAULT_BORDER_COLOR } : {}) };
 }
 
 /** Độ trong, bo góc, viền (Issue #521); invalid values are ignored. */
 export function setOverlayStyle(edit: Edit, id: string, change: Partial<OverlayStyle>): Edit {
-  const valid = Object.fromEntries(Object.entries(change).filter(([key, value]) => key === "borderColor" ? isHex(value) : finite(value)));
+  const valid = Object.fromEntries(Object.entries(change).filter(([key, value]) => key === "borderColor" ? isHex(value)
+    : key === "shape" ? value === "rect" || value === "ellipse" : finite(value)));
   return changeOverlay(edit, id, (overlay) => styled(overlay, { ...overlayStyle(overlay), ...valid }));
 }
 
@@ -1014,6 +1020,39 @@ export function mainLevel(edit: Edit, time: number, total = outputDuration(edit)
     if (clip.duckDb > 0 && time >= clip.at && time < clip.at + audioLength(clip, total)) duck = Math.max(duck, clip.duckDb);
   }
   return edit.mainVolume * Math.pow(10, -duck / 20);
+}
+
+/**
+ * Timeline rows for overlays (Issue #531): each in the first row where it
+ * overlaps nothing, the top layer first, so of overlapping overlays the one
+ * drawn on top sits higher on the timeline.
+ */
+export function overlayLanes(edit: Edit, total = outputDuration(edit)): Map<string, number> {
+  const rows: Array<Array<[number, number]>> = [];
+  const lanes = new Map<string, number>();
+  for (const overlay of [...edit.overlays].reverse()) {
+    const span: [number, number] = [overlay.at, overlay.at + Math.max(overlayLength(edit, overlay, total), 0.001)];
+    let lane = rows.findIndex((row) => row.every(([from, to]) => span[1] <= from + 1e-6 || span[0] >= to - 1e-6));
+    if (lane < 0) lane = rows.push([]) - 1;
+    rows[lane].push(span);
+    lanes.set(overlay.id, lane);
+  }
+  return lanes;
+}
+
+/**
+ * Lớp: overlays later in the list are drawn on top. `step` +1 brings one a
+ * layer up, −1 sends it down, ±Infinity to the very top or bottom; no-op at the end.
+ */
+export function moveOverlayLayer(edit: Edit, id: string, step: number): Edit {
+  const index = edit.overlays.findIndex((overlay) => overlay.id === id);
+  if (index < 0) return edit;
+  const target = Math.max(0, Math.min(edit.overlays.length - 1, index + (Number.isFinite(step) ? Math.trunc(step) : step > 0 ? edit.overlays.length : -edit.overlays.length)));
+  if (target === index) return edit;
+  const overlays = [...edit.overlays];
+  const [moved] = overlays.splice(index, 1);
+  overlays.splice(target, 0, moved);
+  return { ...edit, overlays };
 }
 
 /** Rows for the timeline: each clip in the first row where it overlaps nothing. */
@@ -1231,7 +1270,7 @@ export type PlanSegment = { media: number; start: number; end: number; speed: nu
 export type PlanTransition = { after: number; type: TransitionType; duration: number };
 export type PlanOverlay = {
   media: number; at: number; start: number; end: number; x: number; y: number; w: number; volume: number;
-  opacity?: number; radius?: number; border?: number; border_color?: string; fade_in?: number; fade_out?: number; to?: Placement;
+  opacity?: number; radius?: number; shape?: "ellipse"; border?: number; border_color?: string; fade_in?: number; fade_out?: number; to?: Placement;
 };
 export type PlanAudio = {
   source: { kind: "sfx"; id: string } | { kind: "file"; path: string };
@@ -1243,6 +1282,8 @@ export type PlanText = Omit<TextClip, "id" | "shadow"> & { shadow?: number };
 export type ExportPlan = {
   media: string[]; segments: PlanSegment[]; transitions: PlanTransition[]; overlays: PlanOverlay[]; audio: PlanAudio[]; mainVolume: number;
   texts: PlanText[];
+  /** LUT màu files the segments' `lut` index into. */
+  luts: string[];
 };
 
 export function exportPlan(edit: Edit): ExportPlan {
@@ -1254,7 +1295,15 @@ export function exportPlan(edit: Edit): ExportPlan {
     if (at < 0) at = media.push(path) - 1;
     return at + 1;
   };
-  const segments = edit.segments.map(({ mediaId, start, end, speed, volume, look }) => ({ media: index(mediaId), start, end, speed, volume, ...planLook(look) }));
+  // LUT màu: each .cube file once; segments point at it by index.
+  const luts: string[] = [];
+  const segments = edit.segments.map(({ mediaId, start, end, speed, volume, look }) => {
+    const { lut, ...rest } = planLook(look);
+    if (typeof lut !== "string") return { media: index(mediaId), start, end, speed, volume, ...rest };
+    let at = luts.indexOf(lut);
+    if (at < 0) at = luts.push(lut) - 1;
+    return { media: index(mediaId), start, end, speed, volume, ...rest, lut: at };
+  });
   const transitions: PlanTransition[] = [];
   edit.segments.forEach((_, at) => {
     const transition = transitionAt(edit, at);
@@ -1265,7 +1314,7 @@ export function exportPlan(edit: Edit): ExportPlan {
     .map((overlay) => planOverlay(overlay, index(overlay.mediaId)));
   const audio = edit.audio.filter((clip) => audioLength(clip, total) >= MIN_AUDIO).map(planAudio);
   const texts = edit.texts.filter((text) => text.text.trim() && textLength(text, total) >= 0.05).map((text) => planText(text, total));
-  return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume, texts };
+  return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume, texts, luts };
 }
 
 function planText({ id: _, shadow, ...text }: TextClip, total: number): PlanText {
@@ -1274,10 +1323,10 @@ function planText({ id: _, shadow, ...text }: TextClip, total: number): PlanText
 }
 
 function planOverlay(overlay: Overlay, media: number): PlanOverlay {
-  const { at, start, end, x, y, w, volume, opacity, radius, border, borderColor, fadeIn, fadeOut, to } = overlay;
+  const { at, start, end, x, y, w, volume, opacity, radius, border, borderColor, fadeIn, fadeOut, to, shape } = overlay;
   const moves = to && (to.x !== x || to.y !== y || to.w !== w);
   return { media, at, start, end, x, y, w, volume, ...(opacity !== undefined && opacity !== 1 ? { opacity } : {}), ...(radius ? { radius } : {}),
-    ...(border ? { border, border_color: borderColor ?? DEFAULT_BORDER_COLOR } : {}), ...(fadeIn ? { fade_in: fadeIn } : {}),
+    ...(shape === "ellipse" ? { shape } : {}), ...(border ? { border, border_color: borderColor ?? DEFAULT_BORDER_COLOR } : {}), ...(fadeIn ? { fade_in: fadeIn } : {}),
     ...(fadeOut ? { fade_out: fadeOut } : {}), ...(moves ? { to: { x: to.x, y: to.y, w: to.w } } : {}) };
 }
 
@@ -1291,13 +1340,15 @@ const near = (a: unknown, b: unknown, tolerance = 0.0005): boolean => typeof a =
 
 /** An edit renders the same as an exported one (4a exports list only main segments, 4e adds sounds and the main volume, 4f texts). */
 export function matchesExport(edit: Edit, exported: {
-  media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown; audio?: unknown; main_volume?: unknown; texts?: unknown;
+  media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown; audio?: unknown; main_volume?: unknown; texts?: unknown; luts?: unknown;
 }): boolean {
   const plan = exportPlan(edit);
   const list = (value: unknown): Array<Record<string, unknown>> => Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
   const media = Array.isArray(exported.media) ? exported.media : [];
   const segments = list(exported.segments), transitions = list(exported.transitions), overlays = list(exported.overlays), audio = list(exported.audio);
   const texts = list(exported.texts);
+  const luts = Array.isArray(exported.luts) ? exported.luts : [];
+  const lutOf = (index: unknown, from: readonly unknown[]): string | null => typeof index === "number" && typeof from[index] === "string" ? from[index] as string : null;
   const sameText = (other: Record<string, unknown>, text: PlanText): boolean => (Object.keys(text) as Array<keyof PlanText>).every((key) => {
     const value = text[key];
     return typeof value === "number" ? near(other[key], value, key === "x" || key === "y" || key === "w" ? 0.0002 : 0.0005) : other[key] === value;
@@ -1319,7 +1370,8 @@ export function matchesExport(edit: Edit, exported: {
       const other = segments[at];
       return (other.media ?? 0) === segment.media && near(other.start, segment.start) && near(other.end, segment.end)
         && other.speed === segment.speed && other.volume === segment.volume
-        && LOOK_PLAN_KEYS.every((key) => JSON.stringify(other[key] ?? null) === JSON.stringify(segment[key] ?? null));
+        && LOOK_PLAN_KEYS.every((key) => JSON.stringify(other[key] ?? null) === JSON.stringify(segment[key] ?? null))
+        && ((lut, mine) => lut === mine || (lut !== null && mine !== null && samePath(lut, mine)))(lutOf(other.lut, luts), lutOf(segment.lut, plan.luts));
     })
     && transitions.length === plan.transitions.length && plan.transitions.every((transition, at) => {
       const other = transitions[at];
@@ -1330,7 +1382,7 @@ export function matchesExport(edit: Edit, exported: {
       return other.media === overlay.media && near(other.at, overlay.at) && near(other.start, overlay.start) && near(other.end, overlay.end)
         && near(other.x, overlay.x, 0.0002) && near(other.y, overlay.y, 0.0002) && near(other.w, overlay.w, 0.0002) && other.volume === overlay.volume
         && (other.opacity ?? 1) === (overlay.opacity ?? 1) && (other.radius ?? 0) === (overlay.radius ?? 0) && (other.border ?? 0) === (overlay.border ?? 0)
-        && (other.border_color ?? null) === (overlay.border_color ?? null)
+        && (other.border_color ?? null) === (overlay.border_color ?? null) && (other.shape ?? null) === (overlay.shape ?? null)
         && (other.fade_in ?? 0) === (overlay.fade_in ?? 0) && (other.fade_out ?? 0) === (overlay.fade_out ?? 0)
         && JSON.stringify(other.to ?? null) === JSON.stringify(overlay.to ?? null);
     });
@@ -1595,11 +1647,11 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
       if (typeof id !== "string" || !/^o\d{1,9}$/.test(id) || ids.has(id) || typeof mediaId !== "string" || !known.has(mediaId)) continue;
       if (![at, start, end, x, y, w, volume].every(finite)) continue;
       const media = known.get(mediaId)!;
-      const { opacity, radius, border, borderColor } = raw as Record<string, unknown>;
+      const { opacity, radius, border, borderColor, shape } = raw as Record<string, unknown>;
       const overlay = styled({ id, mediaId, at: at as number, start: start as number, end: Math.min(end as number, media.duration),
         x: x as number, y: y as number, w: w as number, volume: volume as number }, {
         opacity: finite(opacity) ? opacity : 1, radius: finite(radius) ? radius : 0, border: finite(border) ? border : 0,
-        borderColor: isHex(borderColor) ? borderColor : DEFAULT_BORDER_COLOR });
+        borderColor: isHex(borderColor) ? borderColor : DEFAULT_BORDER_COLOR, shape: shape === "ellipse" ? "ellipse" : "rect" });
       const { fadeIn, fadeOut, to } = raw as Record<string, unknown>;
       const goal = to && typeof to === "object" ? to as Record<string, unknown> : null;
       if (finite(fadeIn) && fadeIn > 0) Object.assign(overlay, { fadeIn: Math.round(clamp(fadeIn, 0, MAX_FADE) * 10) / 10 });

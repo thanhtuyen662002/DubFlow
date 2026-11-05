@@ -117,6 +117,9 @@ pub struct Segment {
     fade_in: f64,
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     fade_out: f64,
+    /// LUT màu (Issue #531): index into the request's `luts` (.cube files).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lut: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
@@ -175,7 +178,7 @@ impl Segment {
     /// Plays its part as filmed: the 4a graph can render it.
     fn is_plain(&self) -> bool {
         self.crop.is_none() && self.rotate == 0 && !self.flip_h && !self.flip_v && self.zoom.is_none() && self.color.is_none()
-            && !self.reverse && self.freeze.is_none() && self.fade_in == 0.0 && self.fade_out == 0.0
+            && !self.reverse && self.freeze.is_none() && self.fade_in == 0.0 && self.fade_out == 0.0 && self.lut.is_none()
     }
 
     /// Why its look cannot be rendered, if so.
@@ -281,6 +284,9 @@ pub struct Overlay {
     /// Corner radius, a fraction of the overlay's short side (0–0.5; 0.5 is round).
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     radius: f64,
+    /// "ellipse" (Hình tròn, Issue #531): an ellipse filling its box; the radius is unused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shape: Option<String>,
     /// A frame around it, pixels on a frame whose short side is 1080 (0–20), in `border_color`.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     border: f64,
@@ -306,7 +312,7 @@ pub struct Placement {
 
 impl Default for Overlay {
     fn default() -> Self {
-        Self { media: 0, at: 0.0, start: 0.0, end: 0.0, x: 0.0, y: 0.0, w: 0.0, volume: 1.0, opacity: 1.0, radius: 0.0, border: 0.0, border_color: None,
+        Self { media: 0, at: 0.0, start: 0.0, end: 0.0, x: 0.0, y: 0.0, w: 0.0, volume: 1.0, opacity: 1.0, radius: 0.0, shape: None, border: 0.0, border_color: None,
             fade_in: 0.0, fade_out: 0.0, to: None }
     }
 }
@@ -429,6 +435,9 @@ pub struct ExportRequest {
     /// Chỉ âm thanh: an .m4a of the edit's sound, no picture.
     #[serde(default)]
     audio_only: bool,
+    /// LUT màu (Issue #531): .cube files the segments' `lut` points at.
+    #[serde(default)]
+    luts: Vec<String>,
 }
 
 /// What follows the edit's picture and sound in the export graph.
@@ -464,11 +473,13 @@ lutyuv=y='val*0.6'[rfb];[rf1]{fit}[rff];[rfb][rff]overlay=(W-w)/2:(H-h)/2,setsar
 }
 
 /// A validated edit, clamped to its media.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct Edit {
     segments: Vec<Segment>,
     transitions: Vec<Transition>,
     overlays: Vec<Overlay>,
+    /// LUT files (paths) the segments' `lut` index into.
+    luts: Vec<String>,
 }
 
 /// What the filter graph needs to know about each input.
@@ -843,6 +854,9 @@ fn validate(request: &ExportRequest, durations: &[f64]) -> Result<Edit, String> 
         if let Some(problem) = segment.look_problem() {
             return Err(fail(problem));
         }
+        if segment.lut.is_some_and(|lut| lut >= request.luts.len()) {
+            return Err(fail("Đoạn dùng LUT không có trong danh sách"));
+        }
         if !(0.0..=2.0).contains(&segment.volume) {
             return Err(fail("Âm lượng mỗi đoạn phải từ 0 đến 200%"));
         }
@@ -876,6 +890,7 @@ fn validate(request: &ExportRequest, durations: &[f64]) -> Result<Edit, String> 
         }
         if !(MIN_OPACITY - 1e-6..=1.0).contains(&overlay.opacity) || !(0.0..=0.5).contains(&overlay.radius)
             || !(0.0..=MAX_BORDER).contains(&overlay.border) || overlay.border_color.as_deref().is_some_and(|color| !hex_color(color))
+            || overlay.shape.as_deref().is_some_and(|shape| shape != "ellipse")
             || (overlay.border > 0.0 && overlay.border_color.is_none()) {
             return Err(fail("Độ trong, bo góc hoặc viền của lớp chồng không hợp lệ"));
         }
@@ -903,7 +918,10 @@ fn validate(request: &ExportRequest, durations: &[f64]) -> Result<Edit, String> 
             return Err(fail("Phụ đề của bản chỉnh sửa không hợp lệ"));
         }
     }
-    Ok(Edit { segments, transitions, overlays })
+    if request.luts.len() > MAX_LUTS || !request.luts.iter().all(|lut| is_lut_path(lut)) {
+        return Err(fail("Chỉ dùng được tối đa 8 file LUT .cube"));
+    }
+    Ok(Edit { segments, transitions, overlays, luts: request.luts.clone() })
 }
 
 /// The added sounds, checked against their files' lengths (`files[i]` is
@@ -1036,7 +1054,7 @@ fn fps_number(fps: &str) -> f64 {
 /// One segment's picture: its part (held, reversed or retimed), then crop,
 /// rotation, flips and colour on the source picture, the fit into the frame,
 /// and the slow zoom on the fitted picture.
-fn segment_video(segment: &Segment, fit: &str, frame: &Frame) -> Vec<String> {
+fn segment_video(segment: &Segment, fit: &str, frame: &Frame, luts: &[String]) -> Vec<String> {
     let (start, end) = (num(segment.start), num(segment.end));
     let mut video = vec![format!("trim=start={start}:end={end}")];
     if let Some(hold) = segment.freeze {
@@ -1053,6 +1071,9 @@ fn segment_video(segment: &Segment, fit: &str, frame: &Frame) -> Vec<String> {
         video.push(if segment.speed == 1.0 { "setpts=PTS-STARTPTS".to_owned() } else { format!("setpts=(PTS-STARTPTS)/{}", num(segment.speed)) });
     }
     video.extend(look_filters(segment));
+    if let Some(lut) = segment.lut.and_then(|lut| luts.get(lut)) {
+        video.push(lut_filter(lut));
+    }
     video.push(fit.to_owned());
     if let Some(hold) = segment.freeze {
         video.push(format!("trim=duration={}", num(hold)));
@@ -1157,7 +1178,7 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, vide
     let mut lines = Vec::new();
     for (index, segment) in segments.iter().enumerate() {
         let (start, end) = (num(segment.start), num(segment.end));
-        let mut video = segment_video(segment, &fit, frame);
+        let mut video = segment_video(segment, &fit, frame, &edit.luts);
         let mut fades = Vec::new();
         if fade_in[index] > 0.0 {
             fades.push(format!("t=in:st=0:d={}", num(fade_in[index])));
@@ -1273,8 +1294,9 @@ fn overlay_look(overlay: &Overlay, width: u32, height: u32) -> String {
         Some(_) if overlay.border > 0.0 => ((overlay.border * f64::from(width.min(height)) / 1080.0).round() as u32).clamp(1, outer / 4),
         _ => 0,
     };
+    let ellipse = overlay.shape.as_deref() == Some("ellipse");
     let mut filters = vec![format!("scale={}:-2", outer - 2 * border)];
-    if border == 0 && overlay.radius == 0.0 && overlay.opacity == 1.0 {
+    if border == 0 && overlay.radius == 0.0 && overlay.opacity == 1.0 && !ellipse {
         filters.push("setsar=1".to_owned());
         return filters.join(",");
     }
@@ -1284,13 +1306,36 @@ fn overlay_look(overlay: &Overlay, width: u32, height: u32) -> String {
     }
     filters.push("setsar=1".to_owned());
     let opacity = if overlay.opacity == 1.0 { String::new() } else { format!("{}*", num(overlay.opacity)) };
-    if overlay.radius > 0.0 {
+    if ellipse {
+        // Inside the box's ellipse; with a frame, the ring between it and the
+        // ellipse `border` px inside is drawn in the frame colour (sizes per plane).
+        let inside = |inset: &str| format!("lte(hypot((X-W/2+0.5)/(W/2{inset}),(Y-H/2+0.5)/(H/2{inset})),1)");
+        let (lum, cb, cr) = match (&overlay.border_color, border > 0) {
+            (Some(color), true) => {
+                let (y, u, v) = yuv(color);
+                let ring = inside(&format!("-{border}*W/{outer}"));
+                (format!("if({ring},lum(X,Y),{y})"), format!("if({ring},cb(X,Y),{u})"), format!("if({ring},cr(X,Y),{v})"))
+            }
+            _ => ("lum(X,Y)".to_owned(), "cb(X,Y)".to_owned(), "cr(X,Y)".to_owned()),
+        };
+        filters.push(format!("geq=lum='{lum}':cb='{cb}':cr='{cr}':a='{opacity}alpha(X,Y)*{}'", inside("")));
+    } else if overlay.radius > 0.0 {
         let r = format!("({}*min(W,H))", num(overlay.radius));
         filters.push(format!("geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='{opacity}alpha(X,Y)*lte(hypot(max(max({r}-X,X-W+1+{r}),0),max(max({r}-Y,Y-H+1+{r}),0)),{r})'"));
     } else if overlay.opacity != 1.0 {
         filters.push(format!("lut=a='val*{}'", num(overlay.opacity)));
     }
     filters.join(",")
+}
+
+/// A #RRGGBB colour as limited-range BT.601 Y, Cb, Cr (what yuva420p holds).
+fn yuv(color: &str) -> (u32, u32, u32) {
+    let part = |at: usize| f64::from(u8::from_str_radix(&color[at..at + 2], 16).unwrap_or(0)) / 255.0;
+    let (r, g, b) = (part(1), part(3), part(5));
+    let y = 16.0 + 65.481 * r + 128.553 * g + 24.966 * b;
+    let u = 128.0 - 37.797 * r - 74.203 * g + 112.0 * b;
+    let v = 128.0 + 112.0 * r - 93.786 * g - 18.214 * b;
+    (y.round() as u32, u.round() as u32, v.round() as u32)
 }
 
 /// `from` to `to` evenly over [at, at + span) of output time, as an FFmpeg expression.
@@ -1828,6 +1873,34 @@ fn filter_path(path: &str) -> String {
     escape(&escape(&path.replace('\\', "/"), "\\':"), "\\'[],;")
 }
 
+/// At most this many LUT files in one edit.
+const MAX_LUTS: usize = 8;
+/// A .cube file is text; bigger ones are not LUTs a user picked on purpose.
+const MAX_LUT_BYTES: u64 = 64 * 1024 * 1024;
+
+fn is_lut_path(path: &str) -> bool {
+    let file = Path::new(path);
+    file.is_absolute() && file.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("cube"))
+}
+
+/// An existing .cube file the user picked, or why it cannot be used.
+pub(crate) fn lut_file(path: &str) -> Result<PathBuf, String> {
+    if !is_lut_path(path) {
+        return Err(fail("LUT phải là file .cube trên máy"));
+    }
+    let file = Path::new(path).canonicalize().map_err(|_| fail("Không tìm thấy file LUT"))?;
+    let size = std::fs::metadata(&file).map(|meta| meta.len()).unwrap_or(0);
+    if !file.is_file() || !is_lut_path(&file.to_string_lossy()) || size == 0 || size > MAX_LUT_BYTES {
+        return Err(fail("File LUT không hợp lệ"));
+    }
+    Ok(file)
+}
+
+/// The colour lookup of a .cube file, after the segment's colour and before the fit into the frame.
+fn lut_filter(path: &str) -> String {
+    format!("lut3d=file={}", filter_path(path))
+}
+
 /// The filter drawing the text layer at `file`.
 fn subtitles_filter(file: &str) -> String {
     format!("subtitles=filename={}", filter_path(file))
@@ -2241,6 +2314,32 @@ pub async fn edit_media_info(path: String) -> Result<Value, String> {
         "fps": fps_value(&facts.fps), "has_audio": facts.has_audio, "size_bytes": facts.size}))
 }
 
+/// Xem thử LUT (Issue #531): the frame of `path` at `time` seconds through
+/// the LUT, as a PNG at most 640 px wide, for the panel's before/after.
+#[tauri::command]
+pub async fn edit_lut_frame(path: String, time: f64, lut: String) -> Result<tauri::ipc::Response, String> {
+    let file = crate::overlay_media(&path)?;
+    let lut = crate::display_path(&lut_file(&lut)?);
+    if !time.is_finite() || time < 0.0 {
+        return Err(fail("Thời điểm không hợp lệ"));
+    }
+    let ffmpeg = media_tool("ffmpeg.exe")?;
+    let png = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        let mut command = Command::new(ffmpeg);
+        command.args(["-nostdin", "-v", "error", "-ss", &num(time), "-i"]).arg(&file)
+            .args(["-frames:v", "1", "-vf", &format!("scale='min(640,iw)':-2,{}", lut_filter(&lut)), "-f", "image2pipe", "-vcodec", "png", "pipe:1"])
+            .stdin(Stdio::null()).stderr(Stdio::null());
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let output = command.output().map_err(|error| fail(format!("Không chạy được FFmpeg: {error}")))?;
+        if !output.status.success() || output.stdout.is_empty() {
+            return Err(fail("Không áp được LUT này (file .cube không đọc được)"));
+        }
+        Ok(output.stdout)
+    }).await.map_err(|_| fail("Không xem thử được LUT"))??;
+    Ok(tauri::ipc::Response::new(png))
+}
+
 /// The user's audio files a draft's sounds play (schema 3 `audio`).
 fn draft_sounds(project: &Value) -> Vec<PathBuf> {
     project["audio"].as_array().into_iter().flatten().take(MAX_SOUNDS)
@@ -2543,7 +2642,7 @@ fn run_export(job: &ExportJob, running: &Running) {
     }
     append_export(&job.work, json!({"path": display_path(&target), "srt_path": srt, "created": unix_now(),
         "duration": (job.seconds * 1000.0).round() / 1000.0, "quality": job.quality, "segments": job.edit.segments,
-        "media": job.media, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume,
+        "media": job.media, "luts": job.edit.luts, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume,
         "texts": job.texts}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
 }
@@ -2563,7 +2662,11 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         inputs.push(file);
     }
     let durations: Vec<f64> = probes.iter().map(|probe| probe.duration).collect();
-    let edit = validate(&request, &durations)?;
+    let mut edit = validate(&request, &durations)?;
+    // LUT màu: the files as they are on disk (a link may point elsewhere).
+    for lut in &mut edit.luts {
+        *lut = crate::display_path(&lut_file(lut)?);
+    }
     // Âm thanh: each sound's file once, after the videos.
     if request.audio.len() > MAX_SOUNDS {
         return Err(fail("Tối đa 100 âm thanh thêm"));
@@ -2731,7 +2834,7 @@ mod tests {
     fn request(segments: Vec<Segment>) -> ExportRequest {
         ExportRequest { output_path: "unused".into(), kind: "file".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
             texts: vec![], quality: "source".into(),
-            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false, burn: None, fps: None, bitrate: None, aspect: None, fill: None, audio_only: false }
+            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false, burn: None, fps: None, bitrate: None, aspect: None, fill: None, audio_only: false, luts: vec![] }
     }
 
     fn frame() -> Frame {
@@ -2760,7 +2863,7 @@ mod tests {
     fn writes_the_graph_for_an_inserted_clip_with_a_dissolve() {
         let inputs = [Input { has_audio: true }, Input { has_audio: true }];
         let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), clip(1, 2.0, 7.0), segment(10.0, 20.0, 1.5, 0.5)],
-            transitions: vec![joint(0, TransitionKind::Dissolve, 1.0)], overlays: vec![] };
+            transitions: vec![joint(0, TransitionKind::Dissolve, 1.0)], overlays: vec![], ..Default::default() };
         let (script, has_audio) = render_script(&edit, &inputs, &frame(), "source");
         assert!(has_audio);
         assert_eq!(script, expected("\
@@ -2779,7 +2882,7 @@ mod tests {
     #[test]
     fn fades_through_black_without_changing_the_length() {
         let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), segment(20.0, 30.0, 1.0, 1.0)],
-            transitions: vec![joint(0, TransitionKind::Fade, 0.8)], overlays: vec![] };
+            transitions: vec![joint(0, TransitionKind::Fade, 0.8)], overlays: vec![], ..Default::default() };
         assert_eq!(render_script(&edit, &[Input { has_audio: true }], &frame(), "720p").0, expected("\
 [0:v]trim=start=0:end=10,setpts=PTS-STARTPTS,{fit},fade=t=out:st=9.6:d=0.4[v0];
 [0:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,{af},afade=t=out:st=9.6:d=0.4[a0];
@@ -2797,7 +2900,7 @@ mod tests {
             transitions: vec![joint(1, TransitionKind::Dissolve, 0.5)], overlays: vec![
                 Overlay { media: 1, at: 3.0, start: 1.0, end: 6.0, x: 0.62, y: 0.03, w: 0.35, volume: 0.8, ..Default::default() },
                 // Runs past the end of the output: cut there; a silent clip adds no sound.
-                Overlay { media: 2, at: 12.0, start: 0.0, end: 4.0, x: 0.0, y: 0.0, w: 0.2, volume: 1.0, ..Default::default() }] };
+                Overlay { media: 2, at: 12.0, start: 0.0, end: 4.0, x: 0.0, y: 0.0, w: 0.2, volume: 1.0, ..Default::default() }], ..Default::default() };
         assert_eq!(render_script(&edit, &inputs, &frame(), "source").0, expected("\
 [0:v]trim=start=0:end=10,setpts=PTS-STARTPTS,{fit}[v0];
 [0:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,{af}[a0];
@@ -2819,7 +2922,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     #[test]
     fn graphs_without_any_sound_and_main_only_cuts() {
         let silent = [Input { has_audio: false }, Input { has_audio: false }];
-        let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), clip(1, 0.0, 4.0)], transitions: vec![], overlays: vec![] };
+        let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), clip(1, 0.0, 4.0)], transitions: vec![], overlays: vec![], ..Default::default() };
         let (script, has_audio) = render_script(&edit, &silent, &frame(), "source");
         assert!(!has_audio);
         assert_eq!(script, expected("\
@@ -2828,10 +2931,10 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
 [v0][v1]concat=n=2:v=1:a=0[v]"));
         // A muted overlay of a clip with sound adds no track to a silent edit.
         let muted = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0)], transitions: vec![],
-            overlays: vec![Overlay { media: 1, at: 0.0, start: 0.0, end: 1.0, x: 0.0, y: 0.0, w: 0.5, volume: 0.0, ..Default::default() }] };
+            overlays: vec![Overlay { media: 1, at: 0.0, start: 0.0, end: 1.0, x: 0.0, y: 0.0, w: 0.5, volume: 0.0, ..Default::default() }], ..Default::default() };
         assert!(!render_script(&muted, &[Input { has_audio: false }, Input { has_audio: true }], &frame(), "source").1);
         // Only the main video, no transitions or overlays: the 4a graph.
-        let cut = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), segment(20.0, 30.5, 1.5, 0.5)], transitions: vec![], overlays: vec![] };
+        let cut = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), segment(20.0, 30.5, 1.5, 0.5)], transitions: vec![], overlays: vec![], ..Default::default() };
         assert_eq!(render_script(&cut, &[Input { has_audio: true }], &frame(), "720p"), (filter_script(&cut.segments, true, "720p"), true));
     }
 
@@ -3500,7 +3603,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     }
 
     fn whole(seconds: f64) -> Edit {
-        Edit { segments: vec![segment(0.0, seconds, 1.0, 1.0)], transitions: vec![], overlays: vec![] }
+        Edit { segments: vec![segment(0.0, seconds, 1.0, 1.0)], transitions: vec![], overlays: vec![], ..Default::default() }
     }
 
     const MAIN_ONLY: &str = "\
@@ -3651,7 +3754,7 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
         // After the quality scale and the mix, with overlays and transitions: still the last filter.
         let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), segment(20.0, 30.0, 1.0, 1.0)],
             transitions: vec![joint(0, TransitionKind::Fade, 0.8)],
-            overlays: vec![Overlay { media: 0, at: 1.0, start: 0.0, end: 2.0, x: 0.0, y: 0.0, w: 0.5, volume: 0.0, ..Default::default() }] };
+            overlays: vec![Overlay { media: 0, at: 1.0, start: 0.0, end: 2.0, x: 0.0, y: 0.0, w: 0.5, volume: 0.0, ..Default::default() }], ..Default::default() };
         let mix = Mix { sounds: vec![], main_volume: 0.5 };
         let (with, has_audio) = export_script(&edit, &input, &frame(), "720p", &mix, &Finish { texts: Some("subtitles=filename=t.ass".into()), ..Finish::default() });
         let (without, _) = export_script(&edit, &input, &frame(), "720p", &mix, &Finish::default());
@@ -3707,32 +3810,32 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
         let frame = Frame { width: 1920, height: 1080, fps: "30".into() };
         let fit = "FIT";
         let plain = segment(0.0, 10.0, 2.0, 1.0);
-        assert_eq!(segment_video(&plain, fit, &frame), vec!["trim=start=0:end=10", "setpts=(PTS-STARTPTS)/2", "FIT"]);
+        assert_eq!(segment_video(&plain, fit, &frame, &[]), vec!["trim=start=0:end=10", "setpts=(PTS-STARTPTS)/2", "FIT"]);
         let styled = Segment {
             crop: Some(Crop { x: 0.25, y: 0.0, w: 0.5, h: 1.0 }), rotate: 90, flip_h: true,
             color: Some(Color { brightness: 0.1, contrast: 1.2, saturation: 0.0, temperature: 0.5 }), ..segment(0.0, 10.0, 1.0, 1.0)
         };
-        let video = segment_video(&styled, fit, &frame).join(",");
+        let video = segment_video(&styled, fit, &frame, &[]).join(",");
         assert!(video.starts_with("trim=start=0:end=10,setpts=PTS-STARTPTS,crop=w='trunc(iw*0.5/2)*2':h='trunc(ih*1/2)*2':x='iw*0.25':y='ih*0',transpose=1,hflip,lutyuv=y='clip((val-128)*1.2+128+15,0,255)',hue=s=0,colorbalance="), "{video}");
         assert!(video.ends_with(",FIT"));
         let reversed = Segment { reverse: true, ..segment(0.0, 10.0, 2.0, 1.0) };
-        assert_eq!(segment_video(&reversed, fit, &frame), vec!["trim=start=0:end=10", "setpts=PTS-STARTPTS", "reverse", "setpts=PTS/2", "FIT"]);
+        assert_eq!(segment_video(&reversed, fit, &frame, &[]), vec!["trim=start=0:end=10", "setpts=PTS-STARTPTS", "reverse", "setpts=PTS/2", "FIT"]);
         let frozen = Segment { freeze: Some(3.0), ..segment(4.0, 4.1, 1.0, 0.0) };
-        assert_eq!(segment_video(&frozen, fit, &frame),
+        assert_eq!(segment_video(&frozen, fit, &frame, &[]),
             vec!["trim=start=4:end=4.1", "setpts=PTS-STARTPTS", "trim=end_frame=1", "tpad=stop_mode=clone:stop_duration=3", "FIT", "trim=duration=3"]);
         assert_eq!(segment_length(&frozen), 3.0);
         let zoomed = Segment { zoom: Some(Zoom { from: 1.0, to: 1.5, x: 0.5, y: 0.25 }), ..segment(0.0, 2.0, 1.0, 1.0) };
-        let video = segment_video(&zoomed, fit, &frame);
+        let video = segment_video(&zoomed, fit, &frame, &[]);
         assert_eq!(video[3], "zoompan=z='1+0.5*min(on/59,1)':x='(iw-iw/zoom)*0.5':y='(ih-ih/zoom)*0.25':d=1:s=1920x1080:fps=30");
         assert_eq!(fps_number("30000/1001"), 30000.0 / 1001.0);
 
         // A styled main-only edit leaves the 4a graph; its sound reverses and fades.
-        let edit = Edit { segments: vec![Segment { reverse: true, fade_in: 0.5, fade_out: 1.0, ..segment(0.0, 10.0, 1.0, 1.0) }], transitions: vec![], overlays: vec![] };
+        let edit = Edit { segments: vec![Segment { reverse: true, fade_in: 0.5, fade_out: 1.0, ..segment(0.0, 10.0, 1.0, 1.0) }], transitions: vec![], overlays: vec![], ..Default::default() };
         let inputs = vec![Input { has_audio: true }];
         let (graph, audio) = render_script(&edit, &inputs, &frame, "source");
         assert!(audio);
         assert!(graph.contains("atrim=start=0:end=10,asetpts=PTS-STARTPTS,areverse,afade=t=in:st=0:d=0.5,afade=t=out:st=9:d=1"), "{graph}");
-        let edit = Edit { segments: vec![frozen], transitions: vec![], overlays: vec![] };
+        let edit = Edit { segments: vec![frozen], transitions: vec![], overlays: vec![], ..Default::default() };
         let (graph, _) = render_script(&edit, &inputs, &frame, "source");
         assert!(graph.contains("anullsrc=r=48000:cl=stereo,atrim=duration=3"), "a held frame is silent: {graph}");
 
@@ -3759,7 +3862,7 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
     fn wave_three_transitions_overlays_loops_loudness_and_shadows() {
         // Every overlapping transition is an xfade of its own kind and overlaps like a dissolve.
         let edit = Edit { segments: vec![segment(0.0, 5.0, 1.0, 1.0), segment(5.0, 10.0, 1.0, 1.0)],
-            transitions: vec![joint(0, TransitionKind::WipeLeft, 1.0)], overlays: vec![] };
+            transitions: vec![joint(0, TransitionKind::WipeLeft, 1.0)], overlays: vec![], ..Default::default() };
         let (graph, _) = render_script(&edit, &[Input { has_audio: true }], &frame(), "source");
         assert!(graph.contains("xfade=transition=wipeleft:duration=1:offset=4"), "{graph}");
         assert!((output_seconds(&edit.segments, &edit.transitions) - 9.0).abs() < 1e-9);
@@ -3842,7 +3945,7 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
             "fade=t=out:st=4:d=2:alpha=1".into(), "scale=w='trunc((320+320*clip((t-2)/4,0,1))/2)*2':h=-2:eval=frame".into()]);
         assert_eq!(overlay_place(&moving, 1280, 720, 4.0), ("'128+512*clip((t-2)/4,0,1)'".into(), "'72+0*clip((t-2)/4,0,1)'".into(), true));
         assert!(overlay_look(&moving, 1280, 720).starts_with("scale=640:-2"), "drawn at its largest, then scaled");
-        let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0)], transitions: vec![], overlays: vec![moving.clone()] };
+        let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0)], transitions: vec![], overlays: vec![moving.clone()], ..Default::default() };
         let (graph, _) = render_script(&edit, &[Input { has_audio: true }, Input { has_audio: false }], &frame(), "source");
         assert!(graph.contains("overlay=x='128+512*clip((t-2)/4,0,1)':y='72+0*clip((t-2)/4,0,1)':eval=frame:enable='between(t,2,6)'"), "{graph}");
         let mut request = request(vec![segment(0.0, 10.0, 1.0, 1.0)]);
@@ -3851,5 +3954,39 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         assert!(validate(&request, &[10.0, STILL_SECONDS]).is_err());
         request.overlays = vec![Overlay { to: Some(Placement { x: 0.5, y: 2.0, w: 0.5 }), ..base }];
         assert!(validate(&request, &[10.0, STILL_SECONDS]).is_err());
+    }
+    #[test]
+    fn ellipse_overlays_cut_round_with_a_ring_frame() {
+        assert_eq!(yuv("#FFFFFF"), (235, 128, 128));
+        assert_eq!(yuv("#000000"), (16, 128, 128));
+        let round = Overlay { media: 1, end: 4.0, w: 0.25, shape: Some("ellipse".into()), ..Default::default() };
+        assert_eq!(overlay_look(&round, 1280, 720),
+            "scale=320:-2,format=yuva420p,setsar=1,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='alpha(X,Y)*lte(hypot((X-W/2+0.5)/(W/2),(Y-H/2+0.5)/(H/2)),1)'");
+        let framed = Overlay { border: 10.0, border_color: Some("#FFFFFF".into()), ..round.clone() };
+        let look = overlay_look(&framed, 1280, 720);
+        assert!(look.contains("lum='if(lte(hypot((X-W/2+0.5)/(W/2-7*W/320),(Y-H/2+0.5)/(H/2-7*W/320)),1),lum(X,Y),235)'"), "{look}");
+        let mut request = request(vec![segment(0.0, 10.0, 1.0, 1.0)]);
+        request.media = vec!["b.png".into()];
+        request.overlays = vec![Overlay { shape: Some("star".into()), ..round }];
+        assert!(validate(&request, &[10.0, STILL_SECONDS]).is_err());
+    }
+
+    #[test]
+    fn segments_take_a_lut_file_once_validated() {
+        let frame = frame();
+        let graded = Segment { lut: Some(0), ..segment(0.0, 10.0, 1.0, 1.0) };
+        assert!(!graded.is_plain());
+        let luts = vec![r"D:\LUT\it's [teal].cube".to_owned()];
+        assert_eq!(segment_video(&graded, "FIT", &frame, &luts),
+            vec!["trim=start=0:end=10".to_owned(), "setpts=PTS-STARTPTS".into(), r"lut3d=file=D\\:/LUT/it\\\'s \[teal\].cube".into(), "FIT".into()]);
+        let mut request = request(vec![graded]);
+        assert!(validate(&request, &[10.0]).is_err(), "points at no file");
+        request.luts = vec!["relative.cube".into()];
+        assert!(validate(&request, &[10.0]).is_err(), "only absolute .cube paths");
+        request.luts = vec![if cfg!(windows) { r"D:\LUT\teal.cube".into() } else { "/luts/teal.CUBE".into() }];
+        assert_eq!(validate(&request, &[10.0]).map(|edit| edit.luts.len()), Ok(1));
+        request.luts = vec![if cfg!(windows) { r"D:\LUT\teal.png".into() } else { "/luts/teal.png".into() }];
+        assert!(validate(&request, &[10.0]).is_err());
+        assert!(lut_file("/no/such/file.cube").is_err());
     }
 }
