@@ -243,6 +243,8 @@ export function resolveTarget<T extends { kind: string; job?: unknown; seed?: un
 export function modeOffered(mode: string, kind: string, reviewable: boolean): boolean {
   if (mode === "template") return kind === "product";
   if (mode === "subs") return kind === "job" && reviewable;
+  // Tạo thêm: đóng gói, Shorts and đổi khung work from a dubbing job's outputs.
+  if (mode === "more") return kind === "job";
   return true;
 }
 

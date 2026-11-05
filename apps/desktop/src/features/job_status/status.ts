@@ -117,7 +117,7 @@ const FAILURE_HINTS: Array<[RegExp, string]> = [
   [/^LANGUAGE_UNSUPPORTED(?![A-Z_])/, "Ngôn ngữ của video chưa được hỗ trợ (hiện hỗ trợ tiếng Trung và tiếng Anh)."],
   [/^EDITABLE_STORAGE_INSUFFICIENT(?![A-Z_])/, "Ổ đĩa không đủ dung lượng trống. Hãy giải phóng dung lượng rồi xử lý lại."],
   [/^QC_DURATION_SHORT(?![A-Z_])/, "Video xuất ra ngắn hơn bản gốc; có thể file gốc bị lỗi. Hãy thử xử lý lại."],
-  [/^TRANSLATION_OVERRIDES_INVALID(?![A-Z_])/, "Bản sửa dịch không hợp lệ. Hãy mở “Xem & sửa bản dịch” và lưu lại."],
+  [/^TRANSLATION_OVERRIDES_INVALID(?![A-Z_])/, "Bản sửa dịch không hợp lệ. Hãy mở Chỉnh sửa › Phụ đề › Bảng bản dịch đầy đủ và lưu lại."],
   [/^AUDIO_DISK_REQUIRED(?![A-Z_])/, "Ổ đĩa không đủ dung lượng trống. Hãy giải phóng dung lượng rồi xử lý lại."],
   [/^(MODEL_DOWNLOAD_FAILED|MODEL_SIZE_INVALID|MODEL_HASH_MISMATCH)(?![A-Z_])/, "Không tải được model cần thiết. Hãy kiểm tra kết nối mạng rồi xử lý lại."],
   // Jobs started before 1.1.11 used folder names too long for Windows.

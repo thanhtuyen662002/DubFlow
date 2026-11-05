@@ -463,6 +463,9 @@ assert.equal(modeOffered("template", "product", false), true);
 assert.equal(modeOffered("subs", "job", true), true);
 assert.equal(modeOffered("subs", "job", false), false);
 assert.equal(modeOffered("subs", "docu", true), false);
+// Issue #514: Tạo thêm (đóng gói, Shorts, đổi khung) for dubbing jobs only.
+assert.equal(modeOffered("more", "job", false), true);
+for (const kind of ["docu", "product", "compilation", "file"]) assert.equal(modeOffered("more", kind, true), false, `${kind}: no more`);
 // Issue #510: Che for every video.
 for (const kind of ["job", "docu", "product", "compilation", "file"]) assert.equal(modeOffered("cover", kind, false), true, `${kind}: cover`);
 console.log("edit target tests passed");

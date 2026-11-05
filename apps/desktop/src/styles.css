@@ -299,6 +299,12 @@ button.job.selected { background: var(--select); }
 .result-actions .btn { flex: 1 1 auto; height: 32px; padding: 0 12px; }
 .result-warning { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); font-size: 13px; line-height: 1.5; }
 .review-btn { margin-top: 8px; }
+.result-edit { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.result-edit .review-btn { margin-top: 0; }
+.edit-more[hidden] { display: none; }
+.edit-more { display: flex; flex-direction: column; gap: 10px; }
+.edit-more .more-list { margin: 0 -8px; }
+.subs-full-review { width: 100%; margin-bottom: 8px; justify-content: center; }
 .link-card { padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
 .link-card h3 { color: var(--text); font-size: 14px; font-weight: 600; }
 .source-info { padding-top: 12px; border-top: 1px solid var(--line); }
