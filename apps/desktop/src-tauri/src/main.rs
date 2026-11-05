@@ -11,6 +11,7 @@ mod docu;
 mod edit;
 mod package;
 mod shorts;
+mod single_instance;
 mod reframe;
 mod product;
 mod sfx;
@@ -452,7 +453,9 @@ fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
     if !updater::is_update_setup(&root, &setup) {
         return Err(fail("Tệp cài đặt cập nhật không hợp lệ"));
     }
-    Command::new(&setup).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+    // The setup starts the new version once done; it waits for this one to quit.
+    Command::new(&setup).env(single_instance::RELAUNCH_AFTER, std::process::id().to_string())
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
         .map_err(|error| fail(format!("Không chạy được bộ cài: {error}")))?;
     app.exit(0);
     Ok(())
@@ -493,6 +496,8 @@ fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
     }
     let mut command = Command::new(std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into()));
     command.args(["/d", "/c"]).arg(&launcher).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // The new host waits for this one to quit instead of handing over to it.
+    command.env(single_instance::RELAUNCH_AFTER, std::process::id().to_string());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command.spawn().map_err(|error| fail(format!("Không khởi động lại được: {error}")))?;
@@ -1243,14 +1248,18 @@ struct FetchStarted {
 }
 
 #[tauri::command]
-async fn fetch_url(app: tauri::AppHandle, url: String, title: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
+async fn fetch_url(app: tauri::AppHandle, url: String, mut title: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
     let mut url = url.trim().to_owned();
     // Douyin refuses the link service's own requests, so a Douyin video's
     // details are read through douyin.com in DubFlow's browser first. Any
     // failure here leaves the link to the service's own attempt.
     if source::provider_for(&url) == Ok("douyin") {
-        if let Ok(page) = read_douyin_video(&app, &url).await {
+        if let Ok((page, desc)) = read_douyin_video(&app, &url).await {
             url = page;
+            // A pasted link has no title of its own; the video's caption is.
+            if title.as_deref().is_none_or(|title| title.trim().is_empty()) {
+                title = desc;
+            }
         }
     }
     let root = version_root()?;
@@ -2052,8 +2061,9 @@ async fn page_value(webview: &tauri::Webview, script: &str) -> Option<String> {
 
 /// Open a Douyin link (a video page or a short link) in a hidden window,
 /// ask douyin.com for the video's details the way its own page does, and
-/// leave them for the link service. Returns the video page's address.
-async fn read_douyin_video(app: &tauri::AppHandle, url: &str) -> Result<String, String> {
+/// leave them for the link service. Returns the video page's address and
+/// its caption, when it has one.
+async fn read_douyin_video(app: &tauri::AppHandle, url: &str) -> Result<(String, Option<String>), String> {
     use tauri::Manager;
     let _one_at_a_time = douyin_video_lock().lock().await;
     if let Some(stale) = app.get_webview_window(DOUYIN_VIDEO) {
@@ -2084,7 +2094,8 @@ async fn read_douyin_video(app: &tauri::AppHandle, url: &str) -> Result<String, 
     let partial = folder.join(format!("douyin-{id}.json.part"));
     fs::write(&partial, detail.to_string()).and_then(|_| fs::rename(&partial, &path))
         .map_err(|error| fail(format!("Không lưu được thông tin video Douyin: {error}")))?;
-    Ok(format!("https://www.douyin.com/video/{id}"))
+    let desc = detail["desc"].as_str().map(str::trim).filter(|desc| !desc.is_empty()).map(str::to_owned);
+    Ok((format!("https://www.douyin.com/video/{id}"), desc))
 }
 
 async fn douyin_video_detail(webview: &tauri::Webview) -> Result<(String, Value), String> {
@@ -2149,6 +2160,9 @@ async fn douyin_logout(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn main() {
+    if !single_instance::claim() {
+        return;
+    }
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
     let sources = std::sync::Arc::new(source::Sources::default());

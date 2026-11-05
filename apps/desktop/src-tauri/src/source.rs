@@ -429,10 +429,15 @@ impl Sources {
             }
             "source_items" => {
                 let identity = event["items"][0]["identity_key"].as_str().map(str::to_owned);
+                let found = clean_title(event["items"][0]["title"].as_str().map(str::to_owned));
                 let mut started = false;
                 self.update(scan, |s| if s.state == "preparing" {
                     s.state = "downloading".into();
                     s.detail = None;
+                    // A pasted link learns its title from the service.
+                    if s.title.is_none() {
+                        s.title = found.clone();
+                    }
                     started = true;
                 });
                 if let (Some(identity), true) = (identity, started) {
@@ -943,6 +948,23 @@ mod tests {
         *sources.cancelling.lock().unwrap() = Some("running".into());
         sources.on_event(&json!({"event":"source_error", "code":"SOURCE_REQUEST_REJECTED"}));
         assert_eq!(sources.status("third").unwrap().state, "preparing");
+    }
+
+    #[test]
+    fn a_pasted_link_takes_the_title_the_service_found() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "pasted", "preparing");
+        queued(&sources, "named", "preparing");
+        sources.update("named", |s| s.title = Some("Tên từ Khám phá".into()));
+        for scan in ["pasted", "named"] {
+            sources.on_event(&json!({"event":"source_items", "scan_id":scan, "items":[{"identity_key":"bilibili:x", "title":"  【4K】Video hay  "}]}));
+        }
+        assert_eq!(sources.status("pasted").unwrap().title.as_deref(), Some("【4K】Video hay"));
+        assert_eq!(sources.status("named").unwrap().title.as_deref(), Some("Tên từ Khám phá"), "a known title is kept");
+        queued(&sources, "untitled", "preparing");
+        sources.on_event(&json!({"event":"source_items", "scan_id":"untitled", "items":[{"identity_key":"bilibili:y", "title":null}]}));
+        let status = sources.status("untitled").unwrap();
+        assert_eq!((status.state.as_str(), status.title), ("downloading", None));
     }
 
     #[test]
