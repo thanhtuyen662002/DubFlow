@@ -768,11 +768,13 @@ pub fn link_output_dir(url: &str, title: Option<&str>, scan: &str) -> Result<Pat
 
 /// A Douyin caption worth using as a link's title: not empty, not just the
 /// video's id and not a web address (any letter case).
+/// It is cleaned the way every link title is (`clean_title`) before the
+/// checks, so what is checked is what is shown.
 pub fn douyin_caption(desc: &str, id: &str) -> Option<String> {
-    let caption = desc.trim();
+    let caption = clean_title(Some(desc.to_owned()))?;
     let lower = caption.to_ascii_lowercase();
-    let placeholder = caption.is_empty() || caption == id || lower.starts_with("http://") || lower.starts_with("https://");
-    (!placeholder).then(|| caption.to_owned())
+    let placeholder = caption == id || lower.starts_with("http://") || lower.starts_with("https://");
+    (!placeholder).then_some(caption)
 }
 
 /// The results folder of a link that only learned its title while it
@@ -1132,7 +1134,7 @@ mod tests {
     fn a_douyin_caption_is_a_title_only_when_it_says_something() {
         let id = "7699053575086918966";
         assert_eq!(douyin_caption("  2026年火爆全网的短剧，剧情惊艳口碑炸裂，你还没看？ ", id).as_deref(), Some("2026年火爆全网的短剧，剧情惊艳口碑炸裂，你还没看？"));
-        for placeholder in ["", "   \n", id, " 7699053575086918966 ", "HTTPS://example.test/video", "Http://x.test", "https://www.douyin.com/video/1"] {
+        for placeholder in ["", "   \n", id, " 7699053575086918966 ", "7699\u{0}053575086918966", "HTTPS://example.test/video", "h\u{0}TtPs://example.test/video", "Http://x.test", "https://www.douyin.com/video/1"] {
             assert_eq!(douyin_caption(placeholder, id), None, "{placeholder:?}");
         }
         assert!(douyin_caption("Https là gì #giaitri", id).is_some(), "an ordinary caption that mentions https stays");
