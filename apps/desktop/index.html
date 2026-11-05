@@ -710,9 +710,27 @@
                   </label>
                   <div class="edit-actions">
                     <button id="edit-split" class="btn" type="button" aria-keyshortcuts="S">Tách tại đầu phát<kbd>S</kbd></button>
+                    <button id="edit-duplicate" class="btn" type="button" aria-keyshortcuts="Control+D" title="Thêm một bản sao ngay sau đoạn này">Nhân bản<kbd>Ctrl D</kbd></button>
                     <button id="edit-delete" class="btn danger" type="button" aria-keyshortcuts="Delete"><span id="edit-delete-label">Xóa đoạn</span><kbd>Delete</kbd></button>
                   </div>
+                  <p class="edit-note">Kéo đoạn trên dòng thời gian để đổi thứ tự. Chuột phải để sao chép, dán, nhân bản.</p>
                 </div>
+                <section id="edit-range" class="edit-range" aria-labelledby="edit-range-title" hidden>
+                  <h3 id="edit-range-title" class="edit-segment-title">Khoảng chọn</h3>
+                  <p id="edit-range-text" class="edit-length"></p>
+                  <div class="edit-actions">
+                    <button id="range-remove" class="btn danger" type="button" title="Xóa phần giữa điểm vào và điểm ra, phần sau tự dồn lên">Cắt bỏ khoảng</button>
+                    <button id="range-keep" class="btn" type="button" title="Chỉ giữ phần giữa điểm vào và điểm ra">Chỉ giữ khoảng</button>
+                    <button id="range-clear" class="btn ghost" type="button" title="Bỏ điểm vào và điểm ra (Esc)">Bỏ chọn</button>
+                  </div>
+                </section>
+                <section id="edit-markers" class="edit-markers" aria-labelledby="edit-markers-title" hidden>
+                  <div class="edit-markers-head">
+                    <h3 id="edit-markers-title" class="edit-segment-title">Đánh dấu</h3>
+                    <button id="markers-add" class="btn ghost small" type="button" aria-keyshortcuts="M">+ Tại đầu phát<kbd>M</kbd></button>
+                  </div>
+                  <ul id="markers-list" class="markers-list"></ul>
+                </section>
                 <section id="edit-ov-controls" class="edit-ov-controls" aria-labelledby="ov-title" hidden>
                   <h3 id="ov-title" class="edit-segment-title">Video chồng</h3>
                   <div class="edit-field">
@@ -1162,6 +1180,25 @@
                 <p id="edit-select-hint" class="edit-note" hidden>Chọn một đoạn chèn hoặc video chồng trên dòng thời gian để chỉnh.</p>
                 <p id="edit-hint" class="edit-hint" role="status"></p>
                 <div id="edit-cut-notes" class="edit-cut-notes">
+                  <details class="edit-keys">
+                    <summary>Phím tắt</summary>
+                    <dl>
+                      <dt><kbd>Space</kbd> <kbd>K</kbd></dt><dd>Phát / dừng</dd>
+                      <dt><kbd>J</kbd> <kbd>L</kbd></dt><dd>Lùi 1 giây / phát, bấm L lần nữa để phát nhanh 2×</dd>
+                      <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Lùi / tới 1 giây (Shift: 5 giây)</dd>
+                      <dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Lùi / tới một khung hình</dd>
+                      <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Về mối nối hoặc dấu trước / sau</dd>
+                      <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>Về đầu / cuối video</dd>
+                      <dt><kbd>S</kbd> <kbd>Ctrl B</kbd></dt><dd>Tách tại đầu phát</dd>
+                      <dt><kbd>I</kbd> <kbd>O</kbd></dt><dd>Đặt điểm vào / điểm ra</dd>
+                      <dt><kbd>M</kbd></dt><dd>Thêm dấu tại đầu phát</dd>
+                      <dt><kbd>Ctrl C</kbd> <kbd>Ctrl X</kbd> <kbd>Ctrl V</kbd></dt><dd>Sao chép / cắt / dán đoạn tại đầu phát</dd>
+                      <dt><kbd>Ctrl D</kbd></dt><dd>Nhân bản đoạn</dd>
+                      <dt><kbd>Delete</kbd></dt><dd>Xóa đoạn đang chọn</dd>
+                      <dt><kbd>Ctrl Z</kbd> <kbd>Ctrl Y</kbd></dt><dd>Hoàn tác / làm lại</dd>
+                      <dt><kbd>Alt</kbd> khi kéo</dt><dd>Tạm tắt hút mép</dd>
+                    </dl>
+                  </details>
                   <p class="edit-note">Phụ đề trong đoạn bị xóa cũng bị bỏ theo, các đoạn sau tự dồn lên. Bắt đầu và kết thúc tính theo video của đoạn.</p>
                   <p class="edit-note">Thay đổi hiện ngay trên khung video và được tự lưu nháp. Bấm Xuất video để ra file mới, video gốc vẫn giữ nguyên.</p>
                 </div>
@@ -1184,6 +1221,12 @@
                   <button id="tl-delete" class="tl-tool" type="button" title="Xóa đoạn đang chọn (Delete)">
                     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 7h14M10 11v6M14 11v6M7 7l1 13h8l1-13M9 7V4h6v3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>Xóa</span>
                   </button>
+                  <button id="tl-marker" class="tl-tool" type="button" title="Thêm dấu tại đầu phát (M)">
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 21V4h10l-2 4 2 4H7" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>Dấu</span>
+                  </button>
+                  <button id="tl-snap" class="tl-tool toggle" type="button" aria-pressed="true" title="Hút mép: khi kéo, mép đoạn và đầu phát bám vào mối nối, dấu và đầu phát (giữ Alt để tạm tắt)">
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 4v8a6 6 0 0 0 12 0V4M6 8h4M14 8h4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>Hút mép</span>
+                  </button>
                   <label class="tl-zoom" title="Thu phóng dòng thời gian">
                     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM16 16l4 4M8 11h6M11 8v6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
                     <input id="tl-zoom" type="range" min="0" max="100" value="0" aria-label="Thu phóng dòng thời gian" />
@@ -1197,6 +1240,10 @@
                   <div id="tl-track" class="tl-track" aria-label="Các đoạn video"></div>
                   <div id="tl-text" class="tl-txtrack" aria-label="Chữ trên video" hidden></div>
                   <div id="tl-audio" class="tl-autrack" aria-label="Âm thanh thêm" hidden></div>
+                  <div id="tl-range" class="tl-range" aria-hidden="true" hidden></div>
+                  <div id="tl-markers" class="tl-markers"></div>
+                  <div id="tl-snapline" class="tl-snapline" aria-hidden="true" hidden></div>
+                  <div id="tl-drop" class="tl-dropline" aria-hidden="true" hidden></div>
                   <div id="tl-playhead" class="tl-playhead" aria-hidden="true"><span></span></div>
                 </div>
               </div>
@@ -1556,6 +1603,15 @@
       </div>
     </div>
     <div id="drag-overlay" class="drag-overlay" hidden><div id="drag-overlay-text">Thả để thêm video</div></div>
+    <div id="tl-menu" class="tl-menu" role="menu" aria-label="Thao tác đoạn" hidden>
+      <button type="button" role="menuitem" data-action="copy">Sao chép<kbd>Ctrl C</kbd></button>
+      <button type="button" role="menuitem" data-action="cut">Cắt<kbd>Ctrl X</kbd></button>
+      <button type="button" role="menuitem" data-action="paste">Dán tại đầu phát<kbd>Ctrl V</kbd></button>
+      <button type="button" role="menuitem" data-action="duplicate">Nhân bản<kbd>Ctrl D</kbd></button>
+      <button type="button" role="menuitem" data-action="split">Tách tại đầu phát<kbd>S</kbd></button>
+      <hr />
+      <button type="button" role="menuitem" data-action="delete" class="danger">Xóa đoạn<kbd>Delete</kbd></button>
+    </div>
     <div id="tl-transition" class="tl-pop" role="dialog" aria-labelledby="tl-pop-title" hidden>
       <div class="tl-pop-head"><strong id="tl-pop-title">Chuyển cảnh</strong><span id="tl-pop-where" class="tl-pop-where"></span></div>
       <div id="tl-pop-types" class="seg tl-pop-types" role="radiogroup" aria-label="Kiểu chuyển cảnh">

@@ -1572,3 +1572,52 @@ button.job.selected { background: var(--select); }
 #docu-project-info { grid-template-columns: max-content minmax(0, 1fr); }
 #docu-project-info dd { display: grid; gap: 4px; }
 #docu-project-info select { width: 100%; height: 30px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; }
+
+/* Chỉnh sửa: timeline tools (waveform, markers, I–O range, snapping, reorder, segment menu) */
+.tl-wave { position: absolute; left: 0; bottom: 0; height: 18px; pointer-events: none; background: linear-gradient(to top, oklch(0 0 0 / .55), oklch(0 0 0 / 0)); }
+.tl-wave[hidden] { display: none; }
+.tl-markers { position: absolute; z-index: 4; top: 0; left: 0; right: 0; height: 22px; pointer-events: none; }
+.tl-marker { position: absolute; top: 2px; display: flex; align-items: center; height: 16px; margin-left: -1px; padding-left: 9px; pointer-events: auto; cursor: grab; }
+.tl-marker::before { content: ""; position: absolute; top: 0; left: 0; width: 8px; height: 12px; background: var(--warn); clip-path: polygon(0 0, 100% 0, 100% 70%, 50% 100%, 0 70%); }
+.tl-marker:hover::before { background: oklch(0.92 0.13 85); }
+.tl-marker-name { max-width: 120px; overflow: hidden; padding: 0 5px; border-radius: 3px; background: oklch(0.27 0.04 85 / .92); color: var(--warn); font-size: 11px; font-weight: 600; line-height: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.tl-range { position: absolute; z-index: 1; top: 0; bottom: 0; border-inline: 2px solid var(--ok); background: oklch(0.80 0.14 152 / .10); pointer-events: none; }
+.tl-range[hidden] { display: none; }
+.tl-range.open-start { border-left-style: dashed; }
+.tl-range.open-end { border-right-style: dashed; }
+.tl-snapline, .tl-dropline { position: absolute; z-index: 4; top: 0; bottom: 0; left: 0; width: 0; border-left: 1px dashed var(--warn); pointer-events: none; }
+.tl-dropline { width: 3px; margin-left: -1px; border: 0; border-radius: 2px; background: var(--accent); box-shadow: 0 0 0 1px oklch(0 0 0 / .5); }
+.tl-snapline[hidden], .tl-dropline[hidden] { display: none; }
+.tl-content.reordering .tl-seg { cursor: grabbing; }
+.tl-content.reordering .tl-seg.selected { z-index: 3; opacity: .85; box-shadow: 0 8px 24px oklch(0 0 0 / .5); transition: none; }
+.tl-content.reordering .tl-joint { visibility: hidden; }
+.tl-tool.toggle[aria-pressed="true"] { background: var(--select); color: var(--accent-text); }
+.tl-menu { position: fixed; z-index: 20; display: flex; flex-direction: column; min-width: 220px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-pop); }
+.tl-menu[hidden] { display: none; }
+.tl-menu button { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 30px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
+.tl-menu button:hover:not(:disabled), .tl-menu button:focus-visible { background: var(--hover); outline: none; }
+.tl-menu button:disabled { color: var(--text-3); opacity: .55; cursor: default; }
+.tl-menu button.danger { color: var(--err); }
+.tl-menu kbd { color: var(--text-3); font: 600 11px/1 inherit; }
+.tl-menu hr { margin: 4px 2px; border: 0; border-top: 1px solid var(--line); }
+.edit-range, .edit-markers { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.edit-range[hidden], .edit-markers[hidden] { display: none; }
+.edit-range .edit-length { margin-top: -4px; }
+.edit-markers-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.btn.small { height: 28px; padding: 0 8px; font-size: 12.5px; }
+.btn.small kbd { margin-left: 6px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--text-3); font: 600 10.5px/16px inherit; }
+.markers-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.markers-empty { color: var(--text-3); font-size: 12.5px; line-height: 1.45; }
+.marker-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; }
+.marker-time { min-width: 62px; height: 28px; padding: 0 6px; border: 0; border-radius: 5px; background: oklch(0.27 0.04 85 / .7); color: var(--warn); font: 600 12px/1 inherit; font-variant-numeric: tabular-nums; cursor: pointer; }
+.marker-time:hover { background: oklch(0.32 0.06 85); }
+.marker-row input { min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--canvas); color: var(--text); font-size: 12.5px; }
+.marker-row input:focus { border-color: var(--accent); outline: none; }
+.marker-remove { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-3); font-size: 16px; line-height: 1; cursor: pointer; }
+.marker-remove:hover { background: var(--err-bg); color: var(--err); }
+.edit-keys { color: var(--text-3); font-size: 12.5px; }
+.edit-keys summary { color: var(--text-2); cursor: pointer; }
+.edit-keys dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; margin: 8px 0 4px; }
+.edit-keys dt { white-space: nowrap; }
+.edit-keys dd { margin: 0; line-height: 1.4; }
+.edit-keys kbd { display: inline-block; min-width: 18px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--text-2); font: 600 11px/18px inherit; text-align: center; }

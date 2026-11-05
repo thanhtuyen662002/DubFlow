@@ -271,6 +271,24 @@ const editExports = new Map<string, PreviewExport[]>([[PREVIEW_EDIT_LIBRARY[1].o
 }]]]);
 
 /** Facts of a local video for "Chèn": portrait clips and a silent one, so every case can be designed. */
+/** A speech-like waveform: phrases of varying loudness with short pauses, 50 levels a second for 15 minutes. */
+function previewPeaks(path: string): ArrayBuffer {
+  let seed = 7;
+  for (const char of path) seed = (seed * 31 + char.charCodeAt(0)) >>> 0;
+  const random = (): number => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const levels = new Uint8Array(50 * 900);
+  let phrase = 0, loud = 0;
+  for (let index = 0; index < levels.length; index++) {
+    if (phrase <= 0) {
+      phrase = 20 + Math.floor(random() * 120);
+      loud = random() < 0.18 ? 0 : 140 + random() * 100;
+    }
+    phrase -= 1;
+    levels[index] = loud ? Math.max(0, Math.min(255, loud - random() * 70)) : random() * 30;
+  }
+  return levels.buffer;
+}
+
 function previewMediaInfo(path: string) {
   const name = path.split(/[\\/]/).pop() ?? path;
   let hash = 0;
@@ -482,6 +500,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     }
     case "edit_status": return previewEditStatus(String(args.outputPath)) as T;
     case "edit_media_info": return previewMediaInfo(String(args.path)) as T;
+    case "edit_audio_peaks": return previewPeaks(String(args.path)) as T;
     case "edit_cancel": {
       const run = editRuns.get(String(args.outputPath));
       if (run && Date.now() - run.started < EDIT_EXPORT_MS) run.cancelled = true;

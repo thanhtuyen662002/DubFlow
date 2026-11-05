@@ -1729,6 +1729,88 @@ fn check_project(project: &Value) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Waveform buckets per second of `edit_audio_peaks`.
+pub const PEAKS_PER_SECOND: u32 = 50;
+/// The waveform is drawn from this sample rate (mono).
+const PEAK_RATE: u32 = 8000;
+/// Waveforms longer than this are cut (about 3 hours).
+const MAX_PEAKS: usize = 540_000;
+
+/// Loudness of each bucket of 16-bit mono samples: its peak on a -48..0 dBFS
+/// scale as 0–255, so speech and quiet parts both show.
+pub fn bucket_level(peak: i32) -> u8 {
+    if peak <= 0 {
+        return 0;
+    }
+    let db = 20.0 * (f64::from(peak) / 32768.0).log10();
+    (((db + 48.0) / 48.0).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Bucket levels of raw s16le mono `pcm` at `per_bucket` samples a bucket;
+/// `carry` holds the running peak and sample count across calls.
+pub fn push_peaks(pcm: &[u8], per_bucket: usize, carry: &mut (i32, usize), out: &mut Vec<u8>) {
+    for pair in pcm.chunks_exact(2) {
+        let sample = i32::from(i16::from_le_bytes([pair[0], pair[1]])).abs();
+        carry.0 = carry.0.max(sample);
+        carry.1 += 1;
+        if carry.1 == per_bucket {
+            if out.len() < MAX_PEAKS {
+                out.push(bucket_level(carry.0));
+            }
+            *carry = (0, 0);
+        }
+    }
+}
+
+/// The waveform of a video's sound for the timeline: one byte per 1/50 s
+/// (see `bucket_level`), empty when it has no sound.
+#[tauri::command]
+pub async fn edit_audio_peaks(path: String) -> Result<tauri::ipc::Response, String> {
+    let file = crate::playable_media(&path)?;
+    let ffmpeg = media_tool("ffmpeg.exe")?;
+    let peaks = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        use std::io::Read;
+        let mut command = Command::new(ffmpeg);
+        command.args(["-nostdin", "-v", "error", "-i"]).arg(&file)
+            .args(["-vn", "-ac", "1", "-ar", &PEAK_RATE.to_string(), "-f", "s16le", "-acodec", "pcm_s16le", "pipe:1"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let mut child = command.spawn().map_err(|error| fail(format!("Không chạy được FFmpeg: {error}")))?;
+        let mut stdout = child.stdout.take().ok_or_else(|| fail("Không đọc được âm thanh"))?;
+        let per_bucket = (PEAK_RATE / PEAKS_PER_SECOND) as usize;
+        let mut carry = (0, 0);
+        let mut out = Vec::new();
+        let mut buffer = vec![0u8; 64 * 1024];
+        let mut odd: Option<u8> = None;
+        loop {
+            let read = stdout.read(&mut buffer).map_err(|_| fail("Không đọc được âm thanh"))?;
+            if read == 0 {
+                break;
+            }
+            let mut chunk = Vec::with_capacity(read + 1);
+            if let Some(byte) = odd.take() {
+                chunk.push(byte);
+            }
+            chunk.extend_from_slice(&buffer[..read]);
+            if chunk.len() % 2 == 1 {
+                odd = chunk.pop();
+            }
+            push_peaks(&chunk, per_bucket, &mut carry, &mut out);
+            if out.len() >= MAX_PEAKS {
+                let _ = child.kill();
+                break;
+            }
+        }
+        let _ = child.wait();
+        if carry.1 > 0 && out.len() < MAX_PEAKS {
+            out.push(bucket_level(carry.0));
+        }
+        Ok(out)
+    }).await.map_err(|error| fail(error.to_string()))??;
+    Ok(tauri::ipc::Response::new(peaks))
+}
+
 /// Sizes of the queue's finished videos for the Chỉnh sửa cards (0 when a file is gone).
 #[tauri::command]
 pub fn edit_file_sizes(paths: Vec<String>) -> Vec<u64> {
@@ -3016,5 +3098,21 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
         let request: ExportRequest = serde_json::from_value(json!({"outputPath": "x", "kind": "file", "segments": [], "quality": "source", "folder": "x",
             "fileName": "a", "cues": [], "texts": [serde_json::to_value(&ok).unwrap()]})).unwrap();
         assert_eq!(request.texts, vec![ok]);
+    }
+
+    #[test]
+    fn waveform_levels_use_a_decibel_scale() {
+        assert_eq!(bucket_level(0), 0);
+        assert_eq!(bucket_level(32767), 255);
+        // -24 dBFS is half way up.
+        let half = bucket_level((32768.0 * 10f64.powf(-24.0 / 20.0)) as i32);
+        assert!((126..=129).contains(&half), "{half}");
+        assert_eq!(bucket_level(10), 0, "below -48 dBFS is silence");
+        let mut out = Vec::new();
+        let mut carry = (0, 0);
+        let samples: Vec<u8> = [100i16, -32767, 5, 7, 0].iter().flat_map(|value| value.to_le_bytes()).collect();
+        push_peaks(&samples, 2, &mut carry, &mut out);
+        assert_eq!(out, vec![bucket_level(32767), bucket_level(7)]);
+        assert_eq!(carry, (0, 1));
     }
 }

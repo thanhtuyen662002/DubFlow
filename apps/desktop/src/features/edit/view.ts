@@ -18,6 +18,8 @@ import {
   overlayPreset, overlayPresetOf, parseClock, parseProject, RECENT_LIMIT, remapCues, remove, removeOverlay, resizeOverlay,
   samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput, openingTime, resolveTarget, modeOffered,
   SPEED_PRESETS, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
+  addMarker, copySegment, duplicateSegment, keepRange, moveSegment, nearbyPoint, pasteSegment, removeMarker, removeRange, segmentLength,
+  setMarker, snapPoints, snapTime, MAX_MARKERS, type SegmentClip,
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
 import { mountSubtitles } from "./subtitles_view.ts";
@@ -138,6 +140,11 @@ type Session = {
   recent: Media[];
   /** Che drawn here and applied at export (Issue #510): every video that is not a re-runnable dubbing job. */
   plainCover: boolean;
+  /** Điểm vào / điểm ra (I, O) in output seconds. */
+  markIn: number | null;
+  markOut: number | null;
+  /** J/K/L: the playback rate on top of each segment's speed. */
+  shuttle: number;
 };
 
 type Mode = "template" | "cut" | "insert" | "subs" | "cover" | "audio" | "text" | "more";
@@ -151,6 +158,12 @@ const TIMELINE_PX = 170;
 const SHORT_TIMELINE_PX = 140;
 /** A timeline drop this close to a segment edge goes on the edge, not a sliver away. */
 const DROP_SNAP_PX = 12;
+/** Moving edges and the playhead snap to points this close. */
+const SNAP_PX = 8;
+/** A segment drag starts after this many pixels (less is a click). */
+const DRAG_PX = 5;
+/** Waveform strip height in a segment block. */
+const WAVE_PX = 18;
 const THUMB_WIDTH = 76;
 const THUMB_PX = 192;
 const POSTER_PX = 160;
@@ -201,6 +214,9 @@ function seconds(value: number): string {
 
 const clamp = (value: number, low: number, high: number): number => Math.min(high, Math.max(low, value));
 
+/** "Sao chép" keeps a segment across videos while the app runs. */
+let clipboard: SegmentClip | null = null;
+
 export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const { video } = host;
   const screen = $("#queue-content");
@@ -243,6 +259,18 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const pop = $("#tl-transition");
   const popTypes = [...document.querySelectorAll<HTMLButtonElement>("#tl-pop-types [data-type]")];
   const popDuration = $<HTMLInputElement>("#tl-pop-duration");
+  const rangeLayer = $("#tl-range");
+  const markerLayer = $("#tl-markers");
+  const snapLine = $("#tl-snapline");
+  const dropLine = $("#tl-drop");
+  const menu = $("#tl-menu");
+  const snapButton = $<HTMLButtonElement>("#tl-snap");
+  const markerList = $("#markers-list");
+  /** Hút mép, remembered across videos. */
+  let snapping = (() => { try { return localStorage.getItem("dubflow.edit.snap") !== "0"; } catch { return true; } })();
+  // Timeline waveforms: one level byte per 1/50 s of each media's sound, fetched once.
+  const peaks = new Map<string, Uint8Array | null>();
+  const peaksLoading = new Set<string>();
 
   let session: Session | null = null;
   let saveTimer = 0;
@@ -344,7 +372,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   function applySegment(segment: Segment, player: HTMLVideoElement): void {
-    player.playbackRate = segment.speed;
+    player.playbackRate = segment.speed * (session?.shuttle ?? 1);
     applyLevel(segment, player);
   }
 
@@ -454,6 +482,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   function pausePlayback(): void {
     if (!session) return;
     session.playing = false;
+    session.shuttle = 1;
+    active.playbackRate = session.index < current().segments.length ? current().segments[session.index].speed : 1;
     active.pause();
     for (const box of boxes.values()) box.video.pause();
     audio.pause();
@@ -547,7 +577,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     renderOverlays(edit, time);
     subs.frame();
     plainCoverFrame();
-    audio.frame(time, session.playing);
+    // Sound clips play along at normal speed only (L twice plays faster).
+    audio.frame(time, session.playing && session.shuttle === 1);
     textMode.frame(time);
   }
 
@@ -926,6 +957,164 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     render();
   }
 
+  // ---------- Arranging, clipboard, markers, in/out, J/K/L ----------
+
+  function duplicateSelected(): void {
+    if (!session || session.draft) return;
+    const segment = selectedSegment();
+    if (!segment) return;
+    const edit = session.history.current;
+    const next = duplicateSegment(edit, segment.id);
+    if (next === edit) {
+      note("Đã đạt tối đa 500 đoạn.");
+      return;
+    }
+    const index = edit.segments.indexOf(segment);
+    session.overlay = null;
+    commit(next, next.segments[index + 1].id);
+    seekOutput(outputStarts(next)[index + 1]);
+    note("Đã nhân bản đoạn; bản sao nằm ngay sau.");
+  }
+
+  function copySelected(): boolean {
+    if (!session) return false;
+    const segment = selectedSegment();
+    const clip = segment ? copySegment(current(), segment.id) : null;
+    if (!clip) return false;
+    clipboard = clip.media.kind === "main"
+      ? { ...clip, media: { ...clip.media, path: session.outputPath, title: clip.media.title || session.target.displayName } }
+      : clip;
+    note(`Đã sao chép đoạn dài ${seconds(segmentLength(segment!))}. Ctrl V để dán tại đầu phát.`);
+    return true;
+  }
+
+  function cutSelected(): void {
+    if (!session || session.draft || current().segments.length <= 1) return;
+    if (copySelected()) deleteSelected();
+  }
+
+  function pasteAtPlayhead(): void {
+    if (!session || session.draft) return;
+    if (!clipboard) {
+      note("Chưa sao chép đoạn nào. Chọn một đoạn rồi bấm Ctrl C.");
+      return;
+    }
+    const edit = session.history.current;
+    const next = pasteSegment(edit, session.outputTime, clipboard, session.outputPath);
+    if (next === edit) {
+      note(edit.media.length >= MAX_MEDIA ? "Đã dùng tối đa 20 video trong một bản chỉnh sửa." : "Đã đạt tối đa 500 đoạn.");
+      return;
+    }
+    const added = addedId(edit, next);
+    session.overlay = null;
+    commit(next, added ?? undefined);
+    const index = next.segments.findIndex((segment) => segment.id === added);
+    if (index >= 0) seekOutput(outputStarts(next)[index]);
+  }
+
+  function addMarkerHere(): void {
+    if (!session || session.draft) return;
+    const edit = session.history.current;
+    const next = addMarker(edit, session.outputTime, `Dấu ${edit.markers.length + 1}`);
+    if (next === edit) {
+      note(edit.markers.length >= MAX_MARKERS ? "Đã có tối đa 100 dấu." : "Đã có dấu ở đúng chỗ này.");
+      return;
+    }
+    if (mode !== "cut") setMode("cut");
+    commit(next);
+  }
+
+  function setMark(which: "in" | "out"): void {
+    if (!session) return;
+    const time = Math.round(session.outputTime * 1000) / 1000;
+    if (which === "in") {
+      session.markIn = time;
+      if (session.markOut !== null && session.markOut <= time + MIN_SEGMENT) session.markOut = null;
+    } else {
+      session.markOut = time;
+      if (session.markIn !== null && session.markIn >= time - MIN_SEGMENT) session.markIn = null;
+    }
+    if (mode !== "cut") setMode("cut");
+    else render();
+  }
+
+  function clearMarks(): boolean {
+    if (!session || (session.markIn === null && session.markOut === null)) return false;
+    session.markIn = session.markOut = null;
+    render();
+    return true;
+  }
+
+  /** The I–O range, filling a missing end with the start or end of the video. */
+  function markedRange(): { from: number; to: number } | null {
+    if (!session || (session.markIn === null && session.markOut === null)) return null;
+    return { from: session.markIn ?? 0, to: session.markOut ?? outputDuration(current()) };
+  }
+
+  function applyRange(keep: boolean): void {
+    if (!session || session.draft) return;
+    const range = markedRange();
+    if (!range) return;
+    const edit = session.history.current;
+    const next = keep ? keepRange(edit, range.from, range.to) : removeRange(edit, range.from, range.to);
+    if (next === edit) {
+      note(keep ? "Khoảng chọn đã là cả video." : "Không cắt được: khoảng quá ngắn hoặc là cả video.");
+      return;
+    }
+    session.markIn = session.markOut = null;
+    session.outputTime = keep ? 0 : Math.min(range.from, outputDuration(next));
+    commit(next);
+    seekOutput(keep ? 0 : Math.min(range.from, outputDuration(next)));
+  }
+
+  /** L: play; again while playing: 2× (and back). */
+  function shuttleForward(): void {
+    if (!session) return;
+    if (!session.playing) {
+      session.shuttle = 1;
+      togglePlay();
+      return;
+    }
+    session.shuttle = session.shuttle >= 2 ? 1 : 2;
+    const segment = current().segments[session.index];
+    if (segment) applySegment(segment, active);
+    renderEffects();
+    note(session.shuttle === 1 ? "Phát tốc độ thường." : "Phát nhanh 2×; âm thanh thêm tạm tắt khi phát nhanh.");
+  }
+
+  function stepFrames(count: number): void {
+    if (!session) return;
+    if (session.playing) pausePlayback();
+    const fps = mediaOf(current(), MAIN)?.fps || session.facts.fps || 30;
+    step(count / fps);
+  }
+
+  function jumpPoint(direction: -1 | 1): void {
+    if (!session) return;
+    seekOutput(nearbyPoint(current(), session.outputTime, direction));
+    renderPlayhead(true);
+  }
+
+  // ---------- Context menu ----------
+
+  function openMenu(x: number, y: number): void {
+    if (!session) return;
+    const edit = current();
+    for (const item of menu.querySelectorAll<HTMLButtonElement>("[data-action]")) {
+      const action = item.dataset.action;
+      item.disabled = (action === "paste" && !clipboard) || ((action === "delete" || action === "cut") && edit.segments.length <= 1);
+    }
+    menu.hidden = false;
+    const box = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - box.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - box.height - 8))}px`;
+    menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }
+
+  function closeMenu(): void {
+    menu.hidden = true;
+  }
+
   /** Length, frame and sound of a local video, probed once. */
   function mediaInfo(path: string, kind: MediaInfo["kind"], title?: string): Promise<MediaInfo | null> {
     const key = path.toLocaleLowerCase("en");
@@ -1134,6 +1323,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $("#edit-seg-controls").hidden = panelMode || !!overlay || (mode === "insert" && !inserted);
     $("#edit-select-hint").hidden = !(mode === "insert" && !overlay && !inserted);
     $("#edit-cut-notes").hidden = mode !== "cut" || !!overlay;
+    renderRangePanel(mode === "cut" && !overlay);
+    renderMarkerList(edit, mode === "cut" && !overlay);
     audio.render(mode === "audio");
     textMode.render(mode === "text");
     templateMode.render(mode === "template");
@@ -1174,6 +1365,47 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $<HTMLButtonElement>("#edit-delete").disabled = edit.segments.length <= 1;
     $<HTMLButtonElement>("#tl-delete").disabled = edit.segments.length <= 1 && !overlay && !(mode === "audio" && audio.selected)
       && !(mode === "text" && textMode.selected);
+  }
+
+  function renderRangePanel(show: boolean): void {
+    const range = markedRange();
+    $("#edit-range").hidden = !show || !range;
+    if (!range || !session) return;
+    const both = session.markIn !== null && session.markOut !== null;
+    $("#edit-range-text").textContent = `${session.markIn === null ? "Từ đầu" : formatClock(range.from, true)} – ${session.markOut === null ? "đến cuối" : formatClock(range.to, true)}`
+      + ` · dài ${seconds(range.to - range.from)}${both ? "" : " · bấm " + (session.markIn === null ? "I" : "O") + " để đặt đầu còn lại"}`;
+  }
+
+  function renderMarkerList(edit: Edit, show: boolean): void {
+    $("#edit-markers").hidden = !show;
+    if (!show) return;
+    const focused = document.activeElement instanceof HTMLInputElement && markerList.contains(document.activeElement)
+      ? document.activeElement.closest<HTMLElement>("[data-id]")?.dataset.id : null;
+    if (focused) return;
+    if (!edit.markers.length) {
+      markerList.replaceChildren(element("li", "markers-empty", "Bấm M hoặc nút Dấu để đánh dấu chỗ cần chú ý; dấu không xuất ra video."));
+      return;
+    }
+    markerList.replaceChildren(...edit.markers.map((marker) => {
+      const item = element("li", "marker-row");
+      item.dataset.id = marker.id;
+      const time = element("button", "marker-time", formatClock(marker.at, true));
+      time.type = "button";
+      time.title = "Tới dấu này";
+      const name = element("input");
+      name.type = "text";
+      name.value = marker.label;
+      name.maxLength = 60;
+      name.placeholder = "Tên dấu";
+      name.setAttribute("aria-label", `Tên dấu lúc ${formatClock(marker.at, true)}`);
+      const remove_ = element("button", "marker-remove", "×");
+      remove_.type = "button";
+      remove_.dataset.role = "remove";
+      remove_.title = "Xóa dấu";
+      remove_.setAttribute("aria-label", "Xóa dấu");
+      item.append(time, name, remove_);
+      return item;
+    }));
   }
 
   function renderOverlayPanel(edit: Edit, overlay: Overlay): void {
@@ -1342,7 +1574,14 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const endHandle = element("span", "tl-handle end");
       endHandle.dataset.edge = "end";
       endHandle.title = "Kéo để cắt cuối đoạn";
-      block.append(strip, label, startHandle, endHandle);
+      block.append(strip);
+      if (media?.hasAudio && segment.volume > 0 && length >= 8) {
+        const wave = element("canvas", "tl-wave");
+        wave.dataset.path = path;
+        wave.dataset.id = segment.id;
+        block.append(wave);
+      }
+      block.append(label, startHandle, endHandle);
       return block;
     });
     // Joints: "+" adds a transition, a chip shows one.
@@ -1360,6 +1599,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       blocks.push(joint);
     }
     track.replaceChildren(...blocks);
+    drawWaves(edit);
     // Overlay row.
     overlayTrack.hidden = !edit.overlays.length;
     content.classList.toggle("with-overlays", edit.overlays.length > 0);
@@ -1378,6 +1618,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       block.append(name, startHandle, endHandle);
       return block;
     }));
+    renderMarks(edit, total);
     // Text and sound rows: under the video track; the timeline grows with its rows.
     const textHeight = textMode.renderTrack(textTrack, mode === "text", PAD);
     const audioHeight = audio.renderTrack(audioTrack, mode === "audio", PAD);
@@ -1393,6 +1634,78 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;
     $("#tl-info").textContent = [`${edit.segments.length} đoạn`, inserts ? `${inserts} đoạn chèn` : "", edit.overlays.length ? `${edit.overlays.length} video chồng` : "",
       edit.audio.length ? `${edit.audio.length} âm thanh` : "", edit.texts.length ? `${edit.texts.length} chữ` : "", formatClock(total)].filter(Boolean).join(" · ");
+  }
+
+  /** Markers on the ruler and the I–O range over the tracks. */
+  function renderMarks(edit: Edit, total: number): void {
+    if (!session) return;
+    markerLayer.replaceChildren(...edit.markers.map((marker) => {
+      const flag = element("div", "tl-marker");
+      flag.dataset.id = marker.id;
+      flag.style.left = `${PAD + marker.at * pps}px`;
+      flag.title = `${marker.label || "Dấu"} · ${formatClock(marker.at, true)} · bấm để tới, kéo để dời`;
+      flag.setAttribute("aria-label", flag.title);
+      if (marker.label) flag.append(element("span", "tl-marker-name", marker.label));
+      return flag;
+    }));
+    const range = markedRange();
+    rangeLayer.hidden = !range;
+    if (range) {
+      rangeLayer.style.left = `${PAD + Math.min(range.from, total) * pps}px`;
+      rangeLayer.style.width = `${Math.max(2, (Math.min(range.to, total) - Math.min(range.from, total)) * pps)}px`;
+      rangeLayer.classList.toggle("open-start", session.markIn === null);
+      rangeLayer.classList.toggle("open-end", session.markOut === null);
+    }
+  }
+
+  // ---------- Waveforms ----------
+
+  function requestPeaks(path: string): void {
+    if (!path || peaks.has(path) || peaksLoading.has(path)) return;
+    peaksLoading.add(path);
+    void invoke<ArrayBuffer>("edit_audio_peaks", { path })
+      .then((bytes) => peaks.set(path, new Uint8Array(bytes)))
+      .catch(() => peaks.set(path, null))
+      .finally(() => {
+        peaksLoading.delete(path);
+        if (session) drawWaves(current());
+      });
+  }
+
+  /** Draw each segment's sound under its thumbnails (50 levels a second of its media). */
+  function drawWaves(edit: Edit): void {
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    for (const canvas of track.querySelectorAll<HTMLCanvasElement>("canvas.tl-wave")) {
+      const path = canvas.dataset.path ?? "";
+      const segment = edit.segments.find((candidate) => candidate.id === canvas.dataset.id);
+      const levels = peaks.get(path);
+      if (levels === undefined) {
+        requestPeaks(path);
+        continue;
+      }
+      if (!levels || !segment) {
+        canvas.hidden = true;
+        continue;
+      }
+      const width = Math.min(8192, Math.max(1, Math.round(segmentLength(segment) * pps)));
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(WAVE_PX * ratio);
+      canvas.style.width = `${width}px`;
+      const context = canvas.getContext("2d");
+      if (!context) continue;
+      context.scale(ratio, ratio);
+      context.fillStyle = "oklch(0.86 0.12 160 / 0.85)";
+      const perPixel = segment.speed / pps;
+      const gain = Math.min(1, 0.35 + segment.volume * 0.65);
+      for (let x = 0; x < width; x += 2) {
+        const from = Math.floor((segment.start + x * perPixel) * 50);
+        const to = Math.max(from + 1, Math.floor((segment.start + (x + 2) * perPixel) * 50));
+        let level = 0;
+        for (let index = from; index < to && index < levels.length; index++) level = Math.max(level, levels[index]);
+        const height = Math.max(level ? 1 : 0, (level / 255) * WAVE_PX * gain);
+        context.fillRect(x, WAVE_PX - height, 1.4, height);
+      }
+    }
   }
 
   function render(): void {
@@ -1494,9 +1807,36 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   type Drag = { kind: "seek" }
     | { kind: "trim"; id: string; edge: "start" | "end"; x: number; from: number; base: Edit; moved: boolean }
     | { kind: "select"; id: string; x: number }
+    | { kind: "reorder"; id: string; x: number; base: Edit; to: number }
+    | { kind: "marker"; id: string; x: number; base: Edit; moved: boolean }
     | { kind: "ov-move"; id: string; x: number; base: Edit; moved: boolean }
     | { kind: "ov-trim"; id: string; edge: "start" | "end"; x: number; base: Edit; moved: boolean };
   let drag: Drag | null = null;
+
+  /** `time` snapped to the timeline's points (Hút mép, not while Alt is held), showing the guide. */
+  function snapped(time: number, event: { altKey: boolean }, edit: Edit, extra: number[] = [], skip: number[] = []): number {
+    if (!session || !snapping || event.altKey) {
+      snapLine.hidden = true;
+      return time;
+    }
+    const marks = [session.markIn, session.markOut].filter((value): value is number => value !== null);
+    const points = snapPoints(edit, [...extra, ...marks]).filter((point) => !skip.some((other) => Math.abs(other - point) < 1e-6));
+    const result = snapTime(time, points, SNAP_PX / pps);
+    snapLine.hidden = result === time;
+    if (result !== time) snapLine.style.transform = `translateX(${PAD + result * pps}px)`;
+    return result;
+  }
+
+  /** Where a dragged segment would land: the index among the others whose middle the pointer passed, and that joint's time. */
+  function reorderTarget(base: Edit, id: string, time: number): { to: number; joint: number } {
+    const starts = outputStarts(base);
+    const others = base.segments.map((segment, at) => ({ segment, start: starts[at] })).filter(({ segment }) => segment.id !== id);
+    let to = 0;
+    others.forEach(({ segment, start }, index) => { if (time > start + segmentLength(segment) / 2) to = index + 1; });
+    const joint = to === 0 ? others[0]?.start ?? 0 : others[to - 1].start + segmentLength(others[to - 1].segment);
+    return { to, joint };
+  }
+
 
   content.addEventListener("pointerdown", (event) => {
     if (!session || event.button !== 0 || session.draft) return;
@@ -1506,6 +1846,14 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       event.preventDefault();
       if (popFor === joint.dataset.after && !pop.hidden) closePopover();
       else openPopover(joint.dataset.after!, joint);
+      return;
+    }
+    closeMenu();
+    const flag = target.closest<HTMLElement>(".tl-marker");
+    if (flag) {
+      event.preventDefault();
+      content.setPointerCapture(event.pointerId);
+      drag = { kind: "marker", id: flag.dataset.id!, x: event.clientX, base: session.history.current, moved: false };
       return;
     }
     const handle = target.closest<HTMLElement>(".tl-handle");
@@ -1539,20 +1887,59 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       return;
     }
     drag = { kind: "seek" };
-    seekOutput(timeAt(event.clientX));
+    seekOutput(snapped(timeAt(event.clientX), event, current(), [], [session.outputTime]));
   });
 
   content.addEventListener("pointermove", (event) => {
     if (!session || !drag) return;
     if (drag.kind === "seek") {
-      seekOutput(timeAt(event.clientX));
-    } else if (drag.kind === "select" && Math.abs(event.clientX - drag.x) > 4) {
-      drag = { kind: "seek" };
-      seekOutput(timeAt(event.clientX));
+      seekOutput(snapped(timeAt(event.clientX), event, current()));
+    } else if (drag.kind === "select" && Math.abs(event.clientX - drag.x) > DRAG_PX) {
+      const base = session.history.current;
+      if (base.segments.length < 2) {
+        drag = { kind: "seek" };
+        seekOutput(timeAt(event.clientX));
+        return;
+      }
+      if (session.playing) pausePlayback();
+      const { id, x } = drag;
+      session.selected = id;
+      session.overlay = null;
+      drag = { kind: "reorder", id, x, base, to: base.segments.findIndex((segment) => segment.id === id) };
+      content.classList.add("reordering");
+      render();
+    } else if (drag.kind === "reorder") {
+      const reordering = drag;
+      const { to, joint } = reorderTarget(reordering.base, reordering.id, timeAt(event.clientX));
+      reordering.to = to;
+      const from = reordering.base.segments.findIndex((segment) => segment.id === reordering.id);
+      dropLine.hidden = to === from;
+      dropLine.style.transform = `translateX(${PAD + joint * pps}px)`;
+      const block = track.querySelector<HTMLElement>(`.tl-seg[data-id="${reordering.id}"]`);
+      if (block) block.style.transform = `translate(${event.clientX - reordering.x}px, -6px)`;
+    } else if (drag.kind === "marker") {
+      const dragging = drag;
+      if (!dragging.moved && Math.abs(event.clientX - dragging.x) <= 3) return;
+      dragging.moved = true;
+      const marker = dragging.base.markers.find((candidate) => candidate.id === dragging.id);
+      if (!marker) return;
+      const time = snapped(marker.at + (event.clientX - dragging.x) / pps, event, dragging.base, [session.outputTime], [marker.at]);
+      session.draft = setMarker(dragging.base, dragging.id, { at: time });
+      renderMarks(session.draft, outputDuration(session.draft));
     } else if (drag.kind === "trim") {
       const trimming = drag;
       const segment = trimming.base.segments.find((candidate) => candidate.id === trimming.id)!;
-      const next = trim(trimming.base, trimming.id, trimming.edge, trimming.from + ((event.clientX - trimming.x) / pps) * segment.speed);
+      let sourceTime = trimming.from + ((event.clientX - trimming.x) / pps) * segment.speed;
+      if (trimming.edge === "end") {
+        // The end edge moves on the output: snap it there, then back to the media's seconds.
+        const index = trimming.base.segments.indexOf(segment);
+        const start = outputStarts(trimming.base)[index];
+        const edge = start + (sourceTime - segment.start) / segment.speed;
+        const original = start + segmentLength(segment);
+        const points = snapped(edge, event, trimming.base, [session.outputTime], [original]);
+        sourceTime = segment.start + (points - start) * segment.speed;
+      }
+      const next = trim(trimming.base, trimming.id, trimming.edge, sourceTime);
       trimming.moved = true;
       session.draft = next;
       // Show the frame at the edge being moved.
@@ -1571,7 +1958,15 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const shift = (event.clientX - dragging.x) / pps;
       let next: Edit;
       if (dragging.kind === "ov-move") {
-        next = setOverlayTime(dragging.base, dragging.id, { at: overlay.at + shift });
+        const length = overlayLength(dragging.base, overlay);
+        let at = overlay.at + shift;
+        const head = snapped(at, event, dragging.base, [session.outputTime], [overlay.at, overlay.at + length]);
+        if (head !== at) at = head;
+        else {
+          const tail = snapped(at + length, event, dragging.base, [session.outputTime], [overlay.at, overlay.at + length]);
+          at = tail - length;
+        }
+        next = setOverlayTime(dragging.base, dragging.id, { at: Math.max(0, at) });
       } else if (dragging.edge === "end") {
         next = setOverlayTime(dragging.base, dragging.id, { end: overlay.end + shift });
       } else {
@@ -1590,6 +1985,30 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!session || !drag) return;
     const ended = drag;
     drag = null;
+    snapLine.hidden = true;
+    dropLine.hidden = true;
+    content.classList.remove("reordering");
+    if (ended.kind === "reorder") {
+      const next = moveSegment(ended.base, ended.id, ended.to);
+      if (next !== ended.base) {
+        commit(next, ended.id);
+        const index = next.segments.findIndex((segment) => segment.id === ended.id);
+        seekOutput(outputStarts(next)[index]);
+        if (Object.keys(next.transitions).length < Object.keys(ended.base.transitions).length) note("Đã dời đoạn; chuyển cảnh ở các mối nối thay đổi đã được bỏ.");
+      } else render();
+      return;
+    }
+    if (ended.kind === "marker") {
+      const next = session.draft;
+      session.draft = null;
+      const marker = ended.base.markers.find((candidate) => candidate.id === ended.id);
+      if (next && ended.moved) commit(next);
+      else if (marker) {
+        seekOutput(marker.at);
+        renderPlayhead(true);
+      }
+      return;
+    }
     if (ended.kind === "trim" || ended.kind === "ov-move" || ended.kind === "ov-trim") {
       const next = session.draft;
       session.draft = null;
@@ -1909,10 +2328,36 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       redo();
     } else if (ctrl && !event.altKey && key === "b") {
       splitAtPlayhead();
+    } else if (ctrl && !event.altKey && !event.shiftKey && key === "c" && cutModes()) {
+      if (!copySelected()) handled = false;
+    } else if (ctrl && !event.altKey && !event.shiftKey && key === "x" && cutModes()) {
+      cutSelected();
+    } else if (ctrl && !event.altKey && !event.shiftKey && key === "v" && cutModes()) {
+      pasteAtPlayhead();
+    } else if (ctrl && !event.altKey && !event.shiftKey && key === "d" && cutModes()) {
+      duplicateSelected();
     } else if (ctrl || event.altKey) {
       handled = false;
     } else if (key === " ") {
       togglePlay();
+    } else if (key === "k") {
+      if (session.playing) pausePlayback();
+    } else if (key === "l") {
+      shuttleForward();
+    } else if (key === "j") {
+      if (session.playing) pausePlayback();
+      step(-1);
+    } else if (key === "," || key === ".") {
+      stepFrames(key === "," ? -1 : 1);
+    } else if (key === "arrowup" || key === "arrowdown") {
+      jumpPoint(key === "arrowup" ? -1 : 1);
+    } else if (key === "home" || key === "end") {
+      seekOutput(key === "home" ? 0 : outputDuration(current()));
+      renderPlayhead(true);
+    } else if (key === "i" || key === "o") {
+      setMark(key === "i" ? "in" : "out");
+    } else if (key === "m") {
+      addMarkerHere();
     } else if (key === "s") {
       splitAtPlayhead();
     } else if (key === "delete" || key === "backspace") {
@@ -1920,7 +2365,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     } else if (key === "arrowleft" || key === "arrowright") {
       step((key === "arrowleft" ? -1 : 1) * (event.shiftKey ? 5 : 1));
     } else if (key === "escape") {
-      if (!pop.hidden) closePopover();
+      if (!menu.hidden) closeMenu();
+      else if (!pop.hidden) closePopover();
+      else if (clearMarks()) { /* I–O cleared */ }
       else if (session.overlay) selectOverlay(null);
       else if (mode === "audio" && audio.selected) {
         audio.select(null);
@@ -1933,6 +2380,91 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       handled = false;
     }
     if (handled) event.preventDefault();
+  });
+
+  /** Segment shortcuts (copy, paste, duplicate) belong to Cắt ghép and Chèn; other modes have their own selection. */
+  function cutModes(): boolean {
+    return mode === "cut" || mode === "insert";
+  }
+
+  content.addEventListener("contextmenu", (event) => {
+    if (!session || session.draft) return;
+    const block = (event.target as HTMLElement).closest<HTMLElement>(".tl-seg");
+    if (!block) return;
+    event.preventDefault();
+    session.selected = block.dataset.id!;
+    session.overlay = null;
+    if (!cutModes()) setMode("cut");
+    render();
+    openMenu(event.clientX, event.clientY);
+  });
+  menu.addEventListener("click", (event) => {
+    const item = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
+    if (!item || item.disabled) return;
+    closeMenu();
+    const action = item.dataset.action;
+    if (action === "copy") copySelected();
+    else if (action === "cut") cutSelected();
+    else if (action === "paste") pasteAtPlayhead();
+    else if (action === "duplicate") duplicateSelected();
+    else if (action === "split") splitAtPlayhead();
+    else if (action === "delete") deleteSelected();
+  });
+  menu.addEventListener("keydown", (event) => {
+    const items = [...menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      items[(index + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMenu();
+    }
+  });
+  document.addEventListener("pointerdown", (event) => { if (!menu.hidden && !menu.contains(event.target as Node)) closeMenu(); }, true);
+  window.addEventListener("blur", closeMenu);
+  scroll.addEventListener("scroll", closeMenu);
+
+  $("#edit-duplicate").addEventListener("click", duplicateSelected);
+  $("#tl-marker").addEventListener("click", addMarkerHere);
+  $("#markers-add").addEventListener("click", addMarkerHere);
+  $("#range-remove").addEventListener("click", () => applyRange(false));
+  $("#range-keep").addEventListener("click", () => applyRange(true));
+  $("#range-clear").addEventListener("click", () => { clearMarks(); });
+  snapButton.setAttribute("aria-pressed", String(snapping));
+  snapButton.addEventListener("click", () => {
+    snapping = !snapping;
+    snapButton.setAttribute("aria-pressed", String(snapping));
+    try { localStorage.setItem("dubflow.edit.snap", snapping ? "1" : "0"); } catch { /* per-viewer convenience only */ }
+  });
+  markerList.addEventListener("click", (event) => {
+    if (!session || session.draft) return;
+    const item = (event.target as HTMLElement).closest<HTMLElement>("[data-id]");
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
+    if (!item || !button) return;
+    const marker = current().markers.find((candidate) => candidate.id === item.dataset.id);
+    if (!marker) return;
+    if (button.dataset.role === "remove") commit(removeMarker(session.history.current, marker.id));
+    else {
+      seekOutput(marker.at);
+      renderPlayhead(true);
+    }
+  });
+  markerList.addEventListener("change", (event) => {
+    if (!session || session.draft) return;
+    const input = event.target as HTMLInputElement;
+    const id = input.closest<HTMLElement>("[data-id]")?.dataset.id;
+    if (id) commit(setMarker(session.history.current, id, { label: input.value.trim() }));
+  });
+  markerList.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.target.blur();
+  });
+  content.addEventListener("dblclick", (event) => {
+    const flag = (event.target as HTMLElement).closest<HTMLElement>(".tl-marker");
+    if (!flag || !session) return;
+    if (mode !== "cut") setMode("cut");
+    markerList.querySelector<HTMLInputElement>(`[data-id="${flag.dataset.id}"] input`)?.focus();
   });
 
   // ---------- Entering and leaving ----------
@@ -1966,7 +2498,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session = {
         target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
-        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false,
+        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false, markIn: null, markOut: null, shuttle: 1,
       };
       session.plainCover = !session.reviewable;
       resetThumbs();

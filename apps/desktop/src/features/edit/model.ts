@@ -43,6 +43,9 @@ export const MAX_FADE = 3;
 export const MAX_DUCK_DB = 24;
 export const DEFAULT_DUCK_DB = 10;
 export const MAIN = "main";
+/** Đánh dấu: markers in one edit and the characters of a marker's name. */
+export const MAX_MARKERS = 100;
+export const MAX_MARKER_CHARS = 60;
 /** Chữ: texts in one edit, characters in one text, and their limits. */
 export const MAX_TEXTS = 50;
 export const MAX_TEXT_CHARS = 300;
@@ -106,8 +109,12 @@ export type Edit = {
   readonly mainVolume: number;
   /** Chữ: texts over the picture, later ones drawn on top. */
   readonly texts: readonly TextClip[];
+  /** Đánh dấu: named points at output times, in time order (not exported). */
+  readonly markers: readonly Marker[];
   readonly nextId: number;
 };
+/** A named point on the output, anchored to output time like sound clips. */
+export type Marker = { readonly id: string; readonly at: number; readonly label: string };
 export type TextAnimation = typeof TEXT_ANIMATIONS[number];
 export type TextAlign = typeof TEXT_ALIGNS[number];
 /**
@@ -144,7 +151,7 @@ export function createEdit(duration: number, info: Partial<Omit<MediaInfo, "dura
   return {
     duration, media: [mainMedia(duration, info)],
     segments: [{ id: "s1", mediaId: MAIN, start: 0, end: ms(duration), speed: 1, volume: 1 }],
-    transitions: {}, overlays: [], audio: [], mainVolume: 1, texts: [], nextId: 2,
+    transitions: {}, overlays: [], audio: [], mainVolume: 1, texts: [], markers: [], nextId: 2,
   };
 }
 
@@ -329,6 +336,170 @@ export function setVolume(edit: Edit, id: string, volume: number): Edit {
   return replace(edit, index, [{ ...edit.segments[index], volume: value }]);
 }
 
+// ---------- Arranging segments ----------
+
+/**
+ * Move a segment to position `to` (an index in the resulting list). The
+ * joints around its old and new place lose their transitions, since they now
+ * join other pictures. Overlays, sounds and texts keep their output times.
+ */
+export function moveSegment(edit: Edit, id: string, to: number): Edit {
+  const from = edit.segments.findIndex((segment) => segment.id === id);
+  if (from < 0 || !Number.isInteger(to)) return edit;
+  const target = clamp(to, 0, edit.segments.length - 1);
+  if (target === from) return edit;
+  const segments = edit.segments.filter((segment) => segment.id !== id);
+  segments.splice(target, 0, edit.segments[from]);
+  const dropped = new Set<string>([id]);
+  if (from > 0) dropped.add(edit.segments[from - 1].id);
+  if (target > 0) dropped.add(segments[target - 1].id);
+  const transitions = Object.fromEntries(Object.entries(edit.transitions).filter(([key]) => !dropped.has(key)));
+  return { ...edit, segments, transitions };
+}
+
+/**
+ * Put `segment` (without its id) at position `index`; overlays from that
+ * joint on ripple by its length, like an insert.
+ */
+function placeSegment(edit: Edit, index: number, segment: Omit<Segment, "id">): Edit {
+  const total = outputDuration(edit);
+  const joint = index < edit.segments.length ? outputStarts(edit)[index] : total;
+  const added: Segment = { ...segment, id: `s${edit.nextId}` };
+  const next = { ...edit, segments: [...edit.segments.slice(0, index), added, ...edit.segments.slice(index)], nextId: edit.nextId + 1 };
+  const shift = outputDuration(next) - total;
+  const overlays = next.overlays.map((overlay) => overlay.at >= joint - 1e-6 ? { ...overlay, at: ms(overlay.at + shift) } : overlay);
+  return { ...next, overlays };
+}
+
+/** A copy of a segment right after it; the joint after the original moves after the copy. */
+export function duplicateSegment(edit: Edit, id: string): Edit {
+  const index = edit.segments.findIndex((segment) => segment.id === id);
+  if (index < 0 || edit.segments.length >= MAX_SEGMENTS) return edit;
+  const { id: _, ...rest } = edit.segments[index];
+  const next = placeSegment(edit, index + 1, rest);
+  const copy = next.segments[index + 1].id;
+  const moved = edit.transitions[id];
+  return moved ? { ...next, transitions: { ...withoutKey(next.transitions, id), [copy]: moved } } : next;
+}
+
+/** What "Sao chép" keeps of a segment: its media and the part, speed and volume. */
+export type SegmentClip = { media: MediaInfo; start: number; end: number; speed: number; volume: number };
+
+export function copySegment(edit: Edit, id: string): SegmentClip | null {
+  const segment = edit.segments.find((candidate) => candidate.id === id);
+  const media = segment && mediaOf(edit, segment.mediaId);
+  if (!segment || !media) return null;
+  const { id: _, ...info } = media;
+  return { media: info, start: segment.start, end: segment.end, speed: segment.speed, volume: segment.volume };
+}
+
+/**
+ * Paste a copied segment at output time `t` (split there like an insert).
+ * A part of the main video pastes as the main video when it was copied from
+ * the same file (`mainPath`, this edit's main video), else as an inserted clip.
+ */
+export function pasteSegment(edit: Edit, t: number, clip: SegmentClip, mainPath = mediaOf(edit, MAIN)?.path ?? ""): Edit {
+  const isMain = clip.media.kind === "main" && samePath(clip.media.path, mainPath) && Math.abs(clip.media.duration - edit.duration) < 0.5;
+  const next = isMain
+    ? insertSegmentAt(edit, t, MAIN, clip.start, clip.end)
+    : insertAt(edit, t, { ...clip.media, kind: clip.media.kind === "main" ? "file" : clip.media.kind }, { start: clip.start, end: clip.end });
+  const added = addedId(edit, next);
+  if (!added) return edit;
+  return setVolume(setSpeed(next, added, clip.speed), added, clip.volume);
+}
+
+/**
+ * Cut [a, b) of the output out: the segments are split at both ends and the
+ * parts between removed; at least 0.1 s of picture stays. Overlays, sounds
+ * and texts keep their output times, like a deleted segment.
+ */
+export function removeRange(edit: Edit, a: number, b: number): Edit {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return edit;
+  const total = outputDuration(edit);
+  const from = clamp(Math.min(a, b), 0, total), to = clamp(Math.max(a, b), 0, total);
+  if (to - from < MIN_SEGMENT || total - (to - from) < MIN_SEGMENT - 1e-6) return edit;
+  let next = split(split(edit, to), from);
+  const starts = outputStarts(next);
+  const keep = next.segments.filter((segment, index) => {
+    const start = starts[index], end = start + segmentLength(segment);
+    return !(start >= from - 1e-3 && end <= to + 1e-3);
+  });
+  if (!keep.length || keep.length === next.segments.length) return edit;
+  const kept = new Set(keep.map((segment) => segment.id));
+  next = pruneMedia({ ...next, segments: keep, transitions: Object.fromEntries(Object.entries(next.transitions).filter(([id]) => kept.has(id) && id !== keep[keep.length - 1].id)) });
+  return next;
+}
+
+/** Keep only [a, b) of the output. */
+export function keepRange(edit: Edit, a: number, b: number): Edit {
+  const from = Math.min(a, b), to = Math.max(a, b);
+  if (to - from < MIN_SEGMENT) return edit;
+  const total = outputDuration(edit);
+  let next = to < total - MIN_SEGMENT / 2 ? removeRange(edit, to, total) : edit;
+  if (from > MIN_SEGMENT / 2) next = removeRange(next, 0, from);
+  return next;
+}
+
+// ---------- Đánh dấu ----------
+
+function sortMarkers(markers: Marker[]): Marker[] {
+  return markers.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+}
+
+export function addMarker(edit: Edit, at: number, label = ""): Edit {
+  if (!Number.isFinite(at) || edit.markers.length >= MAX_MARKERS) return edit;
+  const time = ms(clamp(at, 0, outputDuration(edit)));
+  if (edit.markers.some((marker) => Math.abs(marker.at - time) < 0.05)) return edit;
+  const marker: Marker = { id: `k${edit.nextId}`, at: time, label: label.replace(/[\r\n\t]+/g, " ").slice(0, MAX_MARKER_CHARS) };
+  return { ...edit, markers: sortMarkers([...edit.markers, marker]), nextId: edit.nextId + 1 };
+}
+
+export function setMarker(edit: Edit, id: string, props: { at?: number; label?: string }): Edit {
+  const marker = edit.markers.find((candidate) => candidate.id === id);
+  if (!marker) return edit;
+  const at = props.at === undefined || !Number.isFinite(props.at) ? marker.at : ms(clamp(props.at, 0, outputDuration(edit)));
+  const label = props.label === undefined ? marker.label : props.label.replace(/[\r\n\t]+/g, " ").slice(0, MAX_MARKER_CHARS);
+  if (at === marker.at && label === marker.label) return edit;
+  return { ...edit, markers: sortMarkers(edit.markers.map((candidate) => candidate.id === id ? { ...candidate, at, label } : candidate)) };
+}
+
+export function removeMarker(edit: Edit, id: string): Edit {
+  return edit.markers.some((marker) => marker.id === id) ? { ...edit, markers: edit.markers.filter((marker) => marker.id !== id) } : edit;
+}
+
+/**
+ * The points a moving edge or the playhead snaps to: the start and end, the
+ * joints, the markers and the overlay, sound and text edges, sorted.
+ */
+export function snapPoints(edit: Edit, extra: readonly number[] = []): number[] {
+  const total = outputDuration(edit);
+  const points = [0, total, ...outputStarts(edit), ...edit.markers.map((marker) => marker.at), ...extra];
+  for (const overlay of edit.overlays) points.push(overlay.at, overlay.at + overlayLength(edit, overlay, total));
+  for (const clip of edit.audio) points.push(clip.at, clip.at + audioLength(clip, total));
+  for (const text of edit.texts) points.push(text.at, text.at + textLength(text, total));
+  return [...new Set(points.filter((point) => Number.isFinite(point) && point >= 0 && point <= total + 1e-6).map(ms))].sort((a, b) => a - b);
+}
+
+/** `time` moved onto the nearest point within `tolerance` seconds, or unchanged. */
+export function snapTime(time: number, points: readonly number[], tolerance: number): number {
+  let best = time, distance = tolerance;
+  for (const point of points) {
+    const gap = Math.abs(point - time);
+    if (gap <= distance) {
+      best = point;
+      distance = gap;
+    }
+  }
+  return best;
+}
+
+/** The previous or next edit point (joint, marker, start, end) from `time`. */
+export function nearbyPoint(edit: Edit, time: number, direction: -1 | 1): number {
+  const points = [0, outputDuration(edit), ...outputStarts(edit), ...edit.markers.map((marker) => marker.at)].sort((a, b) => a - b);
+  if (direction > 0) return points.find((point) => point > time + 0.01) ?? points[points.length - 1];
+  return [...points].reverse().find((point) => point < time - 0.01) ?? 0;
+}
+
 // ---------- Chèn: other media ----------
 
 /** Windows paths compare without case and slash direction. */
@@ -368,7 +539,14 @@ export function insertAt(edit: Edit, t: number, info: MediaInfo, range?: { start
   const length = mediaDuration(attached.edit, attached.id);
   const start = ms(clamp(range?.start ?? 0, 0, length - MIN_SEGMENT));
   const end = ms(clamp(range?.end ?? length, start + MIN_SEGMENT, length));
-  let next = attached.edit;
+  const next = insertSegmentAt(attached.edit, t, attached.id, start, end);
+  return next === attached.edit ? edit : next;
+}
+
+/** Insert [start, end) of media `mediaId`, already in the edit, at output time `t` (see insertAt). */
+function insertSegmentAt(edit: Edit, t: number, mediaId: string, start: number, end: number): Edit {
+  if (edit.segments.length >= MAX_SEGMENTS || !Number.isFinite(t)) return edit;
+  let next = edit;
   const total = outputDuration(next);
   const time = clamp(t, 0, total);
   let index = next.segments.length;
@@ -382,12 +560,7 @@ export function insertAt(edit: Edit, t: number, info: MediaInfo, range?: { start
       index = point.index + 1;
     }
   }
-  const joint = index < next.segments.length ? outputStarts(next)[index] : total;
-  const segment: Segment = { id: `s${next.nextId}`, mediaId: attached.id, start, end, speed: 1, volume: 1 };
-  next = { ...next, segments: [...next.segments.slice(0, index), segment, ...next.segments.slice(index)], nextId: next.nextId + 1 };
-  const shift = outputDuration(next) - total;
-  const overlays = next.overlays.map((overlay) => overlay.at >= joint - 1e-6 ? { ...overlay, at: ms(overlay.at + shift) } : overlay);
-  return { ...next, overlays };
+  return placeSegment(next, index, { mediaId, start, end, speed: 1, volume: 1 });
 }
 
 /** Add a media (or part of it) after the last segment. */
@@ -805,7 +978,8 @@ export function retargetEdit(edit: Edit, duration: number, info: Partial<Omit<Me
   const audio = next.audio.filter((clip) => clip.at < total - MIN_AUDIO);
   const texts = next.texts.filter((text) => text.at < total - MIN_TEXT);
   trimmed += next.overlays.length - overlays.length + next.audio.length - audio.length + next.texts.length - texts.length;
-  return { edit: pruneMedia({ ...next, overlays, audio, texts }), trimmed };
+  const markers = (next.markers ?? []).filter((marker) => marker.at <= total);
+  return { edit: pruneMedia({ ...next, overlays, audio, texts, markers }), trimmed };
 }
 
 // ---------- Comparing, exporting ----------
@@ -1055,6 +1229,7 @@ export function serializeProject(edit: Edit, changes: number, selected: string |
     })),
     main_volume: edit.mainVolume,
     texts: edit.texts.map((text) => ({ ...text })),
+    markers: edit.markers.map(({ id, at, label }) => ({ id, at, label })),
   };
 }
 
@@ -1199,11 +1374,23 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
       texts.push(text);
     }
   }
+  const markers: Marker[] = [];
+  if (schema === 4 && Array.isArray(data.markers)) {
+    for (const raw of (data.markers as unknown[]).slice(0, MAX_MARKERS)) {
+      if (!raw || typeof raw !== "object") continue;
+      const { id, at, label } = raw as Record<string, unknown>;
+      if (typeof id !== "string" || !/^k\d{1,9}$/.test(id) || ids.has(id) || !finite(at) || at < 0) continue;
+      ids.add(id);
+      count(id);
+      markers.push({ id, at, label: typeof label === "string" ? label.replace(/[\r\n\t]+/g, " ").slice(0, MAX_MARKER_CHARS) : "" });
+    }
+    sortMarkers(markers);
+  }
   const nextId = typeof data.next_id === "number" && Number.isInteger(data.next_id) && data.next_id > highest ? data.next_id : highest + 1;
   const changes = typeof data.changes === "number" && Number.isInteger(data.changes) && data.changes >= 0 ? data.changes : 0;
   const selected = typeof data.selected === "string" && segments.some((segment) => segment.id === data.selected) ? data.selected : null;
   const edit = pruneMedia({ duration, media: [main, ...[...known.values()].filter((media) => media.id !== MAIN)], segments, transitions, overlays,
-    audio, mainVolume, texts, nextId });
+    audio, mainVolume, texts, markers, nextId });
   return { edit, changes, selected, recent };
 }
 
