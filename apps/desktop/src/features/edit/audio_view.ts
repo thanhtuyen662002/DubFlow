@@ -76,6 +76,8 @@ type Tab = "library" | "mine" | "ai";
 type Pending = Suggestion & { key: string };
 type Player = { element: HTMLAudioElement; key: string };
 
+/** Short sounds are drawn this wide at least, so they can be clicked and their edges dragged. */
+const MIN_BLOCK_PX = 22;
 const LANE_PX = 20;
 const MAX_LANES = 4;
 const MINE_STEP = 200;
@@ -636,7 +638,10 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
     const marks = pending.filter((item) => item.time_ms / 1000 < total).map((item) => ({
       id: `p:${item.key}`, at: item.time_ms / 1000, start: 0, end: (BY_ID.get(item.sfx_id)?.duration_ms ?? 500) / 1000, item,
     }));
-    const lanes = audioLanes([...edit.audio, ...marks], total);
+    // Lanes as drawn: a short sound takes its minimum width.
+    const least = MIN_BLOCK_PX / Math.max(pps, 1e-6);
+    const drawn = edit.audio.map((clip) => clip.loop ? clip : { ...clip, end: Math.max(clip.end, clip.start + least) });
+    const lanes = audioLanes([...drawn, ...marks], total);
     const count = Math.min(MAX_LANES, Math.max(1, ...[...lanes.values()].map((lane) => lane + 1)));
     const blocks: HTMLElement[] = [];
     for (const clip of edit.audio) {
@@ -644,12 +649,13 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
       const block = element("div", `tl-au${clip.source.kind === "file" ? " file" : ""}${clip.id === selected ? " selected" : ""}`);
       block.dataset.id = clip.id;
       Object.assign(block.style, {
-        left: `${pad + clip.at * pps}px`, width: `${Math.max(6, length * pps)}px`, top: `${Math.min(count - 1, lanes.get(clip.id) ?? 0) * LANE_PX}px`,
+        left: `${pad + clip.at * pps}px`, width: `${Math.max(MIN_BLOCK_PX, length * pps)}px`, top: `${Math.min(count - 1, lanes.get(clip.id) ?? 0) * LANE_PX}px`,
       });
       block.title = `${clip.title} · ${formatClock(clip.at, true)} – ${formatClock(clip.at + length, true)}${clip.duckDb > 0 ? ` · giảm âm gốc ${clip.duckDb} dB` : ""}`;
       block.append(element("span", "tl-au-name", clip.title || "Âm thanh"));
       // A block too narrow for handles is only moved; zoom in to trim it.
-      if (length * pps >= 24) {
+      // Every block can be clicked and trimmed: short sounds are drawn at least 22 px wide.
+      {
         const start = element("span", "tl-handle start");
         start.dataset.edge = "start";
         const end = element("span", "tl-handle end");

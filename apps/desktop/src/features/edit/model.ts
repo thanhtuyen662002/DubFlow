@@ -100,7 +100,14 @@ export type Overlay = {
   readonly id: string; readonly mediaId: string; readonly at: number; readonly start: number; readonly end: number;
   readonly x: number; readonly y: number; readonly w: number; readonly volume: number;
   readonly opacity?: number; readonly radius?: number; readonly border?: number; readonly borderColor?: string;
+  /** Hiện dần / tắt dần in seconds (Issue #526); absent = 0. */
+  readonly fadeIn?: number; readonly fadeOut?: number;
+  /** Chuyển động: where it ends; it moves and resizes evenly from x, y, w over its shown time. */
+  readonly to?: Placement;
 };
+export type Placement = { readonly x: number; readonly y: number; readonly w: number };
+/** Which placement drag and presets change: where it starts, or (with Chuyển động) where it ends. */
+export type OverlayKey = "start" | "end";
 export type OverlayStyle = { opacity: number; radius: number; border: number; borderColor: string };
 export type AudioSource = { readonly kind: "sfx"; readonly id: string } | { readonly kind: "file"; readonly path: string };
 /**
@@ -553,6 +560,31 @@ export function keepRange(edit: Edit, a: number, b: number): Edit {
   return next;
 }
 
+/**
+ * Xuất đoạn I–O (Issue #526): [a, b) of the output as an edit of its own.
+ * Overlays, sounds, texts and markers move with it; parts before `a` are
+ * cut off and whatever starts after `b` is left out. Null when the range
+ * is shorter than a segment.
+ */
+export function rangeEdit(edit: Edit, a: number, b: number): Edit | null {
+  const total = outputDuration(edit);
+  const from = clamp(Math.min(a, b), 0, total), to = clamp(Math.max(a, b), 0, total);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to - from < MIN_SEGMENT) return null;
+  const cut = keepRange(edit, from, to);
+  const length = outputDuration(cut);
+  if (Math.abs(length - (to - from)) > 0.01) return null;
+  const late = (at: number): number => Math.max(0, from - at);
+  const overlays = cut.overlays.filter((overlay) => overlay.at + (overlay.end - overlay.start) > from + MIN_SEGMENT && overlay.at < to - MIN_SEGMENT)
+    .map((overlay) => ({ ...overlay, at: ms(Math.max(0, overlay.at - from)), start: ms(overlay.start + late(overlay.at)) }));
+  const audio = cut.audio.filter((clip) => clip.at + audioLength(clip, total) > from + MIN_AUDIO && clip.at < to - MIN_AUDIO)
+    .map((clip) => clip.loop ? { ...clip, at: ms(Math.max(0, clip.at - from)) }
+      : { ...clip, at: ms(Math.max(0, clip.at - from)), start: ms(clip.start + late(clip.at)), fadeIn: clip.at < from ? 0 : clip.fadeIn });
+  const texts = cut.texts.filter((text) => text.at + text.duration > from + MIN_TEXT && text.at < to - MIN_TEXT)
+    .map((text) => ({ ...text, at: ms(Math.max(0, text.at - from)), duration: ms(text.duration - late(text.at)) }));
+  const markers = cut.markers.filter((marker) => marker.at >= from && marker.at <= to).map((marker) => ({ ...marker, at: ms(marker.at - from) }));
+  return pruneMedia({ ...cut, overlays, audio, texts, markers });
+}
+
 // ---------- Đánh dấu ----------
 
 function sortMarkers(markers: Marker[]): Marker[] {
@@ -726,34 +758,83 @@ export function addOverlay(edit: Edit, info: MediaInfo, at: number, range?: { st
   return { ...next, overlays: [...next.overlays, placeOverlay(next, placed, 1 - placed.w - OVERLAY_MARGIN, OVERLAY_MARGIN, placed.w)] };
 }
 
-export function moveOverlay(edit: Edit, id: string, x: number, y: number): Edit {
+/** The placement `key` names: the overlay's own, or its end with Chuyển động (the start without one). */
+export function placementOf(overlay: Overlay, key: OverlayKey = "start"): Placement {
+  return key === "end" && overlay.to ? overlay.to : { x: overlay.x, y: overlay.y, w: overlay.w };
+}
+
+/** Place the start, or the end of a moving overlay, kept inside the frame. */
+function placeKey(edit: Edit, overlay: Overlay, key: OverlayKey, x: number, y: number, w: number): Overlay {
+  if (key === "end" && overlay.to) {
+    const placed = placeOverlay(edit, { ...overlay, ...overlay.to }, x, y, w);
+    return { ...overlay, to: { x: placed.x, y: placed.y, w: placed.w } };
+  }
+  return placeOverlay(edit, overlay, x, y, w);
+}
+
+export function moveOverlay(edit: Edit, id: string, x: number, y: number, key: OverlayKey = "start"): Edit {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return edit;
-  return changeOverlay(edit, id, (overlay) => placeOverlay(edit, overlay, x, y, overlay.w));
+  return changeOverlay(edit, id, (overlay) => placeKey(edit, overlay, key, x, y, placementOf(overlay, key).w));
 }
 
 /** New width, keeping the top-left corner where it fits. */
-export function resizeOverlay(edit: Edit, id: string, w: number): Edit {
+export function resizeOverlay(edit: Edit, id: string, w: number, key: OverlayKey = "start"): Edit {
   if (!Number.isFinite(w)) return edit;
-  return changeOverlay(edit, id, (overlay) => placeOverlay(edit, overlay, overlay.x, overlay.y, w));
+  return changeOverlay(edit, id, (overlay) => {
+    const place = placementOf(overlay, key);
+    return placeKey(edit, overlay, key, place.x, place.y, w);
+  });
 }
 
-export function overlayPreset(edit: Edit, id: string, preset: OverlayPreset): Edit {
+export function overlayPreset(edit: Edit, id: string, preset: OverlayPreset, key: OverlayKey = "start"): Edit {
   const overlay = edit.overlays.find((candidate) => candidate.id === id);
   if (!overlay) return edit;
-  const height = overlayHeight(edit, overlay);
-  const right = 1 - overlay.w - OVERLAY_MARGIN, bottom = 1 - height - OVERLAY_MARGIN;
+  const place = placementOf(overlay, key);
+  const height = overlayHeight(edit, { mediaId: overlay.mediaId, w: place.w });
+  const right = 1 - place.w - OVERLAY_MARGIN, bottom = 1 - height - OVERLAY_MARGIN;
   const [x, y] = preset === "tl" ? [OVERLAY_MARGIN, OVERLAY_MARGIN] : preset === "tr" ? [right, OVERLAY_MARGIN]
-    : preset === "bl" ? [OVERLAY_MARGIN, bottom] : preset === "br" ? [right, bottom] : [(1 - overlay.w) / 2, (1 - height) / 2];
-  return moveOverlay(edit, id, x, y);
+    : preset === "bl" ? [OVERLAY_MARGIN, bottom] : preset === "br" ? [right, bottom] : [(1 - place.w) / 2, (1 - height) / 2];
+  return moveOverlay(edit, id, x, y, key);
 }
 
-/** Which preset the overlay sits at, if any. */
-export function overlayPresetOf(edit: Edit, overlay: Overlay): OverlayPreset | null {
+/** Which preset the overlay (or its end) sits at, if any. */
+export function overlayPresetOf(edit: Edit, overlay: Overlay, key: OverlayKey = "start"): OverlayPreset | null {
+  const place = placementOf(overlay, key);
   for (const preset of ["tl", "tr", "bl", "br", "center"] as const) {
-    const placed = overlayPreset(edit, overlay.id, preset).overlays.find((candidate) => candidate.id === overlay.id)!;
-    if (Math.abs(placed.x - overlay.x) < 0.002 && Math.abs(placed.y - overlay.y) < 0.002) return preset;
+    const placed = placementOf(overlayPreset(edit, overlay.id, preset, key).overlays.find((candidate) => candidate.id === overlay.id)!, key);
+    if (Math.abs(placed.x - place.x) < 0.002 && Math.abs(placed.y - place.y) < 0.002) return preset;
   }
   return null;
+}
+
+/** Chuyển động on (its end starts where it is now) or off. */
+export function setOverlayMotion(edit: Edit, id: string, on: boolean): Edit {
+  return changeOverlay(edit, id, ({ to: _, ...overlay }) => on ? { ...overlay, to: { x: overlay.x, y: overlay.y, w: overlay.w } } : overlay);
+}
+
+/** Hiện dần / tắt dần, 0–3 s in 0.1 s steps; 0 leaves the key out. */
+export function setOverlayFades(edit: Edit, id: string, fades: { fadeIn?: number; fadeOut?: number }): Edit {
+  if (![fades.fadeIn, fades.fadeOut].every((value) => value === undefined || Number.isFinite(value))) return edit;
+  return changeOverlay(edit, id, ({ fadeIn, fadeOut, ...overlay }) => {
+    const inSeconds = Math.round(clamp(fades.fadeIn ?? fadeIn ?? 0, 0, MAX_FADE) * 10) / 10;
+    const outSeconds = Math.round(clamp(fades.fadeOut ?? fadeOut ?? 0, 0, MAX_FADE) * 10) / 10;
+    return { ...overlay, ...(inSeconds ? { fadeIn: inSeconds } : {}), ...(outSeconds ? { fadeOut: outSeconds } : {}) };
+  });
+}
+
+/** Where an overlay is and how visible at output time `time` (its fades and Chuyển động applied), as the export draws it. */
+export function overlayAt(edit: Edit, overlay: Overlay, time: number, total = outputDuration(edit)): Placement & { h: number; alpha: number } {
+  const length = overlayLength(edit, overlay, total);
+  const into = clamp(time - overlay.at, 0, length);
+  const progress = length > 0 ? into / length : 0;
+  const to = overlay.to ?? overlay;
+  const lerp = (a: number, b: number): number => a + (b - a) * progress;
+  const w = lerp(overlay.w, to.w);
+  const fadeIn = Math.min(overlay.fadeIn ?? 0, length / 2), fadeOut = Math.min(overlay.fadeOut ?? 0, length / 2);
+  let alpha = 1;
+  if (fadeIn > 0 && into < fadeIn) alpha *= into / fadeIn;
+  if (fadeOut > 0 && length - into < fadeOut) alpha *= (length - into) / fadeOut;
+  return { x: lerp(overlay.x, to.x), y: lerp(overlay.y, to.y), w, h: overlayHeight(edit, { mediaId: overlay.mediaId, w }), alpha };
 }
 
 /** Output start, and the part of its media an overlay shows (at least 0.1 s). */
@@ -1150,7 +1231,7 @@ export type PlanSegment = { media: number; start: number; end: number; speed: nu
 export type PlanTransition = { after: number; type: TransitionType; duration: number };
 export type PlanOverlay = {
   media: number; at: number; start: number; end: number; x: number; y: number; w: number; volume: number;
-  opacity?: number; radius?: number; border?: number; border_color?: string;
+  opacity?: number; radius?: number; border?: number; border_color?: string; fade_in?: number; fade_out?: number; to?: Placement;
 };
 export type PlanAudio = {
   source: { kind: "sfx"; id: string } | { kind: "file"; path: string };
@@ -1193,9 +1274,11 @@ function planText({ id: _, shadow, ...text }: TextClip, total: number): PlanText
 }
 
 function planOverlay(overlay: Overlay, media: number): PlanOverlay {
-  const { at, start, end, x, y, w, volume, opacity, radius, border, borderColor } = overlay;
+  const { at, start, end, x, y, w, volume, opacity, radius, border, borderColor, fadeIn, fadeOut, to } = overlay;
+  const moves = to && (to.x !== x || to.y !== y || to.w !== w);
   return { media, at, start, end, x, y, w, volume, ...(opacity !== undefined && opacity !== 1 ? { opacity } : {}), ...(radius ? { radius } : {}),
-    ...(border ? { border, border_color: borderColor ?? DEFAULT_BORDER_COLOR } : {}) };
+    ...(border ? { border, border_color: borderColor ?? DEFAULT_BORDER_COLOR } : {}), ...(fadeIn ? { fade_in: fadeIn } : {}),
+    ...(fadeOut ? { fade_out: fadeOut } : {}), ...(moves ? { to: { x: to.x, y: to.y, w: to.w } } : {}) };
 }
 
 function planAudio(clip: AudioClip): PlanAudio {
@@ -1247,7 +1330,9 @@ export function matchesExport(edit: Edit, exported: {
       return other.media === overlay.media && near(other.at, overlay.at) && near(other.start, overlay.start) && near(other.end, overlay.end)
         && near(other.x, overlay.x, 0.0002) && near(other.y, overlay.y, 0.0002) && near(other.w, overlay.w, 0.0002) && other.volume === overlay.volume
         && (other.opacity ?? 1) === (overlay.opacity ?? 1) && (other.radius ?? 0) === (overlay.radius ?? 0) && (other.border ?? 0) === (overlay.border ?? 0)
-        && (other.border_color ?? null) === (overlay.border_color ?? null);
+        && (other.border_color ?? null) === (overlay.border_color ?? null)
+        && (other.fade_in ?? 0) === (overlay.fade_in ?? 0) && (other.fade_out ?? 0) === (overlay.fade_out ?? 0)
+        && JSON.stringify(other.to ?? null) === JSON.stringify(overlay.to ?? null);
     });
 }
 
@@ -1515,6 +1600,13 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
         x: x as number, y: y as number, w: w as number, volume: volume as number }, {
         opacity: finite(opacity) ? opacity : 1, radius: finite(radius) ? radius : 0, border: finite(border) ? border : 0,
         borderColor: isHex(borderColor) ? borderColor : DEFAULT_BORDER_COLOR });
+      const { fadeIn, fadeOut, to } = raw as Record<string, unknown>;
+      const goal = to && typeof to === "object" ? to as Record<string, unknown> : null;
+      if (finite(fadeIn) && fadeIn > 0) Object.assign(overlay, { fadeIn: Math.round(clamp(fadeIn, 0, MAX_FADE) * 10) / 10 });
+      if (finite(fadeOut) && fadeOut > 0) Object.assign(overlay, { fadeOut: Math.round(clamp(fadeOut, 0, MAX_FADE) * 10) / 10 });
+      if (goal && [goal.x, goal.y, goal.w].every(finite)) {
+        Object.assign(overlay, { to: { x: clamp(goal.x as number, 0, 1), y: clamp(goal.y as number, 0, 1), w: clamp(goal.w as number, 0.01, 1) } });
+      }
       if (overlay.at < 0 || overlay.start < 0 || overlay.end - overlay.start < MIN_SEGMENT - 1e-6 || overlay.volume < 0 || overlay.volume > MAX_VOLUME
         || overlay.w <= 0 || overlay.w > 1 || overlay.x < 0 || overlay.x > 1 || overlay.y < 0 || overlay.y > 1) continue;
       ids.add(id);

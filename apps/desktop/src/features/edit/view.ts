@@ -20,7 +20,8 @@ import {
   SPEED_PRESETS, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
   addMarker, copySegment, duplicateSegment, keepRange, moveSegment, nearbyPoint, pasteSegment, removeMarker, removeRange, segmentLength,
   setMarker, snapPoints, snapTime, MAX_MARKERS, type SegmentClip, lookOf, playsForward, sourceAt,
-  isStillPath, overlaps, overlayStyle, setOverlayStyle,
+  isStillPath, overlaps, overlayStyle, setOverlayStyle, rangeEdit, overlayAt, placementOf, setOverlayFades, setOverlayMotion,
+  type OverlayKey,
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
 import { mountSubtitles } from "./subtitles_view.ts";
@@ -119,6 +120,8 @@ export type Editor = {
   /** Whether the edited output is playing; null outside edit mode. */
   isPlaying(): boolean | null;
   togglePlay(): void;
+  /** A click on the picture: drops the selected overlay or text, else plays or pauses. */
+  clickPicture(): void;
   /** Write a pending autosave now. */
   flush(): Promise<void>;
   /** Switch the open edit to a tool tab; false when this video does not have it. */
@@ -276,6 +279,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const ovRadius = $<HTMLInputElement>("#ov-radius");
   const ovBorder = $<HTMLInputElement>("#ov-border");
   const ovBorderColor = $<HTMLInputElement>("#ov-border-color");
+  const ovMotion = $<HTMLInputElement>("#ov-motion");
+  const ovFadeIn = $<HTMLInputElement>("#ov-fade-in");
+  const ovFadeOut = $<HTMLInputElement>("#ov-fade-out");
+  const keyButtons = [...document.querySelectorAll<HTMLButtonElement>("#ov-keys [data-key]")];
   const ghost = $<HTMLCanvasElement>("#edit-ghost");
   const fadeLayer = $("#edit-fade");
   const overlayLayer = $("#edit-overlays");
@@ -336,6 +343,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   // Export dialog.
   let folder = "";
   let quality: Quality = "source";
+  /** Tùy chọn khác of the export dialog (Issue #526); kept while the app runs. */
+  const options = { aspect: "", fill: "blur", fps: "", rate: "", range: "all" as "all" | "marked", audioOnly: false };
+  /** Which placement of the selected overlay drag, size and presets change (Chuyển động). */
+  let overlayKey: OverlayKey = "start";
+  let overlayKeyFor: string | null = null;
+  /** The key being edited for this overlay: the end only while it moves. */
+  const keyOf = (overlay: Overlay): OverlayKey => overlayKeyFor === overlay.id && overlay.to ? overlayKey : "start";
   /** The dialog started an export and waits for it. */
   let dialogWaiting = false;
   let dialogDone: string | null = null;
@@ -354,7 +368,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const created = element("video", "edit-alt");
       created.preload = "auto";
       created.playsInline = true;
-      created.addEventListener("click", () => { togglePlay(); });
+      created.addEventListener("click", () => { clickPicture(); });
       created.addEventListener("loadedmetadata", () => { if (session && active === created) seekOutput(session.outputTime, true); });
       created.addEventListener("pause", () => externalPause(created));
       ghost.before(created);
@@ -560,6 +574,20 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (session && active === video) seekOutput(session.outputTime, true);
   });
 
+  function clickPicture(): void {
+    if (!session) return;
+    if (session.overlay) {
+      selectOverlay(null);
+      return;
+    }
+    if (mode === "text" && textMode.selected) {
+      textMode.select(null);
+      render();
+      return;
+    }
+    togglePlay();
+  }
+
   function togglePlay(): void {
     if (!session || !hasSource()) return;
     if (session.playing) {
@@ -737,13 +765,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       box.element.classList.toggle("selected", selected);
       box.element.classList.toggle("idle", !on);
       box.element.title = `${media?.title || (still ? "Ảnh chồng" : "Video chồng")} · kéo để đổi chỗ`;
-      const height = overlayHeight(edit, overlay);
+      // Paused on a selected overlay: the key being edited; otherwise where it is now (Chuyển động, fades).
+      const editingKey = selected && !session.playing;
+      const now = overlayAt(edit, overlay, time, total);
+      const place = editingKey ? placementOf(overlay, keyOf(overlay)) : now;
+      const height = overlayHeight(edit, { mediaId: overlay.mediaId, w: place.w });
       Object.assign(box.element.style, {
-        left: `${overlay.x * 100}%`, top: `${overlay.y * 100}%`, width: `${overlay.w * 100}%`, height: `${height * 100}%`,
+        left: `${place.x * 100}%`, top: `${place.y * 100}%`, width: `${place.w * 100}%`, height: `${height * 100}%`,
+        opacity: on && !editingKey && now.alpha < 1 ? now.alpha.toFixed(3) : "",
       });
+      box.element.classList.toggle("end-key", editingKey && keyOf(overlay) === "end");
       // Độ trong, bo góc, viền as the export draws them (sizes on a 1080 frame).
       const look = overlayStyle(overlay);
-      const boxWidth = overlay.w * rect.width, boxHeight = height * rect.height;
+      const boxWidth = place.w * rect.width, boxHeight = height * rect.height;
       const border = look.border ? Math.max(1, look.border * Math.min(rect.width, rect.height) / 1080) : 0;
       Object.assign((still ? box.image : box.video).style, {
         opacity: look.opacity === 1 ? "" : String(look.opacity),
@@ -1646,10 +1680,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (document.activeElement !== ovBorderColor) ovBorderColor.value = look.borderColor.toLowerCase();
     ovBorderColor.disabled = !look.border;
     title.title = media?.path ?? "";
-    const preset = overlayPresetOf(edit, overlay);
+    const key = keyOf(overlay), place = placementOf(overlay, key);
+    const preset = overlayPresetOf(edit, overlay, key);
     for (const button of presetButtons) button.setAttribute("aria-checked", String(button.dataset.preset === preset));
-    if (document.activeElement !== ovSize) ovSize.value = String(Math.round(overlay.w * 100));
-    $("#ov-size-value").textContent = `${Math.round(overlay.w * 100)}%`;
+    if (document.activeElement !== ovSize) ovSize.value = String(Math.round(place.w * 100));
+    $("#ov-size-value").textContent = `${Math.round(place.w * 100)}%`;
+    ovMotion.checked = !!overlay.to;
+    $("#ov-keys").hidden = !overlay.to;
+    for (const button of keyButtons) button.setAttribute("aria-checked", String(button.dataset.key === key));
+    $("#ov-motion-note").hidden = !overlay.to;
+    for (const [input, value] of [[ovFadeIn, overlay.fadeIn ?? 0], [ovFadeOut, overlay.fadeOut ?? 0]] as const) {
+      if (document.activeElement !== input) input.value = String(value);
+      $(`#${input.id}-value`).textContent = value ? `${String(value).replace(".", ",")} giây` : "Tắt";
+    }
     if (document.activeElement !== ovVolume) ovVolume.value = String(Math.round(overlay.volume * 100));
     $("#ov-volume-value").textContent = `${Math.round(overlay.volume * 100)}%`;
     $("#ov-volume-note").hidden = overlay.volume <= 1;
@@ -2304,7 +2347,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const dx = (event.clientX - dragging.x) / rect.width, dy = (event.clientY - dragging.y) / rect.height;
     if (!dragging.moved && Math.abs(event.clientX - dragging.x) + Math.abs(event.clientY - dragging.y) < 3) return;
     dragging.moved = true;
-    session.draft = dragging.resize ? resizeOverlay(dragging.base, dragging.id, overlay.w + dx) : moveOverlay(dragging.base, dragging.id, overlay.x + dx, overlay.y + dy);
+    const key = keyOf(overlay), place = placementOf(overlay, key);
+    session.draft = dragging.resize ? resizeOverlay(dragging.base, dragging.id, place.w + dx, key)
+      : moveOverlay(dragging.base, dragging.id, place.x + dx, place.y + dy, key);
     renderEffects();
     renderPanel();
   });
@@ -2496,13 +2541,44 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   for (const button of presetButtons) {
     button.addEventListener("click", () => {
       const overlay = selectedOverlay();
-      if (session && overlay) commit(overlayPreset(session.history.current, overlay.id, button.dataset.preset as OverlayPreset));
+      if (session && overlay) commit(overlayPreset(session.history.current, overlay.id, button.dataset.preset as OverlayPreset, keyOf(overlay)));
+    });
+  }
+  ovMotion.addEventListener("change", () => {
+    const overlay = selectedOverlay();
+    if (!session || !overlay) return;
+    overlayKeyFor = overlay.id;
+    overlayKey = ovMotion.checked ? "end" : "start";
+    commit(setOverlayMotion(session.history.current, overlay.id, ovMotion.checked));
+  });
+  for (const button of keyButtons) {
+    button.addEventListener("click", () => {
+      const overlay = selectedOverlay();
+      if (!session || !overlay?.to) return;
+      overlayKeyFor = overlay.id;
+      overlayKey = button.dataset.key as OverlayKey;
+      // Show the key: the playhead goes to where the overlay starts or ends.
+      const length = overlayLength(current(), overlay);
+      seekOutput(overlayKey === "start" ? overlay.at : overlay.at + Math.max(0, length - 0.04));
+      render();
+    });
+  }
+  for (const [input, field] of [[ovFadeIn, "fadeIn"], [ovFadeOut, "fadeOut"]] as const) {
+    input.addEventListener("input", () => {
+      const overlay = selectedOverlay();
+      if (!session || !overlay) return;
+      session.draft = setOverlayFades(session.history.current, overlay.id, { [field]: Number(input.value) });
+      renderPanel();
+      renderEffects();
+    });
+    input.addEventListener("change", () => {
+      if (session?.draft) commit(session.draft);
     });
   }
   ovSize.addEventListener("input", () => {
     const overlay = selectedOverlay();
     if (!session || !overlay) return;
-    session.draft = resizeOverlay(session.history.current, overlay.id, Number(ovSize.value) / 100);
+    session.draft = resizeOverlay(session.history.current, overlay.id, Number(ovSize.value) / 100, keyOf(overlay));
     renderPanel();
     renderEffects();
   });
@@ -3032,14 +3108,65 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (session) exportButton.focus();
   }
 
+  /** What "Xuất video" renders: the whole edit, or only its I–O range. */
+  function exportedEdit(): Edit {
+    const edit = current();
+    const range = options.range === "marked" ? markedRange() : null;
+    return (range && rangeEdit(edit, range.from, range.to)) || edit;
+  }
+
+  function renderOptions(): void {
+    const group = (selector: string, key: string, value: string): void => {
+      for (const button of document.querySelectorAll<HTMLButtonElement>(`${selector} [data-${key}]`)) {
+        button.setAttribute("aria-checked", String(button.dataset[key] === value));
+      }
+    };
+    group("#export-aspect", "aspect", options.aspect);
+    group("#export-fill", "fill", options.fill);
+    group("#export-fps", "fps", options.fps);
+    group("#export-rate", "rate", options.rate);
+    const range = markedRange();
+    if (!range) options.range = "all";
+    group("#export-range", "range", options.range);
+    $<HTMLButtonElement>('#export-range [data-range="marked"]').disabled = !range;
+    $("#export-range-hint").textContent = range
+      ? `Đã đánh dấu ${formatClock(Math.min(range.from, range.to), true)} – ${formatClock(Math.max(range.from, range.to), true)}`
+      : "Nhấn I và O trên dòng thời gian để đánh dấu một đoạn.";
+    $("#export-fill").hidden = !options.aspect;
+    $<HTMLInputElement>("#export-audio-only").checked = options.audioOnly;
+    for (const id of ["#export-aspect", "#export-fill", "#export-fps", "#export-rate"]) {
+      for (const button of document.querySelectorAll<HTMLButtonElement>(`${id} button`)) button.disabled = options.audioOnly;
+    }
+    const hint = $("#export-aspect-hint");
+    hint.hidden = !options.aspect || options.audioOnly;
+    hint.textContent = options.fill === "blur" ? "Giữ trọn hình, phần thừa là nền mờ của chính video." : "Giữ trọn hình, phần thừa là viền đen.";
+    const chosen = [options.range === "marked" ? "đoạn I–O" : "", options.audioOnly ? "chỉ âm thanh" : options.aspect,
+      options.audioOnly || !options.fps ? "" : `${options.fps} hình/giây`, options.audioOnly ? "" : options.rate === "low" ? "nhẹ" : options.rate === "high" ? "nét" : ""];
+    $("#export-more-summary").textContent = chosen.filter(Boolean).join(" · ");
+  }
+
+  for (const [selector, key] of [["#export-aspect", "aspect"], ["#export-fill", "fill"], ["#export-fps", "fps"], ["#export-rate", "rate"], ["#export-range", "range"]] as const) {
+    for (const button of document.querySelectorAll<HTMLButtonElement>(`${selector} [data-${key}]`)) {
+      button.addEventListener("click", () => {
+        (options as Record<string, unknown>)[key] = button.dataset[key] ?? "";
+        renderDialog();
+      });
+    }
+  }
+  $<HTMLInputElement>("#export-audio-only").addEventListener("change", (event) => {
+    options.audioOnly = (event.target as HTMLInputElement).checked;
+    renderDialog();
+  });
+
   function renderDialog(): void {
     if (dialog.hidden || !session) return;
     const status = listStatus?.status;
     const running = status?.state === "RUNNING";
     const done = !running && dialogDone !== null;
     const { facts } = session;
-    const edit = current();
+    const edit = exportedEdit();
     const total = outputDuration(edit);
+    renderOptions();
     $("#export-form").toggleAttribute("disabled", running || done);
     $("#export-folder").textContent = folder;
     $("#export-folder").title = folder;
@@ -3060,8 +3187,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       edit.texts.length ? `${edit.texts.length} chữ được vẽ lên hình theo cỡ khung xuất` : "",
     ].filter(Boolean).join(". ");
     extras.hidden = !extras.textContent;
-    const bytes = estimateExportBytes(facts.size_bytes, facts.duration, total, facts.width, facts.height, quality);
+    const rate = options.rate === "low" ? 0.6 : options.rate === "high" ? 1.6 : 1;
+    const bytes = options.audioOnly ? total * 24_000 : estimateExportBytes(facts.size_bytes, facts.duration, total, facts.width, facts.height, quality) * rate;
     $("#export-info").textContent = [`Dài ${formatClock(total)}`, megabytes(bytes)].filter(Boolean).join(" · ");
+    $("#export-name").nextElementSibling!.textContent = options.audioOnly ? ".m4a" : ".mp4";
     const progress = $("#export-progress");
     progress.hidden = !running && !done;
     if (running) {
@@ -3087,7 +3216,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   async function startExport(): Promise<void> {
     if (!session) return;
-    const edit = current();
+    const edit = exportedEdit();
+    const whole = edit === current();
     const { outputPath, target: { kind } } = session;
     // A plain video's lines from Phụ đề, else its own captions, go in the .srt.
     const cues = remapCues(session.plainSubs ? exportLines(session.plainSubs) : session.facts.cues, edit).filter((cue) => cue.end_ms > cue.start_ms);
@@ -3101,9 +3231,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const normalize = $<HTMLInputElement>("#export-loudness").checked;
       try { localStorage.setItem(LOUDNESS_KEY, normalize ? "1" : "0"); } catch { /* the choice is only a convenience */ }
       await invoke("edit_export", { request: { outputPath, kind, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit), normalize,
+        audioOnly: options.audioOnly, ...(options.audioOnly ? {} : {
+          ...(options.fps ? { fps: Number(options.fps) } : {}), ...(options.rate ? { bitrate: options.rate } : {}),
+          ...(options.aspect ? { aspect: options.aspect, fill: options.fill } : {}) }),
         ...(session.plainCover && cover.document() ? { cover: cover.document() } : {}), ...(burn ? { burn } : {}) } });
       if (session?.outputPath !== outputPath) return;
-      session.exporting = edit;
+      // Only a whole video counts as the export of this edit (a range or its sound does not).
+      session.exporting = whole && !options.audioOnly ? edit : null;
       dialogWaiting = true;
       dialogDone = null;
       listStatus = { status: { state: "RUNNING", percent: 0, message: "Đang bắt đầu xuất video…", output_path: null }, exports: listStatus?.exports ?? [] };
@@ -3168,6 +3302,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     timeLabel: () => session ? `${formatClock(session.outputTime)} / ${formatClock(outputDuration(current()))}` : null,
     isPlaying: () => session ? session.playing : null,
     togglePlay,
+    clickPicture,
     flush,
     show(next) {
       if (!session || !offered(next)) return false;

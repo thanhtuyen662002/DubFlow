@@ -1042,6 +1042,7 @@ button.job.selected { background: var(--select); }
 .ov-frame input[type="color"] { width: 40px; height: 30px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
 .ov-frame input[type="color"]:disabled { opacity: .4; }
 .edit-ov.selected { outline: 2px solid var(--accent); }
+.edit-ov.selected.end-key { outline-style: dashed; }
 .edit-ov.idle { outline: 1px dashed oklch(1 0 0 / .7); background: oklch(0.60 0.17 278 / .12); }
 .edit-ov.idle video { visibility: hidden; }
 .edit-ov-handle { position: absolute; right: -7px; bottom: -7px; display: none; width: 14px; height: 14px; border: 2px solid #fff; border-radius: 4px; background: var(--accent); cursor: nwse-resize; }
@@ -1162,6 +1163,13 @@ button.job.selected { background: var(--select); }
 .export-quality { background: var(--canvas); }
 .export-hint { color: var(--text-3); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .export-check { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; cursor: pointer; }
+.export-more { display: flex; flex-direction: column; gap: 12px; color: var(--text-2); font-size: 13px; }
+.export-more > summary { cursor: pointer; color: var(--text); font-size: 13px; }
+.export-more > summary .export-hint { margin-left: 6px; }
+.export-more[open] > summary { margin-bottom: 12px; }
+.export-more > .export-field + .export-field, .export-more > .export-check { margin-top: 12px; }
+.export-seg[hidden] { display: none; }
+.export-seg button:disabled { opacity: .45; cursor: not-allowed; }
 .export-note { color: var(--text-3); font-size: 12.5px; line-height: 1.45; }
 .export-progress { display: flex; flex-direction: column; gap: 6px; }
 .export-progress-line { display: flex; justify-content: space-between; gap: 12px; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
@@ -1403,6 +1411,11 @@ label.cover-docu-row { justify-content: flex-start; cursor: pointer; }
 .tx-handle.w { left: -5px; }
 .tx-handle.e { right: -5px; }
 .edit-texts.interactive .tx-box.selected:not(.editing) .tx-handle { display: block; }
+.tx-handle.tx-corner { width: 12px; height: 12px; margin: 0; border-radius: 3px; }
+.tx-corner.nw { left: -7px; top: -7px; cursor: nwse-resize; }
+.tx-corner.se { right: -7px; top: auto; bottom: -7px; cursor: nwse-resize; }
+.tx-corner.ne { right: -7px; top: -7px; cursor: nesw-resize; }
+.tx-corner.sw { left: -7px; top: auto; bottom: -7px; cursor: nesw-resize; }
 .tx-guide { position: absolute; background: oklch(0.80 0.10 278 / .9); pointer-events: none; }
 .tx-guide.x { top: 0; bottom: 0; width: 1px; }
 .tx-guide.y { left: 0; right: 0; height: 1px; }

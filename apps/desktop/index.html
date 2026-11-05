@@ -843,6 +843,18 @@
                       <input id="ov-border" type="range" min="0" max="20" step="1" value="0" /></label>
                     <input id="ov-border-color" type="color" value="#ffffff" aria-label="Màu viền" title="Màu viền" />
                   </div>
+                  <div class="edit-field look-pair">
+                    <label><span class="edit-label">Hiện dần <output id="ov-fade-in-value">Tắt</output></span>
+                      <input id="ov-fade-in" type="range" min="0" max="3" step="0.1" value="0" /></label>
+                    <label><span class="edit-label">Tắt dần <output id="ov-fade-out-value">Tắt</output></span>
+                      <input id="ov-fade-out" type="range" min="0" max="3" step="0.1" value="0" /></label>
+                  </div>
+                  <label class="au-duck"><input id="ov-motion" type="checkbox" /> Chuyển động (đi và đổi cỡ dần)</label>
+                  <div id="ov-keys" class="seg" role="radiogroup" aria-label="Điểm đang chỉnh" hidden>
+                    <button type="button" role="radio" data-key="start" aria-checked="true">Điểm đầu</button>
+                    <button type="button" role="radio" data-key="end" aria-checked="false">Điểm cuối</button>
+                  </div>
+                  <small id="ov-motion-note" class="edit-note" hidden>Chọn điểm đầu hoặc cuối rồi kéo khung, đổi cỡ hay chọn vị trí trên khung hình; khi phát, lớp chồng đi dần từ đầu đến cuối.</small>
                   <div class="edit-times three">
                     <label title="Thời điểm trên video đã sửa">Hiện lúc<input id="ov-at" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
                     <label id="ov-start-field" title="Bắt đầu trong video chồng">Từ<input id="ov-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
@@ -1701,6 +1713,53 @@
             <label class="export-check" title="Đưa âm thanh về độ to chuẩn của YouTube, TikTok, Facebook (−14 LUFS) để video không quá nhỏ hay quá to">
               <input id="export-loudness" type="checkbox" /> Chuẩn hóa độ to (−14 LUFS)
             </label>
+            <details id="export-more" class="export-more">
+              <summary>Tùy chọn khác <span id="export-more-summary" class="export-hint"></span></summary>
+              <div class="export-field">
+                <span class="export-label">Khung hình</span>
+                <div id="export-aspect" class="seg export-seg" role="radiogroup" aria-label="Khung hình">
+                  <button type="button" role="radio" data-aspect="" aria-checked="true">Như gốc</button>
+                  <button type="button" role="radio" data-aspect="16:9" aria-checked="false">16:9</button>
+                  <button type="button" role="radio" data-aspect="9:16" aria-checked="false">9:16</button>
+                  <button type="button" role="radio" data-aspect="1:1" aria-checked="false">1:1</button>
+                  <button type="button" role="radio" data-aspect="4:5" aria-checked="false">4:5</button>
+                </div>
+                <div id="export-fill" class="seg export-seg" role="radiogroup" aria-label="Phần thừa" hidden>
+                  <button type="button" role="radio" data-fill="blur" aria-checked="true">Nền mờ</button>
+                  <button type="button" role="radio" data-fill="black" aria-checked="false">Viền đen</button>
+                </div>
+                <small id="export-aspect-hint" class="export-hint" hidden></small>
+              </div>
+              <div class="export-field">
+                <span class="export-label">Số khung hình/giây</span>
+                <div id="export-fps" class="seg export-seg" role="radiogroup" aria-label="Số khung hình mỗi giây">
+                  <button type="button" role="radio" data-fps="" aria-checked="true">Như gốc</button>
+                  <button type="button" role="radio" data-fps="24" aria-checked="false">24</button>
+                  <button type="button" role="radio" data-fps="25" aria-checked="false">25</button>
+                  <button type="button" role="radio" data-fps="30" aria-checked="false">30</button>
+                  <button type="button" role="radio" data-fps="60" aria-checked="false">60</button>
+                </div>
+              </div>
+              <div class="export-field">
+                <span class="export-label">Dung lượng</span>
+                <div id="export-rate" class="seg export-seg" role="radiogroup" aria-label="Dung lượng">
+                  <button type="button" role="radio" data-rate="low" aria-checked="false" title="File nhỏ, đăng nhanh">Nhẹ</button>
+                  <button type="button" role="radio" data-rate="" aria-checked="true">Vừa</button>
+                  <button type="button" role="radio" data-rate="high" aria-checked="false" title="Nét hơn, file to hơn">Nét</button>
+                </div>
+              </div>
+              <div class="export-field">
+                <span class="export-label">Phạm vi</span>
+                <div id="export-range" class="seg export-seg" role="radiogroup" aria-label="Phạm vi xuất">
+                  <button type="button" role="radio" data-range="all" aria-checked="true">Cả video</button>
+                  <button type="button" role="radio" data-range="marked" aria-checked="false">Đoạn đã đánh dấu (I–O)</button>
+                </div>
+                <small id="export-range-hint" class="export-hint"></small>
+              </div>
+              <label class="export-check" title="Chỉ lưu phần tiếng của bản sửa thành file .m4a">
+                <input id="export-audio-only" type="checkbox" /> Chỉ xuất âm thanh (.m4a)
+              </label>
+            </details>
           </fieldset>
           <p class="export-note">Video gốc vẫn được giữ nguyên. Phụ đề SRT được lưu kèm, khớp với video mới.</p>
           <div id="export-progress" class="export-progress" role="status" hidden>
