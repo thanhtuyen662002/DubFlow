@@ -24,6 +24,8 @@ import {
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
 import { mountSubtitles } from "./subtitles_view.ts";
+import { burnRequest, exportLines, plainSubtitles, serializePlain, type PlainSubtitles } from "./plain_subs.ts";
+import { STYLE_STORAGE_KEY, storedStyle } from "./subtitles.ts";
 import { COVER_STORAGE_KEY, plainCover } from "./cover.ts";
 import { mountCover } from "./cover_view.ts";
 import { mountDocuCover } from "./docu_cover_view.ts";
@@ -144,6 +146,9 @@ type Session = {
   recent: Media[];
   /** Che drawn here and applied at export (Issue #510): every video that is not a re-runnable dubbing job. */
   plainCover: boolean;
+  /** Phụ đề kept in the draft (Issue #523), for the same videos; `touched` once changed or saved before. */
+  plainSubs: PlainSubtitles | null;
+  subsTouched: boolean;
   /** Điểm vào / điểm ra (I, O) in output seconds. */
   markIn: number | null;
   markOut: number | null;
@@ -791,6 +796,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     changed: () => {
       if (session?.plainCover) {
         plainCoverFrame();
+        if (subs.showing) subs.frame();
         scheduleSave();
         renderPanel();
       } else subs.refresh();
@@ -813,7 +819,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   function plainCoverFrame(): void {
-    if (!session?.plainCover) return;
+    // The plain subtitle layer draws the cover with its lines.
+    if (!session?.plainCover || subs.showing) return;
     const layer = $("#edit-subs-layer");
     const show = mode === "cover" || !!cover.document();
     layer.hidden = !show;
@@ -849,6 +856,18 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     finish: async () => { await close(false); },
     changed: () => renderPanel(),
     cover,
+    plainChanged: () => {
+      if (!session?.plainSubs) return;
+      session.subsTouched = true;
+      try {
+        window.localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify(session.plainSubs.style));
+      } catch {
+        // The remembered look is a convenience.
+      }
+      scheduleSave();
+      renderPanel();
+    },
+    plainCover: (seconds) => cover.draw(session?.plainCover && (mode === "cover" || !!cover.document()) ? seconds : null),
   });
   const revisionReady = $("#edit-revision-ready");
   const audio = mountAudio(invoke, host, {
@@ -868,7 +887,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     seek: (time) => seekOutput(time),
     pps: () => pps,
     timeAt: (clientX) => timeAt(clientX),
-    cues: () => session ? remapCues(session.facts.cues, current()) : [],
+    cues: () => session ? remapCues(session.plainSubs ? exportLines(session.plainSubs) : session.facts.cues, current()) : [],
     enterMode: () => {
       if (!session) return;
       session.overlay = null;
@@ -997,6 +1016,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     try {
       const project = serializeProject(history.current, history.changes, selected, recent);
       if (session.plainCover) project.cover = cover.document();
+      if (session.plainSubs && session.subsTouched) (project as Record<string, unknown>).subtitles = serializePlain(session.plainSubs);
       await invoke("edit_project_save", { outputPath, kind, project });
       $("#edit-save-state").textContent = "";
     } catch (error) {
@@ -1457,7 +1477,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     changesBadge.hidden = !pending;
     $("#edit-changes-text").textContent = `${history.changes} thay đổi chưa xuất`;
     changesBadge.title = `${history.changes} thay đổi chưa xuất · bản nháp được tự lưu`;
-    exportButton.disabled = isUnchanged(edit, facts.duration) && !(session.plainCover && cover.document());
+    exportButton.disabled = isUnchanged(edit, facts.duration) && !(session.plainCover && cover.document())
+      && !(session.plainSubs && session.subsTouched);
     exportButton.title = exportButton.disabled ? "Chưa có thay đổi để xuất" : "Xuất bản đã chỉnh sửa thành file video mới";
     const panelMode = mode === "subs" || mode === "cover" || mode === "audio" || mode === "text" || mode === "template" || mode === "more";
     $("#edit-more").hidden = mode !== "more";
@@ -2345,6 +2366,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (mode !== "text") textMode.select(null);
     if (mode === "cover" && session.plainCover) {
       session.overlay = null;
+      // The plain Phụ đề panel gives way; its burned lines still show over the picture.
+      subs.leave();
       cover.enter();
       plainCoverFrame();
     } else if (mode === "subs" || mode === "cover") {
@@ -2693,7 +2716,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session = {
         target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
-        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false, markIn: null, markOut: null, shuttle: 1,
+        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false, plainSubs: null, subsTouched: false, markIn: null, markOut: null, shuttle: 1,
       };
       session.plainCover = !session.reviewable;
       resetThumbs();
@@ -2704,6 +2727,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       docuCover.begin(outputPath, opened.kind);
       if (session.plainCover) cover.loaded(plainCoverDocument(loaded.project), []);
       if (session.reviewable && opened.job) subs.begin(opened.job, outputPath);
+      else {
+        let remembered = null;
+        try {
+          remembered = storedStyle(window.localStorage.getItem(STYLE_STORAGE_KEY));
+        } catch {
+          // The remembered look is a convenience.
+        }
+        session.plainSubs = plainSubtitles(loaded.project, facts.cues, remembered);
+        session.subsTouched = !!(loaded.project && typeof loaded.project === "object" && "subtitles" in loaded.project);
+        subs.beginPlain(outputPath, session.plainSubs);
+      }
       audio.begin();
       textMode.begin();
       templateMode.begin(opened);
@@ -3003,7 +3037,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!session) return;
     const edit = current();
     const { outputPath, target: { kind } } = session;
-    const cues = remapCues(session.facts.cues, edit).filter((cue) => cue.end_ms > cue.start_ms);
+    // A plain video's lines from Phụ đề, else its own captions, go in the .srt.
+    const cues = remapCues(session.plainSubs ? exportLines(session.plainSubs) : session.facts.cues, edit).filter((cue) => cue.end_ms > cue.start_ms);
+    const burn = session.plainSubs ? burnRequest(session.plainSubs) : null;
     const start = $<HTMLButtonElement>("#export-start");
     const error = $("#export-error");
     start.disabled = true;
@@ -3013,7 +3049,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const normalize = $<HTMLInputElement>("#export-loudness").checked;
       try { localStorage.setItem(LOUDNESS_KEY, normalize ? "1" : "0"); } catch { /* the choice is only a convenience */ }
       await invoke("edit_export", { request: { outputPath, kind, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit), normalize,
-        ...(session.plainCover && cover.document() ? { cover: cover.document() } : {}) } });
+        ...(session.plainCover && cover.document() ? { cover: cover.document() } : {}), ...(burn ? { burn } : {}) } });
       if (session?.outputPath !== outputPath) return;
       session.exporting = edit;
       dialogWaiting = true;

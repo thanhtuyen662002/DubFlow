@@ -856,6 +856,14 @@
                   </div>
                   <div id="subs-lines-pane" class="subs-pane" role="tabpanel" aria-labelledby="subs-tab-lines">
                     <button id="subs-full-review" class="btn ghost subs-full-review" type="button" title="Lọc câu cần xem lại, đổi giọng theo người nói rồi xử lý lại">Bảng bản dịch đầy đủ…</button>
+                    <div id="subs-plain-bar" class="subs-plain-bar" hidden>
+                      <label class="subs-row">
+                        <span>In phụ đề vào video khi xuất</span>
+                        <input id="subs-burn" class="switch" type="checkbox" role="switch" />
+                      </label>
+                      <p class="edit-note">Sửa chữ, giờ bắt đầu và kết thúc của từng câu; mọi thay đổi được tự lưu. Nếu video đã có phụ đề in sẵn, dùng Che để che dải phụ đề cũ.</p>
+                      <button id="subs-add" class="btn ghost small" type="button" title="Thêm một câu bắt đầu tại vị trí đang phát">+ Thêm câu tại vị trí phát</button>
+                    </div>
                     <p id="subs-loading" class="edit-note" role="status">Đang đọc phụ đề…</p>
                     <ol id="subs-list" class="subs-list" aria-label="Các câu phụ đề"></ol>
                     <div id="subs-more" class="subs-more" aria-hidden="true"></div>

@@ -392,6 +392,9 @@ pub struct ExportRequest {
     /// Chuẩn hóa độ to (Issue #520): the sound brought to -14 LUFS.
     #[serde(default)]
     normalize: bool,
+    /// Phụ đề lines burned in (Issue #523): drawn on the main video, in its own time.
+    #[serde(default)]
+    burn: Option<BurnSubtitles>,
 }
 
 /// A validated edit, clamped to its media.
@@ -1748,6 +1751,53 @@ impl SubtitleStyle {
     }
 }
 
+/// Lines a video without a re-runnable dubbing job burns in at export (Issue #523).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BurnSubtitles {
+    style: SubtitleStyle,
+    lines: Vec<Cue>,
+}
+
+const BURN_FILE: &str = "subtitles.ass";
+
+/// The lines as the worker burns subtitles (engine/dubflow/subtitle/style.py and
+/// production_job._write_subtitles): PlayRes 1920x1080, one Default style for
+/// the look (a box is BorderStyle 4 padded by the Shadow), a dragged block
+/// placed by its centre, text literal. Times are the main video's own.
+fn burn_ass(burn: &BurnSubtitles) -> Result<String, String> {
+    let style = &burn.style;
+    style.validate()?;
+    if burn.lines.len() > MAX_CUES || burn.lines.iter()
+        .any(|line| line.end_ms <= line.start_ms || line.text.trim().is_empty() || line.text.chars().count() > MAX_CUE_TEXT) {
+        return Err(fail("Phụ đề không hợp lệ"));
+    }
+    let font_size = (48.0 * style.size).round().max(1.0);
+    let (back, border, shadow) = match &style.box_color {
+        Some(color) => (ass_color(color, ((1.0 - style.box_opacity) * 255.0).round() as u8), 4, (font_size * 0.2).round().max(2.0)),
+        None => ("&H64000000".to_owned(), 1, 0.0),
+    };
+    let align = match style.align.as_str() { "top" => 8, "middle" => 5, _ => 2 };
+    let prefix = match (style.x, style.y) {
+        (Some(x), Some(y)) => format!("{{\\an5\\pos({},{})}}", (x * 1920.0).round() as i64, (y * 1080.0).round() as i64),
+        _ => String::new(),
+    };
+    let mut script = format!("[Script Info]\n; DubFlow: Phụ đề\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 0\n\
+ScaledBorderAndShadow: yes\nYCbCr Matrix: None\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
+BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+Style: Default,{},{},{},&H000000FF,{},{back},{},0,0,0,100,100,0,0,{border},{},{},{align},40,40,48,1\n\n[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        style.font, num(font_size), ass_color(&style.primary, 0), ass_color(&style.outline, 0), if style.bold { -1 } else { 0 },
+        num(style.outline_width), num(shadow));
+    let mut lines: Vec<&Cue> = burn.lines.iter().collect();
+    lines.sort_by_key(|line| (line.start_ms, line.end_ms));
+    for line in lines {
+        script.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{prefix}{}\n", ass_time(line.start_ms as f64 / 1000.0),
+            ass_time(line.end_ms as f64 / 1000.0), ass_text(line.text.trim())));
+    }
+    Ok(script)
+}
+
 /// Store a job's subtitle look beside its outputs, where the worker reads it.
 pub(crate) fn write_subtitle_style(dir: &Path, style: &SubtitleStyle) -> Result<(), String> {
     style.validate()?;
@@ -2431,10 +2481,16 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         Some(subtitles_filter(&display_path(&file)))
     };
     let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix, layer.as_deref(), request.normalize);
-    let text = match request.cover.as_ref().map(cover_filter).transpose()?.flatten() {
-        Some(filter) => with_cover(&text, &filter),
-        None => text,
-    };
+    // Che, then Phụ đề, on the main video before it is cut: both follow its own time.
+    let mut prefilter: Vec<String> = request.cover.as_ref().map(cover_filter).transpose()?.flatten().into_iter().collect();
+    if let Some(burn) = request.burn.as_ref().filter(|burn| !burn.lines.is_empty()) {
+        let file = work.join(BURN_FILE);
+        let body = burn_ass(burn)?;
+        guarded(&work)?;
+        fs::write(&file, body).map_err(|_| fail("Không ghi được phụ đề"))?;
+        prefilter.push(subtitles_filter(&display_path(&file)));
+    }
+    let text = if prefilter.is_empty() { text } else { with_cover(&text, &prefilter.join(",")) };
     inputs.extend(sound_inputs);
     guarded(&work)?;
     fs::write(&script, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
@@ -2520,7 +2576,7 @@ mod tests {
     fn request(segments: Vec<Segment>) -> ExportRequest {
         ExportRequest { output_path: "unused".into(), kind: "file".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
             texts: vec![], quality: "source".into(),
-            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false }
+            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false, burn: None }
     }
 
     fn frame() -> Frame {
@@ -3127,6 +3183,30 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
             "box_opacity": 0.6, "outline_width": 3, "bold": true, "align": "bottom"});
         value.as_object_mut().unwrap().extend(changes.as_object().unwrap().clone());
         value
+    }
+
+    #[test]
+    fn burned_lines_follow_the_worker_look_and_stay_literal() {
+        let style: SubtitleStyle = serde_json::from_value(json!({"font": "Arial", "size": 1.25, "primary": "#FFFF00", "outline": "#000000",
+            "box": "#101010", "box_opacity": 0.5, "outline_width": 2.5, "bold": true, "align": "top", "x": 0.5, "y": 0.25})).unwrap();
+        let burn = BurnSubtitles { style: style.clone(), lines: vec![
+            Cue { start_ms: 2500, end_ms: 4000, text: "Hai {\\b1}\nba".into() },
+            Cue { start_ms: 0, end_ms: 1200, text: " Một ".into() },
+        ] };
+        let script = burn_ass(&burn).unwrap();
+        assert!(script.contains("PlayResX: 1920\nPlayResY: 1080\n"));
+        assert!(script.contains("Style: Default,Arial,60,&H0000FFFF,&H000000FF,&H00000000,&H80101010,-1,0,0,0,100,100,0,0,4,2.5,12,8,40,40,48,1\n"), "{script}");
+        let events: Vec<&str> = script.lines().filter(|line| line.starts_with("Dialogue:")).collect();
+        assert_eq!(events, [
+            "Dialogue: 0,0:00:00.00,0:00:01.20,Default,,0,0,0,,{\\an5\\pos(960,270)}Một",
+            "Dialogue: 0,0:00:02.50,0:00:04.00,Default,,0,0,0,,{\\an5\\pos(960,270)}Hai \\{\\\u{2060}b1\\}\\Nba",
+        ]);
+        let plain = BurnSubtitles { style: SubtitleStyle { box_color: None, x: None, y: None, ..style.clone() }, lines: burn.lines.clone() };
+        assert!(burn_ass(&plain).unwrap().contains(",&H64000000,-1,0,0,0,100,100,0,0,1,2.5,0,8,"));
+        let empty = BurnSubtitles { style: style.clone(), lines: vec![Cue { start_ms: 0, end_ms: 900, text: "  ".into() }] };
+        assert!(burn_ass(&empty).is_err());
+        let backwards = BurnSubtitles { style, lines: vec![Cue { start_ms: 900, end_ms: 900, text: "x".into() }] };
+        assert!(burn_ass(&backwards).is_err());
     }
 
     #[test]
