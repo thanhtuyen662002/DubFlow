@@ -2366,6 +2366,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (mode !== "text") textMode.select(null);
     if (mode === "cover" && session.plainCover) {
       session.overlay = null;
+      // The plain Phụ đề panel gives way; its burned lines still show over the picture.
+      subs.leave();
       cover.enter();
       plainCoverFrame();
     } else if (mode === "subs" || mode === "cover") {
