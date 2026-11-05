@@ -6,6 +6,7 @@
  * per clip scheduled by output time.
  */
 import { VoiceTakes, type Take } from "./voice_capture.ts";
+import { boostedAudio, fallbackAudio, isBoosted, setLevel, wake } from "./boost.ts";
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { CATALOG } from "../sfx/bundled.ts";
 import { CATEGORIES, searchSounds, soundLength, type Category, type Sound } from "../sfx/catalog.ts";
@@ -423,7 +424,8 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
       : `Phát ${formatClock(length, true)} · ${formatClock(clip.at, true)} – ${formatClock(clip.at + length, true)}`;
     if (document.activeElement !== volumeInput) volumeInput.value = String(Math.round(clip.volume * 100));
     $("#au-volume-value").textContent = percent(clip.volume);
-    $("#au-volume-note").hidden = clip.volume <= 1;
+    // Clips play through a gain: past 100 % is heard in the preview too (unless that player fell back).
+    $("#au-volume-note").hidden = clip.volume <= 1 || [...players.values()].every((player) => isBoosted(player.element));
     if (document.activeElement !== fadeInInput) fadeInInput.value = String(clip.fadeIn);
     if (document.activeElement !== fadeOutInput) fadeOutInput.value = String(clip.fadeOut);
     $("#au-fade-in-value").textContent = fadeText(clip.fadeIn);
@@ -879,9 +881,16 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
     let player = players.get(clip.id);
     const key = sourceKey(clip);
     if (!player) {
-      const created = new Audio();
-      created.preload = "auto";
-      player = { element: created, key: "" };
+      const created = boostedAudio();
+      const made: Player = { element: created, key: "" };
+      // A load the gain cannot hear (no CORS) plays plainly instead, up to 100 %.
+      created.addEventListener("error", () => {
+        if (!isBoosted(created) || made.element !== created || !created.getAttribute("src")) return;
+        release(made);
+        made.element = fallbackAudio();
+        made.key = "";
+      });
+      player = made;
       players.set(clip.id, player);
     }
     if (player.key !== key) {
@@ -923,8 +932,8 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
       const audio = player.element;
       if (into >= 0 && playing) {
         const gain = audioGain(clip, time, total);
-        audio.volume = clamp(gain, 0, 1);
-        audio.muted = gain <= 0 || takes.state === "recording";
+        setLevel(audio, takes.state === "recording" ? 0 : gain);
+        wake();
         const want = audioPosition(clip, time);
         if (audio.readyState >= 1 && Math.abs(audio.currentTime - want) > 0.15) audio.currentTime = want;
         if (audio.paused && audio.readyState >= 2) void audio.play().catch(() => undefined);

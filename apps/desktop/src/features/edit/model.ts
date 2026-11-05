@@ -155,12 +155,36 @@ export type Edit = {
   /** Lọc ồn / chỉnh âm of the output's own sound (Issue #533). */
   readonly mainDenoise?: boolean;
   readonly mainEq?: EqPreset;
+  /** Lớp âm thanh: the main video's sound mixed from its parts; absent plays its own track. */
+  readonly mainStems?: StemLevels;
   /** Chữ: texts over the picture, later ones drawn on top. */
   readonly texts: readonly TextClip[];
   /** Đánh dấu: named points at output times, in time order (not exported). */
   readonly markers: readonly Marker[];
   readonly nextId: number;
 };
+/**
+ * Lớp âm thanh: how loud each part of the main video's sound plays, 0–2.
+ * `voice` is the Vietnamese dub; `original` the original voice when the
+ * accompaniment (`background`, music and effects) is separated, else the
+ * whole original sound.
+ */
+export type StemLevels = { readonly voice: number; readonly original: number; readonly background: number };
+export const STEM_KEYS = ["voice", "original", "background"] as const;
+export type StemKey = typeof STEM_KEYS[number];
+/** What the parts start at: the dub over the music, the original voice out (or low when it is not separated). */
+export function defaultStems(separated: boolean): StemLevels {
+  return { voice: 1, original: separated ? 0 : 0.35, background: 1 };
+}
+/**
+ * The weight each file gets in the mix, as the host computes it: the source
+ * at `original` and the accompaniment at `background − original` (the
+ * source's own accompaniment cancels out).
+ */
+export function stemWeights(levels: StemLevels, separated: boolean): { voice: number; source: number; background: number } {
+  return { voice: levels.voice, source: levels.original, background: separated ? levels.background - levels.original : 0 };
+}
+
 /** A named point on the output, anchored to output time like sound clips. */
 export type Marker = { readonly id: string; readonly at: number; readonly label: string };
 export type TextAnimation = typeof TEXT_ANIMATIONS[number];
@@ -1041,6 +1065,26 @@ export function setMainVolume(edit: Edit, volume: number): Edit {
   return value === edit.mainVolume ? edit : { ...edit, mainVolume: value };
 }
 
+/** Lớp âm thanh on (levels 0–200 %, 5 % steps kept as hundredths) or off (null). */
+export function setStems(edit: Edit, levels: StemLevels | null): Edit {
+  if (!levels) {
+    if (!edit.mainStems) return edit;
+    const { mainStems: _, ...rest } = edit;
+    return rest;
+  }
+  if (!STEM_KEYS.every((key) => Number.isFinite(levels[key]))) return edit;
+  const next = Object.fromEntries(STEM_KEYS.map((key) => [key, Math.round(clamp(levels[key], 0, MAX_VOLUME) * 100) / 100])) as StemLevels;
+  const same = edit.mainStems && STEM_KEYS.every((key) => edit.mainStems?.[key] === next[key]);
+  return same ? edit : { ...edit, mainStems: next };
+}
+
+function parseStems(raw: unknown): StemLevels | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as Record<string, unknown>;
+  if (!STEM_KEYS.every((key) => typeof value[key] === "number" && Number.isFinite(value[key]))) return undefined;
+  return setStems({ mainStems: undefined } as unknown as Edit, value as unknown as StemLevels).mainStems;
+}
+
 /** How loud a clip is at output time `time` (0 outside it), its fades included. */
 export function audioGain(clip: AudioClip, time: number, total: number): number {
   const length = audioLength(clip, total);
@@ -1295,7 +1339,7 @@ export function isUnchanged(edit: Edit, duration: number): boolean {
   const [only] = edit.segments;
   return edit.segments.length === 1 && only.mediaId === MAIN && only.start <= 0.001 && only.end >= duration - 0.001
     && only.speed === 1 && only.volume === 1 && !only.look && !edit.overlays.length && !edit.audio.length && edit.mainVolume === 1 && !edit.texts.length
-    && !edit.mainDenoise && !edit.mainEq;
+    && !edit.mainDenoise && !edit.mainEq && !edit.mainStems;
 }
 
 export function sameSegments(a: readonly Segment[], b: readonly Pick<Segment, "start" | "end" | "speed" | "volume">[]): boolean {
@@ -1325,6 +1369,8 @@ export type ExportPlan = {
   texts: PlanText[];
   /** Lọc ồn / chỉnh âm of the output's own sound, only when on. */
   mainDenoise?: boolean; mainEq?: EqPreset;
+  /** Lớp âm thanh, only when on. */
+  stems?: StemLevels;
   /** LUT màu files the segments' `lut` index into. */
   luts: string[];
 };
@@ -1358,7 +1404,8 @@ export function exportPlan(edit: Edit): ExportPlan {
   const audio = edit.audio.filter((clip) => audioLength(clip, total) >= MIN_AUDIO).map(planAudio);
   const texts = edit.texts.filter((text) => text.text.trim() && textLength(text, total) >= 0.05).map((text) => planText(text, total));
   return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume, texts, luts,
-    ...(edit.mainDenoise ? { mainDenoise: true } : {}), ...(edit.mainEq ? { mainEq: edit.mainEq } : {}) };
+    ...(edit.mainDenoise ? { mainDenoise: true } : {}), ...(edit.mainEq ? { mainEq: edit.mainEq } : {}),
+    ...(edit.mainStems ? { stems: { ...edit.mainStems } } : {}) };
 }
 
 function planText({ id: _, shadow, ...text }: TextClip, total: number): PlanText {
@@ -1385,7 +1432,7 @@ const near = (a: unknown, b: unknown, tolerance = 0.0005): boolean => typeof a =
 /** An edit renders the same as an exported one (4a exports list only main segments, 4e adds sounds and the main volume, 4f texts). */
 export function matchesExport(edit: Edit, exported: {
   media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown; audio?: unknown; main_volume?: unknown; texts?: unknown; luts?: unknown;
-  main_denoise?: unknown; main_eq?: unknown;
+  main_denoise?: unknown; main_eq?: unknown; stems?: unknown;
 }): boolean {
   const plan = exportPlan(edit);
   const list = (value: unknown): Array<Record<string, unknown>> => Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
@@ -1403,6 +1450,8 @@ export function matchesExport(edit: Edit, exported: {
     const value = (other ?? {}) as Record<string, unknown>;
     return value.kind === source.kind && (source.kind === "sfx" ? value.id === source.id : typeof value.path === "string" && samePath(value.path, source.path));
   };
+  const stems = parseStems(exported.stems);
+  if (!!stems !== !!plan.stems || (stems && plan.stems && !STEM_KEYS.every((key) => stems[key] === plan.stems?.[key]))) return false;
   return (exported.main_volume ?? 1) === plan.mainVolume
     && (exported.main_denoise === true) === (plan.mainDenoise === true) && (exported.main_eq ?? null) === (plan.mainEq ?? null)
     && audio.length === plan.audio.length && plan.audio.every((clip, at) => {
@@ -1576,6 +1625,7 @@ export function serializeProject(edit: Edit, changes: number, selected: string |
     })),
     main_volume: edit.mainVolume,
     ...(edit.mainDenoise ? { main_denoise: true } : {}), ...(edit.mainEq ? { main_eq: edit.mainEq } : {}),
+    ...(edit.mainStems ? { main_stems: { ...edit.mainStems } } : {}),
     texts: edit.texts.map((text) => ({ ...text })),
     markers: edit.markers.map(({ id, at, label }) => ({ id, at, label })),
   };
@@ -1828,7 +1878,8 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
   const selected = typeof data.selected === "string" && segments.some((segment) => segment.id === data.selected) ? data.selected : null;
   const edit = pruneMedia({ duration, media: [main, ...[...known.values()].filter((media) => media.id !== MAIN)], segments, transitions, overlays,
     audio, mainVolume, texts, markers, nextId,
-    ...(data.main_denoise === true ? { mainDenoise: true } : {}), ...(isEq(data.main_eq) ? { mainEq: data.main_eq } : {}) });
+    ...(data.main_denoise === true ? { mainDenoise: true } : {}), ...(isEq(data.main_eq) ? { mainEq: data.main_eq } : {}),
+    ...(schema === 4 && parseStems(data.main_stems) ? { mainStems: parseStems(data.main_stems) } : {}) });
   return { edit, changes, selected, recent };
 }
 

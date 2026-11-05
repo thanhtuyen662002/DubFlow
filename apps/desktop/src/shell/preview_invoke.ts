@@ -272,6 +272,8 @@ const shorts = new Map<string, { started: number; cancelled: boolean; items: Arr
 const reframes = new Map<string, { started: number; cancelled: boolean }>();
 /** Edit drafts and exports per finished video (Cắt ghép, Chèn). */
 const editProjects = new Map<string, unknown>();
+/** Tách giọng in the browser preview: when each video's started. */
+const previewSeparations = new Map<string, number>();
 type PreviewSegment = { media?: number; start: number; end: number; speed: number; volume: number };
 type PreviewExport = {
   path: string; srt_path: string; created: number; duration: number; quality: string; segments: PreviewSegment[];
@@ -487,6 +489,24 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
         cues: reviewCues.map(({ cue_id, start_ms, end_ms, machine_text }) => ({ start_ms, end_ms, text: savedOverrides[cue_id] ?? machine_text })),
       } as T;
     }
+    case "edit_stems": {
+      // A dubbing job has its Vietnamese voice and original sound; Tách giọng adds the accompaniment.
+      const path = String(args.outputPath);
+      const dir = path.replace(/[\\/][^\\/]*$/, "");
+      const run = previewSeparations.get(path);
+      const progress = run ? Math.min(100, (Date.now() - run) / 60) : 0;
+      const done = run !== undefined && progress >= 100;
+      const job = /[\\/]final_vi\.mp4$/i.test(path);
+      return {
+        voice: job ? `${dir}\\editable\\dialogue_stem.wav` : null,
+        source: job ? `${dir}\\editable\\source_audio.wav` : done ? `${dir}\\.dubflow-work\\edit\\stems\\source.wav` : null,
+        background: done ? `${dir}\\.dubflow-work\\edit\\stems\\background.wav` : null,
+        separation: run === undefined ? null : done ? { state: "COMPLETED", progress: 100, message: "Đã tách giọng." }
+          : { state: "RUNNING", progress, message: progress < 8 ? "Đang tải bộ tách giọng lần đầu: 31/80 MB" : "Đang tách giọng gốc khỏi nhạc nền…" },
+      } as T;
+    }
+    case "edit_separate": previewSeparations.set(String(args.outputPath), Date.now()); return undefined as T;
+    case "edit_separate_cancel": previewSeparations.delete(String(args.outputPath)); return undefined as T;
     case "edit_file_sizes": return (args.paths as string[]).map(() => 46_000_000) as T;
     case "edit_library": {
       // The other pages' finished videos, with made-up dates so the list has its groups.
@@ -643,6 +663,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "ai_key_set": previewKeys.set(String(args.provider), String(args.key).trim()); return `…${String(args.key).trim().slice(-4)}` as T;
     case "ai_key_delete": previewKeys.delete(String(args.provider)); return null as T;
     case "release_info": return { version: "0.1.0", channel: "preview", backend: "mock" } as T;
+    // Nghe thử: a short tone stands in for the voice; the first one takes a moment, like the real model.
+    case "voice_sample": await new Promise((resolve) => setTimeout(resolve, 1200)); return `C:\\Users\\preview\\AppData\\Local\\DubFlow\\voice-samples\\${String(args.voiceId)}.wav` as T;
     case "voice_catalog": return { default_voice_id: voices[0].voice_id, voices } as T;
     case "pick_files": {
       picked += 1;

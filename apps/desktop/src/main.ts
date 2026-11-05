@@ -5,6 +5,7 @@ import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_she
 import { confirmDialog } from "./shell/confirm.ts";
 import { mountLayoutPanels, refitPanels } from "./shell/layout_panels.ts";
 import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
+import { createVoiceSampler } from "./features/voices/sample.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import {
   DEFAULTS_KEY, FIRST_RUN_DEFAULTS, LEGACY_DEFAULTS_KEY, readJobDefaults, serializeJobDefaults, type JobDefaults,
@@ -254,7 +255,12 @@ function initials(name: string): string {
   return name.split(/\s+/).filter(Boolean).slice(-2).map((part) => part[0]).join("").toUpperCase();
 }
 
-function voiceButton(voice: VoiceChoice, selected: boolean, note = ""): HTMLButtonElement {
+/** Nghe thử giọng: one sample at a time, made once per voice. */
+const voiceSampler = createVoiceSampler(invoke, (path) => playableUrl(path), (message) => showError(message));
+
+/** A voice to choose, with its Nghe thử button beside it. */
+function voiceButton(voice: VoiceChoice, selected: boolean, note = ""): HTMLElement {
+  const row = element("div", "voice-row");
   const button = element("button", "voice");
   button.type = "button";
   button.setAttribute("role", "radio");
@@ -275,7 +281,8 @@ function voiceButton(voice: VoiceChoice, selected: boolean, note = ""): HTMLButt
       rememberDefaults(selectedJob() ?? job);
     }
   });
-  return button;
+  row.append(button, voiceSampler.button(voice.voice_id, voice.name));
+  return row;
 }
 
 function renderVoiceControls(job: QueueJob | undefined): void {
@@ -323,7 +330,8 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   // Filtering narrows browsing; it never silently changes a saved voice.
   if (pinned && !choices.includes(pinned)) voiceList.append(voiceButton(pinned, true, " (đang chọn)"));
   for (const voice of choices) voiceList.append(voiceButton(voice, voice.voice_id === selected));
-  if (!editable) voiceList.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+  // Listening stays possible on a locked job; choosing does not.
+  if (!editable) voiceList.querySelectorAll<HTMLButtonElement>("button.voice").forEach((button) => { button.disabled = true; });
   if (!pinned && job?.dubbing.voiceId) {
     status.textContent = "Giọng đã lưu không có trong phiên bản này — hãy chọn giọng khác.";
   } else if (job && job.status.state !== "QUEUED") {
@@ -2659,3 +2667,13 @@ if (isTauri) {
 }
 
 window.addEventListener("beforeunload", () => shell.dispose());
+
+// Nghe thử beside the other Vietnamese voice pickers (Bán hàng, Tổng hợp, Chỉnh sửa › Mẫu).
+for (const id of ["product-voice", "compilation-voice", "tpl-voice"]) {
+  const select = document.getElementById(id);
+  if (!(select instanceof HTMLSelectElement) || select.parentElement?.classList.contains("voice-pick")) continue;
+  const wrap = document.createElement("span");
+  wrap.className = "voice-pick";
+  select.replaceWith(wrap);
+  wrap.append(select, voiceSampler.forSelect(select));
+}

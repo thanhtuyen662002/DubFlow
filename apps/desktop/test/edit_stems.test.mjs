@@ -1,0 +1,42 @@
+import assert from "node:assert/strict";
+import {
+  createEdit, defaultStems, exportPlan, isUnchanged, matchesExport, parseProject, serializeProject, setStems, stemWeights,
+} from "../src/features/edit/model.ts";
+
+// ---------- Lớp âm thanh: levels ----------
+const edit = createEdit(30, { path: "C:/out/final_vi.mp4" });
+assert.equal(setStems(edit, null), edit, "off stays off");
+const on = setStems(edit, defaultStems(true));
+assert.deepEqual(on.mainStems, { voice: 1, original: 0, background: 1 });
+assert.deepEqual(defaultStems(false), { voice: 1, original: 0.35, background: 1 }, "an unseparated original sound starts low");
+assert.equal(isUnchanged(edit, 30), true);
+assert.equal(isUnchanged(on, 30), false, "parts on is an edit to export");
+const loud = setStems(on, { voice: 2.7, original: -1, background: 0.333 });
+assert.deepEqual(loud.mainStems, { voice: 2, original: 0, background: 0.33 }, "0–200 %, hundredths");
+assert.equal(setStems(loud, { ...loud.mainStems }), loud, "same levels, same edit");
+assert.equal(setStems(loud, { voice: Number.NaN, original: 0, background: 1 }), loud, "not a number: unchanged");
+assert.equal(setStems(loud, null).mainStems, undefined);
+
+// The weights cancel the source's accompaniment: only the original voice keeps `original`.
+assert.deepEqual(stemWeights({ voice: 1.5, original: 0.2, background: 1 }, true), { voice: 1.5, source: 0.2, background: 0.8 });
+assert.deepEqual(stemWeights({ voice: 0, original: 1, background: 0 }, true), { voice: 0, source: 1, background: -1 });
+assert.deepEqual(stemWeights({ voice: 1, original: 0.35, background: 1 }, false), { voice: 1, source: 0.35, background: 0 });
+
+// ---------- Export and drafts ----------
+const plan = exportPlan(loud);
+assert.deepEqual(plan.stems, { voice: 2, original: 0, background: 0.33 });
+assert.equal(exportPlan(edit).stems, undefined, "off: nothing sent");
+const exported = { segments: plan.segments, main_volume: 1, stems: plan.stems };
+assert.equal(matchesExport(loud, exported), true);
+assert.equal(matchesExport(edit, exported), false, "an export with parts is not the plain edit");
+assert.equal(matchesExport(setStems(loud, { voice: 1, original: 0, background: 0.33 }), exported), false, "other levels");
+assert.equal(matchesExport(edit, { segments: plan.segments, main_volume: 1 }), true);
+
+const saved = serializeProject(loud, 3, null);
+assert.deepEqual(saved.main_stems, { voice: 2, original: 0, background: 0.33 });
+const back = parseProject(JSON.parse(JSON.stringify(saved)), 30, { path: "C:/out/final_vi.mp4" });
+assert.deepEqual(back?.edit.mainStems, loud.mainStems);
+assert.equal("main_stems" in serializeProject(edit, 0, null), false);
+const broken = parseProject({ ...JSON.parse(JSON.stringify(saved)), main_stems: { voice: "x" } }, 30, { path: "C:/out/final_vi.mp4" });
+assert.equal(broken?.edit.mainStems, undefined, "a bad entry is dropped");
+console.log("edit_stems tests passed");

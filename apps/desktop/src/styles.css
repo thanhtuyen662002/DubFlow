@@ -1798,3 +1798,29 @@ body:is(.panel-dragging-x, .panel-dragging-y) :is(iframe, video) { pointer-event
 .trend-panel.panel-collapsed, .product-side.panel-collapsed { padding: 0; }
 .product-side.panel-collapsed { align-self: stretch; min-height: 320px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .docu-player.panel-collapsed { min-height: 0; padding: 0; }
+/* Lớp âm thanh (Âm thanh › the main video's sound in parts) */
+.au-stems { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
+.au-stems-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.au-stems-head .edit-segment-title { margin: 0; }
+.au-stems .edit-note { margin: 0; }
+.au-stems .edit-note.error { color: var(--danger, #d14343); }
+.au-stem { display: flex; flex-direction: column; gap: 4px; }
+.au-stem-controls { display: flex; align-items: center; gap: 6px; }
+.au-stem-controls input[type="range"] { flex: 1; min-width: 80px; }
+.au-stem-controls input[type="range"].off { opacity: .55; }
+.au-stem-solo[aria-pressed="true"] { border-color: var(--accent); background: var(--select); color: var(--accent-text); }
+.au-stems-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.au-stems-separate { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.au-stems-track { position: relative; width: 100%; height: 4px; overflow: hidden; border-radius: 2px; background: var(--raised); }
+.au-stems-fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width .3s; }
+
+/* Nghe thử giọng */
+.voice-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.voice-sample { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--text-2); cursor: pointer; }
+.voice-sample:hover { border-color: var(--line-strong); color: var(--text); }
+.voice-sample.on, .voice-sample-btn.on { border-color: var(--accent); color: var(--accent-text); background: var(--select); }
+.voice-pick { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.voice-pick select { flex: 1; min-width: 0; }
+.voice-sample-btn { display: inline-flex; flex: none; align-items: center; gap: 6px; white-space: nowrap; }
+.voice-sample-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: voice-spin .8s linear infinite; }
+@keyframes voice-spin { to { transform: rotate(360deg); } }
