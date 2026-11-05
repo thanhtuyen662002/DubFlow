@@ -1806,14 +1806,20 @@ for (const [id, view] of [["#nav-queue", "queue"], ["#nav-discover", "discover"]
 }
 
 async function startFetch(url: string, title?: string, authRetried = false): Promise<string> {
-  // A Douyin link first gets a session (kept for 20 h); without one it still starts.
+  // A Douyin link is opened in DubFlow's browser first to read the video's
+  // details (a few seconds). The saved session is refreshed alongside, never
+  // in the way: it is only the fallback when the page cannot be read.
+  const note = "Đang mở video trên Douyin…";
   if (isDouyinLink(url)) {
-    const note = "Đang chuẩn bị phiên Douyin…";
+    void douyin.ensureSession(false).catch(() => undefined);
     if (!queueState.textContent) showError(note);
-    await douyin.ensureSession(false).catch(() => undefined);
+  }
+  let started: { status: FetchStatus; output_dir: string };
+  try {
+    started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url, title: title?.trim() || null });
+  } finally {
     if (queueState.textContent === note) showError("");
   }
-  const started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url, title: title?.trim() || null });
   const entry: FetchEntry = { status: started.status, outputDir: started.output_dir, timer: 0, samples: [], authRetried, renewing: false, saving: false };
   fetches.set(started.status.scan_id, entry);
   scheduleFetchPoll(entry);

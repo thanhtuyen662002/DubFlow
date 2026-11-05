@@ -229,6 +229,10 @@ class SourceSession:
                     # never silently downgrade an explicit protected capability.
                     bridge.get_opaque_headers(provider)
                     options["session_bridge"] = bridge
+            if provider == "douyin":
+                details = protected.parent / "source-page-details"
+                _reject_links(details)
+                options["page_details"] = details
         self.adapter = provider_from_verified_bundle(root, artifacts=artifacts, provider_id=provider, **options)
         self.work_root, self.root = work, root
         self.provider, self.reference, self.page_size = provider, reference, args["page_size"]
