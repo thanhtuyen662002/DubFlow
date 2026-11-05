@@ -769,9 +769,15 @@ fn shown_title(title: &str, identity: &Identity) -> Option<String> {
     let placeholder = clean.is_empty()
         || clean == identity.source_id
         || clean == identity.canonical_url
-        || clean.starts_with("http://")
-        || clean.starts_with("https://");
+        || looks_like_url(clean);
     (!placeholder).then(|| clean.to_owned())
+}
+
+/// Whether a title is just a web address: it starts with an http(s) scheme,
+/// in any letter case (`HTTPS://host/...` too).
+fn looks_like_url(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    ["http://", "https://"].iter().any(|scheme| lower.starts_with(scheme))
 }
 
 /// Most titles remembered at once; the oldest scans are forgotten first.
@@ -4311,12 +4317,18 @@ print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'worker':__fil
         value["page"]["items"][0]["title"] = json!("  Phim  hay  ");
         let (_, titles) = checked_page_titled(decode(value), &record, 2).unwrap();
         assert_eq!(titles, vec![("generic:one".to_owned(), "Phim  hay".to_owned())]);
-        for placeholder in ["one", "https://example.test/one", "https://example.test/x", "   "] {
+        for placeholder in ["one", "https://example.test/one", "https://example.test/x", "HTTPS://example.test/video", "HttpS://example.test/v", "Http://example.test/v", "   "] {
             let mut value = page_value(&record);
             value["page"]["items"][0]["title"] = json!(placeholder);
             let (page, titles) = checked_page_titled(decode(value), &record, 2).unwrap();
             assert!(titles.is_empty(), "{placeholder}");
             assert_eq!(page.items.len(), 1, "an untitled item is still kept");
+        }
+        for kept in ["Https là gì? Giải thích dễ hiểu", "Video: http và https", "【4K】Vlog"] {
+            let mut value = page_value(&record);
+            value["page"]["items"][0]["title"] = json!(kept);
+            let (_, titles) = checked_page_titled(decode(value), &record, 2).unwrap();
+            assert_eq!(titles[0].1, kept, "an ordinary title stays as written");
         }
         let mut value = page_value(&record);
         value["page"]["items"][0]["title"] = json!("长".repeat(300));
