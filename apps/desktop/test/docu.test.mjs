@@ -291,12 +291,14 @@ assert.equal(parseMcpActivity({ updated: "x", current: null, recent: [] }).curre
 
 // What the user reads instead of raw ids (all-screens polish).
 {
-  const { SFX_NAMES, sceneName, sourceName, AMBIENT_SFX } = await import("../src/features/docu/model.ts");
+  const { SFX_NAMES, sceneName, sourceName, sourceNames, AMBIENT_SFX } = await import("../src/features/docu/model.ts");
   assert.equal(sceneName("sc_007"), "Cảnh 7");
   assert.equal(sceneName("sc_120"), "Cảnh 120");
   assert.equal(sceneName("custom"), "custom");
   assert.equal(sourceName("src_02"), "Nguồn 2");
   assert.equal(sourceName("other"), "other");
+  assert.equal(sourceNames("Phụ đề gốc của src_01 vẫn lộ; src_12 là video dọc"), "Phụ đề gốc của Nguồn 1 vẫn lộ; Nguồn 12 là video dọc");
+  assert.equal(sourceNames("my_src_01x"), "my_src_01x");
   for (const tag of AMBIENT_SFX) assert.ok(SFX_NAMES[tag] && !SFX_NAMES[tag].includes("_"), tag);
   console.log("docu names tests passed");
 }

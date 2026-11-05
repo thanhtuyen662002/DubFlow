@@ -166,6 +166,16 @@ type Session = {
   plainCover: boolean;
   /** Phụ đề kept in the draft (Issue #523), for the same videos; `touched` once changed or saved before. */
   plainSubs: PlainSubtitles | null;
+  /** Hoàn tác across both histories: which kind each step was, newest last (subtitles live outside the Edit). */
+  steps: Array<"edit" | "subs">;
+  redoSteps: Array<"edit" | "subs">;
+  /** Plain subtitles as they were before each "subs" step, and after each undone one. */
+  subsPast: string[];
+  subsFuture: string[];
+  /** The plain subtitles as last recorded, and when (typing coalesces into one step). */
+  subsShadow: string;
+  subsAt: number;
+  subsBurst: string | null;
   subsTouched: boolean;
   /** Điểm vào / điểm ra (I, O) in output seconds. */
   markIn: number | null;
@@ -251,6 +261,9 @@ const clamp = (value: number, low: number, high: number): number => Math.min(hig
 
 /** "Sao chép" keeps a segment across videos while the app runs. */
 let clipboard: SegmentClip | null = null;
+
+/** Same-kind subtitle changes closer together than this are one Hoàn tác step (typing a line, dragging a slider). */
+const SUBS_STEP_MS = 800;
 
 export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const { video } = host;
@@ -1024,6 +1037,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (edit !== current()) commit(edit);
     if (layers.burnCaptions && session.plainSubs) {
       session.plainSubs.burn = true;
+      session.subsShadow = JSON.stringify(session.plainSubs);
       session.subsTouched = true;
       subs.refresh();
       scheduleSave();
@@ -1045,9 +1059,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     finish: async () => { await close(false); },
     changed: () => renderPanel(),
     cover,
-    plainChanged: () => {
+    plainChanged: (burst) => {
       if (!session?.plainSubs) return;
       session.subsTouched = true;
+      recordSubs(burst);
       try {
         window.localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify(session.plainSubs.style));
       } catch {
@@ -1184,6 +1199,39 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     seekOutput(time ?? session.outputTime);
   }
 
+  /** A subtitle change becomes one Hoàn tác step; quick bursts (typing, a slider) stay one step. */
+  function recordSubs(burst?: string): void {
+    if (!session?.plainSubs) return;
+    const now = JSON.stringify(session.plainSubs);
+    if (now === session.subsShadow) return;
+    const at = Date.now();
+    const same = !!burst && burst === session.subsBurst && session.steps.at(-1) === "subs" && at - session.subsAt <= SUBS_STEP_MS;
+    session.subsBurst = burst ?? null;
+    if (!same) {
+      session.subsPast.push(session.subsShadow);
+      session.steps.push("subs");
+      if (session.steps.length > 400) session.steps.shift();
+      if (session.subsPast.length > 200) session.subsPast.shift();
+    }
+    session.redoSteps = [];
+    session.subsFuture = [];
+    session.subsShadow = now;
+    session.subsAt = at;
+  }
+
+  /** Put plain subtitles back from a recorded snapshot. */
+  function restoreSubs(snapshot: string): void {
+    if (!session?.plainSubs) return;
+    Object.assign(session.plainSubs, JSON.parse(snapshot) as PlainSubtitles);
+    session.subsShadow = snapshot;
+    session.subsAt = 0;
+    session.subsBurst = null;
+    session.subsTouched = true;
+    subs.plainRestored();
+    scheduleSave();
+    render();
+  }
+
   function commit(next: Edit, selected?: string): void {
     if (!session) return;
     const before = session.history.current;
@@ -1192,6 +1240,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       render();
       return;
     }
+    session.steps.push("edit");
+    if (session.steps.length > 400) session.steps.shift();
+    session.redoSteps = [];
     if (selected) session.selected = selected;
     settle(before, next);
     render();
@@ -1200,6 +1251,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   function undo(): void {
     if (!session || session.draft) return;
+    if (session.steps.at(-1) === "subs") {
+      const snapshot = session.subsPast.pop();
+      session.steps.pop();
+      if (snapshot === undefined) return;
+      session.subsFuture.push(session.subsShadow);
+      session.redoSteps.push("subs");
+      restoreSubs(snapshot);
+      return;
+    }
+    if (session.history.canUndo) {
+      session.steps.pop();
+      session.redoSteps.push("edit");
+    }
     const before = session.history.current;
     const edit = session.history.undo();
     if (!edit) return;
@@ -1210,6 +1274,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   function redo(): void {
     if (!session || session.draft) return;
+    if (session.redoSteps.at(-1) === "subs") {
+      const snapshot = session.subsFuture.pop();
+      session.redoSteps.pop();
+      if (snapshot === undefined) return;
+      session.subsPast.push(session.subsShadow);
+      session.steps.push("subs");
+      restoreSubs(snapshot);
+      return;
+    }
+    if (session.history.canRedo) {
+      session.redoSteps.pop();
+      session.steps.push("edit");
+    }
     const before = session.history.current;
     const edit = session.history.redo();
     if (!edit) return;
@@ -1701,8 +1778,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const { history, facts } = session;
     const edit = current();
     renderModes();
-    undoButton.disabled = !history.canUndo || !!session.draft;
-    redoButton.disabled = !history.canRedo || !!session.draft;
+    undoButton.disabled = !(history.canUndo || session.steps.at(-1) === "subs") || !!session.draft;
+    redoButton.disabled = !(session.redoSteps.at(-1) === "subs" ? session.subsFuture.length : session.redoSteps.length && history.canRedo) || !!session.draft;
     const pending = unexported();
     changesBadge.hidden = !pending;
     $("#edit-changes-text").textContent = `${history.changes} thay đổi chưa xuất`;
@@ -3063,7 +3140,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session = {
         target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
-        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false, plainSubs: null, subsTouched: false, markIn: null, markOut: null, shuttle: 1,
+        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false, plainSubs: null, subsTouched: false,
+        steps: [], redoSteps: [], subsPast: [], subsFuture: [], subsShadow: "", subsAt: 0, subsBurst: null, markIn: null, markOut: null, shuttle: 1,
       };
       session.plainCover = !session.reviewable;
       resetThumbs();
@@ -3084,6 +3162,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         }
         session.plainSubs = plainSubtitles(loaded.project, facts.cues, remembered);
         session.subsTouched = !!(loaded.project && typeof loaded.project === "object" && "subtitles" in loaded.project);
+        session.subsShadow = JSON.stringify(session.plainSubs);
         subs.beginPlain(outputPath, session.plainSubs);
       }
       audio.begin();

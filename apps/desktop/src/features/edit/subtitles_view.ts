@@ -65,7 +65,8 @@ export type SubtitleContext = {
   changed: () => void;
   cover: CoverHooks;
   /** A plain video's lines or look changed (saved with the draft). */
-  plainChanged: () => void;
+  /** A plain line changed; changes with the same `burst` key in quick succession are one Hoàn tác step. */
+  plainChanged: (burst?: string) => void;
   /** Draw a plain video's Che at a time of the main video, when it shows. */
   plainCover: (seconds: number | null) => void;
 };
@@ -75,6 +76,8 @@ export type SubtitleMode = {
   begin(job: QueueJob, outputPath: string): void;
   /** A new session on a video without a dubbing job: its lines live in the draft (Issue #523). */
   beginPlain(outputPath: string, subtitles: PlainSubtitles): void;
+  /** The plain lines were put back by Hoàn tác / Làm lại: show them again. */
+  plainRestored(): void;
   /** The subtitle layer shows: under Phụ đề, or a plain video's lines that are burned in. */
   readonly showing: boolean;
   /** A plain video's lines as a timeline lane (drag to move, drag an edge to retime); its height. */
@@ -464,7 +467,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
         refreshRow(row, cue);
         renderFoot();
         frame();
-        context.plainChanged();
+        context.plainChanged(`text:${cue.cue_id}`);
         return;
       }
       if (cleanText(input.value) === cleanText(cue.text)) drafts.delete(cue.cue_id);
@@ -859,7 +862,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     style = normalizeStyle(style);
     if (plain) {
       plain.style = style;
-      context.plainChanged();
+      context.plainChanged("style");
     }
     renderStyle();
     renderFoot();
@@ -1030,6 +1033,13 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       frame();
     },
     get showing() { return visible(); },
+    plainRestored() {
+      if (!plain) return;
+      style = normalizeStyle(plain.style);
+      baseStyle = style;
+      renderStyle();
+      syncPlain();
+    },
     renderTrack,
     beginPlain(path, subtitles) {
       this.begin(null as unknown as QueueJob, path);
