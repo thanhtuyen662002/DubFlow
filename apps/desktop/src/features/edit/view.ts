@@ -91,6 +91,8 @@ export type EditorHost = {
   playExport: (jobId: string, path: string) => void;
   /** A URL the player can stream a local video from (a heavy video's light copy once ready), or null when it cannot. */
   mediaUrl: (path: string) => Promise<string | null>;
+  /** A video was written again in place: stream it afresh, not from the old file or cache. */
+  mediaChanged: (path: string) => void;
   /** Start (or follow) the light copy of a heavy video. */
   proxy: (path: string) => Promise<ProxyState>;
   /** Load the open video into the player again, at the same time (its light copy became ready). */
@@ -985,6 +987,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     reload: async () => {
       if (!session) return;
       const target = session.target;
+      // The film file was replaced on disk: drop every cached copy of it.
+      host.mediaChanged(session.outputPath);
       if (!(await close(false, true))) return;
       if (await open(target)) setMode("cover");
     },
@@ -995,6 +999,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     reload: async (layers) => {
       if (!session) return;
       const target = session.target;
+      // The film file was replaced on disk: drop every cached copy of it.
+      host.mediaChanged(session.outputPath);
       if (!(await close(false, true))) return;
       if (await open(target)) await applyLayers(layers);
     },

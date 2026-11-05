@@ -429,6 +429,11 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       return { graphics: true, captions: false, music: "generated", bed: `${dir}\\music_bed.wav` } as T;
     }
     case "docu_render_status": return previewRender(String(args.dir)) as T;
+    case "docu_render_options": {
+      // A cancelled split puts the cards and music back.
+      if (args.graphics || args.music !== "none") docuSplit.delete(String(args.dir));
+      return { graphics: !!args.graphics, captions: !!args.captions, music: String(args.music), music_path: args.musicPath ?? null } as T;
+    }
     case "docu_capcut": return { state: "COMPLETED", folder: "C:\\Users\\me\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\DubFlow - Three Gorges",
       name: "DubFlow - Three Gorges", clips: 18, duration: 64.1, captions: "D:\\Videos\\captions_en.srt" } as T;
     case "docu_launch_capcut": return undefined as T;

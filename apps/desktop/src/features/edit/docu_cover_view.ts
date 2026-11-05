@@ -42,6 +42,7 @@ export function mountDocuCover(invoke: Invoke, context: DocuCoverContext): DocuC
   const list = document.querySelector<HTMLElement>("#cover-docu-list")!;
   const state = document.querySelector<HTMLElement>("#cover-docu-state")!;
   const apply = document.querySelector<HTMLButtonElement>("#cover-docu-apply")!;
+  const cancel = document.querySelector<HTMLButtonElement>("#cover-docu-cancel")!;
   let dir = "";
   let ticket = 0;
   let base: SourceCover[] = [];
@@ -58,6 +59,8 @@ export function mountDocuCover(invoke: Invoke, context: DocuCoverContext): DocuC
     const button = applyButton(changed().length, unrendered, rendering);
     apply.disabled = !button.enabled;
     apply.textContent = button.label;
+    cancel.hidden = !rendering;
+    cancel.disabled = false;
     if (!rendering && button.state) state.textContent = button.state;
   }
 
@@ -235,6 +238,17 @@ export function mountDocuCover(invoke: Invoke, context: DocuCoverContext): DocuC
       renderFoot();
       state.textContent = String(error).slice(0, 200);
     }
+  });
+
+  // Stop the render: the old film stays as it was and the saved cover can be rendered later.
+  cancel.addEventListener("click", () => {
+    if (!rendering) return;
+    cancel.disabled = true;
+    state.textContent = "Đang hủy…";
+    void invoke("docu_render_cancel", { dir }).catch((error) => {
+      cancel.disabled = false;
+      state.textContent = String(error).slice(0, 200);
+    });
   });
 
   return {

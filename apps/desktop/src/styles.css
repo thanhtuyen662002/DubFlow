@@ -1240,6 +1240,7 @@ button.job.selected { background: var(--select); }
 .cover-boxes { position: absolute; inset: 0; }
 .edit-layers[hidden] { display: none; }
 .edit-layers { display: flex; flex: none; flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+.edit-layers-actions { display: flex; gap: 6px; }
 .edit-layers-text { margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.45; }
 .edit-layers .edit-note:empty { display: none; }
 .cover-docu[hidden] { display: none; }
@@ -1384,7 +1385,8 @@ label.cover-docu-row { justify-content: flex-start; cursor: pointer; }
 .tl-subtrack[hidden] { display: none; }
 .tl-sub { position: absolute; top: 0; height: 18px; overflow: hidden; border-radius: 5px; background: oklch(0.32 0.06 230); box-shadow: inset 0 0 0 1px oklch(0.50 0.09 230); cursor: grab; }
 .tl-sub.empty { background: var(--warn-bg); }
-.tl-sub.selected { box-shadow: inset 0 0 0 2px var(--accent); }
+.tl-sub:hover { z-index: 2; }
+.tl-sub.selected { z-index: 3; box-shadow: inset 0 0 0 2px var(--accent); }
 .tl-sub-name { position: absolute; top: 0; left: 8px; right: 8px; overflow: hidden; color: var(--text); font-size: 11px; font-weight: 600; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
 .tl-sub .tl-handle { width: 7px; }
 .tl-sub .tl-handle::after { left: 2px; height: 8px; margin-top: -4px; }
