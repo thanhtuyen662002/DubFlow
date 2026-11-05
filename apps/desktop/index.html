@@ -655,6 +655,9 @@
                 <button id="edit-redo" class="icon-btn" type="button" aria-label="Làm lại" title="Làm lại (Ctrl+Y)" aria-keyshortcuts="Control+Y">
                   <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M15 14l5-5-5-5M20 9H9a5 5 0 0 0 0 10h3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                 </button>
+                <button id="edit-versions" class="icon-btn" type="button" aria-haspopup="dialog" aria-label="Phiên bản và mẫu" title="Phiên bản và mẫu: lưu bản chỉnh sửa để quay lại, dùng lại chữ, logo, âm thanh cho video khác">
+                  <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 7.5 12 4l8 3.5-8 3.5-8-3.5zM4 12l8 3.5 8-3.5M4 16.5 12 20l8-3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                </button>
                 <span class="edit-changes-slot">
                   <span id="edit-changes" class="edit-changes" hidden><span class="dot warn"></span><span id="edit-changes-text"></span></span>
                 </span>
@@ -1719,6 +1722,41 @@
           <button id="review-undo" class="btn" type="button" title="Hoàn tác lần sửa gần nhất (Ctrl+Z ngoài ô nhập)" aria-keyshortcuts="Control+Z" disabled>Hoàn tác</button>
           <button id="review-apply" class="btn primary" type="button" disabled>Lưu &amp; xử lý lại</button>
         </footer>
+      </div>
+    </div>
+    <div id="snap-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="snap-title" hidden>
+      <div class="review-panel export-panel snap-panel">
+        <header class="review-head">
+          <div><h2 id="snap-title">Phiên bản và mẫu</h2></div>
+          <button id="snap-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <div class="export-body">
+          <div id="snap-tabs" class="seg" role="tablist" aria-label="Phiên bản hoặc mẫu">
+            <button id="snap-versions-tab" type="button" role="tab" data-vtab="versions" aria-selected="true" aria-controls="snap-versions">Phiên bản của video này</button>
+            <button id="snap-templates-tab" type="button" role="tab" data-vtab="templates" aria-selected="false" aria-controls="snap-templates">Mẫu dùng lại</button>
+          </div>
+          <section id="snap-versions" class="snap-pane" role="tabpanel" aria-labelledby="snap-versions-tab">
+            <p class="edit-note">Lưu bản chỉnh sửa hiện tại để quay lại sau. Khôi phục thay bản đang sửa và có thể hoàn tác (Ctrl+Z).</p>
+            <form id="snap-version-form" class="snap-version-form">
+              <input id="snap-version-name" type="text" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Tên, ví dụ: Bản gửi khách" aria-label="Tên phiên bản" />
+              <button class="btn primary" type="submit">Lưu phiên bản</button>
+            </form>
+            <ul id="snap-list" class="snap-list" aria-label="Các phiên bản đã lưu"></ul>
+            <p id="snap-version-empty" class="edit-note" hidden>Chưa có phiên bản nào.</p>
+          </section>
+          <section id="snap-templates" class="snap-pane" role="tabpanel" aria-labelledby="snap-templates-tab" hidden>
+            <p class="edit-note">Mẫu giữ chữ, lớp chồng (ảnh, logo, video), âm thanh và cài đặt tiếng gốc để đặt lên video khác, ở cùng thời điểm.</p>
+            <form id="snap-template-form" class="snap-version-form">
+              <input id="snap-template-name" type="text" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Tên mẫu, ví dụ: Logo + nhạc kênh" aria-label="Tên mẫu" />
+              <button class="btn primary" type="submit">Lưu làm mẫu</button>
+            </form>
+            <ul id="snap-template-list" class="snap-list" aria-label="Các mẫu đã lưu"></ul>
+            <p id="snap-template-empty" class="edit-note" hidden>Chưa có mẫu nào.</p>
+          </section>
+          <p id="snap-error" class="export-error" role="alert" hidden></p>
+        </div>
       </div>
     </div>
     <div id="export-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="export-title" hidden>

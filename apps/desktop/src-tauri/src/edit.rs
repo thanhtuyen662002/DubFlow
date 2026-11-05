@@ -2621,6 +2621,157 @@ fn save_draft(target: &Target, bytes: &[u8]) -> Result<(), String> {
     write_atomic(&target.work.join("project.json"), bytes).map_err(|_| fail("Không lưu được bản nháp chỉnh sửa"))
 }
 
+// ---------- Phiên bản and Mẫu (Issue #534) ----------
+
+/// Versions of a draft live beside it; templates for the whole app below the data root.
+const VERSIONS_DIR: &str = "versions";
+const TEMPLATES_DIR: &str = "edit-templates";
+const MAX_VERSIONS: usize = 30;
+const MAX_TEMPLATES: usize = 50;
+const MAX_SAVED_NAME: usize = 80;
+
+/// "v-<ms>" or "t-<ms>": the only names read or removed in those folders.
+fn saved_id(id: &str, prefix: char) -> bool {
+    id.len() > 2 && id.len() <= 18 && id.starts_with(prefix) && id.as_bytes()[1] == b'-' && id[2..].bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn saved_name(name: &str) -> Result<String, String> {
+    let clean: String = name.chars().filter(|c| !c.is_control()).collect::<String>().trim().chars().take(MAX_SAVED_NAME).collect();
+    if clean.is_empty() { Err(fail("Hãy đặt tên")) } else { Ok(clean) }
+}
+
+/// The saved entries of `dir` (`id`, `name`, `saved_at`, and `summary` when present), newest first.
+fn saved_list(dir: &Path, prefix: char) -> Vec<Value> {
+    let mut entries: Vec<(u64, Value)> = fs::read_dir(dir).into_iter().flatten().filter_map(|entry| {
+        let entry = entry.ok()?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let id = name.strip_suffix(".json").filter(|id| saved_id(id, prefix))?.to_owned();
+        fs::symlink_metadata(entry.path()).ok().filter(|metadata| metadata.is_file() && metadata.len() <= PROJECT_LIMIT as u64 + 4096)?;
+        let value: Value = serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
+        let stamp = id[2..].parse::<u64>().ok()?;
+        Some((stamp, json!({"id": id, "name": value["name"], "saved_at": value["saved_at"], "summary": value["summary"]})))
+    }).collect();
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    entries.into_iter().map(|(_, value)| value).collect()
+}
+
+/// Write `body` as a new entry of `dir`, keeping at most `keep` (the oldest go).
+fn saved_write(dir: &Path, prefix: char, name: &str, summary: Option<&str>, key: &str, body: &Value, keep: usize) -> Result<Value, String> {
+    let bytes = serde_json::to_vec(body).map_err(|_| fail("Không lưu được"))?;
+    if bytes.len() > PROJECT_LIMIT {
+        return Err(fail("Bản chỉnh sửa quá lớn để lưu"));
+    }
+    fs::create_dir_all(dir).map_err(|_| fail("Không tạo được thư mục lưu"))?;
+    if !fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)) {
+        return Err(fail("Thư mục lưu không an toàn (là liên kết)"));
+    }
+    let mut stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+    while dir.join(format!("{prefix}-{stamp}.json")).exists() {
+        stamp += 1;
+    }
+    let id = format!("{prefix}-{stamp}");
+    let saved_at = stamp / 1000;
+    let mut entry = json!({"name": name, "saved_at": saved_at});
+    if let Some(summary) = summary {
+        entry["summary"] = json!(summary.chars().take(200).collect::<String>());
+    }
+    entry[key] = body.clone();
+    write_atomic(&dir.join(format!("{id}.json")), &serde_json::to_vec(&entry).unwrap_or_default()).map_err(|_| fail("Không lưu được"))?;
+    for old in saved_list(dir, prefix).into_iter().skip(keep) {
+        if let Some(old) = old["id"].as_str().filter(|old| saved_id(old, prefix)) {
+            let _ = fs::remove_file(dir.join(format!("{old}.json")));
+        }
+    }
+    Ok(json!({"id": id, "name": name, "saved_at": saved_at, "summary": entry["summary"]}))
+}
+
+fn saved_read(dir: &Path, prefix: char, id: &str, key: &str) -> Result<Value, String> {
+    if !saved_id(id, prefix) {
+        return Err(fail("Không tìm thấy bản đã lưu"));
+    }
+    let file = dir.join(format!("{id}.json"));
+    if !fs::symlink_metadata(&file).is_ok_and(|metadata| metadata.is_file() && metadata.len() <= PROJECT_LIMIT as u64 + 4096) {
+        return Err(fail("Không tìm thấy bản đã lưu"));
+    }
+    let value: Value = serde_json::from_slice(&fs::read(&file).map_err(|_| fail("Không đọc được bản đã lưu"))?).map_err(|_| fail("Bản đã lưu bị hỏng"))?;
+    Ok(value[key].clone())
+}
+
+fn saved_delete(dir: &Path, prefix: char, id: &str) -> Result<(), String> {
+    if !saved_id(id, prefix) {
+        return Err(fail("Không tìm thấy bản đã lưu"));
+    }
+    match fs::remove_file(dir.join(format!("{id}.json"))) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(fail("Không xóa được")),
+    }
+}
+
+fn versions_dir(output_path: &str, kind: &str) -> Result<PathBuf, String> {
+    let target = edit_target(output_path, kind)?;
+    target.prepare()?;
+    guarded(&target.work)?;
+    Ok(target.work.join(VERSIONS_DIR))
+}
+
+fn templates_dir() -> Result<PathBuf, String> {
+    Ok(crate::control_root()?.join(TEMPLATES_DIR))
+}
+
+/// Phiên bản: the saved versions of an edit, newest first.
+#[tauri::command]
+pub fn edit_versions(output_path: String, kind: String) -> Result<Vec<Value>, String> {
+    Ok(saved_list(&versions_dir(&output_path, &kind)?, 'v'))
+}
+
+#[tauri::command]
+pub fn edit_version_save(output_path: String, kind: String, name: String, project: Value) -> Result<Value, String> {
+    check_project(&project)?;
+    saved_write(&versions_dir(&output_path, &kind)?, 'v', &saved_name(&name)?, None, "project", &project, MAX_VERSIONS)
+}
+
+#[tauri::command]
+pub fn edit_version_load(output_path: String, kind: String, id: String) -> Result<Value, String> {
+    saved_read(&versions_dir(&output_path, &kind)?, 'v', &id, "project")
+}
+
+#[tauri::command]
+pub fn edit_version_delete(output_path: String, kind: String, id: String) -> Result<(), String> {
+    saved_delete(&versions_dir(&output_path, &kind)?, 'v', &id)
+}
+
+/// Mẫu: layer templates any video can use, newest first.
+#[tauri::command]
+pub fn edit_templates() -> Result<Vec<Value>, String> {
+    Ok(saved_list(&templates_dir()?, 't'))
+}
+
+#[tauri::command]
+pub fn edit_template_save(name: String, summary: String, layers: Value) -> Result<Value, String> {
+    if layers["schema"] != json!(1) {
+        return Err(fail("Mẫu không hợp lệ"));
+    }
+    saved_write(&templates_dir()?, 't', &saved_name(&name)?, Some(&summary), "layers", &layers, MAX_TEMPLATES)
+}
+
+/// A template's layers; the files its overlays and sounds use may then be previewed.
+#[tauri::command]
+pub fn edit_template_load(id: String) -> Result<Value, String> {
+    let layers = saved_read(&templates_dir()?, 't', &id, "layers")?;
+    let sounds: Vec<PathBuf> = layers["audio"].as_array().into_iter().flatten().take(MAX_SOUNDS)
+        .filter(|clip| clip["source"]["kind"] == "file")
+        .filter_map(|clip| clip["source"]["path"].as_str().and_then(|path| crate::sfx::audio_file(path).ok()))
+        .collect();
+    crate::sfx::allow_files(&sounds);
+    Ok(layers)
+}
+
+#[tauri::command]
+pub fn edit_template_delete(id: String) -> Result<(), String> {
+    saved_delete(&templates_dir()?, 't', &id)
+}
+
 struct ExportJob {
     work: PathBuf,
     /// The main video, then every other media the edit uses, once each.
@@ -4137,5 +4288,31 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         assert_eq!(percent_decoded("D%3A%5CVideos%5CPhim%20hay%20(s%E1%BB%ADa).mp4").as_deref(), Some(r"D:\Videos\Phim hay (sửa).mp4"));
         assert_eq!(percent_decoded("%E1%BB"), None);
         assert_eq!(percent_decoded("%Z1"), None);
+    }
+
+    #[test]
+    fn versions_and_templates_are_named_files_newest_first() {
+        let dir = std::env::temp_dir().join(format!("dubflow-saved-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert!(saved_id("v-1730780000000", 'v') && !saved_id("v-1/../x", 'v') && !saved_id("t-1", 'v') && !saved_id("v-", 'v'));
+        assert_eq!(saved_name("  Bản\n gửi khách  ").unwrap(), "Bản gửi khách");
+        assert!(saved_name(" \t ").is_err());
+        let first = saved_write(&dir, 'v', "Một", None, "project", &json!({"a": 1}), 2).unwrap();
+        let second = saved_write(&dir, 'v', "Hai", None, "project", &json!({"a": 2}), 2).unwrap();
+        let third = saved_write(&dir, 'v', "Ba", None, "project", &json!({"a": 3}), 2).unwrap();
+        let names: Vec<Value> = saved_list(&dir, 'v').into_iter().map(|entry| entry["name"].clone()).collect();
+        assert_eq!(names, vec![json!("Ba"), json!("Hai")], "newest first, the oldest dropped");
+        assert!(saved_read(&dir, 'v', first["id"].as_str().unwrap(), "project").is_err());
+        assert_eq!(saved_read(&dir, 'v', second["id"].as_str().unwrap(), "project").unwrap(), json!({"a": 2}));
+        assert!(saved_read(&dir, 'v', "../project", "project").is_err());
+        saved_delete(&dir, 'v', third["id"].as_str().unwrap()).unwrap();
+        saved_delete(&dir, 'v', third["id"].as_str().unwrap()).unwrap();
+        assert_eq!(saved_list(&dir, 'v').len(), 1);
+        let template = saved_write(&dir, 't', "Mẫu", Some("2 chữ"), "layers", &json!({"schema": 1}), 5).unwrap();
+        assert_eq!(template["summary"], json!("2 chữ"));
+        assert_eq!(saved_list(&dir, 't').len(), 1, "templates and versions apart");
+        let big = json!({"x": "a".repeat(PROJECT_LIMIT)});
+        assert!(saved_write(&dir, 'v', "To", None, "project", &big, 2).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
