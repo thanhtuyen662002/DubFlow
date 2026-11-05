@@ -168,25 +168,46 @@ fn webview_data_root(data_root: &Path, version: &str) -> Result<PathBuf, String>
 }
 
 const LOCAL_STORAGE: [&str; 3] = ["EBWebView", "Default", "Local Storage"];
+/// Files a version's first launch carries over besides localStorage: the
+/// cookie store (sign-ins such as Douyin) and `Local State`, which holds the
+/// key the cookie values are encrypted with. Without that key the copied
+/// cookies cannot be read, so both travel together.
+const INHERITED_FILES: [&[&str]; 4] = [
+    &["EBWebView", "Local State"],
+    &["EBWebView", "Default", "Network", "Cookies"],
+    &["EBWebView", "Default", "Network", "Cookies-journal"],
+    &["EBWebView", "Default", "Cookies"],
+];
+
+fn profile_path(dir: &Path, parts: &[&str]) -> PathBuf {
+    parts.iter().fold(dir.to_path_buf(), |path, part| path.join(part))
+}
 
 /// A version's first launch starts from the newest earlier version's
-/// localStorage (queue, results folder, saved choices) instead of an empty
-/// profile. Best effort; the earlier profile is only read, so rolling back
-/// still finds its own data.
+/// localStorage (queue, results folder, saved choices) and cookies (account
+/// sign-ins) instead of an empty profile. Best effort; the earlier profile is
+/// only read, so rolling back still finds its own data.
 fn inherit_previous_profile(profile: &Path) {
     if profile.exists() {
         return;
     }
     let Some(root) = profile.parent() else { return };
-    let storage = |dir: &Path| LOCAL_STORAGE.iter().fold(dir.to_path_buf(), |path, part| path.join(part));
     // Dot-prefixed folders are cleanup leftovers being deleted, never a profile.
     let newest = fs::read_dir(root).into_iter().flatten().flatten()
         .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-        .map(|entry| storage(&entry.path()))
-        .filter_map(|path| fs::metadata(path.join("leveldb")).and_then(|metadata| metadata.modified()).ok().map(|modified| (modified, path)))
+        .map(|entry| entry.path())
+        .filter_map(|dir| fs::metadata(profile_path(&dir, &LOCAL_STORAGE).join("leveldb"))
+            .and_then(|metadata| metadata.modified()).ok().map(|modified| (modified, dir)))
         .max_by_key(|(modified, _)| *modified);
-    if let Some((_, previous)) = newest {
-        let _ = copy_work_cache(&previous, &storage(profile), &[]);
+    let Some((_, previous)) = newest else { return };
+    let _ = copy_work_cache(&profile_path(&previous, &LOCAL_STORAGE), &profile_path(profile, &LOCAL_STORAGE), &[]);
+    for parts in INHERITED_FILES {
+        let (from, to) = (profile_path(&previous, parts), profile_path(profile, parts));
+        if from.is_file() && !to.exists() {
+            if let Some(parent) = to.parent() {
+                let _ = fs::create_dir_all(parent).and_then(|_| fs::copy(&from, &to));
+            }
+        }
     }
 }
 
@@ -2312,7 +2333,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_version_inherits_the_newest_earlier_local_storage() {
+    fn a_new_version_inherits_the_newest_earlier_local_storage_and_cookies() {
         let root = std::env::temp_dir().join(format!("dubflow-profile-inherit-{}", std::process::id())).join("webview2");
         let _ = fs::remove_dir_all(root.parent().unwrap());
         let storage = |version: &str| LOCAL_STORAGE.iter().fold(root.join(version), |path, part| path.join(part));
@@ -2321,8 +2342,18 @@ mod tests {
             fs::write(storage(version).join("leveldb/000003.log"), body).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        let file = |version: &str, parts: &[&str]| profile_path(&root.join(version), parts);
+        for parts in INHERITED_FILES.iter().take(3) {
+            fs::create_dir_all(file("new", parts).parent().unwrap()).unwrap();
+            fs::write(file("new", parts), parts.last().unwrap()).unwrap();
+        }
         inherit_previous_profile(&root.join("next"));
         assert_eq!(fs::read_to_string(storage("next").join("leveldb/000003.log")).unwrap(), "newest queue");
+        // Sign-ins survive the update: the cookie store and its key travel too.
+        for parts in INHERITED_FILES.iter().take(3) {
+            assert_eq!(fs::read_to_string(file("next", parts)).unwrap(), *parts.last().unwrap());
+        }
+        assert!(!file("next", INHERITED_FILES[3]).exists(), "a file the earlier profile lacks is not invented");
         assert_eq!(fs::read_to_string(storage("new").join("leveldb/000003.log")).unwrap(), "newest queue", "the source is untouched");
         // An existing profile is never overwritten.
         fs::write(storage("next").join("leveldb/000003.log"), "own data").unwrap();
