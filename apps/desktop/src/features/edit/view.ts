@@ -343,6 +343,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   let library: LibraryItem[] = [];
   let libraryToken = 0;
   // Playback across media: the queue player for "main", one <video> per other media, one per overlay.
+  /** The sound or text picked last, so picking one drops the selected overlay (one selection at a time). */
+  let pickedSound: string | null = null;
+  let pickedText: string | null = null;
+
   const alts = new Map<string, HTMLVideoElement>();
   const boxes = new Map<string, Box>();
   let active: HTMLVideoElement = video;
@@ -1279,6 +1283,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   function deleteSelected(): void {
     if (!session || session.draft) return;
+    if ((mode === "audio" || mode === "text") && selectedOverlay()) {
+      const id = selectedOverlay()!.id;
+      session.overlay = null;
+      commit(removeOverlay(session.history.current, id));
+      return;
+    }
     if (mode === "audio") {
       audio.deleteSelected();
       return;
@@ -1313,6 +1323,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   function selectOverlay(id: string | null): void {
     if (!session) return;
+    if (id) {
+      // Picking an overlay drops the picked sound or text, so Delete removes the overlay.
+      audio.select(null);
+      textMode.select(null);
+      pickedSound = null;
+      pickedText = null;
+    }
     session.overlay = id;
     render();
   }
@@ -2125,8 +2142,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }
   }
 
+  /** Delete and the panels act on the last thing picked: an overlay, a sound or a text, never two at once. */
+  function oneSelection(): void {
+    if (!session) return;
+    const sound = audio.selected;
+    const text = textMode.selected;
+    if ((sound && sound !== pickedSound) || (text && text !== pickedText)) session.overlay = null;
+    pickedSound = sound;
+    pickedText = text;
+  }
+
   function render(): void {
     if (!session) return;
+    oneSelection();
     renderPanel();
     renderTimeline();
     subs.editChanged();
