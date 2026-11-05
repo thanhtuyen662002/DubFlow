@@ -25,7 +25,7 @@ from .script import CHAPTERS, load_draft
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 ENCODERS = ("h264_mf", "libopenh264")
 VIDEO_BITRATE = "8M"
-RECIPE = "docu-roughcut-v4"
+RECIPE = "docu-roughcut-v5"
 # The bundled LGPL FFmpeg has no `eq`: a gentle S-curve for contrast and +8 % saturation, the same on every source.
 LOOK = "curves=all='0/0 0.25/0.235 0.75/0.77 1/1',huesaturation=saturation=0.08"
 KEN_BURNS_SHOT = 6.0
@@ -98,17 +98,18 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
         left, top = max(0, x - margin), max(0, y - margin)
         right, bottom = min(width, x + w + margin), min(height, y + h + margin)
         outer_w, outer_h = right - left, bottom - top
-        # Opaque over the box and a quarter of the margin past it, then a slow fade over the rest; along the frame's
-        # own edges it stays opaque to the border.
-        reach = margin // 4
-        inner_x, inner_y = (x - left) - reach if x > left else 0, (y - top) - reach if y > top else 0
-        inner_r = outer_w - ((right - x - w) - reach if right > x + w else 0)
-        inner_b = outer_h - ((bottom - y - h) - reach if bottom > y + h else 0)
+        # Fully opaque over the whole box (its edge is three mask sigmas inside the drawn area, so thin logo graphics
+        # at the box edge such as the 太空记 triangle apex stay hidden), then a slow fade over the margin; along the
+        # frame's own edges it stays opaque to the border (#565).
+        reach = margin // 2
+        inner_x, inner_y = max(0, (x - left) - reach), max(0, (y - top) - reach)
+        inner_r = outer_w - max(0, (right - x - w) - reach)
+        inner_b = outer_h - max(0, (bottom - y - h) - reach)
         sigma = max(safezone.LOGO_SIGMA_MIN, int(round(min(w, h) * safezone.LOGO_SIGMA)))
         graph.append(f"[{label}]split=2[logo{number}base][logo{number}cut];[logo{number}cut]crop={outer_w}:{outer_h}:{left}:{top},"
                      f"gblur=sigma={sigma}:steps=3,format=yuva420p[logo{number}soft];"
                      f"color=c=black:s={outer_w}x{outer_h},drawbox=x={inner_x}:y={inner_y}:w={inner_r - inner_x}:h={inner_b - inner_y}"
-                     f":color=white:t=fill,gblur=sigma={max(2, margin // 4)}:steps=3,format=gray[logo{number}mask];"
+                     f":color=white:t=fill,gblur=sigma={max(2, margin // 6)}:steps=3,format=gray[logo{number}mask];"
                      f"[logo{number}soft][logo{number}mask]alphamerge[logo{number}blur];"
                      f"[logo{number}base][logo{number}blur]overlay={left}:{top}:shortest=1[logo{number}]")
         label = f"logo{number}"
