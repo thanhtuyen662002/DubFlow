@@ -1227,6 +1227,10 @@ button.job.selected { background: var(--select); }
 .cover-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .edit-subs-layer.passive .subs-text { pointer-events: none; cursor: default; outline-color: transparent; }
 .cover-boxes { position: absolute; inset: 0; }
+.edit-layers[hidden] { display: none; }
+.edit-layers { display: flex; flex: none; flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+.edit-layers-text { margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.45; }
+.edit-layers .edit-note:empty { display: none; }
 .cover-docu[hidden] { display: none; }
 .cover-docu { display: flex; flex: none; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .cover-docu-list { display: flex; flex-direction: column; gap: 12px; }
