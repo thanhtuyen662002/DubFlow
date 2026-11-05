@@ -1028,7 +1028,7 @@ button.job.selected { background: var(--select); }
 .edit-ov.idle video { visibility: hidden; }
 .edit-ov-handle { position: absolute; right: -7px; bottom: -7px; display: none; width: 14px; height: 14px; border: 2px solid #fff; border-radius: 4px; background: var(--accent); cursor: nwse-resize; }
 .edit-ov.selected .edit-ov-handle { display: block; }
-.queue-screen:not(.editing) :is(.edit-ghost, .edit-fade, .edit-overlays, .edit-texts, .edit-alt, .edit-subs-layer) { display: none; }
+.queue-screen:not(.editing) :is(.edit-ghost, .edit-tint, .edit-fade, .edit-overlays, .edit-texts, .edit-alt, .edit-subs-layer) { display: none; }
 
 /* Phụ đề: line list, style panel, footer, and the live subtitle over the picture */
 .edit-panel.subs .edit-panel-body { gap: 0; padding: 0; overflow: hidden; }
@@ -1621,3 +1621,39 @@ button.job.selected { background: var(--select); }
 .edit-keys dt { white-space: nowrap; }
 .edit-keys dd { margin: 0; line-height: 1.4; }
 .edit-keys kbd { display: inline-block; min-width: 18px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--text-2); font: 600 11px/18px inherit; text-align: center; }
+
+/* Chỉnh sửa: segment look (Issue #518) */
+.edit-tint { position: absolute; inset: 0; opacity: 0; mix-blend-mode: soft-light; pointer-events: none; }
+.seg-tabs { background: var(--canvas); }
+.seg-tabs button { position: relative; min-width: 0; padding: 0 4px; font-size: 12.5px; }
+.seg-tabs button.dot::after { content: ""; position: absolute; top: 6px; right: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.seg-pane { display: flex; flex-direction: column; gap: 14px; }
+.seg-pane[hidden], .edit-field[hidden], .look-toggles [hidden], .edit-times[hidden] { display: none; }
+.btn.chip { height: 30px; padding: 0 10px; font-size: 12.5px; }
+.btn.chip[aria-pressed="true"] { border-color: var(--accent); background: var(--select); color: var(--accent-text); }
+.look-toggles { display: flex; flex-wrap: wrap; gap: 6px; }
+.look-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.look-pair label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.look-pair .edit-label { font-size: 12.5px; }
+.look-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+.look-grid label { display: flex; flex-direction: column; gap: 2px; color: var(--text-3); font-size: 12px; }
+.look-grid input, .seg-pane input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+.look-ratios, .look-zoom-presets { background: var(--canvas); }
+.look-ratios button, .look-zoom-presets button { min-width: 0; padding: 0 4px; font-size: 12.5px; }
+.look-focus-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.look-focus { display: grid; grid-template-columns: repeat(3, 18px); gap: 3px; padding: 4px; border-radius: 6px; background: var(--canvas); }
+.look-focus button { width: 18px; height: 12px; padding: 0; border: 0; border-radius: 2px; background: var(--line); cursor: pointer; }
+.look-focus button:hover:not(:disabled) { background: var(--line-strong); }
+.look-focus button[aria-checked="true"] { background: var(--accent); }
+.look-focus button:disabled { opacity: .4; cursor: default; }
+.look-presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.look-presets button { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-width: 0; padding: 4px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--text-2); font-size: 11.5px; cursor: pointer; }
+.look-presets button:hover { background: var(--hover); color: var(--text); }
+.look-presets button[aria-checked="true"] { border-color: var(--accent); color: var(--text); font-weight: 600; }
+.look-swatch { position: relative; height: 34px; overflow: hidden; border-radius: 4px; background: linear-gradient(135deg, oklch(0.62 0.13 230) 0%, oklch(0.74 0.12 150) 45%, oklch(0.78 0.14 75) 75%, oklch(0.55 0.16 25) 100%); }
+.look-swatch::after { content: ""; position: absolute; inset: 0; background: var(--tint); opacity: var(--tint-opacity, 0); mix-blend-mode: soft-light; }
+.look-presets span:last-child { overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+input.temperature { accent-color: oklch(0.75 0.13 60); }
+.tl-badge.look { background: oklch(0.42 0.10 200 / .92); }
+.tl-seg.held { background: repeating-linear-gradient(135deg, oklch(0.30 0.03 275) 0 6px, oklch(0.26 0.02 275) 6px 12px); }
+.tl-seg.held .tl-handle { display: none; }

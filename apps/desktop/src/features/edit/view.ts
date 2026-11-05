@@ -19,7 +19,7 @@ import {
   samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput, openingTime, resolveTarget, modeOffered,
   SPEED_PRESETS, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
   addMarker, copySegment, duplicateSegment, keepRange, moveSegment, nearbyPoint, pasteSegment, removeMarker, removeRange, segmentLength,
-  setMarker, snapPoints, snapTime, MAX_MARKERS, type SegmentClip,
+  setMarker, snapPoints, snapTime, MAX_MARKERS, type SegmentClip, lookOf, playsForward, sourceAt,
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
 import { mountSubtitles } from "./subtitles_view.ts";
@@ -28,6 +28,8 @@ import { mountCover } from "./cover_view.ts";
 import { mountAudio } from "./audio_view.ts";
 import { mountText } from "./text_view.ts";
 import { mountTemplate } from "./template_view.ts";
+import { mountLook } from "./look_view.ts";
+import { lookBadges } from "./look.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
@@ -299,6 +301,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const alts = new Map<string, HTMLVideoElement>();
   const boxes = new Map<string, Box>();
   let active: HTMLVideoElement = video;
+  /** Reverse and held-frame segments play by the clock, not by the player: when and where it started. */
+  let clock: { at: number; output: number } | null = null;
   /** Joint whose outgoing frame the ghost holds (dissolve preview), or -1. */
   let ghostJoint = -1;
   /** The transition popover's joint (id of the segment before it). */
@@ -368,11 +372,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const previous = active;
     active = player;
     if (!previous.paused) previous.pause();
+    lookPanel.clear(previous);
     for (const alt of alts.values()) alt.classList.toggle("active", alt === player);
   }
 
   function applySegment(segment: Segment, player: HTMLVideoElement): void {
-    player.playbackRate = segment.speed * (session?.shuttle ?? 1);
+    player.playbackRate = clamp(segment.speed * (session?.shuttle ?? 1), 0.0625, 16);
     applyLevel(segment, player);
   }
 
@@ -412,7 +417,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       activate(player);
       applySegment(point.segment, player);
       if (player.readyState >= 1 && Math.abs(player.currentTime - point.sourceTime) > 0.001) player.currentTime = point.sourceTime;
-      if (session.playing && player.paused && player.readyState >= 1) void player.play().catch(() => undefined);
+      clock = null;
+      if (!playsForward(point.segment)) {
+        // Reverse and held frames are drawn by seeking; the clock moves the playhead (tick).
+        if (!player.paused) player.pause();
+      } else if (session.playing && player.paused && player.readyState >= 1) void player.play().catch(() => undefined);
       prepareNext(edit, point.index);
     }
     renderEffects();
@@ -440,7 +449,25 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const index = Math.min(session.index, edit.segments.length - 1);
     const segment = edit.segments[index];
     const player = active;
-    if (player.readyState >= 2) {
+    if (!playsForward(segment)) {
+      const now = performance.now();
+      if (!clock) clock = { at: now, output: session.outputTime };
+      const end = index + 1 < edit.segments.length ? starts[index + 1] : outputDuration(edit);
+      const time = clock.output + ((now - clock.at) / 1000) * session.shuttle;
+      if (time >= end - 0.001) {
+        clock = null;
+        if (index + 1 < edit.segments.length) seekOutput(starts[index + 1], true);
+        else {
+          session.outputTime = outputDuration(edit);
+          pausePlayback();
+        }
+      } else {
+        session.outputTime = time;
+        const target = sourceAt(segment, time - starts[index]);
+        if (player.readyState >= 1 && !player.seeking && Math.abs(player.currentTime - target) > 0.03) player.currentTime = target;
+        renderEffects();
+      }
+    } else if (player.readyState >= 2) {
       const now = player.currentTime;
       // A dissolve hands over before the segment's end.
       const until = index + 1 < edit.segments.length ? segment.start + (starts[index + 1] - starts[index]) * segment.speed : segment.end;
@@ -520,7 +547,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (session.outputTime >= outputDuration(current()) - 0.05) session.outputTime = 0;
     session.playing = true;
     seekOutput(session.outputTime);
-    if (active.readyState >= 1) void active.play().catch(() => undefined);
+    const playing = current().segments[session.index];
+    if (active.readyState >= 1 && (!playing || playsForward(playing))) void active.play().catch(() => undefined);
     startLoop();
     host.renderPlayer();
   }
@@ -540,6 +568,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     video.playbackRate = 1;
     video.volume = 1;
     video.muted = false;
+    lookPanel.clear(video);
+    const tint = document.querySelector<HTMLElement>("#edit-tint");
+    if (tint) tint.style.opacity = "0";
   }
 
   // ---------- Transitions and overlays on the player ----------
@@ -574,6 +605,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     ghost.style.opacity = still.toFixed(3);
     const segment = edit.segments[session.index];
     if (segment) applyLevel(segment, active);
+    if (segment) {
+      const media = mediaOf(edit, segment.mediaId);
+      const progress = (time - starts[session.index]) / Math.max(0.001, segmentLength(segment));
+      lookPanel.apply(active, segment, progress, pictureRect(), { width: media?.width || active.videoWidth || 16, height: media?.height || active.videoHeight || 9 });
+    }
     renderOverlays(edit, time);
     subs.frame();
     plainCoverFrame();
@@ -786,6 +822,22 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     redraw: () => { if (session) render(); },
   });
 
+  const lookPanel = mountLook({
+    edit: () => current(),
+    base: () => session!.history.current,
+    busy: () => !session || !!session.draft,
+    commit: (next, selected) => commit(next, selected),
+    preview: (next) => {
+      if (!session) return;
+      session.draft = next;
+      renderPanel();
+      renderTimeline();
+      renderEffects();
+    },
+    selected: () => selectedSegment(),
+    outputTime: () => session?.outputTime ?? 0,
+    note,
+  });
   const templateMode = mountTemplate(invoke, {
     draft: () => session ? { edit: session.history.current, changes: session.history.changes, selected: session.selected, recent: session.recent } : null,
     flush: () => flush(),
@@ -1244,7 +1296,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (!id) break;
       const edit = session.history.current;
       const index = edit.segments.findIndex((segment) => segment.id === id);
-      time = outputStarts(edit)[index] + (edit.segments[index].end - edit.segments[index].start) / edit.segments[index].speed;
+      time = outputStarts(edit)[index] + segmentLength(edit.segments[index]);
     }
     renderSources();
   }
@@ -1342,8 +1394,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!segment) return;
     const index = edit.segments.indexOf(segment);
     const start = outputStarts(edit)[index];
-    const length = (segment.end - segment.start) / segment.speed;
+    const length = segmentLength(segment);
     const media = mediaOf(edit, segment.mediaId);
+    const held = lookOf(segment).freeze !== null;
+    lookPanel.render(segment);
     const title = $("#edit-segment-title");
     title.textContent = inserted
       ? `Đoạn chèn · ${media?.title || "video"} · ${formatClock(start)} – ${formatClock(start + length)}`
@@ -1351,7 +1405,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     title.title = inserted ? media?.path ?? "" : "";
     if (document.activeElement !== startInput) startInput.value = formatClock(segment.start, true);
     if (document.activeElement !== endInput) endInput.value = formatClock(segment.end, true);
-    $("#edit-length").textContent = segment.speed === 1
+    $("#edit-length").textContent = held
+      ? `Dừng hình ${formatClock(length, true)} tại ${formatClock(segment.start, true)} của video`
+      : segment.speed === 1
       ? `Dài ${formatClock(segment.end - segment.start, true)} · ${edit.segments.length} đoạn`
       : `Dài ${formatClock(segment.end - segment.start, true)} · thành ${formatClock(length, true)} ở ${formatSpeed(segment.speed)}`;
     for (const button of speeds.querySelectorAll<HTMLButtonElement>("[data-speed]")) {
@@ -1545,7 +1601,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const block = element("div", `tl-seg${inserted ? " inserted" : ""}${segment.id === session!.selected && !session!.overlay ? " selected" : ""}`);
       block.dataset.id = segment.id;
       const left = PAD + starts[index] * pps;
-      const length = (segment.end - segment.start) / segment.speed * pps;
+      const length = segmentLength(segment) * pps;
       block.style.left = `${left}px`;
       block.style.width = `${Math.max(2, length)}px`;
       block.title = inserted
@@ -1555,7 +1611,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const path = media ? mediaPath(media) : "";
       const grid = media ? gridFor(path, media.duration) : null;
       for (let x = 0; grid && x < length && strip.childElementCount < 400; x += THUMB_WIDTH) {
-        const at = segment.start + ((x + THUMB_WIDTH / 2) / pps) * segment.speed;
+        const at = sourceAt(segment, (x + THUMB_WIDTH / 2) / pps);
         const cell = Math.min(grid.times.length - 1, Math.floor(Math.min(at, segment.end) / grid.step));
         if (cell < 0) break;
         const thumb = element("span", "tl-thumb");
@@ -1566,7 +1622,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const label = element("span", "tl-label");
       if (inserted && length >= 40) label.append(element("span", "tl-name media", media?.title || "Chèn"));
       else if (!inserted && length >= 34) label.append(element("span", "tl-name", `Đoạn ${number}`));
-      if (segment.speed !== 1 && length >= 24) label.append(element("span", "tl-badge", formatSpeed(segment.speed)));
+      if (segment.speed !== 1 && playsForward(segment) && length >= 24) label.append(element("span", "tl-badge", formatSpeed(segment.speed)));
+      for (const badge of lookBadges(segment.look)) if (length >= 70) label.append(element("span", "tl-badge look", badge));
       if (segment.volume !== 1 && length >= 60) label.append(element("span", "tl-badge", segment.volume === 0 ? "Tắt tiếng" : `${Math.round(segment.volume * 100)}%`));
       const startHandle = element("span", "tl-handle start");
       startHandle.dataset.edge = "start";
@@ -1575,12 +1632,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       endHandle.dataset.edge = "end";
       endHandle.title = "Kéo để cắt cuối đoạn";
       block.append(strip);
-      if (media?.hasAudio && segment.volume > 0 && length >= 8) {
+      if (media?.hasAudio && segment.volume > 0 && length >= 8 && lookOf(segment).freeze === null) {
         const wave = element("canvas", "tl-wave");
         wave.dataset.path = path;
         wave.dataset.id = segment.id;
         block.append(wave);
       }
+      if (lookOf(segment).freeze !== null) block.classList.add("held");
       block.append(label, startHandle, endHandle);
       return block;
     });
@@ -1695,11 +1753,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (!context) continue;
       context.scale(ratio, ratio);
       context.fillStyle = "oklch(0.86 0.12 160 / 0.85)";
-      const perPixel = segment.speed / pps;
       const gain = Math.min(1, 0.35 + segment.volume * 0.65);
       for (let x = 0; x < width; x += 2) {
-        const from = Math.floor((segment.start + x * perPixel) * 50);
-        const to = Math.max(from + 1, Math.floor((segment.start + (x + 2) * perPixel) * 50));
+        const a = sourceAt(segment, x / pps), b = sourceAt(segment, (x + 2) / pps);
+        const from = Math.floor(Math.min(a, b) * 50);
+        const to = Math.max(from + 1, Math.floor(Math.max(a, b) * 50));
         let level = 0;
         for (let index = from; index < to && index < levels.length; index++) level = Math.max(level, levels[index]);
         const height = Math.max(level ? 1 : 0, (level / 255) * WAVE_PX * gain);
@@ -1805,7 +1863,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   type Drag = { kind: "seek" }
-    | { kind: "trim"; id: string; edge: "start" | "end"; x: number; from: number; base: Edit; moved: boolean }
+    | { kind: "trim"; id: string; edge: "start" | "end"; side: "start" | "end"; sign: number; x: number; from: number; base: Edit; moved: boolean }
     | { kind: "select"; id: string; x: number }
     | { kind: "reorder"; id: string; x: number; base: Edit; to: number }
     | { kind: "marker"; id: string; x: number; base: Edit; moved: boolean }
@@ -1874,11 +1932,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (handle && block) {
       const segment = session.history.current.segments.find((candidate) => candidate.id === block.dataset.id);
       if (!segment) return;
-      const edge = handle.dataset.edge === "start" ? "start" : "end";
+      const side = handle.dataset.edge === "start" ? "start" : "end";
       session.selected = segment.id;
       session.overlay = null;
       if (session.playing) pausePlayback();
-      drag = { kind: "trim", id: segment.id, edge, x: event.clientX, from: segment[edge], base: session.history.current, moved: false };
+      if (lookOf(segment).freeze !== null) {
+        render();
+        note("Đoạn dừng hình: chỉnh độ dài ở mục Giữ hình.");
+        return;
+      }
+      // A reversed segment shows its end first: its left edge is the media's end.
+      const reversed = lookOf(segment).reverse;
+      const edge = reversed ? (side === "start" ? "end" : "start") : side;
+      drag = { kind: "trim", id: segment.id, edge, side, sign: reversed ? -1 : 1, x: event.clientX, from: segment[edge], base: session.history.current, moved: false };
       render();
       return;
     }
@@ -1929,8 +1995,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     } else if (drag.kind === "trim") {
       const trimming = drag;
       const segment = trimming.base.segments.find((candidate) => candidate.id === trimming.id)!;
-      let sourceTime = trimming.from + ((event.clientX - trimming.x) / pps) * segment.speed;
-      if (trimming.edge === "end") {
+      let sourceTime = trimming.from + trimming.sign * ((event.clientX - trimming.x) / pps) * segment.speed;
+      if (trimming.edge === "end" && trimming.sign === 1) {
         // The end edge moves on the output: snap it there, then back to the media's seconds.
         const index = trimming.base.segments.indexOf(segment);
         const start = outputStarts(trimming.base)[index];
@@ -1946,7 +2012,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const index = next.segments.findIndex((candidate) => candidate.id === trimming.id);
       const moved = next.segments[index];
       const start = outputStarts(next)[index];
-      seekOutput(trimming.edge === "start" ? start : start + (moved.end - moved.start) / moved.speed - 0.04);
+      seekOutput(trimming.side === "start" ? start : start + segmentLength(moved) - 0.04);
       renderPanel();
       renderTimeline();
     } else if (drag.kind === "ov-move" || drag.kind === "ov-trim") {

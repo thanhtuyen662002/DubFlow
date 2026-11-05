@@ -400,6 +400,7 @@
                 <div id="player-frame" class="player-frame" hidden>
                   <video id="player-video" preload="metadata" playsinline></video>
                   <canvas id="edit-ghost" class="edit-ghost" aria-hidden="true"></canvas>
+                  <div id="edit-tint" class="edit-tint" aria-hidden="true"></div>
                   <div id="edit-fade" class="edit-fade" aria-hidden="true"></div>
                   <div id="edit-overlays" class="edit-overlays" aria-label="Video chồng"></div>
                   <div id="edit-texts" class="edit-texts" aria-label="Chữ trên video"></div>
@@ -693,27 +694,101 @@
                 </section>
                 <div id="edit-seg-controls" class="edit-seg-controls">
                   <h3 id="edit-segment-title" class="edit-segment-title">Đoạn 1</h3>
-                  <div class="edit-times">
+                  <div id="seg-tabs" class="seg seg-tabs" role="tablist" aria-label="Chỉnh đoạn">
+                    <button type="button" role="tab" data-tab="basic" aria-selected="true">Cơ bản</button>
+                    <button type="button" role="tab" data-tab="frame" aria-selected="false">Khung hình</button>
+                    <button type="button" role="tab" data-tab="color" aria-selected="false">Màu</button>
+                  </div>
+                  <div id="seg-basic" class="seg-pane" role="tabpanel">
+                  <div id="seg-times" class="edit-times">
                     <label>Bắt đầu<input id="edit-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
                     <label>Kết thúc<input id="edit-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
                   </div>
                   <p id="edit-length" class="edit-length"></p>
-                  <div class="edit-field">
+                  <div id="seg-speed-field" class="edit-field">
                     <span class="edit-label">Tốc độ</span>
                     <div id="edit-speeds" class="seg edit-speeds" role="radiogroup" aria-label="Tốc độ đoạn"></div>
-                    <label class="edit-custom">Tùy chỉnh<input id="edit-speed-custom" type="number" min="0.5" max="2" step="0.05" aria-label="Tốc độ tùy chỉnh (0,5 đến 2)" /><span>× (0,5–2)</span></label>
+                    <label class="edit-custom">Tùy chỉnh<input id="edit-speed-custom" type="number" min="0.25" max="4" step="0.05" aria-label="Tốc độ tùy chỉnh (0,25 đến 4)" /><span>× (0,25–4)</span></label>
                   </div>
-                  <label class="edit-field">
+                  <label id="seg-volume-field" class="edit-field">
                     <span class="edit-label">Âm lượng đoạn <output id="edit-volume-value">100%</output></span>
                     <input id="edit-volume" type="range" min="0" max="200" step="5" value="100" />
                     <small id="edit-volume-note" class="edit-note" hidden>Trên 100% chỉ nghe được sau khi xuất video.</small>
                   </label>
-                  <div class="edit-actions">
-                    <button id="edit-split" class="btn" type="button" aria-keyshortcuts="S">Tách tại đầu phát<kbd>S</kbd></button>
-                    <button id="edit-duplicate" class="btn" type="button" aria-keyshortcuts="Control+D" title="Thêm một bản sao ngay sau đoạn này">Nhân bản<kbd>Ctrl D</kbd></button>
-                    <button id="edit-delete" class="btn danger" type="button" aria-keyshortcuts="Delete"><span id="edit-delete-label">Xóa đoạn</span><kbd>Delete</kbd></button>
+                    <label id="seg-freeze-field" class="edit-field" hidden>
+                      <span class="edit-label">Giữ hình <output id="look-freeze-value">2 giây</output></span>
+                      <input id="look-freeze" type="range" min="0.2" max="10" step="0.1" value="2" />
+                      <small class="edit-note">Đoạn dừng hình giữ nguyên một khung, không có tiếng.</small>
+                    </label>
+                    <div id="seg-fades" class="edit-field look-pair">
+                      <label><span class="edit-label">Tiếng vào dần <output id="look-fadein-value">0</output></span>
+                        <input id="look-fadein" type="range" min="0" max="3" step="0.1" value="0" /></label>
+                      <label><span class="edit-label">Tiếng tắt dần <output id="look-fadeout-value">0</output></span>
+                        <input id="look-fadeout" type="range" min="0" max="3" step="0.1" value="0" /></label>
+                    </div>
+                    <div class="look-toggles">
+                      <button id="look-reverse" class="btn chip" type="button" aria-pressed="false" title="Phát đoạn này ngược lại, cả tiếng (đoạn tối đa 2 phút)">⇆ Tua ngược</button>
+                      <button id="look-freeze-add" class="btn chip" type="button" title="Chèn một đoạn giữ nguyên khung hình tại đầu phát">❚❚ Dừng hình tại đầu phát</button>
+                    </div>
+                    <small id="look-reverse-note" class="edit-note" hidden>Khung xem trước tua ngược không có tiếng; video xuất ra có tiếng tua ngược.</small>
+                    <div class="edit-actions">
+                      <button id="edit-split" class="btn" type="button" aria-keyshortcuts="S">Tách tại đầu phát<kbd>S</kbd></button>
+                      <button id="edit-duplicate" class="btn" type="button" aria-keyshortcuts="Control+D" title="Thêm một bản sao ngay sau đoạn này">Nhân bản<kbd>Ctrl D</kbd></button>
+                      <button id="edit-delete" class="btn danger" type="button" aria-keyshortcuts="Delete"><span id="edit-delete-label">Xóa đoạn</span><kbd>Delete</kbd></button>
+                    </div>
+                    <p class="edit-note">Kéo đoạn trên dòng thời gian để đổi thứ tự. Chuột phải để sao chép, dán, nhân bản.</p>
                   </div>
-                  <p class="edit-note">Kéo đoạn trên dòng thời gian để đổi thứ tự. Chuột phải để sao chép, dán, nhân bản.</p>
+                  <div id="seg-frame" class="seg-pane" role="tabpanel" hidden>
+                    <div class="edit-field">
+                      <span class="edit-label">Xoay và lật</span>
+                      <div class="look-toggles">
+                        <button id="look-rotate-left" class="btn chip" type="button" title="Xoay trái 90°">⟲ 90°</button>
+                        <button id="look-rotate-right" class="btn chip" type="button" title="Xoay phải 90°">⟳ 90°</button>
+                        <button id="look-flip-h" class="btn chip" type="button" aria-pressed="false">⇋ Lật ngang</button>
+                        <button id="look-flip-v" class="btn chip" type="button" aria-pressed="false">⇵ Lật dọc</button>
+                      </div>
+                    </div>
+                    <div class="edit-field">
+                      <span class="edit-label">Cắt khung <output id="look-crop-value">Không cắt</output></span>
+                      <div id="look-ratios" class="seg look-ratios" role="radiogroup" aria-label="Tỉ lệ cắt khung"></div>
+                      <div class="look-grid">
+                        <label><span>Trái</span><input id="look-crop-left" type="range" min="0" max="90" step="1" value="0" /></label>
+                        <label><span>Phải</span><input id="look-crop-right" type="range" min="0" max="90" step="1" value="0" /></label>
+                        <label><span>Trên</span><input id="look-crop-top" type="range" min="0" max="90" step="1" value="0" /></label>
+                        <label><span>Dưới</span><input id="look-crop-bottom" type="range" min="0" max="90" step="1" value="0" /></label>
+                      </div>
+                    </div>
+                    <div class="edit-field">
+                      <span class="edit-label">Zoom chậm <output id="look-zoom-value">Không</output></span>
+                      <div id="look-zoom-presets" class="seg look-zoom-presets" role="radiogroup" aria-label="Kiểu zoom">
+                        <button type="button" role="radio" data-zoom="none" aria-checked="true">Không</button>
+                        <button type="button" role="radio" data-zoom="in" aria-checked="false">Phóng vào</button>
+                        <button type="button" role="radio" data-zoom="out" aria-checked="false">Thu ra</button>
+                      </div>
+                      <div class="look-grid">
+                        <label><span>Đầu đoạn</span><input id="look-zoom-from" type="range" min="100" max="300" step="5" value="100" /></label>
+                        <label><span>Cuối đoạn</span><input id="look-zoom-to" type="range" min="100" max="300" step="5" value="100" /></label>
+                      </div>
+                      <div class="look-focus-row"><span class="edit-label">Tâm zoom</span><div id="look-focus" class="look-focus" role="radiogroup" aria-label="Tâm zoom"></div></div>
+                    </div>
+                    <button id="look-frame-reset" class="btn ghost" type="button">Đặt lại khung hình</button>
+                  </div>
+                  <div id="seg-color" class="seg-pane" role="tabpanel" hidden>
+                    <div id="look-presets" class="look-presets" role="radiogroup" aria-label="Màu có sẵn"></div>
+                    <label class="edit-field"><span class="edit-label">Độ sáng <output id="look-brightness-value">0</output></span>
+                      <input id="look-brightness" type="range" min="-50" max="50" step="1" value="0" /></label>
+                    <label class="edit-field"><span class="edit-label">Tương phản <output id="look-contrast-value">0</output></span>
+                      <input id="look-contrast" type="range" min="50" max="150" step="1" value="100" /></label>
+                    <label class="edit-field"><span class="edit-label">Độ bão hòa <output id="look-saturation-value">0</output></span>
+                      <input id="look-saturation" type="range" min="0" max="200" step="1" value="100" /></label>
+                    <label class="edit-field"><span class="edit-label">Nhiệt độ màu <output id="look-temperature-value">0</output></span>
+                      <input id="look-temperature" class="temperature" type="range" min="-100" max="100" step="1" value="0" /></label>
+                    <div class="look-toggles">
+                      <button id="look-color-all" class="btn" type="button" title="Dùng màu này cho mọi đoạn của video">Áp dụng cho mọi đoạn</button>
+                      <button id="look-color-reset" class="btn ghost" type="button">Đặt lại màu</button>
+                    </div>
+                    <small class="edit-note">Khung xem trước gần đúng; video xuất ra dùng bộ lọc màu chính xác.</small>
+                  </div>
                 </div>
                 <section id="edit-range" class="edit-range" aria-labelledby="edit-range-title" hidden>
                   <h3 id="edit-range-title" class="edit-segment-title">Khoảng chọn</h3>

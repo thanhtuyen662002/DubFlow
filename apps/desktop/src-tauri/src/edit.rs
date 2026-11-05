@@ -69,8 +69,10 @@ struct Running {
 
 static RUNNING: LazyLock<Mutex<HashMap<PathBuf, Arc<Running>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// One part of the output: `[start, end)` of media `media` (0 = the main video).
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+/// One part of the output: `[start, end)` of media `media` (0 = the main video),
+/// with its look (Issue #518): crop, rotation, flips, a slow zoom, colour,
+/// reverse, a held frame and sound fades. Absent look fields change nothing.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Segment {
     #[serde(default)]
@@ -79,6 +81,123 @@ pub struct Segment {
     end: f64,
     speed: f64,
     volume: f64,
+    /// Fractions of the source picture kept, then fitted to the frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    crop: Option<Crop>,
+    /// 0, 90, 180 or 270 degrees clockwise.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    rotate: u16,
+    #[serde(default, skip_serializing_if = "is_false")]
+    flip_h: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    flip_v: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    zoom: Option<Zoom>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color: Option<Color>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    reverse: bool,
+    /// Hold the frame at `start` for this many seconds, without sound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    freeze: Option<f64>,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    fade_in: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    fade_out: f64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Crop {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// Scale `from` → `to` over the segment, centred on x, y (fractions of the picture).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Zoom {
+    from: f64,
+    to: f64,
+    x: f64,
+    y: f64,
+}
+
+/// brightness −0.5…0.5, contrast 0.5…1.5, saturation 0…2, temperature −1…1.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Color {
+    brightness: f64,
+    contrast: f64,
+    saturation: f64,
+    temperature: f64,
+}
+
+fn is_zero(value: &u16) -> bool {
+    *value == 0
+}
+
+fn is_zero_f64(value: &f64) -> bool {
+    *value == 0.0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Playing backwards buffers the whole part: at most two minutes of media.
+const MAX_REVERSE: f64 = 120.0;
+const MAX_FREEZE: f64 = 10.0;
+const MIN_FREEZE: f64 = 0.2;
+const MAX_SEGMENT_FADE: f64 = 3.0;
+
+impl Segment {
+    /// Plays its part as filmed: the 4a graph can render it.
+    fn is_plain(&self) -> bool {
+        self.crop.is_none() && self.rotate == 0 && !self.flip_h && !self.flip_v && self.zoom.is_none() && self.color.is_none()
+            && !self.reverse && self.freeze.is_none() && self.fade_in == 0.0 && self.fade_out == 0.0
+    }
+
+    /// Why its look cannot be rendered, if so.
+    fn look_problem(&self) -> Option<&'static str> {
+        let unit = |value: f64| (0.0..=1.0).contains(&value);
+        if let Some(crop) = self.crop {
+            if ![crop.x, crop.y, crop.w, crop.h].iter().all(|value| value.is_finite()) || !unit(crop.x) || !unit(crop.y)
+                || crop.w < 0.1 - 1e-6 || crop.h < 0.1 - 1e-6 || crop.x + crop.w > 1.0 + 1e-4 || crop.y + crop.h > 1.0 + 1e-4 {
+                return Some("Vùng cắt khung phải nằm trong hình");
+            }
+        }
+        if ![0, 90, 180, 270].contains(&self.rotate) {
+            return Some("Chỉ xoay được 90, 180 hoặc 270 độ");
+        }
+        if let Some(zoom) = self.zoom {
+            if ![zoom.from, zoom.to, zoom.x, zoom.y].iter().all(|value| value.is_finite()) || !(1.0..=3.0).contains(&zoom.from)
+                || !(1.0..=3.0).contains(&zoom.to) || !unit(zoom.x) || !unit(zoom.y) {
+                return Some("Zoom phải từ 1× đến 3×");
+            }
+        }
+        if let Some(color) = self.color {
+            if ![color.brightness, color.contrast, color.saturation, color.temperature].iter().all(|value| value.is_finite())
+                || !(-0.5..=0.5).contains(&color.brightness) || !(0.5..=1.5).contains(&color.contrast)
+                || !(0.0..=2.0).contains(&color.saturation) || !(-1.0..=1.0).contains(&color.temperature) {
+                return Some("Thông số màu không hợp lệ");
+            }
+        }
+        if let Some(freeze) = self.freeze {
+            if !freeze.is_finite() || !(MIN_FREEZE - 1e-6..=MAX_FREEZE + 1e-6).contains(&freeze) || self.reverse {
+                return Some("Dừng hình phải từ 0,2 đến 10 giây");
+            }
+        }
+        if self.reverse && self.end - self.start > MAX_REVERSE + 1e-3 {
+            return Some("Tua ngược chỉ dùng cho đoạn dài tối đa 2 phút");
+        }
+        if ![self.fade_in, self.fade_out].iter().all(|value| value.is_finite() && (0.0..=MAX_SEGMENT_FADE).contains(value)) {
+            return Some("Âm thanh mờ dần tối đa 3 giây");
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -519,7 +638,7 @@ fn probe(video: &Path) -> Result<Probe, String> {
 }
 
 fn segment_length(segment: &Segment) -> f64 {
-    (segment.end - segment.start) / segment.speed
+    segment.freeze.unwrap_or((segment.end - segment.start) / segment.speed)
 }
 
 /// Seconds the edited video lasts: each dissolve overlaps its neighbours.
@@ -560,8 +679,11 @@ fn validate(request: &ExportRequest, durations: &[f64]) -> Result<Edit, String> 
         if segment.start < 0.0 || segment.end > duration + 0.05 || end - segment.start < MIN_SEGMENT - 1e-6 {
             return Err(fail("Mỗi đoạn phải nằm trong video và dài ít nhất 0,1 giây"));
         }
-        if !(0.5..=2.0).contains(&segment.speed) {
-            return Err(fail("Tốc độ mỗi đoạn phải từ 0,5× đến 2×"));
+        if !(0.25..=4.0).contains(&segment.speed) {
+            return Err(fail("Tốc độ mỗi đoạn phải từ 0,25× đến 4×"));
+        }
+        if let Some(problem) = segment.look_problem() {
+            return Err(fail(problem));
         }
         if !(0.0..=2.0).contains(&segment.volume) {
             return Err(fail("Âm lượng mỗi đoạn phải từ 0 đến 200%"));
@@ -730,6 +852,84 @@ fn filter_graph(segments: &[Segment], has_audio: bool, quality: &str, video_out:
     lines.join(";\n")
 }
 
+/// A frame rate such as "30" or "30000/1001" as a number.
+fn fps_number(fps: &str) -> f64 {
+    let value = match fps.split_once('/') {
+        Some((top, bottom)) => top.trim().parse::<f64>().unwrap_or(30.0) / bottom.trim().parse::<f64>().unwrap_or(1.0),
+        None => fps.trim().parse::<f64>().unwrap_or(30.0),
+    };
+    if value.is_finite() && value > 0.0 { value } else { 30.0 }
+}
+
+/// One segment's picture: its part (held, reversed or retimed), then crop,
+/// rotation, flips and colour on the source picture, the fit into the frame,
+/// and the slow zoom on the fitted picture.
+fn segment_video(segment: &Segment, fit: &str, frame: &Frame) -> Vec<String> {
+    let (start, end) = (num(segment.start), num(segment.end));
+    let mut video = vec![format!("trim=start={start}:end={end}")];
+    if let Some(hold) = segment.freeze {
+        video.push("setpts=PTS-STARTPTS".to_owned());
+        video.push("trim=end_frame=1".to_owned());
+        video.push(format!("tpad=stop_mode=clone:stop_duration={}", num(hold)));
+    } else if segment.reverse {
+        video.push("setpts=PTS-STARTPTS".to_owned());
+        video.push("reverse".to_owned());
+        if segment.speed != 1.0 {
+            video.push(format!("setpts=PTS/{}", num(segment.speed)));
+        }
+    } else {
+        video.push(if segment.speed == 1.0 { "setpts=PTS-STARTPTS".to_owned() } else { format!("setpts=(PTS-STARTPTS)/{}", num(segment.speed)) });
+    }
+    video.extend(look_filters(segment));
+    video.push(fit.to_owned());
+    if let Some(hold) = segment.freeze {
+        video.push(format!("trim=duration={}", num(hold)));
+    }
+    if let Some(zoom) = segment.zoom {
+        let frames = (segment_length(segment) * fps_number(&frame.fps)).round().max(2.0);
+        let (from, change) = (num(zoom.from), num(zoom.to - zoom.from));
+        video.push(format!(
+            "zoompan=z='{from}+{change}*min(on/{},1)':x='(iw-iw/zoom)*{}':y='(ih-ih/zoom)*{}':d=1:s={}x{}:fps={}",
+            num(frames - 1.0), num(zoom.x), num(zoom.y), frame.width, frame.height, frame.fps));
+        video.push("setsar=1,format=yuv420p,settb=AVTB".to_owned());
+    }
+    video
+}
+
+/// Crop, rotation, flips and colour of a segment, in that order, on the source picture.
+fn look_filters(segment: &Segment) -> Vec<String> {
+    let mut filters = Vec::new();
+    if let Some(crop) = segment.crop {
+        filters.push(format!("crop=w='trunc(iw*{}/2)*2':h='trunc(ih*{}/2)*2':x='iw*{}':y='ih*{}'", num(crop.w), num(crop.h), num(crop.x), num(crop.y)));
+    }
+    match segment.rotate {
+        90 => filters.push("transpose=1".to_owned()),
+        180 => filters.push("hflip,vflip".to_owned()),
+        270 => filters.push("transpose=2".to_owned()),
+        _ => {}
+    }
+    if segment.flip_h {
+        filters.push("hflip".to_owned());
+    }
+    if segment.flip_v {
+        filters.push("vflip".to_owned());
+    }
+    if let Some(color) = segment.color {
+        // The shipped LGPL FFmpeg has no `eq`: luma through a lookup table, saturation with `hue`.
+        if color.brightness != 0.0 || color.contrast != 1.0 {
+            filters.push(format!("lutyuv=y='clip((val-128)*{}+128+{},0,255)'", num(color.contrast), num((color.brightness * 0.6 * 255.0).round())));
+        }
+        if color.saturation != 1.0 {
+            filters.push(format!("hue=s={}", num(color.saturation)));
+        }
+        if color.temperature != 0.0 {
+            let (mid, high) = (color.temperature * 0.22, color.temperature * 0.1);
+            filters.push(format!("colorbalance=rs={}:bs={}:rm={}:bm={}:rh={}:bh={}", num(high), num(-high), num(mid), num(-mid), num(high), num(-high)));
+        }
+    }
+    filters
+}
+
 fn short_side(quality: &str) -> Option<u32> {
     match quality { "1080p" => Some(1080), "720p" => Some(720), _ => None }
 }
@@ -761,7 +961,7 @@ fn render_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str) ->
 
 /// `render_script` with the picture ending as `[video_out]` and the sound as `[audio_out]`.
 fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, video_out: &str, audio_out: &str) -> (String, bool) {
-    if inputs.len() == 1 && edit.transitions.is_empty() && edit.overlays.is_empty() {
+    if inputs.len() == 1 && edit.transitions.is_empty() && edit.overlays.is_empty() && edit.segments.iter().all(Segment::is_plain) {
         return (filter_graph(&edit.segments, inputs[0].has_audio, quality, video_out, audio_out), inputs[0].has_audio);
     }
     let has_audio = output_has_audio(edit, inputs);
@@ -785,8 +985,7 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, vide
     let mut lines = Vec::new();
     for (index, segment) in segments.iter().enumerate() {
         let (start, end) = (num(segment.start), num(segment.end));
-        let pts = if segment.speed == 1.0 { "PTS-STARTPTS".to_owned() } else { format!("(PTS-STARTPTS)/{}", num(segment.speed)) };
-        let mut video = vec![format!("trim=start={start}:end={end}"), format!("setpts={pts}"), fit.clone()];
+        let mut video = segment_video(segment, &fit, frame);
         let mut fades = Vec::new();
         if fade_in[index] > 0.0 {
             fades.push(format!("t=in:st=0:d={}", num(fade_in[index])));
@@ -797,11 +996,21 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, vide
         video.extend(fades.iter().map(|fade| format!("fade={fade}")));
         lines.push(format!("[{}:v]{}[v{index}]", segment.media, video.join(",")));
         if has_audio {
-            let (source, mut audio) = if inputs[segment.media].has_audio {
+            let (source, mut audio) = if inputs[segment.media].has_audio && segment.freeze.is_none() {
                 let mut audio = vec![format!("atrim=start={start}:end={end}"), "asetpts=PTS-STARTPTS".to_owned()];
+                if segment.reverse {
+                    audio.push("areverse".to_owned());
+                }
                 audio.extend(atempo_chain(segment.speed));
                 if segment.volume != 1.0 {
                     audio.push(format!("volume={}", num(segment.volume)));
+                }
+                if segment.fade_in > 0.0 {
+                    audio.push(format!("afade=t=in:st=0:d={}", num(segment.fade_in.min(lengths[index]))));
+                }
+                if segment.fade_out > 0.0 {
+                    let fade = segment.fade_out.min(lengths[index]);
+                    audio.push(format!("afade=t=out:st={}:d={}", num(lengths[index] - fade), num(fade)));
                 }
                 (format!("[{}:a]", segment.media), audio)
             } else {
@@ -2155,11 +2364,11 @@ mod tests {
     use super::*;
 
     fn segment(start: f64, end: f64, speed: f64, volume: f64) -> Segment {
-        Segment { media: 0, start, end, speed, volume }
+        Segment { media: 0, start, end, speed, volume, ..Default::default() }
     }
 
     fn clip(media: usize, start: f64, end: f64) -> Segment {
-        Segment { media, start, end, speed: 1.0, volume: 1.0 }
+        Segment { media, start, end, speed: 1.0, volume: 1.0, ..Default::default() }
     }
 
     fn joint(after: usize, kind: TransitionKind, duration: f64) -> Transition {
@@ -2335,8 +2544,8 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
             ("past end", request(vec![segment(0.0, 30.2, 1.0, 1.0)])),
             ("short", request(vec![segment(5.0, 5.05, 1.0, 1.0)])),
             ("backward", request(vec![segment(8.0, 5.0, 1.0, 1.0)])),
-            ("slow", request(vec![segment(0.0, 10.0, 0.4, 1.0)])),
-            ("fast", request(vec![segment(0.0, 10.0, 2.1, 1.0)])),
+            ("slow", request(vec![segment(0.0, 10.0, 0.2, 1.0)])),
+            ("fast", request(vec![segment(0.0, 10.0, 4.1, 1.0)])),
             ("loud", request(vec![segment(0.0, 10.0, 1.0, 2.01)])),
             ("muted below zero", request(vec![segment(0.0, 10.0, 1.0, -0.1)])),
             ("nan", request(vec![segment(0.0, f64::NAN, 1.0, 1.0)])),
@@ -3114,5 +3323,58 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
         push_peaks(&samples, 2, &mut carry, &mut out);
         assert_eq!(out, vec![bucket_level(32767), bucket_level(7)]);
         assert_eq!(carry, (0, 1));
+    }
+
+    #[test]
+    fn segment_looks_render_and_validate() {
+        let frame = Frame { width: 1920, height: 1080, fps: "30".into() };
+        let fit = "FIT";
+        let plain = segment(0.0, 10.0, 2.0, 1.0);
+        assert_eq!(segment_video(&plain, fit, &frame), vec!["trim=start=0:end=10", "setpts=(PTS-STARTPTS)/2", "FIT"]);
+        let styled = Segment {
+            crop: Some(Crop { x: 0.25, y: 0.0, w: 0.5, h: 1.0 }), rotate: 90, flip_h: true,
+            color: Some(Color { brightness: 0.1, contrast: 1.2, saturation: 0.0, temperature: 0.5 }), ..segment(0.0, 10.0, 1.0, 1.0)
+        };
+        let video = segment_video(&styled, fit, &frame).join(",");
+        assert!(video.starts_with("trim=start=0:end=10,setpts=PTS-STARTPTS,crop=w='trunc(iw*0.5/2)*2':h='trunc(ih*1/2)*2':x='iw*0.25':y='ih*0',transpose=1,hflip,lutyuv=y='clip((val-128)*1.2+128+15,0,255)',hue=s=0,colorbalance="), "{video}");
+        assert!(video.ends_with(",FIT"));
+        let reversed = Segment { reverse: true, ..segment(0.0, 10.0, 2.0, 1.0) };
+        assert_eq!(segment_video(&reversed, fit, &frame), vec!["trim=start=0:end=10", "setpts=PTS-STARTPTS", "reverse", "setpts=PTS/2", "FIT"]);
+        let frozen = Segment { freeze: Some(3.0), ..segment(4.0, 4.1, 1.0, 0.0) };
+        assert_eq!(segment_video(&frozen, fit, &frame),
+            vec!["trim=start=4:end=4.1", "setpts=PTS-STARTPTS", "trim=end_frame=1", "tpad=stop_mode=clone:stop_duration=3", "FIT", "trim=duration=3"]);
+        assert_eq!(segment_length(&frozen), 3.0);
+        let zoomed = Segment { zoom: Some(Zoom { from: 1.0, to: 1.5, x: 0.5, y: 0.25 }), ..segment(0.0, 2.0, 1.0, 1.0) };
+        let video = segment_video(&zoomed, fit, &frame);
+        assert_eq!(video[3], "zoompan=z='1+0.5*min(on/59,1)':x='(iw-iw/zoom)*0.5':y='(ih-ih/zoom)*0.25':d=1:s=1920x1080:fps=30");
+        assert_eq!(fps_number("30000/1001"), 30000.0 / 1001.0);
+
+        // A styled main-only edit leaves the 4a graph; its sound reverses and fades.
+        let edit = Edit { segments: vec![Segment { reverse: true, fade_in: 0.5, fade_out: 1.0, ..segment(0.0, 10.0, 1.0, 1.0) }], transitions: vec![], overlays: vec![] };
+        let inputs = vec![Input { has_audio: true }];
+        let (graph, audio) = render_script(&edit, &inputs, &frame, "source");
+        assert!(audio);
+        assert!(graph.contains("atrim=start=0:end=10,asetpts=PTS-STARTPTS,areverse,afade=t=in:st=0:d=0.5,afade=t=out:st=9:d=1"), "{graph}");
+        let edit = Edit { segments: vec![frozen], transitions: vec![], overlays: vec![] };
+        let (graph, _) = render_script(&edit, &inputs, &frame, "source");
+        assert!(graph.contains("anullsrc=r=48000:cl=stereo,atrim=duration=3"), "a held frame is silent: {graph}");
+
+        let bad = [
+            Segment { rotate: 45, ..segment(0.0, 10.0, 1.0, 1.0) },
+            Segment { crop: Some(Crop { x: 0.6, y: 0.0, w: 0.5, h: 1.0 }), ..segment(0.0, 10.0, 1.0, 1.0) },
+            Segment { zoom: Some(Zoom { from: 1.0, to: 4.0, x: 0.5, y: 0.5 }), ..segment(0.0, 10.0, 1.0, 1.0) },
+            Segment { color: Some(Color { brightness: 0.0, contrast: 3.0, saturation: 1.0, temperature: 0.0 }), ..segment(0.0, 10.0, 1.0, 1.0) },
+            Segment { freeze: Some(20.0), ..segment(0.0, 0.1, 1.0, 0.0) },
+            Segment { reverse: true, ..segment(0.0, 200.0, 1.0, 1.0) },
+            Segment { fade_in: 5.0, ..segment(0.0, 10.0, 1.0, 1.0) },
+        ];
+        for (index, value) in bad.into_iter().enumerate() {
+            assert!(validate(&request(vec![value]), &[300.0]).is_err(), "bad look {index}");
+        }
+        let good: Segment = serde_json::from_value(json!({"media": 0, "start": 0, "end": 10, "speed": 1, "volume": 1, "rotate": 270, "flip_v": true,
+            "crop": {"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8}, "zoom": {"from": 1, "to": 1.3, "x": 0.5, "y": 0.5}, "fade_out": 0.5})).unwrap();
+        assert!(validate(&request(vec![good]), &[30.0]).is_ok());
+        assert!(serde_json::from_value::<Segment>(json!({"start": 0, "end": 1, "speed": 1, "volume": 1, "tint": 3})).is_err(), "unknown fields");
+        assert_eq!(serde_json::to_value(segment(0.0, 1.0, 1.0, 1.0)).unwrap(), json!({"media": 0, "start": 0.0, "end": 1.0, "speed": 1.0, "volume": 1.0}));
     }
 }
