@@ -305,6 +305,14 @@ button.job.selected { background: var(--select); }
 .edit-more { display: flex; flex-direction: column; gap: 10px; }
 .edit-more .more-list { margin: 0 -8px; }
 .subs-full-review { width: 100%; margin-bottom: 8px; justify-content: center; }
+.subs-plain-bar { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.subs-plain-bar .edit-note { margin: 0; }
+.subs-plain-bar #subs-add { align-self: flex-start; }
+.subs-times { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-3); font-size: 12px; }
+.subs-clock { box-sizing: border-box; width: 72px; height: 26px; padding: 0 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.subs-clock:focus { border-color: transparent; outline: 2px solid var(--accent); outline-offset: -1px; }
+.subs-clock.invalid { border-color: var(--warn); }
+.subs-times .subs-remove { margin-left: auto; }
 .link-card { padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
 .link-card h3 { color: var(--text); font-size: 14px; font-weight: 600; }
 .source-info { padding-top: 12px; border-top: 1px solid var(--line); }

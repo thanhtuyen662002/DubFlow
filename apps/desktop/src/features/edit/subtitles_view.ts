@@ -8,7 +8,8 @@
 import type { QueueJob } from "../queue/model.ts";
 import type { ConfirmOptions } from "../../shell/confirm.ts";
 import { COVER_STORAGE_KEY, type AutoRegion, type CoverDocument } from "./cover.ts";
-import { formatClock, MAIN, outputToSource, type Edit } from "./model.ts";
+import { formatClock, MAIN, outputToSource, parseClock, type Edit } from "./model.ts";
+import { addLine, asCues, mainMs, retime, sortLines, type PlainSubtitles } from "./plain_subs.ts";
 import {
   applyPreset, changeSummary, cleanText, cueAt, cueOutputTime, DEFAULT_STYLE, dragPosition, isColor, normalizeStyle, parseStyle,
   presetOf, PRESETS, previewMetrics, rgba, sameStyle, STYLE_STORAGE_KEY, SUBTITLE_FONTS, subtitleChanges, BOX_SWATCHES,
@@ -60,11 +61,19 @@ export type SubtitleContext = {
   /** The footer or a badge changed. */
   changed: () => void;
   cover: CoverHooks;
+  /** A plain video's lines or look changed (saved with the draft). */
+  plainChanged: () => void;
+  /** Draw a plain video's Che at a time of the main video, when it shows. */
+  plainCover: (seconds: number | null) => void;
 };
 
 export type SubtitleMode = {
   /** A new editing session. */
   begin(job: QueueJob, outputPath: string): void;
+  /** A new session on a video without a dubbing job: its lines live in the draft (Issue #523). */
+  beginPlain(outputPath: string, subtitles: PlainSubtitles): void;
+  /** The subtitle layer shows: under Phụ đề, or a plain video's lines that are burned in. */
+  readonly showing: boolean;
   /** The session ends. */
   end(): void;
   /** Show the clean-source preview with the Phụ đề panel, or under the Che panel. */
@@ -144,8 +153,13 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   const alignButtons = [...document.querySelectorAll<HTMLButtonElement>("#subs-align [data-align]")];
   const audio = new Audio();
   audio.preload = "auto";
+  const plainBar = $("#subs-plain-bar");
+  const burnToggle = $<HTMLInputElement>("#subs-burn");
+  const addButton = $<HTMLButtonElement>("#subs-add");
 
   let job: QueueJob | null = null;
+  /** A video without a dubbing job: the draft's lines, edited in place. */
+  let plain: PlainSubtitles | null = null;
   let outputPath = "";
   let data: LoadResponse | null = null;
   let loadToken = 0;
@@ -173,6 +187,8 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
 
   const cues = (): SubtitleCue[] => data?.cues ?? [];
   const draftOf = (cueId: string): string => drafts.get(cueId) ?? cues().find((cue) => cue.cue_id === cueId)?.text ?? "";
+  /** Plain lines burned at export show over the video in every mode. */
+  const visible = (): boolean => active || (!!plain && plain.burn && plain.lines.length > 0);
   const dubbed = (): boolean => !!data?.dubbed;
 
   // ---------- Loading ----------
@@ -210,7 +226,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
 
   /** Play the clean source muted with the dubbed mix beside it, or explain why not. */
   async function swapIn(): Promise<void> {
-    if (!data || !active || swapped) return;
+    if (!data || !active || swapped || plain) return;
     const token = ++swapToken;
     const usable = !!data.source_path && (!!data.mix_path || !data.dubbed);
     if (!usable) {
@@ -308,14 +324,21 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   }
 
   function frame(): void {
-    if (!active) return;
+    if (!visible()) {
+      if (plain) layer.hidden = true;
+      return;
+    }
+    if (plain) {
+      layer.hidden = false;
+      layer.classList.toggle("passive", !active || panel !== "subs");
+    }
     const rect = context.picture();
     Object.assign(layer.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
     const seconds = mainSeconds();
     const cue = seconds === null ? null : cueAt(cues(), seconds);
     const line = cue ? cleanText(draftOf(cue.cue_id)) : "";
     // On the style tab or while dragging an empty moment shows a sample line to place.
-    const sample = !line && panel === "subs" && (pane === "style" || !!drag) && !!data;
+    const sample = !line && active && panel === "subs" && (pane === "style" || !!drag) && !!data;
     block.hidden = !line && !sample;
     block.classList.toggle("sample", sample);
     const shown = line || (sample ? SAMPLE : "");
@@ -338,6 +361,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
    * dark band under the subtitles.
    */
   function renderCovers(seconds: number | null): void {
+    if (plain) return context.plainCover(seconds);
     context.cover.draw(job && data ? seconds : null);
     const band = !!job && swapped && seconds !== null && !!job.subtitleBox && job.burnIn !== false;
     if (band !== !!covers.firstChild) covers.replaceChildren(...(band ? [element("span", "subs-band")] : []));
@@ -408,8 +432,8 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     current = null;
     if (!all.length && data) {
       loading.hidden = false;
-      loading.textContent = "Video này chưa có câu phụ đề nào.";
-    }
+      loading.textContent = plain ? "Chưa có câu nào. Bấm Thêm câu để viết phụ đề tại chỗ đang phát." : "Video này chưa có câu phụ đề nào.";
+    } else if (plain) loading.hidden = true;
   }
 
   function lineRow(cue: SubtitleCue): HTMLLIElement {
@@ -427,6 +451,16 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     input.value = draftOf(cue.cue_id);
     input.setAttribute("aria-label", `Câu lúc ${formatClock(cue.start_ms / 1000)}`);
     input.addEventListener("input", () => {
+      if (plain) {
+        const line = plain.lines.find((each) => each.id === cue.cue_id);
+        if (line) line.text = input.value.slice(0, 2000);
+        cue.text = input.value;
+        refreshRow(row, cue);
+        renderFoot();
+        frame();
+        context.plainChanged();
+        return;
+      }
       if (cleanText(input.value) === cleanText(cue.text)) drafts.delete(cue.cue_id);
       else drafts.set(cue.cue_id, input.value);
       refreshRow(row, cue);
@@ -434,9 +468,13 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       frame();
     });
     input.addEventListener("focus", () => seekTo(cue));
-    const source = element("p", "subs-source", cue.source_text);
-    source.lang = "zh";
-    row.append(head, input, source);
+    row.append(head, input);
+    if (plain) row.append(timesRow(cue));
+    else {
+      const source = element("p", "subs-source", cue.source_text);
+      source.lang = "zh";
+      row.append(source);
+    }
     if (dubbed()) {
       const voice = element("button", "subs-voice");
       voice.type = "button";
@@ -452,12 +490,103 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       row.append(voice);
     }
     row.addEventListener("click", (event) => {
-      if ((event.target as Element).closest("textarea, .subs-voice")) return;
+      if ((event.target as Element).closest("textarea, input, button:not(.subs-time), .subs-voice")) return;
       seekTo(cue);
     });
     refreshRow(row, cue);
     return row;
   }
+
+  /** Where a plain line ends on the edited timeline, or null when cut. */
+  function endOutputTime(cue: SubtitleCue): number | null {
+    const time = cueOutputTime(context.edit(), { start_ms: Math.max(cue.start_ms, cue.end_ms - 1), end_ms: cue.end_ms });
+    return time === null ? null : time + 0.001;
+  }
+
+  /** "Từ 0:12.3 đến 0:14.0 · Xóa" for a plain line, times on the edited timeline. */
+  function timesRow(cue: SubtitleCue): HTMLElement {
+    const box = element("div", "subs-times");
+    const field = (which: "start" | "end", label: string): HTMLInputElement => {
+      const input = element("input", "subs-clock");
+      input.type = "text";
+      input.inputMode = "decimal";
+      input.dataset.which = which;
+      input.setAttribute("aria-label", `${label} của câu`);
+      input.title = "Thời điểm trên video đã chỉnh, ví dụ 1:05.5";
+      input.addEventListener("change", () => {
+        const seconds = parseClock(input.value);
+        const at = seconds === null ? null : mainMs(context.edit(), seconds);
+        const line = plain?.lines.find((each) => each.id === cue.cue_id);
+        const next = line && at !== null ? retime(line, which === "start" ? { start_ms: at } : { end_ms: at }) : null;
+        if (!plain || !line || !next) {
+          input.classList.add("invalid");
+          window.setTimeout(() => input.classList.remove("invalid"), 1200);
+          refreshTimes(box, cue);
+          return;
+        }
+        Object.assign(line, next);
+        sortLines(plain.lines);
+        syncPlain();
+        context.plainChanged();
+      });
+      return input;
+    };
+    const remove = element("button", "btn ghost small subs-remove", "Xóa");
+    remove.type = "button";
+    remove.title = "Xóa câu này";
+    remove.addEventListener("click", () => {
+      if (!plain) return;
+      plain.lines = plain.lines.filter((line) => line.id !== cue.cue_id);
+      syncPlain();
+      context.plainChanged();
+    });
+    box.append(element("span", "", "Từ"), field("start", "Bắt đầu"), element("span", "", "đến"), field("end", "Kết thúc"), remove);
+    refreshTimes(box, cue);
+    return box;
+  }
+
+  function refreshTimes(box: Element, cue: SubtitleCue): void {
+    for (const input of box.querySelectorAll<HTMLInputElement>(".subs-clock")) {
+      if (document.activeElement === input) continue;
+      const time = input.dataset.which === "start" ? cueOutputTime(context.edit(), cue) : endOutputTime(cue);
+      input.value = time === null ? "" : formatClock(time, true);
+      input.placeholder = time === null ? "đã cắt" : "";
+    }
+  }
+
+  /** The list again from the plain lines (after adding, removing or retiming one). */
+  function syncPlain(focus: string | null = null): void {
+    if (!plain || !data) return;
+    data = { ...data, cues: asCues(plain.lines) };
+    limit = Math.max(limit, plain.lines.length);
+    renderList();
+    renderFoot();
+    painted = "";
+    frame();
+    if (focus) {
+      const input = list.querySelector<HTMLTextAreaElement>(`.subs-line[data-id="${CSS.escape(focus)}"] textarea`);
+      input?.scrollIntoView({ block: "nearest" });
+      input?.focus();
+    }
+  }
+
+  addButton.addEventListener("click", () => {
+    if (!plain) return;
+    const at = mainSeconds();
+    if (at === null) return host.showError("Đưa vị trí phát về đoạn của video chính để thêm câu.");
+    const line = addLine(plain.lines, at * 1000, context.edit().duration * 1000);
+    if (!line) return host.showError(plain.lines.length ? "Không còn chỗ cho câu mới ở đây: câu tiếp theo bắt đầu ngay sau." : "Không thêm được câu ở cuối video.");
+    syncPlain(line.id);
+    context.plainChanged();
+  });
+  burnToggle.addEventListener("change", () => {
+    if (!plain) return;
+    plain.burn = burnToggle.checked;
+    renderFoot();
+    painted = "";
+    frame();
+    context.plainChanged();
+  });
 
   function seekTo(cue: SubtitleCue): void {
     const time = cueOutputTime(context.edit(), cue);
@@ -471,7 +600,9 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     time.title = label.cut ? "Câu này nằm trong đoạn đã cắt bỏ" : "Đến câu này";
     time.disabled = label.cut;
     row.classList.toggle("cut", label.cut);
-    const edited = cleanText(draftOf(cue.cue_id)) !== cleanText(cue.text);
+    const times = row.querySelector(".subs-times");
+    if (times) refreshTimes(times, cue);
+    const edited = !plain && cleanText(draftOf(cue.cue_id)) !== cleanText(cue.text);
     // The voice engine reads the same text the same way, so a new take only
     // makes sense for changed text or a line that failed to dub.
     const canRevoice = edited || cue.dub_failed;
@@ -585,6 +716,10 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
 
   function styleChanged(): void {
     style = normalizeStyle(style);
+    if (plain) {
+      plain.style = style;
+      context.plainChanged();
+    }
     renderStyle();
     renderFoot();
     frame();
@@ -661,6 +796,21 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   }
 
   function renderFoot(): void {
+    plainBar.hidden = !plain;
+    $("#subs-full-review").hidden = !!plain;
+    applyButton.hidden = !!plain;
+    if (plain) {
+      const summary = $("#subs-summary");
+      const empty = plain.lines.filter((line) => !cleanText(line.text)).length;
+      const count = plain.lines.length - empty;
+      burnToggle.checked = plain.burn;
+      summary.textContent = empty ? `${empty} câu đang trống, sẽ bỏ qua khi xuất` : !count ? "Chưa có câu nào"
+        : `${count} câu · ${plain.burn ? "in vào video khi xuất" : "chỉ xuất file .srt"}`;
+      summary.title = "Câu thoại và kiểu chữ được tự lưu vào bản nháp";
+      summary.classList.toggle("warn", empty > 0);
+      context.changed();
+      return;
+    }
     const { changes, any } = pendingChanges();
     const summary = $("#subs-summary");
     summary.textContent = changes.empty ? `${changes.empty} câu đang trống` : summaryText(true);
@@ -725,7 +875,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   function show(on: boolean): void {
     section.hidden = !on || panel !== "subs";
     foot.hidden = !on;
-    layer.hidden = !on;
+    layer.hidden = !on && !visible();
     // Under Che the subtitle only shows where it lands; the regions take the pointer.
     layer.classList.toggle("passive", panel !== "subs");
   }
@@ -738,7 +888,22 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       renderFoot();
       frame();
     },
+    get showing() { return visible(); },
+    beginPlain(path, subtitles) {
+      this.begin(null as unknown as QueueJob, path);
+      job = null;
+      plain = subtitles;
+      data = { cues: asCues(subtitles.lines), style: null, source_path: null, mix_path: null, dubbed: false, blur_regions: [] };
+      style = normalizeStyle(subtitles.style);
+      baseStyle = style;
+      loading.hidden = true;
+      renderList();
+      renderStyle();
+      renderFoot();
+      frame();
+    },
     begin(next, path) {
+      plain = null;
       job = next;
       outputPath = path;
       data = null;
@@ -756,6 +921,8 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     },
     end() {
       this.leave();
+      plain = null;
+      layer.hidden = true;
       job = null;
       data = null;
       loadToken += 1;
@@ -791,7 +958,10 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       swapOut();
       showNote(null);
       covers.replaceChildren();
-      context.cover.draw(null);
+      if (plain) {
+        painted = "";
+        frame();
+      } else context.cover.draw(null);
     },
     frame,
     editChanged() {
@@ -808,7 +978,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       syncAudio();
     },
     dirty() {
-      return !!data && pendingChanges().any;
+      return !plain && !!data && pendingChanges().any;
     },
   };
 }
