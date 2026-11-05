@@ -31,8 +31,26 @@ try:
 except Exception as error:
     print("saved session unavailable:", type(error).__name__)
 
-for label, use in (("with saved session", headers), ("visitor (no cookies)", None)):
-    if label.startswith("with") and not use:
+def visitor_cookie():
+    import json, random, string, urllib.request
+    body = json.dumps({"region": "cn", "aid": 1768, "needFid": False, "service": "www.ixigua.com",
+        "migrate_info": {"ticket": "", "source": "node"}, "cbUrlProtocol": "https", "union": True}).encode()
+    req = urllib.request.Request("https://ttwid.bytedance.com/ttwid/union/register/", data=body,
+        headers={"Content-Type": "application/json", "User-Agent": native.USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        ttwid = next(v.split(";", 1)[0].split("=", 1)[1] for k, v in r.headers.items() if k.lower() == "set-cookie" and v.startswith("ttwid="))
+    ms = "".join(random.choice(string.ascii_letters + string.digits) for _ in range(107))
+    return {"Cookie": f"ttwid={ttwid}; msToken={ms}"}
+
+fresh = None
+try:
+    fresh = visitor_cookie()
+    print("fresh visitor cookie: ok")
+except Exception as error:
+    print("fresh visitor cookie: FAILED", type(error).__name__, str(error)[:120])
+
+for label, use in (("with saved session", headers), ("fresh visitor ttwid+msToken", fresh), ("visitor (no cookies)", None)):
+    if label != "visitor (no cookies)" and not use:
         continue
     print("\n==", label)
     with yt_dlp.YoutubeDL(downloader_options()) as d:
