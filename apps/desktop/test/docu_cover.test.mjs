@@ -31,3 +31,14 @@ assert.deepEqual(coverRequest("D:\\run", covers[0]).band, [0.78, 0.97]);
 assert.equal(docuDir("D:\\Out\\Phim tai lieu - X\\run-1\\documentary.mp4"), "D:\\Out\\Phim tai lieu - X\\run-1");
 assert.equal(docuDir("/out/run-1/documentary.mp4"), "/out/run-1");
 console.log("docu cover ok");
+
+// Review on #522: a render that fails after the edits were saved can be retried without another edit.
+{
+  const { applyButton } = await import("../src/features/edit/docu_cover.ts");
+  assert.deepEqual(applyButton(0, false, false).enabled, false);
+  assert.equal(applyButton(2, false, false).enabled, true);
+  assert.equal(applyButton(0, false, true).enabled, false, "not while rendering");
+  const retry = applyButton(0, true, false);
+  assert.equal(retry.enabled, true, "saved edits whose render failed can be rendered again");
+  assert.equal(retry.label, "Dựng lại phim");
+}

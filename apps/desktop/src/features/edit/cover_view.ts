@@ -42,6 +42,8 @@ export type CoverEditor = CoverHooks & {
   readonly active: boolean;
   /** A key while Che is open; true when it was used. */
   keydown(event: KeyboardEvent): boolean;
+  /** A click on the video outside the regions: drop the selection; true when there was one. */
+  deselect(): boolean;
   /** What an edited video's export covers (Issue #510): null when nothing is drawn. */
   document(): CoverDocument | null;
 };
@@ -324,6 +326,9 @@ export function mountCover(context: CoverContext): CoverEditor {
     });
     if (sketch?.rect) nodes.push(boxNode(sketch.rect, "manual selected sketch", ""));
     boxes.replaceChildren(...nodes);
+    // Unselected regions show only an outline: say how to get their handles back.
+    if (!drawing) showHint(!selection && nodes.some((node) => !node.classList.contains("auto"))
+      ? "Bấm vào vùng che để đổi cỡ hoặc di chuyển · Esc để bỏ chọn" : null);
   }
 
   /** Redraw the outlines on the next frame even when nothing they show changed. */
@@ -725,6 +730,11 @@ export function mountCover(context: CoverContext): CoverEditor {
       boxes.replaceChildren();
       boxes.hidden = true;
       showHint(null);
+    },
+    deselect() {
+      if (!active || drawing || !selection) return false;
+      select(null, false);
+      return true;
     },
     keydown(event) {
       if (!active) return false;

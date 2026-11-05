@@ -68,3 +68,15 @@ export function coverRequest(dir: string, cover: SourceCover): { dir: string; so
 export function docuDir(outputPath: string): string {
   return outputPath.replace(/[\\/][^\\/]+$/, "");
 }
+
+/**
+ * The apply button: enabled for unsaved changes, or to render again cover
+ * edits already saved by a render that then failed or was cancelled.
+ */
+export function applyButton(changed: number, unrendered: boolean, rendering: boolean): { enabled: boolean; label: string; state: string } {
+  if (rendering) return { enabled: false, label: "Đang dựng lại phim…", state: "" };
+  if (changed) return { enabled: true, label: "Dựng lại phim với vùng che mới", state: `${changed} nguồn có vùng che mới, chưa dựng lại.` };
+  if (unrendered) return { enabled: true, label: "Dựng lại phim", state: "Vùng che mới đã lưu nhưng phim chưa dựng lại xong." };
+  return { enabled: false, label: "Dựng lại phim với vùng che mới", state: "" };
+}
+
