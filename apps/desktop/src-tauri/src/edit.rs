@@ -492,6 +492,20 @@ pub struct ExportRequest {
     main_denoise: bool,
     #[serde(default)]
     main_eq: Option<EqPreset>,
+    /// Lớp âm thanh: the main video's sound mixed from its parts (`stem_files`).
+    #[serde(default)]
+    stems: Option<StemLevels>,
+}
+
+/// Lớp âm thanh: how loud each part of the main video's sound plays, 0–2.
+/// `original` is the original voice when the accompaniment is separated, the
+/// whole original sound otherwise; `background` is the accompaniment.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StemLevels {
+    voice: f64,
+    original: f64,
+    background: f64,
 }
 
 /// What follows the edit's picture and sound in the export graph.
@@ -534,6 +548,9 @@ struct Edit {
     overlays: Vec<Overlay>,
     /// LUT files (paths) the segments' `lut` index into.
     luts: Vec<String>,
+    /// Lớp âm thanh: the main video's own sound mixed from its parts (input
+    /// index, weight); empty plays the main video's sound track.
+    stems: Vec<(usize, f64)>,
 }
 
 /// What the filter graph needs to know about each input.
@@ -975,7 +992,7 @@ fn validate(request: &ExportRequest, durations: &[f64]) -> Result<Edit, String> 
     if request.luts.len() > MAX_LUTS || !request.luts.iter().all(|lut| is_lut_path(lut)) {
         return Err(fail("Chỉ dùng được tối đa 8 file LUT .cube"));
     }
-    Ok(Edit { segments, transitions, overlays, luts: request.luts.clone() })
+    Ok(Edit { segments, transitions, overlays, luts: request.luts.clone(), stems: Vec::new() })
 }
 
 /// The added sounds, checked against their files' lengths (`files[i]` is
@@ -1208,7 +1225,7 @@ fn render_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str) ->
 
 /// `render_script` with the picture ending as `[video_out]` and the sound as `[audio_out]`.
 fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, video_out: &str, audio_out: &str) -> (String, bool) {
-    if inputs.len() == 1 && edit.transitions.is_empty() && edit.overlays.is_empty() && edit.segments.iter().all(Segment::is_plain) {
+    if inputs.len() == 1 && edit.transitions.is_empty() && edit.overlays.is_empty() && edit.stems.is_empty() && edit.segments.iter().all(Segment::is_plain) {
         return (filter_graph(&edit.segments, inputs[0].has_audio, quality, video_out, audio_out), inputs[0].has_audio);
     }
     let has_audio = output_has_audio(edit, inputs);
@@ -1244,7 +1261,11 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, vide
         lines.push(format!("[{}:v]{}[v{index}]", segment.media, video.join(",")));
         if has_audio {
             let (source, mut audio) = if inputs[segment.media].has_audio && segment.freeze.is_none() {
-                let mut audio = vec![format!("atrim=start={start}:end={end}"), "asetpts=PTS-STARTPTS".to_owned()];
+                let (source, mut audio) = if segment.media == 0 && !edit.stems.is_empty() {
+                    (stem_mix(&mut lines, &edit.stems, segment, index), Vec::new())
+                } else {
+                    (format!("[{}:a]", segment.media), vec![format!("atrim=start={start}:end={end}"), "asetpts=PTS-STARTPTS".to_owned()])
+                };
                 if segment.reverse {
                     audio.push("areverse".to_owned());
                 }
@@ -1259,7 +1280,7 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, vide
                     let fade = segment.fade_out.min(lengths[index]);
                     audio.push(format!("afade=t=out:st={}:d={}", num(lengths[index] - fade), num(fade)));
                 }
-                (format!("[{}:a]", segment.media), audio)
+                (source, audio)
             } else {
                 (String::new(), vec!["anullsrc=r=48000:cl=stereo".to_owned(), format!("atrim=duration={}", num(lengths[index]))])
             };
@@ -1338,6 +1359,23 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, vide
         lines.push(quality_scale(&video, short, video_out));
     }
     (lines.join(";\n"), has_audio)
+}
+
+/// Lớp âm thanh: one segment of the main video's sound as the weighted sum
+/// of its parts (a negative weight takes the accompaniment out of the source,
+/// leaving the original voice), padded to the segment so later parts stay in
+/// sync; the label it ends as.
+fn stem_mix(lines: &mut Vec<String>, stems: &[(usize, f64)], segment: &Segment, index: usize) -> String {
+    let span = num(segment.end - segment.start);
+    let mut pads = String::new();
+    for (part, (input, weight)) in stems.iter().enumerate() {
+        let gain = if *weight == 1.0 { String::new() } else { format!(",volume={}", num(*weight)) };
+        lines.push(format!("[{input}:a]atrim=start={}:end={},asetpts=PTS-STARTPTS,{AUDIO_FORMAT}{gain}[st{index}x{part}]",
+            num(segment.start), num(segment.end)));
+        pads.push_str(&format!("[st{index}x{part}]"));
+    }
+    lines.push(format!("{pads}amix=inputs={}:duration=longest:normalize=0,apad=whole_dur={span},atrim=duration={span}[sm{index}]", stems.len()));
+    format!("[sm{index}]")
 }
 
 /// An overlay's picture: scaled to its width, inside its frame, with
@@ -1493,7 +1531,8 @@ fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mi
 
 /// The picture (ending as `[video_out]`) and the mixed sound (`[audio_out]`).
 fn mixed_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, video_out: &str, audio_out: &str) -> (String, bool) {
-    if mix.sounds.is_empty() && mix.main_volume == 1.0 && mix.main_clean.is_plain() {
+    // Parts of the main sound turned up can clip: they always pass the limiter.
+    if mix.sounds.is_empty() && mix.main_volume == 1.0 && mix.main_clean.is_plain() && edit.stems.is_empty() {
         return video_graph(edit, inputs, frame, quality, video_out, audio_out);
     }
     let (graph, has_main) = video_graph(edit, inputs, frame, quality, video_out, "am");
@@ -2795,6 +2834,7 @@ struct ExportJob {
     main_volume: f64,
     main_denoise: bool,
     main_eq: Option<EqPreset>,
+    stems: Option<StemLevels>,
     /// The texts as requested, for exports.json.
     texts: Vec<TextClip>,
     /// Chỉ âm thanh: an .m4a, kept out of exports.json (it is no edited video).
@@ -2919,7 +2959,7 @@ fn run_export(job: &ExportJob, running: &Running) {
     append_export(&job.work, json!({"path": display_path(&target), "srt_path": srt, "created": unix_now(),
         "duration": (job.seconds * 1000.0).round() / 1000.0, "quality": job.quality, "segments": job.edit.segments,
         "media": job.media, "luts": job.edit.luts, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume, "main_denoise": job.main_denoise, "main_eq": job.main_eq,
-        "texts": job.texts}));
+        "stems": job.stems, "texts": job.texts}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
 }
 
@@ -2927,6 +2967,11 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     let target = edit_target(&request.output_path, &request.kind)?;
     let main = target.main.clone();
     let facts = probe(&main)?;
+    // Lớp âm thanh: the parts are inputs after the videos and the added sounds.
+    let stem_inputs = match &request.stems {
+        Some(levels) => stem_weights(levels, &stem_files(&target))?,
+        None => Vec::new(),
+    };
     if request.media.len() + 1 > MAX_MEDIA {
         return Err(fail("Một bản sửa dùng tối đa 20 video"));
     }
@@ -2993,7 +3038,12 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     }
     let target = unique_target(&folder, &name, if request.audio_only { "m4a" } else { "mp4" })?;
     let script = work.join("filter.txt");
-    let streams: Vec<Input> = probes.iter().map(|probe| Input { has_audio: probe.has_audio }).collect();
+    let mut streams: Vec<Input> = probes.iter().map(|probe| Input { has_audio: probe.has_audio }).collect();
+    let first_stem = inputs.len() + sound_inputs.len();
+    edit.stems = stem_inputs.iter().enumerate().map(|(at, (_, weight))| (first_stem + at, *weight)).collect();
+    if !edit.stems.is_empty() {
+        streams[0].has_audio = true;
+    }
     let fps = request.fps.map_or_else(|| facts.fps.clone(), |fps| format!("{fps}/1"));
     let frame = Frame { width: facts.width, height: facts.height, fps: fps.clone() };
     let (width, height) = scaled_size(facts.width, facts.height, &request.quality);
@@ -3027,6 +3077,7 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     }
     let text = if prefilter.is_empty() { text } else { with_cover(&text, &prefilter.join(",")) };
     inputs.extend(sound_inputs);
+    inputs.extend(stem_inputs.into_iter().map(|(file, _)| file));
     guarded(&work)?;
     fs::write(&script, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
     let job = ExportJob {
@@ -3034,7 +3085,7 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         srt: (!request.cues.is_empty() && !request.audio_only).then(|| format_srt(&request.cues)),
         seconds: output_seconds(&edit.segments, &edit.transitions), has_audio, bitrate, fps, ffmpeg, audio_only: request.audio_only,
         quality: request.quality, edit, audio: request.audio, main_volume: request.main_volume, texts: request.texts,
-        main_denoise: request.main_denoise, main_eq: request.main_eq,
+        main_denoise: request.main_denoise, main_eq: request.main_eq, stems: request.stems,
     };
     write_status(&work, "RUNNING", 0.0, "Đang bắt đầu xuất video…", Some(&target));
     let entry = Arc::new(Running { child: Mutex::new(None), cancelled: AtomicBool::new(false) });
@@ -3089,6 +3140,161 @@ pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
     }
     if let Some(entry) = RUNNING.lock().ok().and_then(|running| running.get(&work).cloned()) {
         stop(&entry);
+    }
+    Ok(())
+}
+
+// ---------- Lớp âm thanh: the main video's sound in parts ----------
+
+/// Below the draft folder: Tách giọng's output (`background.wav`, and
+/// `source.wav` when it read a video) and its `status.json`.
+const STEMS_DIR: &str = "stems";
+
+/// Tách giọng runs, by draft folder.
+static SEPARATING: LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// The parts of the main video's sound the editor can mix: a dubbing job's
+/// Vietnamese voice and original sound (`editable\`), and the accompaniment
+/// separated by the job or by Tách giọng. A video without a job's tracks has
+/// parts only once Tách giọng made both its source and accompaniment.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct StemFiles {
+    voice: Option<PathBuf>,
+    source: Option<PathBuf>,
+    background: Option<PathBuf>,
+}
+
+fn stem_files(target: &Target) -> StemFiles {
+    let file = |path: PathBuf| path.is_file().then_some(path);
+    let own = target.work.join(STEMS_DIR);
+    let editable = target.dir.join("editable");
+    let job = matches!(target.kind, Kind::Job);
+    let voice = job.then(|| file(editable.join("dialogue_stem.wav"))).flatten();
+    let separated = file(own.join("background.wav"));
+    match job.then(|| file(editable.join("source_audio.wav"))).flatten() {
+        Some(source) => StemFiles { voice, source: Some(source), background: file(editable.join("background_stem.wav")).or(separated) },
+        None => {
+            let source = separated.as_ref().and_then(|_| file(own.join("source.wav")));
+            StemFiles { voice, background: source.as_ref().and(separated), source }
+        }
+    }
+}
+
+/// The parts to mix and their weights: the voice at its level; with an
+/// accompaniment, the source at the original voice's level and the
+/// accompaniment at (background − original), so the source's accompaniment
+/// cancels and only the original voice keeps `original`; without one, the
+/// whole source at `original`.
+fn stem_weights(levels: &StemLevels, files: &StemFiles) -> Result<Vec<(PathBuf, f64)>, String> {
+    let StemLevels { voice, original, background } = *levels;
+    if ![voice, original, background].iter().all(|level| level.is_finite() && (0.0..=MAX_STEM_LEVEL).contains(level)) {
+        return Err(fail("Âm lượng lớp âm thanh không hợp lệ"));
+    }
+    let Some(source) = files.source.clone() else {
+        return Err(fail("Video này chưa có lớp âm thanh riêng; hãy bấm Tách giọng trước"));
+    };
+    let mut parts = Vec::new();
+    if let Some(file) = &files.voice {
+        parts.push((file.clone(), voice));
+    }
+    parts.push((source, original));
+    if let Some(file) = &files.background {
+        parts.push((file.clone(), background - original));
+    }
+    let audible: Vec<(PathBuf, f64)> = parts.iter().filter(|(_, weight)| weight.abs() > 1e-6).cloned().collect();
+    // All silent: one part at 0 keeps the sound track.
+    Ok(if audible.is_empty() { parts.into_iter().take(1).map(|(file, _)| (file, 0.0)).collect() } else { audible })
+}
+
+/// Each part's level reaches 200 %.
+const MAX_STEM_LEVEL: f64 = 2.0;
+
+fn read_separation(work: &Path) -> Option<Value> {
+    let path = work.join(STEMS_DIR).join("status.json");
+    let value: Value = fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024).and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    let running = SEPARATING.lock().is_ok_and(|set| set.contains(work));
+    // A run the app no longer watches (closed mid-way) is over.
+    if value["state"] == "RUNNING" && !running {
+        return Some(json!({"state": "FAILED", "progress": 0, "message": "Tách giọng đã dừng giữa chừng; hãy bấm Tách giọng lại."}));
+    }
+    Some(json!({"state": value["state"], "progress": value["progress"], "message": value["message"]}))
+}
+
+/// Lớp âm thanh of the video the editor has open: its parts (allowed in the
+/// preview), whether they come from a dubbing job, and Tách giọng's progress.
+#[tauri::command]
+pub fn edit_stems(output_path: String, kind: String) -> Result<Value, String> {
+    let target = edit_target(&output_path, &kind)?;
+    let files = stem_files(&target);
+    let listed: Vec<PathBuf> = [&files.voice, &files.source, &files.background].into_iter().flatten()
+        .filter_map(|file| file.canonicalize().ok()).collect();
+    crate::sfx::allow_files(&listed);
+    let shown = |file: &Option<PathBuf>| file.as_ref().map(|file| display_path(file));
+    Ok(json!({"voice": shown(&files.voice), "source": shown(&files.source), "background": shown(&files.background),
+        "separation": read_separation(&target.work)}))
+}
+
+/// Tách giọng: separate the main video's sound (a dubbing job's original
+/// track when it has one) into its accompaniment, in the background.
+#[tauri::command]
+pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
+    let target = edit_target(&output_path, &kind)?;
+    let files = stem_files(&target);
+    if files.source.is_some() && files.background.is_some() {
+        return Err(fail("Video này đã tách giọng rồi"));
+    }
+    let input = match (matches!(target.kind, Kind::Job), target.dir.join("editable").join("source_audio.wav")) {
+        (true, wav) if wav.is_file() => wav,
+        _ => target.main.clone(),
+    };
+    let root = version_root()?;
+    let models = crate::control_root()?.join("models");
+    let media = root.join("runtime").join("media");
+    let mut running = SEPARATING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
+    if running.contains(&target.work) {
+        return Err(fail("Video này đang được tách giọng"));
+    }
+    target.prepare()?;
+    guarded(&target.work)?;
+    let out = target.work.join(STEMS_DIR);
+    if fs::symlink_metadata(&out).is_ok_and(|metadata| is_link(&metadata) || !metadata.is_dir()) {
+        return Err(fail("Thư mục tách giọng không an toàn (là liên kết); hãy xóa nó rồi thử lại"));
+    }
+    fs::create_dir_all(&out).map_err(|_| fail("Không tạo được thư mục tách giọng"))?;
+    for name in ["cancel", "status.json"] {
+        let _ = fs::remove_file(out.join(name));
+    }
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app"))
+        .args(["-B", "-m", "engine.dubflow.separation", "--source"]).arg(&input)
+        .arg("--out-dir").arg(&out)
+        .arg("--app-root").arg(root.join("app"))
+        .arg("--model-root").arg(models)
+        .arg("--ffmpeg").arg(media.join("ffmpeg.exe"))
+        .arg("--ffprobe").arg(media.join("ffprobe.exe"))
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().map_err(|_| fail("Không chạy được bộ tách giọng"))?;
+    let work = target.work.clone();
+    running.insert(work.clone());
+    drop(running);
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        if let Ok(mut running) = SEPARATING.lock() {
+            running.remove(&work);
+        }
+    });
+    Ok(())
+}
+
+/// Stop Tách giọng; what it made so far is dropped.
+#[tauri::command]
+pub fn edit_separate_cancel(output_path: String, kind: String) -> Result<(), String> {
+    let target = edit_target(&output_path, &kind)?;
+    let out = target.work.join(STEMS_DIR);
+    if out.is_dir() && unlinked(&target.work) {
+        fs::write(out.join("cancel"), b"").map_err(|_| fail("Không hủy được tách giọng"))?;
     }
     Ok(())
 }
@@ -3289,7 +3495,7 @@ mod tests {
     fn request(segments: Vec<Segment>) -> ExportRequest {
         ExportRequest { output_path: "unused".into(), kind: "file".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
             texts: vec![], quality: "source".into(),
-            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false, burn: None, fps: None, bitrate: None, aspect: None, fill: None, audio_only: false, luts: vec![], main_denoise: false, main_eq: None }
+            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false, burn: None, fps: None, bitrate: None, aspect: None, fill: None, audio_only: false, luts: vec![], main_denoise: false, main_eq: None, stems: None }
     }
 
     fn frame() -> Frame {
@@ -4108,6 +4314,60 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert_eq!(script, expected(&format!("{MAIN_ONLY};
 [1:a]atrim=start=0:end=1.2,asetpts=PTS-STARTPTS,{{af}},afade=t=in:st=0:d=0.2,afade=t=out:st=0.7:d=0.5,volume=0.8,adelay=2500:all=1[sx0];
 [am][sx0]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.891:level=0:latency=1[a]")));
+    }
+
+    #[test]
+    fn mixes_the_main_sound_from_its_parts() {
+        // Voice at 150 %, the original voice at 20 % and the accompaniment at 100 %: source 0.2, accompaniment 0.8.
+        let parts = stem_weights(&StemLevels { voice: 1.5, original: 0.2, background: 1.0 },
+            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()) }).unwrap();
+        assert_eq!(parts, vec![(PathBuf::from("v.wav"), 1.5), (PathBuf::from("s.wav"), 0.2), (PathBuf::from("b.wav"), 0.8)]);
+        let edit = Edit { stems: vec![(1, 1.5), (2, 0.2), (3, 0.8)], ..whole(10.0) };
+        let mix = Mix { sounds: vec![], main_volume: 1.0, ..Default::default() };
+        let (script, has_audio) = export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &mix, &Finish::default());
+        assert!(has_audio);
+        assert!(script.contains("[1:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=1.5[st0x0];"), "{script}");
+        assert!(script.contains("[3:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.8[st0x2];"));
+        assert!(script.contains("[st0x0][st0x1][st0x2]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=10,atrim=duration=10[sm0];"));
+        assert!(script.contains("[sm0]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0]"), "the main video's own track is not read");
+        assert!(!script.contains("[0:a]"));
+        assert!(script.ends_with("[am]alimiter=limit=0.891:level=0:latency=1[a]"), "turned-up parts pass the limiter");
+        // Only the original voice: the accompaniment cancels out of the source.
+        let only = stem_weights(&StemLevels { voice: 0.0, original: 1.0, background: 0.0 },
+            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()) }).unwrap();
+        assert_eq!(only, vec![(PathBuf::from("s.wav"), 1.0), (PathBuf::from("b.wav"), -1.0)]);
+        // Without an accompaniment, `original` is the whole source; silence keeps one part.
+        let plain = StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: None };
+        assert_eq!(stem_weights(&StemLevels { voice: 1.0, original: 0.3, background: 1.0 }, &plain).unwrap(),
+            vec![(PathBuf::from("v.wav"), 1.0), (PathBuf::from("s.wav"), 0.3)]);
+        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 0.0, background: 0.0 }, &plain).unwrap(), vec![(PathBuf::from("v.wav"), 0.0)]);
+        assert!(stem_weights(&StemLevels { voice: 2.5, original: 1.0, background: 1.0 }, &plain).is_err());
+        assert!(stem_weights(&StemLevels { voice: 1.0, original: 1.0, background: 1.0 }, &StemFiles::default()).is_err());
+    }
+
+    #[test]
+    fn finds_the_parts_of_a_job_and_of_a_separated_file() {
+        let base = std::env::temp_dir().join(format!("dubflow-edit-stems-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join("job");
+        fs::create_dir_all(dir.join("editable")).unwrap();
+        let work = work_dir(&dir);
+        let job = Target { kind: Kind::Job, main: dir.join("final_vi.mp4"), dir: dir.clone(), work: work.clone(), captions: None, store: None };
+        assert_eq!(stem_files(&job), StemFiles::default());
+        for name in ["dialogue_stem.wav", "source_audio.wav"] {
+            fs::write(dir.join("editable").join(name), b"wav").unwrap();
+        }
+        let files = stem_files(&job);
+        assert_eq!((files.voice.is_some(), files.source.is_some(), files.background.is_some()), (true, true, false));
+        fs::create_dir_all(work.join(STEMS_DIR)).unwrap();
+        fs::write(work.join(STEMS_DIR).join("background.wav"), b"wav").unwrap();
+        assert_eq!(stem_files(&job).background, Some(work.join(STEMS_DIR).join("background.wav")), "Tách giọng of a job without one");
+        let file = Target { kind: Kind::File, main: base.join("a.mp4"), dir: base.clone(), work: work.clone(), captions: None, store: None };
+        assert_eq!(stem_files(&file), StemFiles::default(), "an accompaniment without its source is no part");
+        fs::write(work.join(STEMS_DIR).join("source.wav"), b"wav").unwrap();
+        let files = stem_files(&file);
+        assert_eq!((files.voice, files.source.is_some(), files.background.is_some()), (None, true, true));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

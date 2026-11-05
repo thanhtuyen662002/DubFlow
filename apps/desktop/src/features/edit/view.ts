@@ -35,6 +35,7 @@ import { mountDocuLayers } from "./docu_layers_view.ts";
 import type { Layers } from "./docu_layers.ts";
 import type { AudioFacts } from "../sfx/library.ts";
 import { mountAudio } from "./audio_view.ts";
+import { mountStems } from "./stems_view.ts";
 import { mountText } from "./text_view.ts";
 import { mountTemplate } from "./template_view.ts";
 import { mountLook } from "./look_view.ts";
@@ -528,14 +529,20 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     applyLevel(segment, player);
   }
 
-  /** The segment's volume times "Âm thanh gốc", lowered under ducking sounds. */
+  /**
+   * The segment's volume times "Âm thanh gốc", lowered under ducking sounds.
+   * With Lớp âm thanh on, the main video stays muted and its parts play beside it.
+   */
   function applyLevel(segment: Segment, player: HTMLVideoElement): void {
     const level = silenced ? 0 : segment.volume * (session ? mainLevel(current(), session.outputTime) : 1);
+    const parts = player === video && segment.mediaId === MAIN && stems.active(current());
+    const heard = parts ? 0 : level;
     // Above 100% is heard only after export.
-    player.volume = Math.min(1, level);
-    player.muted = level === 0;
+    player.volume = Math.min(1, heard);
+    player.muted = heard === 0;
     // Phụ đề previews the muted source with the dubbed mix beside it.
-    if (player === video && subs.active) subs.volume(level);
+    if (player === video && subs.active) subs.volume(heard);
+    stems.sync(video, level, parts && playsForward(segment), !!session?.playing && active === video);
   }
 
   /** Cue the next segment's player when it is another file, so the switch is quick. */
@@ -1108,6 +1115,21 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       silenced = on;
       if (session) applyLevel(current().segments[session.index] ?? current().segments[0], active);
     },
+  });
+  const stems = mountStems(invoke, {
+    edit: () => current(),
+    base: () => session!.history.current,
+    busy: () => !session || !!session.draft,
+    commit: (next) => commit(next),
+    preview: (next) => {
+      if (!session) return;
+      session.draft = next;
+      renderPanel();
+      renderEffects();
+    },
+    note,
+    mediaUrl: (path) => host.mediaUrl(path),
+    changed: () => { if (session) applyLevel(current().segments[session.index] ?? current().segments[0], active); },
   });
   const textMode = mountText({
     edit: () => current(),
@@ -1801,6 +1823,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     renderRangePanel(mode === "cut" && !overlay);
     renderMarkerList(edit, mode === "cut" && !overlay);
     audio.render(mode === "audio");
+    stems.render(mode === "audio");
     textMode.render(mode === "text");
     templateMode.render(mode === "template");
     if (templateMode.dirty() || templateMode.busy) {
@@ -3166,6 +3189,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         subs.beginPlain(outputPath, session.plainSubs);
       }
       audio.begin();
+      stems.begin(outputPath, opened.kind, loaded.has_audio);
       textMode.begin();
       templateMode.begin(opened);
       // A Bán hàng video opens on its template; modes it does not have fall back to Cắt ghép.
@@ -3236,6 +3260,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $("#edit-subs-layer").hidden = true;
     subs.end();
     audio.end();
+    stems.end();
     textMode.end();
     templateMode.end();
     restorePlayer();
