@@ -7,7 +7,7 @@ import { calloutTexts, type Callout, type OpenDocuRun } from "../docu/model.ts";
 
 export type Burned = { graphics: boolean; captions: boolean; music: string };
 /** What docu_layers answers: what was burned before, and the kept bed. */
-export type Split = Burned & { bed: string | null };
+export type Split = Burned & { bed: string | null; music_path?: string | null };
 /** What the reopened draft gets. */
 export type Layers = { texts: Callout[]; burnCaptions: boolean; bed: string | null };
 

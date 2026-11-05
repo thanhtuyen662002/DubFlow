@@ -519,7 +519,19 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       input.dataset.which = which;
       input.setAttribute("aria-label", `${label} của câu`);
       input.title = "Thời điểm trên video đã chỉnh, ví dụ 1:05.5";
+      // Enter commits the time, like leaving the box; Esc puts the old one back.
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); input.blur(); }
+        else if (event.key === "Escape") {
+          event.preventDefault();
+          input.dataset.revert = "1";
+          input.blur();
+          delete input.dataset.revert;
+          refreshTimes(box, cue);
+        }
+      });
       input.addEventListener("change", () => {
+        if (input.dataset.revert) return;
         const seconds = parseClock(input.value);
         const at = seconds === null ? null : mainMs(context.edit(), seconds);
         const line = plain?.lines.find((each) => each.id === cue.cue_id);
@@ -645,6 +657,8 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   // ---------- Timeline lane (plain lines) ----------
 
   const LANE_PX = 20;
+  /** The narrowest a lane block is drawn, so a short line still has two grabbable edges. */
+  const LANE_MIN_PX = 28;
   let laneRow: HTMLElement | null = null;
   let lanePad = 0;
   type LaneDrag = { kind: "move" | "start" | "end"; id: string; x: number; out: { start: number; end: number }; pointer: number; moved: boolean; block: HTMLElement };
@@ -674,10 +688,11 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       if (!span) return [];
       const block = element("div", `tl-sub${line.id === current ? " selected" : ""}${cleanText(line.text) ? "" : " empty"}`);
       block.dataset.id = line.id;
-      Object.assign(block.style, { left: `${pad + span.start * pps}px`, width: `${Math.max(6, (span.end - span.start) * pps)}px` });
+      Object.assign(block.style, { left: `${pad + span.start * pps}px`, width: `${Math.max(LANE_MIN_PX, (span.end - span.start) * pps)}px` });
       block.title = `${cleanText(line.text) || "(trống)"} · ${formatClock(span.start, true)} – ${formatClock(span.end, true)} · kéo để dời, kéo mép để đổi thời gian`;
       block.append(element("span", "tl-sub-name", cleanText(line.text) || "…"));
-      if ((span.end - span.start) * pps >= 24) {
+      {
+        // Short lines are drawn LANE_MIN_PX wide so both edges stay grabbable.
         const start = element("span", "tl-handle start");
         start.dataset.edge = "start";
         const end = element("span", "tl-handle end");
@@ -724,6 +739,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     const handle = target.closest<HTMLElement>(".tl-handle");
     laneDrag = { kind: handle ? (handle.dataset.edge === "start" ? "start" : "end") : "move", id: line.id, x: event.clientX, out: span,
       pointer: event.pointerId, moved: false, block };
+    block.style.zIndex = "4";
     context.pause();
   });
   laneElement?.addEventListener("pointermove", (event) => {
@@ -735,7 +751,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     const span = outputSpan(times);
     if (!span) return;
     const pps = context.pps();
-    Object.assign(laneDrag.block.style, { left: `${lanePad + span.start * pps}px`, width: `${Math.max(6, (span.end - span.start) * pps)}px` });
+    Object.assign(laneDrag.block.style, { left: `${lanePad + span.start * pps}px`, width: `${Math.max(LANE_MIN_PX, (span.end - span.start) * pps)}px` });
     context.seek(laneDrag.kind === "end" ? Math.max(span.start, span.end - 0.02) : span.start + 0.001);
   });
   const endLaneDrag = (event: PointerEvent): void => {

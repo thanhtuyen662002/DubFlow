@@ -576,7 +576,17 @@ const editor = mountEditor(invoke, {
   // A heavy video's light copy (Bản xem nhẹ) when it is ready, else the file itself.
   mediaUrl: async (path) => {
     const allowed = await lightPath(path) ?? await invoke<string | null>("allow_media", { path });
-    return allowed ? convertFileSrc(allowed) : null;
+    return allowed ? versioned(path, convertFileSrc(allowed)) : null;
+  },
+  mediaChanged: (path) => {
+    mediaVersions.set(path.toLowerCase(), Date.now());
+    if (playerPath === path) {
+      // Let go of the old file now; the editor opens it again.
+      playerVideo.pause();
+      playerVideo.removeAttribute("src");
+      playerVideo.load();
+      playerPath = null;
+    }
   },
   proxy: (path) => invoke<ProxyState>("edit_proxy", { path, start: true }),
   reloadPlayer: () => {
@@ -676,6 +686,13 @@ function editedPath(): string | null {
   }
 }
 
+/** Videos written again in place (a documentary rendered anew): their URLs carry a version so the player does not replay the old file. */
+const mediaVersions = new Map<string, number>();
+function versioned(path: string, url: string): string {
+  const version = mediaVersions.get(path.toLowerCase());
+  return version ? `${url}${url.includes("?") ? "&" : "?"}v=${version}` : url;
+}
+
 /** The light copy of a heavy video, when it is ready (Bản xem nhẹ). */
 async function lightPath(path: string): Promise<string | null> {
   if (!isTauri) return null;
@@ -712,7 +729,7 @@ function setPlayerSource(path: string | null, note = PLAYER_NOTE): void {
       showPlaceholder(isTauri ? "Không xem được video này trong ứng dụng." : "Bản xem thử trên trình duyệt không phát video; hãy mở ứng dụng DubFlow để xem.");
       return;
     }
-    playerVideo.src = convertFileSrc(allowed);
+    playerVideo.src = versioned(path, convertFileSrc(allowed));
   }).catch((error) => {
     if (request === playerRequest) showPlaceholder(`Không mở được video để xem: ${String(error).slice(0, 160)}`);
   });
@@ -1678,7 +1695,7 @@ function outputRoots(): string[] {
 }
 async function playableUrl(path: string): Promise<string | null> {
   const allowed = await invoke<string | null>("allow_media", { path });
-  return allowed ? convertFileSrc(allowed) : null;
+  return allowed ? versioned(path, convertFileSrc(allowed)) : null;
 }
 const productStudio = mountProductStudio(invoke, claudeKey, {
   outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,

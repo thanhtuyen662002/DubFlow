@@ -626,7 +626,9 @@ pub async fn docu_layers(dir: String) -> Result<Value, String> {
     if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
     let root = version_root()?;
     spawn_job(&dir, &RENDER_JOB, render_args(&dir, &root))?;
-    Ok(json!({"graphics": before["graphics"] == true, "captions": before["captions"] == true, "music": music, "bed": kept}))
+    // music_path lets a cancelled split put the film's own options back.
+    Ok(json!({"graphics": before["graphics"] == true, "captions": before["captions"] == true, "music": music,
+        "music_path": before["music_path"].as_str(), "bed": kept}))
 }
 
 fn capcut_args(dir: &Path) -> Vec<OsString> {
