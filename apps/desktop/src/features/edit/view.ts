@@ -256,6 +256,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const overlayTrack = $("#tl-overlays");
   const audioTrack = $("#tl-audio");
   const textTrack = $("#tl-text");
+  const subsTrack = $("#tl-subs");
   const timeline = $("#edit-timeline");
   const playhead = $("#tl-playhead");
   const zoom = $<HTMLInputElement>("#tl-zoom");
@@ -789,6 +790,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     renderPanel();
     renderTimeline();
   }
+  // Under Che a click on the picture beside the regions drops the selection instead of playing.
+  // A click that began on a region or while drawing one is not a click beside them.
+  let pressed: Element | null = null;
+  frame.addEventListener("pointerdown", (event) => { pressed = event.target as Element; }, true);
+  frame.addEventListener("click", (event) => {
+    if (!session || mode !== "cover" || pressed?.closest(".cover-box, #cover-draw, #cover-boxes")) return;
+    if (cover.deselect()) {
+      event.stopPropagation();
+      event.preventDefault();
+    }
+  }, true);
   const cover = mountCover({
     video,
     picture: () => pictureRect(),
@@ -887,6 +899,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     playing: () => !!session?.playing,
     active: () => active,
     seek: seekTo,
+    pps: () => pps,
+    pause: () => { if (session?.playing) pausePlayback(); },
     flush: () => flush(),
     finish: async () => { await close(false); },
     changed: () => renderPanel(),
@@ -1843,7 +1857,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }));
     renderMarks(edit, total);
     // Text and sound rows: under the video track; the timeline grows with its rows.
-    const textHeight = textMode.renderTrack(textTrack, mode === "text", PAD);
+    const subsHeight = subs.renderTrack(subsTrack, PAD);
+    const textHeight = textMode.renderTrack(textTrack, mode === "text", PAD) + (subsHeight ? 6 + subsHeight : 0);
     const audioHeight = audio.renderTrack(audioTrack, mode === "audio", PAD);
     content.classList.toggle("with-audio", audioHeight > 0 || textHeight > 0);
     const rows = 22 + (edit.overlays.length ? 30 : 0) + 48 + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + 16;

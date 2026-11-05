@@ -54,6 +54,9 @@ export type SubtitleContext = {
   /** The player showing the output right now (the main video or an inserted clip's). */
   active: () => HTMLVideoElement;
   seek: (time: number) => void;
+  /** Timeline pixels per second, and pausing before a lane drag. */
+  pps: () => number;
+  pause: () => void;
   /** Save the cut/insert draft now, so the new version gets it. */
   flush: () => Promise<void>;
   /** Leave edit mode once the new version is queued. */
@@ -74,6 +77,8 @@ export type SubtitleMode = {
   beginPlain(outputPath: string, subtitles: PlainSubtitles): void;
   /** The subtitle layer shows: under Phụ đề, or a plain video's lines that are burned in. */
   readonly showing: boolean;
+  /** A plain video's lines as a timeline lane (drag to move, drag an edge to retime); its height. */
+  renderTrack(row: HTMLElement, pad: number): number;
   /** The session ends. */
   end(): void;
   /** Show the clean-source preview with the Phụ đề panel, or under the Che panel. */
@@ -455,6 +460,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
         const line = plain.lines.find((each) => each.id === cue.cue_id);
         if (line) line.text = input.value.slice(0, 2000);
         cue.text = input.value;
+        if (laneRow) renderTrack(laneRow, lanePad);
         refreshRow(row, cue);
         renderFoot();
         frame();
@@ -563,6 +569,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     renderFoot();
     painted = "";
     frame();
+    if (laneRow) renderTrack(laneRow, lanePad);
     if (focus) {
       const input = list.querySelector<HTMLTextAreaElement>(`.subs-line[data-id="${CSS.escape(focus)}"] textarea`);
       input?.scrollIntoView({ block: "nearest" });
@@ -634,6 +641,124 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     list.append(...cues().slice(from, limit).map(lineRow));
     more.hidden = cues().length <= limit;
   }, { root: $("#subs-lines-pane"), rootMargin: "400px" }).observe(more);
+
+  // ---------- Timeline lane (plain lines) ----------
+
+  const LANE_PX = 20;
+  let laneRow: HTMLElement | null = null;
+  let lanePad = 0;
+  type LaneDrag = { kind: "move" | "start" | "end"; id: string; x: number; out: { start: number; end: number }; pointer: number; moved: boolean; block: HTMLElement };
+  let laneDrag: LaneDrag | null = null;
+
+  /** A plain line's span on the edited timeline (where its first visible part starts and ends). */
+  function outputSpan(line: { start_ms: number; end_ms: number }): { start: number; end: number } | null {
+    const cue = { start_ms: line.start_ms, end_ms: line.end_ms };
+    const start = cueOutputTime(context.edit(), cue);
+    const end = endOutputTime({ ...cue } as SubtitleCue);
+    return start === null || end === null ? null : { start, end: Math.max(start + 0.05, end) };
+  }
+
+  function renderTrack(row: HTMLElement, pad: number): number {
+    laneRow = row;
+    lanePad = pad;
+    const shown = !!plain && (active || (plain.burn && plain.lines.length > 0));
+    row.hidden = !shown;
+    if (!shown || !plain) {
+      row.replaceChildren();
+      return 0;
+    }
+    if (laneDrag) return LANE_PX;
+    const pps = context.pps();
+    const blocks: HTMLElement[] = plain.lines.flatMap((line) => {
+      const span = outputSpan(line);
+      if (!span) return [];
+      const block = element("div", `tl-sub${line.id === current ? " selected" : ""}${cleanText(line.text) ? "" : " empty"}`);
+      block.dataset.id = line.id;
+      Object.assign(block.style, { left: `${pad + span.start * pps}px`, width: `${Math.max(6, (span.end - span.start) * pps)}px` });
+      block.title = `${cleanText(line.text) || "(trống)"} · ${formatClock(span.start, true)} – ${formatClock(span.end, true)} · kéo để dời, kéo mép để đổi thời gian`;
+      block.append(element("span", "tl-sub-name", cleanText(line.text) || "…"));
+      if ((span.end - span.start) * pps >= 24) {
+        const start = element("span", "tl-handle start");
+        start.dataset.edge = "start";
+        const end = element("span", "tl-handle end");
+        end.dataset.edge = "end";
+        block.append(start, end);
+      }
+      return [block];
+    });
+    if (!blocks.length) {
+      const hint = element("span", "tl-au-hint", "Phụ đề: bấm Thêm câu trong bảng Phụ đề");
+      hint.style.left = `${pad}px`;
+      blocks.push(hint);
+    }
+    row.replaceChildren(...blocks);
+    row.style.height = `${LANE_PX}px`;
+    return LANE_PX;
+  }
+
+  /** Where a lane drag would put the line, in the main video's time; null when it would leave the main video. */
+  function laneTimes(dragging: LaneDrag, clientX: number): { start_ms: number; end_ms: number } | null {
+    const shift = (clientX - dragging.x) / Math.max(1e-6, context.pps());
+    const line = plain?.lines.find((each) => each.id === dragging.id);
+    if (!line) return null;
+    const edit = context.edit();
+    if (dragging.kind === "move") {
+      const start = mainMs(edit, Math.max(0, dragging.out.start + shift));
+      return start === null ? null : retime(line, { start_ms: start, end_ms: start + (line.end_ms - line.start_ms) });
+    }
+    const at = mainMs(edit, Math.max(0, (dragging.kind === "start" ? dragging.out.start : dragging.out.end) + shift));
+    return at === null ? null : retime(line, dragging.kind === "start" ? { start_ms: at } : { end_ms: at });
+  }
+
+  const laneElement = document.querySelector<HTMLElement>("#tl-subs");
+  laneElement?.addEventListener("pointerdown", (event) => {
+    if (!plain || event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    const block = target.closest<HTMLElement>(".tl-sub");
+    const line = block && plain.lines.find((each) => each.id === block.dataset.id);
+    const span = line && outputSpan(line);
+    if (!block || !line || !span) return;
+    event.stopPropagation();
+    event.preventDefault();
+    laneElement.setPointerCapture(event.pointerId);
+    const handle = target.closest<HTMLElement>(".tl-handle");
+    laneDrag = { kind: handle ? (handle.dataset.edge === "start" ? "start" : "end") : "move", id: line.id, x: event.clientX, out: span,
+      pointer: event.pointerId, moved: false, block };
+    context.pause();
+  });
+  laneElement?.addEventListener("pointermove", (event) => {
+    if (!laneDrag || event.pointerId !== laneDrag.pointer) return;
+    if (!laneDrag.moved && Math.abs(event.clientX - laneDrag.x) <= 4) return;
+    laneDrag.moved = true;
+    const times = laneTimes(laneDrag, event.clientX);
+    if (!times) return;
+    const span = outputSpan(times);
+    if (!span) return;
+    const pps = context.pps();
+    Object.assign(laneDrag.block.style, { left: `${lanePad + span.start * pps}px`, width: `${Math.max(6, (span.end - span.start) * pps)}px` });
+    context.seek(laneDrag.kind === "end" ? Math.max(span.start, span.end - 0.02) : span.start + 0.001);
+  });
+  const endLaneDrag = (event: PointerEvent): void => {
+    if (!laneDrag || event.pointerId !== laneDrag.pointer) return;
+    const ended = laneDrag;
+    laneDrag = null;
+    const line = plain?.lines.find((each) => each.id === ended.id);
+    if (!plain || !line) return;
+    const times = ended.moved ? laneTimes(ended, event.clientX) : null;
+    if (times) {
+      Object.assign(line, times);
+      sortLines(plain.lines);
+      syncPlain();
+      context.plainChanged();
+    } else {
+      const span = outputSpan(line);
+      if (span) context.seek(span.start + 0.001);
+      if (active) list.querySelector<HTMLElement>(`.subs-line[data-id="${CSS.escape(line.id)}"]`)?.scrollIntoView({ block: "nearest" });
+      if (laneRow) renderTrack(laneRow, lanePad);
+    }
+  };
+  laneElement?.addEventListener("pointerup", endLaneDrag);
+  laneElement?.addEventListener("pointercancel", endLaneDrag);
 
   // ---------- Style panel ----------
 
@@ -889,6 +1014,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       frame();
     },
     get showing() { return visible(); },
+    renderTrack,
     beginPlain(path, subtitles) {
       this.begin(null as unknown as QueueJob, path);
       job = null;
