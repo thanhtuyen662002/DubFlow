@@ -76,6 +76,9 @@ export function jobTarget(job: QueueJob): EditTarget {
   return { id: job.id, kind: "job", outputPath: job.outputPath ?? "", displayName: job.displayName, job };
 }
 
+/** Bản xem nhẹ (Issue #536): a heavy video's light preview copy. */
+export type ProxyState = { state: "none" | "running" | "ready" | "failed"; percent?: number; path?: string; error?: string };
+
 export type EditorHost = {
   video: HTMLVideoElement;
   confirm: (options: ConfirmOptions) => Promise<boolean>;
@@ -86,8 +89,12 @@ export type EditorHost = {
   showError: (text: string) => void;
   /** Play a finished export in the in-app player. */
   playExport: (jobId: string, path: string) => void;
-  /** A URL the player can stream a local video from, or null when it cannot. */
+  /** A URL the player can stream a local video from (a heavy video's light copy once ready), or null when it cannot. */
   mediaUrl: (path: string) => Promise<string | null>;
+  /** Start (or follow) the light copy of a heavy video. */
+  proxy: (path: string) => Promise<ProxyState>;
+  /** Load the open video into the player again, at the same time (its light copy became ready). */
+  reloadPlayer: () => void;
   /** Finished videos in the queue, for "Từ DubFlow". */
   library: () => LibraryJob[];
   /** The full translation review (speakers, lines to look at), over the editor. */
@@ -382,9 +389,87 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       ghost.before(created);
       alts.set(key, created);
       void host.mediaUrl(media.path).then((url) => { if (url && alts.get(key) === created) created.src = url; }).catch(() => undefined);
+      lightCheck(media.path);
       player = created;
     }
     return player;
+  }
+
+  // ---------- Bản xem nhẹ (Issue #536) ----------
+
+  /** Heavy videos whose light copy is being made (path → percent), and the videos already asked about. */
+  const lightPending = new Map<string, number>();
+  const lightAsked = new Set<string>();
+  let lightTimer = 0;
+
+  /** Ask once per open edit whether `path` is heavy; a heavy one gets its light copy in the background. */
+  function lightCheck(path: string): void {
+    if (!session || !path || isStillPath(path)) return;
+    const key = path.toLocaleLowerCase("en");
+    if (lightAsked.has(key)) return;
+    lightAsked.add(key);
+    void lightPoll(path);
+  }
+
+  async function lightPoll(path: string): Promise<void> {
+    const owner = session;
+    const state = await host.proxy(path).catch(() => null);
+    if (!session || session !== owner) return;
+    if (state?.state === "running") {
+      lightPending.set(path, state.percent ?? 0);
+      if (!lightTimer) {
+        lightTimer = window.setTimeout(() => {
+          lightTimer = 0;
+          for (const pending of [...lightPending.keys()]) void lightPoll(pending);
+        }, 1500);
+      }
+    } else {
+      const was = lightPending.delete(path);
+      if (state?.state === "ready") lightReady(path);
+      else if (state?.state === "failed" && was) note("Không tạo được bản xem nhẹ; vẫn xem bằng video gốc.");
+    }
+    renderLight();
+  }
+
+  /** Players showing `path` switch to its light copy, at the same time. */
+  function lightReady(path: string): void {
+    if (!session) return;
+    const key = path.toLocaleLowerCase("en");
+    if (session.outputPath.toLocaleLowerCase("en") === key) host.reloadPlayer();
+    const alt = alts.get(key);
+    if (alt) {
+      void host.mediaUrl(path).then((url) => {
+        if (!url || alt.src === url || alts.get(key) !== alt) return;
+        const time = alt.currentTime;
+        alt.src = url;
+        if (active !== alt) alt.addEventListener("loadedmetadata", () => { alt.currentTime = time; }, { once: true });
+      }).catch(() => undefined);
+    }
+    let changed = false;
+    for (const box of boxes.values()) {
+      if (box.path.toLocaleLowerCase("en") === key) {
+        box.path = "";
+        changed = true;
+      }
+    }
+    if (changed) render();
+  }
+
+  function renderLight(): void {
+    const badge = $("#edit-light");
+    badge.hidden = lightPending.size === 0;
+    if (!lightPending.size) return;
+    const percent = Math.min(...lightPending.values());
+    const many = lightPending.size > 1 ? ` (${lightPending.size})` : "";
+    $("#edit-light-text").textContent = `Xem nhẹ${many} ${Math.floor(percent)}%`;
+  }
+
+  function lightReset(): void {
+    lightPending.clear();
+    lightAsked.clear();
+    window.clearTimeout(lightTimer);
+    lightTimer = 0;
+    renderLight();
   }
 
   function playerFor(mediaId: string): HTMLVideoElement {
@@ -768,6 +853,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
           if (still) box.image.src = url;
           else box.video.src = url;
         }).catch(() => undefined);
+        lightCheck(path);
       }
       box.element.hidden = false;
       // Later overlays are drawn on top (Lớp), as the export lays them.
@@ -2958,6 +3044,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       host.refresh();
       seekOutput(start);
       render();
+      // Heavy videos preview from a light copy (Bản xem nhẹ); the export reads the originals.
+      lightReset();
+      lightCheck(outputPath);
+      for (const media of edit.media) if (media.id !== MAIN) lightCheck(media.path);
       if (mode === "insert") {
         renderSources();
         void loadLibrary();
@@ -3016,6 +3106,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     textMode.end();
     templateMode.end();
     restorePlayer();
+    lightReset();
     timeline.style.height = "";
     session = null;
     drag = null;

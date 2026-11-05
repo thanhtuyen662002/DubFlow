@@ -27,7 +27,7 @@ import { mountCompilation } from "./features/compilation/view.ts";
 import { mountDocu } from "./features/docu/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { shortDate } from "./features/product/model.ts";
-import { jobTarget, mountEditor, type EditTarget } from "./features/edit/view.ts";
+import { jobTarget, mountEditor, type EditTarget, type ProxyState } from "./features/edit/view.ts";
 import { mountEditLibrary } from "./features/edit/library_view.ts";
 import { KIND_LABELS, distinctTitles, type LibraryEntry } from "./features/edit/library.ts";
 import { createSfxLibrary } from "./features/sfx/library.ts";
@@ -573,9 +573,19 @@ const editor = mountEditor(invoke, {
     playWhenLoaded = true;
     if (lastModel) renderStage(lastModel.view.selected);
   },
+  // A heavy video's light copy (Bản xem nhẹ) when it is ready, else the file itself.
   mediaUrl: async (path) => {
-    const allowed = await invoke<string | null>("allow_media", { path });
+    const allowed = await lightPath(path) ?? await invoke<string | null>("allow_media", { path });
     return allowed ? convertFileSrc(allowed) : null;
+  },
+  proxy: (path) => invoke<ProxyState>("edit_proxy", { path, start: true }),
+  reloadPlayer: () => {
+    const path = playerPath;
+    if (!path || playerLight) return;
+    const time = playerVideo.currentTime;
+    playerPath = null;
+    setPlayerSource(path);
+    resumeAt = Number.isFinite(time) ? time : null;
   },
   library: () => [
     ...queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
@@ -652,13 +662,37 @@ function renderEditedStage(target: EditTarget): void {
 /** "Xem" on an edited export starts it as soon as it has loaded. */
 let playWhenLoaded = false;
 
+/** Where the player goes back to after it reloads the same video (a light copy became ready). */
+let resumeAt: number | null = null;
+/** Whether the player shows the open video's light copy (Bản xem nhẹ). */
+let playerLight = false;
+
+/** The open edit's video (the player may be set before the editor is mounted). */
+function editedPath(): string | null {
+  try {
+    return editor.target?.outputPath ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The light copy of a heavy video, when it is ready (Bản xem nhẹ). */
+async function lightPath(path: string): Promise<string | null> {
+  if (!isTauri) return null;
+  const state = await invoke<ProxyState>("edit_proxy", { path, start: false }).catch(() => null);
+  return state?.state === "ready" && state.path ? state.path : null;
+}
+
 /** Load a local video into the player through the asset protocol. */
 function setPlayerSource(path: string | null, note = PLAYER_NOTE): void {
-  if (path === playerPath) {
+  // Out of the editor the player goes back from the light copy to the video itself.
+  if (path === playerPath && !(playerLight && editedPath() !== path)) {
     if (!path) showPlaceholder(note);
     return;
   }
   playerPath = path;
+  playerLight = false;
+  resumeAt = null;
   const request = ++playerRequest;
   playerVideo.pause();
   playerVideo.removeAttribute("src");
@@ -666,7 +700,13 @@ function setPlayerSource(path: string | null, note = PLAYER_NOTE): void {
   showPlaceholder(note);
   renderPlayButton();
   if (!path) return;
-  invoke<string | null>("allow_media", { path }).then((allowed) => {
+  // The edited video previews from its light copy when one is ready (Bản xem nhẹ).
+  const editing = editedPath() === path;
+  (editing ? lightPath(path) : Promise.resolve(null))
+    .then((light) => {
+      if (light && request === playerRequest) playerLight = true;
+      return light ?? invoke<string | null>("allow_media", { path });
+    }).then((allowed) => {
     if (request !== playerRequest) return;
     if (!allowed) {
       showPlaceholder(isTauri ? "Không xem được video này trong ứng dụng." : "Bản xem thử trên trình duyệt không phát video; hãy mở ứng dụng DubFlow để xem.");
@@ -678,6 +718,11 @@ function setPlayerSource(path: string | null, note = PLAYER_NOTE): void {
   });
 }
 
+playerVideo.addEventListener("loadedmetadata", () => {
+  if (resumeAt === null) return;
+  playerVideo.currentTime = Math.min(resumeAt, Number.isFinite(playerVideo.duration) ? playerVideo.duration : resumeAt);
+  resumeAt = null;
+});
 playerVideo.addEventListener("loadeddata", () => {
   $("#player-placeholder").hidden = true;
   if (playWhenLoaded) void playerVideo.play().catch(() => undefined);

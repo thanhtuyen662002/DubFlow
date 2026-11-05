@@ -3093,6 +3093,183 @@ pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Bản xem nhẹ (Issue #536): a heavy video (above Full HD, or above 25 Mbit/s)
+/// previews from a small copy made once in the background, below the data
+/// root; exports always read the original.
+const PROXIES_DIR: &str = "edit-proxies";
+const PROXY_PIXELS: u64 = 1920 * 1088;
+const PROXY_BITRATE: f64 = 25_000_000.0;
+/// The copy's short side, its video bitrate, and how many copies are kept.
+const PROXY_SHORT_SIDE: u32 = 540;
+const PROXY_VIDEO_BITRATE: u64 = 1_500_000;
+const MAX_PROXIES: usize = 30;
+
+#[derive(Clone, Debug, PartialEq)]
+enum ProxyJob {
+    Running(f64),
+    Failed(String),
+}
+
+static PROXY_JOBS: LazyLock<Mutex<HashMap<PathBuf, ProxyJob>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// One copy is made at a time; the others wait at 0 %.
+static PROXY_LANE: Mutex<()> = Mutex::new(());
+
+fn heavy(probe: &Probe) -> bool {
+    let pixels = u64::from(probe.width) * u64::from(probe.height);
+    let bitrate = if probe.duration > 0.0 { probe.size as f64 * 8.0 / probe.duration } else { 0.0 };
+    pixels > PROXY_PIXELS || bitrate > PROXY_BITRATE
+}
+
+/// The copy's file name: the video's path, size and modification time (a changed file gets a new copy).
+fn proxy_name(video: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let metadata = fs::metadata(video).ok()?;
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    let seed = format!("{}|{}|{modified}", display_path(video).to_lowercase(), metadata.len());
+    let digest = format!("{:x}", Sha256::digest(seed.as_bytes()));
+    Some(format!("{}.mp4", &digest[..24]))
+}
+
+fn proxy_args(video: &Path, encoder: &str, has_audio: bool, output: &Path) -> Vec<OsString> {
+    let side = PROXY_SHORT_SIDE;
+    let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"].map(OsString::from).to_vec();
+    args.push(video.into());
+    args.extend(["-map", "0:v:0"].map(OsString::from));
+    if has_audio {
+        args.extend(["-map", "0:a:0"].map(OsString::from));
+    }
+    // The short side becomes 540 px (never larger), the frame rate stays, and
+    // a key frame every half second keeps seeking quick.
+    args.push("-vf".into());
+    args.push(format!("scale='if(gte(iw,ih),-2,min({side},iw))':'if(gte(iw,ih),min({side},ih),-2)',format=yuv420p").into());
+    args.extend(["-c:v", encoder, "-b:v"].map(OsString::from));
+    args.push(PROXY_VIDEO_BITRATE.to_string().into());
+    args.extend(["-g", "15"].map(OsString::from));
+    if has_audio {
+        args.extend(["-c:a", "aac", "-b:a", "96k"].map(OsString::from));
+    }
+    args.extend(["-sn", "-dn", "-map_chapters", "-1", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"].map(OsString::from));
+    args.push(output.into());
+    args
+}
+
+fn set_proxy_job(key: &Path, job: Option<ProxyJob>) {
+    if let Ok(mut jobs) = PROXY_JOBS.lock() {
+        match job {
+            Some(job) => { jobs.insert(key.to_path_buf(), job); }
+            None => { jobs.remove(key); }
+        }
+    }
+}
+
+/// Keep the newest `MAX_PROXIES` copies (and drop half-written ones that are not being written).
+fn prune_proxies(dir: &Path, keep: usize) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let running: Vec<PathBuf> = PROXY_JOBS.lock().map(|jobs| jobs.keys().cloned().collect()).unwrap_or_default();
+    let mut copies: Vec<(SystemTime, PathBuf)> = Vec::new();
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_owned();
+        if name.ends_with(".mp4.partial") {
+            if !running.iter().any(|key| partial_of(key) == path) {
+                let _ = fs::remove_file(&path);
+            }
+        } else if name.ends_with(".mp4") {
+            let time = fs::metadata(&path).and_then(|metadata| metadata.modified()).unwrap_or(UNIX_EPOCH);
+            copies.push((time, path));
+        }
+    }
+    copies.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in copies.into_iter().skip(keep) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn make_proxy(ffmpeg: &Path, video: &Path, probe: &Probe, target: &Path) {
+    let _lane = PROXY_LANE.lock();
+    let partial = partial_of(target);
+    let mut failure = String::new();
+    for encoder in ENCODERS {
+        let _ = fs::remove_file(&partial);
+        let mut command = Command::new(ffmpeg);
+        command.args(proxy_args(video, encoder, probe.has_audio, &partial))
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let Ok(mut child) = command.spawn() else { failure = "Không chạy được FFmpeg".into(); break };
+        let stderr = child.stderr.take();
+        let errors = std::thread::spawn(move || {
+            stderr.and_then(|stderr| BufReader::new(stderr).lines().map_while(Result::ok).filter(|line| !line.trim().is_empty()).last())
+        });
+        if let Some(stdout) = child.stdout.take() {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|value| value.trim().parse::<i64>().ok()) {
+                    set_proxy_job(target, Some(ProxyJob::Running(progress_percent(us, probe.duration))));
+                }
+            }
+        }
+        let ok = child.wait().is_ok_and(|status| status.success());
+        let last = errors.join().ok().flatten().unwrap_or_default();
+        if ok && fs::metadata(&partial).is_ok_and(|metadata| metadata.len() > 0) && fs::rename(&partial, target).is_ok() {
+            set_proxy_job(target, None);
+            if let Some(dir) = target.parent() {
+                prune_proxies(dir, MAX_PROXIES);
+            }
+            return;
+        }
+        failure = last.chars().take(200).collect();
+    }
+    let _ = fs::remove_file(&partial);
+    set_proxy_job(target, Some(ProxyJob::Failed(failure)));
+}
+
+/// Bản xem nhẹ of `path`: `{state: "ready", path}` once its light copy exists
+/// (and may be streamed), `running` with `percent` while it is made, `failed`,
+/// or `none` (a picture, a light video, or no copy yet when `start` is false).
+/// `start` makes the copy of a heavy video in the background.
+#[tauri::command]
+pub async fn edit_proxy(app: tauri::AppHandle, path: String, start: bool) -> Result<Value, String> {
+    use tauri::Manager;
+    let video = crate::overlay_media(&path)?;
+    if crate::is_still(&video) {
+        return Ok(json!({ "state": "none" }));
+    }
+    let dir = crate::control_root()?.join(PROXIES_DIR);
+    let name = proxy_name(&video).ok_or_else(|| fail("Không đọc được video"))?;
+    let target = dir.join(name);
+    if target.is_file() {
+        app.asset_protocol_scope().allow_file(&target).map_err(|error| fail(error.to_string()))?;
+        return Ok(json!({ "state": "ready", "path": display_path(&target) }));
+    }
+    match PROXY_JOBS.lock().ok().and_then(|jobs| jobs.get(&target).cloned()) {
+        Some(ProxyJob::Running(percent)) => return Ok(json!({ "state": "running", "percent": percent.floor() })),
+        Some(ProxyJob::Failed(error)) => return Ok(json!({ "state": "failed", "error": error })),
+        None => {}
+    }
+    if !start {
+        return Ok(json!({ "state": "none" }));
+    }
+    let ffmpeg = media_tool("ffmpeg.exe")?;
+    let probed = tauri::async_runtime::spawn_blocking(move || probe(&video).map(|probed| (video, probed)))
+        .await.map_err(|_| fail("Không đọc được video"))??;
+    let (video, probed) = probed;
+    if !heavy(&probed) {
+        return Ok(json!({ "state": "none" }));
+    }
+    fs::create_dir_all(&dir).map_err(|error| fail(format!("Không tạo được thư mục bản xem nhẹ: {error}")))?;
+    {
+        let mut jobs = PROXY_JOBS.lock().map_err(|_| fail("Không tạo được bản xem nhẹ"))?;
+        if let Some(job) = jobs.get(&target) {
+            return Ok(match job {
+                ProxyJob::Running(percent) => json!({ "state": "running", "percent": percent.floor() }),
+                ProxyJob::Failed(error) => json!({ "state": "failed", "error": error }),
+            });
+        }
+        jobs.insert(target.clone(), ProxyJob::Running(0.0));
+    }
+    std::thread::spawn(move || make_proxy(&ffmpeg, &video, &probed, &target));
+    Ok(json!({ "state": "running", "percent": 0 }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3344,6 +3521,40 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert_eq!(num(0.0), "0");
         assert_eq!(num(12.3456), "12.346");
         assert_eq!(num(-0.0001), "0");
+    }
+
+    #[test]
+    fn heavy_videos_get_a_light_copy_and_old_copies_go() {
+        let probe = |width, height, size: u64| Probe { duration: 10.0, width, height, fps: "30/1".into(), has_audio: true, size };
+        assert!(!heavy(&probe(1920, 1080, 20_000_000)));
+        assert!(!heavy(&probe(1080, 1920, 20_000_000)));
+        assert!(heavy(&probe(3840, 2160, 20_000_000)));
+        assert!(heavy(&probe(1280, 720, 40_000_000)), "above 25 Mbit/s");
+        let args: Vec<String> = proxy_args(Path::new("in.mov"), "libopenh264", true, Path::new("p.mp4.partial"))
+            .into_iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args.join(" "), "-nostdin -hide_banner -v error -y -i in.mov -map 0:v:0 -map 0:a:0 \
+-vf scale='if(gte(iw,ih),-2,min(540,iw))':'if(gte(iw,ih),min(540,ih),-2)',format=yuv420p -c:v libopenh264 -b:v 1500000 -g 15 \
+-c:a aac -b:a 96k -sn -dn -map_chapters -1 -movflags +faststart -progress pipe:1 -nostats -f mp4 p.mp4.partial");
+        let silent = proxy_args(Path::new("in.mov"), "h264_mf", false, Path::new("p.mp4.partial"));
+        assert!(!silent.iter().any(|arg| arg == "0:a:0" || arg == "aac"));
+
+        let dir = std::env::temp_dir().join(format!("dubflow-proxies-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["a.mp4", "b.mp4", "c.mp4"] {
+            fs::write(dir.join(name), b"x").unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        fs::write(dir.join("left.mp4.partial"), b"x").unwrap();
+        let first = proxy_name(&dir.join("a.mp4")).unwrap();
+        assert_eq!(first.len(), 28);
+        assert_eq!(proxy_name(&dir.join("a.mp4")).unwrap(), first, "same file, same copy");
+        assert!(proxy_name(&dir.join("missing.mp4")).is_none());
+        prune_proxies(&dir, 2);
+        let mut left: Vec<String> = fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["b.mp4", "c.mp4"]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

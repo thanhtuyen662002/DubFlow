@@ -660,6 +660,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "edit_version_load": case "edit_template_load": return (previewVersions.find((item) => item.id === args.id)?.project ?? null) as T;
     case "edit_version_delete": case "edit_template_delete": previewVersions = previewVersions.filter((item) => item.id !== args.id); return null as T;
     case "pick_lut": return "D:\\LUT\\Teal Orange Cinematic.cube" as T;
+    // Bản xem nhẹ: the browser preview plays nothing heavy.
+    case "edit_proxy": return { state: "none" } as T;
     case "edit_lut_frame": return await previewFrame(Number(args.time), false) as T;
     case "expand_video_paths": return (args.paths as string[]).filter((path) => /\.(mp4|mkv|mov|avi|webm|m4v)$/i.test(path)) as T;
     case "pick_folder": return "D:/Videos/Kết quả DubFlow" as T;
