@@ -12,7 +12,7 @@ import traceback
 from typing import Any, Callable
 
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
-from . import matcher, safezone, shots
+from . import keywords, matcher, safezone, shots
 from .project import FRAMING_PRESETS, DocuError, Spec, context_path, load_spec, script_path, spec_path, work_dir, write_json
 from .script import load_contexts, load_draft
 from .narration import _Status
@@ -29,8 +29,8 @@ def _sha256(path: Path) -> str:
 
 
 def caption_warning(source_id: str, preset: str) -> str:
-    """A caption band framing cannot clear: it is covered by edge stretch; the letterbox would shrink it."""
-    covered = f"Phụ đề gốc của {source_id} cao hơn mức phóng 114% che được; phần còn lại được che bằng cách kéo giãn mép ảnh"
+    """A caption band framing cannot clear: it is blurred and darkened in place; the letterbox would shrink it."""
+    covered = f"Phụ đề gốc của {source_id} cao hơn mức phóng 114% che được; phần còn lại được làm mờ và phủ dải tối"
     return covered if preset == "letterbox_235" else f"{covered}. Chọn khung Viền đen điện ảnh 2,35:1 để vùng che nhỏ hơn"
 
 
@@ -208,18 +208,36 @@ def load_pacing(run_dir: Path) -> dict[str, Any]:
 
 
 def _scenes(script: dict[str, Any], timeline: dict[str, Any], paces: dict[str, float] | None = None) -> list[matcher.Scene]:
-    refs = {scene["scene_id"]: scene.get("matched_source_refs", []) for chapter in script["chapters"] for scene in chapter["scenes"]}
+    by_id = {scene["scene_id"]: scene for chapter in script["chapters"] for scene in chapter["scenes"]}
     paces = paces or {}
     result = []
     for timed in timeline["scenes"]:
-        cited = tuple(matcher.Ref(ref["source_id"], float(ref["start"]), float(ref["end"])) for ref in refs.get(timed["scene_id"], []))
+        scene = by_id.get(timed["scene_id"], {})
+        cited = tuple(matcher.Ref(ref["source_id"], float(ref["start"]), float(ref["end"])) for ref in scene.get("matched_source_refs", []))
         pace = paces.get(timed.get("chapter_type"), matcher.MAX_SLICE)
-        result.append(matcher.Scene(timed["scene_id"], float(timed["start"]), float(timed["slot_end"]), cited, pace))
+        tags = [tag for tag in scene.get("visual_search_tags") or [] if isinstance(tag, str)]
+        terms = keywords.scene_terms(tags, str(scene.get("narration_text") or ""))
+        result.append(matcher.Scene(timed["scene_id"], float(timed["start"]), float(timed["slot_end"]), cited, pace, terms))
     if result:
         # The film starts with the first picture, not with the first word.
         first = result[0]
-        result[0] = matcher.Scene(first.scene_id, 0.0, first.end, first.refs, first.max_slice)
+        result[0] = matcher.Scene(first.scene_id, 0.0, first.end, first.refs, first.max_slice, first.terms)
     return result
+
+
+def source_lines(context: dict[str, Any]) -> tuple[tuple[float, float, frozenset[str]], ...]:
+    """Each source line's time and concepts, for the matcher's keyword ranking."""
+    lines = []
+    for segment in context.get("segments", []):
+        if isinstance(segment, dict) and isinstance(segment.get("original_text"), str):
+            try:
+                start, end = float(segment["start"]), float(segment["end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            found = keywords.concepts(segment["original_text"])
+            if found:
+                lines.append((start, end, found))
+    return tuple(sorted(lines, key=lambda line: (line[0], line[1])))
 
 
 def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | None, ocr_identity: dict[str, Any] | None,
@@ -279,7 +297,8 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
             framings[source.id] = {"band": band.__dict__ if band else None, **framing.to_dict(),
                                    "frame_size": list(size) if size else None, "portrait": portrait, "logos": logos,
                                    "text_spans": texts}
-            sources.append(matcher.Source(source.id, duration, tuple(cuts), portrait, tuple((a, b) for a, b in texts)))
+            sources.append(matcher.Source(source.id, duration, tuple(cuts), portrait, tuple((a, b) for a, b in texts),
+                                          source_lines(contexts[source.id])))
         status.write(done=done, message="Đang ghép lát cắt cho từng cảnh…")
         try:
             planned = matcher.plan(_scenes(script, timeline, load_pacing(run_dir)["max_slice"]), sources)

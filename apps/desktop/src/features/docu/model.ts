@@ -175,6 +175,16 @@ export function buildRequest(input: {
     sources, outputRoot: input.outputRoot?.trim() || null };
 }
 
+/** YouTube allows mid-roll ads from 8 minutes; 8–12 also leaves room for all four acts. */
+export const MIDROLL_MINUTES = 8;
+export const MIDROLL_HINT = "Mẹo: Video từ 8–12 phút giúp bật quảng cáo giữa video (Mid-roll) trên YouTube và đủ thời lượng triển khai sâu 4 hồi.";
+
+/** The non-blocking hint under the target length, or "" from 8 minutes up. */
+export function midrollHint(minutes: number | string): string {
+  const value = Number(minutes);
+  return Number.isFinite(value) && value > 0 && value < MIDROLL_MINUTES ? MIDROLL_HINT : "";
+}
+
 export function chapterTargetSeconds(targetMinutes: number, chapter: ChapterType): number {
   return Math.round(targetMinutes * 60 * CHAPTER_SHARES[chapter]);
 }

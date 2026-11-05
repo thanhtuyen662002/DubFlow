@@ -139,7 +139,7 @@ def sources():
 class WarningTests(unittest.TestCase):
     def test_caption_warning_follows_the_preset(self):
         boxed = visual.caption_warning("src_01", "letterbox_235")
-        self.assertIn("kéo giãn mép ảnh", boxed)
+        self.assertIn("làm mờ và phủ dải tối", boxed)
         self.assertNotIn("Chọn khung Letterbox", boxed)
         self.assertIn("Chọn khung Viền đen điện ảnh 2,35:1", visual.caption_warning("src_01", "none"))
 

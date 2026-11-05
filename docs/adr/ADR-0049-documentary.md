@@ -241,3 +241,20 @@ The owner chose to write drafts straight into CapCut's draft folder. CapCut stay
   - `sync_to_capcut_draft`;
   - `get_frame`: a 960 px PNG of the rough cut or a source, so Claude can read a foreign label before covering it.
 - **Connecting.** The page shows the `claude mcp add` command and the Claude Desktop configuration for this install. Both point at the version's bundled Python with `PYTHONPATH` set to the app folder, so they are added again after an update.
+
+## Tier-2 upgrade: from listicle to engineering mystery (Issue #548)
+
+The 2026-11-05 review of the Hubei pig-tower film found a Wikipedia-style list: flat scene openers, an act 3 that toured floors one by one, a hook without a stake, mechanical pauses, no room tone and a stretched-pixel caption cover.
+
+- **Story rules** (`features/docu/ai.ts`, mirrored word for word in `intake.py` for MCP; a test guards the match). The act shares stay 7/20/50/23 %.
+  - The hook has four beats: visual payoff, a US scale anchor from `units.py`, a fatal "But" that pulls the biggest risk forward into scene 2, and an open loop.
+  - `ENGINEERING_SOLUTION` is three escalating micro-arcs (3A structure and heavy logistics, 3B automation and life support with simple physical comparisons, 3C containment and the hidden fragility). Each ends on the problem the next solves.
+  - Every scene after the first opens with a Therefore/But link to the scene before. Static topic sentences and stock AI phrasing are banned; `script.py` marks a scene that still says "delve", "testament", "marvel", "tapestry", "in conclusion" or "to sum up" for review. The number checks (6/10/15 %) and the 600-character limit are unchanged.
+  - The verdict's last scene gives a judgement and an open question, never a sign-off.
+- **Pacing** (`narration.py`): 0.22 s between sentences (0.35 s after "?" or "!"), 0.40 s between scenes, 1.0 s between acts. Every piece ends on a 20 ms fade, applied while joining so the TTS cache stays valid. Times still come from sample counts; the timeline's `pauses` records the new values.
+- **Room tone and act hits** (`soundscape.py`, used by `roughcut.py`): each scene's `ambient_sfx_tag` plays under exactly its narrated `[start, end]` at about -31 LUFS with 0.5 s fades; a file `assets/sfx/<tag>.wav` in the project or app folder wins over the built-in FFmpeg-synthesised sound (fixed seeds, no third-party audio). A 1.2 s sub-drop and whoosh (about -22 LUFS) plays in each pause between acts. The render option `sfx` (on by default, MCP `set_render_options`) turns both off.
+- **Music bed** (`overlays.py`): per mood, a pad of detuned triangle pairs through a 260–600 Hz low-pass that breathes every eight beats, over a sub-bass pulse on the mood's tempo, generated at 24 kHz and resampled.
+- **Keyword B-roll** (`keywords.py`, `matcher.py`): scenes and source lines map to a fixed bilingual concept lexicon plus their numbers. Uncited filler and reused footage go first to the candidate whose lines share the most concepts with the scene's `visual_search_tags` (double weight) and narration, after the A/B interleaving rule and before shot boundaries. Cited footage still comes first; the plan stays deterministic and `overrides.json` is applied as before.
+- **Caption cover** (`safezone.py`, `roughcut.py`): what 114 % cannot clear is no longer covered by stretched edge rows. The band, from a feather of 3.5 % of the height above it, is blurred (`gblur` sigma 20, 3 steps), darkened 25 % and faded in at its top with a gradient alpha mask.
+- **Graphics** (`overlays.py`): number cards slide in with a yellow accent bar. The hook's first number and a number compared with a US landmark become a hero callout (large value at the left after a tall accent bar), at most one per act.
+- **Page**: under 8 minutes the new-project form shows a non-blocking tip about YouTube mid-roll ads (8–12 minutes).

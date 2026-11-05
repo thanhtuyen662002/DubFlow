@@ -39,13 +39,17 @@ class FilterTests(unittest.TestCase):
         self.assertIn("gblur", tall, "a vertical source is fitted over a blurred fill")
         covered = roughcut.video_filter(1920, 1080, {"zoom": 1.14, "shift": 0.06, "letterbox": 0.0, "clear": False,
                                                      "band": {"top": 0.8, "bottom": 0.95, "share": 1.0}}, frames=90, ken_burns=False)
-        self.assertIn("crop=iw:2:0:862,scale=iw:162", covered, "the caption band is covered by stretched edge rows")
+        # Not stretched edge rows any more (#548): the band, from a 38 px feather above it, blurred, darkened and faded in.
+        self.assertNotIn("scale=iw:", covered)
+        self.assertIn("[band]crop=iw:200:0:826,gblur=sigma=20:steps=3,curves=all='0/0 1/0.75'", covered)
+        self.assertIn("gradients=s=1920x200:c0=black:c1=white:x0=0:y0=0:x1=0:y1=38", covered)
+        self.assertIn("[soft][mask]alphamerge[strip];[base][strip]overlay=0:826[covered]", covered)
         self.assertNotIn("split=2[base]", roughcut.video_filter(1920, 1080, {"clear": True, "band": {"top": 0.8, "bottom": 0.95}}, frames=9, ken_burns=False))
         # Another channel's logo is blurred where it sits, before the band cover and the framing.
         logo = roughcut.video_filter(1920, 1080, {"clear": False, "band": {"top": 0.8, "bottom": 0.95}, "logos": [[0.043, 0.682, 0.152, 0.118]]},
                                      frames=9, ken_burns=False)
         self.assertIn("[0:v]split=2[logo0base][logo0cut];[logo0cut]crop=292:128:80:734,gblur=sigma=12[logo0blur];"
-                      "[logo0base][logo0blur]overlay=80:734[logo0];[logo0]split=2[base][edge]", logo)
+                      "[logo0base][logo0blur]overlay=80:734[logo0];[logo0]split=2[base][band]", logo)
 
     def test_description_and_credits(self):
         with TemporaryDirectory() as temp:
@@ -154,12 +158,14 @@ class RunTests(unittest.TestCase):
                 Path(cwd, Path(argv[-1]).name).write_bytes(b"data")
             result = roughcut.run(run, spec, ffmpeg=Path("ffmpeg"), probe=lambda video: (1920, 1080), ffmpeg_runner=runner)
             self.assertEqual(result["state"], "COMPLETED", result)
-            self.assertEqual(result["overlays"], {"graphics": True, "captions": True, "music": "generated", "music_path": None})
+            self.assertEqual(result["overlays"], {"graphics": True, "captions": True, "music": "generated", "music_path": None, "sfx": True})
             work = run / ".dubflow-work" / "render"
             first, second = (work / "slice-0001.ass").read_text(encoding="utf-8"), (work / "slice-0002.ass").read_text(encoding="utf-8")
-            # The card fades in on slice 1 (0.6 s) and out on slice 2 at the scene's end; the caption is on slice 1 only.
-            self.assertIn("Dialogue: 1,0:00:00.60,0:00:03.00,CardValue,,0,0,0,,{\\pos(1810,124)\\fad(250,0)}1.2 million", first)
-            self.assertIn("CardValue,,0,0,0,,{\\pos(1810,124)\\fad(0,250)}1.2 million", second)
+            # The hook's first number is a hero callout (#548): it slides in on slice 1 (0.6 s) and fades out on
+            # slice 2 at the scene's end, without sliding in again at the cut; the caption is on slice 1 only.
+            self.assertIn("Dialogue: 1,0:00:00.60,0:00:03.00,HeroValue,,0,0,0,,{\\move(80,516,170,516,0,350)\\fad(250,0)}1.2 million", first)
+            self.assertIn("HeroValue,,0,0,0,,{\\pos(170,516)\\fad(0,250)}1.2 million", second)
+            self.assertIn("Accent,,0,0,0,,{\\move(46,466,136,466,0,350)\\fad(250,0)}{\\p1}m 0 0 l 8 0 8 246", first)
             self.assertIn("Caption,,0,0,0,,{\\fad(250,250)}The dam rises.", first)
             self.assertNotIn("The dam rises.", second)
             bed = next(argv for argv in calls if any("aevalsrc" in str(arg) for arg in argv))
