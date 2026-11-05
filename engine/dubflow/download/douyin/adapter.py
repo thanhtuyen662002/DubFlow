@@ -8,8 +8,12 @@ recorded fixtures can exercise the full mapping without contacting Douyin.
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import json
+import os
 from pathlib import Path
 import re
+import stat
+import time
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
@@ -33,6 +37,11 @@ _SHORT_TOKEN = re.compile(r"^[A-Za-z0-9._-]{2,128}$")
 _VIDEO_PATH = re.compile(r"/(?:video/)?([0-9]{6,32})(?:/|$)")
 _HOSTS = {"douyin.com", "www.douyin.com", "m.douyin.com", "v.douyin.com", "iesdouyin.com", "www.iesdouyin.com"}
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# The desktop app reads a video's details through its own Douyin page (the
+# user's real browser session) and leaves them here for a short while.
+# Douyin refuses the SDK's own non-browser detail request.
+PAGE_DETAIL_SECONDS = 15 * 60
+MAX_PAGE_DETAIL_BYTES = 256 * 1024
 
 
 class DouyinTransport(Protocol):
@@ -213,7 +222,7 @@ class DouyinSourceAdapter:
 
     def __init__(self, transport: DouyinTransport | None = None, session_bridge: BrowserSessionBridge | None = None, *, ytdlp_executable: str | Path | None = None,
                  ytdlp_root: str | Path | None = None, ytdlp_sha256: str | None = None, materializer: MediaMaterializer | None = None,
-                 stream_materializer: StreamMaterializer | None = None) -> None:
+                 stream_materializer: StreamMaterializer | None = None, page_details: str | Path | None = None) -> None:
         if transport is None:
             if ytdlp_executable is None:
                 raise ValueError("a Douyin transport or app-owned yt-dlp executable is required")
@@ -222,6 +231,7 @@ class DouyinSourceAdapter:
         self._session_bridge = session_bridge
         self._materializer = materializer or MediaMaterializer()
         self._stream_materializer = stream_materializer
+        self._page_details = Path(page_details) if page_details is not None else None
 
     @classmethod
     def can_handle(cls, source_ref: str) -> bool:
@@ -244,11 +254,35 @@ class DouyinSourceAdapter:
         # include it in SourceError text.
         return dict(session)
 
+    def _page_detail(self, normalized: str) -> Mapping[str, Any] | None:
+        """Details the app read from the Douyin page, when fresh and for this video."""
+        if self._page_details is None or not _AWEME_ID.fullmatch(normalized):
+            return None
+        path = self._page_details / ("douyin-" + normalized + ".json")
+        try:
+            info = os.lstat(path)
+            if (not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                    or not 0 < info.st_size <= MAX_PAGE_DETAIL_BYTES or not 0 <= time.time() - info.st_mtime <= PAGE_DETAIL_SECONDS):
+                return None
+            with open(path, "rb") as stream:
+                value = json.loads(stream.read(MAX_PAGE_DETAIL_BYTES + 1))
+        except (OSError, ValueError, RecursionError):
+            return None
+        if not isinstance(value, dict) or value.get("aweme_id") != normalized or not isinstance(value.get("video"), dict):
+            return None
+        return value
+
     def inspect(self, source_ref: str) -> SourceItem:
         normalized = normalize_source_ref(source_ref)
+        payload = self._page_detail(normalized)
+        if payload is None:
+            payload = self._fetch(normalized)
+        return self._item(payload, normalized)
+
+    def _fetch(self, normalized: str) -> Any:
         session = self._session()
         try:
-            payload = self._transport.fetch_video(normalized, session)
+            return self._transport.fetch_video(normalized, session)
         except DouyinTransportError as exc:
             if exc.challenge:
                 raise SourceError(SourceErrorCode.AUTH_REQUIRED, "Douyin requires a browser challenge", provider_id=self.provider_id, source_id=normalized, action="complete_challenge") from exc
@@ -259,6 +293,8 @@ class DouyinSourceAdapter:
             raise SourceError(SourceErrorCode.NETWORK, "Douyin transport failed", provider_id=self.provider_id, source_id=normalized, retryable=True, action="retry") from exc
         except (TimeoutError, ConnectionError) as exc:
             raise SourceError(SourceErrorCode.NETWORK, "Douyin transport failed", provider_id=self.provider_id, source_id=normalized, retryable=True, action="retry") from exc
+
+    def _item(self, payload: Any, normalized: str) -> SourceItem:
         if not isinstance(payload, Mapping):
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "Douyin response is not an object", provider_id=self.provider_id, source_id=normalized)
         status = payload.get("status_code", payload.get("code", 0))

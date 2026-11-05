@@ -270,7 +270,8 @@ def _verified_extensions(root: Path, index: Mapping[str, Mapping], profile: Mapp
 
 
 def provider_from_verified_bundle(bundle_root: str | Path, *, artifacts: Sequence[Mapping],
-                                  provider_id: str, session_bridge: ProtectedSessionBridge | None = None):
+                                  provider_id: str, session_bridge: ProtectedSessionBridge | None = None,
+                                  page_details: Path | None = None):
     """Use the bootstrap's verified inventory, never self-pin current disk bytes."""
     if provider_id not in {"bilibili", "douyin", "generic"}:
         raise SourceError(SourceErrorCode.INVALID_INPUT, "unsupported source provider")
@@ -333,7 +334,9 @@ def provider_from_verified_bundle(bundle_root: str | Path, *, artifacts: Sequenc
         kwargs = {"transport": YtDlpProviderTransport(provider_id, authenticated_transport=transport),
                   "session_bridge": session_bridge, "materializer": materializer,
                   "stream_materializer": StreamMaterializer(muxer, materializer=materializer)}
-        return BilibiliSourceAdapter(**kwargs) if provider_id == "bilibili" else DouyinSourceAdapter(**kwargs)
+        if provider_id == "bilibili":
+            return BilibiliSourceAdapter(**kwargs)
+        return DouyinSourceAdapter(**kwargs, page_details=page_details)
     except Exception:
         raise _unavailable() from None
 

@@ -1243,8 +1243,16 @@ struct FetchStarted {
 }
 
 #[tauri::command]
-fn fetch_url(url: String, title: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
-    let url = url.trim().to_owned();
+async fn fetch_url(app: tauri::AppHandle, url: String, title: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
+    let mut url = url.trim().to_owned();
+    // Douyin refuses the link service's own requests, so a Douyin video's
+    // details are read through douyin.com in DubFlow's browser first. Any
+    // failure here leaves the link to the service's own attempt.
+    if source::provider_for(&url) == Ok("douyin") {
+        if let Ok(page) = read_douyin_video(&app, &url).await {
+            url = page;
+        }
+    }
     let root = version_root()?;
     let supervisor = supervisor_binary(&root)?;
     let status = sources.fetch(url.clone(), title, &supervisor, &root, &control_root()?)?;
@@ -2019,6 +2027,99 @@ async fn ensure_douyin_session(app: tauri::AppHandle, sources: tauri::State<'_, 
     }
     store_douyin_session(std::sync::Arc::clone(&sources), cookies).await?;
     Ok("ready".into())
+}
+
+/// Hidden window that opens a Douyin video page to read the video's details.
+const DOUYIN_VIDEO: &str = "douyin-video";
+/// Where those details wait for the link service, below the control folder.
+const DOUYIN_PAGE_DETAILS: &str = "source-page-details";
+
+fn douyin_video_lock() -> &'static tauri::async_runtime::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tauri::async_runtime::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tauri::async_runtime::Mutex::new(()))
+}
+
+async fn pause(milliseconds: u64) {
+    let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(std::time::Duration::from_millis(milliseconds))).await;
+}
+
+/// A page script's value, as JSON text (`None` when the page does not answer).
+async fn page_value(webview: &tauri::Webview, script: &str) -> Option<String> {
+    let (sender, receiver) = std::sync::mpsc::channel::<String>();
+    webview.eval_with_callback(script, move |result| { let _ = sender.send(result); }).ok()?;
+    tauri::async_runtime::spawn_blocking(move || receiver.recv_timeout(std::time::Duration::from_secs(5))).await.ok()?.ok()
+}
+
+/// Open a Douyin link (a video page or a short link) in a hidden window,
+/// ask douyin.com for the video's details the way its own page does, and
+/// leave them for the link service. Returns the video page's address.
+async fn read_douyin_video(app: &tauri::AppHandle, url: &str) -> Result<String, String> {
+    use tauri::Manager;
+    let _one_at_a_time = douyin_video_lock().lock().await;
+    if let Some(stale) = app.get_webview_window(DOUYIN_VIDEO) {
+        let _ = stale.close();
+    }
+    let target = url.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))?;
+    let window = tauri::WebviewWindowBuilder::new(app, DOUYIN_VIDEO, tauri::WebviewUrl::External(target))
+        .title("Douyin")
+        .visible(false)
+        .skip_taskbar(true)
+        .build()
+        .map_err(|error| fail(format!("Không mở được Douyin: {error}")))?;
+    let result = douyin_video_detail(window.as_ref()).await;
+    let _ = window.close();
+    let (id, detail) = result?;
+    let folder = control_root()?.join("control").join(DOUYIN_PAGE_DETAILS);
+    fs::create_dir_all(&folder).map_err(|error| fail(error.to_string()))?;
+    // Details older than an hour are of no use to anyone.
+    for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
+        let old = entry.metadata().ok().and_then(|meta| meta.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(3600));
+        if old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    let path = folder.join(format!("douyin-{id}.json"));
+    let partial = folder.join(format!("douyin-{id}.json.part"));
+    fs::write(&partial, detail.to_string()).and_then(|_| fs::rename(&partial, &path))
+        .map_err(|error| fail(format!("Không lưu được thông tin video Douyin: {error}")))?;
+    Ok(format!("https://www.douyin.com/video/{id}"))
+}
+
+async fn douyin_video_detail(webview: &tauri::Webview) -> Result<(String, Value), String> {
+    // The page settles on the video's own address (short links redirect).
+    let mut id = None;
+    for _ in 0..60 {
+        pause(500).await;
+        if page_value(webview, "document.readyState").await.as_deref() == Some("\"complete\"") {
+            id = webview.url().ok().and_then(|url| source::douyin_video_id(url.as_str()));
+            if id.is_some() {
+                break;
+            }
+        }
+    }
+    let id = id.ok_or_else(|| fail("Trang Douyin không mở được video này"))?;
+    // The page's own scripts sign its requests; give them a moment to load.
+    let mut last = fail("Douyin không trả lời");
+    for wait in [1500, 2500, 4000] {
+        pause(wait).await;
+        let start = format!("(function(){{window.__dubflowVideo=null;fetch('/aweme/v1/web/aweme/detail/?device_platform=webapp&aid=6383&channel=channel_pc_web&aweme_id={id}',{{credentials:'include'}}).then(function(r){{return r.text()}}).then(function(t){{window.__dubflowVideo=t}},function(){{window.__dubflowVideo=''}});return 1}})()");
+        if page_value(webview, &start).await.is_none() {
+            continue;
+        }
+        for _ in 0..40 {
+            pause(500).await;
+            let Some(value) = page_value(webview, "window.__dubflowVideo").await else { continue };
+            let Ok(Some(text)) = serde_json::from_str::<Option<String>>(&value) else { continue };
+            match source::douyin_page_detail(&text, &id) {
+                Ok(detail) => return Ok((id, detail)),
+                Err(error) => last = error,
+            }
+            break;
+        }
+    }
+    Err(last)
 }
 
 /// Whether the shared browser profile is logged in to Douyin.

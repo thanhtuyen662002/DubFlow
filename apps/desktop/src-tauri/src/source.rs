@@ -134,6 +134,99 @@ pub fn session_fresh(saved_at: u64, now: u64) -> bool {
     saved_at <= now && now - saved_at < SESSION_REUSE_SECONDS
 }
 
+/// The aweme id of a douyin.com video page URL (`/video/<id>`, `/note/<id>`
+/// or a `modal_id=<id>` overlay), as the page itself reports it.
+pub fn douyin_video_id(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    if host != "www.douyin.com" && host != "douyin.com" {
+        return None;
+    }
+    let digits = |text: &str| -> Option<String> {
+        let id: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+        (6..=32).contains(&id.len()).then_some(id)
+    };
+    let (path_only, query) = path.split_once('?').unwrap_or((path, ""));
+    let path_only = path_only.split('#').next().unwrap_or("");
+    for prefix in ["video/", "note/"] {
+        if let Some(tail) = path_only.strip_prefix(prefix) {
+            if let Some(id) = digits(tail).filter(|id| tail.len() == id.len() || tail[id.len()..].starts_with('/')) {
+                return Some(id);
+            }
+        }
+    }
+    query.split(['&', '#']).find_map(|pair| pair.strip_prefix("modal_id=").and_then(digits))
+}
+
+fn douyin_media_url(value: &Value) -> Option<String> {
+    let text = value.as_str()?;
+    (text.len() <= 4096 && text.starts_with("https://") && !text.chars().any(|c| c.is_control() || c.is_whitespace()))
+        .then(|| text.to_owned())
+}
+
+/// Reduce the Douyin web page's own video detail response to what the link
+/// service needs: id, title, duration and the best rendition's media URLs.
+/// The response comes from a web page, so everything is checked.
+pub fn douyin_page_detail(text: &str, id: &str) -> Result<Value, String> {
+    if text.trim().is_empty() {
+        return Err("Douyin trả về trang trống".into());
+    }
+    let value: Value = serde_json::from_str(text).map_err(|_| fail("Douyin trả về dữ liệu không đọc được"))?;
+    if value["status_code"].as_i64() != Some(0) {
+        return Err(fail("Douyin từ chối yêu cầu thông tin video"));
+    }
+    let detail = &value["aweme_detail"];
+    if !detail.is_object() {
+        return Err(fail("Không tìm thấy video (có thể đã bị xóa hoặc là video riêng tư)"));
+    }
+    if detail["aweme_id"].as_str() != Some(id) {
+        return Err(fail("Douyin trả về video khác với link"));
+    }
+    let video = &detail["video"];
+    // The rendition with the most pixels, then the highest bit rate; the
+    // plain play address when the page lists no renditions.
+    let mut best: Option<(u64, u64, &Value)> = None;
+    for rendition in video["bit_rate"].as_array().into_iter().flatten().take(64) {
+        let address = &rendition["play_addr"];
+        let area = address["width"].as_u64().unwrap_or(0) * address["height"].as_u64().unwrap_or(0);
+        let rate = rendition["bit_rate"].as_u64().unwrap_or(0);
+        if address["url_list"].as_array().is_some_and(|urls| !urls.is_empty())
+            && best.map_or(true, |(best_area, best_rate, _)| (area, rate) > (best_area, best_rate))
+        {
+            best = Some((area, rate, address));
+        }
+    }
+    let address = best.map(|(_, _, address)| address).unwrap_or(&video["play_addr"]);
+    let all: Vec<String> = address["url_list"].as_array().into_iter().flatten().take(16).filter_map(douyin_media_url).collect();
+    // Media CDN addresses first; douyin.com's own play redirect only when
+    // there is nothing else (the link service picks one candidate).
+    let mut urls: Vec<String> = Vec::new();
+    for url in all.iter().filter(|url| !url.starts_with("https://www.douyin.com/")).chain(all.iter()) {
+        if !urls.contains(url) && (urls.is_empty() || !url.starts_with("https://www.douyin.com/")) {
+            urls.push(url.clone());
+        }
+    }
+    urls.truncate(4);
+    if urls.is_empty() {
+        return Err(fail("Video Douyin này không có bản tải được (có thể là bài ảnh)"));
+    }
+    let title: String = detail["desc"].as_str().unwrap_or("").chars().filter(|c| !c.is_control()).take(1024).collect();
+    let mut compact = json!({
+        "aweme_id": id,
+        "desc": title.trim(),
+        "video": {"play_addr": {"url_list": urls}},
+    });
+    if let Some(duration) = detail["duration"].as_u64().or_else(|| video["duration"].as_u64()) {
+        compact["duration"] = json!(duration);
+    }
+    for key in ["width", "height"] {
+        if let Some(size) = address[key].as_u64().or_else(|| video[key].as_u64()) {
+            compact["video"][key] = json!(size);
+        }
+    }
+    Ok(compact)
+}
+
 fn cookie_safe(value: &str) -> bool {
     !value.is_empty() && value.len() <= 1024
         && value.bytes().all(|b| b.is_ascii_graphic() && !matches!(b, b'"' | b',' | b';' | b'\\'))
@@ -730,6 +823,51 @@ mod tests {
             &root.join("app/bin/dubflow-supervisor.exe"), &root, Path::new(&data));
         sources.shutdown();
         result.unwrap();
+    }
+
+    #[test]
+    fn douyin_video_id_reads_video_pages_only() {
+        assert_eq!(douyin_video_id("https://www.douyin.com/video/7699053575086918966").as_deref(), Some("7699053575086918966"));
+        assert_eq!(douyin_video_id("https://www.douyin.com/video/7699053575086918966?previous_page=x").as_deref(), Some("7699053575086918966"));
+        assert_eq!(douyin_video_id("https://www.douyin.com/note/7699053575086918966").as_deref(), Some("7699053575086918966"));
+        assert_eq!(douyin_video_id("https://www.douyin.com/search/abc?modal_id=7699053575086918966&type=video").as_deref(), Some("7699053575086918966"));
+        assert_eq!(douyin_video_id("https://www.douyin.com/user/MS4w"), None);
+        assert_eq!(douyin_video_id("https://www.douyin.com/video/12345x"), None);
+        assert_eq!(douyin_video_id("https://evil.example/video/7699053575086918966"), None);
+        assert_eq!(douyin_video_id("http://www.douyin.com/video/7699053575086918966"), None);
+    }
+
+    #[test]
+    fn douyin_page_detail_keeps_the_best_rendition() {
+        let raw = json!({"status_code": 0, "aweme_detail": {"aweme_id": "7699053575086918966", "desc": "Phim\nhay", "duration": 143489,
+            "video": {"play_addr": {"url_list": ["https://v3-web.douyinvod.com/low.mp4"], "width": 540, "height": 960},
+                "bit_rate": [
+                    {"bit_rate": 900, "play_addr": {"width": 576, "height": 1024, "url_list": ["https://v3-web.douyinvod.com/540.mp4"]}},
+                    {"bit_rate": 2300, "play_addr": {"width": 720, "height": 1280, "url_list": [
+                        "https://www.douyin.com/aweme/v1/play/?video_id=v1", "https://v3-web.douyinvod.com/720.mp4",
+                        "https://v26-web.douyinvod.com/720.mp4", "https://v3-web.douyinvod.com/720.mp4", "javascript:alert(1)"]}},
+                    {"bit_rate": 1500, "play_addr": {"width": 720, "height": 1280, "url_list": ["https://v3-web.douyinvod.com/720-low.mp4"]}}]}}});
+        let detail = douyin_page_detail(&raw.to_string(), "7699053575086918966").unwrap();
+        assert_eq!(detail["video"]["play_addr"]["url_list"], json!(["https://v3-web.douyinvod.com/720.mp4", "https://v26-web.douyinvod.com/720.mp4"]));
+        assert_eq!((detail["video"]["width"].as_u64(), detail["video"]["height"].as_u64()), (Some(720), Some(1280)));
+        assert_eq!(detail["desc"], "Phimhay");
+        assert_eq!(detail["duration"], 143489);
+        // Only douyin.com's play redirect: kept as the one candidate.
+        let only_play = json!({"status_code": 0, "aweme_detail": {"aweme_id": "7699053575086918966", "desc": "",
+            "video": {"play_addr": {"url_list": ["https://www.douyin.com/aweme/v1/play/?video_id=v1"]}}}});
+        assert_eq!(douyin_page_detail(&only_play.to_string(), "7699053575086918966").unwrap()["video"]["play_addr"]["url_list"],
+            json!(["https://www.douyin.com/aweme/v1/play/?video_id=v1"]));
+    }
+
+    #[test]
+    fn douyin_page_detail_refuses_unusable_answers() {
+        let id = "7699053575086918966";
+        assert!(douyin_page_detail("", id).is_err());
+        assert!(douyin_page_detail("<html>", id).is_err());
+        assert!(douyin_page_detail(&json!({"status_code": 8}).to_string(), id).is_err());
+        assert!(douyin_page_detail(&json!({"status_code": 0, "aweme_detail": null}).to_string(), id).is_err());
+        assert!(douyin_page_detail(&json!({"status_code": 0, "aweme_detail": {"aweme_id": "7699053575086918967", "video": {}}}).to_string(), id).is_err());
+        assert!(douyin_page_detail(&json!({"status_code": 0, "aweme_detail": {"aweme_id": id, "video": {"play_addr": {"url_list": []}}}}).to_string(), id).is_err());
     }
 
     #[test]
