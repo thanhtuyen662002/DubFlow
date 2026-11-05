@@ -11,10 +11,11 @@
  * nothing changes, so the history can skip no-op steps.
  */
 import { isFont, type SubtitleFont } from "./fonts.ts";
+import { DEFAULT_LOOK, DEFAULT_FREEZE, LOOK_PLAN_KEYS, MAX_FREEZE, MAX_REVERSE, MIN_FREEZE, normalizeLook, planLook, type SegmentLook } from "./look.ts";
 
 export const MIN_SEGMENT = 0.1;
-export const MIN_SPEED = 0.5;
-export const MAX_SPEED = 2;
+export const MIN_SPEED = 0.25;
+export const MAX_SPEED = 4;
 export const MAX_VOLUME = 2;
 export const MAX_SEGMENTS = 500;
 export const MAX_MEDIA = 20;
@@ -29,7 +30,7 @@ export const DEFAULT_OVERLAY_WIDTH = 0.35;
 export const OVERLAY_MARGIN = 0.03;
 /** Recently picked files kept with the draft. */
 export const RECENT_LIMIT = 12;
-export const SPEED_PRESETS: readonly number[] = [0.5, 0.75, 1, 1.25, 1.5, 2];
+export const SPEED_PRESETS: readonly number[] = [0.25, 0.5, 1, 1.5, 2, 4];
 export const HISTORY_LIMIT = 200;
 /** A remapped cue piece shorter than this is dropped, unless it is the whole cue. */
 export const MIN_CUE_PIECE = 0.1;
@@ -71,6 +72,8 @@ export type Media = {
 export type MediaInfo = Omit<Media, "id">;
 export type Segment = {
   readonly id: string; readonly mediaId: string; readonly start: number; readonly end: number; readonly speed: number; readonly volume: number;
+  /** Crop, rotation, colour, reverse, held frame, sound fades (look.ts); absent = as filmed. */
+  readonly look?: SegmentLook;
 };
 export type TransitionType = "fade" | "dissolve";
 export type Transition = { readonly type: TransitionType; readonly duration: number };
@@ -163,9 +166,33 @@ function mediaDuration(edit: Edit, id: string): number {
   return id === MAIN ? edit.duration : mediaOf(edit, id)?.duration ?? 0;
 }
 
-/** Seconds a segment lasts in the edited output. */
+export function lookOf(segment: Pick<Segment, "look">): SegmentLook {
+  return segment.look ?? DEFAULT_LOOK;
+}
+
+/** Seconds a segment lasts in the edited output: a held frame its hold, else its part at its speed. */
 export function segmentLength(segment: Segment): number {
-  return (segment.end - segment.start) / segment.speed;
+  return segment.look?.freeze ?? (segment.end - segment.start) / segment.speed;
+}
+
+/** The media time shown `offset` output seconds into a segment (a held frame stays on its start, reverse runs from the end). */
+export function sourceAt(segment: Segment, offset: number): number {
+  const look = segment.look;
+  if (look?.freeze != null) return segment.start;
+  const time = look?.reverse ? segment.end - offset * segment.speed : segment.start + offset * segment.speed;
+  return clamp(time, segment.start, segment.end);
+}
+
+/** Output seconds into a segment where it shows media time `sourceTime` (0 for a held frame). */
+export function offsetOf(segment: Segment, sourceTime: number): number {
+  const look = segment.look;
+  if (look?.freeze != null) return 0;
+  return (look?.reverse ? segment.end - sourceTime : sourceTime - segment.start) / segment.speed;
+}
+
+/** Whether a segment plays its media forwards at some speed (not reversed, not a held frame). */
+export function playsForward(segment: Segment): boolean {
+  return !segment.look || (!segment.look.reverse && segment.look.freeze === null);
 }
 
 /**
@@ -219,7 +246,7 @@ export function outputToSource(edit: Edit, t: number): SourcePoint | null {
   let index = 0;
   while (index + 1 < segments.length && starts[index + 1] <= time) index += 1;
   const segment = segments[index];
-  const sourceTime = clamp(segment.start + (time - starts[index]) * segment.speed, segment.start, segment.end);
+  const sourceTime = sourceAt(segment, time - starts[index]);
   return { segment, index, sourceTime, outputStart: starts[index] };
 }
 
@@ -261,7 +288,7 @@ export function openingTime(kind: string, edit: Edit, playerTime: number | null)
 
 export function sourceToOutput(edit: Edit, sourceTime: number, preferredIndex = -1, mediaId = MAIN): number | null {
   const starts = outputStarts(edit);
-  const at = (index: number): number => starts[index] + (sourceTime - edit.segments[index].start) / edit.segments[index].speed;
+  const at = (index: number): number => starts[index] + offsetOf(edit.segments[index], sourceTime);
   const preferred = edit.segments[preferredIndex];
   if (preferred && preferred.mediaId === mediaId && sourceTime >= preferred.start && sourceTime <= preferred.end) return at(preferredIndex);
   const index = edit.segments.findIndex((segment) => segment.mediaId === mediaId && sourceTime >= segment.start && sourceTime < segment.end);
@@ -289,10 +316,28 @@ export function split(edit: Edit, t: number): Edit {
   const point = outputToSource(edit, t);
   if (!point || edit.segments.length >= MAX_SEGMENTS) return edit;
   const { segment, index } = point;
-  const at = ms(point.sourceTime);
-  if (at - segment.start < MIN_SEGMENT || segment.end - at < MIN_SEGMENT) return edit;
   const id = `s${edit.nextId}`;
-  const next = replace(edit, index, [{ ...segment, end: at }, { ...segment, id, start: at }], edit.nextId + 1);
+  let parts: [Segment, Segment];
+  if (segment.look?.freeze != null) {
+    // A held frame splits into two shorter holds of the same frame.
+    const offset = ms(clamp(t, 0, outputDuration(edit)) - point.outputStart);
+    const rest = ms(segment.look.freeze - offset);
+    if (offset < MIN_FREEZE - 1e-6 || rest < MIN_FREEZE - 1e-6) return edit;
+    parts = [{ ...segment, look: { ...segment.look, freeze: offset } }, { ...segment, id, look: { ...segment.look, freeze: rest } }];
+  } else {
+    const at = ms(point.sourceTime);
+    if (at - segment.start < MIN_SEGMENT || segment.end - at < MIN_SEGMENT) return edit;
+    // A reversed segment shows its end first: the first part is the media's later half.
+    const look = segment.look;
+    const first = look?.reverse ? { ...segment, start: at } : { ...segment, end: at };
+    const second = look?.reverse ? { ...segment, id, end: at } : { ...segment, id, start: at };
+    // Fades stay at the outer ends.
+    parts = look && (look.fadeIn || look.fadeOut)
+      ? [{ ...first, look: { ...look, fadeOut: 0 } }, { ...second, look: { ...look, fadeIn: 0 } }]
+      : [first, second];
+    // Zoom runs over each part again; a slow zoom across a split is out of scope.
+  }
+  const next = replace(edit, index, parts, edit.nextId + 1);
   // The joint after the original segment now follows its right part.
   const moved = edit.transitions[segment.id];
   return moved ? { ...next, transitions: { ...withoutKey(edit.transitions, segment.id), [id]: moved } } : next;
@@ -313,6 +358,8 @@ export function trim(edit: Edit, id: string, edge: "start" | "end", sourceTime: 
   const index = edit.segments.findIndex((segment) => segment.id === id);
   if (index < 0 || !Number.isFinite(sourceTime)) return edit;
   const segment = edit.segments[index];
+  if (segment.look?.freeze != null) return edit;
+  if (segment.look?.reverse && Math.max(segment.end, sourceTime) - Math.min(segment.start, sourceTime) > MAX_REVERSE + 1e-6) return edit;
   const value = edge === "start"
     ? ms(clamp(sourceTime, 0, segment.end - MIN_SEGMENT))
     : ms(clamp(sourceTime, segment.start + MIN_SEGMENT, mediaDuration(edit, segment.mediaId)));
@@ -334,6 +381,41 @@ export function setVolume(edit: Edit, id: string, volume: number): Edit {
   const value = Math.round(clamp(volume, 0, MAX_VOLUME) * 100) / 100;
   if (value === edit.segments[index].volume) return edit;
   return replace(edit, index, [{ ...edit.segments[index], volume: value }]);
+}
+
+// ---------- Segment look ----------
+
+/**
+ * Change a segment's look (crop, rotation, colour, reverse, held frame, fades).
+ * Reverse is refused on parts longer than two minutes; a held frame keeps its
+ * own length and no sound.
+ */
+export function setLook(edit: Edit, id: string, change: Partial<SegmentLook>): Edit {
+  const index = edit.segments.findIndex((segment) => segment.id === id);
+  if (index < 0) return edit;
+  const segment = edit.segments[index];
+  if (change.reverse && !segment.look?.reverse && segment.end - segment.start > MAX_REVERSE + 1e-6) return edit;
+  const look = normalizeLook({ ...lookOf(segment), ...change });
+  const { look: _, ...plain } = segment;
+  const next: Segment = look ? { ...plain, look } : plain;
+  if (JSON.stringify(next.look ?? null) === JSON.stringify(segment.look ?? null)) return edit;
+  return replace(edit, index, [next]);
+}
+
+/**
+ * Dừng hình: hold the frame at output time `t` for `seconds` (a new held
+ * segment there, splitting the one under it); everything after ripples like an insert.
+ */
+export function freezeFrame(edit: Edit, t: number, seconds = DEFAULT_FREEZE): Edit {
+  const point = outputToSource(edit, t);
+  if (!point || !Number.isFinite(seconds) || edit.segments.length + 2 > MAX_SEGMENTS) return edit;
+  const { segment } = point;
+  const length = mediaDuration(edit, segment.mediaId);
+  const at = ms(clamp(point.sourceTime, 0, Math.max(0, length - MIN_SEGMENT)));
+  const hold = ms(clamp(seconds, MIN_FREEZE, MAX_FREEZE));
+  const base = segment.look ? { ...segment.look, freeze: null, reverse: false, fadeIn: 0, fadeOut: 0, zoom: null } : null;
+  const look = normalizeLook({ ...(base ?? DEFAULT_LOOK), freeze: hold })!;
+  return insertSegmentAt(edit, t, segment.mediaId, at, ms(at + MIN_SEGMENT), { look, volume: 0 });
 }
 
 // ---------- Arranging segments ----------
@@ -383,14 +465,14 @@ export function duplicateSegment(edit: Edit, id: string): Edit {
 }
 
 /** What "Sao chép" keeps of a segment: its media and the part, speed and volume. */
-export type SegmentClip = { media: MediaInfo; start: number; end: number; speed: number; volume: number };
+export type SegmentClip = { media: MediaInfo; start: number; end: number; speed: number; volume: number; look?: SegmentLook };
 
 export function copySegment(edit: Edit, id: string): SegmentClip | null {
   const segment = edit.segments.find((candidate) => candidate.id === id);
   const media = segment && mediaOf(edit, segment.mediaId);
   if (!segment || !media) return null;
   const { id: _, ...info } = media;
-  return { media: info, start: segment.start, end: segment.end, speed: segment.speed, volume: segment.volume };
+  return { media: info, start: segment.start, end: segment.end, speed: segment.speed, volume: segment.volume, ...(segment.look ? { look: segment.look } : {}) };
 }
 
 /**
@@ -405,7 +487,8 @@ export function pasteSegment(edit: Edit, t: number, clip: SegmentClip, mainPath 
     : insertAt(edit, t, { ...clip.media, kind: clip.media.kind === "main" ? "file" : clip.media.kind }, { start: clip.start, end: clip.end });
   const added = addedId(edit, next);
   if (!added) return edit;
-  return setVolume(setSpeed(next, added, clip.speed), added, clip.volume);
+  const styled = setVolume(setSpeed(next, added, clip.speed), added, clip.volume);
+  return clip.look ? setLook(styled, added, clip.look) : styled;
 }
 
 /**
@@ -544,7 +627,7 @@ export function insertAt(edit: Edit, t: number, info: MediaInfo, range?: { start
 }
 
 /** Insert [start, end) of media `mediaId`, already in the edit, at output time `t` (see insertAt). */
-function insertSegmentAt(edit: Edit, t: number, mediaId: string, start: number, end: number): Edit {
+function insertSegmentAt(edit: Edit, t: number, mediaId: string, start: number, end: number, extra: Partial<Omit<Segment, "id">> = {}): Edit {
   if (edit.segments.length >= MAX_SEGMENTS || !Number.isFinite(t)) return edit;
   let next = edit;
   const total = outputDuration(next);
@@ -560,7 +643,7 @@ function insertSegmentAt(edit: Edit, t: number, mediaId: string, start: number, 
       index = point.index + 1;
     }
   }
-  return placeSegment(next, index, { mediaId, start, end, speed: 1, volume: 1 });
+  return placeSegment(next, index, { mediaId, start, end, speed: 1, volume: 1, ...extra });
 }
 
 /** Add a media (or part of it) after the last segment. */
@@ -988,18 +1071,18 @@ export function retargetEdit(edit: Edit, duration: number, info: Partial<Omit<Me
 export function isUnchanged(edit: Edit, duration: number): boolean {
   const [only] = edit.segments;
   return edit.segments.length === 1 && only.mediaId === MAIN && only.start <= 0.001 && only.end >= duration - 0.001
-    && only.speed === 1 && only.volume === 1 && !edit.overlays.length && !edit.audio.length && edit.mainVolume === 1 && !edit.texts.length;
+    && only.speed === 1 && only.volume === 1 && !only.look && !edit.overlays.length && !edit.audio.length && edit.mainVolume === 1 && !edit.texts.length;
 }
 
 export function sameSegments(a: readonly Segment[], b: readonly Pick<Segment, "start" | "end" | "speed" | "volume">[]): boolean {
   return a.length === b.length && a.every((segment, index) => {
     const other = b[index];
     return Math.abs(segment.start - other.start) < 0.0005 && Math.abs(segment.end - other.end) < 0.0005
-      && segment.speed === other.speed && segment.volume === other.volume;
+      && segment.speed === other.speed && segment.volume === other.volume && !segment.look;
   });
 }
 
-export type PlanSegment = { media: number; start: number; end: number; speed: number; volume: number };
+export type PlanSegment = { media: number; start: number; end: number; speed: number; volume: number } & Record<string, unknown>;
 export type PlanTransition = { after: number; type: TransitionType; duration: number };
 export type PlanOverlay = { media: number; at: number; start: number; end: number; x: number; y: number; w: number; volume: number };
 export type PlanAudio = {
@@ -1023,7 +1106,7 @@ export function exportPlan(edit: Edit): ExportPlan {
     if (at < 0) at = media.push(path) - 1;
     return at + 1;
   };
-  const segments = edit.segments.map(({ mediaId, start, end, speed, volume }) => ({ media: index(mediaId), start, end, speed, volume }));
+  const segments = edit.segments.map(({ mediaId, start, end, speed, volume, look }) => ({ media: index(mediaId), start, end, speed, volume, ...planLook(look) }));
   const transitions: PlanTransition[] = [];
   edit.segments.forEach((_, at) => {
     const transition = transitionAt(edit, at);
@@ -1077,7 +1160,8 @@ export function matchesExport(edit: Edit, exported: {
     && segments.length === plan.segments.length && plan.segments.every((segment, at) => {
       const other = segments[at];
       return (other.media ?? 0) === segment.media && near(other.start, segment.start) && near(other.end, segment.end)
-        && other.speed === segment.speed && other.volume === segment.volume;
+        && other.speed === segment.speed && other.volume === segment.volume
+        && LOOK_PLAN_KEYS.every((key) => JSON.stringify(other[key] ?? null) === JSON.stringify(segment[key] ?? null));
     })
     && transitions.length === plan.transitions.length && plan.transitions.every((transition, at) => {
       const other = transitions[at];
@@ -1105,7 +1189,8 @@ export function remapCues(cues: readonly Cue[], edit: Edit): Cue[] {
   const starts = outputStarts(edit);
   const ordered = cues.map((cue, source) => ({ cue, source })).sort((a, b) => a.cue.start_ms - b.cue.start_ms || a.source - b.source);
   edit.segments.forEach((segment, index) => {
-    if (segment.mediaId !== MAIN) return;
+    // Reversed speech and a held frame carry no subtitles.
+    if (segment.mediaId !== MAIN || !playsForward(segment)) return;
     for (const { cue, source } of ordered) {
       const cueStart = cue.start_ms / 1000, cueEnd = cue.end_ms / 1000;
       const from = Math.max(cueStart, segment.start), to = Math.min(cueEnd, segment.end);
@@ -1220,7 +1305,7 @@ export function serializeProject(edit: Edit, changes: number, selected: string |
   return {
     schema_version: PROJECT_SCHEMA, duration: edit.duration, next_id: edit.nextId, changes, selected,
     media: [...edit.media, ...extra].map(serializeMedia),
-    segments: edit.segments.map(({ id, mediaId, start, end, speed, volume }) => ({ id, mediaId, start, end, speed, volume })),
+    segments: edit.segments.map(({ id, mediaId, start, end, speed, volume, look }) => ({ id, mediaId, start, end, speed, volume, ...(look ? { look: { ...look } } : {}) })),
     transitions: Object.fromEntries(Object.entries(edit.transitions).map(([id, { type, duration }]) => [id, { type, duration }])),
     overlays: edit.overlays.map(({ id, mediaId, at, start, end, x, y, w, volume }) => ({ id, mediaId, at, start, end, x, y, w, volume })),
     audio: edit.audio.map(({ id, source, title, duration, at, start, end, volume, fadeIn, fadeOut, duckDb }) => ({
@@ -1320,7 +1405,9 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
     if (typeof mediaId !== "string" || !known.has(mediaId)) return null;
     if (![start, end, speed, volume].every(finite)) return null;
     const length = mediaId === MAIN ? ms(duration) : known.get(mediaId)!.duration;
-    const segment = { id, mediaId, start: start as number, end: Math.min(end as number, length), speed: speed as number, volume: volume as number };
+    const look = normalizeLook((raw as Record<string, unknown>).look);
+    const segment: Segment = { id, mediaId, start: start as number, end: Math.min(end as number, length), speed: speed as number, volume: volume as number,
+      ...(look ? { look } : {}) };
     if (segment.start < 0 || segment.end - segment.start < MIN_SEGMENT - 1e-6 || segment.speed < MIN_SPEED || segment.speed > MAX_SPEED
       || segment.volume < 0 || segment.volume > MAX_VOLUME) return null;
     ids.add(id);

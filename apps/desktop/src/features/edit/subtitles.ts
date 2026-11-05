@@ -5,7 +5,7 @@
  * (engine/dubflow/subtitle/style.py); its ASS canvas is 1920×1080 with a
  * 48 px base font and 40/48 px margins, which the preview reproduces.
  */
-import { MAIN, outputStarts, type Edit } from "./model.ts";
+import { MAIN, offsetOf, outputStarts, playsForward, type Edit } from "./model.ts";
 import { EM_SCALE, SUBTITLE_FONTS, type SubtitleFont } from "./fonts.ts";
 
 export { EM_SCALE, SUBTITLE_FONTS, type SubtitleFont };
@@ -223,8 +223,8 @@ export function cueOutputTime(edit: Edit, cue: { start_ms: number; end_ms: numbe
   const starts = outputStarts(edit);
   for (let index = 0; index < edit.segments.length; index++) {
     const segment = edit.segments[index];
-    if (segment.mediaId !== MAIN || segment.end <= start || segment.start >= end) continue;
-    return starts[index] + (Math.max(start, segment.start) - segment.start) / segment.speed;
+    if (segment.mediaId !== MAIN || !playsForward(segment) || segment.end <= start || segment.start >= end) continue;
+    return starts[index] + offsetOf(segment, Math.max(start, segment.start));
   }
   return null;
 }
