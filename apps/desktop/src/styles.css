@@ -1731,3 +1731,14 @@ input.temperature { accent-color: oklch(0.75 0.13 60); }
 .look-lut-preview { margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .look-lut-preview img { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 6px; background: #000; }
 .look-lut-preview figcaption { color: var(--text-3); font-size: 12px; line-height: 1.4; }
+.au-clean { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.au-eq { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; }
+.au-eq select { height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; }
+.au-record { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.au-record .btn { display: inline-flex; align-items: center; gap: 8px; }
+.au-rec-dot { width: 10px; height: 10px; border-radius: 50%; background: oklch(0.63 0.21 25); flex: none; }
+#au-rec[aria-pressed="true"] { box-shadow: inset 0 0 0 1px oklch(0.63 0.21 25); }
+#au-rec[aria-pressed="true"] .au-rec-dot { animation: au-rec-blink 1s steps(2, start) infinite; }
+.au-rec-time { color: oklch(0.72 0.17 25); font-variant-numeric: tabular-nums; font-weight: 600; }
+@keyframes au-rec-blink { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { #au-rec[aria-pressed="true"] .au-rec-dot { animation: none; } }

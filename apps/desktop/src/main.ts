@@ -597,6 +597,11 @@ const editor = mountEditor(invoke, {
   sfx: sfxLibrary,
   ai: claudeKey,
   openAiSettings: () => aiSettings.open(),
+  // The recording goes as the raw body (a JSON array of bytes would be several times larger).
+  saveRecording: (bytes, outputPath, kind) => isTauri
+    ? tauriInvoke<string>("edit_save_recording", new Uint8Array(bytes),
+      { headers: { "x-output-path": encodeURIComponent(outputPath), "x-kind": encodeURIComponent(kind) } })
+    : previewInvoke<string>("edit_save_recording", { bytes: bytes.byteLength, outputPath, kind }),
   openReview: () => void openReview(),
   cpuOnly: () => cpuOnly(),
   // Back to the page the video was opened from: the Chỉnh sửa list, the queue or another page.

@@ -1049,6 +1049,17 @@
                     <small id="au-main-hint" class="edit-note">Âm lượng của cả video (lời lồng tiếng, nhạc nền, đoạn chèn).</small>
                     <small id="au-main-note" class="edit-note" hidden>Trên 100% chỉ nghe được sau khi xuất video.</small>
                   </label>
+                  <div class="au-clean">
+                    <label class="au-duck"><input id="au-main-denoise" type="checkbox" /> Lọc ồn tiếng gốc</label>
+                    <label class="au-eq">Chỉnh âm <select id="au-main-eq" aria-label="Chỉnh âm tiếng gốc"><option value="">Tắt</option><option value="voice">Giọng rõ</option><option value="warm">Ấm</option><option value="bright">Sáng</option><option value="bass">Trầm</option></select></label>
+                  </div>
+                  <small id="au-main-clean-note" class="edit-note" hidden>Lọc ồn và chỉnh âm nghe được sau khi xuất video.</small>
+                  <div class="au-record">
+                    <button id="au-rec" class="btn" type="button" aria-pressed="false" title="Thu giọng từ micro trong lúc video phát (tắt tiếng), bản thu được thêm vào dòng âm thanh">
+                      <span class="au-rec-dot" aria-hidden="true"></span><span id="au-rec-label">Thu giọng tại đầu phát</span></button>
+                    <output id="au-rec-time" class="au-rec-time" hidden>0:00</output>
+                  </div>
+                  <small id="au-rec-note" class="edit-note">Video phát không tiếng trong lúc thu; bấm lại để dừng. Nên dùng tai nghe.</small>
                   <section id="au-selected" class="au-selected" aria-labelledby="au-title" hidden>
                     <h3 id="au-title" class="edit-segment-title">Âm thanh</h3>
                     <div class="edit-times three">
@@ -1073,6 +1084,11 @@
                       </label>
                     </div>
                     <label class="au-duck"><input id="au-loop" type="checkbox" /> Lặp lại đến hết video (nhạc nền)</label>
+                    <div class="au-clean">
+                      <label class="au-duck"><input id="au-denoise" type="checkbox" /> Lọc ồn</label>
+                      <label class="au-eq">Chỉnh âm <select id="au-eq" aria-label="Chỉnh âm"><option value="">Tắt</option><option value="voice">Giọng rõ</option><option value="warm">Ấm</option><option value="bright">Sáng</option><option value="bass">Trầm</option></select></label>
+                    </div>
+                    <small id="au-clean-note" class="edit-note" hidden>Lọc ồn và chỉnh âm nghe được sau khi xuất video.</small>
                     <label class="au-duck"><input id="au-duck" type="checkbox" /> Giảm âm gốc khi phát</label>
                     <label id="au-duck-row" class="edit-field" hidden>
                       <span class="edit-label">Giảm âm gốc <output id="au-duck-value">10 dB</output></span>

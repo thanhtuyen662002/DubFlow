@@ -342,6 +342,52 @@ pub struct SoundClip {
     /// Lặp lại (Issue #520): the part repeats until the end of the video.
     #[serde(rename = "loop", default, skip_serializing_if = "is_false")]
     repeat: bool,
+    /// Lọc ồn (Issue #533): FFT noise reduction.
+    #[serde(default, skip_serializing_if = "is_false")]
+    denoise: bool,
+    /// Chỉnh âm (EQ) preset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eq: Option<EqPreset>,
+}
+
+/// Chỉnh âm presets (Issue #533): Giọng rõ, Ấm, Sáng, Trầm.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum EqPreset {
+    Voice,
+    Warm,
+    Bright,
+    Bass,
+}
+
+/// Lọc ồn and chỉnh âm of one sound (or of the output's own sound).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Clean {
+    denoise: bool,
+    eq: Option<EqPreset>,
+}
+
+impl Clean {
+    fn is_plain(self) -> bool {
+        !self.denoise && self.eq.is_none()
+    }
+
+    /// Native FFmpeg filters (in the LGPL build): rumble cut and FFT noise reduction, then the EQ.
+    fn filters(self) -> Vec<String> {
+        let mut filters = Vec::new();
+        if self.denoise {
+            filters.push("highpass=f=70".to_owned());
+            filters.push("afftdn=nr=12:nf=-40".to_owned());
+        }
+        match self.eq {
+            Some(EqPreset::Voice) => filters.extend(["highpass=f=90", "equalizer=f=250:t=q:w=1:g=-3", "equalizer=f=3500:t=q:w=1.2:g=4"].map(str::to_owned)),
+            Some(EqPreset::Warm) => filters.extend(["equalizer=f=150:t=q:w=1:g=3", "equalizer=f=7000:t=q:w=1:g=-2"].map(str::to_owned)),
+            Some(EqPreset::Bright) => filters.push("equalizer=f=6000:t=q:w=1:g=4".to_owned()),
+            Some(EqPreset::Bass) => filters.push("bass=g=6:f=100".to_owned()),
+            None => {}
+        }
+        filters
+    }
 }
 
 /// A validated sound: `input` indexes the audio files, which follow the video inputs.
@@ -356,6 +402,7 @@ struct Sound {
     fade_out: f64,
     duck_db: f64,
     repeat: bool,
+    clean: Clean,
 }
 
 impl Sound {
@@ -366,10 +413,12 @@ impl Sound {
 }
 
 /// The added sounds and the volume of the output's own sound.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct Mix {
     sounds: Vec<Sound>,
     main_volume: f64,
+    /// Lọc ồn / chỉnh âm of the output's own sound (Issue #533).
+    main_clean: Clean,
 }
 
 fn full_volume() -> f64 {
@@ -438,6 +487,11 @@ pub struct ExportRequest {
     /// LUT màu (Issue #531): .cube files the segments' `lut` points at.
     #[serde(default)]
     luts: Vec<String>,
+    /// Lọc ồn / chỉnh âm of the output's own sound (Issue #533).
+    #[serde(default)]
+    main_denoise: bool,
+    #[serde(default)]
+    main_eq: Option<EqPreset>,
 }
 
 /// What follows the edit's picture and sound in the export graph.
@@ -949,9 +1003,9 @@ fn validate_mix(clips: &[SoundClip], files: &[usize], durations: &[f64], main_vo
             return Err(fail("Âm thanh lặp lại dài tối đa 10 phút một lượt"));
         }
         sounds.push(Sound { input, at: clip.at, start: clip.start, end, volume: clip.volume, fade_in: clip.fade_in, fade_out: clip.fade_out,
-            duck_db: clip.duck_db, repeat: clip.repeat });
+            duck_db: clip.duck_db, repeat: clip.repeat, clean: Clean { denoise: clip.denoise, eq: clip.eq } });
     }
-    Ok(Mix { sounds, main_volume })
+    Ok(Mix { sounds, main_volume, main_clean: Clean::default() })
 }
 
 /// An existing folder chosen for the export.
@@ -1439,7 +1493,7 @@ fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mi
 
 /// The picture (ending as `[video_out]`) and the mixed sound (`[audio_out]`).
 fn mixed_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, video_out: &str, audio_out: &str) -> (String, bool) {
-    if mix.sounds.is_empty() && mix.main_volume == 1.0 {
+    if mix.sounds.is_empty() && mix.main_volume == 1.0 && mix.main_clean.is_plain() {
         return video_graph(edit, inputs, frame, quality, video_out, audio_out);
     }
     let (graph, has_main) = video_graph(edit, inputs, frame, quality, video_out, "am");
@@ -1451,7 +1505,7 @@ fn mixed_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix
     if !has_main {
         lines.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={}[am]", num(total)));
     }
-    let mut main = Vec::new();
+    let mut main = if has_main { mix.main_clean.filters() } else { Vec::new() };
     if mix.main_volume != 1.0 {
         main.push(format!("volume={}", num(mix.main_volume)));
     }
@@ -1472,6 +1526,7 @@ fn mixed_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix
         let part = if sound.repeat { sound.end - sound.start } else { shown };
         let mut filters = vec![format!("atrim=start={}:end={}", num(sound.start), num(sound.start + part)), "asetpts=PTS-STARTPTS".to_owned(),
             AUDIO_FORMAT.to_owned()];
+        filters.extend(sound.clean.filters());
         if sound.repeat && shown > part {
             filters.push(format!("aloop=loop=-1:size={}", (part * 48000.0).round() as u64));
             filters.push(format!("atrim=duration={}", num(shown)));
@@ -2340,6 +2395,74 @@ pub async fn edit_lut_frame(path: String, time: f64, lut: String) -> Result<taur
     Ok(tauri::ipc::Response::new(png))
 }
 
+/// A recording is at most this big (about an hour of Opus).
+const MAX_RECORDING_BYTES: usize = 200 * 1024 * 1024;
+/// Recordings of an edit live in its draft folder.
+const RECORDINGS_DIR: &str = "thu-am";
+
+/// `%XX` escapes (encodeURIComponent) back to text.
+fn percent_decoded(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(at + 1..at + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            at += 3;
+        } else {
+            out.push(bytes[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Thu giọng (Issue #533): the voice recorded in the editor (WebM/Opus or
+/// MP4/AAC bytes in the body; the edit's `x-output-path` and `x-kind`
+/// headers, URI-encoded) saved as an .m4a in the edit's draft folder.
+/// Returns its path; the preview may play it.
+#[tauri::command]
+pub async fn edit_save_recording(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(fail("Bản thu không hợp lệ"));
+    };
+    if bytes.len() < 64 || bytes.len() > MAX_RECORDING_BYTES {
+        return Err(fail("Bản thu trống hoặc quá dài"));
+    }
+    let header = |name: &str| request.headers().get(name).and_then(|value| value.to_str().ok()).and_then(percent_decoded);
+    let (Some(output_path), Some(kind)) = (header("x-output-path"), header("x-kind")) else {
+        return Err(fail("Không biết bản thu thuộc video nào"));
+    };
+    let target = edit_target(&output_path, &kind)?;
+    let ffmpeg = media_tool("ffmpeg.exe")?;
+    let bytes = bytes.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        guarded(&target.work)?;
+        let dir = target.work.join(RECORDINGS_DIR);
+        fs::create_dir_all(&dir).map_err(|_| fail("Không tạo được thư mục bản thu"))?;
+        guarded(&dir)?;
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis());
+        let raw = dir.join(format!("giong-{stamp}.rec"));
+        let voice = dir.join(format!("giong-{stamp}.m4a"));
+        fs::write(&raw, &bytes).map_err(|_| fail("Không lưu được bản thu"))?;
+        let mut command = Command::new(ffmpeg);
+        command.args(["-nostdin", "-v", "error", "-y", "-i"]).arg(&raw)
+            .args(["-vn", "-ac", "1", "-ar", "48000", "-c:a", "aac", "-b:a", "160k", "-f", "ipod"]).arg(&voice)
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let status = command.status();
+        let _ = fs::remove_file(&raw);
+        if !status.is_ok_and(|status| status.success()) || !voice.is_file() {
+            let _ = fs::remove_file(&voice);
+            return Err(fail("Không đọc được bản thu từ micro"));
+        }
+        crate::sfx::allow_files(&[voice.canonicalize().unwrap_or_else(|_| voice.clone())]);
+        Ok(display_path(&voice))
+    }).await.map_err(|_| fail("Không lưu được bản thu"))?
+}
+
 /// The user's audio files a draft's sounds play (schema 3 `audio`).
 fn draft_sounds(project: &Value) -> Vec<PathBuf> {
     project["audio"].as_array().into_iter().flatten().take(MAX_SOUNDS)
@@ -2519,6 +2642,8 @@ struct ExportJob {
     /// The added sounds as requested, and the original sound's volume, for exports.json.
     audio: Vec<SoundClip>,
     main_volume: f64,
+    main_denoise: bool,
+    main_eq: Option<EqPreset>,
     /// The texts as requested, for exports.json.
     texts: Vec<TextClip>,
     /// Chỉ âm thanh: an .m4a, kept out of exports.json (it is no edited video).
@@ -2642,7 +2767,7 @@ fn run_export(job: &ExportJob, running: &Running) {
     }
     append_export(&job.work, json!({"path": display_path(&target), "srt_path": srt, "created": unix_now(),
         "duration": (job.seconds * 1000.0).round() / 1000.0, "quality": job.quality, "segments": job.edit.segments,
-        "media": job.media, "luts": job.edit.luts, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume,
+        "media": job.media, "luts": job.edit.luts, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume, "main_denoise": job.main_denoise, "main_eq": job.main_eq,
         "texts": job.texts}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
 }
@@ -2690,7 +2815,8 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         files.push(index);
     }
     let total = output_seconds(&edit.segments, &edit.transitions);
-    let mix = validate_mix(&request.audio, &files, &sound_seconds, request.main_volume, total)?;
+    let mut mix = validate_mix(&request.audio, &files, &sound_seconds, request.main_volume, total)?;
+    mix.main_clean = Clean { denoise: request.main_denoise, eq: request.main_eq };
     let texts = validate_texts(&request.texts, total)?;
     if request.fps.is_some_and(|fps| !EXPORT_FPS.contains(&fps)) || request.bitrate.as_deref().is_some_and(|rate| rate != "low" && rate != "high")
         || request.aspect.as_deref().is_some_and(|aspect| !ASPECTS.contains(&aspect))
@@ -2757,6 +2883,7 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         srt: (!request.cues.is_empty() && !request.audio_only).then(|| format_srt(&request.cues)),
         seconds: output_seconds(&edit.segments, &edit.transitions), has_audio, bitrate, fps, ffmpeg, audio_only: request.audio_only,
         quality: request.quality, edit, audio: request.audio, main_volume: request.main_volume, texts: request.texts,
+        main_denoise: request.main_denoise, main_eq: request.main_eq,
     };
     write_status(&work, "RUNNING", 0.0, "Đang bắt đầu xuất video…", Some(&target));
     let entry = Arc::new(Running { child: Mutex::new(None), cancelled: AtomicBool::new(false) });
@@ -2834,7 +2961,7 @@ mod tests {
     fn request(segments: Vec<Segment>) -> ExportRequest {
         ExportRequest { output_path: "unused".into(), kind: "file".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
             texts: vec![], quality: "source".into(),
-            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false, burn: None, fps: None, bitrate: None, aspect: None, fill: None, audio_only: false, luts: vec![] }
+            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false, burn: None, fps: None, bitrate: None, aspect: None, fill: None, audio_only: false, luts: vec![], main_denoise: false, main_eq: None }
     }
 
     fn frame() -> Frame {
@@ -3599,7 +3726,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     }
 
     fn sound(input: usize, at: f64, start: f64, end: f64) -> Sound {
-        Sound { input, at, start, end, volume: 1.0, fade_in: 0.0, fade_out: 0.0, duck_db: 0.0, repeat: false }
+        Sound { input, at, start, end, volume: 1.0, fade_in: 0.0, fade_out: 0.0, duck_db: 0.0, repeat: false, clean: Clean::default() }
     }
 
     fn whole(seconds: f64) -> Edit {
@@ -3613,7 +3740,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
 
     #[test]
     fn mixes_a_sound_effect_with_fades_and_limits_the_sum() {
-        let mix = Mix { sounds: vec![Sound { volume: 0.8, fade_in: 0.2, fade_out: 0.5, ..sound(0, 2.5, 0.0, 1.2) }], main_volume: 1.0 };
+        let mix = Mix { sounds: vec![Sound { volume: 0.8, fade_in: 0.2, fade_out: 0.5, ..sound(0, 2.5, 0.0, 1.2) }], main_volume: 1.0, ..Default::default() };
         let (script, has_audio) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix, &Finish::default());
         assert!(has_audio);
         assert_eq!(script, expected(&format!("{MAIN_ONLY};
@@ -3625,7 +3752,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     fn ducks_the_original_sound_under_a_clip() {
         // A file that ducks 12 dB, and a louder sound effect cut at the end of the output that ducks 6 dB.
         let mix = Mix { sounds: vec![Sound { duck_db: 12.0, ..sound(0, 4.0, 0.0, 2.0) }, Sound { volume: 1.5, duck_db: 6.0, ..sound(1, 9.5, 0.5, 3.0) }],
-            main_volume: 1.0 };
+            main_volume: 1.0, ..Default::default() };
         let (script, _) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix, &Finish::default());
         assert_eq!(script, expected(&format!("{MAIN_ONLY};
 [am]volume=volume='1-0.749*clip(min((t-3.9)/0.1,(6.1-t)/0.1),0,1)':eval=frame:enable='between(t,3.9,6.1)',\
@@ -3642,14 +3769,14 @@ volume=volume='1-0.499*clip(min((t-9.4)/0.1,(10.1-t)/0.1),0,1)':eval=frame:enabl
     #[test]
     fn changes_the_original_volume_and_keeps_plain_edits_as_before() {
         let edit = whole(10.0);
-        let quiet = Mix { sounds: vec![], main_volume: 0.5 };
+        let quiet = Mix { sounds: vec![], main_volume: 0.5, ..Default::default() };
         assert_eq!(export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &quiet, &Finish::default()).0, expected(&format!("{MAIN_ONLY};
 [am]volume=0.5,alimiter=limit=0.891:level=0:latency=1[a]")));
-        let plain = Mix { sounds: vec![], main_volume: 1.0 };
+        let plain = Mix { sounds: vec![], main_volume: 1.0, ..Default::default() };
         assert_eq!(export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &plain, &Finish::default()), render_script(&edit, &[Input { has_audio: true }], &frame(), "source"));
         // A silent video gets a sound track only for added sounds.
         assert!(!export_script(&edit, &[Input { has_audio: false }], &frame(), "source", &quiet, &Finish::default()).1);
-        let (script, has_audio) = export_script(&edit, &[Input { has_audio: false }], &frame(), "source", &Mix { sounds: vec![sound(0, 0.0, 0.0, 1.0)], main_volume: 0.5 }, &Finish::default());
+        let (script, has_audio) = export_script(&edit, &[Input { has_audio: false }], &frame(), "source", &Mix { sounds: vec![sound(0, 0.0, 0.0, 1.0)], main_volume: 0.5, ..Default::default() }, &Finish::default());
         assert!(has_audio);
         assert_eq!(script, expected("\
 [0:v]trim=start=0:end=10,setpts=PTS-STARTPTS[v0];
@@ -3663,7 +3790,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=10[am];
     #[test]
     fn validates_added_sounds() {
         let clip = |at: f64, end: f64| SoundClip { source: SoundSource::Sfx { id: "whoosh-01".into() }, at, start: 0.0, end, volume: 1.0, fade_in: 0.0,
-            fade_out: 0.0, duck_db: 0.0, repeat: false };
+            fade_out: 0.0, duck_db: 0.0, repeat: false, denoise: false, eq: None };
         let mix = validate_mix(&[clip(2.0, 0.64)], &[0], &[0.6], 1.0, 10.0).unwrap();
         assert_eq!(mix.sounds[0].end, 0.6, "clamped to the file");
         assert!(validate_mix(&[clip(10.0, 0.5)], &[0], &[0.6], 1.0, 10.0).is_err(), "starts after the output");
@@ -3744,7 +3871,7 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
     fn draws_texts_as_the_last_filter_and_keeps_graphs_without_texts() {
         let filter = subtitles_filter(r"D:\DubFlow Output\it's [1], a;b\.dubflow-work\edit\texts.ass");
         assert_eq!(filter, r"subtitles=filename=D\\:/DubFlow Output/it\\\'s \[1\]\, a\;b/.dubflow-work/edit/texts.ass");
-        let plain = Mix { sounds: vec![], main_volume: 1.0 };
+        let plain = Mix { sounds: vec![], main_volume: 1.0, ..Default::default() };
         let input = [Input { has_audio: true }];
         assert_eq!(export_script(&whole(10.0), &input, &frame(), "source", &plain, &Finish { texts: Some("subtitles=filename=t.ass".into()), ..Finish::default() }).0, "\
 [0:v]trim=start=0:end=10,setpts=PTS-STARTPTS[v0];
@@ -3755,7 +3882,7 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
         let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), segment(20.0, 30.0, 1.0, 1.0)],
             transitions: vec![joint(0, TransitionKind::Fade, 0.8)],
             overlays: vec![Overlay { media: 0, at: 1.0, start: 0.0, end: 2.0, x: 0.0, y: 0.0, w: 0.5, volume: 0.0, ..Default::default() }], ..Default::default() };
-        let mix = Mix { sounds: vec![], main_volume: 0.5 };
+        let mix = Mix { sounds: vec![], main_volume: 0.5, ..Default::default() };
         let (with, has_audio) = export_script(&edit, &input, &frame(), "720p", &mix, &Finish { texts: Some("subtitles=filename=t.ass".into()), ..Finish::default() });
         let (without, _) = export_script(&edit, &input, &frame(), "720p", &mix, &Finish::default());
         assert!(has_audio);
@@ -3895,7 +4022,7 @@ max(max((0.5*min(W,H))-Y,Y-H+1+(0.5*min(W,H))),0)),(0.5*min(W,H)))'");
         assert_eq!(args[5..15].join(" "), "-i in.mp4 -loop 1 -framerate 30 -t 3600 -i logo.PNG");
 
         // A looping sound repeats its part to the end; loudness comes last.
-        let mix = Mix { sounds: vec![Sound { repeat: true, ..sound(0, 2.0, 1.0, 4.0) }], main_volume: 1.0 };
+        let mix = Mix { sounds: vec![Sound { repeat: true, ..sound(0, 2.0, 1.0, 4.0) }], main_volume: 1.0, ..Default::default() };
         let (script, _) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix, &Finish { normalize: true, ..Finish::default() });
         assert!(script.contains("atrim=start=1:end=4,asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,\
 aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
@@ -3903,7 +4030,7 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         let (plain_script, _) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix, &Finish::default());
         assert!(!plain_script.contains("loudnorm"));
         let long = SoundClip { source: SoundSource::Sfx { id: "x".into() }, at: 0.0, start: 0.0, end: 700.0, volume: 1.0, fade_in: 0.0, fade_out: 0.0,
-            duck_db: 0.0, repeat: true };
+            duck_db: 0.0, repeat: true, denoise: false, eq: None };
         assert!(validate_mix(&[long.clone()], &[0], &[800.0], 1.0, 900.0).is_err());
         assert!(validate_mix(&[SoundClip { repeat: false, ..long }], &[0], &[800.0], 1.0, 900.0).is_ok());
 
@@ -3924,7 +4051,7 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         assert_eq!(reframe_filter(720, 900, false), "scale=720:900:force_original_aspect_ratio=decrease,pad=720:900:(ow-iw)/2:(oh-ih)/2,setsar=1");
         assert!(reframe_filter(720, 900, true).contains("gblur=sigma=40"));
         let finish = Finish { texts: Some("subtitles=filename=t.ass".into()), reframe: Some(reframe_filter(720, 720, false)), audio_only: true, ..Finish::default() };
-        let mix = Mix { sounds: vec![], main_volume: 1.0 };
+        let mix = Mix { sounds: vec![], main_volume: 1.0, ..Default::default() };
         let (graph, audio) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix, &finish);
         assert!(audio);
         assert!(graph.contains("[vt]subtitles=filename=t.ass[vf0];\n[vf0]scale=720:720:force_original_aspect_ratio=decrease"), "{graph}");
@@ -3988,5 +4115,27 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         request.luts = vec![if cfg!(windows) { r"D:\LUT\teal.png".into() } else { "/luts/teal.png".into() }];
         assert!(validate(&request, &[10.0]).is_err());
         assert!(lut_file("/no/such/file.cube").is_err());
+    }
+
+    #[test]
+    fn sounds_and_the_main_sound_can_be_cleaned() {
+        assert!(Clean::default().filters().is_empty());
+        assert_eq!(Clean { denoise: true, eq: Some(EqPreset::Bass) }.filters(), vec!["highpass=f=70", "afftdn=nr=12:nf=-40", "bass=g=6:f=100"]);
+        let voice: SoundClip = serde_json::from_value(json!({"source": {"kind": "sfx", "id": "x"}, "at": 0, "start": 0, "end": 1, "volume": 1,
+            "fade_in": 0, "fade_out": 0, "duck_db": 0, "denoise": true, "eq": "voice"})).unwrap();
+        assert_eq!((voice.denoise, voice.eq), (true, Some(EqPreset::Voice)));
+        assert!(serde_json::from_value::<SoundClip>(json!({"source": {"kind": "sfx", "id": "x"}, "at": 0, "start": 0, "end": 1, "volume": 1,
+            "fade_in": 0, "fade_out": 0, "duck_db": 0, "eq": "loud"})).is_err(), "unknown presets are refused");
+        let mix = validate_mix(&[voice], &[0], &[1.0], 1.0, 10.0).unwrap();
+        assert_eq!(mix.sounds[0].clean, Clean { denoise: true, eq: Some(EqPreset::Voice) });
+        let edit = whole(10.0);
+        let (graph, _) = export_script(&edit, &[Input { has_audio: true }, Input { has_audio: true }], &frame(), "source", &mix, &Finish::default());
+        assert!(graph.contains("[2:a]atrim=start=0:end=1,asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,highpass=f=70,afftdn=nr=12:nf=-40,highpass=f=90,"), "{graph}");
+        let main = Mix { main_volume: 1.0, main_clean: Clean { denoise: true, eq: None }, ..Default::default() };
+        let (graph, _) = export_script(&edit, &[Input { has_audio: true }], &frame(), "source", &main, &Finish::default());
+        assert!(graph.contains("[am]highpass=f=70,afftdn=nr=12:nf=-40,"), "{graph}");
+        assert_eq!(percent_decoded("D%3A%5CVideos%5CPhim%20hay%20(s%E1%BB%ADa).mp4").as_deref(), Some(r"D:\Videos\Phim hay (sửa).mp4"));
+        assert_eq!(percent_decoded("%E1%BB"), None);
+        assert_eq!(percent_decoded("%Z1"), None);
     }
 }

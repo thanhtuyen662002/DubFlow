@@ -644,6 +644,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       picked += 1;
       return [`D:\\Videos\\Douyin\\phim-ngan-tap-${picked}.mp4`, `D:\\Logo\\logo-kenh-${picked}.png`] as T;
     }
+    case "edit_save_recording": return "D:\\Videos\\DubFlow Output\\preview\\thu-am\\giong-1.m4a" as T;
     case "pick_lut": return "D:\\LUT\\Teal Orange Cinematic.cube" as T;
     case "edit_lut_frame": return await previewFrame(Number(args.time), false) as T;
     case "expand_video_paths": return (args.paths as string[]).filter((path) => /\.(mp4|mkv|mov|avi|webm|m4v)$/i.test(path)) as T;

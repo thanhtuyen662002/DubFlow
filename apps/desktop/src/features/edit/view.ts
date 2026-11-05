@@ -98,6 +98,8 @@ export type EditorHost = {
   /** The AI account "Gợi ý AI" uses (Cài đặt AI). */
   ai: AiSession;
   openAiSettings: () => void;
+  /** Thu giọng: save recorded bytes with the edit at `outputPath` (`kind`); the saved file's path. */
+  saveRecording: (bytes: ArrayBuffer, outputPath: string, kind: string) => Promise<string>;
   /** Mẫu: render on the CPU only (Cài đặt). */
   cpuOnly: () => boolean;
   /** Edit mode ended for `target` (to go back to the page it came from). */
@@ -289,6 +291,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const ghost = $<HTMLCanvasElement>("#edit-ghost");
   const fadeLayer = $("#edit-fade");
   const overlayLayer = $("#edit-overlays");
+  // Thu giọng: the preview stays silent while the user records over it.
+  let silenced = false;
   const pop = $("#tl-transition");
   const popTypes = [...document.querySelectorAll<HTMLButtonElement>("#tl-pop-types [data-type]")];
   const popDuration = $<HTMLInputElement>("#tl-pop-duration");
@@ -421,7 +425,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   /** The segment's volume times "Âm thanh gốc", lowered under ducking sounds. */
   function applyLevel(segment: Segment, player: HTMLVideoElement): void {
-    const level = segment.volume * (session ? mainLevel(current(), session.outputTime) : 1);
+    const level = silenced ? 0 : segment.volume * (session ? mainLevel(current(), session.outputTime) : 1);
     // Above 100% is heard only after export.
     player.volume = Math.min(1, level);
     player.muted = level === 0;
@@ -733,7 +737,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const rect = pictureRect();
     Object.assign(overlayLayer.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
     const total = outputDuration(edit);
-    const level = mainLevel(edit, time, total);
+    const level = silenced ? 0 : mainLevel(edit, time, total);
     const seen = new Set<string>();
     for (const [layer, overlay] of edit.overlays.entries()) {
       seen.add(overlay.id);
@@ -958,7 +962,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     plainCover: (seconds) => cover.draw(session?.plainCover && (mode === "cover" || !!cover.document()) ? seconds : null),
   });
   const revisionReady = $("#edit-revision-ready");
-  const audio = mountAudio(invoke, host, {
+  const audio = mountAudio(invoke, {
+    ...host,
+    saveRecording: (bytes) => session ? host.saveRecording(bytes, session.outputPath, session.target.kind) : Promise.reject(new Error("Chưa mở video")),
+  }, {
     edit: () => current(),
     base: () => session!.history.current,
     busy: () => !session || !!session.draft,
@@ -984,6 +991,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     },
     note,
     redraw: () => { if (session) render(); },
+    play: (on) => { if (session && on !== session.playing) togglePlay(); },
+    silence: (on) => {
+      silenced = on;
+      if (session) applyLevel(current().segments[session.index] ?? current().segments[0], active);
+    },
   });
   const textMode = mountText({
     edit: () => current(),
