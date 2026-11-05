@@ -822,19 +822,30 @@
                     <span class="edit-label">Kích thước <output id="ov-size-value">35%</output></span>
                     <input id="ov-size" type="range" min="20" max="100" step="1" value="35" />
                   </label>
-                  <label class="edit-field">
+                  <label id="ov-volume-field" class="edit-field">
                     <span class="edit-label">Âm lượng <output id="ov-volume-value">100%</output></span>
                     <input id="ov-volume" type="range" min="0" max="200" step="5" value="100" />
                     <small id="ov-volume-note" class="edit-note" hidden>Trên 100% chỉ nghe được sau khi xuất video.</small>
                   </label>
+                  <div class="edit-field look-pair">
+                    <label><span class="edit-label">Độ rõ <output id="ov-opacity-value">100%</output></span>
+                      <input id="ov-opacity" type="range" min="10" max="100" step="5" value="100" /></label>
+                    <label><span class="edit-label">Bo góc <output id="ov-radius-value">Không</output></span>
+                      <input id="ov-radius" type="range" min="0" max="50" step="1" value="0" /></label>
+                  </div>
+                  <div class="edit-field ov-frame">
+                    <label><span class="edit-label">Viền <output id="ov-border-value">Không</output></span>
+                      <input id="ov-border" type="range" min="0" max="20" step="1" value="0" /></label>
+                    <input id="ov-border-color" type="color" value="#ffffff" aria-label="Màu viền" title="Màu viền" />
+                  </div>
                   <div class="edit-times three">
                     <label title="Thời điểm trên video đã sửa">Hiện lúc<input id="ov-at" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
-                    <label title="Bắt đầu trong video chồng">Từ<input id="ov-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
-                    <label title="Kết thúc trong video chồng">Đến<input id="ov-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                    <label id="ov-start-field" title="Bắt đầu trong video chồng">Từ<input id="ov-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
+                    <label title="Kết thúc trong video chồng (ảnh: thời gian hiện)"><span id="ov-end-label">Đến</span><input id="ov-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" /></label>
                   </div>
                   <p id="ov-length" class="edit-length"></p>
                   <div class="edit-actions">
-                    <button id="ov-delete" class="btn danger" type="button" aria-keyshortcuts="Delete">Xóa video chồng<kbd>Delete</kbd></button>
+                    <button id="ov-delete" class="btn danger" type="button" aria-keyshortcuts="Delete">Xóa lớp chồng<kbd>Delete</kbd></button>
                   </div>
                   <p class="edit-note">Kéo khung trên video để đổi chỗ, kéo góc dưới bên phải để đổi cỡ.</p>
                 </section>
@@ -1013,6 +1024,7 @@
                         <input id="au-fade-out" type="range" min="0" max="3" step="0.1" value="0" />
                       </label>
                     </div>
+                    <label class="au-duck"><input id="au-loop" type="checkbox" /> Lặp lại đến hết video (nhạc nền)</label>
                     <label class="au-duck"><input id="au-duck" type="checkbox" /> Giảm âm gốc khi phát</label>
                     <label id="au-duck-row" class="edit-field" hidden>
                       <span class="edit-label">Giảm âm gốc <output id="au-duck-value">10 dB</output></span>
@@ -1229,6 +1241,10 @@
                     <label class="edit-field">
                       <span class="edit-label">Độ dày viền <output id="tx-outline-value">4</output></span>
                       <input id="tx-outline-width" type="range" min="0" max="12" step="0.5" value="4" />
+                    </label>
+                    <label id="tx-shadow-field" class="edit-field">
+                      <span class="edit-label">Bóng đổ <output id="tx-shadow-value">Không</output></span>
+                      <input id="tx-shadow" type="range" min="0" max="12" step="0.5" value="0" />
                     </label>
                     <label class="au-duck"><input id="tx-box" type="checkbox" /> Hộp nền</label>
                     <div id="tx-box-options" class="subs-box-options" hidden>
@@ -1668,6 +1684,9 @@
               <small id="export-quality-hint" class="export-hint"></small>
               <small id="export-extras" class="export-hint" hidden></small>
             </div>
+            <label class="export-check" title="Đưa âm thanh về độ to chuẩn của YouTube, TikTok, Facebook (−14 LUFS) để video không quá nhỏ hay quá to">
+              <input id="export-loudness" type="checkbox" /> Chuẩn hóa độ to (−14 LUFS)
+            </label>
           </fieldset>
           <p class="export-note">Video gốc vẫn được giữ nguyên. Phụ đề SRT được lưu kèm, khớp với video mới.</p>
           <div id="export-progress" class="export-progress" role="status" hidden>
@@ -1701,6 +1720,13 @@
         <button type="button" role="radio" data-type="none" aria-checked="true">Không</button>
         <button type="button" role="radio" data-type="fade" aria-checked="false">Mờ qua đen</button>
         <button type="button" role="radio" data-type="dissolve" aria-checked="false">Hòa trộn</button>
+        <button type="button" role="radio" data-type="fadewhite" aria-checked="false">Lóe trắng</button>
+        <button type="button" role="radio" data-type="wipeleft" aria-checked="false" title="Quét sang trái">Quét ←</button>
+        <button type="button" role="radio" data-type="wiperight" aria-checked="false" title="Quét sang phải">Quét →</button>
+        <button type="button" role="radio" data-type="slideleft" aria-checked="false" title="Trượt sang trái">Trượt ←</button>
+        <button type="button" role="radio" data-type="slideright" aria-checked="false" title="Trượt sang phải">Trượt →</button>
+        <button type="button" role="radio" data-type="zoomin" aria-checked="false">Phóng to</button>
+        <button type="button" role="radio" data-type="circleopen" aria-checked="false">Mở tròn</button>
       </div>
       <label class="edit-field">
         <span class="edit-label">Thời lượng <output id="tl-pop-value">0,5 giây</output></span>

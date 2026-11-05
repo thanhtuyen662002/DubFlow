@@ -1012,17 +1012,27 @@ button.job.selected { background: var(--select); }
 .tl-pop-where { overflow: hidden; color: var(--text-3); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tl-pop-types { background: var(--canvas); }
 .tl-pop-types button { min-width: 0; padding: 0 6px; font-size: 12.5px; }
+/* Ten kinds of joints (Issue #521): three per row. */
+.tl-pop-types.seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .tl-pop input[type="range"]:disabled { opacity: .4; }
 
 .edit-ghost, .edit-fade { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; pointer-events: none; }
 .edit-ghost { object-fit: contain; }
 .edit-fade { background: #000; }
+.edit-fade.white { background: #fff; }
 .player-frame video.edit-alt { position: absolute; inset: 0; background: oklch(0.11 0.005 275); visibility: hidden; }
 .player-frame video.edit-alt.active { visibility: visible; }
 .edit-overlays { position: absolute; pointer-events: none; }
 .edit-ov { position: absolute; box-sizing: border-box; pointer-events: auto; cursor: move; touch-action: none; }
 .edit-ov[hidden] { display: none; }
-.player-frame .edit-ov video { width: 100%; height: 100%; object-fit: fill; background: #000; cursor: move; pointer-events: none; }
+.player-frame .edit-ov video { width: 100%; height: 100%; object-fit: fill; background: #000; cursor: move; pointer-events: none; box-sizing: border-box; }
+.player-frame .edit-ov img { display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; box-sizing: border-box; }
+.player-frame .edit-ov :is(video, img)[hidden] { display: none; }
+.edit-ov.idle img { visibility: hidden; }
+.ov-frame { display: flex; flex-direction: row; align-items: flex-end; gap: 10px; }
+.ov-frame label { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.ov-frame input[type="color"] { width: 40px; height: 30px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
+.ov-frame input[type="color"]:disabled { opacity: .4; }
 .edit-ov.selected { outline: 2px solid var(--accent); }
 .edit-ov.idle { outline: 1px dashed oklch(1 0 0 / .7); background: oklch(0.60 0.17 278 / .12); }
 .edit-ov.idle video { visibility: hidden; }
@@ -1143,6 +1153,7 @@ button.job.selected { background: var(--select); }
 .export-folder .btn { flex: none; height: 32px; padding: 0 12px; }
 .export-quality { background: var(--canvas); }
 .export-hint { color: var(--text-3); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.export-check { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; cursor: pointer; }
 .export-note { color: var(--text-3); font-size: 12.5px; line-height: 1.45; }
 .export-progress { display: flex; flex-direction: column; gap: 6px; }
 .export-progress-line { display: flex; justify-content: space-between; gap: 12px; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
@@ -1293,6 +1304,8 @@ label.cover-docu-row { justify-content: flex-start; cursor: pointer; }
 .tl-autrack[hidden] { display: none; }
 .tl-au { position: absolute; height: 18px; overflow: hidden; border-radius: 5px; background: oklch(0.32 0.08 160); box-shadow: inset 0 0 0 1px oklch(0.45 0.09 160); cursor: grab; }
 .tl-au.file { background: oklch(0.30 0.06 300); box-shadow: inset 0 0 0 1px oklch(0.44 0.08 300); }
+/* Lặp lại: a tick where each repeat starts. */
+.tl-au.loop { background-image: repeating-linear-gradient(90deg, transparent 0 calc(var(--part) - 1px), oklch(1 0 0 / .45) calc(var(--part) - 1px) var(--part)); }
 .tl-au.selected { box-shadow: inset 0 0 0 2px var(--accent); }
 .tl-au.pending { background: transparent; box-shadow: none; border: 1px dashed oklch(0.62 0.10 160); cursor: pointer; }
 .tl-au.pending.focus { border-color: var(--accent); border-style: solid; }

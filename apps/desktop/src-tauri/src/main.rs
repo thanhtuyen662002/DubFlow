@@ -1576,6 +1576,44 @@ fn has_playable_extension(path: &Path) -> bool {
         .is_some_and(|extension| PLAYABLE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
 }
 
+/// Pictures the editor lays over the video as a logo or still (Issue #520).
+pub(crate) const STILL_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "bmp"];
+
+pub(crate) fn is_still(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str())
+        .is_some_and(|extension| STILL_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+/// A local video, or a picture (`is_still`), the editor may lay over the output.
+pub(crate) fn overlay_media(value: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    if !is_still(path) {
+        return playable_media(value);
+    }
+    if !path.is_absolute() {
+        return Err(fail("Chỉ dùng được ảnh PNG, JPG, WEBP hoặc BMP trên máy"));
+    }
+    let resolved = path.canonicalize().map_err(|_| fail("Không tìm thấy ảnh"))?;
+    if !resolved.is_file() || !is_still(&resolved) {
+        return Err(fail("Không tìm thấy ảnh"));
+    }
+    Ok(resolved)
+}
+
+/// Videos and pictures for the editor's Chèn (pictures go over the video).
+#[tauri::command]
+fn pick_edit_files() -> Result<Vec<String>, String> {
+    let mut all: Vec<&str> = VIDEO_EXTENSIONS.to_vec();
+    all.extend(STILL_EXTENSIONS);
+    let files = rfd::FileDialog::new()
+        .add_filter("Video và ảnh", &all)
+        .add_filter("Video", &VIDEO_EXTENSIONS)
+        .add_filter("Ảnh", &STILL_EXTENSIONS)
+        .pick_files()
+        .unwrap_or_default();
+    Ok(files.into_iter().map(|path| path.to_string_lossy().into_owned()).collect())
+}
+
 /// The canonical path of an existing local video, or why the player may not open it.
 fn playable_media(value: &str) -> Result<PathBuf, String> {
     let path = Path::new(value);
@@ -1620,7 +1658,7 @@ fn allow_media(app: tauri::AppHandle, path: String) -> Result<String, String> {
     } else if sfx::AUDIO_EXTENSIONS.contains(&extension.as_str()) {
         sfx::playable_audio(&path)?
     } else {
-        playable_media(&path)?
+        overlay_media(&path)?
     };
     app.asset_protocol_scope().allow_file(&media).map_err(|error| fail(error.to_string()))?;
     let text = media.to_string_lossy();
@@ -1982,7 +2020,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover,
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, pick_edit_files, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover,
             docu::docu_reframe, docu::docu_render_options, docu::docu_render, docu::docu_render_status, docu::docu_render_cancel, docu::docu_capcut, docu::docu_launch_capcut, docu::docu_mcp_connection, docu::docu_mcp_activity, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_library, edit::edit_file_sizes, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_media_info, edit::edit_audio_peaks, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")

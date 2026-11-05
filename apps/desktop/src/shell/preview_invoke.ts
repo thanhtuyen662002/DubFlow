@@ -309,6 +309,10 @@ function previewMediaInfo(path: string) {
   for (const char of path) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   const portrait = /doc|dọc|douyin|short/i.test(path);
   const silent = /khong-tieng|im-lang|silent/i.test(path);
+  // A picture (Issue #521): an hour long, no sound.
+  if (/\.(png|jpe?g|webp|bmp)$/i.test(path)) {
+    return { path, title: name.replace(/\.[^.]*$/, ""), duration: 3600, width: 512, height: 512, fps: 30, has_audio: false, size_bytes: 40_000 };
+  }
   return {
     path, title: name.replace(/\.[^.]*$/, ""), duration: /final_vi/i.test(name) ? 60 + hash % 120 : 8 + hash % 50,
     width: portrait ? 1080 : 1280, height: portrait ? 1920 : 720, fps: hash % 2 ? 30 : 25, has_audio: !silent, size_bytes: 9_000_000 + hash % 40_000_000,
@@ -486,9 +490,9 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       const stem = request.fileName.replace(/\.mp4$/i, "").trim();
       let path = `${request.folder}/${stem}.mp4`;
       for (let number = 2; taken.has(path); number++) path = `${request.folder}/${stem} (${number}).mp4`;
-      // A dissolve overlaps its neighbours; fade through black keeps the length.
+      // Every transition but fade through black overlaps its neighbours.
       const duration = request.segments.reduce((total, segment) => total + (segment.end - segment.start) / segment.speed, 0)
-        - (request.transitions ?? []).filter((joint) => joint.type === "dissolve").reduce((total, joint) => total + joint.duration, 0);
+        - (request.transitions ?? []).filter((joint) => joint.type !== "fade").reduce((total, joint) => total + joint.duration, 0);
       editRuns.set(request.outputPath, { started: Date.now(), cancelled: false, recorded: false,
         entry: { path, srt_path: path.replace(/\.mp4$/, ".srt"), created: Math.floor(Date.now() / 1000), duration, quality: request.quality,
           segments: request.segments, media: request.media ?? [], transitions: request.transitions ?? [], overlays: request.overlays ?? [],
@@ -624,6 +628,10 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "pick_files": {
       picked += 1;
       return [`D:\\Videos\\Douyin\\phim-ngan-tap-${picked}.mp4`, `D:\\Videos\\Bilibili\\review-dien-thoai-${picked}.mkv`] as T;
+    }
+    case "pick_edit_files": {
+      picked += 1;
+      return [`D:\\Videos\\Douyin\\phim-ngan-tap-${picked}.mp4`, `D:\\Logo\\logo-kenh-${picked}.png`] as T;
     }
     case "expand_video_paths": return (args.paths as string[]).filter((path) => /\.(mp4|mkv|mov|avi|webm|m4v)$/i.test(path)) as T;
     case "pick_folder": return "D:/Videos/Kết quả DubFlow" as T;

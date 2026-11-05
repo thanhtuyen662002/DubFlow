@@ -11,7 +11,7 @@ import { CATEGORIES, searchSounds, soundLength, type Category, type Sound } from
 import { suggestEffects, type Suggestion, type TimedLine } from "../sfx/ai.ts";
 import { packSummary, sizeText, type AudioFacts, type SfxLibrary, type UserAudio } from "../sfx/library.ts";
 import {
-  addAudio, audioGain, audioLanes, audioLength, DEFAULT_DUCK_DB, formatClock, MAX_AUDIO, MIN_AUDIO, outputDuration, parseClock,
+  addAudio, audioGain, audioLanes, audioLength, audioPosition, DEFAULT_DUCK_DB, MAX_LOOP_PART, formatClock, MAX_AUDIO, MIN_AUDIO, outputDuration, parseClock,
   removeAudio, setAudioProps, setAudioTime, setMainVolume, type AudioClip, type AudioInfo, type Edit,
 } from "./model.ts";
 
@@ -114,6 +114,7 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
   const fadeInInput = $<HTMLInputElement>("#au-fade-in");
   const fadeOutInput = $<HTMLInputElement>("#au-fade-out");
   const duckToggle = $<HTMLInputElement>("#au-duck");
+  const loopToggle = $<HTMLInputElement>("#au-loop");
   const duckInput = $<HTMLInputElement>("#au-duck-db");
   const tabs = [...document.querySelectorAll<HTMLButtonElement>("#au-tabs [data-au-tab]")];
   const search = $<HTMLInputElement>("#au-search");
@@ -305,7 +306,12 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
     if (document.activeElement !== atInput) atInput.value = formatClock(clip.at, true);
     if (document.activeElement !== startInput) startInput.value = formatClock(clip.start, true);
     if (document.activeElement !== endInput) endInput.value = formatClock(clip.end, true);
-    $("#au-length").textContent = length < clip.end - clip.start - 0.01
+    loopToggle.checked = clip.loop === true;
+    loopToggle.disabled = !clip.loop && clip.end - clip.start > MAX_LOOP_PART;
+    loopToggle.parentElement!.title = loopToggle.disabled ? "Chỉ lặp được phần dài tối đa 10 phút" : "Phát lại phần đã chọn đến hết video (nhạc nền)";
+    $("#au-length").textContent = clip.loop
+      ? `Lặp lại đến hết video · phát ${formatClock(length, true)} từ ${formatClock(clip.at, true)}`
+      : length < clip.end - clip.start - 0.01
       ? `Phát ${formatClock(length, true)} · bị cắt ở cuối video`
       : `Phát ${formatClock(length, true)} · ${formatClock(clip.at, true)} – ${formatClock(clip.at + length, true)}`;
     if (document.activeElement !== volumeInput) volumeInput.value = String(Math.round(clip.volume * 100));
@@ -648,7 +654,13 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
         start.dataset.edge = "start";
         const end = element("span", "tl-handle end");
         end.dataset.edge = "end";
-        block.append(start, end);
+        // A looping sound runs to the end of the video: its part is set in the panel.
+        block.append(...(clip.loop ? [start] : [start, end]));
+      }
+      if (clip.loop) {
+        block.classList.add("loop");
+        block.style.setProperty("--part", `${Math.max(4, (clip.end - clip.start) * pps)}px`);
+        block.title += " · lặp lại đến hết video";
       }
       if (clip.fadeIn > 0 || clip.fadeOut > 0) {
         const fades = element("span", "tl-au-fades");
@@ -794,12 +806,12 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
         const gain = audioGain(clip, time, total);
         audio.volume = clamp(gain, 0, 1);
         audio.muted = gain <= 0;
-        const want = clip.start + into;
+        const want = audioPosition(clip, time);
         if (audio.readyState >= 1 && Math.abs(audio.currentTime - want) > 0.15) audio.currentTime = want;
         if (audio.paused && audio.readyState >= 2) void audio.play().catch(() => undefined);
       } else {
         if (!audio.paused) audio.pause();
-        const want = clip.start + Math.max(0, into);
+        const want = audioPosition(clip, Math.max(time, clip.at));
         if (audio.readyState >= 1 && Math.abs(audio.currentTime - want) > 0.03) audio.currentTime = want;
       }
     }
@@ -848,6 +860,10 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
       if (next && selectedId()) context.commit(next);
     });
   }
+  loopToggle.addEventListener("change", () => {
+    const id = selectedId();
+    if (id) context.commit(setAudioProps(context.base(), id, { loop: loopToggle.checked }));
+  });
   duckToggle.addEventListener("change", () => {
     const id = selectedId();
     if (id) context.commit(setAudioProps(context.base(), id, { duckDb: duckToggle.checked ? Number(duckInput.value) || DEFAULT_DUCK_DB : 0 }));

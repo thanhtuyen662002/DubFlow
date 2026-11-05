@@ -20,6 +20,17 @@ export const MAX_VOLUME = 2;
 export const MAX_SEGMENTS = 500;
 export const MAX_MEDIA = 20;
 export const MAX_OVERLAYS = 20;
+export const MIN_OVERLAY_OPACITY = 0.1;
+export const MAX_OVERLAY_BORDER = 20;
+export const DEFAULT_BORDER_COLOR = "#FFFFFF";
+/** A looping sound repeats a part of at most 10 minutes. */
+export const MAX_LOOP_PART = 600;
+export const MAX_TEXT_SHADOW = 12;
+/** Pictures the editor lays over the video (logo, still); they never become segments. */
+const STILL_PATH = /\.(png|jpe?g|webp|bmp)$/i;
+export function isStillPath(path: string): boolean {
+  return STILL_PATH.test(path);
+}
 export const MIN_TRANSITION = 0.2;
 export const MAX_TRANSITION = 2;
 export const DEFAULT_TRANSITION = 0.5;
@@ -75,13 +86,22 @@ export type Segment = {
   /** Crop, rotation, colour, reverse, held frame, sound fades (look.ts); absent = as filmed. */
   readonly look?: SegmentLook;
 };
-export type TransitionType = "fade" | "dissolve";
+/** Mờ qua đen keeps the length; the rest overlap their neighbours (FFmpeg `xfade`). */
+export const TRANSITION_TYPES = ["fade", "dissolve", "fadewhite", "wipeleft", "wiperight", "slideleft", "slideright", "zoomin", "circleopen"] as const;
+export type TransitionType = typeof TRANSITION_TYPES[number];
 export type Transition = { readonly type: TransitionType; readonly duration: number };
-/** `at` is output time; `start`/`end` are the overlay media's seconds; x, y, w are fractions of the frame (the height follows the media's aspect). */
+/**
+ * `at` is output time; `start`/`end` are the overlay media's seconds; x, y, w
+ * are fractions of the frame (the height follows the media's aspect). The
+ * optional style (Issue #521): opacity 0.1–1, corner radius 0–0.5 of its short
+ * side, a frame `border` px (on a 1080 frame) in `borderColor`; absent = plain.
+ */
 export type Overlay = {
   readonly id: string; readonly mediaId: string; readonly at: number; readonly start: number; readonly end: number;
   readonly x: number; readonly y: number; readonly w: number; readonly volume: number;
+  readonly opacity?: number; readonly radius?: number; readonly border?: number; readonly borderColor?: string;
 };
+export type OverlayStyle = { opacity: number; radius: number; border: number; borderColor: string };
 export type AudioSource = { readonly kind: "sfx"; readonly id: string } | { readonly kind: "file"; readonly path: string };
 /**
  * A sound over the output: `at` is output time, `start`/`end` its own seconds
@@ -94,6 +114,8 @@ export type AudioClip = {
   readonly id: string; readonly source: AudioSource; readonly title: string; readonly duration: number;
   readonly at: number; readonly start: number; readonly end: number;
   readonly volume: number; readonly fadeIn: number; readonly fadeOut: number; readonly duckDb: number;
+  /** Lặp lại: the part repeats until the end of the output (background music). */
+  readonly loop?: boolean;
 };
 /** A sound before it joins an edit. */
 export type AudioInfo = { source: AudioSource; title: string; duration: number };
@@ -133,6 +155,8 @@ export type TextClip = {
   readonly font: SubtitleFont; readonly size: number; readonly color: string; readonly outline: string; readonly outline_width: number;
   readonly box: string | null; readonly box_opacity: number; readonly bold: boolean; readonly italic: boolean; readonly align: TextAlign;
   readonly animation: TextAnimation; readonly anim_duration: number;
+  /** Bóng đổ: offset in pixels on a 1080 frame (0–12), drawn when there is no box. */
+  readonly shadow: number;
 };
 /** Everything about a text but its words and times. */
 export type TextLook = Omit<TextClip, "id" | "text" | "at" | "duration">;
@@ -209,10 +233,15 @@ export function transitionAt(edit: Edit, index: number): Transition | null {
   return { type: stored.type, duration: floorMs(clamp(stored.duration, MIN_TRANSITION, room)) };
 }
 
+/** Every transition but fade through black overlaps its neighbours. */
+export function overlaps(type: TransitionType): boolean {
+  return type !== "fade";
+}
+
 /** A dissolve overlaps its neighbours; fade through black keeps the length. */
 function overlapAfter(edit: Edit, index: number): number {
   const transition = transitionAt(edit, index);
-  return transition?.type === "dissolve" ? transition.duration : 0;
+  return transition && overlaps(transition.type) ? transition.duration : 0;
 }
 
 /** Output time at which each segment starts. */
@@ -616,7 +645,7 @@ export function addedId(before: Edit, after: Edit): string | null {
  * overlays included. Sound clips stay at their output time (see AudioClip).
  */
 export function insertAt(edit: Edit, t: number, info: MediaInfo, range?: { start?: number; end?: number }): Edit {
-  if (edit.segments.length >= MAX_SEGMENTS || !Number.isFinite(t)) return edit;
+  if (edit.segments.length >= MAX_SEGMENTS || !Number.isFinite(t) || isStillPath(info.path)) return edit;
   const attached = attachMedia(edit, info);
   if (!attached) return edit;
   const length = mediaDuration(attached.edit, attached.id);
@@ -673,7 +702,8 @@ function changeOverlay(edit: Edit, id: string, change: (overlay: Overlay) => Ove
   if (index < 0) return edit;
   const before = edit.overlays[index];
   const after = change(before);
-  if ((Object.keys(after) as Array<keyof Overlay>).every((key) => after[key] === before[key])) return edit;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]) as Set<keyof Overlay>;
+  if ([...keys].every((key) => after[key] === before[key])) return edit;
   return { ...edit, overlays: [...edit.overlays.slice(0, index), after, ...edit.overlays.slice(index + 1)] };
 }
 
@@ -743,6 +773,26 @@ export function setOverlayVolume(edit: Edit, id: string, volume: number): Edit {
   return changeOverlay(edit, id, (overlay) => ({ ...overlay, volume: Math.round(clamp(volume, 0, MAX_VOLUME) * 100) / 100 }));
 }
 
+export function overlayStyle(overlay: Overlay): OverlayStyle {
+  return { opacity: overlay.opacity ?? 1, radius: overlay.radius ?? 0, border: overlay.border ?? 0, borderColor: overlay.borderColor ?? DEFAULT_BORDER_COLOR };
+}
+
+/** The style an overlay keeps: values clamped, defaults left out. */
+function styled(overlay: Overlay, style: OverlayStyle): Overlay {
+  const { opacity: _o, radius: _r, border: _b, borderColor: _c, ...plain } = overlay;
+  const opacity = Math.round(clamp(style.opacity, MIN_OVERLAY_OPACITY, 1) * 100) / 100;
+  const radius = Math.round(clamp(style.radius, 0, 0.5) * 100) / 100;
+  const border = Math.round(clamp(style.border, 0, MAX_OVERLAY_BORDER));
+  return { ...plain, ...(opacity !== 1 ? { opacity } : {}), ...(radius ? { radius } : {}),
+    ...(border ? { border, borderColor: isHex(style.borderColor) ? style.borderColor.toUpperCase() : DEFAULT_BORDER_COLOR } : {}) };
+}
+
+/** Độ trong, bo góc, viền (Issue #521); invalid values are ignored. */
+export function setOverlayStyle(edit: Edit, id: string, change: Partial<OverlayStyle>): Edit {
+  const valid = Object.fromEntries(Object.entries(change).filter(([key, value]) => key === "borderColor" ? isHex(value) : finite(value)));
+  return changeOverlay(edit, id, (overlay) => styled(overlay, { ...overlayStyle(overlay), ...valid }));
+}
+
 export function removeOverlay(edit: Edit, id: string): Edit {
   if (!edit.overlays.some((overlay) => overlay.id === id)) return edit;
   return pruneMedia({ ...edit, overlays: edit.overlays.filter((overlay) => overlay.id !== id) });
@@ -783,8 +833,14 @@ export function transitionRoom(edit: Edit, index: number): number {
 const fade = (value: number): number => Math.round(clamp(value, 0, MAX_FADE) * 10) / 10;
 
 /** Seconds a sound plays in the output (cut at the end of the output). */
-export function audioLength(clip: Pick<AudioClip, "at" | "start" | "end">, total: number): number {
-  return Math.max(0, Math.min(clip.end - clip.start, total - clip.at));
+export function audioLength(clip: Pick<AudioClip, "at" | "start" | "end" | "loop">, total: number): number {
+  return Math.max(0, clip.loop ? total - clip.at : Math.min(clip.end - clip.start, total - clip.at));
+}
+
+/** Where in its sound a clip is at output time `time` (a looping one wraps around its part). */
+export function audioPosition(clip: Pick<AudioClip, "at" | "start" | "end" | "loop">, time: number): number {
+  const into = Math.max(0, time - clip.at), part = clip.end - clip.start;
+  return clip.start + (clip.loop && part > 0 ? into % part : into);
 }
 
 /** Fades that fit the clip: each within 0–3 s, together no longer than it plays. */
@@ -799,8 +855,10 @@ function changeAudio(edit: Edit, id: string, change: (clip: AudioClip) => AudioC
   const index = edit.audio.findIndex((clip) => clip.id === id);
   if (index < 0) return edit;
   const before = edit.audio[index];
-  const after = fitFades(change(before), outputDuration(edit));
-  if ((Object.keys(after) as Array<keyof AudioClip>).every((key) => after[key] === before[key])) return edit;
+  const changed = change(before);
+  const after = fitFades(changed.loop && changed.end - changed.start > MAX_LOOP_PART + 1e-6 ? withoutLoop(changed) : changed, outputDuration(edit));
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]) as Set<keyof AudioClip>;
+  if ([...keys].every((key) => after[key] === before[key])) return edit;
   return { ...edit, audio: [...edit.audio.slice(0, index), after, ...edit.audio.slice(index + 1)] };
 }
 
@@ -828,11 +886,15 @@ export function setAudioTime(edit: Edit, id: string, times: { at?: number; start
   });
 }
 
-/** Volume 0–200 %, fades 0–3 s (0.1 s steps) and ducking 0 (off) or 1–24 dB. */
-export function setAudioProps(edit: Edit, id: string, props: { volume?: number; fadeIn?: number; fadeOut?: number; duckDb?: number }): Edit {
+function withoutLoop({ loop: _, ...clip }: AudioClip): AudioClip {
+  return clip;
+}
+
+/** Volume 0–200 %, fades 0–3 s (0.1 s steps), ducking 0 (off) or 1–24 dB, and Lặp lại (parts up to 10 minutes). */
+export function setAudioProps(edit: Edit, id: string, props: { volume?: number; fadeIn?: number; fadeOut?: number; duckDb?: number; loop?: boolean }): Edit {
   if (![props.volume, props.fadeIn, props.fadeOut, props.duckDb].every((value) => value === undefined || Number.isFinite(value))) return edit;
   return changeAudio(edit, id, (clip) => ({
-    ...clip,
+    ...(props.loop === undefined ? clip : props.loop ? { ...clip, loop: true } : withoutLoop(clip)),
     volume: props.volume === undefined ? clip.volume : Math.round(clamp(props.volume, 0, MAX_VOLUME) * 100) / 100,
     fadeIn: props.fadeIn === undefined ? clip.fadeIn : fade(props.fadeIn),
     fadeOut: props.fadeOut === undefined ? clip.fadeOut : fade(props.fadeOut),
@@ -894,7 +956,7 @@ const isHex = (value: unknown): value is string => typeof value === "string" && 
 /** The look "Thêm chữ" starts from. */
 export const DEFAULT_TEXT_LOOK: TextLook = {
   x: 0.5, y: 0.5, w: 0.8, font: "Arial", size: 72, color: "#FFFFFF", outline: "#000000", outline_width: 4,
-  box: null, box_opacity: 0.6, bold: true, italic: false, align: "center", animation: "none", anim_duration: 0.5,
+  box: null, box_opacity: 0.6, bold: true, italic: false, align: "center", animation: "none", anim_duration: 0.5, shadow: 0,
 };
 
 /**
@@ -927,6 +989,7 @@ function fitText(text: TextClip): TextClip {
     outline_width: Math.round(clamp(text.outline_width, 0, MAX_TEXT_OUTLINE) * 2) / 2,
     box_opacity: Math.round(clamp(text.box_opacity, 0, 1) * 20) / 20,
     anim_duration: Math.round(clamp(text.anim_duration, MIN_ANIM, MAX_ANIM) * 10) / 10,
+    shadow: Math.round(clamp(text.shadow ?? 0, 0, MAX_TEXT_SHADOW) * 2) / 2,
   };
 }
 
@@ -948,7 +1011,7 @@ function placeTime(at: number, duration: number, total: number): { at: number; d
 /** The valid parts of a look; anything else is left out. */
 function validLook(look: Partial<TextLook>): Partial<TextLook> {
   const value: Record<string, unknown> = {};
-  for (const key of ["x", "y", "w", "size", "outline_width", "box_opacity", "anim_duration"] as const) {
+  for (const key of ["x", "y", "w", "size", "outline_width", "box_opacity", "anim_duration", "shadow"] as const) {
     if (finite(look[key])) value[key] = look[key];
   }
   if (isFont(look.font)) value.font = look.font;
@@ -1084,13 +1147,16 @@ export function sameSegments(a: readonly Segment[], b: readonly Pick<Segment, "s
 
 export type PlanSegment = { media: number; start: number; end: number; speed: number; volume: number } & Record<string, unknown>;
 export type PlanTransition = { after: number; type: TransitionType; duration: number };
-export type PlanOverlay = { media: number; at: number; start: number; end: number; x: number; y: number; w: number; volume: number };
+export type PlanOverlay = {
+  media: number; at: number; start: number; end: number; x: number; y: number; w: number; volume: number;
+  opacity?: number; radius?: number; border?: number; border_color?: string;
+};
 export type PlanAudio = {
   source: { kind: "sfx"; id: string } | { kind: "file"; path: string };
-  at: number; start: number; end: number; volume: number; fade_in: number; fade_out: number; duck_db: number;
+  at: number; start: number; end: number; volume: number; fade_in: number; fade_out: number; duck_db: number; loop?: boolean;
 };
 /** A text as the host draws it: its shown length and animation span already fitted to the output. */
-export type PlanText = Omit<TextClip, "id">;
+export type PlanText = Omit<TextClip, "id" | "shadow"> & { shadow?: number };
 /** What the host renders: media 0 is the main video, `media` lists the others by path. */
 export type ExportPlan = {
   media: string[]; segments: PlanSegment[]; transitions: PlanTransition[]; overlays: PlanOverlay[]; audio: PlanAudio[]; mainVolume: number;
@@ -1114,20 +1180,27 @@ export function exportPlan(edit: Edit): ExportPlan {
   });
   const total = outputDuration(edit);
   const overlays = edit.overlays.filter((overlay) => overlayLength(edit, overlay, total) >= 0.05)
-    .map(({ mediaId, at, start, end, x, y, w, volume }) => ({ media: index(mediaId), at, start, end, x, y, w, volume }));
+    .map((overlay) => planOverlay(overlay, index(overlay.mediaId)));
   const audio = edit.audio.filter((clip) => audioLength(clip, total) >= MIN_AUDIO).map(planAudio);
   const texts = edit.texts.filter((text) => text.text.trim() && textLength(text, total) >= 0.05).map((text) => planText(text, total));
   return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume, texts };
 }
 
-function planText({ id: _, ...text }: TextClip, total: number): PlanText {
+function planText({ id: _, shadow, ...text }: TextClip, total: number): PlanText {
   const duration = floorMs(textLength(text, total));
-  return { ...text, duration, anim_duration: text.animation === "none" ? text.anim_duration : animSpan(text, duration) };
+  return { ...text, duration, anim_duration: text.animation === "none" ? text.anim_duration : animSpan(text, duration), ...(shadow ? { shadow } : {}) };
+}
+
+function planOverlay(overlay: Overlay, media: number): PlanOverlay {
+  const { at, start, end, x, y, w, volume, opacity, radius, border, borderColor } = overlay;
+  return { media, at, start, end, x, y, w, volume, ...(opacity !== undefined && opacity !== 1 ? { opacity } : {}), ...(radius ? { radius } : {}),
+    ...(border ? { border, border_color: borderColor ?? DEFAULT_BORDER_COLOR } : {}) };
 }
 
 function planAudio(clip: AudioClip): PlanAudio {
   const source = clip.source.kind === "sfx" ? { kind: "sfx" as const, id: clip.source.id } : { kind: "file" as const, path: clip.source.path };
-  return { source, at: clip.at, start: clip.start, end: clip.end, volume: clip.volume, fade_in: clip.fadeIn, fade_out: clip.fadeOut, duck_db: clip.duckDb };
+  return { source, at: clip.at, start: clip.start, end: clip.end, volume: clip.volume, fade_in: clip.fadeIn, fade_out: clip.fadeOut, duck_db: clip.duckDb,
+    ...(clip.loop ? { loop: true } : {}) };
 }
 
 const near = (a: unknown, b: unknown, tolerance = 0.0005): boolean => typeof a === "number" && typeof b === "number" && Math.abs(a - b) < tolerance;
@@ -1145,7 +1218,7 @@ export function matchesExport(edit: Edit, exported: {
     const value = text[key];
     return typeof value === "number" ? near(other[key], value, key === "x" || key === "y" || key === "w" ? 0.0002 : 0.0005) : other[key] === value;
   });
-  if (texts.length !== plan.texts.length || !plan.texts.every((text, at) => sameText(texts[at], text))) return false;
+  if (texts.length !== plan.texts.length || !plan.texts.every((text, at) => sameText(texts[at], text) && near(texts[at].shadow ?? 0, text.shadow ?? 0))) return false;
   const sameSource = (other: unknown, source: PlanAudio["source"]): boolean => {
     const value = (other ?? {}) as Record<string, unknown>;
     return value.kind === source.kind && (source.kind === "sfx" ? value.id === source.id : typeof value.path === "string" && samePath(value.path, source.path));
@@ -1154,7 +1227,8 @@ export function matchesExport(edit: Edit, exported: {
     && audio.length === plan.audio.length && plan.audio.every((clip, at) => {
       const other = audio[at];
       return sameSource(other.source, clip.source) && near(other.at, clip.at) && near(other.start, clip.start) && near(other.end, clip.end)
-        && other.volume === clip.volume && near(other.fade_in, clip.fade_in) && near(other.fade_out, clip.fade_out) && other.duck_db === clip.duck_db;
+        && other.volume === clip.volume && near(other.fade_in, clip.fade_in) && near(other.fade_out, clip.fade_out) && other.duck_db === clip.duck_db
+        && (other.loop === true) === (clip.loop === true);
     })
     && media.length === plan.media.length && media.every((path, at) => typeof path === "string" && samePath(path, plan.media[at]))
     && segments.length === plan.segments.length && plan.segments.every((segment, at) => {
@@ -1170,7 +1244,9 @@ export function matchesExport(edit: Edit, exported: {
     && overlays.length === plan.overlays.length && plan.overlays.every((overlay, at) => {
       const other = overlays[at];
       return other.media === overlay.media && near(other.at, overlay.at) && near(other.start, overlay.start) && near(other.end, overlay.end)
-        && near(other.x, overlay.x, 0.0002) && near(other.y, overlay.y, 0.0002) && near(other.w, overlay.w, 0.0002) && other.volume === overlay.volume;
+        && near(other.x, overlay.x, 0.0002) && near(other.y, overlay.y, 0.0002) && near(other.w, overlay.w, 0.0002) && other.volume === overlay.volume
+        && (other.opacity ?? 1) === (overlay.opacity ?? 1) && (other.radius ?? 0) === (overlay.radius ?? 0) && (other.border ?? 0) === (overlay.border ?? 0)
+        && (other.border_color ?? null) === (overlay.border_color ?? null);
     });
 }
 
@@ -1307,10 +1383,10 @@ export function serializeProject(edit: Edit, changes: number, selected: string |
     media: [...edit.media, ...extra].map(serializeMedia),
     segments: edit.segments.map(({ id, mediaId, start, end, speed, volume, look }) => ({ id, mediaId, start, end, speed, volume, ...(look ? { look: { ...look } } : {}) })),
     transitions: Object.fromEntries(Object.entries(edit.transitions).map(([id, { type, duration }]) => [id, { type, duration }])),
-    overlays: edit.overlays.map(({ id, mediaId, at, start, end, x, y, w, volume }) => ({ id, mediaId, at, start, end, x, y, w, volume })),
-    audio: edit.audio.map(({ id, source, title, duration, at, start, end, volume, fadeIn, fadeOut, duckDb }) => ({
+    overlays: edit.overlays.map((overlay) => ({ ...overlay })),
+    audio: edit.audio.map(({ id, source, title, duration, at, start, end, volume, fadeIn, fadeOut, duckDb, loop }) => ({
       id, source: source.kind === "sfx" ? { kind: "sfx", id: source.id } : { kind: "file", path: source.path }, title, duration,
-      at, start, end, volume, fade_in: fadeIn, fade_out: fadeOut, duck_db: duckDb,
+      at, start, end, volume, fade_in: fadeIn, fade_out: fadeOut, duck_db: duckDb, ...(loop ? { loop: true } : {}),
     })),
     main_volume: edit.mainVolume,
     texts: edit.texts.map((text) => ({ ...text })),
@@ -1332,6 +1408,7 @@ function parseText(raw: unknown): TextClip | null {
     id, text: words, at: at as number, duration: duration as number, x: x as number, y: y as number, w: w as number, font, size: size as number,
     color: color.toUpperCase(), outline: outline.toUpperCase(), outline_width: outline_width as number, box: box === null ? null : (box as string).toUpperCase(),
     box_opacity: box_opacity as number, bold, italic, align: align as TextAlign, animation: animation as TextAnimation, anim_duration: anim_duration as number,
+    shadow: finite(value.shadow) ? value.shadow : 0,
   });
 }
 
@@ -1340,7 +1417,7 @@ export const SFX_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 function parseAudio(raw: unknown): AudioClip | null {
   if (!raw || typeof raw !== "object") return null;
-  const { id, source, title, duration, at, start, end, volume, fade_in, fade_out, duck_db } = raw as Record<string, unknown>;
+  const { id, source, title, duration, at, start, end, volume, fade_in, fade_out, duck_db, loop } = raw as Record<string, unknown>;
   if (typeof id !== "string" || !/^a\d{1,9}$/.test(id) || !source || typeof source !== "object") return null;
   const { kind, id: sfx, path } = source as Record<string, unknown>;
   const parsed: AudioSource | null = kind === "sfx" && typeof sfx === "string" && SFX_ID.test(sfx) ? { kind: "sfx", id: sfx }
@@ -1348,7 +1425,8 @@ function parseAudio(raw: unknown): AudioClip | null {
   if (!parsed || ![duration, at, start, end, volume, fade_in, fade_out, duck_db].every(finite)) return null;
   const clip: AudioClip = { id, source: parsed, title: typeof title === "string" ? title.slice(0, 300) : "", duration: duration as number,
     at: at as number, start: start as number, end: Math.min(end as number, duration as number), volume: volume as number,
-    fadeIn: fade_in as number, fadeOut: fade_out as number, duckDb: duck_db as number };
+    fadeIn: fade_in as number, fadeOut: fade_out as number, duckDb: duck_db as number,
+    ...(loop === true && (end as number) - (start as number) <= MAX_LOOP_PART + 1e-6 ? { loop: true } : {}) };
   if (clip.duration < MIN_AUDIO || clip.at < 0 || clip.start < 0 || clip.end - clip.start < MIN_AUDIO - 1e-6 || clip.volume < 0 || clip.volume > MAX_VOLUME
     || clip.fadeIn < 0 || clip.fadeIn > MAX_FADE || clip.fadeOut < 0 || clip.fadeOut > MAX_FADE || clip.duckDb < 0 || clip.duckDb > MAX_DUCK_DB) return null;
   return clip;
@@ -1419,8 +1497,8 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
     for (const [id, raw] of Object.entries(data.transitions as Record<string, unknown>)) {
       const { type, duration: length } = (raw ?? {}) as Record<string, unknown>;
       const index = segments.findIndex((segment) => segment.id === id);
-      if (index < 0 || index >= segments.length - 1 || (type !== "fade" && type !== "dissolve") || !finite(length)) continue;
-      transitions[id] = { type, duration: clamp(length, MIN_TRANSITION, MAX_TRANSITION) };
+      if (index < 0 || index >= segments.length - 1 || !(TRANSITION_TYPES as readonly unknown[]).includes(type) || !finite(length)) continue;
+      transitions[id] = { type: type as TransitionType, duration: clamp(length, MIN_TRANSITION, MAX_TRANSITION) };
     }
   }
   const overlays: Overlay[] = [];
@@ -1431,8 +1509,11 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
       if (typeof id !== "string" || !/^o\d{1,9}$/.test(id) || ids.has(id) || typeof mediaId !== "string" || !known.has(mediaId)) continue;
       if (![at, start, end, x, y, w, volume].every(finite)) continue;
       const media = known.get(mediaId)!;
-      const overlay = { id, mediaId, at: at as number, start: start as number, end: Math.min(end as number, media.duration),
-        x: x as number, y: y as number, w: w as number, volume: volume as number };
+      const { opacity, radius, border, borderColor } = raw as Record<string, unknown>;
+      const overlay = styled({ id, mediaId, at: at as number, start: start as number, end: Math.min(end as number, media.duration),
+        x: x as number, y: y as number, w: w as number, volume: volume as number }, {
+        opacity: finite(opacity) ? opacity : 1, radius: finite(radius) ? radius : 0, border: finite(border) ? border : 0,
+        borderColor: isHex(borderColor) ? borderColor : DEFAULT_BORDER_COLOR });
       if (overlay.at < 0 || overlay.start < 0 || overlay.end - overlay.start < MIN_SEGMENT - 1e-6 || overlay.volume < 0 || overlay.volume > MAX_VOLUME
         || overlay.w <= 0 || overlay.w > 1 || overlay.x < 0 || overlay.x > 1 || overlay.y < 0 || overlay.y > 1) continue;
       ids.add(id);
