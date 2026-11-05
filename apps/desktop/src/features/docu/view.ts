@@ -1,7 +1,7 @@
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import {
-  AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES, SFX_NAMES, readable, sceneName, sourceName,
+  AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES, SFX_NAMES, readable, sceneName, sourceName, sourceNames,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
   hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
   calloutTexts, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
@@ -415,7 +415,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const planned = visual.plan?.scenes.find(item => item.scene_id === scene.scene_id);
     if (!planned) return "";
     const seconds = (value: number) => value.toFixed(1).replace(".", ",");
-    return `<span class="docu-slices-label">Hình:</span>${planned.slices.map(piece => `<button type="button" class="docu-ref docu-slice ${piece.tier ? "far" : ""}" data-seek-source="${escapeHtml(piece.source_id)}" data-seek-start="${piece.start}" data-seek-end="${piece.end}" title="${piece.tier ? "Ngoài đoạn nguồn gợi ý" : "Trong đoạn nguồn gợi ý"}">${escapeHtml(sourceName(piece.source_id))} · ${seconds(piece.start)}–${seconds(piece.end)}</button>`).join("")}${planned.warnings.map(note => `<small class="docu-slice-note">${escapeHtml(note)}</small>`).join("")}`;
+    return `<span class="docu-slices-label">Hình:</span>${planned.slices.map(piece => `<button type="button" class="docu-ref docu-slice ${piece.tier ? "far" : ""}" data-seek-source="${escapeHtml(piece.source_id)}" data-seek-start="${piece.start}" data-seek-end="${piece.end}" title="${piece.tier ? "Ngoài đoạn nguồn gợi ý" : "Trong đoạn nguồn gợi ý"}">${escapeHtml(sourceName(piece.source_id))} · ${seconds(piece.start)}–${seconds(piece.end)}</button>`).join("")}${planned.warnings.map(note => `<small class="docu-slice-note">${escapeHtml(sourceNames(note))}</small>`).join("")}`;
   }
 
   function renderVisual(): void {
@@ -428,11 +428,11 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     $("#docu-plan-bar").style.width = `${running && total ? Math.round(100 * (visual.status!.done / total)) : 0}%`;
     const failed = visual.status && ["FAILED", "CANCELLED"].includes(visual.status.state);
     const count = visual.plan?.scenes.reduce((sum, scene) => sum + scene.slices.length, 0) ?? 0;
-    $("#docu-plan-state").textContent = running || failed ? visual.status!.message
+    $("#docu-plan-state").textContent = running || failed ? sourceNames(visual.status!.message)
       : !timelineFresh ? "Cần lời đọc khớp với kịch bản trước." : visual.plan ? `${count} lát cắt cho ${visual.plan.scenes.length} cảnh` : "";
     $("#docu-plan-stale").hidden = !planStale(currentScript, narration.timeline, visual.plan);
     badge("#docu-plan-badge", running ? "busy" : !visual.plan ? "todo" : planStale(currentScript, narration.timeline, visual.plan) ? "stale" : "done");
-    $("#docu-plan-warnings").innerHTML = (visual.plan?.warnings ?? []).map(note => `<li>${escapeHtml(note)}</li>`).join("");
+    $("#docu-plan-warnings").innerHTML = (visual.plan?.warnings ?? []).map(note => `<li>${escapeHtml(sourceNames(note))}</li>`).join("");
     renderRough();
     for (const holder of editor.querySelectorAll<HTMLElement>("[data-slices]")) {
       const card = holder.closest<HTMLElement>("[data-scene-card]");
@@ -461,7 +461,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const total = render.status?.total ?? 0;
     $("#docu-render-bar").style.width = `${running && total ? Math.round(100 * (render.status!.done / total)) : 0}%`;
     const failed = render.status && ["FAILED", "CANCELLED"].includes(render.status.state);
-    $("#docu-render-state").textContent = running || failed ? render.status!.message
+    $("#docu-render-state").textContent = running || failed ? sourceNames(render.status!.message)
       : !planFresh ? (render.video ? "Bản nháp hiện có dựng từ kịch bản, lời đọc hoặc kế hoạch cũ. Lập lại kế hoạch hình ảnh rồi dựng lại." : "Cần kế hoạch hình ảnh khớp với lời đọc trước.")
       : render.video ? "Bản nháp đã sẵn sàng." : "";
     $("#docu-render-actions").hidden = !render.video || running;

@@ -85,6 +85,10 @@ export function sourceName(sourceId: string): string {
   const number = /^src_0*(\d+)$/.exec(sourceId)?.[1];
   return number ? `Nguồn ${number}` : sourceId;
 }
+/** Engine notes and progress name sources by id ("Phụ đề gốc của src_01…"): show "Nguồn 1" instead. */
+export function sourceNames(text: string): string {
+  return text.replace(/\bsrc_\d+\b/g, (id) => sourceName(id));
+}
 /** Engine limits (engine/dubflow/docu/script.py). */
 export const MAX_NARRATION = 600;
 export const MAX_REFS = 6;
