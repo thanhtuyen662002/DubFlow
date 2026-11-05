@@ -92,6 +92,7 @@ export function mountText(context: TextContext): TextMode {
   const fontSelect = $<HTMLSelectElement>("#tx-font");
   const sizeInput = $<HTMLInputElement>("#tx-size");
   const outlineInput = $<HTMLInputElement>("#tx-outline-width");
+  const shadowInput = $<HTMLInputElement>("#tx-shadow");
   const boxToggle = $<HTMLInputElement>("#tx-box");
   const boxOpacity = $<HTMLInputElement>("#tx-box-opacity");
   const animationSelect = $<HTMLSelectElement>("#tx-animation");
@@ -259,9 +260,10 @@ export function mountText(context: TextContext): TextMode {
   fontSelect.addEventListener("change", () => change({ font: fontSelect.value as TextLook["font"] }));
   sizeInput.addEventListener("input", () => change({ size: Number(sizeInput.value) }, true));
   outlineInput.addEventListener("input", () => change({ outline_width: Number(outlineInput.value) }, true));
+  shadowInput.addEventListener("input", () => change({ shadow: Number(shadowInput.value) }, true));
   boxOpacity.addEventListener("input", () => change({ box_opacity: Number(boxOpacity.value) / 100 }, true));
   animInput.addEventListener("input", () => change({ anim_duration: Number(animInput.value) }, true));
-  for (const input of [sizeInput, outlineInput, boxOpacity, animInput]) input.addEventListener("change", settle);
+  for (const input of [sizeInput, outlineInput, shadowInput, boxOpacity, animInput]) input.addEventListener("change", settle);
   boxToggle.addEventListener("change", () => change({ box: boxToggle.checked ? selectedText()?.box ?? "#000000" : null }));
   boldButton.addEventListener("click", () => change({ bold: !selectedText()?.bold }));
   italicButton.addEventListener("click", () => change({ italic: !selectedText()?.italic }));
@@ -309,6 +311,10 @@ export function mountText(context: TextContext): TextMode {
     $("#tx-size-value").textContent = String(text.size);
     if (document.activeElement !== outlineInput) outlineInput.value = String(text.outline_width);
     $("#tx-outline-value").textContent = text.outline_width ? String(text.outline_width).replace(".", ",") : "Không";
+    // Bóng đổ is drawn only without a box (the box takes its place in the export).
+    $("#tx-shadow-field").hidden = text.box !== null;
+    if (document.activeElement !== shadowInput) shadowInput.value = String(text.shadow);
+    $("#tx-shadow-value").textContent = text.shadow ? String(text.shadow).replace(".", ",") : "Không";
     boldButton.setAttribute("aria-pressed", String(text.bold));
     italicButton.setAttribute("aria-pressed", String(text.italic));
     for (const button of alignButtons) button.setAttribute("aria-checked", String(button.dataset.align === text.align));
@@ -497,10 +503,16 @@ export function mountText(context: TextContext): TextMode {
     return view;
   }
 
+  /** The export's shadow: down and right by `px`, black at 60 %. */
+  function shadowCss(px: number): string {
+    const offset = px.toFixed(1);
+    return `${offset}px ${offset}px 0 rgba(0, 0, 0, 0.6)`;
+  }
+
   /** Words, look and place; redone only when one of them changed. */
   function paint(view: Shown, text: TextClip, picture: Picture): void {
     const key = JSON.stringify([text.text, text.font, text.size, text.color, text.outline, text.outline_width, text.box, text.box_opacity, text.bold,
-      text.italic, text.align, text.animation, text.x, text.y, text.w, picture.width, picture.height]);
+      text.italic, text.align, text.animation, text.x, text.y, text.w, text.shadow, picture.width, picture.height]);
     if (key === view.painted) return;
     view.painted = key;
     const metrics = textMetrics(text, picture);
@@ -515,6 +527,7 @@ export function mountText(context: TextContext): TextMode {
       fontWeight: text.bold ? "700" : "400", fontStyle: text.italic ? "italic" : "normal", color: text.color,
       webkitTextStroke: metrics.outlinePx > 0 ? `${metrics.outlinePx * 2}px ${text.outline}` : "0",
       background: text.box ? rgba(text.box, text.box_opacity) : "transparent", padding: `${metrics.paddingPx}px`, width: "", textAlign: text.align,
+      textShadow: !text.box && text.shadow ? shadowCss(text.shadow * metrics.fontPx / text.size) : "",
     });
     if (editing !== text.id) {
       view.units = [];
