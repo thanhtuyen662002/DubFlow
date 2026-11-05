@@ -8,7 +8,7 @@
  */
 import { SUBTITLE_FONTS } from "./fonts.ts";
 import {
-  addText, animSpan, audioLanes, duplicateText, formatClock, MAX_TEXT_CHARS, MAX_TEXTS, MIN_TEXT, moveText, outputDuration, parseClock,
+  addText, animSpan, audioLanes, duplicateText, formatClock, MAX_TEXT_CHARS, MAX_TEXTS, MAX_TEXT_SIZE, MIN_TEXT_SIZE, MIN_TEXT, moveText, outputDuration, parseClock,
   removeText, resizeText, setTextProps, setTextTime, textLength, TEXT_ANIMATIONS, type Edit, type TextClip, type TextLook,
 } from "./model.ts";
 import {
@@ -495,7 +495,14 @@ export function mountText(context: TextContext): TextMode {
       const east = element("span", "tx-handle e");
       east.dataset.side = "e";
       east.title = "Kéo để đổi độ rộng";
-      box.append(body, west, east);
+      // Corners scale the whole text: its size and its box width (Issue #526).
+      const corners = (["nw", "ne", "sw", "se"] as const).map((corner) => {
+        const handle = element("span", `tx-handle tx-corner ${corner}`);
+        handle.dataset.side = corner;
+        handle.title = "Kéo để phóng to, thu nhỏ chữ";
+        return handle;
+      });
+      box.append(body, west, east, ...corners);
       layer.append(box);
       view = { box, body, painted: "", units: [], shown: -1 };
       views.set(text.id, view);
@@ -602,7 +609,8 @@ export function mountText(context: TextContext): TextMode {
 
   // ---------- Dragging and editing on the preview ----------
 
-  type BoxDrag = { id: string; side: "move" | "w" | "e"; x: number; y: number; base: Edit; moved: boolean; pointer: number; height: number };
+  type Side = "move" | "w" | "e" | "nw" | "ne" | "sw" | "se";
+  type BoxDrag = { id: string; side: Side; x: number; y: number; base: Edit; moved: boolean; pointer: number; height: number; diagonal: number };
   let boxDrag: BoxDrag | null = null;
 
   function showGuides(lines: Guide[]): void {
@@ -634,8 +642,10 @@ export function mountText(context: TextContext): TextMode {
     const handle = target.closest<HTMLElement>(".tx-handle");
     selected = box.dataset.id!;
     context.pause();
-    boxDrag = { id: selected, side: handle?.dataset.side === "w" ? "w" : handle ? "e" : "move", x: event.clientX, y: event.clientY,
-      base: context.base(), moved: false, pointer: event.pointerId, height: views.get(selected)?.body.getBoundingClientRect().height ?? 0 };
+    const bounds = views.get(selected)?.body.getBoundingClientRect();
+    boxDrag = { id: selected, side: (handle?.dataset.side as Side | undefined) ?? "move", x: event.clientX, y: event.clientY,
+      base: context.base(), moved: false, pointer: event.pointerId, height: bounds?.height ?? 0,
+      diagonal: bounds ? Math.hypot(bounds.width, bounds.height) / 2 : 0 };
     context.redraw();
   });
   layer.addEventListener("pointermove", (event) => {
@@ -653,6 +663,15 @@ export function mountText(context: TextContext): TextMode {
         { x: SNAP_PX / rect.width, y: SNAP_PX / rect.height }, event.altKey);
       showGuides(snapped.guides);
       context.preview(moveText(dragging.base, dragging.id, snapped.x, snapped.y));
+    } else if (dragging.side.length === 2) {
+      // Away from the centre grows, towards it shrinks; the centre stays.
+      const sx = dragging.side.endsWith("e") ? 1 : -1, sy = dragging.side.startsWith("s") ? 1 : -1;
+      const along = ((event.clientX - dragging.x) * sx + (event.clientY - dragging.y) * sy) / Math.SQRT2;
+      const scale = Math.max(0.1, (dragging.diagonal + along) / Math.max(1, dragging.diagonal));
+      const size = clamp(Math.round(text.size * scale), MIN_TEXT_SIZE, MAX_TEXT_SIZE);
+      const ratio = size / text.size;
+      const w = clamp(text.w * ratio, 0.1, 1);
+      context.preview(resizeText(setTextProps(dragging.base, dragging.id, { size }), dragging.id, w, clamp(text.x, w / 2, 1 - w / 2)));
     } else {
       const left = text.x - text.w / 2, right = text.x + text.w / 2;
       const w = dragging.side === "e" ? clamp(text.w + dx, 0.1, 1 - left) : clamp(text.w - dx, 0.1, right);

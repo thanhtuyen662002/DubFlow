@@ -698,7 +698,11 @@ const togglePlayback = (): void => {
   else playerVideo.pause();
 };
 playButton.addEventListener("click", togglePlayback);
-playerVideo.addEventListener("click", togglePlayback);
+// In Chỉnh sửa a click on the picture first drops what is selected on it.
+playerVideo.addEventListener("click", () => {
+  if (editor.target !== null && !playButton.disabled) editor.clickPicture();
+  else togglePlayback();
+});
 for (const button of document.querySelectorAll<HTMLButtonElement>("#player-mode [data-mode]")) {
   button.addEventListener("click", () => {
     playerMode = button.dataset.mode === "source" ? "source" : button.dataset.mode === "edited" && playerEditedPath ? "edited" : "output";
