@@ -126,7 +126,17 @@ export type AudioClip = {
   readonly volume: number; readonly fadeIn: number; readonly fadeOut: number; readonly duckDb: number;
   /** Lặp lại: the part repeats until the end of the output (background music). */
   readonly loop?: boolean;
+  /** Lọc ồn and Chỉnh âm (Issue #533); heard after export only. */
+  readonly denoise?: boolean;
+  readonly eq?: EqPreset;
 };
+/** Chỉnh âm presets the host knows (src-tauri/src/edit.rs `EqPreset`). */
+export const EQ_PRESETS = ["voice", "warm", "bright", "bass"] as const;
+export type EqPreset = typeof EQ_PRESETS[number];
+export const EQ_NAMES: Readonly<Record<EqPreset, string>> = { voice: "Giọng rõ", warm: "Ấm", bright: "Sáng", bass: "Trầm" };
+/** Lọc ồn / chỉnh âm; `eq` null turns the EQ off. */
+export type SoundClean = { denoise?: boolean; eq?: EqPreset | null };
+const isEq = (value: unknown): value is EqPreset => (EQ_PRESETS as readonly unknown[]).includes(value);
 /** A sound before it joins an edit. */
 export type AudioInfo = { source: AudioSource; title: string; duration: number };
 export type Edit = {
@@ -142,6 +152,9 @@ export type Edit = {
   readonly audio: readonly AudioClip[];
   /** "Âm thanh gốc": the volume of the output's own sound (segments and overlays), 0–2. */
   readonly mainVolume: number;
+  /** Lọc ồn / chỉnh âm of the output's own sound (Issue #533). */
+  readonly mainDenoise?: boolean;
+  readonly mainEq?: EqPreset;
   /** Chữ: texts over the picture, later ones drawn on top. */
   readonly texts: readonly TextClip[];
   /** Đánh dấu: named points at output times, in time order (not exported). */
@@ -990,6 +1003,32 @@ export function setAudioProps(edit: Edit, id: string, props: { volume?: number; 
   }));
 }
 
+/** The clean-up keys of a clip or the edit: set when on, left out when off. */
+function cleaned<T extends object>(item: T, denoiseKey: string, eqKey: string, change: SoundClean): T {
+  const record = item as Record<string, unknown>;
+  const denoise = change.denoise === undefined ? record[denoiseKey] === true : change.denoise === true;
+  const eq = change.eq === undefined ? record[eqKey] : change.eq;
+  const { [denoiseKey]: _d, [eqKey]: _e, ...plain } = record;
+  return { ...plain, ...(denoise ? { [denoiseKey]: true } : {}), ...(isEq(eq) ? { [eqKey]: eq } : {}) } as T;
+}
+
+/** Lọc ồn and Chỉnh âm of an added sound; unknown presets are ignored. */
+export function setAudioClean(edit: Edit, id: string, change: SoundClean): Edit {
+  if (change.eq !== undefined && change.eq !== null && !isEq(change.eq)) return edit;
+  const clip = edit.audio.find((candidate) => candidate.id === id);
+  if (!clip) return edit;
+  const next = cleaned(clip, "denoise", "eq", change);
+  if (next.denoise === clip.denoise && next.eq === clip.eq) return edit;
+  return { ...edit, audio: edit.audio.map((candidate) => candidate.id === id ? next : candidate) };
+}
+
+/** Lọc ồn and Chỉnh âm of the output's own sound. */
+export function setMainClean(edit: Edit, change: SoundClean): Edit {
+  if (change.eq !== undefined && change.eq !== null && !isEq(change.eq)) return edit;
+  const next = cleaned(edit, "mainDenoise", "mainEq", change);
+  return next.mainDenoise === edit.mainDenoise && next.mainEq === edit.mainEq ? edit : next;
+}
+
 export function removeAudio(edit: Edit, id: string): Edit {
   if (!edit.audio.some((clip) => clip.id === id)) return edit;
   return { ...edit, audio: edit.audio.filter((clip) => clip.id !== id) };
@@ -1255,7 +1294,8 @@ export function retargetEdit(edit: Edit, duration: number, info: Partial<Omit<Me
 export function isUnchanged(edit: Edit, duration: number): boolean {
   const [only] = edit.segments;
   return edit.segments.length === 1 && only.mediaId === MAIN && only.start <= 0.001 && only.end >= duration - 0.001
-    && only.speed === 1 && only.volume === 1 && !only.look && !edit.overlays.length && !edit.audio.length && edit.mainVolume === 1 && !edit.texts.length;
+    && only.speed === 1 && only.volume === 1 && !only.look && !edit.overlays.length && !edit.audio.length && edit.mainVolume === 1 && !edit.texts.length
+    && !edit.mainDenoise && !edit.mainEq;
 }
 
 export function sameSegments(a: readonly Segment[], b: readonly Pick<Segment, "start" | "end" | "speed" | "volume">[]): boolean {
@@ -1275,6 +1315,7 @@ export type PlanOverlay = {
 export type PlanAudio = {
   source: { kind: "sfx"; id: string } | { kind: "file"; path: string };
   at: number; start: number; end: number; volume: number; fade_in: number; fade_out: number; duck_db: number; loop?: boolean;
+  denoise?: boolean; eq?: EqPreset;
 };
 /** A text as the host draws it: its shown length and animation span already fitted to the output. */
 export type PlanText = Omit<TextClip, "id" | "shadow"> & { shadow?: number };
@@ -1282,6 +1323,8 @@ export type PlanText = Omit<TextClip, "id" | "shadow"> & { shadow?: number };
 export type ExportPlan = {
   media: string[]; segments: PlanSegment[]; transitions: PlanTransition[]; overlays: PlanOverlay[]; audio: PlanAudio[]; mainVolume: number;
   texts: PlanText[];
+  /** Lọc ồn / chỉnh âm of the output's own sound, only when on. */
+  mainDenoise?: boolean; mainEq?: EqPreset;
   /** LUT màu files the segments' `lut` index into. */
   luts: string[];
 };
@@ -1314,7 +1357,8 @@ export function exportPlan(edit: Edit): ExportPlan {
     .map((overlay) => planOverlay(overlay, index(overlay.mediaId)));
   const audio = edit.audio.filter((clip) => audioLength(clip, total) >= MIN_AUDIO).map(planAudio);
   const texts = edit.texts.filter((text) => text.text.trim() && textLength(text, total) >= 0.05).map((text) => planText(text, total));
-  return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume, texts, luts };
+  return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume, texts, luts,
+    ...(edit.mainDenoise ? { mainDenoise: true } : {}), ...(edit.mainEq ? { mainEq: edit.mainEq } : {}) };
 }
 
 function planText({ id: _, shadow, ...text }: TextClip, total: number): PlanText {
@@ -1333,7 +1377,7 @@ function planOverlay(overlay: Overlay, media: number): PlanOverlay {
 function planAudio(clip: AudioClip): PlanAudio {
   const source = clip.source.kind === "sfx" ? { kind: "sfx" as const, id: clip.source.id } : { kind: "file" as const, path: clip.source.path };
   return { source, at: clip.at, start: clip.start, end: clip.end, volume: clip.volume, fade_in: clip.fadeIn, fade_out: clip.fadeOut, duck_db: clip.duckDb,
-    ...(clip.loop ? { loop: true } : {}) };
+    ...(clip.loop ? { loop: true } : {}), ...(clip.denoise ? { denoise: true } : {}), ...(clip.eq ? { eq: clip.eq } : {}) };
 }
 
 const near = (a: unknown, b: unknown, tolerance = 0.0005): boolean => typeof a === "number" && typeof b === "number" && Math.abs(a - b) < tolerance;
@@ -1341,6 +1385,7 @@ const near = (a: unknown, b: unknown, tolerance = 0.0005): boolean => typeof a =
 /** An edit renders the same as an exported one (4a exports list only main segments, 4e adds sounds and the main volume, 4f texts). */
 export function matchesExport(edit: Edit, exported: {
   media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown; audio?: unknown; main_volume?: unknown; texts?: unknown; luts?: unknown;
+  main_denoise?: unknown; main_eq?: unknown;
 }): boolean {
   const plan = exportPlan(edit);
   const list = (value: unknown): Array<Record<string, unknown>> => Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
@@ -1359,11 +1404,13 @@ export function matchesExport(edit: Edit, exported: {
     return value.kind === source.kind && (source.kind === "sfx" ? value.id === source.id : typeof value.path === "string" && samePath(value.path, source.path));
   };
   return (exported.main_volume ?? 1) === plan.mainVolume
+    && (exported.main_denoise === true) === (plan.mainDenoise === true) && (exported.main_eq ?? null) === (plan.mainEq ?? null)
     && audio.length === plan.audio.length && plan.audio.every((clip, at) => {
       const other = audio[at];
       return sameSource(other.source, clip.source) && near(other.at, clip.at) && near(other.start, clip.start) && near(other.end, clip.end)
         && other.volume === clip.volume && near(other.fade_in, clip.fade_in) && near(other.fade_out, clip.fade_out) && other.duck_db === clip.duck_db
-        && (other.loop === true) === (clip.loop === true);
+        && (other.loop === true) === (clip.loop === true)
+        && (other.denoise === true) === (clip.denoise === true) && (other.eq ?? null) === (clip.eq ?? null);
     })
     && media.length === plan.media.length && media.every((path, at) => typeof path === "string" && samePath(path, plan.media[at]))
     && segments.length === plan.segments.length && plan.segments.every((segment, at) => {
@@ -1522,11 +1569,13 @@ export function serializeProject(edit: Edit, changes: number, selected: string |
     segments: edit.segments.map(({ id, mediaId, start, end, speed, volume, look }) => ({ id, mediaId, start, end, speed, volume, ...(look ? { look: { ...look } } : {}) })),
     transitions: Object.fromEntries(Object.entries(edit.transitions).map(([id, { type, duration }]) => [id, { type, duration }])),
     overlays: edit.overlays.map((overlay) => ({ ...overlay })),
-    audio: edit.audio.map(({ id, source, title, duration, at, start, end, volume, fadeIn, fadeOut, duckDb, loop }) => ({
+    audio: edit.audio.map(({ id, source, title, duration, at, start, end, volume, fadeIn, fadeOut, duckDb, loop, denoise, eq }) => ({
       id, source: source.kind === "sfx" ? { kind: "sfx", id: source.id } : { kind: "file", path: source.path }, title, duration,
       at, start, end, volume, fade_in: fadeIn, fade_out: fadeOut, duck_db: duckDb, ...(loop ? { loop: true } : {}),
+      ...(denoise ? { denoise: true } : {}), ...(eq ? { eq } : {}),
     })),
     main_volume: edit.mainVolume,
+    ...(edit.mainDenoise ? { main_denoise: true } : {}), ...(edit.mainEq ? { main_eq: edit.mainEq } : {}),
     texts: edit.texts.map((text) => ({ ...text })),
     markers: edit.markers.map(({ id, at, label }) => ({ id, at, label })),
   };
@@ -1555,7 +1604,7 @@ export const SFX_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 function parseAudio(raw: unknown): AudioClip | null {
   if (!raw || typeof raw !== "object") return null;
-  const { id, source, title, duration, at, start, end, volume, fade_in, fade_out, duck_db, loop } = raw as Record<string, unknown>;
+  const { id, source, title, duration, at, start, end, volume, fade_in, fade_out, duck_db, loop, denoise, eq } = raw as Record<string, unknown>;
   if (typeof id !== "string" || !/^a\d{1,9}$/.test(id) || !source || typeof source !== "object") return null;
   const { kind, id: sfx, path } = source as Record<string, unknown>;
   const parsed: AudioSource | null = kind === "sfx" && typeof sfx === "string" && SFX_ID.test(sfx) ? { kind: "sfx", id: sfx }
@@ -1564,7 +1613,8 @@ function parseAudio(raw: unknown): AudioClip | null {
   const clip: AudioClip = { id, source: parsed, title: typeof title === "string" ? title.slice(0, 300) : "", duration: duration as number,
     at: at as number, start: start as number, end: Math.min(end as number, duration as number), volume: volume as number,
     fadeIn: fade_in as number, fadeOut: fade_out as number, duckDb: duck_db as number,
-    ...(loop === true && (end as number) - (start as number) <= MAX_LOOP_PART + 1e-6 ? { loop: true } : {}) };
+    ...(loop === true && (end as number) - (start as number) <= MAX_LOOP_PART + 1e-6 ? { loop: true } : {}),
+    ...(denoise === true ? { denoise: true } : {}), ...(isEq(eq) ? { eq } : {}) };
   if (clip.duration < MIN_AUDIO || clip.at < 0 || clip.start < 0 || clip.end - clip.start < MIN_AUDIO - 1e-6 || clip.volume < 0 || clip.volume > MAX_VOLUME
     || clip.fadeIn < 0 || clip.fadeIn > MAX_FADE || clip.fadeOut < 0 || clip.fadeOut > MAX_FADE || clip.duckDb < 0 || clip.duckDb > MAX_DUCK_DB) return null;
   return clip;
@@ -1703,7 +1753,8 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
   const changes = typeof data.changes === "number" && Number.isInteger(data.changes) && data.changes >= 0 ? data.changes : 0;
   const selected = typeof data.selected === "string" && segments.some((segment) => segment.id === data.selected) ? data.selected : null;
   const edit = pruneMedia({ duration, media: [main, ...[...known.values()].filter((media) => media.id !== MAIN)], segments, transitions, overlays,
-    audio, mainVolume, texts, markers, nextId });
+    audio, mainVolume, texts, markers, nextId,
+    ...(data.main_denoise === true ? { mainDenoise: true } : {}), ...(isEq(data.main_eq) ? { mainEq: data.main_eq } : {}) });
   return { edit, changes, selected, recent };
 }
 

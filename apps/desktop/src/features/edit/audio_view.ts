@@ -5,6 +5,7 @@
  * pending AI suggestions) and the live preview of the clips, one <audio>
  * per clip scheduled by output time.
  */
+import { VoiceTakes, type Take } from "./voice_capture.ts";
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { CATALOG } from "../sfx/bundled.ts";
 import { CATEGORIES, searchSounds, soundLength, type Category, type Sound } from "../sfx/catalog.ts";
@@ -12,7 +13,8 @@ import { suggestEffects, type Suggestion, type TimedLine } from "../sfx/ai.ts";
 import { packSummary, sizeText, type AudioFacts, type SfxLibrary, type UserAudio } from "../sfx/library.ts";
 import {
   addAudio, audioGain, audioLanes, audioLength, audioPosition, DEFAULT_DUCK_DB, MAX_LOOP_PART, formatClock, MAX_AUDIO, MIN_AUDIO, outputDuration, parseClock,
-  removeAudio, setAudioProps, setAudioTime, setMainVolume, type AudioClip, type AudioInfo, type Edit,
+  removeAudio, setAudioClean, setAudioProps, setAudioTime, setMainClean, setMainVolume, EQ_PRESETS, type AudioClip, type AudioInfo, type Edit,
+  type EqPreset,
 } from "./model.ts";
 
 /** The catalog's category ids as shown ("Bấm/Pop" stays the id in the sound pack). */
@@ -26,6 +28,8 @@ export type AudioHost = {
   openAiSettings: () => void;
   mediaUrl: (path: string) => Promise<string | null>;
   showError: (text: string) => void;
+  /** Thu giọng: save a recording (WebM/MP4 bytes) with the open edit; the saved .m4a's path. */
+  saveRecording: (bytes: ArrayBuffer) => Promise<string>;
 };
 
 export type AudioContext = {
@@ -51,6 +55,9 @@ export type AudioContext = {
   note: (text: string) => void;
   /** The timeline must be drawn again (suggestions changed). */
   redraw: () => void;
+  /** Thu giọng: play or pause the edit, and keep the preview silent while recording. */
+  play: (on: boolean) => void;
+  silence: (on: boolean) => void;
 };
 
 export type AudioMode = {
@@ -118,6 +125,30 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
   const duckToggle = $<HTMLInputElement>("#au-duck");
   const loopToggle = $<HTMLInputElement>("#au-loop");
   const duckInput = $<HTMLInputElement>("#au-duck-db");
+  const denoiseToggle = $<HTMLInputElement>("#au-denoise");
+  const eqSelect = $<HTMLSelectElement>("#au-eq");
+  const mainDenoise = $<HTMLInputElement>("#au-main-denoise");
+  const mainEq = $<HTMLSelectElement>("#au-main-eq");
+  const recButton = $<HTMLButtonElement>("#au-rec");
+  // Thu giọng: takes one after another, each with its own bytes and start time (voice_capture.ts).
+  let recStarted = 0;
+  let recSaving = false;
+  const takes = new VoiceTakes<MediaRecorder>({
+    getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
+    makeRecorder: (stream) => {
+      const type = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((candidate) => MediaRecorder.isTypeSupported(candidate));
+      return new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 128000 } : undefined);
+    },
+    finished: (take) => finishRecording(take),
+    changed: () => renderRecording(),
+    // The microphone went away mid-take: the preview plays and sounds as before.
+    interrupted: () => {
+      context.play(false);
+      context.silence(false);
+      context.note("Micro đã ngắt, đã dừng thu.");
+    },
+  });
+
   const tabs = [...document.querySelectorAll<HTMLButtonElement>("#au-tabs [data-au-tab]")];
   const search = $<HTMLInputElement>("#au-search");
   const cats = $("#au-cats");
@@ -294,6 +325,80 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
     if (document.activeElement !== mainInput) mainInput.value = String(Math.round(edit.mainVolume * 100));
     $("#au-main-value").textContent = percent(edit.mainVolume);
     $("#au-main-note").hidden = edit.mainVolume <= 1;
+    mainDenoise.checked = edit.mainDenoise === true;
+    mainEq.value = edit.mainEq ?? "";
+    $("#au-main-clean-note").hidden = !edit.mainDenoise && !edit.mainEq;
+    renderRecording();
+  }
+
+  // ---------- Thu giọng ----------
+
+  function renderRecording(): void {
+    const state = takes.state;
+    const recording = state === "recording";
+    recButton.setAttribute("aria-pressed", String(recording));
+    recButton.disabled = state === "starting" || state === "finishing";
+    $("#au-rec-label").textContent = state === "finishing" || recSaving ? "Đang lưu bản thu…" : state === "starting" ? "Đang mở micro…"
+      : recording ? "Dừng thu" : "Thu giọng tại đầu phát";
+    const time = $("#au-rec-time");
+    time.hidden = !recording;
+    if (recording) time.textContent = formatClock((performance.now() - recStarted) / 1000);
+  }
+
+  async function startRecording(): Promise<void> {
+    if (!active || takes.state !== "idle" || context.busy()) return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      host.showError("Máy này không thu được âm thanh trong DubFlow.");
+      return;
+    }
+    const result = await takes.start(context.outputTime(), 1000);
+    if (result.kind === "denied" || result.kind === "failed") {
+      host.showError(result.kind === "denied"
+        ? "Không mở được micro. Kiểm tra micro đã cắm, rồi cho phép ứng dụng dùng micro trong Cài đặt Windows → Quyền riêng tư → Micro."
+        : `Không bắt đầu thu được: ${String(result.error).slice(0, 160)}`);
+      return;
+    }
+    if (result.kind !== "started") return;
+    if (!active) {
+      // Closed between the start and here: nothing records into a closed edit.
+      takes.stop();
+      return;
+    }
+    recStarted = performance.now();
+    context.silence(true);
+    context.play(true);
+    renderRecording();
+  }
+
+  /** Stop the take (or a start still waiting for the microphone). */
+  function stopRecording(): void {
+    const recording = takes.state === "recording";
+    takes.stop();
+    if (!recording) return;
+    context.play(false);
+    context.silence(false);
+  }
+
+  async function finishRecording(take: Take): Promise<void> {
+    const blob = new Blob(take.chunks, { type: take.mimeType || "audio/webm" });
+    // The editor closed while recording: the edit the sound belonged to is gone.
+    if (!active) return;
+    if (blob.size < 1024) {
+      context.note("Bản thu trống, chưa thêm gì.");
+      return;
+    }
+    recSaving = true;
+    renderRecording();
+    try {
+      const path = await host.saveRecording(await blob.arrayBuffer());
+      facts.delete(path);
+      await addFiles([path], take.at);
+    } catch (error) {
+      host.showError(`Không lưu được bản thu: ${String(error).slice(0, 160)}`);
+    } finally {
+      recSaving = false;
+      renderRecording();
+    }
   }
 
   function renderSelected(edit: Edit): void {
@@ -328,6 +433,9 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
     if (document.activeElement !== duckInput) duckInput.value = String(clip.duckDb || DEFAULT_DUCK_DB);
     $("#au-duck-value").textContent = `${clip.duckDb || DEFAULT_DUCK_DB} dB`;
     $("#au-play").dataset.listen = sourceKey(clip);
+    denoiseToggle.checked = clip.denoise === true;
+    eqSelect.value = clip.eq ?? "";
+    $("#au-clean-note").hidden = !clip.denoise && !clip.eq;
   }
 
   function renderTabs(): void {
@@ -793,6 +901,11 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
 
   function frame(time: number, playing: boolean): void {
     if (!active) return;
+    if (takes.state === "recording") {
+      // Pausing (or the end of the video) ends the recording.
+      if (!playing && performance.now() - recStarted > 600) stopRecording();
+      else renderRecording();
+    }
     const edit = context.edit();
     const total = outputDuration(edit);
     const seen = new Set<string>();
@@ -811,7 +924,7 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
       if (into >= 0 && playing) {
         const gain = audioGain(clip, time, total);
         audio.volume = clamp(gain, 0, 1);
-        audio.muted = gain <= 0;
+        audio.muted = gain <= 0 || takes.state === "recording";
         const want = audioPosition(clip, time);
         if (audio.readyState >= 1 && Math.abs(audio.currentTime - want) > 0.15) audio.currentTime = want;
         if (audio.paused && audio.readyState >= 2) void audio.play().catch(() => undefined);
@@ -866,6 +979,25 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
       if (next && selectedId()) context.commit(next);
     });
   }
+  const eqOf = (value: string): EqPreset | null => (EQ_PRESETS as readonly string[]).includes(value) ? value as EqPreset : null;
+  denoiseToggle.addEventListener("change", () => {
+    const id = selectedId();
+    if (id) context.commit(setAudioClean(context.base(), id, { denoise: denoiseToggle.checked }));
+  });
+  eqSelect.addEventListener("change", () => {
+    const id = selectedId();
+    if (id) context.commit(setAudioClean(context.base(), id, { eq: eqOf(eqSelect.value) }));
+  });
+  mainDenoise.addEventListener("change", () => {
+    if (active && !context.busy()) context.commit(setMainClean(context.base(), { denoise: mainDenoise.checked }));
+  });
+  mainEq.addEventListener("change", () => {
+    if (active && !context.busy()) context.commit(setMainClean(context.base(), { eq: eqOf(mainEq.value) }));
+  });
+  recButton.addEventListener("click", () => {
+    if (takes.state === "recording") stopRecording();
+    else void startRecording();
+  });
   loopToggle.addEventListener("change", () => {
     const id = selectedId();
     if (id) context.commit(setAudioProps(context.base(), id, { loop: loopToggle.checked }));
@@ -956,6 +1088,7 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
       aiBusy = false;
     },
     end: () => {
+      stopRecording();
       active = false;
       aiToken += 1;
       aiBusy = false;
