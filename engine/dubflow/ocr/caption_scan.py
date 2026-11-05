@@ -44,6 +44,11 @@ LOGO_FPS = 0.5
 LOGO_MAX_WIDTH = 0.4
 LOGO_MAX_HEIGHT = 0.2
 LOGO_MIN_PRESENCE = 0.6
+# Text that keeps showing up beside a logo belongs to it: a channel name under a watermark, a tag that slides
+# in next to it (src_03 of the 2026-11-05 tier-2 film: gold "科普足迹" under "剑指桃花开 bilibili").
+LOGO_NEIGHBOUR_GAP = 0.5  # how far from the logo, in logo heights
+LOGO_NEIGHBOUR_PRESENCE = 0.25  # share of samples that show such text
+LOGO_NEIGHBOUR_SPREAD = 0.1  # the grown box spans the 10th-90th percentile of the neighbours' edges
 # A text line this tall (share of the frame height) is a title or a giant number, not a caption or a sign.
 BIG_TEXT_HEIGHT = 0.09
 BIG_TEXT_WIDTH = 0.08
@@ -208,8 +213,53 @@ def logo_boxes(samples: Sequence[Sequence[TextBox]]) -> list[TextBox]:
         middle = TextBox(*(sorted(getattr(box, name) for box in cluster)[len(cluster) // 2] for name in ("x", "y", "w", "h")))
         steady = sum(_iou(box, middle) > 0.6 for box in cluster) / len(cluster)
         if steady >= 0.8 and not is_caption(middle) and middle.w <= LOGO_MAX_WIDTH and middle.h <= LOGO_MAX_HEIGHT:
-            found.append(middle)
-    return found
+            found.append(grow_logo(samples, middle))
+    # A channel name found as a logo of its own and also grown into its neighbour's box is one logo.
+    kept: list[TextBox] = []
+    for box in sorted(found, key=lambda item: -item.w * item.h):
+        if not any(_covered(box, other) for other in kept):
+            kept.append(box)
+    return sorted(kept, key=lambda item: (item.y, item.x))
+
+
+def _near(box: TextBox, logo: TextBox, gap: float) -> bool:
+    margin = gap * logo.h
+    return (box.x < logo.x + logo.w + margin and box.x + box.w > logo.x - margin
+            and box.y < logo.y + logo.h + margin and box.y + box.h > logo.y - margin)
+
+
+def _covered(box: TextBox, logo: TextBox) -> bool:
+    """The box is the logo, or lies mostly inside it."""
+    left, top = max(box.x, logo.x), max(box.y, logo.y)
+    right, bottom = min(box.x + box.w, logo.x + logo.w), min(box.y + box.h, logo.y + logo.h)
+    inter = max(0.0, right - left) * max(0.0, bottom - top)
+    return _iou(box, logo) > 0.3 or inter >= 0.6 * box.w * box.h
+
+
+def _percentile(values: Sequence[float], share: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, max(0, int(round(share * (len(ordered) - 1)))))]
+
+
+def grow_logo(samples: Sequence[Sequence[TextBox]], logo: TextBox) -> TextBox:
+    """The logo widened to the text that keeps appearing right beside it, within the logo size limits."""
+    near, hits = [], 0
+    for boxes in samples:
+        found = [box for box in boxes if _near(box, logo, LOGO_NEIGHBOUR_GAP) and not is_caption(box)
+                 and box.h <= 2 * logo.h and box.w <= LOGO_MAX_WIDTH]
+        if any(_iou(box, logo) <= 0.5 for box in found):
+            hits += 1
+        near.extend(found)
+    if hits < LOGO_NEIGHBOUR_PRESENCE * max(1, len(samples)):
+        return logo
+    low, high = LOGO_NEIGHBOUR_SPREAD, 1 - LOGO_NEIGHBOUR_SPREAD
+    left = min(logo.x, _percentile([box.x for box in near], low))
+    top = min(logo.y, _percentile([box.y for box in near], low))
+    right = max(logo.x + logo.w, _percentile([box.x + box.w for box in near], high))
+    bottom = max(logo.y + logo.h, _percentile([box.y + box.h for box in near], high))
+    if right - left > LOGO_MAX_WIDTH or bottom - top > LOGO_MAX_HEIGHT:
+        return logo
+    return TextBox(left, top, right - left, bottom - top, logo.signature)
 
 
 def _big(box: TextBox) -> bool:
@@ -239,11 +289,11 @@ def big_text_times(samples: Sequence[tuple[float, Sequence[TextBox]]], logos: Se
     times = []
     for time_s, boxes in samples:
         wide = [box for box in boxes if box.w >= WIDE_TEXT_WIDTH and box.h >= WIDE_TEXT_HEIGHT]
-        if band_top is not None and any(_overlay(box, band_top) and not any(_iou(box, logo) > 0.3 for logo in logos) for box in boxes):
+        if band_top is not None and any(_overlay(box, band_top) and not any(_covered(box, logo) for logo in logos) for box in boxes):
             times.append(round(time_s, 3))
             continue
         # Two or more lines spanning the frame: a news ticker or a paragraph card. One wide line is a long caption.
-        if len(wide) >= 2 or any(_big(box) and not any(_iou(box, logo) > 0.3 for logo in logos) for box in boxes):
+        if len(wide) >= 2 or any(_big(box) and not any(_covered(box, logo) for logo in logos) for box in boxes):
             times.append(round(time_s, 3))
     return times
 

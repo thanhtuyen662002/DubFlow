@@ -153,10 +153,18 @@ def scan_band(video: Path, *, duration: float, speech: Iterable[tuple[float, flo
     return band, size
 
 
-LOGO_RECIPE = "fixed-text-full-frame-v4"
+LOGO_RECIPE = "fixed-text-full-frame-v5"
 # Around each sample with big text (samples are 2 s apart), how much footage to leave out.
 TEXT_PAD = 1.2
 LOGO_PAD = 0.012
+# Logos come with graphics the text detector cannot see: the outline triangle round "太空记" reaches 0.6 of the
+# text height above it. So the blur box grows with the logo's height, more up and down than sideways.
+LOGO_PAD_X, LOGO_PAD_Y, LOGO_PAD_MAX = 0.25, 0.7, 0.07
+
+
+def logo_pad(height: float) -> tuple[float, float]:
+    """(horizontal, vertical) padding of a detected logo of this height, in frame fractions."""
+    return (min(LOGO_PAD_MAX, max(LOGO_PAD, LOGO_PAD_X * height)), min(LOGO_PAD_MAX, max(LOGO_PAD, LOGO_PAD_Y * height)))
 
 
 def scan_logos(video: Path, *, duration: float, cache: Path, scanner: Callable[[], Any],
@@ -191,8 +199,9 @@ def scan_frame_text(video: Path, *, duration: float, cache: Path, scanner: Calla
     boxes, times = scanner().scan_frame_text(video, duration_s=duration, band_top=band.top if band else None)
     logos = []
     for box in boxes:
-        x, y = max(0.0, box.x - LOGO_PAD), max(0.0, box.y - LOGO_PAD)
-        right, bottom = min(1.0, box.x + box.w + LOGO_PAD), min(1.0, box.y + box.h + LOGO_PAD)
+        pad_x, pad_y = logo_pad(box.h)
+        x, y = max(0.0, box.x - pad_x), max(0.0, box.y - pad_y)
+        right, bottom = min(1.0, box.x + box.w + pad_x), min(1.0, box.y + box.h + pad_y)
         logos.append([round(x, 4), round(y, 4), round(right - x, 4), round(bottom - y, 4)])
     spans = text_spans(times, duration)
     write_json(cache, {"schema_version": 2, "identity": identity, "logos": logos, "text_spans": spans})

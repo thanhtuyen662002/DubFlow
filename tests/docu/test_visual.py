@@ -71,8 +71,12 @@ class SafeZoneTests(unittest.TestCase):
             cache = Path(temp) / "logos.json"
             args = dict(duration=10.0, cache=cache, scanner=Scanner, identity={"recipe": "r"})
             logos = safezone.scan_logos(Path(temp) / "a.mp4", **args)
-            self.assertEqual(logos[0], [0.043, 0.682, 0.152, 0.118])
-            self.assertEqual(logos[1], [0.978, 0.0, 0.022, 0.032], "kept inside the frame")
+            self.assertEqual(logos[0], [0.0315, 0.6282, 0.175, 0.2256])
+            # The outline triangle round "太空记" (src_02, 2026-11-05) reaches y 0.637 and runs x 0.061-0.180.
+            self.assertLessEqual(logos[0][1], 0.637)
+            self.assertLessEqual(logos[0][0], 0.061)
+            self.assertGreaterEqual(logos[0][0] + logos[0][2], 0.180)
+            self.assertEqual(logos[1], [0.978, 0.0, 0.022, 0.034], "kept inside the frame")
             self.assertEqual(safezone.scan_logos(Path(temp) / "a.mp4", **args), logos)
             self.assertEqual(Scanner.calls, 1)
 
