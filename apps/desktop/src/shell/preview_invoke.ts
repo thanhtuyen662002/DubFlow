@@ -207,8 +207,22 @@ function previewRender(dir: string): Record<string, unknown> {
 }
 /** Simulated visual plans: three polls, then slices alternating the two sources across each scene's slot. */
 const docuPlans = new Map<string, { polls: number; cancelled: boolean }>();
+/** Che › "Che có sẵn trong phim" (Issue #520): bands and logos set by hand, per project and source. */
+const docuCovers = new Map<string, Map<string, { band: [number, number] | null; logos: number[][] }>>();
+function previewCoverSources(dir: string): Array<Record<string, unknown>> {
+  const project = docuProjects.get(dir);
+  const edits = docuCovers.get(dir);
+  return ((project?.spec.sources ?? []) as Array<{ id: string }>).map((source, index) => {
+    const edit = edits?.get(source.id);
+    const band = edit ? edit.band : index === 0 ? [0.78, 0.97] : null;
+    return { id: source.id, duration: 60, framing: { band: band ? { top: band[0], bottom: band[1], share: 0.9 } : null, clear: !band,
+      zoom: band ? 1.14 : 1, shift: 0, letterbox: 0, logos: edit ? edit.logos : index === 0 ? [[0.03, 0.04, 0.2, 0.09]] : [] } };
+  });
+}
 function previewVisual(dir: string): Record<string, unknown> {
   const run = docuPlans.get(dir);
+  // The sample film was planned and rendered before the preview started.
+  if (!run && dir === PREVIEW_DOCU_DIR) return { status: null, plan: { script_sha256: "", duration: 0, scenes: [], warnings: [], sources: previewCoverSources(dir) } };
   if (!run) return { plan: null, status: null };
   if (run.cancelled) return { plan: null, status: { state: "CANCELLED", done: 0, total: 5, message: "Đã hủy lập kế hoạch hình ảnh" } };
   run.polls += 1;
@@ -227,7 +241,7 @@ function previewVisual(dir: string): Record<string, unknown> {
       warnings: index === 1 ? ["Một số lát cắt lấy ngay quanh đoạn nguồn kịch bản gợi ý"] : [] };
   });
   return { status: { state: "COMPLETED", done: 5, total: 5, message: "Đã lập kế hoạch" },
-    plan: { script_sha256: String(project.script?.script_sha256 ?? ""), duration: narration.timeline?.duration ?? 0, scenes,
+    plan: { script_sha256: String(project.script?.script_sha256 ?? ""), duration: narration.timeline?.duration ?? 0, scenes, sources: previewCoverSources(dir),
       warnings: ["Phụ đề gốc của src_01 vẫn lộ một phần sau khi phóng 114%; nên chọn khung Viền đen điện ảnh 2,35:1 cho dự án"] } };
 }
 function previewNarration(dir: string): Record<string, unknown> {
@@ -388,6 +402,13 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_narration_status": return previewNarration(String(args.dir)) as T;
     case "docu_plan": docuPlans.set(String(args.dir), { polls: 0, cancelled: false }); return undefined as T;
     case "docu_plan_status": return previewVisual(String(args.dir)) as T;
+    case "docu_cover": {
+      const dir = String(args.dir);
+      const edits = docuCovers.get(dir) ?? new Map();
+      edits.set(String(args.source), { band: (args.band as [number, number] | null) ?? null, logos: (args.logos as number[][]) ?? [] });
+      docuCovers.set(dir, edits);
+      return { state: "COMPLETED", plan: true, warnings: [] } as T;
+    }
     case "docu_render": docuRenders.set(String(args.dir), { polls: 0, cancelled: false }); return undefined as T;
     case "docu_render_status": return previewRender(String(args.dir)) as T;
     case "docu_capcut": return { state: "COMPLETED", folder: "C:\\Users\\me\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\DubFlow - Three Gorges",

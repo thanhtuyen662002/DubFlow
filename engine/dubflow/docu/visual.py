@@ -126,6 +126,74 @@ def reframe(run_dir: Path, preset: str) -> dict[str, Any]:
             "sources": [{"source_id": source["id"], "clear": source["framing"]["clear"]} for source in plan["sources"]]}
 
 
+COVER_EDITS = "cover_edits.json"
+
+
+def load_cover_edits(run_dir: Path) -> dict[str, dict[str, Any]]:
+    """Per-source caption band and logo boxes set by hand in Chỉnh sửa (#520); they win over the scans."""
+    try:
+        value = json.loads((work_dir(run_dir) / COVER_EDITS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    edits = value.get("sources") if isinstance(value, dict) else None
+    return {key: edit for key, edit in edits.items() if isinstance(edit, dict)} if isinstance(edits, dict) else {}
+
+
+def _checked_band(band: Any) -> safezone.Band | None:
+    if band is None:
+        return None
+    if not isinstance(band, dict) or not all(isinstance(band.get(key), (int, float)) for key in ("top", "bottom")):
+        raise DocuError("Dải che không hợp lệ")
+    top, bottom = float(band["top"]), float(band["bottom"])
+    if not 0.0 <= top < bottom <= 1.0 or bottom - top < 0.01:
+        raise DocuError("Dải che phải nằm trong khung hình, mép trên cao hơn mép dưới")
+    return safezone.Band(round(top, 4), round(bottom, 4), float(band.get("share", 1.0)) if isinstance(band.get("share"), (int, float)) else 1.0)
+
+
+def _checked_logos(logos: Any) -> list[list[float]]:
+    if not isinstance(logos, list) or len(logos) > 16:
+        raise DocuError("Danh sách logo không hợp lệ")
+    result = []
+    for logo in logos:
+        if (not isinstance(logo, (list, tuple)) or len(logo) != 4 or not all(isinstance(part, (int, float)) for part in logo)):
+            raise DocuError("Vùng logo không hợp lệ")
+        x, y, w, h = (float(part) for part in logo)
+        if not (0 <= x and 0 <= y and w >= 0.01 and h >= 0.01 and x + w <= 1.000001 and y + h <= 1.000001):
+            raise DocuError("Vùng logo phải nằm trong khung hình")
+        result.append([round(x, 4), round(y, 4), round(w, 4), round(h, 4)])
+    return result
+
+
+def _apply_cover(source: dict[str, Any], band: safezone.Band | None, logos: list[list[float]], preset: str) -> None:
+    saved = source.get("framing") or {}
+    source["framing"] = {**saved, "band": band.__dict__ if band else None, **safezone.framing(band, preset).to_dict(),
+                         "logos": logos, "cover_edited": True}
+
+
+def set_cover(run_dir: Path, source_id: str, band: Any, logos: Any) -> dict[str, Any]:
+    """Set one source's caption band (None: no cover) and logo boxes by hand; kept across re-planning, applied on the next render."""
+    checked_band, checked_logos = _checked_band(band), _checked_logos(logos)
+    spec = load_spec(spec_path(run_dir))
+    if source_id not in {source.id for source in spec.sources}:
+        raise DocuError("Không có nguồn này trong phim tài liệu")
+    edits = load_cover_edits(run_dir)
+    edits[source_id] = {"band": checked_band.__dict__ if checked_band else None, "logos": checked_logos}
+    write_json(work_dir(run_dir) / COVER_EDITS, {"schema_version": 1, "sources": edits})
+    plan_path = run_dir / PLAN
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"plan": False, "warnings": []}
+    preset = plan.get("cinematic_framing_preset") or spec.cinematic_framing_preset
+    for source in plan["sources"]:
+        if source.get("id") == source_id:
+            _apply_cover(source, checked_band, checked_logos, preset)
+    others = [note for note in plan.get("warnings", []) if not note.startswith("Phụ đề gốc của") and "là video dọc" not in note]
+    plan["warnings"] = source_warnings(plan["sources"], preset) + others
+    write_json(plan_path, plan)
+    return {"plan": True, "warnings": plan["warnings"]}
+
+
 def load_pacing(run_dir: Path) -> dict[str, Any]:
     """Per-chapter longest slice and the Ken Burns strength, as set over MCP; defaults when absent."""
     try:
@@ -198,6 +266,10 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
                                             scanner=scanner, identity={**ocr_identity, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
                                                         band=band)
             done += 1
+            edit = load_cover_edits(run_dir).get(source.id)
+            if edit is not None:
+                # A band or logos set by hand in Chỉnh sửa win over this scan (#520).
+                band, logos = _checked_band(edit.get("band")), _checked_logos(edit.get("logos", []))
             framing = safezone.framing(band, spec.cinematic_framing_preset)
             if not framing.clear:
                 warnings.append(caption_warning(source.id, spec.cinematic_framing_preset))

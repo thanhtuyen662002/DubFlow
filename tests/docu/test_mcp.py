@@ -119,6 +119,33 @@ class ToolTests(unittest.TestCase):
         with self.assertRaises(DocuError):
             visual.reframe(self.run, "wide")
 
+    def test_a_hand_set_cover_changes_the_framing_and_survives_a_new_plan(self):
+        plan = json.loads((self.run / "visual_plan.json").read_text(encoding="utf-8"))
+        plan["sources"][0]["framing"] = {"band": {"top": 0.7, "bottom": 0.98, "share": 0.9}, "zoom": 1.14, "shift": 0.06, "letterbox": 0.0,
+                                         "clear": False, "logos": [[0.02, 0.02, 0.2, 0.1]], "portrait": False}
+        plan["warnings"] = [visual.caption_warning("src_01", "none"), "Kế hoạch khác"]
+        write_json(self.run / "visual_plan.json", plan)
+        slices = plan["scenes"]
+        # A smaller band near the bottom: the zoom hides it, nothing is stretched any more.
+        result = visual.set_cover(self.run, "src_01", {"top": 0.9, "bottom": 0.96}, [])
+        self.assertTrue(result["plan"])
+        saved = json.loads((self.run / "visual_plan.json").read_text(encoding="utf-8"))
+        framing = saved["sources"][0]["framing"]
+        self.assertEqual(saved["scenes"], slices)
+        self.assertEqual((framing["band"]["top"], framing["band"]["bottom"], framing["logos"], framing["cover_edited"]), (0.9, 0.96, [], True))
+        self.assertTrue(framing["clear"])
+        self.assertEqual(saved["warnings"], ["Kế hoạch khác"])
+        # No cover at all.
+        visual.set_cover(self.run, "src_01", None, [[0.8, 0.02, 0.15, 0.08]])
+        framing = json.loads((self.run / "visual_plan.json").read_text(encoding="utf-8"))["sources"][0]["framing"]
+        self.assertEqual((framing["band"], framing["zoom"], framing["logos"]), (None, 1.0, [[0.8, 0.02, 0.15, 0.08]]))
+        self.assertEqual(visual.load_cover_edits(self.run)["src_01"], {"band": None, "logos": [[0.8, 0.02, 0.15, 0.08]]})
+        for band, logos in (({"top": 0.9, "bottom": 0.5}, []), ({"top": -0.1, "bottom": 0.5}, []), (None, [[0.9, 0.9, 0.2, 0.2]]), ("x", [])):
+            with self.assertRaises(DocuError):
+                visual.set_cover(self.run, "src_01", band, logos)
+        with self.assertRaises(DocuError):
+            visual.set_cover(self.run, "src_99", None, [])
+
     def test_a_label_can_cover_one_slice_only(self):
         label = mcp_tools.apply_label(self.run, "sc_001", "Disinfection room", 0.6, 0.8, 0.25, 1)["label"]
         self.assertEqual(label["clip_index"], 1)

@@ -25,6 +25,7 @@ import {
 import { mountSubtitles } from "./subtitles_view.ts";
 import { COVER_STORAGE_KEY, plainCover } from "./cover.ts";
 import { mountCover } from "./cover_view.ts";
+import { mountDocuCover } from "./docu_cover_view.ts";
 import { mountAudio } from "./audio_view.ts";
 import { mountText } from "./text_view.ts";
 import { mountTemplate } from "./template_view.ts";
@@ -753,6 +754,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const point = outputToSource(current(), session.outputTime);
     cover.draw(point && point.segment.mediaId === MAIN ? point.sourceTime : null);
   }
+  const docuCover = mountDocuCover(invoke, {
+    note,
+    confirm: (options) => host.confirm(options),
+    // The film was rendered again: open it afresh, keeping its draft and the Che tab.
+    reload: async () => {
+      if (!session) return;
+      const target = session.target;
+      if (!(await close(false, true))) return;
+      if (await open(target)) setMode("cover");
+    },
+  });
   const subs = mountSubtitles(invoke, host, {
     video,
     picture: () => pictureRect(),
@@ -2572,6 +2584,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       library = [];
       zoom.value = "0";
       cover.begin();
+      docuCover.begin(outputPath, opened.kind);
       if (session.plainCover) cover.loaded(plainCoverDocument(loaded.project), []);
       if (session.reviewable && opened.job) subs.begin(opened.job, outputPath);
       audio.begin();
@@ -2616,11 +2629,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   async function closeNow(ask: boolean, quiet: boolean): Promise<boolean> {
     if (!session) return true;
-    if (ask && (unexported() || subs.dirty() || templateMode.dirty() || templateMode.busy)) {
+    if (ask && (unexported() || subs.dirty() || docuCover.dirty || templateMode.dirty() || templateMode.busy)) {
       const leave = await host.confirm(templateMode.busy ? {
         title: "Thoát chỉnh sửa?", message: "Video đang được dựng lại theo mẫu mới. Bản mới vẫn được tạo và có trong Bán hàng › Video đã tạo, nhưng bản nháp chỉnh sửa không được chuyển sang.",
         confirmLabel: "Thoát", cancelLabel: "Ở lại", danger: true,
-      } : subs.dirty() || templateMode.dirty() ? {
+      } : subs.dirty() || docuCover.dirty || templateMode.dirty() ? {
         title: "Thoát chỉnh sửa?", message: templateMode.dirty() ? "Các thay đổi mẫu chưa bấm Áp dụng mẫu sẽ mất. Cắt ghép vẫn được lưu nháp."
           : "Các câu đã sửa, kiểu chữ và cách che chưa bấm Áp dụng sẽ mất. Cắt ghép vẫn được lưu nháp.",
         confirmLabel: "Thoát", cancelLabel: "Ở lại", danger: true,
@@ -2635,6 +2648,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     session.playing = false;
     await flush();
     cover.end();
+    docuCover.end();
     $("#edit-subs-layer").classList.remove("plain-cover");
     $("#edit-subs-layer").hidden = true;
     subs.end();

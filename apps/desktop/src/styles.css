@@ -1208,6 +1208,22 @@ button.job.selected { background: var(--select); }
 .cover-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .edit-subs-layer.passive .subs-text { pointer-events: none; cursor: default; outline-color: transparent; }
 .cover-boxes { position: absolute; inset: 0; }
+.cover-docu[hidden] { display: none; }
+.cover-docu { display: flex; flex: none; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.cover-docu-list { display: flex; flex-direction: column; gap: 12px; }
+.cover-docu-card { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+.cover-docu-head { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.cover-docu-title { overflow: hidden; color: var(--text-3); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.cover-docu-stage { position: relative; overflow: visible; aspect-ratio: 16 / 9; border-radius: 6px; background: oklch(0.16 0.01 260); }
+.cover-docu-frame { display: block; width: 100%; height: 100%; object-fit: fill; border-radius: 6px; user-select: none; }
+.cover-docu-stage .cover-box { outline: 2px solid var(--voice); background: oklch(0.74 0.13 40 / .18); }
+.cover-docu-stage .cover-box.band .cover-box-label { left: 6px; }
+.cover-docu-rows { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-2); }
+.cover-docu-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cover-docu-row > span { flex: 1; min-width: 0; }
+label.cover-docu-row { justify-content: flex-start; cursor: pointer; }
+.cover-docu-reset { align-self: flex-start; }
+.cover-docu-more { margin-top: 6px; }
 .cover-box { position: absolute; box-sizing: border-box; outline: 1px dashed oklch(1 0 0 / .55); outline-offset: -1px; pointer-events: auto; cursor: pointer; }
 .cover-box.selected { outline: 2px solid var(--voice); }
 .cover-box.auto.selected { outline-style: dashed; }

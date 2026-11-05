@@ -74,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
     reframe = commands.add_parser("reframe", help="change the framing look; the plan's slices and scans stay")
     reframe.add_argument("--run-dir", type=Path, required=True)
     reframe.add_argument("--preset", required=True)
+    cover = commands.add_parser("cover", help="set one source's caption band and logo boxes by hand")
+    cover.add_argument("--run-dir", type=Path, required=True)
+    cover.add_argument("--source", required=True)
+    cover.add_argument("--band", required=True, help='JSON: {"top": 0.8, "bottom": 0.95} or null')
+    cover.add_argument("--logos", required=True, help="JSON: [[x, y, w, h], ...]")
     options = commands.add_parser("options", help="what the rough cut draws and plays: number cards, captions, music bed")
     options.add_argument("--run-dir", type=Path, required=True)
     options.add_argument("--graphics", choices=("true", "false"))
@@ -98,6 +103,12 @@ def main(argv: list[str] | None = None) -> int:
             result: dict[str, object] = {"state": "COMPLETED", "message": "", "sources": sources}
         elif args.command == "reframe":
             result = {"state": "COMPLETED", "message": "", **visual.reframe(args.run_dir, args.preset)}
+        elif args.command == "cover":
+            try:
+                band, logos = json.loads(args.band), json.loads(args.logos)
+            except ValueError as error:
+                raise DocuError("Dữ liệu vùng che không hợp lệ") from error
+            result = {"state": "COMPLETED", "message": "", **visual.set_cover(args.run_dir, args.source, band, logos)}
         elif args.command == "options":
             flag = {"true": True, "false": False, None: None}
             chosen = overlays.save_options(args.run_dir, graphics=flag[args.graphics], captions=flag[args.captions],
