@@ -2104,7 +2104,7 @@ async fn read_douyin_video(app: &tauri::AppHandle, url: &str) -> Result<(String,
     let partial = folder.join(format!("douyin-{id}.json.part"));
     fs::write(&partial, detail.to_string()).and_then(|_| fs::rename(&partial, &path))
         .map_err(|error| fail(format!("Không lưu được thông tin video Douyin: {error}")))?;
-    let desc = detail["desc"].as_str().map(str::trim).filter(|desc| !desc.is_empty()).map(str::to_owned);
+    let desc = detail["desc"].as_str().and_then(|desc| source::douyin_caption(desc, &id));
     Ok((format!("https://www.douyin.com/video/{id}"), desc))
 }
 

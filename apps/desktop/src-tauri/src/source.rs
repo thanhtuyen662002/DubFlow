@@ -766,6 +766,15 @@ pub fn link_output_dir(url: &str, title: Option<&str>, scan: &str) -> Result<Pat
     Ok(PathBuf::from(profile).join("Videos").join("DubFlow Output").join(format!("{} - vi", link_folder_name(url, title))).join(scan))
 }
 
+/// A Douyin caption worth using as a link's title: not empty, not just the
+/// video's id and not a web address (any letter case).
+pub fn douyin_caption(desc: &str, id: &str) -> Option<String> {
+    let caption = desc.trim();
+    let lower = caption.to_ascii_lowercase();
+    let placeholder = caption.is_empty() || caption == id || lower.starts_with("http://") || lower.starts_with("https://");
+    (!placeholder).then(|| caption.to_owned())
+}
+
 /// The results folder of a link that only learned its title while it
 /// downloaded: its untitled folder (still empty) moves to the titled name.
 /// Any other folder (already titled, chosen elsewhere, or with files in it)
@@ -781,13 +790,17 @@ fn retitled_output_in(output: &Path, current: &Path, url: &str, title: &str, sca
     if current != untitled || titled == untitled || titled.exists() {
         return Ok(current.to_path_buf());
     }
-    let empty = fs::read_dir(current).map(|mut entries| entries.next().is_none()).unwrap_or(true);
-    if !empty {
-        return Ok(current.to_path_buf());
-    }
+    // Only an empty folder moves, and only a missing one is made afresh;
+    // anything unreadable (a file in its place, no access) stays as it is.
+    let missing = match fs::read_dir(current).map(|mut entries| entries.next().is_none()) {
+        Ok(true) => false,
+        Ok(false) => return Ok(current.to_path_buf()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => return Ok(current.to_path_buf()),
+    };
     let parent = titled.parent().ok_or_else(|| fail("results folder has no parent"))?;
     fs::create_dir_all(parent).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
-    if current.exists() {
+    if !missing {
         fs::rename(current, &titled).map_err(|error| fail(format!("Không đổi tên được thư mục kết quả: {error}")))?;
         // The untitled `<id> - vi` folder goes too once nothing else is in it.
         if let Some(old) = current.parent() {
@@ -1116,6 +1129,16 @@ mod tests {
     }
 
     #[test]
+    fn a_douyin_caption_is_a_title_only_when_it_says_something() {
+        let id = "7699053575086918966";
+        assert_eq!(douyin_caption("  2026年火爆全网的短剧，剧情惊艳口碑炸裂，你还没看？ ", id).as_deref(), Some("2026年火爆全网的短剧，剧情惊艳口碑炸裂，你还没看？"));
+        for placeholder in ["", "   \n", id, " 7699053575086918966 ", "HTTPS://example.test/video", "Http://x.test", "https://www.douyin.com/video/1"] {
+            assert_eq!(douyin_caption(placeholder, id), None, "{placeholder:?}");
+        }
+        assert!(douyin_caption("Https là gì #giaitri", id).is_some(), "an ordinary caption that mentions https stays");
+    }
+
+    #[test]
     fn an_untitled_results_folder_takes_the_title_once_known() {
         let output = std::env::temp_dir().join(format!("dubflow-retitle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&output);
@@ -1142,6 +1165,11 @@ mod tests {
         let gone = output.join("BV1LHxQ6gELU - vi").join("link-4");
         let made = retitled_output_in(&output, &gone, url, "Video hay", "link-4").unwrap();
         assert!(made.is_dir() && made.ends_with(Path::new("Video-hay - vi").join("link-4")));
+        // A file where the folder should be is left alone, never moved.
+        let file = output.join("BV1LHxQ6gELU - vi").join("link-6");
+        fs::write(&file, "not a folder").unwrap();
+        assert_eq!(retitled_output_in(&output, &file, url, "Video hay", "link-6").unwrap(), file);
+        assert!(file.is_file() && !output.join("Video-hay - vi").join("link-6").exists());
         // A title that names the folder the same way changes nothing.
         let same = output.join("BV1LHxQ6gELU - vi").join("link-5");
         assert_eq!(retitled_output_in(&output, &same, url, "  ", "link-5").unwrap(), same);
