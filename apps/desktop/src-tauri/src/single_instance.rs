@@ -126,20 +126,40 @@ fn refuse() {
     unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONERROR) };
 }
 
+/// How long a second launch looks for the first one's window: a cold first
+/// start (WebView2, the link service) can take this long to show it.
+#[cfg(windows)]
+const FOCUS_WAIT_MS: u64 = 30_000;
+
 /// Bring the running host's main window to the front. The window may not
 /// exist yet when both launches are moments apart, so look for a while.
+/// When Windows refuses to hand over the foreground, the taskbar button
+/// flashes instead, so the user still sees where DubFlow is.
 #[cfg(windows)]
 fn focus_other() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW};
-    for _ in 0..30 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FlashWindowEx, GetForegroundWindow, IsIconic, SetForegroundWindow, ShowWindow, FLASHWINFO, FLASHW_ALL, FLASHW_TIMERNOFG, SW_RESTORE, SW_SHOW,
+    };
+    let step = std::time::Duration::from_millis(100);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(FOCUS_WAIT_MS);
+    while std::time::Instant::now() < deadline {
         if let Some(window) = other_window(MAIN_TITLE) {
             unsafe {
                 ShowWindow(window, if IsIconic(window) != 0 { SW_RESTORE } else { SW_SHOW });
-                SetForegroundWindow(window);
+                if SetForegroundWindow(window) == 0 || GetForegroundWindow() != window {
+                    let flash = FLASHWINFO {
+                        cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
+                        hwnd: window,
+                        dwFlags: FLASHW_ALL | FLASHW_TIMERNOFG,
+                        uCount: 0,
+                        dwTimeout: 0,
+                    };
+                    FlashWindowEx(&flash);
+                }
             }
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(step);
     }
 }
 
