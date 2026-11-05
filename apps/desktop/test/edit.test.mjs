@@ -163,7 +163,7 @@ assert.deepEqual(saved, {
   schema_version: 4, duration: 100, next_id: 4, changes: 4, selected: "s3",
   media: [{ id: "main", path: "", title: "", duration: 100, width: 0, height: 0, fps: 30, hasAudio: true, kind: "main" }],
   segments: [{ id: "s1", mediaId: "main", start: 0, end: 40, speed: 1, volume: 1 }, { id: "s3", mediaId: "main", start: 70, end: 100, speed: 1.5, volume: 1 }],
-  transitions: {}, overlays: [], audio: [], main_volume: 1, texts: [],
+  transitions: {}, overlays: [], audio: [], main_volume: 1, texts: [], markers: [],
 });
 const parsed = parseProject(saved, 100.2);
 assert.equal(parsed.changes, 4);
