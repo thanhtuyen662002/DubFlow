@@ -141,6 +141,12 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
     },
     finished: (take) => finishRecording(take),
     changed: () => renderRecording(),
+    // The microphone went away mid-take: the preview plays and sounds as before.
+    interrupted: () => {
+      context.play(false);
+      context.silence(false);
+      context.note("Micro đã ngắt, đã dừng thu.");
+    },
   });
 
   const tabs = [...document.querySelectorAll<HTMLButtonElement>("#au-tabs [data-au-tab]")];

@@ -113,6 +113,8 @@ export type TakesOptions<R extends TakeRecorder> = {
   finished: (take: Take) => Promise<void>;
   /** The state changed (to redraw the record button). */
   changed?: () => void;
+  /** The recorder stopped on its own (the microphone went away) while recording. */
+  interrupted?: () => void;
 };
 
 /**
@@ -126,6 +128,8 @@ export class VoiceTakes<R extends TakeRecorder> {
   #recorder: R | null = null;
   #stream: MediaStream | null = null;
   #finishing = 0;
+  /** Recorders stopped by `stop()` whose stop event has not been handled yet (each counted in `#finishing`). */
+  readonly #detached = new Set<R>();
 
   constructor(options: TakesOptions<R>) {
     this.options = options;
@@ -166,23 +170,26 @@ export class VoiceTakes<R extends TakeRecorder> {
       this.#recorder = null;
       stopTracks(this.#stream);
       this.#stream = null;
-      if (recorder.state !== "inactive") {
-        // Blocks the next take until this one's stop event and save are done.
-        this.#finishing += 1;
-        recorder.stop();
-      }
+      // Blocks the next take until this one's stop event and save are done,
+      // even when the recorder is already inactive and its event is queued.
+      this.#detached.add(recorder);
+      this.#finishing += 1;
+      if (recorder.state !== "inactive") recorder.stop();
     }
     this.options.changed?.();
   }
 
   #ended(recorder: R, take: Take): void {
-    const asked = this.#recorder !== recorder;
-    if (!asked) {
+    if (!this.#detached.delete(recorder)) {
       // The recorder stopped on its own (device lost): end the take here.
-      this.#recorder = null;
-      stopTracks(this.#stream);
-      this.#stream = null;
+      const current = this.#recorder === recorder;
+      if (current) {
+        this.#recorder = null;
+        stopTracks(this.#stream);
+        this.#stream = null;
+      }
       this.#finishing += 1;
+      if (current) this.options.interrupted?.();
     }
     take.mimeType = recorder.mimeType;
     void this.options.finished(take).catch(() => undefined).finally(() => {

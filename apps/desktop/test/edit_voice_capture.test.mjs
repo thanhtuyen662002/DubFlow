@@ -127,7 +127,9 @@ for (const options of [{ throwOnCreate: true }, { throwOnStart: true }]) {
   const recorders = [];
   const finished = [];
   let release = null;
+  let interruptions = 0;
   const takes = new VoiceTakes({
+    interrupted: () => { interruptions += 1; },
     getUserMedia: media.getUserMedia,
     makeRecorder: (stream) => { const made = new FakeRecorder(stream); recorders.push(made); return made; },
     // The save of a take is slow: the next take must wait for it too.
@@ -175,17 +177,39 @@ for (const options of [{ throwOnCreate: true }, { throwOnStart: true }]) {
   recorders[2].stop();
   recorders[2].stopped();
   assert.equal(stream.live(), false, "its microphone is closed");
+  assert.equal(interruptions, 1, "the editor hears of it (to restore the preview's sound)");
   assert.equal(finished[2].at, 70);
   assert.equal(takes.state, "finishing");
   release();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(takes.state, "idle");
 
+  assert.equal(interruptions, 1, "a stop asked for is not an interruption");
+
+  // Already inactive with its stop event still queued: stop() keeps the next take waiting.
+  const fifth = takes.start(80);
+  media.calls[3].resolve(fakeStream());
+  await fifth;
+  recorders[3].data("queued");
+  recorders[3].state = "inactive";
+  takes.stop();
+  assert.equal(takes.state, "finishing");
+  assert.equal((await takes.start(85)).kind, "busy", "busy before the queued stop event");
+  recorders[3].stopped();
+  assert.equal(finished[3].at, 80);
+  assert.equal(await new Blob(finished[3].chunks).text(), "queued");
+  assert.equal(takes.state, "finishing", "busy until its save settles");
+  assert.equal((await takes.start(85)).kind, "busy");
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(takes.state, "idle");
+  assert.equal(interruptions, 1);
+
   // Stopping while the microphone is still being opened cancels the start.
   const fourth = takes.start(90);
   takes.stop();
   const late = fakeStream();
-  media.calls[3].resolve(late);
+  media.calls[4].resolve(late);
   assert.equal((await fourth).kind, "cancelled");
   assert.equal(late.live(), false);
   assert.equal(takes.state, "idle");
