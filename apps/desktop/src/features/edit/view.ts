@@ -1321,9 +1321,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (session) seekOutput(session.outputTime + seconds_);
   }
 
-  function selectOverlay(id: string | null): void {
+  /** Pick an overlay (or none) without redrawing; the picked sound or text and any typing are dropped. */
+  function pickOverlay(id: string | null): void {
     if (!session) return;
     if (id) {
+      // Typing stops in the text box (Chữ), so Delete reaches the overlay, not the words.
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && focused.closest("input, textarea, [contenteditable='true'], [contenteditable='plaintext-only']")) focused.blur();
       // Picking an overlay drops the picked sound or text, so Delete removes the overlay.
       audio.select(null);
       textMode.select(null);
@@ -1331,6 +1335,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       pickedText = null;
     }
     session.overlay = id;
+  }
+
+  function selectOverlay(id: string | null): void {
+    if (!session) return;
+    pickOverlay(id);
     render();
   }
 
@@ -2308,7 +2317,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     content.setPointerCapture(event.pointerId);
     if (overlayBlock) {
       const id = overlayBlock.dataset.id!;
-      session.overlay = id;
+      pickOverlay(id);
       const base = session.history.current;
       drag = handle
         ? { kind: "ov-trim", id, edge: handle.dataset.edge === "start" ? "start" : "end", x: event.clientX, base, moved: false }
@@ -2498,7 +2507,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     event.preventDefault();
     event.stopPropagation();
     box.setPointerCapture(event.pointerId);
-    session.overlay = box.dataset.id!;
+    pickOverlay(box.dataset.id!);
     boxDrag = { id: box.dataset.id!, resize: !!target.closest(".edit-ov-handle"), x: event.clientX, y: event.clientY, base: session.history.current, moved: false, pointer: event.pointerId };
     render();
   });
@@ -2855,10 +2864,21 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   $("#subs-full-review").addEventListener("click", () => host.openReview());
   exportButton.addEventListener("click", openDialog);
 
+  /**
+   * A slider's live preview (`input`) waits for its `change` to be kept; if that
+   * never came (the panel redrew under it), the edit would stay "busy" and the
+   * recorder, the ruler and Delete would do nothing. Keep it before the next action.
+   */
+  function settleDraft(): void {
+    if (session?.draft && !drag && !boxDrag) commit(session.draft);
+  }
+  document.addEventListener("pointerdown", () => { if (!screen.hidden) settleDraft(); }, true);
+
   document.addEventListener("keydown", (event) => {
     if (!session || screen.hidden || !dialog.hidden || document.querySelector(".confirm-backdrop, .review:not([hidden])")) return;
     const target = event.target;
     if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='plaintext-only']")) return;
+    settleDraft();
     const key = event.key.toLowerCase();
     const ctrl = event.ctrlKey || event.metaKey;
     if (mode === "cover" && !ctrl && !event.altKey && cover.keydown(event)) {
