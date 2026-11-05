@@ -44,13 +44,15 @@ pub enum Launch {
     Refuse,
 }
 
-/// The decision for a launch. `relaunch` tells whether this host may wait
-/// for the claim, and `waited` whether that wait ended with the claim.
-pub fn decide(claim: Claim, relaunch: bool, waited: impl FnOnce() -> bool) -> Launch {
+/// The decision for a launch. An existing claim may have no holder any more
+/// (its host has just quit), so every launch tries to take it: at once for
+/// a plain launch, for up to `relaunch_wait_ms` for a restart. `wait` gets
+/// the milliseconds to wait and tells whether the claim was taken.
+pub fn decide(claim: Claim, relaunch: bool, relaunch_wait_ms: u32, wait: impl FnOnce(u32) -> bool) -> Launch {
     match claim {
         Claim::Owned => Launch::Run,
         Claim::Failed => Launch::Refuse,
-        Claim::Taken if relaunch && waited() => Launch::Run,
+        Claim::Taken if wait(if relaunch { relaunch_wait_ms } else { 0 }) => Launch::Run,
         Claim::Taken => Launch::FocusOther,
     }
 }
@@ -64,6 +66,10 @@ pub fn relaunch_requested(value: Option<std::ffi::OsString>) -> bool {
 /// process; Windows releases the claim when the process ends, however it ends.
 #[cfg(windows)]
 struct Mutex(windows_sys::Win32::Foundation::HANDLE);
+
+// A kernel handle belongs to the process, not to a thread.
+#[cfg(windows)]
+unsafe impl Send for Mutex {}
 
 #[cfg(windows)]
 impl Mutex {
@@ -96,7 +102,7 @@ pub fn claim() -> bool {
     // The helpers this host starts must never inherit the note.
     std::env::remove_var(RELAUNCH_AFTER);
     let (mutex, claim) = Mutex::open(CLAIM_NAME);
-    let launch = decide(claim, relaunch, || mutex.as_ref().is_some_and(|mutex| mutex.wait(RELAUNCH_WAIT_MS)));
+    let launch = decide(claim, relaunch, RELAUNCH_WAIT_MS, |ms| mutex.as_ref().is_some_and(|mutex| mutex.wait(ms)));
     // Held until the process ends.
     std::mem::forget(mutex);
     match launch {
@@ -197,17 +203,23 @@ mod tests {
 
     #[test]
     fn a_second_launch_focuses_the_first_unless_it_is_a_relaunch() {
-        assert_eq!(decide(Claim::Owned, false, || unreachable!()), Launch::Run);
-        assert_eq!(decide(Claim::Owned, true, || unreachable!()), Launch::Run, "the first host never waits");
-        assert_eq!(decide(Claim::Taken, false, || unreachable!()), Launch::FocusOther, "a plain second launch never waits");
-        assert_eq!(decide(Claim::Taken, true, || true), Launch::Run, "a restart takes over once the old host has gone");
-        assert_eq!(decide(Claim::Taken, true, || false), Launch::FocusOther, "an old host that never quits keeps its place");
+        assert_eq!(decide(Claim::Owned, false, 90, |_| unreachable!()), Launch::Run);
+        assert_eq!(decide(Claim::Owned, true, 90, |_| unreachable!()), Launch::Run, "the first host never waits");
+        assert_eq!(decide(Claim::Taken, false, 90, |ms| { assert_eq!(ms, 0, "a plain launch only looks"); false }), Launch::FocusOther);
+        assert_eq!(decide(Claim::Taken, true, 90, |ms| { assert_eq!(ms, 90); true }), Launch::Run, "a restart takes over once the old host has gone");
+        assert_eq!(decide(Claim::Taken, true, 90, |_| false), Launch::FocusOther, "an old host that never quits keeps its place");
     }
 
     #[test]
     fn a_claim_windows_cannot_make_never_starts_a_second_host() {
-        assert_eq!(decide(Claim::Failed, false, || unreachable!()), Launch::Refuse);
-        assert_eq!(decide(Claim::Failed, true, || unreachable!()), Launch::Refuse, "not even a restart guesses");
+        assert_eq!(decide(Claim::Failed, false, 90, |_| unreachable!()), Launch::Refuse);
+        assert_eq!(decide(Claim::Failed, true, 90, |_| unreachable!()), Launch::Refuse, "not even a restart guesses");
+    }
+
+    #[test]
+    fn a_plain_launch_takes_a_claim_whose_host_has_just_quit() {
+        // The old host quit between this launch opening the claim and looking at it.
+        assert_eq!(decide(Claim::Taken, false, 90, |ms| ms == 0), Launch::Run);
     }
 
     #[test]
@@ -249,6 +261,38 @@ mod tests {
         release.0.send(()).unwrap();
         holder.join().unwrap();
         assert!(second.wait(5_000), "the holder has gone, so the claim is handed over");
-        assert_eq!(decide(claim, true, || true), Launch::Run);
+        assert_eq!(decide(claim, true, 5_000, |ms| second.wait(ms)), Launch::Run);
+    }
+
+    /// A plain launch that opens a claim whose holder has already gone (the
+    /// holder ended without letting go) takes it at once instead of exiting.
+    #[cfg(windows)]
+    #[test]
+    fn a_plain_launch_takes_an_abandoned_windows_claim() {
+        let name = format!("Local\\DubFlowDesktop-abandoned-{}-{:?}", std::process::id(), std::time::SystemTime::now());
+        let (opened, keep) = std::sync::mpsc::channel();
+        let holder = {
+            let name = name.clone();
+            std::thread::spawn(move || {
+                let (mutex, claim) = Mutex::open(&name);
+                assert_eq!(claim, Claim::Owned);
+                // Keep the object alive after this thread (its owner) ends.
+                opened.send(mutex).unwrap();
+            })
+        };
+        let first = keep.recv().unwrap();
+        holder.join().unwrap();
+        let (second, claim) = Mutex::open(&name);
+        assert_eq!(claim, Claim::Taken, "the object still exists");
+        let second = second.unwrap();
+        assert_eq!(decide(claim, false, 90_000, |ms| second.wait(ms)), Launch::Run);
+        // Now this launch holds it: a third launch must not take it.
+        let third = std::thread::spawn(move || {
+            let (mutex, claim) = Mutex::open(&name);
+            let mutex = mutex.unwrap();
+            (claim, decide(claim, false, 90_000, |ms| mutex.wait(ms)))
+        }).join().unwrap();
+        assert_eq!(third, (Claim::Taken, Launch::FocusOther));
+        drop(first);
     }
 }
