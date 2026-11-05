@@ -298,5 +298,28 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(int(frames), 180)
 
 
+class LogoBlurTests(unittest.TestCase):
+    @unittest.skipUnless(FFMPEG, "ffmpeg not available")
+    def test_bold_white_logo_is_washed_out_and_the_blur_has_no_hard_edge(self):
+        # "太空记" in src_02 (2026-11-05): bold white strokes and a thin outline, still readable under sigma 12.
+        source = ("color=c=0x406080:s=1920x1080:d=1,format=rgb24,drawbox=x=120:y=770:w=40:h=60:color=white:t=fill,"
+                  "drawbox=x=180:y=770:w=12:h=60:color=white:t=fill,drawbox=x=220:y=770:w=60:h=10:color=white:t=fill,"
+                  "drawbox=x=117:y=860:w=230:h=4:color=white:t=fill")
+        graph = roughcut.video_filter(1920, 1080, {"clear": True, "logos": [[0.0326, 0.6283, 0.1738, 0.2267]]}, frames=1, ken_burns=False)
+        with TemporaryDirectory() as temp:
+            out = Path(temp) / "frame.gray"
+            subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", source, "-filter_complex", graph, "-map", "[video]",
+                            "-frames:v", "1", "-pix_fmt", "gray", "-f", "rawvideo", str(out)], check=True)
+            data = out.read_bytes()
+        pixel = lambda x, y: data[y * 1920 + x]
+        box = [pixel(x, y) for y in range(680, 920, 4) for x in range(60, 394, 4)]
+        self.assertLess(max(box) - min(box), 50, "white strokes (255 on 90) are washed out")
+        # Walking out of the box, no step between neighbouring pixels is bigger than a few levels.
+        row = [pixel(x, 800) for x in range(300, 520)]
+        column = [pixel(200, y) for y in range(560, 760)]
+        self.assertLess(max(abs(a - b) for a, b in zip(row, row[1:])), 4)
+        self.assertLess(max(abs(a - b) for a, b in zip(column, column[1:])), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
