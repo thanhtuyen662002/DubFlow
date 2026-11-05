@@ -214,17 +214,22 @@ export function mountPanel(options: PanelOptions): PanelHandle {
     commit({ size: state.size, collapsed });
   };
 
-  fold.addEventListener("pointerdown", (event) => event.stopPropagation());
+  // The arrow sits in the middle of the handle: a drag that starts on it resizes, a plain press folds
+  // (handled on pointerup below, since the handle captures the pointer). Keyboard presses arrive as clicks.
   fold.addEventListener("click", (event) => {
     event.stopPropagation();
-    setCollapsed(true);
+    if (event.detail === 0) setCollapsed(true);
   });
   reveal.addEventListener("click", () => setCollapsed(false));
-  handle.addEventListener("dblclick", () => setCollapsed(!(state.collapsed && foldable())));
+  handle.addEventListener("dblclick", (event) => {
+    if (fold.contains(event.target as Node)) return;
+    setCollapsed(!(state.collapsed && foldable()));
+  });
 
   handle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || !enabled()) return;
     event.preventDefault();
+    const onArrow = fold.contains(event.target as Node);
     const collapsedAtStart = state.collapsed && foldable();
     const startSize = collapsedAtStart ? COLLAPSED_PX : clampSize(currentSize(), options.min, maxNow());
     const startPos = horizontal ? event.clientX : event.clientY;
@@ -242,13 +247,14 @@ export function mountPanel(options: PanelOptions): PanelHandle {
       apply();
       window.dispatchEvent(new Event("resize"));
     };
-    const end = () => {
+    const end = (endEvent: PointerEvent) => {
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", end);
       handle.removeEventListener("pointercancel", end);
       document.body.classList.remove("panel-dragging-x", "panel-dragging-y");
       handle.classList.remove("dragging");
       if (last) commit(state);
+      else if (onArrow && endEvent.type === "pointerup") setCollapsed(true);
     };
     handle.addEventListener("pointermove", move);
     handle.addEventListener("pointerup", end);
