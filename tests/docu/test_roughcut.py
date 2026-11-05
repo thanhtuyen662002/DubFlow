@@ -48,8 +48,15 @@ class FilterTests(unittest.TestCase):
         # Another channel's logo is blurred where it sits, before the band cover and the framing.
         logo = roughcut.video_filter(1920, 1080, {"clear": False, "band": {"top": 0.8, "bottom": 0.95}, "logos": [[0.043, 0.682, 0.152, 0.118]]},
                                      frames=9, ken_burns=False)
-        self.assertIn("[0:v]split=2[logo0base][logo0cut];[logo0cut]crop=292:128:80:734,gblur=sigma=12[logo0blur];"
-                      "[logo0base][logo0blur]overlay=80:734[logo0];[logo0]split=2[base][band]", logo)
+        # The blur grows with the box and fades out over a margin round it instead of ending on a hard edge (#556).
+        self.assertIn("[0:v]split=2[logo0base][logo0cut];[logo0cut]crop=368:204:42:696,gblur=sigma=26:steps=3,format=yuva420p[logo0soft];"
+                      "color=c=black:s=368x204,drawbox=x=19:y=19:w=330:h=166:color=white:t=fill,gblur=sigma=9,format=gray[logo0mask];"
+                      "[logo0soft][logo0mask]alphamerge[logo0blur];[logo0base][logo0blur]overlay=42:696:shortest=1[logo0];"
+                      "[logo0]split=2[base][band]", logo)
+        # Along the frame's own edge the blur stays opaque to the border.
+        corner = roughcut.video_filter(1920, 1080, {"clear": True, "logos": [[0.0, 0.0, 0.2854, 0.2367]]}, frames=9, ken_burns=False)
+        self.assertIn("crop=624:332:0:0,gblur=sigma=51:steps=3", corner)
+        self.assertIn("drawbox=x=0:y=0:w=586:h=294", corner)
 
     def test_description_and_credits(self):
         with TemporaryDirectory() as temp:

@@ -162,6 +162,11 @@ LOGO_PAD = 0.012
 LOGO_PAD_X, LOGO_PAD_Y, LOGO_PAD_MAX = 0.25, 0.7, 0.07
 
 
+# The logo blur in the rough cut: sigma as a share of the box's short side (at least LOGO_SIGMA_MIN px), and a
+# margin round the box, as a share of its short side, over which the blur fades into the picture.
+LOGO_SIGMA, LOGO_SIGMA_MIN, LOGO_FEATHER = 0.2, 12, 0.3
+
+
 def logo_pad(height: float) -> tuple[float, float]:
     """(horizontal, vertical) padding of a detected logo of this height, in frame fractions."""
     return (min(LOGO_PAD_MAX, max(LOGO_PAD, LOGO_PAD_X * height)), min(LOGO_PAD_MAX, max(LOGO_PAD, LOGO_PAD_Y * height)))

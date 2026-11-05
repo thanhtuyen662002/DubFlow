@@ -25,7 +25,7 @@ from .script import CHAPTERS, load_draft
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 ENCODERS = ("h264_mf", "libopenh264")
 VIDEO_BITRATE = "8M"
-RECIPE = "docu-roughcut-v2"
+RECIPE = "docu-roughcut-v3"
 # The bundled LGPL FFmpeg has no `eq`: a gentle S-curve for contrast and +8 % saturation, the same on every source.
 LOOK = "curves=all='0/0 0.25/0.235 0.75/0.77 1/1',huesaturation=saturation=0.08"
 KEN_BURNS_SHOT = 6.0
@@ -85,15 +85,30 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
     graph: list[str] = []
     band = framing.get("band")
     label = "0:v"
-    # Another channel's logo or watermark: blurred where it sits (the bundled LGPL FFmpeg has no delogo).
+    # Another channel's logo or watermark: blurred where it sits (the bundled LGPL FFmpeg has no delogo). The blur
+    # grows with the box, so bold white text like "太空记" cannot be read through it, and it fades out over a margin
+    # round the box instead of ending on a hard edge (#556).
     for number, logo in enumerate(framing.get("logos") or ()):
         x, y = _even(float(logo[0]) * width) - 2 if logo[0] else 0, _even(float(logo[1]) * height) - 2 if logo[1] else 0
         x, y = max(0, x), max(0, y)
         w, h = min(width - x, _even(float(logo[2]) * width)), min(height - y, _even(float(logo[3]) * height))
         if w < 4 or h < 4:
             continue
-        graph.append(f"[{label}]split=2[logo{number}base][logo{number}cut];[logo{number}cut]crop={w}:{h}:{x}:{y},gblur=sigma=12[logo{number}blur];"
-                     f"[logo{number}base][logo{number}blur]overlay={x}:{y}[logo{number}]")
+        margin = _even(max(8.0, safezone.LOGO_FEATHER * min(w, h)))
+        left, top = max(0, x - margin), max(0, y - margin)
+        right, bottom = min(width, x + w + margin), min(height, y + h + margin)
+        outer_w, outer_h = right - left, bottom - top
+        # Opaque over the box and half the margin past it, except along the frame's own edges.
+        inner_x, inner_y = (x - left) - margin // 2 if x > left else 0, (y - top) - margin // 2 if y > top else 0
+        inner_r = outer_w - ((right - x - w) - margin // 2 if right > x + w else 0)
+        inner_b = outer_h - ((bottom - y - h) - margin // 2 if bottom > y + h else 0)
+        sigma = max(safezone.LOGO_SIGMA_MIN, int(round(min(w, h) * safezone.LOGO_SIGMA)))
+        graph.append(f"[{label}]split=2[logo{number}base][logo{number}cut];[logo{number}cut]crop={outer_w}:{outer_h}:{left}:{top},"
+                     f"gblur=sigma={sigma}:steps=3,format=yuva420p[logo{number}soft];"
+                     f"color=c=black:s={outer_w}x{outer_h},drawbox=x={inner_x}:y={inner_y}:w={inner_r - inner_x}:h={inner_b - inner_y}"
+                     f":color=white:t=fill,gblur=sigma={max(2, margin // 4)},format=gray[logo{number}mask];"
+                     f"[logo{number}soft][logo{number}mask]alphamerge[logo{number}blur];"
+                     f"[logo{number}base][logo{number}blur]overlay={left}:{top}:shortest=1[logo{number}]")
         label = f"logo{number}"
     if band and not framing.get("clear", True):
         # What framing cannot clear: blurred and darkened in place, its top edge feathered into the picture (#548).
