@@ -143,6 +143,17 @@ function pick(region: Region): Region {
 }
 
 /** What "Áp dụng" stores as cover.json. */
+/**
+ * The cover a video exported from Chỉnh sửa starts with (Issue #510): the one
+ * saved with its draft, else nothing drawn in the style last used (stretch
+ * when none was).
+ */
+export function plainCover(project: unknown, remembered: unknown): unknown {
+  const saved = project && typeof project === "object" ? (project as Record<string, unknown>).cover : null;
+  if (saved && typeof saved === "object" && !Array.isArray(saved)) return saved;
+  return { style: parseCoverStyle(remembered) ?? DEFAULT_COVER_STYLE, regions: [], disabled_auto: [], fixed: null };
+}
+
 export function coverDocument(state: CoverState): CoverDocument {
   return {
     style: normalizeCoverStyle(state.style),

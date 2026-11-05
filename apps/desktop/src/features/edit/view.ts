@@ -21,6 +21,7 @@ import {
   type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
 import { mountSubtitles } from "./subtitles_view.ts";
+import { COVER_STORAGE_KEY, plainCover } from "./cover.ts";
 import { mountCover } from "./cover_view.ts";
 import { mountAudio } from "./audio_view.ts";
 import { mountText } from "./text_view.ts";
@@ -131,6 +132,8 @@ type Session = {
   exporting: Edit | null;
   /** Files picked from the computer, kept with the draft. */
   recent: Media[];
+  /** Che drawn here and applied at export (Issue #510): every video that is not a re-runnable dubbing job. */
+  plainCover: boolean;
 };
 
 type Mode = "template" | "cut" | "insert" | "subs" | "cover" | "audio" | "text";
@@ -539,6 +542,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (segment) applyLevel(segment, active);
     renderOverlays(edit, time);
     subs.frame();
+    plainCoverFrame();
     audio.frame(time, session.playing);
     textMode.frame(time);
   }
@@ -619,6 +623,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   new ResizeObserver(() => {
     if (!session) return;
     renderOverlays(current(), session.outputTime);
+    plainCoverFrame();
     // Texts measure their lines: after this layout pass.
     requestAnimationFrame(() => { if (session) textMode.frame(session.outputTime); });
   }).observe(frame);
@@ -639,8 +644,44 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     outputTime: () => session?.outputTime ?? 0,
     seek: seekTo,
     job: () => session?.target.job ?? null,
-    changed: () => subs.refresh(),
+    changed: () => {
+      if (session?.plainCover) {
+        plainCoverFrame();
+        scheduleSave();
+        renderPanel();
+      } else subs.refresh();
+    },
   });
+
+  /**
+   * Che on a video exported here: the preview layer shows the cover over the
+   * main video (the regions take the pointer only under Che), and the
+   * subtitle block of a dubbing job stays hidden.
+   */
+  function plainCoverDocument(project: unknown): unknown {
+    let remembered: unknown = null;
+    try {
+      remembered = JSON.parse(window.localStorage.getItem(COVER_STORAGE_KEY) ?? "null");
+    } catch {
+      // The remembered style is a convenience.
+    }
+    return plainCover(project, remembered);
+  }
+
+  function plainCoverFrame(): void {
+    if (!session?.plainCover) return;
+    const layer = $("#edit-subs-layer");
+    const show = mode === "cover" || !!cover.document();
+    layer.hidden = !show;
+    layer.classList.toggle("passive", true);
+    layer.classList.add("plain-cover");
+    if (!show) return cover.draw(null);
+    const rect = pictureRect();
+    Object.assign(layer.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+    $("#subs-block").hidden = true;
+    const point = outputToSource(current(), session.outputTime);
+    cover.draw(point && point.segment.mediaId === MAIN ? point.sourceTime : null);
+  }
   const subs = mountSubtitles(invoke, host, {
     video,
     picture: () => pictureRect(),
@@ -783,7 +824,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!session) return;
     const { outputPath, history, selected, recent, target: { kind } } = session;
     try {
-      await invoke("edit_project_save", { outputPath, kind, project: serializeProject(history.current, history.changes, selected, recent) });
+      const project = serializeProject(history.current, history.changes, selected, recent);
+      if (session.plainCover) project.cover = cover.document();
+      await invoke("edit_project_save", { outputPath, kind, project });
       $("#edit-save-state").textContent = "";
     } catch (error) {
       $("#edit-save-state").textContent = `Chưa lưu được bản nháp: ${String(error).slice(0, 140)}`;
@@ -1075,7 +1118,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     changesBadge.hidden = !pending;
     $("#edit-changes-text").textContent = `${history.changes} thay đổi chưa xuất`;
     changesBadge.title = `${history.changes} thay đổi chưa xuất · bản nháp được tự lưu`;
-    exportButton.disabled = isUnchanged(edit, facts.duration);
+    exportButton.disabled = isUnchanged(edit, facts.duration) && !(session.plainCover && cover.document());
     exportButton.title = exportButton.disabled ? "Chưa có thay đổi để xuất" : "Xuất bản đã chỉnh sửa thành file video mới";
     const panelMode = mode === "subs" || mode === "cover" || mode === "audio" || mode === "text" || mode === "template";
     const overlay = panelMode ? undefined : selectedOverlay();
@@ -1701,13 +1744,19 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (mode !== "cover") cover.leave();
     if (mode !== "audio") audio.select(null);
     if (mode !== "text") textMode.select(null);
-    if (mode === "subs" || mode === "cover") {
+    if (mode === "cover" && session.plainCover) {
+      session.overlay = null;
+      cover.enter();
+      plainCoverFrame();
+    } else if (mode === "subs" || mode === "cover") {
       session.overlay = null;
       subs.enter(mode);
       if (mode === "cover") cover.enter();
     } else {
       subs.leave();
+      plainCoverFrame();
     }
+    $("#cover-export-note").hidden = !session.plainCover;
     if (mode === "insert") {
       renderSources();
       void loadLibrary();
@@ -1911,13 +1960,15 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session = {
         target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
-        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [],
+        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false,
       };
+      session.plainCover = !session.reviewable;
       resetThumbs();
       active = video;
       library = [];
       zoom.value = "0";
       cover.begin();
+      if (session.plainCover) cover.loaded(plainCoverDocument(loaded.project), []);
       if (session.reviewable && opened.job) subs.begin(opened.job, outputPath);
       audio.begin();
       textMode.begin();
@@ -1980,6 +2031,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     session.playing = false;
     await flush();
     cover.end();
+    $("#edit-subs-layer").classList.remove("plain-cover");
+    $("#edit-subs-layer").hidden = true;
     subs.end();
     audio.end();
     textMode.end();
@@ -2219,7 +2272,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     error.hidden = true;
     try {
       await flush();
-      await invoke("edit_export", { request: { outputPath, kind, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit) } });
+      await invoke("edit_export", { request: { outputPath, kind, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit),
+        ...(session.plainCover && cover.document() ? { cover: cover.document() } : {}) } });
       if (session?.outputPath !== outputPath) return;
       session.exporting = edit;
       dialogWaiting = true;

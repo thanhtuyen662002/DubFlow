@@ -454,8 +454,8 @@ for (const kind of ["product", "compilation", "docu", "job"]) {
   assert.equal(opened.seed, undefined, `${kind}: no documentary first draft`);
   assert.equal(opened.job, undefined, `${kind}: no queue job`);
   assert.equal(opened.displayName, "Video");
-  for (const mode of ["template", "subs", "cover"]) assert.equal(modeOffered(mode, opened.kind, true), false, `${kind} as a file: no ${mode}`);
-  for (const mode of ["cut", "insert", "audio", "text"]) assert.equal(modeOffered(mode, opened.kind, false), true, `${kind} as a file: ${mode}`);
+  for (const mode of ["template", "subs"]) assert.equal(modeOffered(mode, opened.kind, true), false, `${kind} as a file: no ${mode}`);
+  for (const mode of ["cut", "insert", "audio", "text", "cover"]) assert.equal(modeOffered(mode, opened.kind, false), true, `${kind} as a file: ${mode}`);
   // A recorded run keeps its kind.
   assert.equal(resolveTarget(requested, kind), requested);
 }
@@ -463,4 +463,6 @@ assert.equal(modeOffered("template", "product", false), true);
 assert.equal(modeOffered("subs", "job", true), true);
 assert.equal(modeOffered("subs", "job", false), false);
 assert.equal(modeOffered("subs", "docu", true), false);
+// Issue #510: Che for every video.
+for (const kind of ["job", "docu", "product", "compilation", "file"]) assert.equal(modeOffered("cover", kind, false), true, `${kind}: cover`);
 console.log("edit target tests passed");

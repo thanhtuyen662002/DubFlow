@@ -3,7 +3,7 @@ import { createEdit, remove, split } from "../src/features/edit/model.ts";
 import {
   activeRegions, COVER_MODES, coverDocument, coverSummary, DEFAULT_COVER_STYLE, describeCoverStyle, groupAuto, LEGACY_COVER_STYLE, loadCover,
   mosaicCells, nextMoment, normalizeCoverStyle, parseCoverStyle, rectBetween, regionOn, sameCover, sameCoverStyle, storedCoverStyle,
-  stretchDraws, uncoveredMoments,
+  stretchDraws, uncoveredMoments, plainCover,
 } from "../src/features/edit/cover.ts";
 import { cueOutputTime } from "../src/features/edit/subtitles.ts";
 import { startJobRequest } from "../src/features/translation_review/flow.ts";
@@ -108,3 +108,16 @@ assert.deepEqual(mosaicCells({ x: 0.1, y: 0.8, w: 0.8, h: 0.1 }, 16, 1920, 1080)
 assert.deepEqual(mosaicCells({ x: 0.1, y: 0.8, w: 0.8, h: 0.1 }, 16, 640, 360), { rows: 7, columns: 100 });
 
 console.log("cover tests passed");
+
+// Issue #510: a video exported from Chỉnh sửa keeps its cover with the draft; a fresh one starts empty in the last style.
+{
+  const saved = { style: { ...DEFAULT_COVER_STYLE, mode: "color" }, regions: [{ x: 0.1, y: 0.8, w: 0.5, h: 0.1 }], disabled_auto: [], fixed: null };
+  assert.equal(plainCover({ schema_version: 4, cover: saved }, null), saved);
+  const fresh = plainCover({ schema_version: 4 }, { ...DEFAULT_COVER_STYLE, mode: "mosaic" });
+  assert.equal(fresh.style.mode, "mosaic");
+  assert.deepEqual(fresh.regions, []);
+  assert.equal(plainCover(null, "rubbish").style.mode, "stretch");
+  const state = loadCover(plainCover(null, null), makeId);
+  assert.equal(state.style.mode, "stretch");
+  assert.equal(state.manual.length, 0);
+}

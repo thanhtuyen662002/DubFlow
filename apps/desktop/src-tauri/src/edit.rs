@@ -199,6 +199,9 @@ pub struct ExportRequest {
     file_name: String,
     /// Subtitles already remapped to the edited timeline by the front end.
     cues: Vec<Cue>,
+    /// Che drawn in the editor (Issue #510): applied to the main video, in its own time.
+    #[serde(default)]
+    cover: Option<CoverChoice>,
 }
 
 /// A validated edit, clamped to its media.
@@ -1530,6 +1533,48 @@ impl CoverChoice {
     }
 }
 
+/// The Che filter of an edited video (Issue #510): the drawn regions and the
+/// fixed one, in the chosen style (stretch when none was chosen).
+fn cover_filter(cover: &CoverChoice) -> Result<Option<String>, String> {
+    cover.validate()?;
+    let stretch = CoverStyle { mode: "stretch".into(), direction: default_direction(), strip_px: default_strip(), color: default_cover_color(),
+        block: default_block(), feather: 0 };
+    let style = cover.style.as_ref().unwrap_or(&stretch);
+    let mut areas: Vec<crate::cover_graph::Area> = cover.regions.iter().map(|region| crate::cover_graph::Area {
+        x: region.x, y: region.y, w: region.w, h: region.h, window: region.start_ms.zip(region.end_ms),
+    }).collect();
+    if let Some(fixed) = &cover.fixed {
+        areas.push(crate::cover_graph::Area { x: fixed.x, y: fixed.y, w: fixed.w, h: fixed.h, window: None });
+    }
+    let look = crate::cover_graph::Look { mode: &style.mode, direction: &style.direction, strip_px: style.strip_px, color: &style.color,
+        block: style.block, feather: style.feather };
+    Ok(crate::cover_graph::cover_filter(&areas, &look))
+}
+
+/// The export graph reading the main video through the cover: it runs once,
+/// on the main video's own clock, and every use of `[0:v]` takes a copy.
+fn with_cover(graph: &str, filter: &str) -> String {
+    let uses = graph.matches("[0:v]").count();
+    if uses == 0 {
+        return graph.to_owned();
+    }
+    let mut lines = vec![format!("[0:v]{filter}[mcv]")];
+    let mut rest = String::with_capacity(graph.len() + uses * 4);
+    if uses == 1 {
+        rest = graph.replacen("[0:v]", "[mcv]", 1);
+    } else {
+        lines.push(format!("[mcv]split={uses}{}", (0..uses).map(|index| format!("[mc{index}]")).collect::<String>()));
+        let mut parts = graph.split("[0:v]");
+        rest.push_str(parts.next().unwrap_or_default());
+        for (index, part) in parts.enumerate() {
+            rest.push_str(&format!("[mc{index}]"));
+            rest.push_str(part);
+        }
+    }
+    lines.push(rest);
+    lines.join(";\n")
+}
+
 /// Store a job's cover beside its outputs, where the worker reads it.
 pub(crate) fn write_cover(dir: &Path, cover: &CoverChoice) -> Result<(), String> {
     cover.validate()?;
@@ -1953,6 +1998,10 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         Some(subtitles_filter(&display_path(&file)))
     };
     let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix, layer.as_deref());
+    let text = match request.cover.as_ref().map(cover_filter).transpose()?.flatten() {
+        Some(filter) => with_cover(&text, &filter),
+        None => text,
+    };
     inputs.extend(sound_inputs);
     guarded(&work)?;
     fs::write(&script, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
@@ -2038,7 +2087,7 @@ mod tests {
     fn request(segments: Vec<Segment>) -> ExportRequest {
         ExportRequest { output_path: "unused".into(), kind: "file".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
             texts: vec![], quality: "source".into(),
-            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }] }
+            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None }
     }
 
     fn frame() -> Frame {
@@ -2659,6 +2708,22 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
             assert!(parse(style(changes.clone())).is_err(), "{changes}");
         }
         assert_eq!(SUBTITLE_FONTS.len(), 12);
+    }
+
+    #[test]
+    fn a_drawn_cover_reads_the_main_video_once() {
+        let cover: CoverChoice = serde_json::from_value(json!({"style": {"mode": "color", "color": "#FF0000"},
+            "regions": [{"x": 0.1, "y": 0.8, "w": 0.8, "h": 0.1, "start_ms": 0, "end_ms": 2000}]})).unwrap();
+        let filter = cover_filter(&cover).unwrap().unwrap();
+        assert!(filter.starts_with("drawbox=") && filter.contains("color=0xFF0000"));
+        let graph = with_cover("[0:v]trim=start=0:end=1[v0];\n[0:v]trim=start=2:end=3[v1];\n[1:v]null[v2]", &filter);
+        assert_eq!(graph.matches("[0:v]").count(), 1);
+        assert!(graph.starts_with(&format!("[0:v]{filter}[mcv];\n[mcv]split=2[mc0][mc1];\n[mc0]trim=start=0")), "{graph}");
+        assert!(graph.contains("[mc1]trim=start=2:end=3[v1]") && graph.contains("[1:v]null[v2]"));
+        assert_eq!(with_cover("[0:v]null[v]", &filter), format!("[0:v]{filter}[mcv];\n[mcv]null[v]"));
+        assert_eq!(cover_filter(&CoverChoice::default()).unwrap(), None);
+        let stretch: CoverChoice = serde_json::from_value(json!({"fixed": {"x": 0.0, "y": 0.0, "w": 0.2, "h": 0.1}})).unwrap();
+        assert!(cover_filter(&stretch).unwrap().unwrap().starts_with("split=3[cv0m]"));
     }
 
     #[test]

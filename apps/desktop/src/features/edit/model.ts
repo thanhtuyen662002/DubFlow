@@ -235,10 +235,14 @@ export function resolveTarget<T extends { kind: string; job?: unknown; seed?: un
   return { ...rest, kind: "file" } as unknown as T;
 }
 
-/** The editor modes a video has: Mẫu for Bán hàng videos, Phụ đề and Che for dubbing jobs that can be re-run. */
+/**
+ * The editor modes a video has: Mẫu for Bán hàng videos, Phụ đề for dubbing
+ * jobs that can be re-run, Che for every video (Issue #510: a job re-runs
+ * with it, any other video gets it at export).
+ */
 export function modeOffered(mode: string, kind: string, reviewable: boolean): boolean {
   if (mode === "template") return kind === "product";
-  if (mode === "subs" || mode === "cover") return kind === "job" && reviewable;
+  if (mode === "subs") return kind === "job" && reviewable;
   return true;
 }
 
