@@ -593,6 +593,42 @@ pub async fn docu_render_options(dir: String, graphics: bool, captions: bool, mu
     Ok(result["options"].clone())
 }
 
+/// The music bed kept beside the project when the film is split into layers (Issue #525).
+const LAYER_BED: &str = "music_bed.wav";
+
+/// Split the film into layers for Chỉnh sửa (Issue #525): keep the current
+/// music bed as a file, render a clean picture (no number cards, captions or
+/// music) and say what was burned before, so the editor puts those back as
+/// Chữ texts, Phụ đề lines and an Âm thanh clip.
+#[tauri::command]
+pub async fn docu_layers(dir: String) -> Result<Value, String> {
+    let dir = docu_dir(&dir)?;
+    if !dir.join("visual_plan.json").is_file() { return Err(fail("Hãy lập kế hoạch hình ảnh trước khi dựng bản nháp")); }
+    for work in [".dubflow-work/visual", ".dubflow-work/render"] {
+        if crate::product::read_small_json(&dir.join(work).join("status.json"), 64 * 1024).is_some_and(|status| status["state"] == "RUNNING") {
+            return Err(fail("Đợi lập kế hoạch hoặc dựng phim xong rồi hãy tách lớp"));
+        }
+    }
+    let status = crate::product::read_small_json(&dir.join(".dubflow-work/render/status.json"), 64 * 1024).unwrap_or(Value::Null);
+    let before = &status["overlays"];
+    let music = before["music"].as_str().unwrap_or("none").to_owned();
+    let bed = dir.join(".dubflow-work/render/bed.wav");
+    let kept = if music != "none" && bed.is_file() {
+        let target = dir.join(LAYER_BED);
+        let partial = dir.join(format!("{LAYER_BED}.partial"));
+        fs::copy(&bed, &partial).and_then(|_| fs::rename(&partial, &target)).map_err(|error| fail(format!("Không giữ được nhạc nền: {error}")))?;
+        crate::sfx::allow_files(&[target.clone()]);
+        Some(display_path(&target))
+    } else {
+        None
+    };
+    let result = python_json(options_args(&dir, false, false, "none", None), "bộ xử lý phim tài liệu").await?;
+    if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
+    let root = version_root()?;
+    spawn_job(&dir, &RENDER_JOB, render_args(&dir, &root))?;
+    Ok(json!({"graphics": before["graphics"] == true, "captions": before["captions"] == true, "music": music, "bed": kept}))
+}
+
 fn capcut_args(dir: &Path) -> Vec<OsString> {
     vec!["-m".into(), "engine.dubflow.docu".into(), "capcut".into(), "--run-dir".into(), dir.into()]
 }

@@ -12,7 +12,7 @@ import type { ConfirmOptions } from "../../shell/confirm.ts";
 import type { AiSession } from "../ai/provider.ts";
 import { isAudioPath, type SfxLibrary } from "../sfx/library.ts";
 import {
-  addedId, addOverlay, append, createEdit, defaultExportName, EditHistory, estimateExportBytes, exportPlan, exportSize,
+  addAudio, addedId, addOverlay, addText, append, createEdit, defaultExportName, EditHistory, estimateExportBytes, exportPlan, exportSize,
   formatClock, formatSpeed, insertAt, isUnchanged, MAIN, mainLevel, MAX_MEDIA, MAX_OVERLAYS, MAX_SEGMENTS, matchesExport, MIN_SEGMENT,
   MIN_TRANSITION, mediaOf, moveOverlay, outputDuration, outputStarts, outputToSource, overlayHeight, overlayLength,
   overlayPreset, overlayPresetOf, parseClock, parseProject, RECENT_LIMIT, remapCues, remove, removeOverlay, resizeOverlay,
@@ -29,6 +29,9 @@ import { STYLE_STORAGE_KEY, storedStyle } from "./subtitles.ts";
 import { COVER_STORAGE_KEY, plainCover } from "./cover.ts";
 import { mountCover } from "./cover_view.ts";
 import { mountDocuCover } from "./docu_cover_view.ts";
+import { mountDocuLayers } from "./docu_layers_view.ts";
+import type { Layers } from "./docu_layers.ts";
+import type { AudioFacts } from "../sfx/library.ts";
 import { mountAudio } from "./audio_view.ts";
 import { mountText } from "./text_view.ts";
 import { mountTemplate } from "./template_view.ts";
@@ -844,6 +847,38 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (await open(target)) setMode("cover");
     },
   });
+  const docuLayers = mountDocuLayers(invoke, {
+    note,
+    confirm: (options) => host.confirm(options),
+    reload: async (layers) => {
+      if (!session) return;
+      const target = session.target;
+      if (!(await close(false, true))) return;
+      if (await open(target)) await applyLayers(layers);
+    },
+  });
+
+  /** The documentary's split layers back in the reopened draft (Issue #525). */
+  async function applyLayers(layers: Layers): Promise<void> {
+    if (!session) return;
+    let edit = current();
+    for (const callout of layers.texts) edit = addText(edit, callout.at, callout.text, callout.look, callout.seconds);
+    if (layers.bed) {
+      const facts = await invoke<AudioFacts>("audio_info", { path: layers.bed }).catch(() => null);
+      if (!session) return;
+      if (facts) edit = addAudio(edit, { source: { kind: "file", path: layers.bed }, title: "Nhạc nền phim", duration: facts.duration }, 0);
+      else note("Không đọc được nhạc nền đã tách");
+    }
+    if (edit !== current()) commit(edit);
+    if (layers.burnCaptions && session.plainSubs) {
+      session.plainSubs.burn = true;
+      session.subsTouched = true;
+      subs.refresh();
+      scheduleSave();
+      renderPanel();
+    }
+  }
+
   const subs = mountSubtitles(invoke, host, {
     video,
     picture: () => pictureRect(),
@@ -2725,6 +2760,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       zoom.value = "0";
       cover.begin();
       docuCover.begin(outputPath, opened.kind);
+      docuLayers.begin(outputPath, opened.kind);
       if (session.plainCover) cover.loaded(plainCoverDocument(loaded.project), []);
       if (session.reviewable && opened.job) subs.begin(opened.job, outputPath);
       else {
@@ -2780,7 +2816,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   async function closeNow(ask: boolean, quiet: boolean): Promise<boolean> {
     if (!session) return true;
-    if (ask && (unexported() || subs.dirty() || docuCover.dirty || templateMode.dirty() || templateMode.busy)) {
+    if (ask && (unexported() || subs.dirty() || docuCover.dirty || docuLayers.busy || templateMode.dirty() || templateMode.busy)) {
       const leave = await host.confirm(templateMode.busy ? {
         title: "Thoát chỉnh sửa?", message: "Video đang được dựng lại theo mẫu mới. Bản mới vẫn được tạo và có trong Bán hàng › Video đã tạo, nhưng bản nháp chỉnh sửa không được chuyển sang.",
         confirmLabel: "Thoát", cancelLabel: "Ở lại", danger: true,
@@ -2800,6 +2836,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     await flush();
     cover.end();
     docuCover.end();
+    docuLayers.end();
     $("#edit-subs-layer").classList.remove("plain-cover");
     $("#edit-subs-layer").hidden = true;
     subs.end();

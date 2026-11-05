@@ -197,13 +197,18 @@ const previewDocuHash = (script: unknown): string => {
 };
 /** Simulated rough cuts: a few polls, then the sample video stands in for documentary.mp4. */
 const docuRenders = new Map<string, { polls: number; cancelled: boolean }>();
+/** Documentaries split into layers in Chỉnh sửa (Issue #525): rendered clean since. */
+const docuSplit = new Set<string>();
 function previewRender(dir: string): Record<string, unknown> {
   const run = docuRenders.get(dir);
+  const overlays = docuSplit.has(dir) ? { graphics: false, captions: false, music: "none" } : { graphics: true, captions: false, music: "generated" };
+  // The sample film was rendered with its number cards and music before the preview started.
+  if (!run && dir === PREVIEW_DOCU_DIR) return { video: `${dir}\\documentary.mp4`, status: { state: "COMPLETED", done: 6, total: 6, message: "Đã dựng bản nháp", overlays } };
   if (!run) return { video: null, status: null };
   if (run.cancelled) return { video: null, status: { state: "CANCELLED", done: 0, total: 6, message: "Đã hủy dựng bản nháp" } };
   run.polls += 1;
   if (run.polls < 4) return { video: null, status: { state: "RUNNING", done: run.polls, total: 6, message: `Đang dựng lát cắt ${run.polls}/5` } };
-  return { video: "D:\\Videos\\DubFlow Output\\Phim tai lieu - Three Gorges\\documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "Đã dựng bản nháp" } };
+  return { video: "D:\\Videos\\DubFlow Output\\Phim tai lieu - Three Gorges\\documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "Đã dựng bản nháp", overlays } };
 }
 /** Simulated visual plans: three polls, then slices alternating the two sources across each scene's slot. */
 const docuPlans = new Map<string, { polls: number; cancelled: boolean }>();
@@ -414,6 +419,12 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       return { state: "COMPLETED", plan: true, warnings: [] } as T;
     }
     case "docu_render": docuRenders.set(String(args.dir), { polls: 0, cancelled: false }); return undefined as T;
+    case "docu_layers": {
+      const dir = String(args.dir);
+      docuSplit.add(dir);
+      docuRenders.set(dir, { polls: 0, cancelled: false });
+      return { graphics: true, captions: false, music: "generated", bed: `${dir}\\music_bed.wav` } as T;
+    }
     case "docu_render_status": return previewRender(String(args.dir)) as T;
     case "docu_capcut": return { state: "COMPLETED", folder: "C:\\Users\\me\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\DubFlow - Three Gorges",
       name: "DubFlow - Three Gorges", clips: 18, duration: 64.1, captions: "D:\\Videos\\captions_en.srt" } as T;
