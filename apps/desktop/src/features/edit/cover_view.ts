@@ -14,7 +14,7 @@ import type { CoverHooks } from "./subtitles_view.ts";
 import {
   activeRegions, COVER_MODES, COVER_SWATCHES, coverDocument, coverSummary, even, groupAuto, LEGACY_COVER_STYLE, loadCover, MAX_MANUAL,
   mosaicCells, nextMoment, normalizeCoverStyle, rectBetween, regionOn, sameCover, stretchDraws, uncoveredMoments,
-  type AutoGroup, type AutoRegion, type CoverDirection, type CoverMode as Mode, type CoverState, type CoverStyle,
+  type AutoGroup, type AutoRegion, type CoverDirection, type CoverDocument, type CoverMode as Mode, type CoverState, type CoverStyle,
   type ManualRegion, type Rect, type Region,
 } from "./cover.ts";
 
@@ -42,6 +42,8 @@ export type CoverEditor = CoverHooks & {
   readonly active: boolean;
   /** A key while Che is open; true when it was used. */
   keydown(event: KeyboardEvent): boolean;
+  /** What an edited video's export covers (Issue #510): null when nothing is drawn. */
+  document(): CoverDocument | null;
 };
 
 /** The engine's Gaussian blur, in frame pixels. */
@@ -760,6 +762,9 @@ export function mountCover(context: CoverContext): CoverEditor {
         return;
       }
       draw(seconds);
+    },
+    document() {
+      return state && (state.manual.length || state.fixed) ? coverDocument(state) : null;
     },
     pending() {
       if (!state || !base || sameCover(state, base)) return null;

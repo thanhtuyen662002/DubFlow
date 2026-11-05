@@ -5,6 +5,7 @@
 
 mod ai_keys;
 mod compilation;
+mod cover_graph;
 mod discovery;
 mod docu;
 mod edit;
