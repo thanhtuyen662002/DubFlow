@@ -30,6 +30,7 @@ import { STYLE_STORAGE_KEY, storedStyle } from "./subtitles.ts";
 import { COVER_STORAGE_KEY, plainCover } from "./cover.ts";
 import { mountCover } from "./cover_view.ts";
 import { mountDocuCover } from "./docu_cover_view.ts";
+import { mountVersions } from "./versions_view.ts";
 import { mountDocuLayers } from "./docu_layers_view.ts";
 import type { Layers } from "./docu_layers.ts";
 import type { AudioFacts } from "../sfx/library.ts";
@@ -1587,6 +1588,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const pending = unexported();
     changesBadge.hidden = !pending;
     $("#edit-changes-text").textContent = `${history.changes} thay đổi chưa xuất`;
+    $("#edit-changes").title = $("#edit-changes-text").textContent ?? "";
     changesBadge.title = `${history.changes} thay đổi chưa xuất · bản nháp được tự lưu`;
     exportButton.disabled = isUnchanged(edit, facts.duration) && !(session.plainCover && cover.document())
       && !(session.plainSubs && session.subsTouched);
@@ -1609,11 +1611,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (templateMode.dirty() || templateMode.busy) {
       changesBadge.hidden = false;
       $("#edit-changes-text").textContent = templateMode.busy ? "Đang dựng lại theo mẫu" : pending ? `${history.changes} thay đổi · mẫu chưa áp dụng` : "Mẫu chưa áp dụng";
+      $("#edit-changes").title = $("#edit-changes-text").textContent ?? "";
       changesBadge.title = templateMode.busy ? "Video đang được dựng lại theo mẫu mới" : "Bấm Áp dụng mẫu ở cuối bảng Mẫu để dựng lại video";
     }
     if (subs.dirty()) {
       changesBadge.hidden = false;
       $("#edit-changes-text").textContent = pending ? `${history.changes} thay đổi · chưa áp dụng` : "Chưa áp dụng";
+      $("#edit-changes").title = $("#edit-changes-text").textContent ?? "";
       changesBadge.title = "Bấm Áp dụng ở cuối bảng Phụ đề hoặc Che để tạo phiên bản mới";
     }
     if (overlay) renderOverlayPanel(edit, overlay);
@@ -2689,6 +2693,31 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   $("#edit-delete").addEventListener("click", deleteSelected);
   $("#tl-delete").addEventListener("click", deleteSelected);
   undoButton.addEventListener("click", undo);
+  const versions = mountVersions(invoke, {
+    open: () => session ? {
+      edit: session.history.current, outputPath: session.outputPath, kind: session.target.kind,
+      project: () => {
+        const project = serializeProject(session!.history.current, session!.history.changes, session!.selected, session!.recent);
+        if (session!.plainCover) project.cover = cover.document();
+        return project;
+      },
+    } : null,
+    busy: () => !session || !!session.draft,
+    parse: (project) => {
+      if (!session) return null;
+      const { facts } = session;
+      const info = { path: session.outputPath, title: session.target.displayName, width: facts.width, height: facts.height, fps: facts.fps ?? 30, hasAudio: facts.has_audio };
+      return parseProject(project, facts.duration, info)?.edit ?? null;
+    },
+    commit: (next) => commit(next),
+    confirm: host.confirm,
+    note,
+    closed: () => $<HTMLButtonElement>("#edit-versions").focus(),
+  });
+  $("#edit-versions").addEventListener("click", () => {
+    if (session?.playing) pausePlayback();
+    versions.open();
+  });
   redoButton.addEventListener("click", redo);
   $("#edit-exit").addEventListener("click", () => void close(true));
   $("#edit-revision-open").addEventListener("click", () => {
@@ -2993,6 +3022,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     boxDrag = null;
     closePopover();
     dialog.hidden = true;
+    versions.close();
     if (!quiet) leave(leaving);
     return true;
   }

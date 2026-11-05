@@ -1581,6 +1581,27 @@ export function serializeProject(edit: Edit, changes: number, selected: string |
   };
 }
 
+/** An overlay of a draft or a template on media `mediaId` (`duration` seconds long); null when invalid. */
+function parseOverlay(raw: Record<string, unknown>, id: string, mediaId: string, duration: number): Overlay | null {
+  const { at, start, end, x, y, w, volume } = raw;
+  if (![at, start, end, x, y, w, volume].every(finite)) return null;
+  const { opacity, radius, border, borderColor, shape } = raw as Record<string, unknown>;
+  const overlay = styled({ id, mediaId, at: at as number, start: start as number, end: Math.min(end as number, duration),
+    x: x as number, y: y as number, w: w as number, volume: volume as number }, {
+    opacity: finite(opacity) ? opacity : 1, radius: finite(radius) ? radius : 0, border: finite(border) ? border : 0,
+    borderColor: isHex(borderColor) ? borderColor : DEFAULT_BORDER_COLOR, shape: shape === "ellipse" ? "ellipse" : "rect" });
+  const { fadeIn, fadeOut, to } = raw as Record<string, unknown>;
+  const goal = to && typeof to === "object" ? to as Record<string, unknown> : null;
+  if (finite(fadeIn) && fadeIn > 0) Object.assign(overlay, { fadeIn: Math.round(clamp(fadeIn, 0, MAX_FADE) * 10) / 10 });
+  if (finite(fadeOut) && fadeOut > 0) Object.assign(overlay, { fadeOut: Math.round(clamp(fadeOut, 0, MAX_FADE) * 10) / 10 });
+  if (goal && [goal.x, goal.y, goal.w].every(finite)) {
+    Object.assign(overlay, { to: { x: clamp(goal.x as number, 0, 1), y: clamp(goal.y as number, 0, 1), w: clamp(goal.w as number, 0.01, 1) } });
+  }
+  if (overlay.at < 0 || overlay.start < 0 || overlay.end - overlay.start < MIN_SEGMENT - 1e-6 || overlay.volume < 0 || overlay.volume > MAX_VOLUME
+    || overlay.w <= 0 || overlay.w > 1 || overlay.x < 0 || overlay.x > 1 || overlay.y < 0 || overlay.y > 1) return null;
+  return overlay;
+}
+
 function parseText(raw: unknown): TextClip | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
@@ -1631,6 +1652,72 @@ function parseMedia(raw: unknown): Media | null {
   if (id !== MAIN && !path) return null;
   return { id, path, title: typeof title === "string" ? title.slice(0, 300) : "", duration, width: width as number, height: height as number,
     fps: fps as number, hasAudio, kind: kind as MediaKind };
+}
+
+// ---------- Mẫu: the layers of an edit, to lay over another video (Issue #534) ----------
+
+export const LAYERS_SCHEMA = 1;
+
+/** Chữ, lớp chồng and âm thanh of an edit (with the media the overlays show), and its own sound's settings. */
+export function serializeLayers(edit: Edit): Record<string, unknown> {
+  const project = serializeProject(edit, 0, null);
+  return {
+    schema: LAYERS_SCHEMA, duration: outputDuration(edit),
+    texts: project.texts, audio: project.audio,
+    overlays: edit.overlays.map((overlay) => {
+      const media = mediaOf(edit, overlay.mediaId);
+      return media ? { ...overlay, media: serializeMedia({ ...media, id: "m1", kind: media.kind === "main" ? "file" : media.kind }) } : null;
+    }).filter(Boolean),
+    main_volume: edit.mainVolume, ...(edit.mainDenoise ? { main_denoise: true } : {}), ...(edit.mainEq ? { main_eq: edit.mainEq } : {}),
+  };
+}
+
+/** How many layers a saved template holds, for its row ("3 chữ · 1 lớp chồng · 2 âm thanh"). */
+export function layersSummary(raw: unknown): string {
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const count = (key: string): number => Array.isArray(value[key]) ? (value[key] as unknown[]).length : 0;
+  const parts = [[count("texts"), "chữ"], [count("overlays"), "lớp chồng"], [count("audio"), "âm thanh"]] as const;
+  return parts.filter(([n]) => n > 0).map(([n, name]) => `${n} ${name}`).join(" · ") || "Chỉ cài đặt âm thanh";
+}
+
+/**
+ * Lay a template's layers over the edit, at the same output times: texts,
+ * overlays (their media attached) and sounds that start inside the video,
+ * with new ids, within the limits; and its own-sound settings. The edit is
+ * unchanged when nothing applies.
+ */
+export function applyLayers(edit: Edit, raw: unknown): { edit: Edit; added: number; skipped: number } {
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : null;
+  if (!value || value.schema !== LAYERS_SCHEMA) return { edit, added: 0, skipped: 0 };
+  const total = outputDuration(edit);
+  let next = edit;
+  let added = 0, skipped = 0;
+  const list = (key: string): unknown[] => Array.isArray(value[key]) ? (value[key] as unknown[]) : [];
+  for (const item of list("texts")) {
+    const text = parseText(item && typeof item === "object" ? { ...item, id: "t1" } : item);
+    if (!text || text.at >= total - MIN_TEXT || next.texts.length >= MAX_TEXTS) { skipped += 1; continue; }
+    next = { ...next, texts: [...next.texts, fitText({ ...text, id: `t${next.nextId}`, duration: Math.min(text.duration, total - text.at) })], nextId: next.nextId + 1 };
+    added += 1;
+  }
+  for (const item of list("overlays")) {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : null;
+    const media = parseMedia(record?.media && typeof record.media === "object" ? { ...record.media as object, id: "m1" } : null);
+    if (!record || !media || media.kind === "main" || next.overlays.length >= MAX_OVERLAYS) { skipped += 1; continue; }
+    const attached = attachMedia(next, { ...media });
+    const overlay = attached && parseOverlay(record, `o${attached.edit.nextId}`, attached.id, media.duration);
+    if (!attached || !overlay || overlay.at >= total - MIN_SEGMENT) { skipped += 1; continue; }
+    next = { ...attached.edit, overlays: [...attached.edit.overlays, overlay], nextId: attached.edit.nextId + 1 };
+    added += 1;
+  }
+  for (const item of list("audio")) {
+    const clip = parseAudio(item && typeof item === "object" ? { ...item, id: "a1" } : item);
+    if (!clip || clip.at >= total - MIN_AUDIO || next.audio.length >= MAX_AUDIO) { skipped += 1; continue; }
+    next = { ...next, audio: [...next.audio, { ...clip, id: `a${next.nextId}` }], nextId: next.nextId + 1 };
+    added += 1;
+  }
+  if (finite(value.main_volume)) next = setMainVolume(next, value.main_volume);
+  next = setMainClean(next, { denoise: value.main_denoise === true, eq: isEq(value.main_eq) ? value.main_eq : null });
+  return { edit: next, added, skipped };
 }
 
 /**
@@ -1696,21 +1783,8 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
       const { id, mediaId, at, start, end, x, y, w, volume } = raw as Record<string, unknown>;
       if (typeof id !== "string" || !/^o\d{1,9}$/.test(id) || ids.has(id) || typeof mediaId !== "string" || !known.has(mediaId)) continue;
       if (![at, start, end, x, y, w, volume].every(finite)) continue;
-      const media = known.get(mediaId)!;
-      const { opacity, radius, border, borderColor, shape } = raw as Record<string, unknown>;
-      const overlay = styled({ id, mediaId, at: at as number, start: start as number, end: Math.min(end as number, media.duration),
-        x: x as number, y: y as number, w: w as number, volume: volume as number }, {
-        opacity: finite(opacity) ? opacity : 1, radius: finite(radius) ? radius : 0, border: finite(border) ? border : 0,
-        borderColor: isHex(borderColor) ? borderColor : DEFAULT_BORDER_COLOR, shape: shape === "ellipse" ? "ellipse" : "rect" });
-      const { fadeIn, fadeOut, to } = raw as Record<string, unknown>;
-      const goal = to && typeof to === "object" ? to as Record<string, unknown> : null;
-      if (finite(fadeIn) && fadeIn > 0) Object.assign(overlay, { fadeIn: Math.round(clamp(fadeIn, 0, MAX_FADE) * 10) / 10 });
-      if (finite(fadeOut) && fadeOut > 0) Object.assign(overlay, { fadeOut: Math.round(clamp(fadeOut, 0, MAX_FADE) * 10) / 10 });
-      if (goal && [goal.x, goal.y, goal.w].every(finite)) {
-        Object.assign(overlay, { to: { x: clamp(goal.x as number, 0, 1), y: clamp(goal.y as number, 0, 1), w: clamp(goal.w as number, 0.01, 1) } });
-      }
-      if (overlay.at < 0 || overlay.start < 0 || overlay.end - overlay.start < MIN_SEGMENT - 1e-6 || overlay.volume < 0 || overlay.volume > MAX_VOLUME
-        || overlay.w <= 0 || overlay.w > 1 || overlay.x < 0 || overlay.x > 1 || overlay.y < 0 || overlay.y > 1) continue;
+      const overlay = parseOverlay(raw as Record<string, unknown>, id, mediaId, known.get(mediaId)!.duration);
+      if (!overlay) continue;
       ids.add(id);
       count(id);
       overlays.push(overlay);

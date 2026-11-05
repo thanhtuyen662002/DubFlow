@@ -360,6 +360,9 @@ function previewEditStatus(outputPath: string) {
   }
   return { status: { schema_version: 1, state: "COMPLETED", percent: 100, message: "Đã xuất video.", output_path: run.entry.path }, exports };
 }
+/** Phiên bản và mẫu saved in the browser preview (kept for the page's life). */
+let previewVersions: Array<{ id: string; name: string; saved_at: number; summary: string | null; project: unknown }> = [];
+
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
@@ -645,6 +648,17 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       return [`D:\\Videos\\Douyin\\phim-ngan-tap-${picked}.mp4`, `D:\\Logo\\logo-kenh-${picked}.png`] as T;
     }
     case "edit_save_recording": return "D:\\Videos\\DubFlow Output\\preview\\thu-am\\giong-1.m4a" as T;
+    case "edit_versions": return previewVersions.filter((item) => item.id.startsWith("v-")).map(({ project: _, ...item }) => item) as T;
+    case "edit_templates": return previewVersions.filter((item) => item.id.startsWith("t-")).map(({ project: _, ...item }) => item) as T;
+    case "edit_version_save": case "edit_template_save": {
+      const id = `${command === "edit_version_save" ? "v" : "t"}-${Date.now()}`;
+      const entry = { id, name: String(args.name), saved_at: Math.floor(Date.now() / 1000), summary: typeof args.summary === "string" ? args.summary : null,
+        project: command === "edit_version_save" ? args.project : args.layers };
+      previewVersions.unshift(entry);
+      return { id, name: entry.name, saved_at: entry.saved_at } as T;
+    }
+    case "edit_version_load": case "edit_template_load": return (previewVersions.find((item) => item.id === args.id)?.project ?? null) as T;
+    case "edit_version_delete": case "edit_template_delete": previewVersions = previewVersions.filter((item) => item.id !== args.id); return null as T;
     case "pick_lut": return "D:\\LUT\\Teal Orange Cinematic.cube" as T;
     case "edit_lut_frame": return await previewFrame(Number(args.time), false) as T;
     case "expand_video_paths": return (args.paths as string[]).filter((path) => /\.(mp4|mkv|mov|avi|webm|m4v)$/i.test(path)) as T;
