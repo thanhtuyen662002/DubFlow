@@ -122,6 +122,30 @@ class LogoTests(unittest.TestCase):
         self.assertEqual(scan.logo_boxes([[caption(i, y=0.88)] for i in range(10)]), [])
         self.assertEqual(scan.logo_boxes([[TextBox(0.1, 0.1, 0.6, 0.3, ())] for _ in range(10)]), [])
 
+    def test_a_channel_name_beside_a_logo_joins_it(self):
+        # src_03 of the 2026-11-05 tier-2 film: a grey "剑指桃花开 bilibili" watermark with the gold channel name
+        # "科普足迹" under it, which slides in from the left in the first 3 s and then flickers in height.
+        def boxes(i):
+            found = [TextBox(0.016, 0.025 + (i % 2) * 0.003, 0.192, 0.075 + (i % 3) * 0.004, ())]
+            if i % 4 != 3:
+                found.append(TextBox(0.067, 0.078, 0.181, 0.075 + (i % 5) * 0.008, ()))
+            if i == 7:
+                found.append(TextBox(0.3, 0.05, 0.1, 0.05, ()))  # one-off scene text nearby does not stretch it
+            return found + [caption(i, y=0.83, x=0.19, w=0.62)]
+        samples = [boxes(i) for i in range(40)]
+        [logo] = scan.logo_boxes(samples)
+        self.assertLessEqual(logo.x, 0.067)
+        self.assertGreaterEqual(logo.x + logo.w, 0.247)
+        self.assertGreaterEqual(logo.y + logo.h, 0.15)
+        self.assertLess(logo.x + logo.w, 0.3)
+        # The animation (only "足迹" at the left edge) and the tall flicker are part of the logo, not big text.
+        timed = [(0.5, [TextBox(0.0, 0.09, 0.07, 0.05)]), (5.0, [TextBox(0.064, 0.072, 0.188, 0.092)]),
+                 (7.5, [TextBox(0.013, 0.414, 0.93, 0.153)])]
+        self.assertEqual(scan.big_text_times(timed, [logo]), [7.5])
+        # A logo alone stays as it was.
+        alone = [[TextBox(0.055, 0.694, 0.128, 0.094, ())] for _ in range(20)]
+        self.assertEqual(scan.logo_boxes(alone)[0].w, 0.128)
+
     def test_big_text_moments_are_found_but_not_logos_or_captions(self):
         logo = TextBox(0.055, 0.694, 0.128, 0.094)
         title = TextBox(0.0, 0.3, 0.98, 0.12)  # "120万头猪要怎么养?" across the frame
