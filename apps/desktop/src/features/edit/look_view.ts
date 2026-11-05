@@ -5,7 +5,7 @@
  * on the player.
  */
 import {
-  COLOR_PRESETS, colorPresetOf, CROP_RATIOS, cropForRatio, cropRatioOf, cssFilter, DEFAULT_FREEZE, MAX_REVERSE, NEUTRAL_COLOR, temperatureTint, zoomAt,
+  COLOR_PRESETS, colorPresetOf, lutName, CROP_RATIOS, cropForRatio, cropRatioOf, cssFilter, DEFAULT_FREEZE, MAX_REVERSE, NEUTRAL_COLOR, temperatureTint, zoomAt,
   type ColorLook, type Crop, type SegmentLook,
 } from "./look.ts";
 import { freezeFrame, lookOf, mediaOf, segmentLength, setLook, type Edit, type Segment } from "./model.ts";
@@ -20,6 +20,10 @@ export type LookContext = {
   selected: () => Segment | undefined;
   outputTime: () => number;
   note: (text: string) => void;
+  /** LUT màu: the user's .cube file, or null when they cancel. */
+  pickLut: () => Promise<string | null>;
+  /** The selected segment's frame at the playhead through `lut`, as an image URL. */
+  lutFrame: (segment: Segment, lut: string) => Promise<string>;
 };
 
 export type LookPanel = {
@@ -73,6 +77,9 @@ export function mountLook(context: LookContext): LookPanel {
     saturation: $<HTMLInputElement>("#look-saturation"), temperature: $<HTMLInputElement>("#look-temperature"),
   };
   let tab: Tab = "basic";
+  // Xem thử LUT: the last frame asked for, so renders do not ask again.
+  let lutShown = "";
+  let lutUrl = "";
 
   for (const ratio of CROP_RATIOS) {
     const button = document.createElement("button");
@@ -251,13 +258,25 @@ export function mountLook(context: LookContext): LookPanel {
     input.addEventListener("change", () => { change({ color: colorFromInputs() }); });
   }
   $("#look-color-reset").addEventListener("click", () => { change({ color: null }); });
+  $("#look-lut-pick").addEventListener("click", () => {
+    if (context.busy()) return;
+    void context.pickLut().then((path) => {
+      if (!path) return;
+      if (!/\.cube$/i.test(path)) {
+        context.note("LUT phải là file .cube.");
+        return;
+      }
+      change({ lut: path });
+    }).catch((error: unknown) => context.note(error instanceof Error ? error.message : "Không mở được hộp chọn file."));
+  });
+  $("#look-lut-clear").addEventListener("click", () => { change({ lut: null }); });
   $("#look-color-all").addEventListener("click", () => {
     if (context.busy()) return;
     const segment = segmentNow(context.base());
     if (!segment) return;
-    const color = lookOf(segment).color;
+    const { color, lut } = lookOf(segment);
     let next = context.base();
-    for (const other of next.segments) next = setLook(next, other.id, { color });
+    for (const other of next.segments) next = setLook(next, other.id, { color, lut: lut ?? null });
     if (next === context.base()) {
       context.note("Mọi đoạn đã dùng màu này.");
       return;
@@ -336,7 +355,32 @@ export function mountLook(context: LookContext): LookPanel {
     $("#look-contrast-value").textContent = signed(Math.round((color.contrast - 1) * 100));
     $("#look-saturation-value").textContent = signed(Math.round((color.saturation - 1) * 100));
     $("#look-temperature-value").textContent = color.temperature > 0 ? `Ấm ${Math.round(color.temperature * 100)}` : color.temperature < 0 ? `Lạnh ${Math.round(-color.temperature * 100)}` : "0";
-    $("#seg-tabs [data-tab='color']").classList.toggle("dot", !!look.color);
+    $("#seg-tabs [data-tab='color']").classList.toggle("dot", !!look.color || !!look.lut);
+    const lut = look.lut ?? null;
+    $("#look-lut-value").textContent = lut ? lutName(lut) : "Không";
+    $("#look-lut-value").title = lut ?? "";
+    $("#look-lut-clear").hidden = !lut;
+    $("#look-lut-preview").hidden = !lut;
+    if (lut && tab === "color") showLut(segment, lut);
+  }
+
+  /** The frame at the playhead through the LUT, asked for again when the segment, file or time changes. */
+  function showLut(segment: Segment, lut: string, again = false): void {
+    const key = `${segment.id}|${segment.start}|${lut}|${Math.round(context.outputTime() * 2)}`;
+    if (key === lutShown && !again) return;
+    lutShown = key;
+    const caption = $("#look-lut-caption");
+    caption.textContent = "Đang áp LUT lên khung tại đầu phát…";
+    void context.lutFrame(segment, lut).then((url) => {
+      if (lutShown !== key) return;
+      if (lutUrl) URL.revokeObjectURL(lutUrl);
+      lutUrl = url;
+      $<HTMLImageElement>("#look-lut-img").src = url;
+      caption.textContent = "Khung tại đầu phát khi áp LUT · khung xem trước lớn không hiện LUT, video xuất ra có LUT.";
+    }).catch((error: unknown) => {
+      if (lutShown !== key) return;
+      caption.textContent = error instanceof Error ? error.message : String(error || "Không xem thử được LUT này.");
+    });
   }
 
   function clear(player: HTMLVideoElement): void {

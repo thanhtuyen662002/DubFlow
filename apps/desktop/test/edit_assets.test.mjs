@@ -29,10 +29,10 @@ const [overlay] = withLogo.overlays;
 assert.deepEqual([overlay.at, overlay.start, overlay.end], [0, 0, 100], "shown for the whole video");
 
 // ---------- Overlay style: clamped, defaults left out, carried by drafts and exports ----------
-assert.deepEqual(overlayStyle(overlay), { opacity: 1, radius: 0, border: 0, borderColor: "#FFFFFF" });
+assert.deepEqual(overlayStyle(overlay), { opacity: 1, radius: 0, border: 0, borderColor: "#FFFFFF", shape: "rect" });
 assert.equal(setOverlayStyle(withLogo, overlay.id, { opacity: 1, radius: 0 }), withLogo, "nothing changed");
 const styled = setOverlayStyle(withLogo, overlay.id, { opacity: 0.02, radius: 0.9, border: 33, borderColor: "#ff0000" });
-assert.deepEqual(overlayStyle(styled.overlays[0]), { opacity: 0.1, radius: 0.5, border: 20, borderColor: "#FF0000" });
+assert.deepEqual(overlayStyle(styled.overlays[0]), { opacity: 0.1, radius: 0.5, border: 20, borderColor: "#FF0000", shape: "rect" });
 assert.equal(setOverlayStyle(styled, overlay.id, { borderColor: "red" }), styled, "colours must be #RRGGBB");
 const plain = setOverlayStyle(styled, overlay.id, { opacity: 1, radius: 0, border: 0 });
 assert.deepEqual(Object.keys(plain.overlays[0]).sort(), Object.keys(overlay).sort(), "back to plain drops the style");

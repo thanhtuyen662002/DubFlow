@@ -1722,3 +1722,12 @@ input.temperature { accent-color: oklch(0.75 0.13 60); }
 .tl-badge.look { background: oklch(0.42 0.10 200 / .92); }
 .tl-seg.held { background: repeating-linear-gradient(135deg, oklch(0.30 0.03 275) 0 6px, oklch(0.26 0.02 275) 6px 12px); }
 .tl-seg.held .tl-handle { display: none; }
+.ov-shape-row > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ov-shape { display: grid; grid-template-columns: 1fr 1fr; }
+.ov-layer-buttons { display: flex; gap: 6px; }
+.ov-layer-buttons .btn { flex: 1; padding-inline: 6px; white-space: nowrap; }
+.look-lut { display: flex; flex-direction: column; gap: 8px; }
+.look-lut output { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.look-lut-preview { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.look-lut-preview img { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 6px; background: #000; }
+.look-lut-preview figcaption { color: var(--text-3); font-size: 12px; line-height: 1.4; }

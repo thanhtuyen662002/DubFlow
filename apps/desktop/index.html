@@ -788,6 +788,17 @@
                       <input id="look-saturation" type="range" min="0" max="200" step="1" value="100" /></label>
                     <label class="edit-field"><span class="edit-label">Nhiệt độ màu <output id="look-temperature-value">0</output></span>
                       <input id="look-temperature" class="temperature" type="range" min="-100" max="100" step="1" value="0" /></label>
+                    <div class="edit-field look-lut">
+                      <span class="edit-label">LUT màu <output id="look-lut-value">Không</output></span>
+                      <div class="look-toggles">
+                        <button id="look-lut-pick" class="btn" type="button" title="Chọn file LUT màu .cube (từ Premiere, DaVinci, CapCut...)">Chọn file .cube…</button>
+                        <button id="look-lut-clear" class="btn ghost" type="button" hidden>Bỏ LUT</button>
+                      </div>
+                      <figure id="look-lut-preview" class="look-lut-preview" hidden>
+                        <img id="look-lut-img" alt="Khung hình tại đầu phát sau khi áp LUT" />
+                        <figcaption id="look-lut-caption">Khung tại đầu phát khi áp LUT · khung xem trước lớn không hiện LUT, video xuất ra có LUT.</figcaption>
+                      </figure>
+                    </div>
                     <div class="look-toggles">
                       <button id="look-color-all" class="btn" type="button" title="Dùng màu này cho mọi đoạn của video">Áp dụng cho mọi đoạn</button>
                       <button id="look-color-reset" class="btn ghost" type="button">Đặt lại màu</button>
@@ -835,8 +846,20 @@
                   <div class="edit-field look-pair">
                     <label><span class="edit-label">Độ rõ <output id="ov-opacity-value">100%</output></span>
                       <input id="ov-opacity" type="range" min="10" max="100" step="5" value="100" /></label>
-                    <label><span class="edit-label">Bo góc <output id="ov-radius-value">Không</output></span>
+                    <label id="ov-radius-field"><span class="edit-label">Bo góc <output id="ov-radius-value">Không</output></span>
                       <input id="ov-radius" type="range" min="0" max="50" step="1" value="0" /></label>
+                  </div>
+                  <div class="edit-field look-pair ov-shape-row">
+                    <div><span class="edit-label">Hình dạng</span>
+                      <div id="ov-shape" class="seg ov-shape" role="radiogroup" aria-label="Hình dạng">
+                        <button type="button" role="radio" data-shape="rect" aria-checked="true">Chữ nhật</button>
+                        <button type="button" role="radio" data-shape="ellipse" aria-checked="false">Tròn</button>
+                      </div></div>
+                    <div><span class="edit-label">Lớp <output id="ov-layer-value"></output></span>
+                      <div class="ov-layer-buttons">
+                        <button id="ov-layer-up" class="btn ghost small" type="button" title="Vẽ lớp này đè lên lớp phía trên">Lên trên</button>
+                        <button id="ov-layer-down" class="btn ghost small" type="button" title="Đưa lớp này xuống dưới lớp khác">Xuống dưới</button>
+                      </div></div>
                   </div>
                   <div class="edit-field ov-frame">
                     <label><span class="edit-label">Viền <output id="ov-border-value">Không</output></span>
