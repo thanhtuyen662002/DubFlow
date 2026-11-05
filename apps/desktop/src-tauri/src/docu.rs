@@ -547,6 +547,30 @@ pub async fn docu_reframe(dir: String, preset: String) -> Result<Value, String> 
     Ok(result)
 }
 
+fn cover_args(dir: &Path, source: &str, band: &Value, logos: &Value) -> Vec<OsString> {
+    vec!["-m".into(), "engine.dubflow.docu".into(), "cover".into(), "--run-dir".into(), dir.into(), "--source".into(), source.into(),
+        "--band".into(), band.to_string().into(), "--logos".into(), logos.to_string().into()]
+}
+
+/// One source's caption band (null: no cover) and logo boxes, set by hand in Chỉnh sửa (#520); the next render uses them.
+#[tauri::command]
+pub async fn docu_cover(dir: String, source: String, band: Option<[f64; 2]>, logos: Vec<[f64; 4]>) -> Result<Value, String> {
+    let dir = docu_dir(&dir)?;
+    if source.is_empty() || source.len() > 32 || !source.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(fail("Nguồn không hợp lệ"));
+    }
+    if logos.len() > 16 { return Err(fail("Tối đa 16 vùng logo")); }
+    for work in [".dubflow-work/visual", ".dubflow-work/render"] {
+        if crate::product::read_small_json(&dir.join(work).join("status.json"), 64 * 1024).is_some_and(|status| status["state"] == "RUNNING") {
+            return Err(fail("Đợi lập kế hoạch hoặc dựng phim xong rồi hãy đổi vùng che"));
+        }
+    }
+    let band = band.map_or(Value::Null, |[top, bottom]| json!({"top": top, "bottom": bottom}));
+    let result = python_json(cover_args(&dir, &source, &band, &json!(logos)), "bộ xử lý phim tài liệu").await?;
+    if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
+    Ok(result)
+}
+
 fn options_args(dir: &Path, graphics: bool, captions: bool, music: &str, music_path: Option<&Path>) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["-m".into(), "engine.dubflow.docu".into(), "options".into(), "--run-dir".into(), dir.into(),
         "--graphics".into(), graphics.to_string().into(), "--captions".into(), captions.to_string().into(), "--music".into(), music.into()];
