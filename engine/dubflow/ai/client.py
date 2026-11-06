@@ -406,6 +406,9 @@ def list_models(route: Route, *, transport: Transport = _urllib, timeout: float 
         names = [str(item.get("name", "")).removeprefix("models/") for item in reply.get("models", [])
                  if isinstance(item, dict) and "generateContent" in (item.get("supportedGenerationMethods") or [])]
     else:
+        if route.provider == "openrouter":
+            # OpenRouter lists its models without a key; its key endpoint is what proves the key.
+            _send(route, _json_request(f"{route.base_url}/key", _auth_headers(route)), transport, timeout)
         reply = _send(route, _json_request(f"{route.base_url}/models" + ("?limit=1000" if dialect == "anthropic" else ""), _auth_headers(route)), transport, timeout)
         names = [str(item.get("id", "")) for item in reply.get("data", []) if isinstance(item, dict)]
     return sorted({name for name in names if name and len(name) <= 200})[:1000]

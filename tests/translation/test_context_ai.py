@@ -84,6 +84,21 @@ class ContextTranslationTest(unittest.TestCase):
         result = context_ai.translate_in_context(cues(3), ROUTE, dubbing=True, asker=asker)
         self.assertEqual([cue.translated_text for cue in result.cues], ["Xin chào 0", "Xin chào 1", "Được rồi con đi đây"])
 
+    def test_skipped_lines_are_asked_once_more(self):
+        asked = []
+
+        def asker(route, system, schema, parts, **_):
+            if schema is context_ai.BRIEF_SCHEMA:
+                return BRIEF, route
+            ids = [json.loads(line)["id"] for line in parts[0]["text"].splitlines() if line.startswith('{"id"')]
+            asked.append(ids)
+            return {"lines": [{"id": cue_id, "text": f"Câu {cue_id} đã dịch"} for cue_id in ids if cue_id != "c1" or len(asked) > 1],
+                    "ghi_chu": "ghi chú"}, route
+        result = context_ai.translate_in_context(cues(3), ROUTE, dubbing=True, asker=asker)
+        self.assertEqual(asked, [["c0", "c1", "c2"], ["c1"]])
+        self.assertEqual([cue.translated_text for cue in result.cues], ["Câu c0 đã dịch", "Câu c1 đã dịch", "Câu c2 đã dịch"])
+        self.assertEqual(result.cues_from_ai, 3)
+
     def test_unaccented_answers_are_asked_again(self):
         calls = []
 

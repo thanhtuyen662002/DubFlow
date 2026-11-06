@@ -1893,6 +1893,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             translated, _ = _without_repeat_loops(result.cues)
             translation_provenance = dict(translation_provenance, context_ai=dict(translation_provenance["context_ai"], model=result.model,
                 windows=result.windows_total, windows_done=result.windows_done, cues_from_ai=result.cues_from_ai))
+            kept = len(result.cues) - result.cues_from_ai
+            if result.complete and kept:
+                warnings.append(f"{context_ai.WARNING}{kept}/{len(result.cues)} câu AI không dịch được nên giữ bản dịch offline.")
             if not result.complete:
                 # Not marked done: the next run retries the failed windows (the rest are cached).
                 stored_input = translation_input + ":partial"

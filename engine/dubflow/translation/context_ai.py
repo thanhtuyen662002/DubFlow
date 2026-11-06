@@ -107,7 +107,9 @@ Quy tắc:
 - Thành ngữ, tục ngữ, tiếng lóng, câu đùa: dùng cách nói tương đương của người Việt, không dịch nghĩa đen.
 - Tên người Trung viết theo âm Hán Việt; thương hiệu, tên tiếng Anh giữ nguyên; thống nhất theo phần ghi chú.
 - Nếu lời gốc rõ ràng bị nhận dạng sai, suy ra ý đúng theo ngữ cảnh.
-- Mỗi dòng KHÔNG vượt quá số tiếng tối đa (một tiếng = một âm tiết tiếng Việt) để đọc và lồng tiếng vừa thời lượng; ưu tiên câu gọn, bỏ từ đệm thừa.
+- KHÔNG bỏ ý: mỗi dòng phải giữ đủ thông tin của lời gốc dòng đó (ai, làm gì, vì sao, cảm xúc). Câu tự nhiên nhưng không được lược mất nội dung.
+- Giữ số tiếng của mỗi dòng trong khoảng tối đa đã cho (một tiếng = một âm tiết tiếng Việt) để đọc và lồng tiếng vừa thời lượng: ưu tiên câu gọn, bỏ từ đệm thừa; chỉ khi bắt buộc để giữ đủ ý mới được vượt, tối đa thêm 20%.
+- Ngôi thứ ba cho cùng một người dùng một cách gọi thống nhất (ví dụ luôn "anh ta" hoặc luôn "hắn"), theo ghi chú.
 - Giữ nguyên số liệu, giá tiền, đơn vị. Không thêm thông tin, không giải thích, không ghi chú trong ngoặc, không emoji.
 - Viết tiếng Việt có dấu đầy đủ.
 - Trả đủ mọi id đã cho. ghi_chu: cập nhật ngắn gọn (dưới 600 ký tự) cách xưng hô, tên riêng, thuật ngữ đã dùng để các đoạn sau dịch thống nhất."""
@@ -193,6 +195,23 @@ def _lines(value: Any, window: Sequence[Cue], *, dubbing: bool) -> dict[str, str
     return result
 
 
+def _ask_missing(asker: Asker, route: Route, value: Any, window: Sequence[Cue], missing: Sequence[Cue], lines: dict[str, str],
+                 brief: str, notes: str, *, dubbing: bool, title: str) -> Any:
+    """The window's answer with the missing lines filled in, when a second request gives them."""
+    before = [(cue, lines[cue.cue_id]) for cue in window if cue.cue_id in lines][-CONTEXT_CUES:]
+    prompt = _window_prompt(missing, before, brief, notes, dubbing=dubbing, title=title, part=1, parts=1)
+    try:
+        extra, _ = asker(route, LINES_SYSTEM, LINES_SCHEMA, [{"text": prompt}], max_tokens=4000)
+    except AiError:
+        return value
+    found = _lines(extra, missing, dubbing=dubbing)
+    if not found or lacks_diacritics(list(found.values())):
+        return value
+    merged = dict(value) if isinstance(value, dict) else {"ghi_chu": ""}
+    merged["lines"] = [{"id": key, "text": text} for key, text in lines.items()] + [{"id": key, "text": text} for key, text in found.items()]
+    return merged
+
+
 def _digest(value: Any) -> str:
     return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -268,6 +287,11 @@ def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, ca
                 if lines and lacks_diacritics(list(lines.values())):
                     value, current = asker(current, LINES_SYSTEM, LINES_SCHEMA, [{"text": prompt}], max_tokens=12000)
                 lines = _lines(value, window, dubbing=dubbing)
+                missing = [cue for cue in window if cue.cue_id not in lines]
+                if lines and missing and not lacks_diacritics(list(lines.values())):
+                    # Lines the model skipped or overran: asked once more, with the window's answer as context.
+                    value = _ask_missing(asker, current, value, window, missing, lines, brief, notes, dubbing=dubbing, title=title)
+                    lines = _lines(value, window, dubbing=dubbing)
                 if lines and not lacks_diacritics(list(lines.values())):
                     _store(path, value)
             except AiError as failure:

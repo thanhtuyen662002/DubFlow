@@ -169,6 +169,15 @@ class OtherDialectsTest(unittest.TestCase):
         self.assertEqual(pick_model("grok", ["grok-9"]), "grok-9")
         self.assertIsNone(pick_model("custom", ["a"]))
 
+    def test_openrouter_proves_the_key_before_listing_its_public_models(self):
+        fake = Fake((401, {"error": {"message": "No auth credentials found"}}))
+        with self.assertRaises(AiError) as caught:
+            list_models(make_route("openrouter", KEY), transport=fake)
+        self.assertEqual(caught.exception.code, "KEY")
+        self.assertEqual(fake.requests[0].full_url, "https://openrouter.ai/api/v1/key")
+        fake = Fake((200, {"data": {"label": "x"}}), (200, {"data": [{"id": "openrouter/auto"}]}))
+        self.assertEqual(list_models(make_route("openrouter", KEY), transport=fake), ["openrouter/auto"])
+
 
 class JsonTextTest(unittest.TestCase):
     def test_parses_fences_and_preambles(self):
