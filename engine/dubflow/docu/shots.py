@@ -20,13 +20,14 @@ ANALYSIS_WIDTH = 320
 # Cuts closer than this are one flicker (a flash, a double detection). A real 0.3 s shot keeps both of its cuts, so
 # no slice is planned across it (Tier-3).
 MIN_SHOT = 0.15
-RECIPE = "scdet-320-v3"
-# Gradual changes scdet misses (a whip pan, a dissolve; Tier-3): tiny grey thumbnails at SLOW_FPS, each compared with
-# the one SLOW_SPAN samples later (mean difference, % of full scale). Where that change stands out from the footage
-# around it (SLOW_RATIO times the median within SLOW_WINDOW samples, and at least SLOW_MIN), the stretch is cut out
-# as a shot of its own, too short to be planned. Steady camera motion raises the median, so it does not cut.
+RECIPE = "scdet-320-v4"
+# Gradual changes scdet misses (a whip pan, a dissolve; Tier-3): tiny grey thumbnails at SLOW_FPS. At each sample
+# the picture SLOW_SPAN samples before is compared with the one SLOW_SPAN after (mean difference, % of full scale).
+# It is a transition when that change is big (SLOW_MIN) and the picture was steady on both sides: SLOW_RATIO times
+# the change within the span just before and the span just after. Walking along a corridor changes the picture all
+# the time, so it is not cut; a whip from one view to another is.
 SLOW_FPS, SLOW_SPAN, SLOW_W, SLOW_H = 5, 3, 32, 18
-SLOW_MIN, SLOW_RATIO, SLOW_WINDOW = 8.0, 3.5, 15
+SLOW_MIN, SLOW_RATIO = 12.0, 2.5
 _TIME = re.compile(r"lavfi\.scd\.time=([0-9]+(?:\.[0-9]+)?)")
 
 Runner = Callable[[list[str], Path, Callable[[], bool]], None]
@@ -53,24 +54,41 @@ def changes(raw: bytes) -> list[tuple[float, float]]:
     return out
 
 
-def slow_cuts(raw: bytes, duration: float) -> list[float]:
+def _frames(raw: bytes) -> list[bytes]:
+    size = SLOW_W * SLOW_H
+    return [raw[i:i + size] for i in range(0, len(raw) - size + 1, size)]
+
+
+def _difference(a: bytes, b: bytes) -> float:
+    return sum(abs(x - y) for x, y in zip(a, b)) / len(a) / 2.55
+
+
+def transitions(raw: bytes, *, minimum: float = SLOW_MIN, ratio: float = SLOW_RATIO,
+                span: int = SLOW_SPAN) -> list[tuple[float, float, float]]:
+    """(time, change across, steadiest side's change) at each sample whose picture turns into another one there."""
+    frames = _frames(raw)
+    found = []
+    for i in range(2 * span, len(frames) - 2 * span):
+        across = _difference(frames[i - span], frames[i + span])
+        if across <= minimum:
+            continue
+        sides = max(_difference(frames[i - 2 * span], frames[i - span]), _difference(frames[i + span], frames[i + 2 * span]))
+        if across > ratio * sides:
+            found.append((i / SLOW_FPS, across, sides))
+    return found
+
+
+def slow_cuts(raw: bytes, duration: float, **tuning: float) -> list[float]:
     """Both ends of each stretch where the picture turns into another one gradually (whip pan, dissolve)."""
-    values = changes(raw)
-    if not values:
-        return []
-    # A pair spans SLOW_SPAN samples; a dissolve's blend runs on past it, so a whole span is taken off each side.
-    half = SLOW_SPAN / SLOW_FPS
+    step = 1 / SLOW_FPS
+    half = int(tuning.get("span", SLOW_SPAN)) / SLOW_FPS
     cuts: list[float] = []
-    start = None
-    for index, (time, change) in enumerate(values):
-        around = sorted(value for _, value in values[max(0, index - SLOW_WINDOW):index + SLOW_WINDOW + 1])
-        over = change > max(SLOW_MIN, SLOW_RATIO * around[len(around) // 2])
-        if over and start is None:
-            start = time
-        if start is not None and (not over or index == len(values) - 1):
-            end = time if over else values[index - 1][0]
-            cuts += [round(max(0.0, start - half), 3), round(min(duration, end + half), 3)]
-            start = None
+    run: list[float] = []
+    for time, _, _ in transitions(raw, **tuning) + [(float("inf"), 0.0, 0.0)]:
+        if run and time - run[-1] > step * 1.5:
+            cuts += [round(max(0.0, run[0] - half), 3), round(min(duration, run[-1] + half), 3)]
+            run = []
+        run.append(time)
     return cuts
 
 
