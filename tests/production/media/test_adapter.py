@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from unittest.mock import patch
 import wave
 
@@ -384,6 +386,77 @@ class MediaCommandTests(unittest.TestCase):
                 self.assertEqual(call[call.index("-af") + 1], "aresample=48000:async=1:first_pts=4000,asetpts=PTS-STARTPTS")
 
 
+    def _long_probe(self):
+        document = _probe_document()
+        # 30 minutes at 1/12800, first video frame at 0.08 s.
+        document["streams"][0].update(start_pts=1024, duration_ts=30 * 60 * 12800)
+        document["format"]["duration"] = "1800.000000"
+        return parse_ffprobe_json(json.dumps(document), source_path=self.source)
+
+    def test_a_long_video_renders_parts_at_once_then_joins_them_without_reencoding(self):
+        probe = self._long_probe()
+        runner = RecordingRunner()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner,
+                                     video_encoders=("h264_nvenc", "h264_mf"))
+        with mock.patch.dict(os.environ, {"DUBFLOW_THREADS": "8"}), mock.patch("engine.dubflow.resources.machine_threads", return_value=16):
+            adapter.render(self.source, self.root / "long.mp4", subtitle_path=self.subtitle, audio_path=self.audio,
+                           source_probe=probe, video_duration=probe.video_timeline(), preserve_original_audio=False,
+                           burn_in_subtitles=True, overwrite=True)
+        parts = [call for call in runner.calls if "-ss" in call]
+        final = runner.calls[-1]
+        self.assertEqual(len(parts), 4)  # Eight threads: four parts at once on the GPU.
+        starts = sorted((call[call.index("-vf") + 1].split(",", 1)[0] for call in parts), key=lambda text: float(text.split("=")[2].split(":")[0]))
+        self.assertEqual(starts[0], "trim=start=0.080000:end=450.080000")
+        self.assertEqual(starts[-1], "trim=start=1350.080000:end=1800.080000")
+        for call in parts:
+            graph = call[call.index("-vf") + 1]
+            self.assertIn(",setpts=PTS-0.080000/TB,subtitles=", graph)
+            self.assertTrue(graph.endswith(",setpts=PTS-STARTPTS"))
+            self.assertEqual(list(call[call.index("-i") - 4:call.index("-i") - 2]), ["-hwaccel", "cuda"])
+            self.assertNotIn("-t", call)  # The trim ends the read.
+            self.assertEqual(call[call.index("-c:v") + 1], "h264_nvenc")
+            self.assertIn("-an", call)
+        # The join: the single pass's inputs and sound, the parts' picture copied.
+        self.assertIn("concat", final)
+        self.assertEqual(final[final.index("-c:v") + 1], "copy")
+        self.assertEqual(final[final.index("-map") + 1], "2:v:0")
+        self.assertEqual(final[final.index("-map") + 3], "1:a:0")
+        self.assertNotIn("-hwaccel", final)
+        self.assertNotIn("-pix_fmt", final)
+        self.assertIn("-t", final)
+        self.assertEqual(list(self.root.glob(".long.parts-*")), [])
+
+    def test_a_failed_part_retries_and_a_failing_gpu_redoes_every_part_on_the_cpu(self):
+        probe = self._long_probe()
+
+        class GpuGone(RecordingRunner):
+            def __call__(self, argv, timeout):
+                if "h264_nvenc" in argv:
+                    self.calls.append(argv)
+                    return subprocess.CompletedProcess(argv, 1, "", "OpenEncodeSessionEx failed")
+                return super().__call__(argv, timeout)
+
+        runner = GpuGone()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner,
+                                     video_encoders=("h264_nvenc", "h264_mf"))
+        with mock.patch.dict(os.environ, {"DUBFLOW_THREADS": "4"}), mock.patch("engine.dubflow.resources.machine_threads", return_value=16):
+            adapter.render(self.source, self.root / "cpu.mp4", subtitle_path=self.subtitle, source_probe=probe,
+                           video_duration=probe.video_timeline(), burn_in_subtitles=True, overwrite=True)
+        gpu = [call for call in runner.calls if "h264_nvenc" in call]
+        cpu = [call for call in runner.calls if "-ss" in call and "h264_mf" in call]
+        self.assertEqual(len(gpu), 4)  # The first failed part fails again alone, then the CPU takes over.
+        self.assertEqual(len(cpu), 3)  # 1800 s in parts of at most 600 s, two at once.
+        self.assertEqual(runner.calls[-1][runner.calls[-1].index("-c:v") + 1], "copy")
+
+    def test_a_short_video_or_one_core_keeps_the_single_pass(self):
+        probe = self._long_probe()
+        runner = RecordingRunner()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
+        with mock.patch.dict(os.environ, {"DUBFLOW_THREADS": "1"}):
+            adapter.render(self.source, self.root / "one.mp4", source_probe=probe, video_duration=probe.video_timeline(), overwrite=True)
+        self.assertEqual(len(runner.calls), 1)
+        self.assertNotIn("-ss", runner.calls[0])
+
     def test_burn_in_escapes_filter_path_without_shelling(self) -> None:
         runner = RecordingRunner()
         adapter = FfmpegMediaAdapter(sys.executable, trusted_root=Path(sys.executable).resolve().parent, runner=runner)
@@ -745,3 +818,46 @@ class RealFfmpegBlurTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.environ.get("DUBFLOW_TEST_FFMPEG"), "set DUBFLOW_TEST_FFMPEG to a real ffmpeg.exe to run")
+class RealFfmpegPartsTests(unittest.TestCase):
+    def test_parts_rendered_at_once_match_the_single_pass_frame_for_frame(self):
+        import engine.dubflow.media.adapter as adapter_module
+
+        ffmpeg = Path(os.environ["DUBFLOW_TEST_FFMPEG"])
+        ffprobe = ffmpeg.with_name("ffprobe" + ffmpeg.suffix)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # A moving picture whose first frame is not at zero (MPEG-TS, 1.4 s offset), 29.97 fps, with sound.
+            source = root / "source.ts"
+            subprocess.run([str(ffmpeg), "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30000/1001:d=24",
+                            "-f", "lavfi", "-i", "sine=d=24", "-c:v", "mpeg2video", "-q:v", "3", "-g", "120", "-c:a", "mp2",
+                            "-output_ts_offset", "1.4", "-shortest", "-f", "mpegts", str(source)], check=True)
+            subtitle = root / "lines.srt"
+            subtitle.write_text("".join(f"{n + 1}\n00:00:{2 * n:02d},000 --> 00:00:{2 * n + 1:02d},500\nDòng {n}\n\n" for n in range(11)), encoding="utf-8")
+            probe = MediaProbe(ffprobe, trusted_root=ffprobe.resolve().parent).probe(source)
+            adapter = FfmpegMediaAdapter(ffmpeg, trusted_root=ffmpeg.resolve().parent)
+            region = (BlurRegion(0.1, 0.7, 0.8, 0.2, 3000, 15000),)
+            render = lambda name: adapter.render(source, root / name, subtitle_path=subtitle, burn_in_subtitles=True, source_probe=probe,
+                                                 video_duration=probe.video_timeline(), blur_regions=region, overwrite=True)
+            single = render("single.mp4")
+            with mock.patch.object(adapter_module, "_PARALLEL_MIN_SECONDS", 10), mock.patch.object(adapter_module, "_PART_SECONDS", 7), \
+                    mock.patch.dict(os.environ, {"DUBFLOW_THREADS": "4"}), mock.patch("engine.dubflow.resources.machine_threads", return_value=16), \
+                    mock.patch.object(adapter, "_render_parts", wraps=adapter._render_parts) as parts, \
+                    mock.patch.object(adapter, "_run_parts", wraps=adapter._run_parts) as ran, \
+                    mock.patch.object(adapter, "_write_atomic", wraps=adapter._write_atomic) as wrote:
+                joined = render("parts.mp4")
+            self.assertEqual(parts.call_count, 1)
+            self.assertEqual(ran.call_args.args[1:], (4, 2))  # Four parts, two at once.
+            # The join, not the single-pass fallback, wrote the output.
+            self.assertIn("concat", wrote.call_args.args[1])
+            self.assertEqual(wrote.call_count, 5)
+            count = lambda video: subprocess.run([str(ffprobe), "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
+                                                  "stream=nb_read_frames", "-of", "csv=p=0", str(video)], check=True, capture_output=True, text=True).stdout.strip()
+            self.assertEqual(count(joined), count(single))
+            # Same frame at the same time everywhere (only the encoders' rounding differs): a shifted frame scores far lower.
+            compared = subprocess.run([str(ffmpeg), "-hide_banner", "-nostdin", "-i", str(single), "-i", str(joined), "-lavfi", "[0:v][1:v]psnr", "-f", "null", "-"],
+                                      capture_output=True, text=True)
+            low = float(re.search(r"min:([0-9.]+|inf)", compared.stderr).group(1))
+            self.assertGreater(low, 30.0, compared.stderr[-400:])
