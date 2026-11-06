@@ -149,11 +149,13 @@ class WarningTests(unittest.TestCase):
 
 
 class MatcherTests(unittest.TestCase):
-    def test_lengths(self):
-        self.assertEqual(matcher.lengths(4.0), [4.0])
-        self.assertEqual([round(piece, 6) for piece in matcher.lengths(12.3)], [4.1, 4.1, 4.1])
-        self.assertEqual(matcher.lengths(5.1), [5.1])
-        self.assertTrue(all(3.0 <= piece <= 4.5 for piece in matcher.lengths(37.0)))
+    def test_fit_length(self):
+        # The whole rest of the slot when the shot holds it; never a leftover shorter than a slice.
+        self.assertEqual(matcher.fit_length(4.0, 3.0, 10.0, 1.8, 6.5), 4.0)
+        self.assertAlmostEqual(matcher.fit_length(5.0, 4.0, 10.0, 1.8, 6.5), 5.0)
+        self.assertAlmostEqual(matcher.fit_length(12.0, 4.4, 10.0, 1.8, 6.5), 4.4)
+        self.assertAlmostEqual(matcher.fit_length(6.0, 4.4, 4.4, 1.8, 6.5), 4.2)
+        self.assertIsNone(matcher.fit_length(12.0, 4.0, 1.2, 1.8, 6.5))
 
     def test_rules(self):
         scenes = [matcher.Scene("sc_001", 0, 12.3, (matcher.Ref("src_01", 10, 30), matcher.Ref("src_02", 20, 30))),
@@ -175,10 +177,13 @@ class MatcherTests(unittest.TestCase):
                 if a is not b and a.source_id == b.source_id:
                     self.assertFalse(a.start < b.end - 0.05 and a.end > b.start + 0.05, "no range is used twice")
         for piece in slices:
-            self.assertTrue(piece.start == 0 or piece.start in by_id[piece.source_id].cuts or piece.tier > 0)
+            # One shot, one slice: inside one clean shot window.
+            self.assertTrue(any(a - 1e-6 <= piece.start and piece.end <= b + 1e-6 for a, b in by_id[piece.source_id].windows),
+                            (piece.source_id, piece.start, piece.end))
+            self.assertTrue(matcher.MIN_SLICE - 1e-6 <= piece.duration <= matcher.MAX_SLICE + 1e-6 or piece is slices[-1])
         # The first scene alternates sources and stays in the cited footage.
         first = planned[0][1]
-        self.assertEqual([p.source_id for p in first], ["src_01", "src_02", "src_01"])
+        self.assertEqual([p.source_id for p in first], ["src_01", "src_02", "src_01", "src_02"])
         self.assertEqual({p.tier for p in first}, {matcher.CITED})
         # sc_002 cites 4 s of src_01: it needs more, and says where it came from.
         self.assertTrue(planned[1][2])
@@ -252,7 +257,8 @@ class VisualRunTests(unittest.TestCase):
             self.assertEqual([s["scene_id"] for s in plan["scenes"]], ["sc_001", "sc_002"])
             self.assertEqual(plan["scenes"][0]["start"], 0.0, "the picture starts with the film")
             self.assertEqual(plan["sources"][0]["framing"], {"band": None, "zoom": 1.0, "shift": 0.0, "letterbox": 0.1217, "clear": True,
-                                                             "frame_size": None, "portrait": False, "logos": [], "text_spans": []})
+                                                             "shift_x": 0.0, "frame_size": None, "portrait": False, "logos": [], "text_spans": [],
+                                                             "heavy_watermark": False, "usable": True, "logos_cropped": 0, "text_share": 0.0})
             self.assertAlmostEqual(sum(s["duration"] for scene in plan["scenes"] for s in scene["slices"]), 9.0, places=2)
 
 

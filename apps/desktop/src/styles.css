@@ -1610,6 +1610,7 @@ label.cover-docu-row { justify-content: flex-start; cursor: pointer; }
 .docu-slices-label { color: var(--text-3); font-size: 11.5px; }
 .docu-slice { padding: 2px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); }
 .docu-slice.far { border-style: dashed; color: var(--text-2); }
+.docu-slice-drawn { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: var(--text); font-size: 12px; }
 .docu-slice-note { flex-basis: 100%; color: var(--warn); font-size: 11.5px; }
 .docu-mcp-activity { font-size: 12.5px; }
 .docu-mcp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }

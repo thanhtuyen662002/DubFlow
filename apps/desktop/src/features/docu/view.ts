@@ -5,7 +5,7 @@ import {
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
   hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
   calloutTexts, midrollHint, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
-  type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type McpActivity, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
+  type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type McpActivity, type GraphicType, type Mood, type OpenDocuRun, type PlanSlice, type SourceForm,
 } from "./model.ts";
 import { writeScript } from "./ai.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
@@ -153,7 +153,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
             </section>
             <section class="docu-card docu-narration docu-visual" aria-labelledby="docu-visual-title">
               <header class="docu-step-head"><span class="docu-step-num">2</span><h3 id="docu-visual-title">Kế hoạch hình ảnh</h3><span id="docu-plan-badge" class="docu-badge"></span></header>
-              <p class="hint">Tách cảnh các video nguồn, tránh vùng phụ đề gốc rồi chia mỗi cảnh lời đọc thành các lát 3–4,5 giây, xen kẽ góc máy giữa các nguồn.</p>
+              <p class="hint">Tách cảnh các video nguồn, tránh vùng phụ đề gốc, cắt logo ra ngoài khung rồi chia mỗi cảnh lời đọc thành các lát 1,8–6,5 giây, mỗi lát nằm trọn trong một cú máy và xen kẽ góc máy giữa các nguồn. Tự thêm cảnh bản đồ vệ tinh tại tọa độ của kịch bản và tối đa 4 slide số liệu.</p>
               <button id="docu-plan" class="btn primary block" type="button">Lập kế hoạch hình ảnh</button>
               <div id="docu-plan-progress" class="docu-narration-progress" hidden>
                 <div class="bar busy-bar"><span id="docu-plan-bar"></span></div>
@@ -416,7 +416,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const planned = visual.plan?.scenes.find(item => item.scene_id === scene.scene_id);
     if (!planned) return "";
     const seconds = (value: number) => value.toFixed(1).replace(".", ",");
-    return `<span class="docu-slices-label">Hình:</span>${planned.slices.map(piece => `<button type="button" class="docu-ref docu-slice ${piece.tier ? "far" : ""}" data-seek-source="${escapeHtml(piece.source_id)}" data-seek-start="${piece.start}" data-seek-end="${piece.end}" title="${piece.tier ? "Ngoài đoạn nguồn gợi ý" : "Trong đoạn nguồn gợi ý"}">${escapeHtml(sourceName(piece.source_id))} · ${seconds(piece.start)}–${seconds(piece.end)}</button>`).join("")}${planned.warnings.map(note => `<small class="docu-slice-note">${escapeHtml(sourceNames(note))}</small>`).join("")}`;
+    const drawn = (piece: PlanSlice) => `<span class="docu-ref docu-slice docu-slice-drawn" title="Cảnh dựng tự động">${piece.kind === "map" ? "Bản đồ vệ tinh" : "Đồ họa số liệu"} · ${seconds(piece.duration)} s</span>`;
+    return `<span class="docu-slices-label">Hình:</span>${planned.slices.map(piece => piece.kind ? drawn(piece) : `<button type="button" class="docu-ref docu-slice ${piece.tier ? "far" : ""}" data-seek-source="${escapeHtml(piece.source_id)}" data-seek-start="${piece.start}" data-seek-end="${piece.end}" title="${piece.tier ? "Ngoài đoạn nguồn gợi ý" : "Trong đoạn nguồn gợi ý"}">${escapeHtml(sourceName(piece.source_id))} · ${seconds(piece.start)}–${seconds(piece.end)}</button>`).join("")}${planned.warnings.map(note => `<small class="docu-slice-note">${escapeHtml(sourceNames(note))}</small>`).join("")}`;
   }
 
   function renderVisual(): void {

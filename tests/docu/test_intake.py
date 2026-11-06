@@ -85,7 +85,7 @@ class IntakeTests(unittest.TestCase):
         self.assertTrue(script_path(run).is_file())
 
     def test_bad_requests_are_refused(self):
-        for changes, words in (({"framing": "wide"}, "framing"), ({"sources": [{"video": str(self.videos[0])}]}, "2 đến 5"),
+        for changes, words in (({"framing": "wide"}, "framing"), ({"sources": [{"video": str(self.videos[0])}]}, "2 đến 15"),
                                ({"sources": [{"video": "relative.mp4"}, {"video": str(self.videos[1])}]}, "Nguồn 1"),
                                ({"sources": [{"video": str(self.videos[0]), "subtitles": str(self.videos[1])}, {"video": str(self.videos[1])}]}, ".srt")):
             with self.subTest(words), self.assertRaises(DocuError) as caught:

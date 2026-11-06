@@ -19,7 +19,7 @@ from typing import Any, Callable, Sequence
 from engine.dubflow import resources
 from engine.dubflow.media import encoders as h264
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
-from . import overlays, safezone, soundscape
+from . import graphics, infographic, mapgen, overlays, safezone, soundscape
 from .narration import _Status
 from .project import DocuError, Spec, replace, script_path, work_dir, write_json
 from .script import CHAPTERS, load_draft
@@ -27,11 +27,13 @@ from .script import CHAPTERS, load_draft
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 ENCODERS = h264.CPU_ENCODERS  # The CLI puts NVENC first when the GPU really encodes (media/encoders.py).
 VIDEO_BITRATE = "8M"
-RECIPE = "docu-roughcut-v5"
+RECIPE = "docu-roughcut-v6"
 # The bundled LGPL FFmpeg has no `eq`: a gentle S-curve for contrast and +8 % saturation, the same on every source.
 LOOK = "curves=all='0/0 0.25/0.235 0.75/0.77 1/1',huesaturation=saturation=0.08"
 KEN_BURNS_SHOT = 6.0
 KEN_BURNS_ZOOM = 0.04
+# Tier-3: a slice held this long gets the slow push too, whatever its shot's length.
+KEN_BURNS_SLICE = 4.5
 # Sources narrower than this are fitted over a blurred fill instead of cropped to 16:9.
 WIDE = 1.5
 END_CARD = 6.0
@@ -90,7 +92,12 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
     # Another channel's logo or watermark: blurred where it sits (the bundled LGPL FFmpeg has no delogo). The blur
     # grows with the box, so bold white text like "太空记" cannot be read through it, and it fades out over a margin
     # round the box instead of ending on a hard edge (#556).
+    framed = safezone.Framing(float(framing.get("zoom", 1.0)), float(framing.get("shift", 0.0)), float(framing.get("letterbox") or 0.0),
+                              bool(framing.get("clear", True)), float(framing.get("shift_x") or 0.0))
     for number, logo in enumerate(framing.get("logos") or ()):
+        if safezone.logo_on_screen(framed, logo) == (0.0, 0.0):
+            # Cropped out of the picture by the framing (Tier-3): nothing to blur.
+            continue
         x, y = _even(float(logo[0]) * width) - 2 if logo[0] else 0, _even(float(logo[1]) * height) - 2 if logo[1] else 0
         x, y = max(0, x), max(0, y)
         w, h = min(width - x, _even(float(logo[2]) * width)), min(height - y, _even(float(logo[3]) * height))
@@ -128,7 +135,7 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
             label = "covered"
     zoom, shift = float(framing.get("zoom", 1.0)), float(framing.get("shift", 0.0))
     crop_w, crop_h = _even(width / zoom), _even(height / zoom)
-    x = (width - crop_w) // 2
+    x = max(0, min(width - crop_w, int(round((width - crop_w) / 2 + float(framing.get("shift_x") or 0.0) * width))))
     y = max(0, min(height - crop_h, int(round((height - crop_h) / 2 - shift * height))))
     steps.append(f"crop={crop_w}:{crop_h}:{x}:{y}")
     if crop_w / crop_h >= WIDE:
@@ -272,8 +279,52 @@ def _receipt(path: Path) -> dict[str, Any] | None:
         return None
 
 
+GENERATED = ("map", "infographic")
+
+
+def generated_spans(plan: dict[str, Any]) -> list[tuple[float, float]]:
+    """Where the film shows a generated picture (the satellite map, a data slide)."""
+    return [(float(piece["at"]), float(piece["at"]) + float(piece.get("duration") or float(piece["end"]) - float(piece["start"])))
+            for scene in plan.get("scenes", []) for piece in scene.get("slices", []) if piece.get("kind") in GENERATED]
+
+
+def ui_cues(plan: dict[str, Any], events: Sequence[overlays.Event]) -> list[tuple[str, float]]:
+    """The UI micro-sounds: a telemetry sweep as the map cuts in, a slide tick as a data slide or a hero card appears."""
+    cues = []
+    for scene in plan.get("scenes", []):
+        for piece in scene.get("slices", []):
+            if piece.get("kind") == "map":
+                cues.append(("telemetry_sweep", float(piece["at"])))
+            elif piece.get("kind") == "infographic":
+                cues.append(("hud_slide_tick", float(piece["at"]) + 0.05))
+    cues += [("hud_slide_tick", start) for start in overlays.hero_starts(events)]
+    return sorted(cues, key=lambda cue: (cue[1], cue[0]))
+
+
+def _generated(kind: str, graphic: dict[str, Any], *, index: int, count: int, bar: int, overlay_ass: str | None, work: Path,
+               ffmpeg: Path, videos: dict[str, Path], runner: Callable, cancelled: Callable[[], bool]) -> tuple[graphics.FrameSource, list[str], dict[str, Any]]:
+    """The frames and ASS files of one generated slice, and what its receipt depends on."""
+    hud = f"slice-{index:04d}-hud.ass"
+    if kind == "map":
+        source, name, info = mapgen.build(ffmpeg, work, graphic, count, bar, runner, cancelled)
+        (work / hud).write_text((work / name).read_text(encoding="utf-8"), encoding="utf-8")
+        (work / name).unlink(missing_ok=True)
+        detail = {"map": info}
+    else:
+        backdrop = graphic.get("backdrop") if isinstance(graphic.get("backdrop"), dict) else None
+        footage, detail = None, {"backdrop": None}
+        video = videos.get(str(backdrop.get("source_id"))) if backdrop else None
+        if video is not None and video.is_file():
+            footage = graphics.read_frame(ffmpeg, video, float(backdrop.get("at") or 0.0), runner, work, cancelled)
+            stat = video.stat()
+            detail = {"backdrop": [str(video), stat.st_size, stat.st_mtime_ns, backdrop.get("at")]}
+        (work / hud).write_text(infographic.slide_ass(graphic, count / FPS, bar), encoding="utf-8")
+        source = infographic.frames(footage, count)
+    return source, [hud] + ([overlay_ass] if overlay_ass else []), detail
+
+
 def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner: Callable = run_ffmpeg,
-        encoders: Sequence[str] = ENCODERS) -> dict[str, Any]:
+        encoders: Sequence[str] = ENCODERS, pipe: Callable[[graphics.FrameSource], Callable] = graphics.pipe_runner) -> dict[str, Any]:
     work = work_dir(run_dir) / "render"
     work.mkdir(parents=True, exist_ok=True)
     cancel = work / "cancel"
@@ -317,14 +368,49 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
         # The letterbox is the same for every source; overlays sit inside the picture, above the bars.
         bar = max((_even(float(item.get("letterbox") or 0.0) * HEIGHT) if item.get("letterbox") else 0 for item in framings.values()),
                   default=0)
-        events = overlays.all_events(run_dir, script, timeline, options, bar)
+        drawn = plan.get("graphics") if isinstance(plan.get("graphics"), dict) else {}
+        # A scene shown as a data slide does not also get its number card (Tier-3).
+        slides = frozenset(str(item.get("scene_id")) for item in drawn.values() if isinstance(item, dict) and item.get("kind") != "map")
+        events = overlays.clear_spans(overlays.all_events(run_dir, script, timeline, options, bar, slides), generated_spans(plan))
         scene_of = {id(piece): (scene["scene_id"], index) for scene in plan["scenes"] for index, piece in enumerate(scene["slices"])}
         encoder = encoders[0]
         parts: list[str] = []
-        made: list[tuple[str, Callable[[str], list[str]], Path, dict[str, Any], str]] = []
+        made: list[tuple[str, Callable[[str], list[str]], Path, dict[str, Any], str, Callable]] = []
         for index, (piece, count) in enumerate(zip(slices, frames), 1):
             if cancel.exists():
                 raise Cancelled()
+            kind = piece.get("kind")
+            graphic = drawn.get(str(piece.get("ref"))) if kind in GENERATED else None
+            if isinstance(graphic, dict):
+                name = f"slice-{index:04d}.mp4"
+                overlay = overlays.overlay_rows(events, float(piece["at"]), count / FPS)
+                overlay_ass = None
+                if overlay:
+                    overlay_ass = f"slice-{index:04d}.ass"
+                    (work / overlay_ass).write_text(labels_ass([], count / FPS, overlay, bar), encoding="utf-8")
+                output, receipt = work / name, work / f"slice-{index:04d}.json"
+                key = {"recipe": RECIPE, "kind": kind, "graphic": graphic, "frames": count, "bar": bar, "overlay": overlay}
+                if kind == "map":
+                    key["tiles"] = mapgen.fetch_tiles(float(graphic["lat"]), float(graphic["lon"]), mapgen.tile_folder(work),
+                                                      cancelled=cancel.exists)["tiles"]
+                saved = _receipt(receipt)
+                status.write(done=index - 1, message=f"Đang dựng {'bản đồ vệ tinh' if kind == 'map' else 'đồ họa số liệu'} ({index}/{len(slices)})")
+                source, ass_files, detail = None, [], {}
+                if not (output.is_file() and saved and saved.get("key") == key and saved.get("encoder") == encoder):
+                    source, ass_files, detail = _generated(kind, graphic, index=index, count=count, bar=bar, overlay_ass=overlay_ass, work=work,
+                                                           ffmpeg=ffmpeg, videos=videos, runner=ffmpeg_runner, cancelled=cancel.exists)
+                    make = (lambda chosen, count=count, ass_files=ass_files, name=name:
+                            graphics.encode_argv(ffmpeg, count, chosen, work / f"{name}.partial.mp4", ass=ass_files, bar=bar,
+                                                 size=(mapgen.DRAW_W, mapgen.DRAW_H)))
+                    runner = pipe(source)
+                    encoder = _encode(runner, encoders, encoder, work, cancel.exists, make, work / f"{name}.partial.mp4", output)
+                    write_json(receipt, {"key": key, "encoder": encoder, "drawn": detail})
+                    made.append((name, make, receipt, key, encoder, runner))
+                else:
+                    made.append((name, None, receipt, key, saved.get("encoder"), None))
+                parts.append(name)
+                status.write(done=index, message=f"Đang dựng lát cắt {index}/{len(slices)}")
+                continue
             source_id = piece["source_id"]
             video = videos.get(source_id)
             if video is None or not video.is_file():
@@ -345,7 +431,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
                 ass = f"slice-{index:04d}.ass"
                 (work / ass).write_text(labels_ass(shown, count / FPS, overlay, bar), encoding="utf-8")
             graph = video_filter(*sizes[source_id], framings.get(source_id, {}), frames=count,
-                                 ken_burns=shot_end - shot_start >= KEN_BURNS_SHOT, zoom_push=push, labels=ass)
+                                 ken_burns=shot_end - shot_start >= KEN_BURNS_SHOT or count / FPS >= KEN_BURNS_SLICE, zoom_push=push, labels=ass)
             stat = video.stat()
             output = work / name
             key = {"recipe": RECIPE, "video": [str(video), stat.st_size, stat.st_mtime_ns], "start": round(start, 3),
@@ -358,15 +444,27 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
             if not (output.is_file() and saved and saved.get("key") == key and saved.get("encoder") == encoder):
                 encoder = _encode(ffmpeg_runner, encoders, encoder, work, cancel.exists, make, work / f"{name}.partial.mp4", output)
                 write_json(receipt, {"key": key, "encoder": encoder})
-            made.append((name, make, receipt, key, encoder))
+            made.append((name, make, receipt, key, encoder, ffmpeg_runner))
             parts.append(name)
             status.write(done=index, message=f"Đang dựng lát cắt {index}/{len(slices)}")
-        for name, make, receipt, key, used in made:
+        for position, (name, make, receipt, key, used, runner) in enumerate(made):
             # A GPU that failed part-way: redo the slices it made on the encoder that finished.
             if used != encoder:
                 if cancel.exists():
                     raise Cancelled()
-                encoder = _encode(ffmpeg_runner, encoders, encoder, work, cancel.exists, make, work / f"{name}.partial.mp4", work / name)
+                if make is None or runner is not ffmpeg_runner:
+                    # A generated slice: draw it again (its frames were streamed, not kept).
+                    piece = slices[position]
+                    index, count = position + 1, frames[position]
+                    graphic = drawn[str(piece.get("ref"))]
+                    overlay_ass = f"slice-{index:04d}.ass" if (work / f"slice-{index:04d}.ass").is_file() and key.get("overlay") else None
+                    source, ass_files, _ = _generated(str(piece.get("kind")), graphic, index=index, count=count, bar=bar, overlay_ass=overlay_ass,
+                                                      work=work, ffmpeg=ffmpeg, videos=videos, runner=ffmpeg_runner, cancelled=cancel.exists)
+                    make = (lambda chosen, count=count, ass_files=ass_files, name=name:
+                            graphics.encode_argv(ffmpeg, count, chosen, work / f"{name}.partial.mp4", ass=ass_files, bar=bar,
+                                                 size=(mapgen.DRAW_W, mapgen.DRAW_H)))
+                    runner = pipe(source)
+                encoder = _encode(runner, encoders, encoder, work, cancel.exists, make, work / f"{name}.partial.mp4", work / name)
                 write_json(receipt, {"key": key, "encoder": encoder})
         seconds = total
         if card:
@@ -399,7 +497,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
         ambience = None
         if options["sfx"]:
             built = soundscape.ambience_argv(ffmpeg, script, timeline, seconds, work / "ambience.partial.wav",
-                                             soundscape.folders(run_dir))
+                                             soundscape.folders(run_dir), ui_cues(plan, events))
             if built is not None:
                 status.write(message="Đang tạo âm thanh môi trường…")
                 argv, files = built

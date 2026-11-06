@@ -16,6 +16,12 @@ third-party audio to licence and the same film always sounds the same.
 
 At every act change, during the 1.0 s pause the narration leaves there, a
 1.2 s low sub-drop with a soft whoosh (about -22 LUFS) marks the new chapter.
+
+Tier-3 adds UI micro-sounds (about -24 LUFS, short and crisp) exactly where a
+graphic appears: ``telemetry_sweep`` (a rising radar sweep and soft beeps) when
+the satellite map cuts in, ``hud_slide_tick`` (a low mechanical click with a
+bright tick) when a hero number card slides in or a data slide opens. A file
+``<name>.wav`` in an ``assets/sfx`` folder wins over the built-in sound here too.
 """
 from __future__ import annotations
 
@@ -79,6 +85,16 @@ HIT_GAIN = 0.5
 WHOOSH_GAIN = 1.0
 
 
+UI_LUFS = -24.0
+# The UI sounds, synthesised like the room tones; gains bring each to about UI_LUFS (ebur128, mono).
+UI_SOUNDS: dict[str, tuple[str, float, float]] = {
+    "telemetry_sweep": ("aevalsrc=exprs='0.3*sin(2*PI*(500*t+900*t*t))*exp(-1.8*t)"
+                        "+0.3*sin(2*PI*1850*t)*exp(-38*mod(t-0.15,0.27))*gte(t,0.15)*lt(t,0.96)':s=48000:c=mono:d=1.2", 0.569, 1.2),
+    "hud_slide_tick": ("aevalsrc=exprs='0.8*sin(2*PI*130*t)*exp(-38*t)+0.5*sin(2*PI*2600*t)*exp(-160*t)"
+                       "+0.25*(random(5)-0.5)*exp(-12*abs(t-0.12))':s=48000:c=mono:d=0.5", 0.902, 0.5),
+}
+
+
 def stretches(script: dict[str, Any], timeline: dict[str, Any]) -> list[tuple[str, float, float]]:
     """(tag, start, end) per run of narrated scenes with one ambient tag, in time order."""
     tags = {scene.get("scene_id"): scene.get("ambient_sfx_tag") for chapter in script.get("chapters", [])
@@ -122,14 +138,15 @@ def envelope(spans: Sequence[tuple[float, float]]) -> str:
 
 
 def ambience_argv(ffmpeg: Path, script: dict[str, Any], timeline: dict[str, Any], total: float, output: Path,
-                  sfx_folders: Sequence[Path] = ()) -> tuple[list[str], list[Path]] | None:
+                  sfx_folders: Sequence[Path] = (), cues: Sequence[tuple[str, float]] = ()) -> tuple[list[str], list[Path]] | None:
     """One stereo WAV the film's length with every scene's room tone and the act hits; None when there is nothing to play.
 
     Also returns the user's sound files used, so the caller can key its cache on them.
     """
     runs = stretches(script, timeline)
     hits = [at for at in act_hits(timeline) if at + 0.1 < total]
-    if not runs and not hits:
+    cues = sorted((name, round(float(at), 3)) for name, at in cues if name in UI_SOUNDS and 0 <= float(at) < total - 0.1)
+    if not runs and not hits and not cues:
         return None
     argv = [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y"]
     graph, labels, files = [], [], []
@@ -159,6 +176,20 @@ def ambience_argv(ffmpeg: Path, script: dict[str, Any], timeline: dict[str, Any]
             graph.append(f"[{index}:a]{filters},volume={gain:.4f},adelay={int(round(at * 1000))}:all=1[s{index}]")
             labels.append(f"[s{index}]")
             index += 1
+    for name, at in cues:
+        file = find_file(name, sfx_folders)
+        source, gain, length = UI_SOUNDS[name]
+        if file is not None:
+            files.append(file)
+            argv += ["-i", str(file)]
+            chain = (f"[{index}:a]aformat=sample_rates={RATE}:channel_layouts=mono,atrim=0:{length * 2:.3f},"
+                     f"volume={gain:.4f}")
+        else:
+            argv += ["-f", "lavfi", "-i", source]
+            chain = f"[{index}:a]highpass=f=60,lowpass=f=7000,volume={gain:.4f}"
+        graph.append(f"{chain},adelay={int(round(at * 1000))}:all=1[s{index}]")
+        labels.append(f"[s{index}]")
+        index += 1
     graph.append(f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0:duration=longest,apad=whole_dur={total:.3f},"
                  f"atrim=0:{total:.3f},pan=stereo|c0=0.7071*c0|c1=0.7071*c0[ambience]")
     argv += ["-filter_complex", ";".join(graph), "-map", "[ambience]", "-ar", str(RATE), "-ac", "2", "-c:a", "pcm_s16le", str(output)]

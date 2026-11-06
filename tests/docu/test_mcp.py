@@ -173,8 +173,8 @@ class ToolTests(unittest.TestCase):
                                     replan=lambda run: {"state": "FAILED", "message": "x"})
         # The matcher follows a faster pace.
         fast = matcher.plan([matcher.Scene("sc_001", 0, 10, (matcher.Ref("src_01", 0, 60),), 2.5)], [matcher.Source("src_01", 60, tuple(float(t) for t in range(2, 60, 2)))])
-        self.assertTrue(all(piece.duration <= 2.5 + 0.41 for piece in fast[0][1]))
-        self.assertEqual(len(fast[0][1]), 4)
+        self.assertTrue(all(piece.duration <= 2.5 + 1e-6 for piece in fast[0][1]))
+        self.assertGreaterEqual(len(fast[0][1]), 4)
 
 
 OUTSIDE = "nằm ngoài thư mục DubFlow Output"

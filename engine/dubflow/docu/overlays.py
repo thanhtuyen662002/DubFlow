@@ -122,8 +122,10 @@ def _ass_text(text: str) -> str:
     return text.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", "\\N")
 
 
-def graphic_events(script: dict[str, Any], timeline: dict[str, Any], bar: int) -> list[Event]:
-    """The script's on-screen graphics while their scene is narrated; inside the picture when there are letterbox bars."""
+def graphic_events(script: dict[str, Any], timeline: dict[str, Any], bar: int, skip: frozenset[str] = frozenset()) -> list[Event]:
+    """The script's on-screen graphics while their scene is narrated; inside the picture when there are letterbox bars.
+
+    Scenes in ``skip`` show their figure as a full-screen data slide (Tier-3), so their card is not drawn."""
     times = {scene["scene_id"]: scene for scene in timeline.get("scenes", [])}
     events: list[Event] = []
     for chapter in script.get("chapters", []):
@@ -131,7 +133,7 @@ def graphic_events(script: dict[str, Any], timeline: dict[str, Any], bar: int) -
         cards = hero_done = 0
         for scene in chapter.get("scenes", []):
             graphic, timed = scene.get("on_screen_graphic"), times.get(scene.get("scene_id"))
-            if not isinstance(graphic, dict) or not timed:
+            if not isinstance(graphic, dict) or not timed or (scene.get("scene_id") in skip and graphic.get("type") != "LOWER_THIRD"):
                 continue
             title, value, subtext = (str(graphic.get(key) or "").strip() for key in ("title", "value", "subtext"))
             begin = float(timed["start"])
@@ -174,8 +176,32 @@ def caption_events(srt: str) -> list[Event]:
     return [Event(start / 1000, end / 1000, "Caption", text) for start, end, text in parse_srt(srt)]
 
 
-def all_events(run_dir: Path, script: dict[str, Any], timeline: dict[str, Any], options: dict[str, Any], bar: int) -> list[Event]:
-    events = graphic_events(script, timeline, bar) if options["graphics"] else []
+def hero_starts(events: Sequence[Event]) -> list[float]:
+    """When each hero card slides in (its accent bar's start)."""
+    return sorted({round(event.start, 3) for event in events if event.style == "Accent" and event.slide == HERO_SLIDE})
+
+
+def clear_spans(events: Sequence[Event], spans: Sequence[tuple[float, float]]) -> list[Event]:
+    """Cards and lower-thirds kept off full-screen graphics (the map, a data slide): cut short before one, or held
+    back until after it; captions stay."""
+    kept = []
+    for event in events:
+        start, end = event.start, event.end
+        if event.style != "Caption":
+            for a, b in spans:
+                if start < b and end > a:
+                    if start < a:
+                        end = a
+                    else:
+                        start = b
+        if end - start >= 1.0:
+            kept.append(Event(start, end, event.style, event.text, event.pos, event.slide))
+    return kept
+
+
+def all_events(run_dir: Path, script: dict[str, Any], timeline: dict[str, Any], options: dict[str, Any], bar: int,
+               skip: frozenset[str] = frozenset()) -> list[Event]:
+    events = graphic_events(script, timeline, bar, skip) if options["graphics"] else []
     if options["captions"]:
         try:
             events += caption_events((run_dir / "captions_en.srt").read_text(encoding="utf-8"))
