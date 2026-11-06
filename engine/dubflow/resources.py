@@ -31,10 +31,36 @@ def cpu_threads(default: int) -> int:
     return chosen if chosen is not None else max(1, min(default, machine_threads()))
 
 
+def thread_budget() -> int | None:
+    """The user's thread budget for a whole task, or None when unset."""
+    return configured()
+
+
+def parallel_renders(*, gpu: bool) -> int:
+    """How many parts of one long video render at once.
+
+    One FFmpeg runs its filter chain (blur, subtitles) on about one core, so a
+    part needs roughly two threads. NVENC on GeForce cards allows a few
+    sessions at once (5-8 on current drivers); four leaves room for the editor.
+    """
+    budget = configured() or machine_threads()
+    return max(1, min(budget // 2, 4 if gpu else 6))
+
+
+def part_thread_args(workers: int) -> list[str]:
+    """``-threads``/``-filter_threads`` for one of ``workers`` FFmpegs running at once.
+
+    Always bounded, also when the user kept the default: each FFmpeg's own
+    automatic choice would take the whole machine, ``workers`` times over.
+    """
+    share = str(max(1, (configured() or machine_threads()) // max(1, workers)))
+    return ["-threads", share, "-filter_threads", share]
+
+
 def ffmpeg_thread_args() -> list[str]:
     """``-threads``/``-filter_threads`` for FFmpeg output; FFmpeg's own auto choice when unset."""
     chosen = configured()
     return [] if chosen is None else ["-threads", str(chosen), "-filter_threads", str(chosen)]
 
 
-__all__ = ["ENV", "configured", "cpu_threads", "ffmpeg_thread_args", "machine_threads"]
+__all__ = ["ENV", "configured", "cpu_threads", "ffmpeg_thread_args", "machine_threads", "parallel_renders", "part_thread_args", "thread_budget"]

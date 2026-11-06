@@ -66,6 +66,27 @@ _INLINE_FILTER_LIMIT = 8_000
 _OVERLAY_BLUR_REGIONS = 12
 
 
+# A video at least this long renders as parts at once; each part is about this long.
+_PARALLEL_MIN_SECONDS = 4 * 60
+_PART_SECONDS = 10 * 60
+_PART_SEEK_MARGIN = Fraction(30)
+
+
+@dataclass(frozen=True)
+class _PartPlan:
+    origin: Fraction
+    parts: tuple[tuple[Fraction, Fraction], ...]
+    workers: int
+    seconds: Fraction
+    fps: Fraction | None
+
+
+def _decimal(value: Fraction) -> str:
+    """Seconds with microsecond precision for FFmpeg options."""
+    micro = round(value * 1_000_000)
+    return f"{'-' if micro < 0 else ''}{abs(micro) // 1_000_000}.{abs(micro) % 1_000_000:06d}"
+
+
 class MediaAdapterError(RuntimeError):
     """Structured failure at the app-owned media process boundary."""
 
@@ -1182,6 +1203,7 @@ class FfmpegMediaAdapter:
 
             video_filters.append(_EVEN_DIMENSIONS)
             graph = ",".join(video_filters)
+            filter_at = len(args)
             if len(graph) <= _INLINE_FILTER_LIMIT:
                 args.extend(("-vf", graph))
             else:
@@ -1234,6 +1256,17 @@ class FfmpegMediaAdapter:
                 args.append("-shortest")
             args.extend(("-movflags", "+faststart"))
             cwd = output.parent if subtitle_staging else None
+            plan = self._chunk_plan(source_probe, video_duration)
+            if plan is not None:
+                # A long video renders as several parts at once: one FFmpeg runs
+                # its filters (blur, subtitles) on about one CPU core, so a
+                # single process leaves a fast GPU and most cores waiting.
+                try:
+                    return self._render_parts(output, args, filter_at, encoder_at, graph, plan, bitrate, cwd, progress)
+                except MediaAdapterError as error:
+                    if error.code == "MEDIA_COMMAND_TIMEOUT":
+                        raise
+                    # Any part that will not render: the proven single pass below.
             first: MediaAdapterError | None = None
             # NVENC (GPU decode + encode) when it works, then Media Foundation,
             # then OpenH264: a failed encoder never fails the export by itself.
@@ -1253,6 +1286,119 @@ class FfmpegMediaAdapter:
                 subtitle_staging.unlink(missing_ok=True)
             if filter_staging is not None:
                 filter_staging.unlink(missing_ok=True)
+
+    def _chunk_plan(self, probe: MediaProbeResult | None, duration: MediaTimeline | None) -> "_PartPlan | None":
+        """Parts and how many render at once, or None for one FFmpeg (short video, unknown origin, one core)."""
+        if probe is None or duration is None or probe.video.time_base is None or probe.video.start_pts is None:
+            return None
+        seconds = Fraction(duration.duration_ticks * duration.time_base.numerator, duration.time_base.denominator)
+        if seconds < _PARALLEL_MIN_SECONDS:
+            return None
+        chain = self.video_encoders()
+        workers = resources.parallel_renders(gpu=chain[:1] == (encoders.NVENC,))
+        if workers < 2:
+            return None
+        count = max(workers, math.ceil(seconds / _PART_SECONDS))
+        origin = Fraction(probe.video.start_pts * probe.video.time_base.numerator, probe.video.time_base.denominator)
+        bounds = [seconds * index / count for index in range(count + 1)]
+        rate = probe.video.frame_rate
+        fps = Fraction(rate.numerator, rate.denominator) if rate is not None else None
+        return _PartPlan(origin, tuple(zip(bounds[:-1], bounds[1:])), workers, seconds, fps)
+
+    def _render_parts(self, output: Path, args: list[str], filter_at: int, encoder_at: int, graph: str, plan: "_PartPlan",
+                      bitrate: int, cwd: Path | None, progress: Callable[[int], None] | None) -> Path:
+        """Render ``plan``'s parts in parallel with one encoder, then join them and add the sound in one copy pass."""
+        source = args[args.index("-i") + 1]
+        parts_dir = Path(tempfile.mkdtemp(prefix=f".{output.stem}.parts-", dir=os.fspath(output.parent)))
+        positions = [0] * len(plan.parts)
+        counts = [0] * len(plan.parts)
+        lock = threading.Lock()
+        per_part = resources.part_thread_args(plan.workers)
+        try:
+            # Absolute times stay as in the single pass (blur and subtitle times
+            # match); each part then starts at zero for the join.
+            # Each part is cut exactly by its own times ("trim"); FFmpeg seeks
+            # well before it, since a seek near a late key frame can land past it.
+            body = graph.split(",", 1)[1]
+            def filters(index: int) -> list[str]:
+                start, end = plan.parts[index]
+                part_graph = (f"trim=start={_decimal(plan.origin + start)}:end={_decimal(plan.origin + end)},"
+                              f"setpts=PTS-{_decimal(plan.origin)}/TB,{body},setpts=PTS-STARTPTS")
+                if len(part_graph) <= _INLINE_FILTER_LIMIT:
+                    return ["-vf", part_graph]
+                graph_file = parts_dir / f"graph-{index:04d}.txt"
+                graph_file.write_text(part_graph, encoding="utf-8")
+                return ["-/vf", os.fspath(graph_file)]
+            last: MediaAdapterError | None = None
+            for encoder in self.video_encoders():
+                def part(index: int, encoder: str = encoder) -> Path:
+                    start, end = plan.parts[index]
+                    target = parts_dir / f"part-{index:04d}.mp4"
+                    def moved(count: int) -> None:
+                        # Frames, not FFmpeg's clock: with -copyts its out_time can read 0.
+                        with lock:
+                            counts[index] = count
+                            positions[index] = round(count * 1_000_000 / plan.fps) if plan.fps else 0
+                            if progress is not None:
+                                progress(sum(positions))
+                    # The trim's end stops the read; an input "-t" counts from a different clock under -copyts.
+                    seek = max(Fraction(0), start - _PART_SEEK_MARGIN)
+                    argv = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-copyts", *encoders.decode_args(encoder),
+                            "-ss", _decimal(seek), "-i", source,
+                            *filters(index), "-map", "0:v:0", "-an", "-sn", "-dn",
+                            *encoders.rate_args(encoder, bitrate), *per_part, "-pix_fmt", "yuv420p"]
+                    made = self._write_atomic(target, tuple(argv), output_format="mp4", cwd=cwd, frames=moved if self.runner is None else None)
+                    # A part that came out short (a seek past its frames) must not
+                    # shift the picture against the sound: use the single pass.
+                    # Half the nominal frames: a variable frame rate can run well below r_frame_rate.
+                    if self.runner is None and plan.fps and counts[index] < (end - start) * plan.fps / 2:
+                        raise MediaAdapterError("MEDIA_PART_SHORT", f"part {index} rendered {counts[index]} of about {float((end - start) * plan.fps):.0f} frames")
+                    return made
+                try:
+                    made = self._run_parts(part, len(plan.parts), plan.workers)
+                    break
+                except MediaAdapterError as error:
+                    if error.code != "MEDIA_COMMAND_FAILED":
+                        raise
+                    last = last or error
+                    positions[:] = [0] * len(positions)
+            else:
+                assert last is not None
+                raise last
+            listing = parts_dir / "parts.txt"
+            listing.write_text("".join(f"file '{path.name}'\n" for path in made), encoding="utf-8")
+            # The single pass's own inputs, maps and sound; the picture is the joined parts, copied.
+            final = [*args[:filter_at], "-f", "concat", "-safe", "0", "-i", os.fspath(listing)]
+            inputs = sum(1 for item in args[:filter_at] if item == "-i")
+            rest = args[filter_at + 2:]
+            rest[rest.index("0:v:0")] = f"{inputs}:v:0"
+            final += [*rest[:encoder_at - filter_at - 2], "-c:v", "copy", *rest[encoder_at - filter_at - 2:]]
+            final.remove("-pix_fmt")
+            final.remove("yuv420p")
+            return self._write_atomic(output, tuple(final), output_format="mp4", cwd=cwd)
+        finally:
+            shutil.rmtree(parts_dir, ignore_errors=True)
+
+    def _run_parts(self, part: Callable[[int], Path], count: int, workers: int) -> list[Path]:
+        """Run every part, ``workers`` at a time; a failed part gets one more try alone (an NVENC session may have been busy)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        results: list[Path | MediaAdapterError | None] = [None] * count
+        def attempt(index: int) -> None:
+            try:
+                results[index] = part(index)
+            except MediaAdapterError as error:
+                results[index] = error
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="dubflow-part") as pool:
+            list(pool.map(attempt, range(count)))
+        for index, result in enumerate(results):
+            if isinstance(result, MediaAdapterError):
+                if result.code != "MEDIA_COMMAND_FAILED":
+                    raise result
+                attempt(index)
+                if isinstance(results[index], MediaAdapterError):
+                    raise results[index]  # type: ignore[misc]
+        return [result for result in results if isinstance(result, Path)]
 
     def _prepare_output(self, output_path: str | Path, source: Path, *, overwrite: bool, suffix: str = ".mp4") -> Path:
         try:
@@ -1280,6 +1426,7 @@ class FfmpegMediaAdapter:
         output_format: str,
         cwd: Path | None = None,
         progress: Callable[[int], None] | None = None,
+        frames: Callable[[int], None] | None = None,
     ) -> Path:
         temporary: Path | None = None
         try:
@@ -1297,8 +1444,8 @@ class FfmpegMediaAdapter:
                 plan = build_subprocess_plan(argv[0], argv[1:])
             except SecurityBoundaryError as error:
                 raise MediaAdapterError("MEDIA_COMMAND_INVALID", str(error)) from error
-            completed = (self._run_reporting(plan.argv, cwd=cwd, progress=progress)
-                         if progress is not None and self.runner is None else self._run(plan.argv, cwd=cwd))
+            completed = (self._run_reporting(plan.argv, cwd=cwd, progress=progress, frames=frames)
+                         if (progress is not None or frames is not None) and self.runner is None else self._run(plan.argv, cwd=cwd))
             if completed.returncode != 0:
                 condition = _diagnostic(completed.stderr)
                 if "matches no streams" in condition.casefold() or "stream map" in condition.casefold():
@@ -1317,7 +1464,8 @@ class FfmpegMediaAdapter:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
-    def _run_reporting(self, argv: tuple[str, ...], *, cwd: Path | None, progress: Callable[[int], None]) -> subprocess.CompletedProcess[str]:
+    def _run_reporting(self, argv: tuple[str, ...], *, cwd: Path | None, progress: Callable[[int], None] | None,
+                       frames: Callable[[int], None] | None = None) -> subprocess.CompletedProcess[str]:
         """Like ``_run`` and reports each encoded microsecond, so a 20-hour render shows it is moving."""
         command = (argv[0], "-progress", "pipe:1", "-nostats", *argv[1:])
         try:
@@ -1339,9 +1487,10 @@ class FfmpegMediaAdapter:
         try:
             for line in child.stdout or ():
                 key, _, value = line.strip().partition("=")
-                if key == "out_time_us" and value.lstrip("-").isdigit() and int(value) >= 0:
+                observer = progress if key == "out_time_us" else frames if key == "frame" else None
+                if observer is not None and value.isdigit():
                     try:
-                        progress(int(value))
+                        observer(int(value))
                     except Exception:  # An observer never fails the render.
                         pass
             child.wait()
@@ -1351,6 +1500,9 @@ class FfmpegMediaAdapter:
                 child.kill()
                 child.wait()
             reader.join(timeout=5)
+            for stream in (child.stdout, child.stderr):
+                if stream is not None:
+                    stream.close()
         if expired.is_set():
             raise MediaAdapterError("MEDIA_COMMAND_TIMEOUT", f"media command exceeded {self.timeout_seconds:g}s", retryable=True)
         return subprocess.CompletedProcess(command, child.returncode, "", "".join(errors))

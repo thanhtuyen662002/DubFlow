@@ -365,9 +365,17 @@ function previewEditStatus(outputPath: string) {
 /** Phiên bản và mẫu saved in the browser preview (kept for the page's life). */
 let previewVersions: Array<{ id: string; name: string; saved_at: number; summary: string | null; project: unknown }> = [];
 
+/** Project folders deleted in the preview (Phim tài liệu, Tổng hợp, Bán hàng). */
+const deletedRuns = new Set<string>();
+
 export async function previewInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120));
   switch (command) {
+    case "project_delete": {
+      const dir = String(args.dir);
+      deletedRuns.add(dir); docuProjects.delete(dir); productRuns.delete(dir); compilations.delete(dir);
+      return undefined as T;
+    }
     case "docu_runs":
       return [...docuProjects.values()].sort((a, b) => b.created - a.created).map(project => ({ dir: project.dir, created: project.created,
         spec: project.spec, script: Boolean(project.script) })) as T;
@@ -933,12 +941,12 @@ function previewCompilationRuns() {
   });
   const old = "D:\\Videos\\DubFlow Output\\Tong hop - Top 3 phim ngan\\run-00000000a1b2";
   const failed = "D:\\Videos\\DubFlow Output\\Tong hop - Phim co trang\\run-00000000c3d4";
-  return [...started,
+  return [...started.filter(run => !deletedRuns.has(run.dir)), ...[
     { dir: old, created: 1_793_500_000, spec: spec("Top 3 phim ngắn đáng xem tuần này"), video: `${old}\\compilation.mp4`,
       status: { schema_version: 1, state: "COMPLETED", done: 7, total: 7, message: "Đã tạo video tổng hợp.", path: `${old}\\compilation.mp4`, duration_ms: 202_500 } },
     { dir: failed, created: 1_793_400_000, spec: spec("Phim cổ trang hay nhất"), video: null,
       status: { schema_version: 1, state: "FAILED", done: 2, total: 6, message: "Phần 2: Trailer phim cổ trang tập 2: Mốc cắt nằm ngoài thời lượng video", path: null } },
-  ];
+  ].filter(run => !deletedRuns.has(run.dir))];
 }
 
 /** The preview's background library: one panel-sized image and one that needs cropping. */
