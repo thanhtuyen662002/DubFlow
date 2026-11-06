@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from http.client import HTTPException
 import json
 import re
 import time
@@ -27,7 +28,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-DEFAULT_TIMEOUT = 120.0
+# Seconds without a byte from the server. Thinking models (DeepSeek V4 Pro, o-series) can stay quiet
+# for minutes before answering a long window, so this is generous; a dead connection still fails.
+DEFAULT_TIMEOUT = 300.0
 MAX_WAIT_SECONDS = 30.0
 
 
@@ -107,7 +110,7 @@ class AiError(Exception):
 
     @property
     def retryable(self) -> bool:
-        return self.code in {"LIMIT", "SERVER", "TIMEOUT"}
+        return self.code in {"LIMIT", "SERVER", "TIMEOUT", "NETWORK"}
 
 
 @dataclass(frozen=True)
@@ -262,6 +265,9 @@ def _send(route: Route, request: Request, transport: Transport, timeout: float) 
         raise AiError("NETWORK", f"Không kết nối được {route.preset.label}: {_scrub(getattr(error, 'reason', error), route.key)}") from error
     except OSError as error:
         raise AiError("NETWORK", f"Không kết nối được {route.preset.label}: {_scrub(error, route.key)}") from error
+    except HTTPException as error:
+        # IncompleteRead, RemoteDisconnected, BadStatusLine: the connection was cut mid-answer.
+        raise AiError("NETWORK", f"Kết nối tới {route.preset.label} bị ngắt giữa chừng ({type(error).__name__}).") from error
     if not 200 <= status <= 299:
         raise _http_error(route, status, headers, body)
     try:
