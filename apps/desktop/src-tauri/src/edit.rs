@@ -70,9 +70,8 @@ const QUALITIES: [&str; 3] = ["source", "1080p", "720p"];
 /// Xuất video options (Issue #526): frame rates, frame shapes and how the bars are filled.
 const EXPORT_FPS: [u32; 5] = [24, 25, 30, 50, 60];
 const ASPECTS: [&str; 4] = ["16:9", "9:16", "1:1", "4:5"];
-/// The shipped FFmpeg is the LGPL build (no libx264): Media Foundation's H.264
-/// encoder first, the bundled OpenH264 when Media Foundation refuses.
-const ENCODERS: [&str; 2] = ["h264_mf", "libopenh264"];
+// Encoders: NVIDIA NVENC when it really works here, then Media Foundation's
+// H.264, then the bundled OpenH264 (the LGPL FFmpeg has no libx264): gpu.rs.
 const BUSY: &str = "Video này đang được xuất ở cửa sổ DubFlow khác";
 
 struct Running {
@@ -1627,6 +1626,8 @@ fn ffmpeg_args(inputs: &[PathBuf], script: &Path, has_audio: bool, encoder: &str
             // A picture repeats as a video; each overlay trims the part it shows.
             args.extend(["-loop", "1", "-framerate", "30", "-t"].map(OsString::from));
             args.push(num(STILL_SECONDS).into());
+        } else {
+            args.extend(crate::gpu::decode_args(encoder));
         }
         args.push("-i".into());
         args.push(input.into());
@@ -1637,11 +1638,8 @@ fn ffmpeg_args(inputs: &[PathBuf], script: &Path, has_audio: bool, encoder: &str
     if has_audio {
         args.extend(["-map", "[a]"].map(OsString::from));
     }
-    args.extend(["-c:v", encoder, "-b:v"].map(OsString::from));
-    args.push(bitrate.to_string().into());
-    if encoder == "libopenh264" {
-        args.extend(["-maxrate".into(), (bitrate * 3 / 2).to_string().into(), "-bufsize".into(), (bitrate * 2).to_string().into()]);
-    }
+    args.extend(crate::gpu::rate_args(encoder, bitrate));
+    args.extend(crate::gpu::thread_args(true));
     args.extend(["-pix_fmt", "yuv420p", "-r", fps].map(OsString::from));
     if has_audio {
         args.extend(["-c:a", "aac", "-b:a", "192k"].map(OsString::from));
@@ -2888,7 +2886,7 @@ fn encode(job: &ExportJob, encoder: &str, running: &Running) -> Result<(), Strin
                 stop(running);
             }
             if written.elapsed() >= Duration::from_millis(400) {
-                write_status(&job.work, "RUNNING", percent, &format!("Đang xuất video… {}%", percent.floor()), Some(&job.target));
+                write_status(&job.work, "RUNNING", percent, &format!("Đang xuất video{}… {}%", crate::gpu::label(encoder), percent.floor()), Some(&job.target));
                 written = Instant::now();
             }
         }
@@ -2907,7 +2905,7 @@ fn run_export(job: &ExportJob, running: &Running) {
     let partial = partial_of(&job.target);
     let mut failure = String::new();
     let mut done = false;
-    for (attempt, encoder) in ENCODERS.iter().enumerate() {
+    for (attempt, encoder) in crate::gpu::encoders(&job.ffmpeg).iter().enumerate() {
         if running.cancelled.load(Ordering::SeqCst) {
             break;
         }
@@ -3150,6 +3148,11 @@ pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
 /// `source.wav` when it read a video) and its `status.json`.
 const STEMS_DIR: &str = "stems";
 
+/// The separation model whose accompaniment the editor keeps. Files an older
+/// model made (Spleeter, which left the original voice audible) can be
+/// separated again; the new file then replaces a dubbing job's own.
+const SEPARATION_BACKEND: &str = "uvr-mdx-kim-vocal-2-onnx-v1";
+
 /// Tách giọng runs, by draft folder.
 static SEPARATING: LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
@@ -3172,7 +3175,11 @@ fn stem_files(target: &Target) -> StemFiles {
     let voice = job.then(|| file(editable.join("dialogue_stem.wav"))).flatten();
     let separated = file(own.join("background.wav"));
     match job.then(|| file(editable.join("source_audio.wav"))).flatten() {
-        Some(source) => StemFiles { voice, source: Some(source), background: file(editable.join("background_stem.wav")).or(separated) },
+        Some(source) => {
+            let job_stem = file(editable.join("background_stem.wav"));
+            let background = if separated.is_some() && separated_by_current(&target.work) { separated.or(job_stem) } else { job_stem.or(separated) };
+            StemFiles { voice, source: Some(source), background }
+        }
         None => {
             let source = separated.as_ref().and_then(|_| file(own.join("source.wav")));
             StemFiles { voice, background: source.as_ref().and(separated), source }
@@ -3209,6 +3216,25 @@ fn stem_weights(levels: &StemLevels, files: &StemFiles) -> Result<Vec<(PathBuf, 
 /// Each part's level reaches 200 %.
 const MAX_STEM_LEVEL: f64 = 2.0;
 
+/// Whether Tách giọng's own output came from the current model.
+fn separated_by_current(work: &Path) -> bool {
+    let path = work.join(STEMS_DIR).join("status.json");
+    fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024)
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|value| value["state"] == "COMPLETED" && value["backend"] == SEPARATION_BACKEND)
+}
+
+/// The accompaniment in use came from an older model: Tách giọng may run again.
+fn separation_outdated(target: &Target, files: &StemFiles) -> bool {
+    let Some(background) = &files.background else { return false };
+    if background.starts_with(target.work.join(STEMS_DIR)) {
+        return !separated_by_current(&target.work);
+    }
+    // A dubbing job's own accompaniment: its manifest names the model.
+    let manifest = crate::read_json(&target.dir.join("job_manifest.json"), 16 * 1024 * 1024).unwrap_or_else(|_| json!({}));
+    manifest["background"]["backend"] != SEPARATION_BACKEND
+}
+
 fn read_separation(work: &Path) -> Option<Value> {
     let path = work.join(STEMS_DIR).join("status.json");
     let value: Value = fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024).and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
@@ -3231,7 +3257,7 @@ pub fn edit_stems(output_path: String, kind: String) -> Result<Value, String> {
     crate::sfx::allow_files(&listed);
     let shown = |file: &Option<PathBuf>| file.as_ref().map(|file| display_path(file));
     Ok(json!({"voice": shown(&files.voice), "source": shown(&files.source), "background": shown(&files.background),
-        "separation": read_separation(&target.work)}))
+        "separation": read_separation(&target.work), "outdated": separation_outdated(&target, &files)}))
 }
 
 /// Tách giọng: separate the main video's sound (a dubbing job's original
@@ -3240,7 +3266,7 @@ pub fn edit_stems(output_path: String, kind: String) -> Result<Value, String> {
 pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
     let target = edit_target(&output_path, &kind)?;
     let files = stem_files(&target);
-    if files.source.is_some() && files.background.is_some() {
+    if files.source.is_some() && files.background.is_some() && !separation_outdated(&target, &files) {
         return Err(fail("Video này đã tách giọng rồi"));
     }
     let input = match (matches!(target.kind, Kind::Job), target.dir.join("editable").join("source_audio.wav")) {
@@ -3338,7 +3364,9 @@ fn proxy_name(video: &Path) -> Option<String> {
 
 fn proxy_args(video: &Path, encoder: &str, has_audio: bool, output: &Path) -> Vec<OsString> {
     let side = PROXY_SHORT_SIDE;
-    let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"].map(OsString::from).to_vec();
+    let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-v", "error", "-y"].map(OsString::from).to_vec();
+    args.extend(crate::gpu::decode_args(encoder));
+    args.push("-i".into());
     args.push(video.into());
     args.extend(["-map", "0:v:0"].map(OsString::from));
     if has_audio {
@@ -3348,8 +3376,13 @@ fn proxy_args(video: &Path, encoder: &str, has_audio: bool, output: &Path) -> Ve
     // a key frame every half second keeps seeking quick.
     args.push("-vf".into());
     args.push(format!("scale='if(gte(iw,ih),-2,min({side},iw))':'if(gte(iw,ih),min({side},ih),-2)',format=yuv420p").into());
-    args.extend(["-c:v", encoder, "-b:v"].map(OsString::from));
-    args.push(PROXY_VIDEO_BITRATE.to_string().into());
+    if encoder == crate::gpu::NVENC {
+        args.extend(crate::gpu::rate_args(encoder, PROXY_VIDEO_BITRATE));
+    } else {
+        args.extend(["-c:v", encoder, "-b:v"].map(OsString::from));
+        args.push(PROXY_VIDEO_BITRATE.to_string().into());
+    }
+    args.extend(crate::gpu::thread_args(false));
     args.extend(["-g", "15"].map(OsString::from));
     if has_audio {
         args.extend(["-c:a", "aac", "-b:a", "96k"].map(OsString::from));
@@ -3394,7 +3427,7 @@ fn make_proxy(ffmpeg: &Path, video: &Path, probe: &Probe, target: &Path) {
     let _lane = PROXY_LANE.lock();
     let partial = partial_of(target);
     let mut failure = String::new();
-    for encoder in ENCODERS {
+    for encoder in crate::gpu::encoders(ffmpeg) {
         let _ = fs::remove_file(&partial);
         let mut command = Command::new(ffmpeg);
         command.args(proxy_args(video, encoder, probe.has_audio, &partial))
@@ -3780,6 +3813,16 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
             .into_iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert!(silent.join(" ").contains("-map [v] -c:v libopenh264 -b:v 2000000 -maxrate 3000000 -bufsize 4000000 -pix_fmt"));
         assert!(!silent.iter().any(|arg| arg == "[a]" || arg == "aac"));
+        // NVENC: the video decodes on the GPU, a picture never asks for CUDA.
+        let gpu = ffmpeg_args(&[PathBuf::from("in.mp4"), PathBuf::from("logo.png")], Path::new("f.txt"), true, "h264_nvenc", 3_000_000, "25/1",
+            Path::new("o")).into_iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
+        assert!(gpu.starts_with("-nostdin -hide_banner -v error -y -hwaccel cuda -i in.mp4 -loop 1 -framerate 30 -t "), "{gpu}");
+        assert_eq!(gpu.matches("-hwaccel").count(), 1);
+        assert!(gpu.contains("-c:v h264_nvenc -b:v 3000000 -preset p4 -tune hq -rc vbr -maxrate 4500000 -bufsize 6000000 -spatial-aq 1 -bf 3 -pix_fmt"));
+        let light = proxy_args(Path::new("in.mov"), "h264_nvenc", false, Path::new("p")).into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
+        assert!(light.starts_with("-nostdin -hide_banner -v error -y -hwaccel cuda -i in.mov "), "{light}");
+        assert!(light.contains("-c:v h264_nvenc -b:v 1500000 -preset p4"));
         assert_eq!(progress_percent(5_000_000, 10.0), 50.0);
         assert_eq!(progress_percent(50_000_000, 10.0), 99.0);
         assert_eq!(progress_percent(-1, 10.0), 0.0);
@@ -4367,6 +4410,36 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         fs::write(work.join(STEMS_DIR).join("source.wav"), b"wav").unwrap();
         let files = stem_files(&file);
         assert_eq!((files.voice, files.source.is_some(), files.background.is_some()), (None, true, true));
+        assert!(separation_outdated(&file, &stem_files(&file)), "no backend: an older model made it");
+        fs::write(work.join(STEMS_DIR).join("status.json"), json!({"state": "COMPLETED", "backend": SEPARATION_BACKEND}).to_string()).unwrap();
+        assert!(!separation_outdated(&file, &stem_files(&file)));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_job_prefers_tach_giong_by_the_current_model_over_its_own_older_accompaniment() {
+        let base = std::env::temp_dir().join(format!("dubflow-edit-restems-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join("job");
+        fs::create_dir_all(dir.join("editable")).unwrap();
+        let work = work_dir(&dir);
+        let job = Target { kind: Kind::Job, main: dir.join("final_vi.mp4"), dir: dir.clone(), work: work.clone(), captions: None, store: None };
+        for name in ["dialogue_stem.wav", "source_audio.wav", "background_stem.wav"] {
+            fs::write(dir.join("editable").join(name), b"wav").unwrap();
+        }
+        let own = dir.join("editable").join("background_stem.wav");
+        assert_eq!(stem_files(&job).background, Some(own.clone()));
+        assert!(separation_outdated(&job, &stem_files(&job)), "a Spleeter job may separate again");
+        fs::write(dir.join("job_manifest.json"), json!({"background": {"backend": SEPARATION_BACKEND}}).to_string()).unwrap();
+        assert!(!separation_outdated(&job, &stem_files(&job)), "a job separated by the current model");
+        fs::remove_file(dir.join("job_manifest.json")).unwrap();
+        let stems = work.join(STEMS_DIR);
+        fs::create_dir_all(&stems).unwrap();
+        fs::write(stems.join("background.wav"), b"wav").unwrap();
+        assert_eq!(stem_files(&job).background, Some(own), "an older Tách giọng does not replace the job's own");
+        fs::write(stems.join("status.json"), json!({"state": "COMPLETED", "backend": SEPARATION_BACKEND}).to_string()).unwrap();
+        assert_eq!(stem_files(&job).background, Some(stems.join("background.wav")));
+        assert!(!separation_outdated(&job, &stem_files(&job)));
         let _ = fs::remove_dir_all(&base);
     }
 

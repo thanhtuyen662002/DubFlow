@@ -35,6 +35,7 @@ import { mountEditLibrary } from "./features/edit/library_view.ts";
 import { KIND_LABELS, distinctTitles, type LibraryEntry } from "./features/edit/library.ts";
 import { createSfxLibrary } from "./features/sfx/library.ts";
 import { mountSfxSettings } from "./features/sfx/settings.ts";
+import { mountPerformanceSettings } from "./features/performance/settings.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { configureHostAi, createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
@@ -1183,6 +1184,8 @@ function cpuOnly(): boolean {
   }
 }
 cpuOnlyToggle.checked = cpuOnly();
+// Thread budget and CPU-only reach every FFmpeg/model process the host starts.
+const applyPerformance = mountPerformanceSettings(invoke, cpuOnly, showError);
 cpuOnlyToggle.addEventListener("change", () => {
   try {
     if (cpuOnlyToggle.checked) window.localStorage.setItem(CPU_ONLY_KEY, "1");
@@ -1191,6 +1194,7 @@ cpuOnlyToggle.addEventListener("change", () => {
     cpuOnlyToggle.checked = !cpuOnlyToggle.checked;
     showError("Không lưu được lựa chọn thiết bị xử lý trên máy này.");
   }
+  applyPerformance();
 });
 
 // One click: a small zip of this job's reports (no media) on the Desktop, shown in Explorer.
