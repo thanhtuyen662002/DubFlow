@@ -91,6 +91,10 @@ class ReusedSliceTests(unittest.TestCase):
         still = roughcut.video_filter(1920, 1080, framing, frames=90, ken_burns=True, zoom_push=0, reused=1)
         self.assertNotIn("zoompan", still)
         self.assertAlmostEqual(w / crop(still)[0], 1.09, places=2)
+        # A shot too short for Ken Burns (the caller passes ken_burns=False with the default push): still crop too.
+        short = roughcut.video_filter(1920, 1080, framing, frames=90, ken_burns=False, zoom_push=roughcut.KEN_BURNS_ZOOM, reused=1)
+        self.assertNotIn("zoompan", short)
+        self.assertAlmostEqual(w / crop(short)[0], 1.09, places=2)
 
     def test_old_plans_render_as_before(self):
         framing = {"zoom": 1.0, "shift": 0.0}

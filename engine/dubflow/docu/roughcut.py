@@ -148,9 +148,10 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
     y = max(0, min(height - crop_h, int(round((height - crop_h) / 2 - shift * height))))
     pull = 0.0
     if reused:
-        # With motion: the extra crop is the pull-out's end point and zoompan supplies the rest; without, a still crop.
+        # With motion (a long enough shot and Ken Burns on): the extra crop is the pull-out's end point and zoompan
+        # supplies the rest; without, a still crop.
         start_zoom, end_zoom = REUSED_PULL
-        pull = start_zoom / end_zoom - 1 if zoom_push > 0 else 0.0
+        pull = start_zoom / end_zoom - 1 if ken_burns and zoom_push > 0 else 0.0
         x, y, crop_w, crop_h = _alt_crop(x, y, crop_w, crop_h, end_zoom if pull else REUSED_STILL, reused)
     steps.append(f"crop={crop_w}:{crop_h}:{x}:{y}")
     if crop_w / crop_h >= WIDE:
