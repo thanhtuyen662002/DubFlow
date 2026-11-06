@@ -8,7 +8,9 @@ conversation instead:
 1. one short brief of the whole video (topic, who speaks to whom and how they
    address each other, names and terms), from the source lines;
 2. windows of consecutive cues, each with the lines just before it (already in
-   Vietnamese), the brief and running notes, and the offline draft as a hint.
+   Vietnamese), the brief and running notes, and the offline draft as a hint;
+3. one pass over the lines that still call a person by another third-person
+   word than the brief fixed for them ("anh ta" in one line, "gã" in the next).
 
 Every cue keeps its id and timing. A cue the AI skipped, or a window that
 failed, keeps its offline translation, so a broken key or network never stops
@@ -28,7 +30,7 @@ from typing import Any, Protocol
 
 from engine.dubflow.ai.client import AiError, Route, ask
 
-RECIPE = "context-ai-vi-v1"
+RECIPE = "context-ai-vi-v2"
 WINDOW_CUES = 40
 CONTEXT_CUES = 6
 BRIEF_SOURCE_CHARS = 12_000
@@ -70,8 +72,8 @@ BRIEF_SCHEMA = {
         "tom_tat": {"type": "string"},
         "the_loai": {"type": "string"},
         "nhan_vat": {"type": "array", "items": {"type": "object", "properties": {
-            "ten": {"type": "string"}, "vai": {"type": "string"}, "xung_ho": {"type": "string"}},
-            "required": ["ten", "vai", "xung_ho"], "additionalProperties": False}},
+            "ten": {"type": "string"}, "vai": {"type": "string"}, "xung_ho": {"type": "string"}, "goi_ngoi_ba": {"type": "string"}},
+            "required": ["ten", "vai", "xung_ho", "goi_ngoi_ba"], "additionalProperties": False}},
         "thuat_ngu": {"type": "array", "items": {"type": "object", "properties": {
             "goc": {"type": "string"}, "viet": {"type": "string"}}, "required": ["goc", "viet"], "additionalProperties": False}},
     },
@@ -95,6 +97,7 @@ Hãy đọc hết rồi tóm tắt bằng tiếng Việt có dấu để ngườ
 - tom_tat: video nói về gì, mạch diễn biến, giọng điệu (2-4 câu).
 - the_loai: ví dụ phim ngắn tình cảm, hài, review sản phẩm, phóng sự, vlog, hướng dẫn, kể chuyện.
 - nhan_vat: người nói/nhân vật, vai trò, quan hệ và cách xưng hô tiếng Việt phù hợp (ví dụ "gọi mẹ là mẹ, xưng con"; "hai người yêu nhau: anh - em"; "người dẫn nói với khán giả: mình - các bạn").
+  goi_ngoi_ba: MỘT cách gọi duy nhất khi người kể hoặc người khác nhắc tới nhân vật đó ở ngôi thứ ba, dùng suốt video (ví dụ "anh ta", "cô ấy", "ông lão", "hắn" cho kẻ xấu); để trống nếu không ai nhắc tới người đó ở ngôi thứ ba.
 - thuat_ngu: tên riêng, thương hiệu, thuật ngữ và cách viết tiếng Việt thống nhất (tên người Trung dùng âm Hán Việt, ví dụ 李明 → Lý Minh).
 Chỉ dựa vào lời thoại; không bịa."""
 
@@ -109,7 +112,7 @@ Quy tắc:
 - Nếu lời gốc rõ ràng bị nhận dạng sai, suy ra ý đúng theo ngữ cảnh.
 - KHÔNG bỏ ý: mỗi dòng phải giữ đủ thông tin của lời gốc dòng đó (ai, làm gì, vì sao, cảm xúc). Câu tự nhiên nhưng không được lược mất nội dung.
 - Giữ số tiếng của mỗi dòng trong khoảng tối đa đã cho (một tiếng = một âm tiết tiếng Việt) để đọc và lồng tiếng vừa thời lượng: ưu tiên câu gọn, bỏ từ đệm thừa; chỉ khi bắt buộc để giữ đủ ý mới được vượt, tối đa thêm 20%.
-- Ngôi thứ ba cho cùng một người dùng một cách gọi thống nhất (ví dụ luôn "anh ta" hoặc luôn "hắn"), theo ghi chú.
+- Ngôi thứ ba: nhắc tới nhân vật nào thì dùng ĐÚNG cách gọi "ngôi thứ ba" của nhân vật đó trong bối cảnh, ở mọi dòng; không đổi sang "gã", "hắn", "y", "anh ấy"... cho đa dạng.
 - Giữ nguyên số liệu, giá tiền, đơn vị. Không thêm thông tin, không giải thích, không ghi chú trong ngoặc, không emoji.
 - Viết tiếng Việt có dấu đầy đủ.
 - Trả đủ mọi id đã cho. ghi_chu: cập nhật ngắn gọn (dưới 600 ký tự) cách xưng hô, tên riêng, thuật ngữ đã dùng để các đoạn sau dịch thống nhất."""
@@ -140,6 +143,65 @@ def _clean(text: str) -> str:
     return " ".join(text.split()).strip().strip('"“”')
 
 
+# Words that refer to a person in the third person. One person called "anh ta" in one line and "gã" in
+# the next reads as two people; the brief fixes one per person and the last pass enforces it.
+THIRD_PERSON = ("anh ta", "anh ấy", "cô ta", "cô ấy", "chị ta", "chị ấy", "cậu ta", "cậu ấy", "ông ta", "ông ấy",
+                "bà ta", "bà ấy", "hắn", "gã", "ả")
+MAX_UNIFY_LINES = 120
+
+UNIFY_SYSTEM = """Bạn là biên tập viên phụ đề tiếng Việt. Một video gọi cùng một nhân vật ở ngôi thứ ba bằng nhiều cách khác nhau (lúc "anh ta", lúc "gã"), khiến người xem tưởng là nhiều người.
+Bạn nhận danh sách nhân vật với cách gọi ngôi thứ ba đã chọn, và các dòng phụ đề cần soát (lời gốc và bản dịch hiện tại).
+Quy tắc:
+- Chỉ thay từ gọi ngôi thứ ba cho đúng cách gọi đã chọn của nhân vật mà dòng đó nói tới. Giữ nguyên mọi chữ khác, giữ nguyên ý.
+- Nếu từ đó chỉ một người không có trong danh sách, hoặc là lời thoại của nhân vật (mắng, gọi nhau) và cách gọi đó hợp ngữ cảnh, giữ nguyên dòng.
+- Viết tiếng Việt có dấu đầy đủ. Trả lại đủ mọi id đã cho; ghi_chu để trống."""
+
+
+def _third_person(person: Any) -> str:
+    value = person.get("goi_ngoi_ba") if isinstance(person, dict) else None
+    return " ".join(value.split())[:40] if isinstance(value, str) else ""
+
+
+def _word(phrase: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)", re.IGNORECASE)
+
+
+_THIRD_PERSON_WORDS = {phrase: _word(phrase) for phrase in THIRD_PERSON}
+
+
+def stray_references(text: str, chosen: set[str]) -> list[str]:
+    """The third-person words in a line that the brief did not choose for anyone."""
+    return [phrase for phrase, pattern in _THIRD_PERSON_WORDS.items() if phrase not in chosen and pattern.search(text)]
+
+
+def _unify(asker: Asker, route: Route, ordered: Sequence[Cue], finished: dict[str, str], brief_value: Any, *,
+           dubbing: bool, cache_dir: Path | None, key: dict[str, Any]) -> tuple[dict[str, str], Route]:
+    """Lines whose third-person words differ from the brief's choice, rewritten to it (once, best effort)."""
+    people = [person for person in (brief_value.get("nhan_vat") or [])[:12] if isinstance(person, dict)] if isinstance(brief_value, dict) else []
+    chosen = {_third_person(person).lower() for person in people} - {""}
+    if not chosen:
+        return {}, route
+    flagged = [cue for cue in ordered if cue.cue_id in finished and stray_references(finished[cue.cue_id], chosen)][:MAX_UNIFY_LINES]
+    if not flagged:
+        return {}, route
+    cast = [f"- {str(person.get('ten', ''))[:60]} ({str(person.get('vai', ''))[:80]}): {_third_person(person)}" for person in people if _third_person(person)]
+    rows = [json.dumps({"id": cue.cue_id, "toi_da_tieng": syllable_budget(cue, dubbing=dubbing), "goc": cue.source_text[:300],
+                        "hien_tai": finished[cue.cue_id]}, ensure_ascii=False) for cue in flagged]
+    prompt = "\n".join(["Nhân vật và cách gọi ngôi thứ ba đã chọn:", *cast, "Các dòng cần soát (mỗi dòng một JSON):", *rows])
+    path = cache_dir / f"unify-{_digest({'k': key, 'p': prompt})}.json" if cache_dir else None
+    value = _cached(path)
+    if value is None:
+        try:
+            value, route = asker(route, UNIFY_SYSTEM, LINES_SCHEMA, [{"text": prompt}], max_tokens=8000)
+        except AiError:
+            return {}, route
+    lines = _lines(value, flagged, dubbing=dubbing)
+    if not lines or lacks_diacritics(list(lines.values())):
+        return {}, route
+    _store(path, value)
+    return lines, route
+
+
 def _brief_text(brief: Any) -> str:
     if not isinstance(brief, dict):
         return ""
@@ -150,7 +212,9 @@ def _brief_text(brief: Any) -> str:
         lines.append("Thể loại: " + brief["the_loai"].strip()[:120])
     for person in (brief.get("nhan_vat") or [])[:12]:
         if isinstance(person, dict):
-            lines.append(f"Nhân vật: {str(person.get('ten', ''))[:60]} — {str(person.get('vai', ''))[:120]}; xưng hô: {str(person.get('xung_ho', ''))[:160]}")
+            third = _third_person(person)
+            lines.append(f"Nhân vật: {str(person.get('ten', ''))[:60]} — {str(person.get('vai', ''))[:120]}; xưng hô: {str(person.get('xung_ho', ''))[:160]}"
+                         + (f"; ngôi thứ ba luôn gọi: {third}" if third else ""))
     terms = [f"{str(item.get('goc', ''))[:40]} → {str(item.get('viet', ''))[:60]}" for item in (brief.get("thuat_ngu") or [])[:40]
              if isinstance(item, dict) and item.get("goc") and item.get("viet")]
     if terms:
@@ -308,6 +372,10 @@ def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, ca
         finished.update(lines)
         if isinstance(value, dict) and isinstance(value.get("ghi_chu"), str):
             notes = value["ghi_chu"].strip()[:MAX_NOTES_CHARS]
+    # 3. One name per person: the lines that drifted ("anh ta" … "gã") brought back to the brief's choice.
+    if finished:
+        unified, current = _unify(asker, current, ordered, finished, brief_value, dubbing=dubbing, cache_dir=cache_dir, key=key)
+        finished.update(unified)
     if on_progress:
         on_progress(len(windows), len(windows))
     result = tuple(replace(cue, translated_text=finished[cue.cue_id]) if cue.cue_id in finished else cue for cue in ordered)

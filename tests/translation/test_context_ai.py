@@ -125,6 +125,51 @@ class ContextTranslationTest(unittest.TestCase):
                                             asker=other, cache_dir=Path(folder))
             self.assertEqual(len(other.prompts), 3)
 
+    def test_a_person_keeps_one_third_person_word_across_the_video(self):
+        brief = {**BRIEF, "nhan_vat": [{"ten": "Người đàn ông", "vai": "nhân vật chính", "xung_ho": "người kể gọi anh ta", "goi_ngoi_ba": "anh ta"}]}
+        drafts = {"c0": "Anh ta lấy khăn giấy", "c1": "Gã lại hì hục cả buổi", "c2": "Ông lão hắng giọng"}
+        asked = []
+
+        def asker(route, system, schema, parts, **_):
+            if schema is context_ai.BRIEF_SCHEMA:
+                return brief, route
+            text = parts[0]["text"]
+            ids = [json.loads(line)["id"] for line in text.splitlines() if line.startswith('{"id"')]
+            if system is context_ai.UNIFY_SYSTEM:
+                asked.append(ids)
+                self.assertIn("anh ta", text)
+                return {"lines": [{"id": "c1", "text": "Anh ta lại hì hục cả buổi"}], "ghi_chu": ""}, route
+            return {"lines": [{"id": cue_id, "text": drafts[cue_id]} for cue_id in ids], "ghi_chu": ""}, route
+
+        with tempfile.TemporaryDirectory() as folder:
+            result = context_ai.translate_in_context(cues(3), ROUTE, dubbing=False, asker=asker, cache_dir=Path(folder))
+            self.assertEqual(asked, [["c1"]])  # only the line that drifted is sent, "ông lão hắng" is not a match
+            self.assertEqual([cue.translated_text for cue in result.cues],
+                             ["Anh ta lấy khăn giấy", "Anh ta lại hì hục cả buổi", "Ông lão hắng giọng"])
+            again = context_ai.translate_in_context(cues(3), ROUTE, dubbing=False, asker=asker, cache_dir=Path(folder))
+            self.assertEqual(len(asked), 1)  # the rewrite is cached with the windows
+            self.assertEqual(again.cues[1].translated_text, "Anh ta lại hì hục cả buổi")
+
+    def test_a_failed_unify_pass_keeps_the_window_lines(self):
+        brief = {**BRIEF, "nhan_vat": [{"ten": "A", "vai": "chính", "xung_ho": "", "goi_ngoi_ba": "anh ta"}]}
+
+        def asker(route, system, schema, parts, **_):
+            if schema is context_ai.BRIEF_SCHEMA:
+                return brief, route
+            if system is context_ai.UNIFY_SYSTEM:
+                raise AiError("SERVER", "busy")
+            ids = [json.loads(line)["id"] for line in parts[0]["text"].splitlines() if line.startswith('{"id"')]
+            return {"lines": [{"id": cue_id, "text": "Hắn bỏ đi rồi"} for cue_id in ids], "ghi_chu": ""}, route
+
+        result = context_ai.translate_in_context(cues(2), ROUTE, dubbing=False, asker=asker)
+        self.assertTrue(result.complete)
+        self.assertEqual({cue.translated_text for cue in result.cues}, {"Hắn bỏ đi rồi"})
+
+    def test_stray_references_match_whole_words_only(self):
+        self.assertEqual(context_ai.stray_references("Gã hắng giọng, anh ta cười", {"anh ta"}), ["gã"])
+        self.assertEqual(context_ai.stray_references("Cô ấy đi ả đào", {"cô ấy", "ả"}), [])
+        self.assertEqual(context_ai.stray_references("thằng nhỏ chạy", {"anh ta"}), [])
+
     def test_identity_never_holds_the_key(self):
         self.assertNotIn("sk-test", json.dumps(context_ai.identity(ROUTE, dubbing=True)))
 
