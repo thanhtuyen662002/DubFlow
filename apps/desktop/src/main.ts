@@ -12,6 +12,7 @@ import {
 } from "./features/queue/defaults.ts";
 import { matchesQueueFilter, type QueueFilter } from "./features/queue/view_model.ts";
 import { mountDiscovery } from "./features/discovery/view.ts";
+import { chineseKeyword } from "./features/discovery/ai.ts";
 import { extractLinks } from "./features/links/extract.ts";
 import { fetchBadge, fetchMessage, isDouyinLink, needsDouyinLogin, shortPath, type FetchStatus } from "./features/links/status.ts";
 import { addSample, fractionDone, progressLine, type Sample } from "./features/fetch/progress.ts";
@@ -1692,7 +1693,11 @@ const discovery = mountDiscovery(invoke, async (url, title) => { await startFetc
   } catch {
     return "argos";
   }
-}, onWindowMoved);
+}, onWindowMoved, async (text) => {
+  // Only with a key the user already saved; the phrase alone goes to that provider.
+  const key = claudeKey.read();
+  return key ? chineseKeyword(claudeKey.provider(), key, text) : null;
+});
 void claudeKey.restore();
 const aiSettings = mountAiSettings(claudeKey);
 $("#open-ai-settings").addEventListener("click", () => aiSettings.open());

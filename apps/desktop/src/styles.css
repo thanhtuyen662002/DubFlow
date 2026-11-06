@@ -619,6 +619,11 @@ button.job.selected { background: var(--select); }
 .suggest-list li { padding: 7px 10px; border-radius: 6px; cursor: pointer; }
 .suggest-list li:hover, .suggest-list li[aria-selected="true"] { background: var(--hover); }
 .discover-state { color: var(--text-2); font-size: 13px; }
+.translate-row { margin-top: -4px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; min-width: 0; }
+.translate-row .gloss-toggle { margin-bottom: 0; }
+.translate-note { min-width: 0; color: var(--text-2); font-size: 12.5px; overflow-wrap: anywhere; }
+.translate-note b { color: var(--text); font-weight: 600; }
+.translate-note.warn { color: var(--warn, var(--text-2)); }
 /* Browser panel: the platform page (a native view placed over .discover-page) replaces the results while browsing. */
 .discover-main.browsing { overflow: hidden; }
 .discover-main.browsing > :is(.topic-row, .result-bar, .result-tools, .discover-results, .more-btn, .discover-note) { display: none; }
