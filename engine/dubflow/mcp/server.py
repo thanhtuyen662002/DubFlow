@@ -19,7 +19,7 @@ from engine.dubflow.docu.project import DocuError, load_spec, spec_path
 PROTOCOL = "2025-06-18"
 SUPPORTED = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER = {"name": "dubflow", "title": "DubFlow Phim tài liệu", "version": "1"}
-INSTRUCTIONS = ("Tools for DubFlow documentary projects (Phim tài liệu). A new film: discover_videos -> download_video (2-5 sources) -> "
+INSTRUCTIONS = ("Tools for DubFlow documentary projects (Phim tài liệu). A new film: discover_videos -> download_video (2-15 sources, 6-12 give the richest B-roll) -> "
                 "create_project (speech is recognised when a source has no .srt) -> get_script_brief -> write the script yourself and "
                 "save_script -> narrate -> plan_visuals -> render_rough_cut. An existing one: list_projects, then inspect_timeline_state. "
                 "Plan edits (replace_timeline_clip, apply_smart_label_overlay, adjust_pacing_and_transitions, set_framing) take effect after "
@@ -48,13 +48,13 @@ TOOLS = [
     _tool("download_video", "Download one video through DubFlow's verified downloader (Bilibili, Douyin with a saved session, direct "
           "links) into Videos\\DubFlow Sources. Only use footage you have the right to use.",
           {"url": {"type": "string"}}, ["url"]),
-    _tool("create_project", "Create a documentary project from 2-5 local videos, like the page's Tạo dự án. A source without subtitles "
-          "has its speech recognised (faster-whisper on this computer, a few minutes per video).",
+    _tool("create_project", "Create a documentary project from 2-15 local videos (6-12 give a rich B-roll pool), like the page's Tạo dự án. "
+          "A source without subtitles has its speech recognised (faster-whisper on this computer, a few minutes per video).",
           {"title": {"type": "string", "maxLength": 120}, "topic": {"type": "string", "maxLength": 600},
            "target_minutes": {"type": "integer", "minimum": 3, "maximum": 20},
            "framing": {"type": "string", "enum": ["none", "letterbox_235", "overscan_108"], "description": "letterbox_235 hides low captions best"},
            "burn_end_credits": {"type": "boolean"}, "source_language": {"type": "string", "enum": ["zh", "en"]},
-           "sources": {"type": "array", "minItems": 2, "maxItems": 5, "items": _SOURCE}},
+           "sources": {"type": "array", "minItems": 2, "maxItems": 15, "items": _SOURCE}},
           ["title", "target_minutes", "sources"]),
     _tool("get_script_brief", "What to write the script from: the rules, each chapter's purpose and word budget, the timed source lines "
           "and the quantity facts with US conversions.", {"project": _PROJECT}, ["project"], read_only=True),
@@ -67,7 +67,8 @@ TOOLS = [
           {"project": _PROJECT, "voice": {"type": "string", "description": "voice_id from list_voices, e.g. am_michael"},
            "speed": {"type": "number", "minimum": 0.8, "maximum": 1.2}}, ["project", "voice"]),
     _tool("plan_visuals", "Cut the sources into B-roll slices for every scene (shots, burned-in captions, logos), like the page's "
-          "Lập kế hoạch hình ảnh. Hand-picked slices are kept.", {"project": _PROJECT}, ["project"]),
+          "Lập kế hoạch hình ảnh: each slice inside one camera shot (1.8-6.5 s), logos cropped away where possible, heavily "
+          "watermarked sources last, plus a satellite fly-in at the script's coordinates and up to 4 data slides. Hand-picked slices are kept.", {"project": _PROJECT}, ["project"]),
     _tool("list_projects", "List DubFlow documentary projects, newest first, with what each has (script, narration, plan, rough cut).",
           {"root": {"type": "string", "description": "A 'DubFlow Output' folder to search (absolute path); its projects "
                             "can then be used in this session. Default: the user's Videos\\DubFlow Output"}}, [],

@@ -5,6 +5,7 @@ timeline; writes ``visual_plan.json``, which phase 2b-2 renders.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -12,7 +13,7 @@ import traceback
 from typing import Any, Callable
 
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
-from . import keywords, matcher, safezone, shots
+from . import infographic, keywords, mapgen, matcher, safezone, shots
 from .project import FRAMING_PRESETS, DocuError, Spec, context_path, load_spec, script_path, spec_path, work_dir, write_json
 from .script import load_contexts, load_draft
 from .narration import _Status
@@ -34,9 +35,36 @@ def caption_warning(source_id: str, preset: str) -> str:
     return covered if preset == "letterbox_235" else f"{covered}. Chọn khung Viền đen điện ảnh 2,35:1 để vùng che nhỏ hơn"
 
 
+def logo_first_warning(source_id: str) -> str:
+    """Framing that crops a big logo away and covers the caption band instead (Tier-3)."""
+    return (f"Logo của {source_id} quá to để làm mờ: khung hình đẩy logo ra ngoài, phụ đề gốc ở đáy được phủ dải tối "
+            "sát viền đen")
+
+
 def portrait_warning(source_id: str) -> str:
     return (f"{source_id} là video dọc: khung 16:9 chỉ giữ được một dải giữa hình, nên lát cắt chỉ lấy từ nguồn này "
             "khi không còn cảnh khác. Nên thay bằng video ngang")
+
+
+def heavy_warning(source_id: str) -> str:
+    return (f"{source_id} có logo/watermark lớn không cắt ra khỏi khung được: chỉ dùng khi các nguồn sạch đã hết cảnh")
+
+
+def unusable_warning(source_id: str) -> str:
+    return (f"{source_id} bị bỏ qua: logo/watermark lớn và chữ đồ họa chiếm hơn 60% thời lượng "
+            "(chỉ dùng nếu không còn nguồn nào khác)")
+
+
+def slice_json(piece: matcher.Slice) -> dict[str, Any]:
+    value = {"source_id": piece.source_id, "start": piece.start, "end": piece.end, "at": piece.at,
+             "duration": round(piece.duration, 3), "tier": piece.tier}
+    if piece.kind != matcher.FOOTAGE:
+        value.update({"kind": piece.kind, "ref": piece.ref})
+    if piece.crossed:
+        value["crossed"] = True
+    if piece.reused:
+        value.update({"reused": True, "variation": "alt_crop"})
+    return value
 
 
 PACING = "pacing.json"
@@ -89,9 +117,10 @@ def apply_overrides(run_dir: Path, plan: dict[str, Any]) -> list[str]:
                 dropped += 1
                 continue
             piece.update({"source_id": source_id, "start": round(start, 3), "end": round(start + length, 3), "tier": -1})
-            # Footage picked by hand is the user's call: it is framed as planned, not as a repeat.
-            piece.pop("reused", None)
-            piece.pop("variation", None)
+            # Footage picked by hand is the user's call: framed as planned, not as a repeat; it replaces a generated
+            # picture (map, data slide) too.
+            for key in ("reused", "variation", "kind", "ref", "crossed"):
+                piece.pop(key, None)
     return [f"{dropped} lát cắt đã thay tay không còn chỗ trong kế hoạch mới"] if dropped else []
 
 
@@ -120,7 +149,7 @@ def reframe(run_dir: Path, preset: str) -> dict[str, Any]:
     for source in plan["sources"]:
         saved = source.get("framing") or {}
         band = safezone.Band(**saved["band"]) if saved.get("band") else None
-        source["framing"] = {**saved, **safezone.framing(band, preset).to_dict()}
+        source["framing"] = {**saved, **safezone.frame_logos(band, saved.get("logos") or [], preset).to_dict()}
     plan["cinematic_framing_preset"] = preset
     others = [note for note in plan.get("warnings", []) if not note.startswith("Phụ đề gốc của") and "là video dọc" not in note]
     plan["warnings"] = source_warnings(plan["sources"], preset) + others
@@ -169,7 +198,7 @@ def _checked_logos(logos: Any) -> list[list[float]]:
 
 def _apply_cover(source: dict[str, Any], band: safezone.Band | None, logos: list[list[float]], preset: str) -> None:
     saved = source.get("framing") or {}
-    source["framing"] = {**saved, "band": band.__dict__ if band else None, **safezone.framing(band, preset).to_dict(),
+    source["framing"] = {**saved, "band": band.__dict__ if band else None, **safezone.frame_logos(band, logos, preset).to_dict(),
                          "logos": logos, "cover_edited": True}
 
 
@@ -214,18 +243,62 @@ def _scenes(script: dict[str, Any], timeline: dict[str, Any], paces: dict[str, f
     by_id = {scene["scene_id"]: scene for chapter in script["chapters"] for scene in chapter["scenes"]}
     paces = paces or {}
     result = []
-    for timed in timeline["scenes"]:
+    for index, timed in enumerate(timeline["scenes"]):
         scene = by_id.get(timed["scene_id"], {})
         cited = tuple(matcher.Ref(ref["source_id"], float(ref["start"]), float(ref["end"])) for ref in scene.get("matched_source_refs", []))
         pace = paces.get(timed.get("chapter_type"), matcher.MAX_SLICE)
         tags = [tag for tag in scene.get("visual_search_tags") or [] if isinstance(tag, str)]
         terms = keywords.scene_terms(tags, str(scene.get("narration_text") or ""))
-        result.append(matcher.Scene(timed["scene_id"], float(timed["start"]), float(timed["slot_end"]), cited, pace, terms))
+        result.append(matcher.Scene(timed["scene_id"], float(timed["start"]), float(timed["slot_end"]), cited, pace, terms,
+                                    _hold(timeline["scenes"], index)))
     if result:
         # The film starts with the first picture, not with the first word.
-        first = result[0]
-        result[0] = matcher.Scene(first.scene_id, 0.0, first.end, first.refs, first.max_slice, first.terms)
+        result[0] = replace(result[0], start=0.0)
     return result
+
+
+def _hold(timed: list[dict[str, Any]], index: int) -> str:
+    """A held 5–6 s shot opens the hook and the engineering act and closes the verdict (Tier-3 pacing)."""
+    kind = timed[index].get("chapter_type")
+    before = timed[index - 1].get("chapter_type") if index else None
+    after = timed[index + 1].get("chapter_type") if index + 1 < len(timed) else None
+    if kind in ("HOOK", "ENGINEERING_SOLUTION") and before != kind:
+        return "first"
+    if kind == "CRITICAL_EVALUATION" and after != kind:
+        return "last"
+    return ""
+
+
+def add_graphics(scenes: list[matcher.Scene], script: dict[str, Any], timeline: dict[str, Any], place: dict[str, Any] | None,
+                 ) -> tuple[list[matcher.Scene], dict[str, dict[str, Any]]]:
+    """Reserve the satellite fly-in and up to four data slides in the scenes' slots (Tier-3); {ref: what to draw}."""
+    by_id = {scene["scene_id"]: (chapter.get("chapter_type"), scene) for chapter in script["chapters"] for scene in chapter["scenes"]}
+    rows = []
+    for planned in scenes:
+        chapter, scene = by_id.get(planned.scene_id, (None, {}))
+        rows.append({"chapter_type": chapter, "on_screen_graphic": scene.get("on_screen_graphic"),
+                     "narration_text": scene.get("narration_text"), "slot": planned.end - planned.start})
+    graphics: dict[str, dict[str, Any]] = {}
+    inserts: dict[int, list[matcher.Insert]] = {}
+    map_index = mapgen.scene_for(rows) if place else None
+    if map_index is not None:
+        spot = mapgen.placement(rows[map_index]["slot"], matcher.shortest(scenes[map_index].max_slice))
+        if spot is not None:
+            graphics["map_01"] = {"kind": "map", **place, "scene_id": scenes[map_index].scene_id}
+            inserts.setdefault(map_index, []).append(matcher.Insert("map", spot[0], spot[1], "map_01"))
+        else:
+            map_index = None
+    for number, (index, slide) in enumerate(infographic.select(rows, () if map_index is None else (map_index,)).items(), 1):
+        spot = infographic.placement(rows[index]["slot"], matcher.shortest(scenes[index].max_slice))
+        if spot is None:
+            continue
+        ref = f"info_{number:02d}"
+        backdrop = scenes[index].refs[0] if scenes[index].refs else None
+        graphics[ref] = {**slide, "scene_id": scenes[index].scene_id,
+                         "backdrop": {"source_id": backdrop.source_id, "at": round((backdrop.start + backdrop.end) / 2, 3)} if backdrop else None}
+        inserts.setdefault(index, []).append(matcher.Insert("infographic", spot[0], spot[1], ref, backdrop.source_id if backdrop else ""))
+    result = [replace(scene, inserts=tuple(inserts[index])) if index in inserts else scene for index, scene in enumerate(scenes)]
+    return result, graphics
 
 
 def source_lines(context: dict[str, Any]) -> tuple[tuple[float, float, frozenset[str]], ...]:
@@ -291,33 +364,46 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
             if edit is not None:
                 # A band or logos set by hand in Chỉnh sửa win over this scan (#520).
                 band, logos = _checked_band(edit.get("band")), _checked_logos(edit.get("logos", []))
-            framing = safezone.framing(band, spec.cinematic_framing_preset)
+            # Logos cropped away where a small move or zoom can do it (Tier-3), blurred only where it cannot.
+            framing = safezone.frame_logos(band, logos, spec.cinematic_framing_preset)
             if not framing.clear:
-                warnings.append(caption_warning(source.id, spec.cinematic_framing_preset))
+                warnings.append(logo_first_warning(source.id) if safezone.framing(band, spec.cinematic_framing_preset).clear
+                                else caption_warning(source.id, spec.cinematic_framing_preset))
             portrait = safezone.is_portrait(size)
             if portrait:
                 warnings.append(portrait_warning(source.id))
+            marks = safezone.watermark_state(framing, logos, texts, duration)
+            if not marks["usable"]:
+                warnings.append(unusable_warning(source.id))
+            elif marks["heavy_watermark"]:
+                warnings.append(heavy_warning(source.id))
             framings[source.id] = {"band": band.__dict__ if band else None, **framing.to_dict(),
                                    "frame_size": list(size) if size else None, "portrait": portrait, "logos": logos,
-                                   "text_spans": texts}
+                                   "text_spans": texts, **marks}
             sources.append(matcher.Source(source.id, duration, tuple(cuts), portrait, tuple((a, b) for a, b in texts),
-                                          source_lines(contexts[source.id])))
+                                          source_lines(contexts[source.id]), marks["heavy_watermark"], marks["usable"]))
+        place = mapgen.target(script)
+        if place is not None:
+            # Fetched now so the render works offline; without a network the map is drawn as a vector chart.
+            status.write(done=done, message="Đang tải ảnh vệ tinh của địa điểm…")
+            mapgen.fetch_tiles(place["lat"], place["lon"], mapgen.tile_folder(work_dir(run_dir)), cancelled=cancel.exists)
         status.write(done=done, message="Đang ghép lát cắt cho từng cảnh…")
+        scenes, graphics = add_graphics(_scenes(script, timeline, load_pacing(run_dir)["max_slice"]), script, timeline, place)
         try:
-            planned = matcher.plan(_scenes(script, timeline, load_pacing(run_dir)["max_slice"]), sources)
+            planned = matcher.plan(scenes, sources)
         except ValueError as error:
             raise DocuError("Video nguồn quá ngắn để dựng đủ hình cho lời đọc") from error
         plan = {
             "schema_version": 1, "script_sha256": script.get("script_sha256"), "timeline_sha256": _sha256(timeline_path),
             "duration": timeline["duration"], "cinematic_framing_preset": spec.cinematic_framing_preset,
-            "rules": {"min_slice": matcher.MIN_SLICE, "max_slice": matcher.MAX_SLICE, "same_source_gap": matcher.SAME_SOURCE_GAP},
-            "sources": [{"id": source.id, "duration": source.duration, "shots": len(source.cuts) + 1, "framing": framings[source.id]}
-                        for source in sources],
+            "rules": {"min_slice": matcher.MIN_SLICE, "max_slice": matcher.MAX_SLICE, "same_source_gap": matcher.SAME_SOURCE_GAP,
+                      "shot_margin": matcher.SHOT_MARGIN, "one_shot_per_slice": True},
+            "sources": [{"id": source.id, "duration": source.duration, "shots": len(source.cuts) + 1, "framing": framings[source.id],
+                         "heavy_watermark": source.heavy, "usable": source.usable} for source in sources],
             "scenes": [{"scene_id": scene.scene_id, "start": scene.start, "end": scene.end, "warnings": notes,
-                        "slices": [{"source_id": piece.source_id, "start": piece.start, "end": piece.end, "at": piece.at,
-                                    "duration": round(piece.duration, 3), "tier": piece.tier,
-                                    **({"reused": True, "variation": "alt_crop"} if piece.reused else {})} for piece in slices]}
+                        "slices": [slice_json(piece) for piece in slices]}
                        for scene, slices, notes in planned],
+            "graphics": graphics,
             "warnings": warnings,
         }
         plan["warnings"] += apply_overrides(run_dir, plan)

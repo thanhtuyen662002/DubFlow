@@ -13,7 +13,7 @@ import unicodedata
 SCHEMA_VERSION = 1
 SPEC_LIMIT = 256 * 1024
 FRAMING_PRESETS = ("none", "letterbox_235", "overscan_108")
-MIN_SOURCES, MAX_SOURCES = 2, 5
+MIN_SOURCES, MAX_SOURCES = 2, 15
 MIN_MINUTES, MAX_MINUTES = 3, 20
 TRANSCRIPT_SUFFIXES = frozenset({".json", ".srt"})
 _SOURCE_ID = re.compile(r"src_\d{2}")

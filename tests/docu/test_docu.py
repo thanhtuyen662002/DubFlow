@@ -10,9 +10,17 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
-from engine.dubflow.docu import context, script, units
+from engine.dubflow.docu import context, mapgen, script, units
 from engine.dubflow.docu import __main__ as cli
 from engine.dubflow.docu.project import DocuError, load_spec, script_path, spec_path, write_json
+
+
+def _offline(url: str, timeout: float) -> bytes:
+    raise OSError("tests never download map tiles")
+
+
+# Fixture scripts carry real coordinates: the tests draw the offline chart instead of downloading imagery.
+mapgen._http = _offline
 
 FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG") or shutil.which("ffmpeg")
 FFPROBE = os.environ.get("DUBFLOW_TEST_FFPROBE") or shutil.which("ffprobe")

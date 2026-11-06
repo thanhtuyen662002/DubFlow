@@ -59,9 +59,12 @@ class Framing:
     shift: float
     letterbox: float
     clear: bool = True
+    # Tier-3: the window moved this share of the source width to the right (negative: left), to crop a logo away.
+    shift_x: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        return {"zoom": round(self.zoom, 4), "shift": round(self.shift, 4), "letterbox": round(self.letterbox, 4), "clear": self.clear}
+        return {"zoom": round(self.zoom, 4), "shift": round(self.shift, 4), "letterbox": round(self.letterbox, 4), "clear": self.clear,
+                "shift_x": round(self.shift_x, 4)}
 
 
 def band_from_rows(rows: Sequence[tuple[float, float, float]], speech_seconds: float, *,
@@ -216,3 +219,126 @@ def scan_frame_text(video: Path, *, duration: float, cache: Path, scanner: Calla
 def is_portrait(size: Sequence[int] | None) -> bool:
     """A picture taller than wide (a phone video): a 16:9 frame keeps only a strip of it."""
     return bool(size) and len(size) == 2 and size[1] > size[0]
+
+
+# ---- Tier-3 "zero blemish": crop logos away, or say the source is too marked to use ------------------------------
+
+# A logo still in the picture after framing is blurred; a blur this big reads as a smudge: more than this share of the
+# frame, or a short side longer than this many pixels of the 1920x1080 output.
+HEAVY_SHARE = 0.025
+HEAVY_SIDE = 95
+# A heavy watermark and big text on screen more than this share of the source: the source is not used at all.
+UNUSABLE_TEXT_SHARE = 0.60
+OUTPUT_W, OUTPUT_H = 1920, 1080
+
+
+def window(framed: Framing) -> tuple[float, float, float, float]:
+    """(left, top, right, bottom) of the source that shows in the output, as frame fractions, letterbox bars excluded."""
+    visible = 1 / framed.zoom
+    left = min(max(0.0, 0.5 - visible / 2 + framed.shift_x), 1 - visible)
+    top = min(max(0.0, 0.5 - visible / 2 - framed.shift), 1 - visible)
+    bar = framed.letterbox * visible
+    return left, top + bar, left + visible, top + visible - bar
+
+
+def logo_on_screen(framed: Framing, logo: Sequence[float]) -> tuple[float, float]:
+    """The part of a logo box that shows, as (width, height) shares of the output frame; (0, 0) when it is cropped away."""
+    left, top, right, bottom = window(framed)
+    x, y, w, h = (float(part) for part in logo)
+    across = max(0.0, min(right, x + w) - max(left, x))
+    down = max(0.0, min(bottom, y + h) - max(top, y))
+    if across <= 1e-4 or down <= 1e-4:
+        return 0.0, 0.0
+    return across * framed.zoom, down * framed.zoom
+
+
+def is_heavy(framed: Framing, logo: Sequence[float]) -> bool:
+    w, h = logo_on_screen(framed, logo)
+    return w * h > HEAVY_SHARE or min(w * OUTPUT_W, h * OUTPUT_H) > HEAVY_SIDE
+
+
+def _caption_ok(band: Band | None, zoom: float, shift: float, letterbox: float) -> bool:
+    if band is None:
+        return True
+    visible = 1 / zoom
+    return 0.5 + visible / 2 - shift - visible * letterbox <= band.top - MARGIN + 1e-6
+
+
+def frame_logos(band: Band | None, logos: Sequence[Sequence[float]], preset: str) -> Framing:
+    """``framing``, then zoomed (at most 114%) and moved sideways or up and down so logos leave the picture.
+
+    Cropping a logo away beats blurring it (a big blur reads as a smudge). Among framings that hide the most logo
+    area, the one with the least zoom and the smallest move wins; the caption band stays hidden as before.
+    """
+    base = framing(band, preset)
+    if not logos:
+        return base
+    def shown(framed: Framing) -> float:
+        return sum(w * h for w, h in (logo_on_screen(framed, logo) for logo in logos))
+    best = (round(shown(base), 5), 0.0, 0.0, base)
+    if best[0] == 0:
+        return base
+    zooms = [base.zoom] if not base.clear else [round(z, 2) for z in (base.zoom + step * 0.01 for step in range(0, 15)) if z <= MAX_ZOOM + 1e-9]
+    for zoom in zooms:
+        visible = 1 / zoom
+        reach = (1 - visible) / 2
+        sideways = [reach * step / 10 for step in range(-10, 11)]
+        if base.clear:
+            upward = [reach * step / 10 for step in range(-10, 11)]
+        else:
+            upward = [base.shift]
+        for shift in upward:
+            if base.clear and not _caption_ok(band, zoom, shift, base.letterbox):
+                continue
+            for shift_x in sideways:
+                framed = Framing(zoom, shift, base.letterbox, base.clear, shift_x)
+                key = (round(shown(framed), 5), round(zoom - base.zoom, 4), round(abs(shift_x) + abs(shift - base.shift), 4))
+                if key < best[:3]:
+                    best = (*key, framed)
+    chosen = best[3]
+    if base.clear and band is not None and any(is_heavy(chosen, logo) for logo in logos):
+        # Logo first: when keeping the caption out leaves a big logo blur, a framing that crops the logo away and
+        # lets the caption be covered by the dark strip along the bottom bar reads cleaner than a blot in the picture.
+        traded = _logo_first(band, logos, base, shown)
+        if traded is not None and shown(traded) <= LOGO_FIRST_GAIN * best[0] and caption_seen(traded, band) <= LOGO_FIRST_CAPTION:
+            return traded
+    return chosen
+
+
+# A logo-first framing must cut the logo shown to this share of the caption-first one, and show at most this much of
+# the caption band (frame fractions; covered in place by the dark strip).
+LOGO_FIRST_GAIN, LOGO_FIRST_CAPTION = 0.35, 0.11
+
+
+def caption_seen(framed: Framing, band: Band) -> float:
+    """How much of the caption band (frame fractions, top to bottom) shows in the picture."""
+    _, top, _, bottom = window(framed)
+    return max(0.0, min(bottom, band.bottom) - max(top, band.top))
+
+
+def _logo_first(band: Band, logos: Sequence[Sequence[float]], base: Framing, shown: Callable[[Framing], float]) -> Framing | None:
+    best: tuple | None = None
+    for step in range(0, 15):
+        zoom = round(base.zoom + step * 0.01, 2)
+        if zoom > MAX_ZOOM + 1e-9:
+            break
+        reach = (1 - 1 / zoom) / 2
+        for up in range(-10, 11):
+            for side in range(-10, 11):
+                framed = Framing(zoom, reach * up / 10, base.letterbox, False, reach * side / 10)
+                if any(is_heavy(framed, logo) for logo in logos):
+                    continue
+                key = (round(shown(framed), 5), round(caption_seen(framed, band), 4), zoom, abs(up) + abs(side))
+                if best is None or key < best[0]:
+                    best = (key, framed)
+    return best[1] if best else None
+
+
+def watermark_state(framed: Framing, logos: Sequence[Sequence[float]], texts: Sequence[Sequence[float]],
+                    duration: float) -> dict[str, Any]:
+    """Whether a source's remaining logos are too big to blur unseen (``heavy_watermark``) and whether it is usable."""
+    heavy = any(is_heavy(framed, logo) for logo in logos)
+    shown = sum(1 for logo in logos if logo_on_screen(framed, logo) != (0.0, 0.0))
+    text_share = sum(max(0.0, float(b) - float(a)) for a, b in texts) / duration if duration > 0 else 0.0
+    return {"heavy_watermark": heavy, "usable": not (heavy and text_share > UNUSABLE_TEXT_SHARE),
+            "logos_cropped": len(logos) - shown, "text_share": round(text_share, 3)}

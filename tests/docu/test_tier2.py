@@ -173,7 +173,7 @@ class KeywordTests(unittest.TestCase):
         scene = matcher.Scene("sc_001", 0.0, 4.0, (), terms=terms)
         planned = matcher.plan([scene], self._sources())
         piece = planned[0][1][0]
-        self.assertEqual((piece.source_id, piece.start), ("src_03", 40.0))
+        self.assertEqual((piece.source_id, piece.start), ("src_03", 40.0 + matcher.SHOT_MARGIN))
         # Without terms the old order holds: the first source by id.
         plain = matcher.plan([matcher.Scene("sc_001", 0.0, 4.0, ())], self._sources())
         self.assertNotEqual(plain[0][1][0].source_id, "src_03")

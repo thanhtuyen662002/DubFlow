@@ -15,13 +15,15 @@ const form = { title: "Three Gorges Dam", topic: "Engineering and community impa
 assert.deepEqual(buildRequest(form), { ...form, title: form.title, targetMinutes: 11 });
 for (const change of [{ title: "" }, { title: "x".repeat(121) }, { topic: "x".repeat(601) }, { topic: "x\u0001" },
   { targetMinutes: 2 }, { targetMinutes: 21 }, { targetMinutes: 3.5 }, { cinematicFramingPreset: "bad" },
-  { sources: [] }, { sources: [form.sources[0]] }, { sources: [...form.sources, ...form.sources, ...form.sources, ...form.sources] },
+  { sources: [] }, { sources: [form.sources[0]] }, { sources: Array.from({ length: 16 }, (_, index) => form.sources[index % 2]) },
   { sources: [{ ...form.sources[1], subtitles: path("captions.ass") }, form.sources[0]] },
   { sources: [{ ...form.sources[0], outputPath: "relative/final_vi.mp4" }, form.sources[1]] },
   { sources: [{ ...form.sources[0], title: "" }, form.sources[1]] }]) {
   assert.equal(typeof buildRequest({ ...form, ...change }), "string");
 }
 assert.equal(typeof buildRequest({ ...form, sources: [form.sources[0], form.sources[1]] }), "object");
+// Tier-3: up to 15 sources (6-12 give a rich B-roll pool).
+assert.equal(typeof buildRequest({ ...form, sources: Array.from({ length: 15 }, (_, index) => form.sources[index % 2]) }), "object");
 // A plain video without subtitles is a source too: its speech is recognised when the project is created.
 assert.deepEqual(buildRequest({ ...form, sources: [form.sources[0], { ...form.sources[1], subtitles: undefined }] }).sources[1],
   { kind: "file", video: path("tour.mp4"), subtitles: null, title: "Dam tour" });
@@ -173,6 +175,11 @@ assert.equal(visualInfo.plan.scenes.length, 1);
 assert.equal(visualInfo.plan.scenes[0].slices.length, 1);
 assert.deepEqual(visualInfo.plan.warnings, ["w"]);
 assert.deepEqual(parseVisual(null), { plan: null, status: null });
+// Tier-3: generated pictures (the satellite map, a data slide) keep their kind; anything else is footage.
+const drawnPlan = parseVisual({ plan: { script_sha256: "abc", duration: 9, warnings: [], scenes: [{ scene_id: "sc_001", start: 0, end: 9, warnings: [], slices: [
+  { source_id: "src_01", start: 0, end: 4.5, at: 0, duration: 4.5, tier: 0 }, { source_id: "", start: 0, end: 4.5, at: 4.5, duration: 4.5, tier: 0, kind: "map", ref: "map_01" },
+  { source_id: "src_02", start: 1, end: 2, at: 9, tier: 0, kind: "other" }] }] } });
+assert.deepEqual(drawnPlan.plan.scenes[0].slices.map(piece => piece.kind ?? "footage"), ["footage", "map", "footage"]);
 const timed = { script_sha256: "abc", voice_id: "am_michael", speed: 1, duration: 24.1, scenes: [] };
 assert.equal(planStale({ chapters: [], script_sha256: "abc" }, timed, visualInfo.plan), false);
 assert.equal(planStale({ chapters: [], script_sha256: "new" }, timed, visualInfo.plan), true, "the script changed");

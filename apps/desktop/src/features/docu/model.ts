@@ -103,7 +103,8 @@ export type NarrationTimeline = { script_sha256: string; voice_id: string; speed
 export type NarrationStatus = { state: "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED"; done: number; total: number; message: string };
 export type NarrationInfo = { audio: string | null; timeline: NarrationTimeline | null; status: NarrationStatus | null };
 export const NARRATION_SPEEDS = [0.9, 0.95, 1, 1.05, 1.1] as const;
-export type PlanSlice = { source_id: string; start: number; end: number; at: number; duration: number; tier: number };
+/** ``kind`` marks a generated picture (Tier-3): the satellite map or a data slide; footage has none. */
+export type PlanSlice = { source_id: string; start: number; end: number; at: number; duration: number; tier: number; kind?: "map" | "infographic" };
 export type PlanScene = { scene_id: string; start: number; end: number; warnings: string[]; slices: PlanSlice[] };
 export type VisualPlan = { script_sha256: string; duration: number; scenes: PlanScene[]; warnings: string[] };
 export type VisualInfo = { plan: VisualPlan | null; status: NarrationStatus | null };
@@ -153,7 +154,7 @@ export function buildRequest(input: {
   if (!(FRAMING_PRESETS as readonly string[]).includes(input.cinematicFramingPreset)) return "Kiểu khung hình không hợp lệ.";
   if (typeof input.burnEndCredits !== "boolean") return "Thiết lập credit cuối video không hợp lệ.";
   if (input.outputRoot !== null && (!absolute(input.outputRoot) || !input.outputRoot.trim())) return "Thư mục lưu phải là đường dẫn tuyệt đối.";
-  if (input.sources.length < 2 || input.sources.length > 5) return "Hãy chọn từ 2 đến 5 nguồn.";
+  if (input.sources.length < 2 || input.sources.length > 15) return "Hãy chọn từ 2 đến 15 nguồn.";
   const sources: DocuSource[] = [];
   for (const [index, source] of input.sources.entries()) {
     if (!validText(source.title, 120, true)) return `Nguồn ${index + 1}: tiêu đề từ 1 đến 120 ký tự.`;
@@ -361,7 +362,8 @@ export function parseVisual(value: unknown): VisualInfo {
       const piece = obj(item);
       return piece && typeof piece.source_id === "string" && [piece.start, piece.end, piece.at].every(v => Number.isFinite(Number(v)))
         ? [{ source_id: piece.source_id, start: Number(piece.start), end: Number(piece.end), at: Number(piece.at),
-          duration: Number(piece.duration) || Number(piece.end) - Number(piece.start), tier: Number(piece.tier) || 0 }] : [];
+          duration: Number(piece.duration) || Number(piece.end) - Number(piece.start), tier: Number(piece.tier) || 0,
+          ...(piece.kind === "map" || piece.kind === "infographic" ? { kind: piece.kind as "map" | "infographic" } : {}) }] : [];
     });
     return [{ scene_id: scene.scene_id, start: Number(scene.start) || 0, end: Number(scene.end) || 0, warnings: strings(scene.warnings), slices }];
   });

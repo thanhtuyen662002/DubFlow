@@ -20,7 +20,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from . import context, script, transcribe
-from .project import FRAMING_PRESETS, DocuError, load_spec, script_path, spec_path, work_dir, write_json
+from .project import FRAMING_PRESETS, MAX_SOURCES, MIN_SOURCES, DocuError, load_spec, script_path, spec_path, work_dir, write_json
 from .script import CHAPTERS
 
 PREFIX = "Phim tai lieu - "
@@ -92,8 +92,8 @@ def create_project(*, title: str, topic: str, target_minutes: int, framing: str,
     """A run folder, a spec and source contexts, like the page's "Tạo dự án"; a source without subtitles is transcribed."""
     if framing not in FRAMING_PRESETS:
         raise DocuError("framing phải là none, letterbox_235 hoặc overscan_108")
-    if not isinstance(sources, list) or not 2 <= len(sources) <= 5:
-        raise DocuError("Cần từ 2 đến 5 nguồn")
+    if not isinstance(sources, list) or not MIN_SOURCES <= len(sources) <= MAX_SOURCES:
+        raise DocuError(f"Cần từ {MIN_SOURCES} đến {MAX_SOURCES} nguồn")
     for index, item in enumerate(sources, 1):
         video = Path(str(item.get("video") or "")) if isinstance(item, dict) else Path()
         if not video.is_absolute() or video.suffix.casefold() not in VIDEO_SUFFIXES or not video.is_file():
@@ -153,7 +153,7 @@ def script_brief(run: Path) -> dict[str, Any]:
             "graphic_types": ["METRIC_CALLOUT", "LOWER_THIRD"],
             "sources": [{"source_id": item.id, "title": item.title, "duration": contexts[item.id].get("duration")} for item in spec.sources],
             "source_lines": "\n".join(lines), "quantity_facts": "\n".join(facts) or "(none found)",
-            "format": {"project_title": "string", "target_Coordinates_3D": "{lat, lng, location_name} or null",
+            "format": {"project_title": "string", "target_Coordinates_3D": "{lat, lng, location_name} of the exact site (the building or plant itself, 4 decimal places, not the city centre) or null",
                        "chapters": "[{chapter_type, recommended_bgm_mood, scenes: [{narration_text, matched_source_refs, visual_search_tags, "
                                    "on_screen_graphic, ambient_sfx_tag, acknowledged_numbers?}]}]"}}
 
