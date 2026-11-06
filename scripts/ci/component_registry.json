@@ -604,6 +604,16 @@
       ]
     },
     {
+      "id": "ai-providers",
+      "roots": [
+        "engine/dubflow/ai",
+        "tests/ai"
+      ],
+      "commands": [
+        ["python", "-B", "-m", "unittest", "discover", "-s", "tests/ai", "-t", ".", "-p", "test_*.py"]
+      ]
+    },
+    {
       "id": "seo",
       "roots": [
         "engine/dubflow/seo",

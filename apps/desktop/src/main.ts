@@ -38,7 +38,8 @@ import { mountSfxSettings } from "./features/sfx/settings.ts";
 import { mountPerformanceSettings } from "./features/performance/settings.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
-import { createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
+import { configureHostAi, createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
+import { loadPrefs, translationJobArgs } from "./features/ai/translation_prefs.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
 import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
@@ -116,6 +117,10 @@ const packageVideo = mountPackage(invoke, { cpuOnly });
 // One AI choice and saved keys, shared by every AI feature. The inspector
 // sections below are used by the first render, so they are mounted up here.
 const claudeKey = createAiSession(hostKeyStore(invoke));
+// ChatGPT, DeepSeek, Qwen… are called through the host with the model chosen in Cài đặt AI.
+configureHostAi(invoke, (provider) => claudeKey.options(provider));
+/** Saved keys and model choices; a job started before they load waits for them. */
+const aiRestored = claudeKey.restore().catch(() => undefined);
 // The sound-effect pack and the user's sound folder (editor Âm thanh, Cài đặt).
 const sfxLibrary = createSfxLibrary(invoke);
 const shorts = mountShorts(invoke, claudeKey);
@@ -1238,8 +1243,12 @@ async function startJob(job: QueueJob): Promise<void> {
   startButton.disabled = true;
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
-    const started = await invoke<{ output_dir: string } | null>("start_job",
-      startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle()));
+    await aiRestored;
+    const started = await invoke<{ output_dir: string } | null>("start_job", {
+      ...startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle()),
+      // "Dịch phụ đề bằng AI theo ngữ cảnh" and "Từ nhạy cảm" (Cài đặt AI); the host adds the saved key.
+      ...translationJobArgs(loadPrefs(), claudeKey, job.displayName),
+    });
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
     if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);
@@ -1704,7 +1713,6 @@ const discovery = mountDiscovery(invoke, async (url, title) => { await startFetc
   const key = claudeKey.read();
   return key ? chineseKeyword(claudeKey.provider(), key, text) : null;
 });
-void claudeKey.restore();
 const aiSettings = mountAiSettings(claudeKey);
 $("#open-ai-settings").addEventListener("click", () => aiSettings.open());
 mountSfxSettings(sfxLibrary, showError);

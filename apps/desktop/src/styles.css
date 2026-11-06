@@ -561,6 +561,13 @@ button.job.selected { background: var(--select); }
 .ai-key-status.saved { color: var(--accent-text); }
 .ai-key-card .post-key-actions { margin-top: 0; }
 .ai-key-card .hint { margin: 0; }
+.ai-fields { display: grid; gap: 8px; }
+.ai-field { display: grid; gap: 4px; font-size: 12px; color: var(--text-2); }
+.ai-field :is(input, select, textarea) { width: 100%; min-width: 0; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--canvas); color: var(--text); font-size: 13px; }
+.ai-field :is(input, select) { height: 34px; padding-block: 0; }
+.ai-field textarea { resize: vertical; line-height: 1.5; }
+.ai-check { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ai-check .hint { flex: 1 1 220px; }
 .versions-panel { width: min(520px, 100%); height: auto; }
 .versions-list { margin: 0; padding: 8px 20px; list-style: none; }
 .versions-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }

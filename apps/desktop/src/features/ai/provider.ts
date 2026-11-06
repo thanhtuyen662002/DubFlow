@@ -1,12 +1,49 @@
 import Anthropic from "@anthropic-ai/sdk";
 
-/** Which service writes for the user, with the user's own key (ADR-0042). */
-export type Provider = "claude" | "gemini";
+/**
+ * Which service writes for the user, with the user's own key (ADR-0042). Claude and
+ * Gemini are called from the webview; the others speak the OpenAI Chat Completions
+ * shape and are called from the host (`ai_ask` → engine/dubflow/ai), so the webview's
+ * network policy stays closed. Ids match engine/dubflow/ai/client.py PRESETS.
+ */
+export const PROVIDER_IDS = ["claude", "gemini", "openai", "deepseek", "qwen", "kimi", "glm", "grok", "openrouter", "groq", "mistral", "custom"] as const;
+export type Provider = typeof PROVIDER_IDS[number];
 
-export const PROVIDERS: Record<Provider, { name: string; label: string; company: string; console: string; placeholder: string }> = {
-  claude: { name: "Claude", label: "Claude (Anthropic)", company: "Anthropic", console: "console.anthropic.com", placeholder: "sk-ant-…" },
-  gemini: { name: "Gemini", label: "Gemini (Google)", company: "Google", console: "aistudio.google.com/apikey", placeholder: "AIza…" },
+type ProviderInfo = {
+  name: string; label: string; company: string; console: string; placeholder: string;
+  /** Called through the host (OpenAI-compatible), not from the webview. */
+  host: boolean;
+  /** Reads images (Bán hàng's product photos). */
+  vision: boolean;
+  /** The model used when the user has not picked one; "" for custom servers. */
+  model: string;
+  /** Whether the user can change the server address (their own server, or Qwen's region). */
+  baseUrl?: string;
+  /** One line under the card: what this provider is good at. */
+  note?: string;
 };
+
+export const PROVIDERS: Record<Provider, ProviderInfo> = {
+  claude: { name: "Claude", label: "Claude (Anthropic)", company: "Anthropic", console: "console.anthropic.com", placeholder: "sk-ant-…", host: false, vision: true, model: "claude-opus-5-5" },
+  gemini: { name: "Gemini", label: "Gemini (Google)", company: "Google", console: "aistudio.google.com/apikey", placeholder: "AIza…", host: false, vision: true, model: "gemini-3.5-flash-lite" },
+  openai: { name: "ChatGPT", label: "ChatGPT (OpenAI)", company: "OpenAI", console: "platform.openai.com/api-keys", placeholder: "sk-…", host: true, vision: true, model: "gpt-5-mini" },
+  deepseek: { name: "DeepSeek", label: "DeepSeek", company: "DeepSeek", console: "platform.deepseek.com/api_keys", placeholder: "sk-…", host: true, vision: true, model: "deepseek-flash",
+    note: "Rẻ, dịch tiếng Trung rất tốt." },
+  qwen: { name: "Qwen", label: "Qwen (Alibaba Cloud)", company: "Alibaba Cloud", console: "modelstudio.console.alibabacloud.com", placeholder: "sk-…", host: true, vision: false, model: "qwen-plus",
+    baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", note: "Mạnh về tiếng Trung. Khóa vùng Bắc Kinh: đổi địa chỉ thành https://dashscope.aliyuncs.com/compatible-mode/v1." },
+  kimi: { name: "Kimi", label: "Kimi (Moonshot AI)", company: "Moonshot AI", console: "platform.kimi.ai", placeholder: "sk-…", host: true, vision: true, model: "kimi-k2.6" },
+  glm: { name: "GLM", label: "GLM (Z.ai / Zhipu)", company: "Z.ai", console: "z.ai/manage-apikey/apikey-list", placeholder: "…", host: true, vision: false, model: "glm-5.3" },
+  grok: { name: "Grok", label: "Grok (xAI)", company: "xAI", console: "console.x.ai", placeholder: "xai-…", host: true, vision: true, model: "grok-4.7" },
+  openrouter: { name: "OpenRouter", label: "OpenRouter (nhiều model)", company: "OpenRouter", console: "openrouter.ai/keys", placeholder: "sk-or-…", host: true, vision: true, model: "openrouter/auto",
+    note: "Một khóa dùng được hàng trăm model (GPT, Claude, Gemini, DeepSeek, Qwen…): nhập tên model, ví dụ deepseek/deepseek-chat." },
+  groq: { name: "Groq", label: "Groq", company: "Groq", console: "console.groq.com/keys", placeholder: "gsk_…", host: true, vision: false, model: "openai/gpt-oss-120b", note: "Rất nhanh, có gói miễn phí." },
+  mistral: { name: "Mistral", label: "Mistral AI", company: "Mistral AI", console: "console.mistral.ai/api-keys", placeholder: "…", host: true, vision: true, model: "mistral-medium-latest" },
+  custom: { name: "AI tùy chỉnh", label: "Tùy chỉnh (tương thích OpenAI)", company: "máy chủ bạn nhập", console: "máy chủ của bạn", placeholder: "Khóa (để trống nếu máy chủ trên máy này không cần)", host: true, vision: true, model: "",
+    baseUrl: "", note: "Mọi máy chủ nói chuẩn OpenAI /chat/completions: LM Studio, Ollama (http://localhost:11434/v1), vLLM, one-api, Azure… Nhập địa chỉ và tên model." },
+};
+
+/** Per-provider choices that are not secret: the model and (custom, Qwen) the server address. */
+export type ProviderOptions = { model?: string; baseUrl?: string };
 
 export const CLAUDE_MODEL = "claude-opus-5-5";
 /**
@@ -27,7 +64,7 @@ export const GEMINI_TIMEOUT_MS = 90_000;
 export const GEMINI_MAX_RETRY_WAIT_MS = 30_000;
 
 export function isProvider(value: unknown): value is Provider {
-  return value === "claude" || value === "gemini";
+  return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
 }
 
 export const KEY_STORAGE_NOTE = "Khóa được lưu an toàn trên máy này (Windows Credential Manager) nên lần sau không phải nhập lại; đổi hoặc xóa trong “Cài đặt AI”.";
@@ -46,6 +83,8 @@ export interface KeyStore {
   remove(provider: Provider): Promise<void>;
   loadProvider(): Provider | null;
   saveProvider(provider: Provider): void;
+  loadOptions?(): Partial<Record<Provider, ProviderOptions>>;
+  saveOptions?(options: Partial<Record<Provider, ProviderOptions>>): void;
 }
 
 /** The chosen provider and one key per provider: saved through `store`, cached in memory while the app runs. */
@@ -61,6 +100,9 @@ export interface AiSession {
   restore(): Promise<void>;
   /** A provider's saved key, masked, or null. */
   saved(provider: Provider): string | null;
+  /** The provider's model and server address choices. */
+  options(provider: Provider): ProviderOptions;
+  setOptions(provider: Provider, options: ProviderOptions): void;
 }
 
 function mask(key: string): string | null {
@@ -69,7 +111,8 @@ function mask(key: string): string | null {
 
 export function createAiSession(store?: KeyStore): AiSession {
   let current: Provider = "claude";
-  const keys: Record<Provider, string> = { claude: "", gemini: "" };
+  const keys = Object.fromEntries(PROVIDER_IDS.map((id) => [id, ""])) as Record<Provider, string>;
+  let options: Partial<Record<Provider, ProviderOptions>> = {};
   async function put(provider: Provider, value: string): Promise<void> {
     const key = value.trim();
     const previous = keys[provider];
@@ -93,6 +136,11 @@ export function createAiSession(store?: KeyStore): AiSession {
     restore: async () => {
       if (!store) return;
       current = store.loadProvider() ?? current;
+      try {
+        options = store.loadOptions?.() ?? {};
+      } catch {
+        options = {};
+      }
       for (const provider of Object.keys(keys) as Provider[]) {
         try {
           keys[provider] = (await store.load(provider)) ?? "";
@@ -102,6 +150,14 @@ export function createAiSession(store?: KeyStore): AiSession {
       }
     },
     saved: (provider) => mask(keys[provider]),
+    options: (provider) => ({ ...(options[provider] ?? {}) }),
+    setOptions: (provider, value) => {
+      const clean: ProviderOptions = {};
+      if (value.model?.trim()) clean.model = value.model.trim().slice(0, 200);
+      if (value.baseUrl?.trim()) clean.baseUrl = value.baseUrl.trim().replace(/\/+$/, "").slice(0, 300);
+      options = { ...options, [provider]: clean };
+      store?.saveOptions?.(options);
+    },
   };
 }
 
@@ -118,16 +174,24 @@ export async function setKeyFor(session: AiSession, provider: Provider, value: s
 
 /** A rejected or missing key, from either service's error text. */
 export function isKeyError(error: unknown): boolean {
-  return /\b(401|403)\b|authentication|api[_ -]?key|PERMISSION_DENIED|UNAUTHENTICATED/i.test(String(error));
+  return /^(Error: )?KEY:|\b(401|403)\b|authentication|api[_ -]?key|PERMISSION_DENIED|UNAUTHENTICATED/i.test(String(error));
 }
 
 export type Part = { text: string } | { image: { mediaType: "image/jpeg"; data: string } };
 /** `language` is the answer's language: Vietnamese (the default) or English, which skips the Vietnamese-diacritics guard. */
 export type JsonRequest = { system: string; schema: Record<string, unknown>; parts: Part[]; effort: "low" | "medium"; language?: "vi" | "en" };
 
+/**
+ * fetch that refuses every redirect: on a cross-origin redirect Fetch strips only
+ * Authorization, so x-api-key would follow it. The Claude SDK uses this one.
+ */
+export function noRedirectFetch(send: typeof fetch = (...args) => fetch(...args)): typeof fetch {
+  return ((input: RequestInfo | URL, init?: RequestInit) => send(input, { ...init, redirect: "error" })) as typeof fetch;
+}
+
 async function askClaude(key: string, request: JsonRequest): Promise<unknown> {
   // The key belongs to the user of this desktop app and stays on this machine.
-  const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true });
+  const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, fetch: noRedirectFetch() });
   const response = await client.beta.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 16000,
@@ -221,6 +285,8 @@ async function askGeminiOnce(key: string, request: JsonRequest, send: typeof fet
     response = await send(geminiEndpoint(model), {
       // Covers the answer's body too: a stalled download times out like a stalled request.
       signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      // A redirect would carry x-goog-api-key to its target (Fetch strips only Authorization): fail instead.
+      redirect: "error",
       method: "POST",
       // The key travels in a header, never in the URL.
       headers: { "content-type": "application/json", "x-goog-api-key": key },
@@ -338,7 +404,56 @@ async function askGemini(key: string, request: JsonRequest, send: typeof fetch, 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** One structured answer from the chosen provider. Everything in `request.parts` is sent to that provider. */
+type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+type HostReply = { ok: boolean; value?: unknown; model?: string; models?: string[]; suggested?: string | null; code?: string; message?: string };
+let host: { invoke: Invoke; options: (provider: Provider) => ProviderOptions } | null = null;
+
+/** Wires the host-called providers (main.ts at start-up): the Tauri invoke and the session's model choices. */
+export function configureHostAi(invoke: Invoke, options: (provider: Provider) => ProviderOptions): void {
+  host = { invoke, options };
+}
+
+/** The request the host runs for a provider: its model and, for custom/Qwen, the server address. */
+export function hostRequest(provider: Provider, options: ProviderOptions, body: Record<string, unknown>): Record<string, unknown> {
+  const info = PROVIDERS[provider];
+  return {
+    provider,
+    ...(options.model?.trim() || info.model ? { model: options.model?.trim() || info.model } : {}),
+    ...(info.baseUrl !== undefined && (options.baseUrl?.trim() || info.baseUrl) ? { base_url: options.baseUrl?.trim() || info.baseUrl } : {}),
+    ...body,
+  };
+}
+
+function hostError(reply: HostReply): Error {
+  return new Error(`${reply.code ?? "FAILED"}: ${reply.message ?? "AI không trả lời"}`);
+}
+
+async function askHost(provider: Provider, key: string, request: JsonRequest): Promise<unknown> {
+  if (!host) throw new Error(`${PROVIDERS[provider].name} chỉ dùng được trong ứng dụng DubFlow trên Windows.`);
+  if (!key.trim() && provider !== "custom") throw new Error(`KEY: Chưa có khóa API ${PROVIDERS[provider].name}; hãy nhập khóa trong “Cài đặt AI”.`);
+  if (!PROVIDERS[provider].vision && request.parts.some((part) => "image" in part)) {
+    throw new Error(`${PROVIDERS[provider].name} không đọc được ảnh; hãy chọn Claude, Gemini hoặc ChatGPT cho việc này.`);
+  }
+  const system = request.language === "en" ? request.system : `${request.system}\n${KEEP_DIACRITICS}`;
+  const options = host.options(provider);
+  const reply = await host.invoke<HostReply>("ai_ask", {
+    request: hostRequest(provider, options, { action: "ask", system, schema: request.schema, parts: request.parts, max_tokens: 16000 }),
+    key: key.trim() || null,
+  });
+  if (!reply?.ok) throw hostError(reply ?? { ok: false });
+  return reply.value;
+}
+
+/** "Kiểm tra khóa": the models this key can use (proves the key and the address), and the one to use. */
+export async function checkProvider(provider: Provider, key: string, options: ProviderOptions = {}): Promise<{ models: string[]; suggested: string | null }> {
+  if (!host) throw new Error("Chỉ kiểm tra được trong ứng dụng DubFlow trên Windows.");
+  const reply = await host.invoke<HostReply>("ai_ask", { request: hostRequest(provider, options, { action: "models" }), key: key.trim() || null });
+  if (!reply?.ok) throw hostError(reply ?? { ok: false });
+  return { models: reply.models ?? [], suggested: reply.suggested ?? null };
+}
+
 export function askJson(provider: Provider, key: string, request: JsonRequest, send: typeof fetch = (...args) => fetch(...args),
                         wait: (ms: number) => Promise<void> = sleep): Promise<unknown> {
+  if (PROVIDERS[provider].host) return askHost(provider, key, request);
   return provider === "gemini" ? askGemini(key, request, send, wait) : askClaude(key, request);
 }

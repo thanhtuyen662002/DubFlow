@@ -1650,7 +1650,7 @@
         <header class="review-head">
           <div>
             <h2 id="ai-settings-title">Cài đặt AI</h2>
-            <p class="subtitle">Khóa dùng cho các tính năng AI: gợi ý đăng bài, Shorts, video bán hàng, tổng hợp và phim tài liệu</p>
+            <p class="subtitle">Khóa dùng để dịch phụ đề theo ngữ cảnh và cho các tính năng AI: gợi ý đăng bài, Shorts, video bán hàng, tổng hợp và phim tài liệu</p>
           </div>
           <button id="ai-settings-close" class="icon-btn" type="button" aria-label="Đóng">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -1658,9 +1658,28 @@
         </header>
         <div class="ai-settings-body">
           <label class="ai-provider">AI mặc định
-            <select id="ai-settings-provider"><option value="claude">Claude (Anthropic)</option><option value="gemini">Gemini (Google)</option></select>
+            <select id="ai-settings-provider"></select>
           </label>
           <div id="ai-settings-keys" class="ai-settings-keys"></div>
+          <section class="ai-key-card ai-subs-card">
+            <label class="gloss-toggle"><input id="ai-translate-subs" type="checkbox" checked /> Dịch phụ đề bằng AI theo ngữ cảnh</label>
+            <p id="ai-translate-hint" class="hint"></p>
+          </section>
+          <section class="ai-key-card ai-subs-card">
+            <label class="ai-field">Từ nhạy cảm (chính sách cộng đồng)
+              <select id="sensitive-mode">
+                <option value="off">Tắt</option>
+                <option value="variant">Đổi cách viết: chết → chớt, giết → giớt (phụ đề và giọng đọc)</option>
+                <option value="beep">Che chữ (ch*t) và bíp trong giọng đọc</option>
+              </select>
+            </label>
+            <div id="sensitive-words-box" class="ai-fields" hidden>
+              <label class="ai-field">Danh sách từ, mỗi dòng “từ = cách viết thay”
+                <textarea id="sensitive-words" rows="7" spellcheck="false"></textarea>
+              </label>
+              <p class="hint">Chỉ thay đúng cả từ (“dao động” vẫn giữ nguyên). Áp dụng cho video xử lý từ giờ trở đi; bản dịch gốc để sửa vẫn giữ nguyên. <button id="sensitive-reset" class="link" type="button">Dùng danh sách mặc định</button></p>
+            </div>
+          </section>
           <p id="ai-settings-note" class="hint"></p>
           <p id="ai-settings-state" class="discover-state" role="status"></p>
         </div>
