@@ -374,3 +374,25 @@ class PaceTests(unittest.TestCase):
         from engine.dubflow.docu import shots
         text = "lavfi.scd.time=100.08\nlavfi.scd.time=100.44\nlavfi.scd.time=100.5\n"
         self.assertEqual(shots.parse(text, 200.0), [100.08, 100.44])
+
+
+class SlowCutTests(unittest.TestCase):
+    @staticmethod
+    def _thumbs(levels):
+        from engine.dubflow.docu import shots
+        size = shots.SLOW_W * shots.SLOW_H
+        return b"".join(bytes([int(level) % 256]) * size for level in levels)
+
+    def test_dissolve_is_cut_out_and_steady_motion_is_not(self):
+        from engine.dubflow.docu import shots
+        # 4 s of a slowly drifting picture, a 0.8 s dissolve to a much brighter one, 4 s more.
+        levels = [40 + i * 0.5 for i in range(20)] + [50 + (200 - 50) * k / 4 for k in range(1, 5)] + [200 + i * 0.5 for i in range(20)]
+        cuts = shots.slow_cuts(self._thumbs(levels), len(levels) / shots.SLOW_FPS)
+        self.assertEqual(len(cuts), 2)
+        self.assertLess(cuts[0], 4.0)
+        self.assertGreater(cuts[1], 4.8)
+        self.assertEqual(shots.slow_cuts(self._thumbs([40 + i * 2 for i in range(50)]), 10.0), [])
+
+    def test_merge_drops_flicker(self):
+        from engine.dubflow.docu import shots
+        self.assertEqual(shots.merge([2.0, 5.0], [1.95, 3.0, 3.6], 10.0), [1.95, 3.0, 3.6, 5.0])
