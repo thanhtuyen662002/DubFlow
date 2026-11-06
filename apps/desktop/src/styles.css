@@ -1049,6 +1049,9 @@ button.job.selected { background: var(--select); }
 .edit-ov.idle { outline: 1px dashed oklch(1 0 0 / .7); background: oklch(0.60 0.17 278 / .12); }
 .edit-ov.idle video { visibility: hidden; }
 .edit-ov-handle { position: absolute; right: -7px; bottom: -7px; display: none; width: 14px; height: 14px; border: 2px solid #fff; border-radius: 4px; background: var(--accent); cursor: nwse-resize; }
+.edit-ov-handle.nw { left: -7px; top: -7px; right: auto; bottom: auto; }
+.edit-ov-handle.ne { top: -7px; bottom: auto; cursor: nesw-resize; }
+.edit-ov-handle.sw { left: -7px; right: auto; cursor: nesw-resize; }
 .edit-ov.selected .edit-ov-handle { display: block; }
 .queue-screen:not(.editing) :is(.edit-ghost, .edit-tint, .edit-fade, .edit-overlays, .edit-texts, .edit-alt, .edit-subs-layer) { display: none; }
 
@@ -1824,3 +1827,22 @@ body:is(.panel-dragging-x, .panel-dragging-y) :is(iframe, video) { pointer-event
 .voice-sample-btn { display: inline-flex; flex: none; align-items: center; gap: 6px; white-space: nowrap; }
 .voice-sample-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: voice-spin .8s linear infinite; }
 @keyframes voice-spin { to { transform: rotate(360deg); } }
+
+/* Cắt khung on the preview: the whole picture, the part cut away shaded, a frame with handles. */
+.look-crop-layer { position: absolute; z-index: 6; overflow: hidden; pointer-events: none; }
+.look-crop-layer[hidden] { display: none; }
+.look-crop-box { position: absolute; box-sizing: border-box; outline: 2px solid var(--accent); box-shadow: 0 0 0 9999px oklch(0 0 0 / .55); cursor: move; pointer-events: auto; touch-action: none;
+  background-image: linear-gradient(oklch(1 0 0 / .25), oklch(1 0 0 / .25)), linear-gradient(oklch(1 0 0 / .25), oklch(1 0 0 / .25)),
+    linear-gradient(oklch(1 0 0 / .25), oklch(1 0 0 / .25)), linear-gradient(oklch(1 0 0 / .25), oklch(1 0 0 / .25));
+  background-size: 1px 100%, 1px 100%, 100% 1px, 100% 1px; background-position: 33.33% 0, 66.66% 0, 0 33.33%, 0 66.66%; background-repeat: no-repeat; }
+.look-crop-handle { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border: 2px solid #fff; border-radius: 3px; background: var(--accent); box-sizing: border-box; }
+.look-crop-handle.nw { left: 0; top: 0; cursor: nwse-resize; } .look-crop-handle.n { left: 50%; top: 0; cursor: ns-resize; }
+.look-crop-handle.ne { left: 100%; top: 0; cursor: nesw-resize; } .look-crop-handle.e { left: 100%; top: 50%; cursor: ew-resize; }
+.look-crop-handle.se { left: 100%; top: 100%; cursor: nwse-resize; } .look-crop-handle.s { left: 50%; top: 100%; cursor: ns-resize; }
+.look-crop-handle.sw { left: 0; top: 100%; cursor: nesw-resize; } .look-crop-handle.w { left: 0; top: 50%; cursor: ew-resize; }
+.look-crop-edit { align-self: flex-start; }
+.look-crop-edit[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+/* Phụ đề: the corner knob that resizes the subtitle text on the preview. */
+.subs-size-knob { position: absolute; z-index: 2; width: 14px; height: 14px; margin: -4px 0 0 -4px; box-sizing: border-box; border: 2px solid #fff; border-radius: 4px; background: var(--accent); cursor: nwse-resize; pointer-events: auto; touch-action: none; }
+.subs-size-knob[hidden] { display: none; }

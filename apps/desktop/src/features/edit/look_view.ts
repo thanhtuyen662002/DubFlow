@@ -5,8 +5,8 @@
  * on the player.
  */
 import {
-  COLOR_PRESETS, colorPresetOf, lutName, CROP_RATIOS, cropForRatio, cropRatioOf, cssFilter, DEFAULT_FREEZE, MAX_REVERSE, NEUTRAL_COLOR, temperatureTint, zoomAt,
-  type ColorLook, type Crop, type SegmentLook,
+  COLOR_PRESETS, colorPresetOf, lutName, CROP_RATIOS, cropForRatio, cropRatioOf, cssFilter, dragCrop, DEFAULT_FREEZE, MAX_REVERSE, NEUTRAL_COLOR, temperatureTint, zoomAt,
+  type ColorLook, type Crop, type CropHandle, type SegmentLook,
 } from "./look.ts";
 import { freezeFrame, lookOf, mediaOf, segmentLength, setLook, type Edit, type Segment } from "./model.ts";
 
@@ -16,6 +16,8 @@ export type LookContext = {
   busy: () => boolean;
   commit: (next: Edit, selected?: string) => void;
   preview: (next: Edit) => void;
+  /** Draw the preview again (the crop frame came or went). */
+  redraw: () => void;
   /** The segment the panel shows. */
   selected: () => Segment | undefined;
   outputTime: () => number;
@@ -216,6 +218,86 @@ export function mountLook(context: LookContext): LookPanel {
     input.addEventListener("input", () => { change({ crop: cropFromInputs() }, true); });
     input.addEventListener("change", () => { change({ crop: cropFromInputs() }); });
   }
+
+  // ---------- Cắt khung on the preview: the whole source picture with a frame to drag ----------
+
+  const cropEdit = $<HTMLButtonElement>("#look-crop-edit");
+  let cropEditing = false;
+  const cropLayer = document.createElement("div");
+  cropLayer.className = "look-crop-layer";
+  cropLayer.hidden = true;
+  const cropBox = document.createElement("div");
+  cropBox.className = "look-crop-box";
+  cropBox.dataset.handle = "move";
+  cropBox.title = "Kéo để dời khung cắt, kéo cạnh hoặc góc để đổi cỡ";
+  for (const handle of ["nw", "n", "ne", "e", "se", "s", "sw", "w"]) {
+    const knob = document.createElement("span");
+    knob.className = `look-crop-handle ${handle}`;
+    knob.dataset.handle = handle;
+    cropBox.append(knob);
+  }
+  cropLayer.append(cropBox);
+  let cropDrag: { pointer: number; x: number; y: number; handle: CropHandle; start: Crop | null; segment: string; moved: boolean } | null = null;
+
+  function setCropEditing(on: boolean): void {
+    cropEditing = on;
+    cropEdit.setAttribute("aria-pressed", String(on));
+    cropEdit.textContent = on ? "Xong cắt khung" : "Kéo khung cắt trên video";
+    if (!on) cropLayer.hidden = true;
+    context.redraw();
+  }
+  cropEdit.addEventListener("click", () => setCropEditing(!cropEditing));
+  cropBox.addEventListener("pointerdown", (event) => {
+    const segment = segmentNow(context.base());
+    if (event.button !== 0 || !segment || context.busy()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try { cropBox.setPointerCapture(event.pointerId); } catch { /* A pointer that already ended. */ }
+    cropDrag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, handle: ((event.target as HTMLElement).dataset.handle ?? "move") as CropHandle,
+      start: lookOf(segment).crop, segment: segment.id, moved: false };
+  });
+  cropBox.addEventListener("pointermove", (event) => {
+    if (!cropDrag || event.pointerId !== cropDrag.pointer) return;
+    const dx = event.clientX - cropDrag.x, dy = event.clientY - cropDrag.y;
+    if (!cropDrag.moved && Math.hypot(dx, dy) < 3) return;
+    cropDrag.moved = true;
+    const area = cropLayer.getBoundingClientRect();
+    const crop = dragCrop(cropDrag.start, cropDrag.handle, dx / Math.max(1, area.width), dy / Math.max(1, area.height));
+    context.preview(setLook(context.base(), cropDrag.segment, { crop }));
+  });
+  const endCropDrag = (event: PointerEvent): void => {
+    if (!cropDrag || event.pointerId !== cropDrag.pointer) return;
+    const ended = cropDrag;
+    cropDrag = null;
+    if (!ended.moved) return;
+    const area = cropLayer.getBoundingClientRect();
+    const crop = dragCrop(ended.start, ended.handle, (event.clientX - ended.x) / Math.max(1, area.width), (event.clientY - ended.y) / Math.max(1, area.height));
+    context.commit(setLook(context.base(), ended.segment, { crop }), ended.segment);
+  };
+  cropBox.addEventListener("pointerup", endCropDrag);
+  cropBox.addEventListener("pointercancel", endCropDrag);
+  cropBox.addEventListener("click", (event) => event.stopPropagation());
+  cropLayer.addEventListener("click", (event) => event.stopPropagation());
+
+  /** Show the frame over the uncut source picture; false when the preview is not cropping now. */
+  function showCropFrame(player: HTMLVideoElement, segment: Segment | null, source: { width: number; height: number }): boolean {
+    const editing = cropEditing && !!segment && segment.id === context.selected()?.id && !panes.frame.hidden && panes.frame.offsetParent !== null;
+    if (!editing || !segment) {
+      cropLayer.hidden = true;
+      return false;
+    }
+    const host = player.parentElement;
+    if (host && cropLayer.parentElement !== host) host.append(cropLayer);
+    const box = { width: player.clientWidth, height: player.clientHeight };
+    const scale = Math.min(box.width / source.width, box.height / source.height);
+    const shown = { left: player.offsetLeft + (box.width - source.width * scale) / 2, top: player.offsetTop + (box.height - source.height * scale) / 2,
+      width: source.width * scale, height: source.height * scale };
+    Object.assign(cropLayer.style, { left: `${shown.left}px`, top: `${shown.top}px`, width: `${shown.width}px`, height: `${shown.height}px` });
+    const crop = lookOf(segment).crop ?? { x: 0, y: 0, w: 1, h: 1 };
+    Object.assign(cropBox.style, { left: `${crop.x * 100}%`, top: `${crop.y * 100}%`, width: `${crop.w * 100}%`, height: `${crop.h * 100}%` });
+    cropLayer.hidden = false;
+    return true;
+  }
   const zoomValue = (): SegmentLook["zoom"] => {
     const segment = segmentNow(context.base());
     const current = segment ? lookOf(segment).zoom : null;
@@ -291,6 +373,7 @@ export function mountLook(context: LookContext): LookPanel {
   }
 
   function render(segment: Segment | undefined): void {
+    if (cropEditing && (tab !== "frame" || !segment)) setCropEditing(false);
     for (const button of tabs) button.setAttribute("aria-selected", String(button.dataset.tab === tab));
     for (const [key, pane] of Object.entries(panes)) pane.hidden = key !== tab;
     if (!segment) return;
@@ -393,6 +476,14 @@ export function mountLook(context: LookContext): LookPanel {
   function apply(player: HTMLVideoElement, segment: Segment | null, progress: number, picture: Rect, source: { width: number; height: number }): void {
     const tint = document.querySelector<HTMLElement>("#edit-tint");
     const look = segment ? lookOf(segment) : null;
+    if (showCropFrame(player, segment, source)) {
+      // Cropping: the whole picture, untouched apart from its colour, under the frame.
+      player.style.transform = "";
+      player.style.transformOrigin = "";
+      player.style.clipPath = "";
+      player.style.filter = look ? cssFilter(look.color) : "";
+      return;
+    }
     if (!look || (!look.crop && !look.rotate && !look.flipH && !look.flipV && !look.zoom && !look.color)) {
       clear(player);
       if (tint) tint.style.opacity = "0";

@@ -143,6 +143,12 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   const block = $("#subs-block");
   const text = $("#subs-text");
   const covers = $("#subs-covers");
+  // A corner knob on the subtitle line: drag it away from the line to enlarge the text, towards it to shrink it.
+  const sizeKnob = document.createElement("span");
+  sizeKnob.className = "subs-size-knob";
+  sizeKnob.title = "Kéo để phóng to hoặc thu nhỏ chữ phụ đề";
+  sizeKnob.hidden = true;
+  layer.append(sizeKnob);
   const note = $("#subs-note");
   const guides = { center: layer.querySelector<HTMLElement>(".subs-guide.center")!, top: layer.querySelector<HTMLElement>(".subs-guide.top")!,
     bottom: layer.querySelector<HTMLElement>(".subs-guide.bottom")! };
@@ -358,6 +364,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
       placeBlock(rect);
       fitBox();
     }
+    placeKnob();
     renderCovers(seconds);
     markCurrent(cue?.cue_id ?? null);
     syncAudio();
@@ -388,6 +395,50 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   new ResizeObserver(() => frame()).observe(layer.parentElement!);
 
   // ---------- Dragging the block ----------
+
+  function placeKnob(): void {
+    const show = active && panel === "subs" && !block.hidden && !!text.textContent && !layer.classList.contains("passive");
+    sizeKnob.hidden = !show;
+    if (!show) return;
+    // At the corner of the letters themselves (a balanced line leaves room in its box).
+    const area = layer.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const lines = [...range.getClientRects()];
+    const box = text.getBoundingClientRect();
+    const right = style.box || !lines.length ? box.right : Math.max(...lines.map((line) => line.right));
+    const bottom = style.box || !lines.length ? box.bottom : Math.max(...lines.map((line) => line.bottom));
+    Object.assign(sizeKnob.style, { left: `${right - area.left}px`, top: `${bottom - area.top}px` });
+  }
+
+  let sizing: { pointer: number; centre: { x: number; y: number }; distance: number; size: number } | null = null;
+  sizeKnob.addEventListener("pointerdown", (event) => {
+    if (!active || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try { sizeKnob.setPointerCapture(event.pointerId); } catch { /* A pointer that already ended. */ }
+    const box = text.getBoundingClientRect();
+    const centre = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    sizing = { pointer: event.pointerId, centre, distance: Math.max(8, Math.hypot(event.clientX - centre.x, event.clientY - centre.y)), size: style.size };
+    layer.classList.add("dragging");
+  });
+  sizeKnob.addEventListener("pointermove", (event) => {
+    if (!sizing || event.pointerId !== sizing.pointer) return;
+    const scale = Math.hypot(event.clientX - sizing.centre.x, event.clientY - sizing.centre.y) / sizing.distance;
+    style = normalizeStyle({ ...style, size: sizing.size * scale });
+    frame();
+  });
+  const endSizing = (event: PointerEvent): void => {
+    if (!sizing || event.pointerId !== sizing.pointer) return;
+    const changed = style.size !== sizing.size;
+    sizing = null;
+    layer.classList.remove("dragging");
+    if (changed) styleChanged();
+    else frame();
+  };
+  sizeKnob.addEventListener("pointerup", endSizing);
+  sizeKnob.addEventListener("pointercancel", endSizing);
+  sizeKnob.addEventListener("click", (event) => event.stopPropagation());
 
 
   text.addEventListener("pointerdown", (event) => {
