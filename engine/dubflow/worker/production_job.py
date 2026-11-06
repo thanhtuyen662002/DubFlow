@@ -71,6 +71,7 @@ _prepare_worker_import_path()
 
 from engine.dubflow.media import CANONICAL_TIME_BASE, FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult, MediaTimeline
 from engine.dubflow.media import encoders
+from engine.dubflow import resources
 from engine.dubflow.media.adapter import AUDIO_DECODE_RECIPE, MAX_BLUR_REGIONS, BlurRegion, CoverStyle, audio_origin_samples
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
 from engine.dubflow.asr import TimeBase, TimePoint
@@ -1084,7 +1085,7 @@ def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_l
                 return _asr_word_evidence_matches(to_cues(aligned), {**base_evidence, "cue_quality": {item.cue_id: item.evidence for item in aligned}})
             except (TypeError, ValueError):
                 return False
-        cpu_model = lambda: WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=max(1, min(8, os.cpu_count() or 1)), local_files_only=True)
+        cpu_model = lambda: WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=resources.cpu_threads(8), local_files_only=True)
         on_gpu = device is not None and device.device == "cuda"
         bounded = transcribe_bounded(
             audio_path, total_samples=total_samples, audio_hash=audio_hash, language=_whisper_language(source_language),
@@ -1128,7 +1129,7 @@ def _sidecar_language(cues: tuple[TextCue, ...], config: WorkerConfig, audio_pat
             if reader.getframerate() != 16000 or reader.getnchannels() != 1 or reader.getsampwidth() != 2:
                 raise ProductionJobError("LANGUAGE_AUDIO_INVALID", "language detection needs 16 kHz mono signed-16 analysis audio")
             audio = np.frombuffer(reader.readframes(60 * 16000), dtype="<i2").astype(np.float32) / 32768
-        model = WhisperModel(str(config.model_root / "asr/faster-whisper-small"), device="cpu", compute_type="int8", cpu_threads=4)
+        model = WhisperModel(str(config.model_root / "asr/faster-whisper-small"), device="cpu", compute_type="int8", cpu_threads=resources.cpu_threads(4))
         observed, probability, _all = model.detect_language(audio=audio, vad_filter=True)
         resolved = _resolved_language(cues, "auto", observed)
         probability = float(probability) if 0 <= float(probability) <= 1 else None
@@ -1485,7 +1486,7 @@ def _auto_blur_regions(config: WorkerConfig, source_hash: str, duration_ms: int 
         ensure_model_profile(profile_path, config.model_root)
         model_path = config.model_root / json.loads(profile_path.read_text(encoding="utf-8"))["model_path"]
         emitter.progress(0.84, "Đang dò phụ đề gốc để làm mờ")
-        scanner = caption_scan.CaptionScanner(model_path, config.ffmpeg_path)
+        scanner = caption_scan.CaptionScanner(model_path, config.ffmpeg_path, threads=resources.cpu_threads(4))
         result = scanner.scan(config.source_path, duration_s=(duration_ms or 0) / 1000, speech_ms=speech,
                               progress=lambda fraction: emitter.progress(0.84 + 0.02 * fraction, "Đang dò phụ đề gốc để làm mờ"))
         summary = result.summary()

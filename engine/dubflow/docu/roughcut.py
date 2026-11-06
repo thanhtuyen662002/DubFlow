@@ -16,6 +16,7 @@ import subprocess
 import traceback
 from typing import Any, Callable, Sequence
 
+from engine.dubflow import resources
 from engine.dubflow.media import encoders as h264
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
 from . import overlays, safezone, soundscape
@@ -158,14 +159,14 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
 def slice_argv(ffmpeg: Path, video: Path, start: float, frames: int, graph: str, encoder: str, output: Path) -> list[str]:
     return [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", *h264.decode_args(encoder), "-ss", f"{start:.3f}", "-i", str(video),
             "-filter_complex", graph, "-map", "[video]", "-an", "-frames:v", str(frames),
-            *h264.rate_args(encoder, VIDEO_BITRATE), "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "15360",
+            *h264.rate_args(encoder, VIDEO_BITRATE), *resources.ffmpeg_thread_args(), "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "15360",
             "-movflags", "+faststart", "-f", "mp4", str(output)]
 
 
 def card_argv(ffmpeg: Path, ass: str, frames: int, encoder: str, output: Path) -> list[str]:
     return [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black:s={WIDTH}x{HEIGHT}:r={FPS}",
             "-vf", f"subtitles={ass},format=yuv420p,setsar=1", "-frames:v", str(frames), "-an",
-            *h264.rate_args(encoder, VIDEO_BITRATE), "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "15360",
+            *h264.rate_args(encoder, VIDEO_BITRATE), *resources.ffmpeg_thread_args(), "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "15360",
             "-f", "mp4", str(output)]
 
 

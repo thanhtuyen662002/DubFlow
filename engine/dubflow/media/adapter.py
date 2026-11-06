@@ -38,6 +38,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from engine.dubflow.security import SecurityBoundaryError, build_subprocess_plan, redact_diagnostics
 from engine.dubflow.media import encoders
+from engine.dubflow import resources
 
 
 _U64_MAX = (1 << 64) - 1
@@ -1238,7 +1239,7 @@ class FfmpegMediaAdapter:
             # then OpenH264: a failed encoder never fails the export by itself.
             for encoder in self.video_encoders():
                 argv = [*args[:decode_at], *encoders.decode_args(encoder), *args[decode_at:encoder_at],
-                        *encoders.rate_args(encoder, bitrate), *args[encoder_at:]]
+                        *encoders.rate_args(encoder, bitrate), *resources.ffmpeg_thread_args(), *args[encoder_at:]]
                 try:
                     return self._write_atomic(output, tuple(argv), output_format="mp4", cwd=cwd, progress=progress)
                 except MediaAdapterError as error:

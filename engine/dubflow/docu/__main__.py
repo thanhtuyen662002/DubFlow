@@ -46,7 +46,8 @@ def _plan(args: argparse.Namespace) -> dict[str, object]:
 
         def scanner():
             ensure_model_profile(profile, args.model_root)
-            return caption_scan.CaptionScanner(args.model_root / manifest["model_path"], args.ffmpeg)
+            from engine.dubflow import resources
+            return caption_scan.CaptionScanner(args.model_root / manifest["model_path"], args.ffmpeg, threads=resources.cpu_threads(4))
     return visual.run(args.run_dir, spec, ffmpeg=args.ffmpeg, scanner=scanner, ocr_identity=identity)
 
 

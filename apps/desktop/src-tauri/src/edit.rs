@@ -1639,6 +1639,7 @@ fn ffmpeg_args(inputs: &[PathBuf], script: &Path, has_audio: bool, encoder: &str
         args.extend(["-map", "[a]"].map(OsString::from));
     }
     args.extend(crate::gpu::rate_args(encoder, bitrate));
+    args.extend(crate::gpu::thread_args(true));
     args.extend(["-pix_fmt", "yuv420p", "-r", fps].map(OsString::from));
     if has_audio {
         args.extend(["-c:a", "aac", "-b:a", "192k"].map(OsString::from));
@@ -3353,6 +3354,7 @@ fn proxy_args(video: &Path, encoder: &str, has_audio: bool, output: &Path) -> Ve
         args.extend(["-c:v", encoder, "-b:v"].map(OsString::from));
         args.push(PROXY_VIDEO_BITRATE.to_string().into());
     }
+    args.extend(crate::gpu::thread_args(false));
     args.extend(["-g", "15"].map(OsString::from));
     if has_audio {
         args.extend(["-c:a", "aac", "-b:a", "96k"].map(OsString::from));
