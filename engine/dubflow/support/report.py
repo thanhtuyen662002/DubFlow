@@ -70,8 +70,17 @@ def source_log_name(scan_id: str) -> str:
     return hashlib.sha256(scan_id.encode("utf-8", "surrogatepass")).hexdigest()[:40] + ".log"
 
 
+_CREDENTIAL = re.compile(r"cookie|authorization|bearer|token|sessdata|bili_jct|passport|password|secret", re.IGNORECASE)
+
+
 def strip_url_queries(text: str) -> str:
     return _URL_QUERY.sub(r"\1?<query>", text)
+
+
+def redact_credentials(text: str) -> str:
+    """Every line that mentions a credential is replaced (the worker already does this when it writes)."""
+    return "".join("<line mentions credentials>\n" if _CREDENTIAL.search(line) else line
+                   for line in text.splitlines(keepends=True))
 
 
 def _link_url(url: str) -> str:
@@ -93,7 +102,7 @@ def _link_document(raw: str) -> str | None:
     document = {key: value[key] for key in LINK_FIELDS if key in value}
     for key, item in list(document.items()):
         if isinstance(item, str):
-            document[key] = _link_url(item) if key == "url" else strip_url_queries(item)[:4096]
+            document[key] = _link_url(item) if key == "url" else redact_credentials(strip_url_queries(item))[:4096].rstrip("\n")
         elif not (item is None or type(item) is int):
             del document[key]
     return json.dumps(document, ensure_ascii=False, indent=1)
@@ -184,7 +193,7 @@ def _add(archive: zipfile.ZipFile, path: Path | None, name: str, *, queries: boo
         text = path.read_bytes().decode("utf-8", "replace")
     except OSError:
         return False
-    archive.writestr(name, redact(strip_url_queries(text) if queries else text))
+    archive.writestr(name, redact(redact_credentials(strip_url_queries(text)) if queries else text))
     return True
 
 

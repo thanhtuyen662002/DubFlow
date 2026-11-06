@@ -123,7 +123,8 @@ class ReportTests(unittest.TestCase):
             logs.mkdir(parents=True)
             worker_file = root / "app" / "worker.py"
             (logs / "link-a.log").write_text(f'--- source_download SourceError: NETWORK: A failed\n  File "{worker_file}", line 9\n'
-                                             "at https://upos.example/a.m4s?upsig=SECRET\n", encoding="utf-8")
+                                             "at https://upos.example/a.m4s?upsig=SIGVALUE\n"
+                                             "Cookie: SESSDATA=COOKIEVALUE\n", encoding="utf-8")
             (logs / "link-b.log").write_text("--- source_download SourceError: NOT_FOUND: B failed BV1bbbbbbbbb\n", encoding="utf-8")
             (root / "source-work" / "worker-errors.log").write_text("--- legacy shared log of link B\n", encoding="utf-8")
             status = {"scan_id": "link-a", "url": "https://www.bilibili.com/video/BV1aaaaaaaaa?p=2&vd_source=TRACK&spm_id_from=x",
@@ -137,7 +138,7 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(summary["app_version"], "1.1.76")
             self.assertEqual(summary["included"], ["link-status.json", "source-worker-errors.log"])
             self.assertIn("A failed", log)
-            for leaked in ("B failed", "BV1bbbbbbbbb", "legacy", "SECRET", str(root)):
+            for leaked in ("B failed", "BV1bbbbbbbbb", "legacy", "SIGVALUE", "COOKIEVALUE", str(root)):
                 self.assertNotIn(leaked, log)
             self.assertIn("https://upos.example/a.m4s?<query>", log)
 

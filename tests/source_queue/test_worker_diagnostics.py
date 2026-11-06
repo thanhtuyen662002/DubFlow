@@ -59,7 +59,7 @@ class ErrorLogTests(unittest.TestCase):
     def test_typed_source_error_logs_its_code_cause_and_no_signed_query(self):
         try:
             try:
-                raise ConnectionResetError("reset by https://upos-sz.bilivideo.com/a/b.m4s?deadline=1&upsig=SECRET")
+                raise ConnectionResetError("reset by https://upos-sz.bilivideo.com/a/b.m4s?deadline=1&upsig=SIGVALUE")
             except ConnectionResetError as cause:
                 raise SourceError(SourceErrorCode.NETWORK, "Bilibili media download failed", retryable=True) from cause
         except SourceError as error:
@@ -67,7 +67,7 @@ class ErrorLogTests(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
         self.assertIn("source_download SourceError: NETWORK: Bilibili media download failed", text)
         self.assertIn("ConnectionResetError: reset by https://upos-sz.bilivideo.com/a/b.m4s?<query>", text)
-        self.assertNotIn("SECRET", text)
+        self.assertNotIn("SIGVALUE", text)
 
     def test_each_scan_has_its_own_log(self):
         worker.log_failure(RuntimeError("only A https://a.example/v?x=1"), "source_download", self.log_dir, scan_id="link-a")
@@ -78,6 +78,67 @@ class ErrorLogTests(unittest.TestCase):
         # An id that is not a plain file name never escapes the folder.
         path = worker.log_failure(RuntimeError("odd"), None, self.log_dir, scan_id="../x")
         self.assertEqual(path.parent, logs)
+
+    def test_credential_lines_never_reach_the_log(self):
+        try:
+            try:
+                raise RuntimeError("request failed\nCookie: SESSDATA=COOKIEVALUE; bili_jct=JCTVALUE")
+            except RuntimeError as cause:
+                error = SourceError(SourceErrorCode.NETWORK, "Bilibili transport failed", retryable=True)
+                error.add_note("Authorization: Bearer BEARERVALUE")
+                raise error from cause
+        except SourceError as error:
+            path = worker.log_failure(error, "source_download", self.log_dir, scan_id="link-a", now=0)
+        text = path.read_text(encoding="utf-8")
+        for secret in ("COOKIEVALUE", "JCTVALUE", "BEARERVALUE"):
+            self.assertNotIn(secret, text)
+        self.assertIn("<line mentions credentials>", text)
+        self.assertIn("Bilibili transport failed", text)
+
+    def _link(self, link: Path, target: Path, *, folder: bool) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=folder)
+        except OSError:
+            if not folder or os.name != "nt":
+                self.skipTest("symlinks unavailable")
+            import subprocess
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+
+    def test_a_linked_source_work_root_is_never_used(self):
+        outside = self.data / "outside"
+        outside.mkdir()
+        linked = self.data / "linked-data"
+        linked.mkdir()
+        self._link(linked / "source-work", outside, folder=True)
+        self.assertIsNone(worker.error_log_dir({"data_root": str(linked)}))
+        self.assertIsNone(worker.error_log_dir({"work_root": str(linked / "source-work" / "materialization" / "job")}))
+        self.assertIsNone(worker.log_failure(RuntimeError("x"), None, linked / "source-work", scan_id="link-a"))
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_a_linked_log_file_is_not_followed(self):
+        outside = self.data / "outside.txt"
+        outside.write_text("keep", encoding="utf-8")
+        logs = self.log_dir / "worker-errors"
+        logs.mkdir()
+        self._link(logs / "link-a.log", outside, folder=False)
+        self.assertIsNone(worker.log_failure(RuntimeError("x"), None, self.log_dir, scan_id="link-a"))
+        self.assertEqual(outside.read_text(encoding="utf-8"), "keep")
+        # A pre-created alias with a predictable temporary name is not used either.
+        self._link(logs / f"link-b.log.{os.getpid()}.partial", outside, folder=False)
+        path = worker.log_failure(RuntimeError("for b"), None, self.log_dir, scan_id="link-b")
+        self.assertIn("for b", path.read_text(encoding="utf-8"))
+        self.assertEqual(outside.read_text(encoding="utf-8"), "keep")
+
+    def test_concurrent_writes_for_one_scan_leave_a_whole_log(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            paths = list(pool.map(lambda index: worker.log_failure(RuntimeError(f"entry {index}"), None, self.log_dir,
+                                                                    scan_id="link-a"), range(16)))
+        path = self.log_dir / "worker-errors" / "link-a.log"
+        text = path.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("--- ") and "entry " in text)
+        self.assertEqual(list(path.parent.glob("*.partial")), [])
+        self.assertTrue(all(item in (None, path) for item in paths))
 
     def test_old_scan_logs_are_pruned(self):
         logs = self.log_dir / "worker-errors"

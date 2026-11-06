@@ -16,6 +16,7 @@ import re
 import socket
 import ssl
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -445,8 +446,21 @@ def source_log_name(scan_id: str) -> str:
     return sha256(scan_id.encode("utf-8", "surrogatepass")).hexdigest()[:40] + ".log"
 
 
+_CREDENTIAL = re.compile(r"cookie|authorization|bearer|token|sessdata|bili_jct|passport|password|secret", re.IGNORECASE)
+
+
 def strip_url_queries(text: str) -> str:
     return _URL_QUERY.sub(r"\1?<query>", text)
+
+
+def redact_credentials(text: str) -> str:
+    """Every line that mentions a credential is replaced; the report repeats this (Issue #592)."""
+    return "".join("<line mentions credentials>\n" if _CREDENTIAL.search(line) else line
+                   for line in text.splitlines(keepends=True))
+
+
+def _linked(path: Path) -> bool:
+    return path.is_symlink() or path.is_junction()
 
 
 def failure_code(error: BaseException, command: str | None) -> tuple[str, bool]:
@@ -460,17 +474,27 @@ def failure_code(error: BaseException, command: str | None) -> tuple[str, bool]:
 
 
 def error_log_dir(args: object) -> Path | None:
-    """``<data root>/source-work``: above the job's work folder or in its data root, else beside the installed versions."""
+    """``<data root>/source-work``: above the job's work folder or in its data root, else beside the installed versions.
+
+    A ``source-work`` reached through a symlink or junction is never used.
+    """
     args = args if isinstance(args, dict) else {}
+    candidates: list[Path] = []
     if isinstance(args.get("work_root"), str) and args["work_root"]:
         work = Path(args["work_root"])
-        for folder in [work, *work.parents]:
-            if folder.name == "source-work" and folder.is_dir():
+        candidates += [folder for folder in [work, *work.parents] if folder.name == "source-work"][:1]
+    if isinstance(args.get("data_root"), str) and args["data_root"]:
+        candidates.append(Path(args["data_root"]) / "source-work")
+    here = Path(__file__).resolve().parents
+    if len(here) > 7:
+        candidates.append(here[7] / "source-work")
+    for folder in candidates:
+        try:
+            if not _linked(folder) and folder.is_dir():
                 return folder
-    if isinstance(args.get("data_root"), str) and args["data_root"] and (Path(args["data_root"]) / "source-work").is_dir():
-        return Path(args["data_root"]) / "source-work"
-    installed = Path(__file__).resolve().parents[7] / "source-work" if len(Path(__file__).resolve().parents) > 7 else None
-    return installed if installed is not None and installed.is_dir() else None
+        except OSError:
+            continue
+    return None
 
 
 def log_failure(error: BaseException, command: str | None, folder: Path | None, *, scan_id: str | None,
@@ -482,29 +506,47 @@ def log_failure(error: BaseException, command: str | None, folder: Path | None, 
     """
     if folder is None or not scan_id:
         return None
+    partial = None
     try:
+        # Revalidated at write time: neither the root nor the log folder may be a link.
+        if _linked(folder) or not folder.is_dir():
+            return None
         logs = folder / ERROR_LOG_DIR
-        if logs.is_symlink() or (logs.exists() and logs.is_junction()):
+        if _linked(logs):
             return None
         logs.mkdir(exist_ok=True)
+        if _linked(logs) or not logs.is_dir():
+            return None
         path = logs / source_log_name(scan_id)
-        if path.is_symlink() or path.is_junction():
+        if _linked(path) or (path.exists() and not path.is_file()):
             return None
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now if now is not None else time.time()))
-        entry = strip_url_queries(f"--- {stamp} {command or 'unknown'} {type(error).__name__}: {error}\n"
-                                  f"{''.join(traceback.format_exception(error))}\n")
+        entry = redact_credentials(strip_url_queries(f"--- {stamp} {command or 'unknown'} {type(error).__name__}: {error}\n"
+                                                     f"{''.join(traceback.format_exception(error))}\n"))
         previous = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
         text = previous + entry
         if len(text.encode("utf-8")) > ERROR_LOG_LIMIT:
             text = text[-(ERROR_LOG_LIMIT // 2):]
             text = text[text.find("--- "):] if "--- " in text else text
-        partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
-        partial.write_text(text, encoding="utf-8")
+        # A new, exclusively created temporary file in the checked folder; replace swaps the name only.
+        handle, name = tempfile.mkstemp(dir=logs, prefix=path.name + ".", suffix=".partial")
+        partial = Path(name)
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        if _linked(logs) or _linked(path):
+            return None
         os.replace(partial, path)
+        partial = None
         _prune(logs, keep=path)
         return path
     except OSError:
         return None
+    finally:
+        if partial is not None:
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _prune(logs: Path, *, keep: Path) -> None:
