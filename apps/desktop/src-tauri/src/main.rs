@@ -1467,6 +1467,32 @@ async fn discover(platform: String, action: String, query: Option<String>, page:
         .ok_or_else(|| fail("Bộ khám phá không trả về dữ liệu"))
 }
 
+/// A Vietnamese search phrase in Simplified Chinese, for Khám phá's "Tìm":
+/// `{ok, text, engine}` or `{ok: false, code, message}`. The phrase goes to a
+/// public web translator (see engine/dubflow/discovery/to_chinese.py).
+#[tauri::command]
+async fn translate_query(text: String) -> Result<Value, String> {
+    let text = text.trim().to_owned();
+    if text.is_empty() || text.chars().count() > 100 || text.chars().any(char::is_control) {
+        return Err(fail("Từ khóa không hợp lệ"));
+    }
+    let root = version_root()?;
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app"))
+        .args(["-B", "-m", "engine.dubflow.discovery.to_chinese", "--"])
+        .arg(&text);
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = tauri::async_runtime::spawn_blocking(move || command.output())
+        .await.map_err(|error| fail(error.to_string()))?
+        .map_err(|error| fail(format!("Không chạy được bộ dịch: {error}")))?;
+    let line = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(line.lines().last().unwrap_or_default())
+        .ok().filter(Value::is_object)
+        .ok_or_else(|| fail("Bộ dịch không trả về dữ liệu"))
+}
+
 /// Vietnamese glosses for short Chinese terms (trend keywords), in order.
 /// `engine` "hachimi" only after the user accepted its licence warning.
 #[tauri::command]
@@ -2196,7 +2222,7 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_layers,
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, translate_query, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_layers,
             docu::docu_reframe, docu::docu_render_options, docu::docu_render, docu::docu_render_status, docu::docu_render_cancel, docu::docu_capcut, docu::docu_launch_capcut, docu::docu_mcp_connection, docu::docu_mcp_activity, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_library, edit::edit_file_sizes, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_stems, voice_sample, edit::edit_separate, edit::edit_separate_cancel, edit::edit_media_info, edit::edit_audio_peaks, edit::edit_lut_frame, edit::edit_save_recording, edit::edit_versions, edit::edit_version_save, edit::edit_version_load, edit::edit_version_delete, edit::edit_templates, edit::edit_template_save, edit::edit_template_load, edit::edit_template_delete, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")

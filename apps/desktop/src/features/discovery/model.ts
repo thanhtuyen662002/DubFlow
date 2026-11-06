@@ -25,6 +25,33 @@ export const TOPICS: ReadonlyArray<{ vi: string; zh: string }> = [
   { vi: "Khoa học", zh: "科普" }, { vi: "Thể hình", zh: "健身" }, { vi: "Cảm động", zh: "感人视频" },
 ];
 
+const HAN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
+
+/** Lower case, no Vietnamese tone marks, single spaces: "Ẩm  thực" and "am thuc" match. */
+function fold(text: string): string {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** Whether a search phrase should go through Vietnamese → Chinese first: it has letters, no Chinese and is not a link. */
+export function needsChinese(text: string): boolean {
+  const value = text.trim();
+  return /\p{L}/u.test(value) && !HAN.test(value) && !/^(https?:\/\/|www\.)/i.test(value);
+}
+
+/** The Chinese keyword of a built-in topic typed in Vietnamese (with or without tone marks), or null. */
+export function topicChinese(text: string): string | null {
+  const key = fold(text);
+  return TOPICS.find((topic) => fold(topic.vi) === key)?.zh ?? null;
+}
+
+/** The Chinese phrase from `translate_query`, or null unless it holds Chinese. */
+export function parseChinese(value: unknown): string | null {
+  const object = (value ?? {}) as Record<string, unknown>;
+  if (object.ok !== true || typeof object.text !== "string") return null;
+  const phrase = object.text.replace(/\s+/g, " ").trim().slice(0, 100);
+  return HAN.test(phrase) ? phrase : null;
+}
+
 /** Glosses keyed by keyword; an empty gloss means the term could not be translated. */
 export function parseGlosses(value: unknown, terms: readonly string[]): Map<string, string> | null {
   const object = (value ?? {}) as Record<string, unknown>;

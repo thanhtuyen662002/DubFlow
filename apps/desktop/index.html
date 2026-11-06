@@ -109,12 +109,16 @@
                     <option value="creator">Trang kênh</option>
                   </select>
                   <div class="suggest-box">
-                    <input id="discover-query" type="text" placeholder="Từ khóa tiếng Trung, ví dụ 仙侠 hoặc 美食" aria-label="Từ khóa" aria-autocomplete="list" aria-controls="suggest-list" />
+                    <input id="discover-query" type="text" placeholder="Gõ tiếng Việt hoặc tiếng Trung, ví dụ nuôi lợn, 美食" aria-label="Từ khóa" aria-autocomplete="list" aria-controls="suggest-list" />
                     <ul id="suggest-list" class="suggest-list" role="listbox" hidden></ul>
                   </div>
                   <button class="btn primary" type="submit">Tìm</button>
                   <button id="discover-popular" class="btn" type="button" hidden>Thịnh hành</button>
                 </form>
+                <div class="translate-row">
+                  <label class="gloss-toggle"><input id="discover-auto-zh" type="checkbox" checked /> Tự dịch tiếng Việt sang tiếng Trung khi tìm</label>
+                  <span id="discover-translated" class="translate-note" role="status"></span>
+                </div>
                 <div class="topic-row" aria-label="Chủ đề gợi ý">
                   <span class="hint">Chủ đề:</span>
                   <div id="topic-chips" class="topic-chips"></div>
