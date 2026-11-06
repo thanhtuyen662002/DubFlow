@@ -264,7 +264,14 @@ class SoundTests(unittest.TestCase):
         self.assertEqual((late[0].start, late[0].end), (9.5, 14.0))
 
 
-@unittest.skipUnless(FFMPEG and FFPROBE, "ffmpeg not available")
+try:
+    import numpy  # noqa: F401
+    NUMPY = True
+except ImportError:
+    NUMPY = False
+
+
+@unittest.skipUnless(FFMPEG and FFPROBE and NUMPY, "ffmpeg or numpy not available")
 class RenderTests(unittest.TestCase):
     def test_real_render_with_map_and_slide(self):
         with TemporaryDirectory() as temp:

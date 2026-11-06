@@ -23,7 +23,10 @@ import math
 import re
 from typing import Any, Sequence
 
-import numpy as np
+try:  # in the shipped runtime; the CI lanes that only plan have no numpy, and nothing here runs there
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
 
 from . import graphics
 from .graphics import FPS, HEIGHT, WIDTH, colour, drawing, escape, event, rect

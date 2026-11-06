@@ -15,7 +15,10 @@ import subprocess
 import time
 from typing import Callable, Iterable, Iterator, Sequence
 
-import numpy as np
+try:  # in the shipped runtime; the CI lanes that only plan have no numpy, and nothing here runs there
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
 
 from engine.dubflow import resources
 from engine.dubflow.media import encoders as h264
@@ -24,7 +27,7 @@ from engine.dubflow.product.job import Cancelled, ProductError
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 BITRATE = "8M"
 
-FrameSource = Callable[[], Iterator[np.ndarray]]
+FrameSource = Callable[[], Iterator["np.ndarray"]]
 
 
 def ass_head(styles: str = "") -> str:
