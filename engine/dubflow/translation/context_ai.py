@@ -60,6 +60,9 @@ class ContextResult:
     cues_from_ai: int
     model: str
     error: str | None = None
+    # Lines whose third-person words could not be checked (the consistency pass failed for them).
+    unify_pending: int = 0
+    unify_error: str | None = None
 
     @property
     def complete(self) -> bool:
@@ -147,7 +150,7 @@ def _clean(text: str) -> str:
 # the next reads as two people; the brief fixes one per person and the last pass enforces it.
 THIRD_PERSON = ("anh ta", "anh ấy", "cô ta", "cô ấy", "chị ta", "chị ấy", "cậu ta", "cậu ấy", "ông ta", "ông ấy",
                 "bà ta", "bà ấy", "hắn", "gã", "ả")
-MAX_UNIFY_LINES = 120
+UNIFY_BATCH = 60
 
 UNIFY_SYSTEM = """Bạn là biên tập viên phụ đề tiếng Việt. Một video gọi cùng một nhân vật ở ngôi thứ ba bằng nhiều cách khác nhau (lúc "anh ta", lúc "gã"), khiến người xem tưởng là nhiều người.
 Bạn nhận danh sách nhân vật với cách gọi ngôi thứ ba đã chọn, và các dòng phụ đề cần soát (lời gốc và bản dịch hiện tại).
@@ -174,32 +177,56 @@ def stray_references(text: str, chosen: set[str]) -> list[str]:
     return [phrase for phrase, pattern in _THIRD_PERSON_WORDS.items() if phrase not in chosen and pattern.search(text)]
 
 
+def needs_unify(text: str, chosen: set[str]) -> bool:
+    """Whether a line has to be checked: with one chosen word, only a different word is a drift; with
+    several people, any third-person word may name the wrong one ("cô ấy" for the man), so all are checked."""
+    if len(chosen) > 1:
+        return any(pattern.search(text) for pattern in _THIRD_PERSON_WORDS.values())
+    return bool(stray_references(text, chosen))
+
+
+@dataclass(frozen=True)
+class _Unified:
+    lines: dict[str, str]
+    route: Route
+    pending: int = 0
+    error: str | None = None
+
+
 def _unify(asker: Asker, route: Route, ordered: Sequence[Cue], finished: dict[str, str], brief_value: Any, *,
-           dubbing: bool, cache_dir: Path | None, key: dict[str, Any]) -> tuple[dict[str, str], Route]:
-    """Lines whose third-person words differ from the brief's choice, rewritten to it (once, best effort)."""
+           dubbing: bool, cache_dir: Path | None, key: dict[str, Any]) -> _Unified:
+    """Lines whose third-person words may not match the brief's choice, checked in batches and rewritten to it.
+
+    Best effort: a batch that fails keeps its lines as translated and is counted in ``pending``."""
     people = [person for person in (brief_value.get("nhan_vat") or [])[:12] if isinstance(person, dict)] if isinstance(brief_value, dict) else []
     chosen = {_third_person(person).lower() for person in people} - {""}
     if not chosen:
-        return {}, route
-    flagged = [cue for cue in ordered if cue.cue_id in finished and stray_references(finished[cue.cue_id], chosen)][:MAX_UNIFY_LINES]
-    if not flagged:
-        return {}, route
+        return _Unified({}, route)
+    flagged = [cue for cue in ordered if cue.cue_id in finished and needs_unify(finished[cue.cue_id], chosen)]
     cast = [f"- {str(person.get('ten', ''))[:60]} ({str(person.get('vai', ''))[:80]}): {_third_person(person)}" for person in people if _third_person(person)]
-    rows = [json.dumps({"id": cue.cue_id, "toi_da_tieng": syllable_budget(cue, dubbing=dubbing), "goc": cue.source_text[:300],
-                        "hien_tai": finished[cue.cue_id]}, ensure_ascii=False) for cue in flagged]
-    prompt = "\n".join(["Nhân vật và cách gọi ngôi thứ ba đã chọn:", *cast, "Các dòng cần soát (mỗi dòng một JSON):", *rows])
-    path = cache_dir / f"unify-{_digest({'k': key, 'p': prompt})}.json" if cache_dir else None
-    value = _cached(path)
-    if value is None:
-        try:
-            value, route = asker(route, UNIFY_SYSTEM, LINES_SCHEMA, [{"text": prompt}], max_tokens=8000)
-        except AiError:
-            return {}, route
-    lines = _lines(value, flagged, dubbing=dubbing)
-    if not lines or lacks_diacritics(list(lines.values())):
-        return {}, route
-    _store(path, value)
-    return lines, route
+    fixed: dict[str, str] = {}
+    pending = 0
+    error: str | None = None
+    for index in range(0, len(flagged), UNIFY_BATCH):
+        batch = flagged[index:index + UNIFY_BATCH]
+        rows = [json.dumps({"id": cue.cue_id, "toi_da_tieng": syllable_budget(cue, dubbing=dubbing), "goc": cue.source_text[:300],
+                            "hien_tai": finished[cue.cue_id]}, ensure_ascii=False) for cue in batch]
+        prompt = "\n".join(["Nhân vật và cách gọi ngôi thứ ba đã chọn:", *cast, "Các dòng cần soát (mỗi dòng một JSON):", *rows])
+        path = cache_dir / f"unify-{_digest({'k': key, 'p': prompt})}.json" if cache_dir else None
+        value = _cached(path)
+        if value is None:
+            try:
+                value, route = asker(route, UNIFY_SYSTEM, LINES_SCHEMA, [{"text": prompt}], max_tokens=8000)
+            except AiError as failure:
+                pending, error = pending + len(batch), failure.message
+                continue
+        lines = _lines(value, batch, dubbing=dubbing)
+        if not lines or lacks_diacritics(list(lines.values())):
+            pending, error = pending + len(batch), error or "AI không trả về bản soát xưng hô dùng được."
+            continue
+        _store(path, value)
+        fixed.update(lines)
+    return _Unified(fixed, route, pending, error)
 
 
 def _brief_text(brief: Any) -> str:
@@ -373,10 +400,13 @@ def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, ca
         if isinstance(value, dict) and isinstance(value.get("ghi_chu"), str):
             notes = value["ghi_chu"].strip()[:MAX_NOTES_CHARS]
     # 3. One name per person: the lines that drifted ("anh ta" … "gã") brought back to the brief's choice.
+    unified = _Unified({}, current)
     if finished:
-        unified, current = _unify(asker, current, ordered, finished, brief_value, dubbing=dubbing, cache_dir=cache_dir, key=key)
-        finished.update(unified)
+        unified = _unify(asker, current, ordered, finished, brief_value, dubbing=dubbing, cache_dir=cache_dir, key=key)
+        current = unified.route
+        finished.update(unified.lines)
     if on_progress:
         on_progress(len(windows), len(windows))
     result = tuple(replace(cue, translated_text=finished[cue.cue_id]) if cue.cue_id in finished else cue for cue in ordered)
-    return ContextResult(result, len(windows), done, from_ai, current.model, None if done == len(windows) else error)
+    return ContextResult(result, len(windows), done, from_ai, current.model, None if done == len(windows) else error,
+                         unify_pending=unified.pending, unify_error=unified.error)

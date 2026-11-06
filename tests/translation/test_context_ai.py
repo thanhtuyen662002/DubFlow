@@ -164,6 +164,48 @@ class ContextTranslationTest(unittest.TestCase):
         result = context_ai.translate_in_context(cues(2), ROUTE, dubbing=False, asker=asker)
         self.assertTrue(result.complete)
         self.assertEqual({cue.translated_text for cue in result.cues}, {"Hắn bỏ đi rồi"})
+        self.assertEqual((result.unify_pending, result.unify_error), (2, "busy"))  # reported, not silent
+
+    def test_with_two_people_a_chosen_word_for_the_wrong_person_is_still_checked(self):
+        brief = {**BRIEF, "nhan_vat": [{"ten": "Chồng", "vai": "", "xung_ho": "", "goi_ngoi_ba": "anh ta"},
+                                       {"ten": "Vợ", "vai": "", "xung_ho": "", "goi_ngoi_ba": "cô ấy"}]}
+        drafts = {"c0": "Anh ta mở cửa", "c1": "Cô ấy cạo râu rồi đi làm", "c2": "Trời mưa to"}
+        asked = []
+
+        def asker(route, system, schema, parts, **_):
+            if schema is context_ai.BRIEF_SCHEMA:
+                return brief, route
+            ids = [json.loads(line)["id"] for line in parts[0]["text"].splitlines() if line.startswith('{"id"')]
+            if system is context_ai.UNIFY_SYSTEM:
+                asked.append(ids)
+                return {"lines": [{"id": "c0", "text": "Anh ta mở cửa"}, {"id": "c1", "text": "Anh ta cạo râu rồi đi làm"}], "ghi_chu": ""}, route
+            return {"lines": [{"id": cue_id, "text": drafts[cue_id]} for cue_id in ids], "ghi_chu": ""}, route
+
+        result = context_ai.translate_in_context(cues(3), ROUTE, dubbing=False, asker=asker)
+        self.assertEqual(asked, [["c0", "c1"]])  # every line naming someone, not the line without
+        self.assertEqual(result.cues[1].translated_text, "Anh ta cạo râu rồi đi làm")
+        self.assertEqual(result.unify_pending, 0)
+
+    def test_every_drifted_line_is_checked_in_batches_and_a_failed_batch_is_counted(self):
+        brief = {**BRIEF, "nhan_vat": [{"ten": "A", "vai": "", "xung_ho": "", "goi_ngoi_ba": "anh ta"}]}
+        batches = []
+
+        def asker(route, system, schema, parts, **_):
+            if schema is context_ai.BRIEF_SCHEMA:
+                return brief, route
+            ids = [json.loads(line)["id"] for line in parts[0]["text"].splitlines() if line.startswith('{"id"')]
+            if system is context_ai.UNIFY_SYSTEM:
+                batches.append(len(ids))
+                if len(batches) == 2:
+                    raise AiError("TIMEOUT", "chậm quá")
+                return {"lines": [{"id": cue_id, "text": "Anh ta đi tiếp"} for cue_id in ids], "ghi_chu": ""}, route
+            return {"lines": [{"id": cue_id, "text": "Gã đi tiếp"} for cue_id in ids], "ghi_chu": ""}, route
+
+        total = 2 * context_ai.UNIFY_BATCH + 5
+        result = context_ai.translate_in_context(cues(total), ROUTE, dubbing=False, asker=asker)
+        self.assertEqual(batches, [context_ai.UNIFY_BATCH, context_ai.UNIFY_BATCH, 5])
+        self.assertEqual(result.unify_pending, context_ai.UNIFY_BATCH)
+        self.assertEqual(sum(cue.translated_text == "Anh ta đi tiếp" for cue in result.cues), context_ai.UNIFY_BATCH + 5)
 
     def test_stray_references_match_whole_words_only(self):
         self.assertEqual(context_ai.stray_references("Gã hắng giọng, anh ta cười", {"anh ta"}), ["gã"])
