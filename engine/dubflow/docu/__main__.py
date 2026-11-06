@@ -46,7 +46,8 @@ def _plan(args: argparse.Namespace) -> dict[str, object]:
 
         def scanner():
             ensure_model_profile(profile, args.model_root)
-            return caption_scan.CaptionScanner(args.model_root / manifest["model_path"], args.ffmpeg)
+            from engine.dubflow import resources
+            return caption_scan.CaptionScanner(args.model_root / manifest["model_path"], args.ffmpeg, threads=resources.cpu_threads(4))
     return visual.run(args.run_dir, spec, ffmpeg=args.ffmpeg, scanner=scanner, ocr_identity=identity)
 
 
@@ -122,8 +123,10 @@ def main(argv: list[str] | None = None) -> int:
             exported = capcut_draft.export(args.run_dir, load_spec(spec_path(args.run_dir)), root=args.root or capcut_draft.default_root())
             result = {"state": "COMPLETED", "message": "", **exported}
         elif args.command == "render":
+            from engine.dubflow.media import encoders as h264
             result = roughcut.run(args.run_dir, load_spec(spec_path(args.run_dir)), ffmpeg=args.ffmpeg,
-                                  probe=lambda video: roughcut.probe_display(args.ffprobe, video))
+                                  probe=lambda video: roughcut.probe_display(args.ffprobe, video),
+                                  encoders=h264.h264_encoders(args.ffmpeg))
             print(json.dumps(result, ensure_ascii=True))
             return 0 if result.get("state") == "COMPLETED" else 1
         elif args.command in ("narrate", "plan"):

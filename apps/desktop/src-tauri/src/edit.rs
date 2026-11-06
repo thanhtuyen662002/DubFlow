@@ -70,9 +70,8 @@ const QUALITIES: [&str; 3] = ["source", "1080p", "720p"];
 /// Xuất video options (Issue #526): frame rates, frame shapes and how the bars are filled.
 const EXPORT_FPS: [u32; 5] = [24, 25, 30, 50, 60];
 const ASPECTS: [&str; 4] = ["16:9", "9:16", "1:1", "4:5"];
-/// The shipped FFmpeg is the LGPL build (no libx264): Media Foundation's H.264
-/// encoder first, the bundled OpenH264 when Media Foundation refuses.
-const ENCODERS: [&str; 2] = ["h264_mf", "libopenh264"];
+// Encoders: NVIDIA NVENC when it really works here, then Media Foundation's
+// H.264, then the bundled OpenH264 (the LGPL FFmpeg has no libx264): gpu.rs.
 const BUSY: &str = "Video này đang được xuất ở cửa sổ DubFlow khác";
 
 struct Running {
@@ -1627,6 +1626,8 @@ fn ffmpeg_args(inputs: &[PathBuf], script: &Path, has_audio: bool, encoder: &str
             // A picture repeats as a video; each overlay trims the part it shows.
             args.extend(["-loop", "1", "-framerate", "30", "-t"].map(OsString::from));
             args.push(num(STILL_SECONDS).into());
+        } else {
+            args.extend(crate::gpu::decode_args(encoder));
         }
         args.push("-i".into());
         args.push(input.into());
@@ -1637,11 +1638,8 @@ fn ffmpeg_args(inputs: &[PathBuf], script: &Path, has_audio: bool, encoder: &str
     if has_audio {
         args.extend(["-map", "[a]"].map(OsString::from));
     }
-    args.extend(["-c:v", encoder, "-b:v"].map(OsString::from));
-    args.push(bitrate.to_string().into());
-    if encoder == "libopenh264" {
-        args.extend(["-maxrate".into(), (bitrate * 3 / 2).to_string().into(), "-bufsize".into(), (bitrate * 2).to_string().into()]);
-    }
+    args.extend(crate::gpu::rate_args(encoder, bitrate));
+    args.extend(crate::gpu::thread_args(true));
     args.extend(["-pix_fmt", "yuv420p", "-r", fps].map(OsString::from));
     if has_audio {
         args.extend(["-c:a", "aac", "-b:a", "192k"].map(OsString::from));
@@ -2888,7 +2886,7 @@ fn encode(job: &ExportJob, encoder: &str, running: &Running) -> Result<(), Strin
                 stop(running);
             }
             if written.elapsed() >= Duration::from_millis(400) {
-                write_status(&job.work, "RUNNING", percent, &format!("Đang xuất video… {}%", percent.floor()), Some(&job.target));
+                write_status(&job.work, "RUNNING", percent, &format!("Đang xuất video{}… {}%", crate::gpu::label(encoder), percent.floor()), Some(&job.target));
                 written = Instant::now();
             }
         }
@@ -2907,7 +2905,7 @@ fn run_export(job: &ExportJob, running: &Running) {
     let partial = partial_of(&job.target);
     let mut failure = String::new();
     let mut done = false;
-    for (attempt, encoder) in ENCODERS.iter().enumerate() {
+    for (attempt, encoder) in crate::gpu::encoders(&job.ffmpeg).iter().enumerate() {
         if running.cancelled.load(Ordering::SeqCst) {
             break;
         }
@@ -3366,7 +3364,9 @@ fn proxy_name(video: &Path) -> Option<String> {
 
 fn proxy_args(video: &Path, encoder: &str, has_audio: bool, output: &Path) -> Vec<OsString> {
     let side = PROXY_SHORT_SIDE;
-    let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-v", "error", "-y", "-i"].map(OsString::from).to_vec();
+    let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-v", "error", "-y"].map(OsString::from).to_vec();
+    args.extend(crate::gpu::decode_args(encoder));
+    args.push("-i".into());
     args.push(video.into());
     args.extend(["-map", "0:v:0"].map(OsString::from));
     if has_audio {
@@ -3376,8 +3376,13 @@ fn proxy_args(video: &Path, encoder: &str, has_audio: bool, output: &Path) -> Ve
     // a key frame every half second keeps seeking quick.
     args.push("-vf".into());
     args.push(format!("scale='if(gte(iw,ih),-2,min({side},iw))':'if(gte(iw,ih),min({side},ih),-2)',format=yuv420p").into());
-    args.extend(["-c:v", encoder, "-b:v"].map(OsString::from));
-    args.push(PROXY_VIDEO_BITRATE.to_string().into());
+    if encoder == crate::gpu::NVENC {
+        args.extend(crate::gpu::rate_args(encoder, PROXY_VIDEO_BITRATE));
+    } else {
+        args.extend(["-c:v", encoder, "-b:v"].map(OsString::from));
+        args.push(PROXY_VIDEO_BITRATE.to_string().into());
+    }
+    args.extend(crate::gpu::thread_args(false));
     args.extend(["-g", "15"].map(OsString::from));
     if has_audio {
         args.extend(["-c:a", "aac", "-b:a", "96k"].map(OsString::from));
@@ -3422,7 +3427,7 @@ fn make_proxy(ffmpeg: &Path, video: &Path, probe: &Probe, target: &Path) {
     let _lane = PROXY_LANE.lock();
     let partial = partial_of(target);
     let mut failure = String::new();
-    for encoder in ENCODERS {
+    for encoder in crate::gpu::encoders(ffmpeg) {
         let _ = fs::remove_file(&partial);
         let mut command = Command::new(ffmpeg);
         command.args(proxy_args(video, encoder, probe.has_audio, &partial))
@@ -3808,6 +3813,16 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
             .into_iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert!(silent.join(" ").contains("-map [v] -c:v libopenh264 -b:v 2000000 -maxrate 3000000 -bufsize 4000000 -pix_fmt"));
         assert!(!silent.iter().any(|arg| arg == "[a]" || arg == "aac"));
+        // NVENC: the video decodes on the GPU, a picture never asks for CUDA.
+        let gpu = ffmpeg_args(&[PathBuf::from("in.mp4"), PathBuf::from("logo.png")], Path::new("f.txt"), true, "h264_nvenc", 3_000_000, "25/1",
+            Path::new("o")).into_iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
+        assert!(gpu.starts_with("-nostdin -hide_banner -v error -y -hwaccel cuda -i in.mp4 -loop 1 -framerate 30 -t "), "{gpu}");
+        assert_eq!(gpu.matches("-hwaccel").count(), 1);
+        assert!(gpu.contains("-c:v h264_nvenc -b:v 3000000 -preset p4 -tune hq -rc vbr -maxrate 4500000 -bufsize 6000000 -spatial-aq 1 -bf 3 -pix_fmt"));
+        let light = proxy_args(Path::new("in.mov"), "h264_nvenc", false, Path::new("p")).into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
+        assert!(light.starts_with("-nostdin -hide_banner -v error -y -hwaccel cuda -i in.mov "), "{light}");
+        assert!(light.contains("-c:v h264_nvenc -b:v 1500000 -preset p4"));
         assert_eq!(progress_percent(5_000_000, 10.0), 50.0);
         assert_eq!(progress_percent(50_000_000, 10.0), 99.0);
         assert_eq!(progress_percent(-1, 10.0), 0.0);

@@ -187,7 +187,8 @@ class Server:
 
         def scanner():
             ensure_model_profile(profile, self.install.model_root)
-            return caption_scan.CaptionScanner(self.install.model_root / manifest["model_path"], self.install.ffmpeg)
+            from engine.dubflow import resources
+            return caption_scan.CaptionScanner(self.install.model_root / manifest["model_path"], self.install.ffmpeg, threads=resources.cpu_threads(4))
         return visual.run(run, spec, ffmpeg=self.install.ffmpeg, scanner=scanner, ocr_identity=identity)
 
     def call(self, name: str, args: dict[str, Any]) -> list[dict[str, Any]]:
