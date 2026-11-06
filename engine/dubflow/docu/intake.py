@@ -38,11 +38,11 @@ PURPOSE = {
                             "3B Automation and life support: feeding, climate, air, water, run by machines, each explained with a simple physical comparison a child could picture; end 3B on the waste or biological consequence it produces. "
                             "3C Containment and the hidden fragility: waste, energy recovery and biosecurity; end 3C by exposing the weak point (the Achilles heel) that the verdict will judge.",
     "CRITICAL_EVALUATION": "Weigh it up: running costs, financial sustainability, environmental and social impact, disease and failure risk. Balanced, no cheerleading. "
-                           "The last scene never signals an ending: give a cold, clear verdict, then one open question about the future of the industry.",
+                           "The last scene never signals an ending: give a cold, clear verdict, then one open question about the future of the industry. Never open a sentence with a label that announces the ending, such as \"The verdict:\", \"Final verdict:\" or \"The bottom line:\"; go straight to the cold judgement itself.",
 }
 STORY_RULES = (
     "Write it as an engineering mystery that keeps the viewer to the last second, not an encyclopedia list.",
-    "Banned words and phrases: delve, testament, marvel, tapestry, in conclusion, to sum up, in summary, ultimately, it's worth noting, let's dive in, buckle up, game-changer.",
+    "Banned words and phrases: delve, testament, marvel, tapestry, in conclusion, to sum up, in summary, ultimately, it's worth noting, let's dive in, buckle up, game-changer, the verdict, final verdict, the bottom line, all in all, at the end of the day.",
     "No flat scene openers. Never start a scene with a static topic sentence such as \"The ground floor holds a central control room.\", \"Feeding is fully automated.\" or \"Pregnant sows get special treatment.\"",
     "Therefore/But rule: every scene after the first opens with a cause-and-effect link (\"Therefore...\", \"So...\", \"To solve that weight problem...\") or a conflict (\"But...\", \"However...\", \"Yet keeping them fed created a bigger problem...\") that follows directly from the last sentence of the scene before, including the last scene of the previous act.",
     "Each scene ends on the consequence, problem or question that the next scene answers.",

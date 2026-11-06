@@ -107,8 +107,8 @@ export type PlanSlice = { source_id: string; start: number; end: number; at: num
 export type PlanScene = { scene_id: string; start: number; end: number; warnings: string[]; slices: PlanSlice[] };
 export type VisualPlan = { script_sha256: string; duration: number; scenes: PlanScene[]; warnings: string[] };
 export type VisualInfo = { plan: VisualPlan | null; status: NarrationStatus | null };
-export type RenderOptions = { graphics: boolean; captions: boolean; music: "generated" | "file" | "none"; music_path: string | null };
-export type RenderStatus = NarrationStatus & { overlays?: { graphics: boolean; captions: boolean; music: string } };
+export type RenderOptions = { graphics: boolean; captions: boolean; music: "generated" | "file" | "none"; music_path: string | null; sfx: boolean };
+export type RenderStatus = NarrationStatus & { overlays?: { graphics: boolean; captions: boolean; music: string; sfx: boolean } };
 export type RenderInfo = { video: string | null; status: RenderStatus | null; options: RenderOptions };
 /** The last CapCut export (engine/dubflow/docu/capcut_draft.py). */
 export type CapcutExport = { folder: string; name: string; clips: number; duration: number; captions: string };
@@ -414,14 +414,16 @@ export function parseRenderOptions(value: unknown): RenderOptions {
   const info = obj(value);
   const musicPath = typeof info?.music_path === "string" && info.music_path ? info.music_path : null;
   const music = info?.music === "none" ? "none" : info?.music === "file" && musicPath ? "file" : "generated";
-  return { graphics: info?.graphics !== false, captions: info?.captions === true, music, music_path: musicPath };
+  // Scene ambience is on unless turned off (1.1.75 projects saved no choice).
+  return { graphics: info?.graphics !== false, captions: info?.captions === true, music, music_path: musicPath, sfx: info?.sfx !== false };
 }
 
 export function parseRender(value: unknown): RenderInfo {
   const info = obj(value);
   const status = parseStatus(info?.status) as RenderStatus | null;
   const overlays = obj(obj(info?.status)?.overlays);
-  if (status && overlays) status.overlays = { graphics: overlays.graphics === true, captions: overlays.captions === true, music: String(overlays.music ?? "") };
+  if (status && overlays) status.overlays = { graphics: overlays.graphics === true, captions: overlays.captions === true, music: String(overlays.music ?? ""),
+    sfx: overlays.sfx !== false };
   return { video: typeof info?.video === "string" ? info.video : null, status, options: parseRenderOptions(info?.options) };
 }
 

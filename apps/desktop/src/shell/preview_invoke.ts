@@ -434,7 +434,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_render_options": {
       // A cancelled split puts the cards and music back.
       if (args.graphics || args.music !== "none") docuSplit.delete(String(args.dir));
-      return { graphics: !!args.graphics, captions: !!args.captions, music: String(args.music), music_path: args.musicPath ?? null } as T;
+      return { graphics: !!args.graphics, captions: !!args.captions, music: String(args.music), music_path: args.musicPath ?? null, sfx: args.sfx !== false } as T;
     }
     case "docu_capcut": return { state: "COMPLETED", folder: "C:\\Users\\me\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\DubFlow - Three Gorges",
       name: "DubFlow - Three Gorges", clips: 18, duration: 64.1, captions: "D:\\Videos\\captions_en.srt" } as T;

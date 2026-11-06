@@ -89,6 +89,9 @@ def apply_overrides(run_dir: Path, plan: dict[str, Any]) -> list[str]:
                 dropped += 1
                 continue
             piece.update({"source_id": source_id, "start": round(start, 3), "end": round(start + length, 3), "tier": -1})
+            # Footage picked by hand is the user's call: it is framed as planned, not as a repeat.
+            piece.pop("reused", None)
+            piece.pop("variation", None)
     return [f"{dropped} lát cắt đã thay tay không còn chỗ trong kế hoạch mới"] if dropped else []
 
 
@@ -312,7 +315,8 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
                         for source in sources],
             "scenes": [{"scene_id": scene.scene_id, "start": scene.start, "end": scene.end, "warnings": notes,
                         "slices": [{"source_id": piece.source_id, "start": piece.start, "end": piece.end, "at": piece.at,
-                                    "duration": round(piece.duration, 3), "tier": piece.tier} for piece in slices]}
+                                    "duration": round(piece.duration, 3), "tier": piece.tier,
+                                    **({"reused": True, "variation": "alt_crop"} if piece.reused else {})} for piece in slices]}
                        for scene, slices, notes in planned],
             "warnings": warnings,
         }
