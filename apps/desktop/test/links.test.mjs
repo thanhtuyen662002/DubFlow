@@ -57,4 +57,10 @@ assert.equal(needsDouyinLogin(douyinFailed), true);
 assert.equal(needsDouyinLogin({ ...douyinFailed, error_code: "NETWORK" }), false);
 assert.equal(needsDouyinLogin({ ...douyinFailed, provider: "bilibili" }), false);
 assert.equal(fetchBadge("cancelled"), "Đã hủy");
+// A bare Bilibili id is read as its video page; never alongside a real link.
+assert.deepEqual(extractLinks("BV121Pkz4EsX").links, ["https://www.bilibili.com/video/BV121Pkz4EsX/"]);
+assert.deepEqual(extractLinks(" BV121Pkz4EsX\nBV121Pkz4EsX, BV1gKJ86JEuP ").links,
+  ["https://www.bilibili.com/video/BV121Pkz4EsX/", "https://www.bilibili.com/video/BV1gKJ86JEuP/"]);
+assert.deepEqual(extractLinks("xBV121Pkz4EsX BV121Pkz4Es").links, []);
+assert.deepEqual(extractLinks("BV121Pkz4EsX https://v.douyin.com/abc/").links, ["https://v.douyin.com/abc/"]);
 console.log("desktop link extraction tests passed");

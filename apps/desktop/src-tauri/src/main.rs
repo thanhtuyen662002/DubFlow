@@ -1248,7 +1248,7 @@ struct FetchStarted {
 }
 
 #[tauri::command]
-async fn fetch_url(app: tauri::AppHandle, url: String, mut title: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
+async fn fetch_url(app: tauri::AppHandle, url: String, mut title: Option<String>, output_root: Option<String>, download_dir: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
     let mut url = url.trim().to_owned();
     // Douyin refuses the link service's own requests, so a Douyin video's
     // details are read through douyin.com in DubFlow's browser first. Any
@@ -1272,7 +1272,10 @@ async fn fetch_url(app: tauri::AppHandle, url: String, mut title: Option<String>
     let supervisor = supervisor_binary(&root)?;
     let status = sources.fetch(url.clone(), title, &supervisor, &root, &control_root()?)?;
     storage::note_fetch(&status.scan_id);
-    let output_dir = source::link_output_dir(&url, status.title.as_deref(), &status.scan_id)?;
+    // Results sit next to the downloaded video (or in the chosen results
+    // folder), never in a fixed folder the user did not pick.
+    let base = source::link_output_base(output_root.as_deref(), download_dir.as_deref())?;
+    let output_dir = source::link_output_dir(&base, &url, status.title.as_deref(), &status.scan_id);
     // Exists from the start, so "Mở thư mục" works while the link downloads.
     fs::create_dir_all(&output_dir).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
     Ok(FetchStarted { output_dir: output_dir.to_string_lossy().into_owned(), status })
