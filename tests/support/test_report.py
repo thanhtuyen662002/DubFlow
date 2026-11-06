@@ -128,13 +128,18 @@ class ReportTests(unittest.TestCase):
             (logs / "link-b.log").write_text("--- source_download SourceError: NOT_FOUND: B failed BV1bbbbbbbbb\n", encoding="utf-8")
             (root / "source-work" / "worker-errors.log").write_text("--- legacy shared log of link B\n", encoding="utf-8")
             status = {"scan_id": "link-a", "url": "https://www.bilibili.com/video/BV1aaaaaaaaa?p=2&vd_source=TRACK&spm_id_from=x",
-                      "provider": "bilibili", "title": "Video A", "state": "failed", "error": "Mất kết nối",
+                      "provider": "bilibili", "title": "Video A", "state": "failed",
+                      "error": "Mất kết nối\nCookie: SESSDATA=STATUSCOOKIE", "detail": "Authorization: Bearer STATUSBEARER",
                       "error_code": "NETWORK", "media_path": str(root / "Videos" / "a.mp4"), "queue_position": None,
                       "downloaded_bytes": 0, "total_bytes": None}
             link, summary, log = self._link_report(root, status)
             self.assertEqual(link["url"], "https://www.bilibili.com/video/BV1aaaaaaaaa?p=2")
             self.assertEqual((link["state"], link["error_code"], link["title"]), ("failed", "NETWORK", "Video A"))
             self.assertNotIn("media_path", link)
+            archived = json.dumps(link)
+            for leaked in ("STATUSCOOKIE", "STATUSBEARER", "SESSDATA", "Authorization", "Cookie"):
+                self.assertNotIn(leaked, archived)
+            self.assertEqual(link["error"], "Mất kết nối\n<line mentions credentials>")
             self.assertEqual(summary["app_version"], "1.1.76")
             self.assertEqual(summary["included"], ["link-status.json", "source-worker-errors.log"])
             self.assertIn("A failed", log)

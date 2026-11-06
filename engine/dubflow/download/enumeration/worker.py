@@ -6,6 +6,7 @@ before its checked SQLite transaction. This process never receives a database.
 """
 from __future__ import annotations
 
+import contextlib
 from hashlib import sha256
 import http.client
 import json
@@ -463,6 +464,41 @@ def _linked(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
 
 
+@contextlib.contextmanager
+def _scan_lock(path: Path):
+    """Serialize one scan's log writers across threads and processes with an OS file lock."""
+    lock = path.with_name(path.name + ".lock")
+    if _linked(lock):
+        raise OSError("scan log lock is a link")
+    descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
 def failure_code(error: BaseException, command: str | None) -> tuple[str, bool]:
     """The failure the supervisor receives: typed source errors as they are, network errors as NETWORK."""
     if isinstance(error, SourceError):
@@ -523,20 +559,23 @@ def log_failure(error: BaseException, command: str | None, folder: Path | None, 
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now if now is not None else time.time()))
         entry = redact_credentials(strip_url_queries(f"--- {stamp} {command or 'unknown'} {type(error).__name__}: {error}\n"
                                                      f"{''.join(traceback.format_exception(error))}\n"))
-        previous = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-        text = previous + entry
-        if len(text.encode("utf-8")) > ERROR_LOG_LIMIT:
-            text = text[-(ERROR_LOG_LIMIT // 2):]
-            text = text[text.find("--- "):] if "--- " in text else text
-        # A new, exclusively created temporary file in the checked folder; replace swaps the name only.
-        handle, name = tempfile.mkstemp(dir=logs, prefix=path.name + ".", suffix=".partial")
-        partial = Path(name)
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(text)
-        if _linked(logs) or _linked(path):
-            return None
-        os.replace(partial, path)
-        partial = None
+        with _scan_lock(path):
+            if _linked(path) or (path.exists() and not path.is_file()):
+                return None
+            previous = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+            text = previous + entry
+            if len(text.encode("utf-8")) > ERROR_LOG_LIMIT:
+                text = text[-(ERROR_LOG_LIMIT // 2):]
+                text = text[text.find("--- "):] if "--- " in text else text
+            # A new, exclusively created temporary file in the checked folder; replace swaps the name only.
+            handle, name = tempfile.mkstemp(dir=logs, prefix=path.name + ".", suffix=".partial")
+            partial = Path(name)
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(text)
+            if _linked(logs) or _linked(path):
+                return None
+            os.replace(partial, path)
+            partial = None
         _prune(logs, keep=path)
         return path
     except OSError:
@@ -556,6 +595,7 @@ def _prune(logs: Path, *, keep: Path) -> None:
                        key=lambda entry: entry.stat().st_mtime, reverse=True)
         for stale in files[ERROR_LOG_KEEP - 1:]:
             stale.unlink(missing_ok=True)
+            stale.with_name(stale.name + ".lock").unlink(missing_ok=True)
     except OSError:
         pass
 

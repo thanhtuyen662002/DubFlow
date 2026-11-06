@@ -132,13 +132,16 @@ class ErrorLogTests(unittest.TestCase):
     def test_concurrent_writes_for_one_scan_leave_a_whole_log(self):
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=8) as pool:
-            paths = list(pool.map(lambda index: worker.log_failure(RuntimeError(f"entry {index}"), None, self.log_dir,
+            paths = list(pool.map(lambda index: worker.log_failure(RuntimeError(f"entry-{index:02d}-end"), None, self.log_dir,
                                                                     scan_id="link-a"), range(16)))
         path = self.log_dir / "worker-errors" / "link-a.log"
         text = path.read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("--- ") and "entry " in text)
+        self.assertEqual(paths, [path] * 16)
+        for index in range(16):
+            # The message appears in the header and in the traceback's last line.
+            self.assertEqual(text.count(f"entry-{index:02d}-end"), 2, index)
+        self.assertEqual(text.count("--- "), 16)
         self.assertEqual(list(path.parent.glob("*.partial")), [])
-        self.assertTrue(all(item in (None, path) for item in paths))
 
     def test_old_scan_logs_are_pruned(self):
         logs = self.log_dir / "worker-errors"
@@ -154,10 +157,7 @@ class ErrorLogTests(unittest.TestCase):
     def test_linked_log_folder_is_not_written(self):
         outside = self.data / "outside"
         outside.mkdir()
-        try:
-            (self.log_dir / "worker-errors").symlink_to(outside, target_is_directory=True)
-        except OSError:
-            self.skipTest("symlinks unavailable")
+        self._link(self.log_dir / "worker-errors", outside, folder=True)
         self.assertIsNone(worker.log_failure(RuntimeError("x"), None, self.log_dir, scan_id="link-a"))
         self.assertEqual(list(outside.iterdir()), [])
 
