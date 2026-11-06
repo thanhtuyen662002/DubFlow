@@ -2053,14 +2053,13 @@ async fn douyin_view_close(app: tauri::AppHandle) -> Result<(), String> {
 /// douyin.com cookies, read through the login page when it is open, else the
 /// main window (all webviews share one browser profile).
 fn douyin_cookies(app: &tauri::AppHandle) -> Result<Vec<(String, String)>, String> {
-    use tauri::Manager;
     let url = douyin_home()?;
-    let cookies = match EmbeddedView::find(app, DOUYIN_EMBED) {
-        Some(view) => view.webview().cookies_for_url(url),
-        None => app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?.cookies_for_url(url),
-    };
-    Ok(cookies.map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?
-        .into_iter().map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned())).collect())
+    let Some(view) = EmbeddedView::find(app, DOUYIN_EMBED) else { return douyin_profile_cookies(app) };
+    match view.webview().cookies_for_url(url) {
+        Ok(cookies) => Ok(cookies.into_iter().map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned())).collect()),
+        // A login page that is closing no longer answers; the profile still does.
+        Err(_) => douyin_profile_cookies(app),
+    }
 }
 
 /// Douyin has given this browser profile a visitor identity.
@@ -2242,11 +2241,31 @@ async fn douyin_video_detail(webview: &tauri::Webview) -> Result<(String, Value)
     Err(last)
 }
 
+/// douyin.com cookies read through the main window. All webviews share one
+/// browser profile, so this sees the login page's cookies too, and it keeps
+/// working while that page is closing (reading through a closing page fails).
+fn douyin_profile_cookies(app: &tauri::AppHandle) -> Result<Vec<(String, String)>, String> {
+    use tauri::Manager;
+    let main = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
+    Ok(main.cookies_for_url(douyin_home()?).map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?
+        .into_iter().map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned())).collect())
+}
+
+/// Douyin's login cookie is there and not empty.
+fn has_douyin_login(cookies: &[(String, String)]) -> bool {
+    cookies.iter().any(|(name, value)| (name == "sessionid" || name == "sessionid_ss") && !value.is_empty())
+}
+
 /// Whether the shared browser profile is logged in to Douyin.
 #[tauri::command]
 async fn douyin_account(app: tauri::AppHandle) -> Result<Value, String> {
-    let logged_in = douyin_cookies(&app)?.iter().any(|(name, value)| name == "sessionid" && !value.is_empty());
-    Ok(json!({"logged_in": logged_in}))
+    // Right after "Xong" the login page is still closing: read through the
+    // main window first and only then try the login page.
+    let cookies = match douyin_profile_cookies(&app) {
+        Ok(cookies) => cookies,
+        Err(first) => douyin_cookies(&app).map_err(|_| first)?,
+    };
+    Ok(json!({"logged_in": has_douyin_login(&cookies)}))
 }
 
 /// Log out of Douyin: delete every douyin.com cookie of the browser profile.
