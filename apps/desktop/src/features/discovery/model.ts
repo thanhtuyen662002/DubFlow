@@ -83,8 +83,11 @@ export function parseVideos(value: unknown): DiscoverResult<DiscoveredVideo> {
   return { ok: true, items, nextPage: result.nextPage };
 }
 
+/** A video read from the discovery page; `current` marks the one a video page is playing. */
+export type CollectedVideo = DiscoveredVideo & { current: boolean };
+
 /** Items read from the discovery browser page by the host. */
-export function parseCollected(value: unknown): DiscoveredVideo[] {
+export function parseCollected(value: unknown): CollectedVideo[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((raw) => {
     const item = (raw ?? {}) as Record<string, unknown>;
@@ -92,7 +95,30 @@ export function parseCollected(value: unknown): DiscoveredVideo[] {
     const fetchUrl = https(item.fetch_url);
     if (!pageUrl || !fetchUrl) return [];
     return [{ title: text(item.title) || "(không có tiêu đề)", author: text(item.author, 80), cover: https(item.cover_url),
-      durationS: null, plays: null, pageUrl, fetchUrl }];
+      durationS: null, plays: null, pageUrl, fetchUrl, current: item.current === true }];
+  });
+}
+
+/**
+ * What the page shows the user, for the list kept while they browse: on a
+ * video page only the video they are watching (its suggestions are not
+ * something they looked at), on a list page every card it shows.
+ */
+export function seenOnPage(items: readonly CollectedVideo[]): DiscoveredVideo[] {
+  const playing = items.filter((item) => item.current);
+  return (playing.length ? playing : items).map(({ current: _current, ...video }) => video);
+}
+
+/** Update the titles and covers of listed videos the page now describes better. */
+export function refreshVideos(current: readonly DiscoveredVideo[], incoming: readonly DiscoveredVideo[]): DiscoveredVideo[] {
+  const fresh = new Map(incoming.map((video) => [video.pageUrl, video]));
+  return current.map((video) => {
+    const update = fresh.get(video.pageUrl);
+    if (!update) return video;
+    const title = video.title === "(không có tiêu đề)" ? update.title : video.title;
+    const cover = video.cover ?? update.cover;
+    const author = video.author || update.author;
+    return title === video.title && cover === video.cover && author === video.author ? video : { ...video, title, cover, author };
   });
 }
 

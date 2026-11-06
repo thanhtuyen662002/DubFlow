@@ -1,6 +1,6 @@
 import {
   GLOSS_BATCH, PLATFORMS, TITLE_GLOSS_KEY, TOPICS, bilibiliMid, cleanTitle, parseGlosses, discoveryError, formatCount, formatDuration, loadGlossCache,
-  mergeVideos, needsTitleGloss, pageAddress, parseCollected, parseTrends, parseVideos, previewSource, rememberGloss, saveGlossCache,
+  mergeVideos, needsTitleGloss, pageAddress, parseCollected, parseTrends, parseVideos, previewSource, refreshVideos, rememberGloss, saveGlossCache, seenOnPage,
   type DiscoveredVideo, type Platform, type PreviewSource, type Trend,
 } from "./model.ts";
 
@@ -657,8 +657,39 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
       }
       urlLabel.textContent = pageAddress(url);
       urlLabel.title = url;
+      void keepSeen();
     } catch {
       // The address is informational.
+    }
+  }
+
+  /**
+   * Keep what the user looks at in the page on the result list as they
+   * browse: the cards of each list page, and each video they open. Collecting
+   * only when asked read whatever page was open then (often a video page,
+   * whose suggestions the user never saw), so the list did not match the
+   * pages they had looked at.
+   */
+  let seenBusy = false;
+  let seenAt = 0;
+  async function keepSeen(): Promise<void> {
+    const forPlatform = page?.platform;
+    if (!forPlatform || !pageShown || seenBusy || Date.now() - seenAt < 2500) return;
+    seenBusy = true;
+    try {
+      const found = seenOnPage(parseCollected(await host<unknown>("collect_discovery", { platform: forPlatform })));
+      if (forPlatform !== platform || page?.platform !== forPlatform || !found.length) return;
+      const refreshed = refreshVideos(videos, found);
+      const merged = mergeVideos(refreshed, found);
+      if (merged.length === videos.length && refreshed.every((video, index) => video === videos[index])) return;
+      videos = merged;
+      renderResults();
+      void translateTitles();
+    } catch {
+      // The page may be loading; the next look catches up.
+    } finally {
+      seenAt = Date.now();
+      seenBusy = false;
     }
   }
 
@@ -765,7 +796,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
       lastBounds = "";
       urlLabel.textContent = pageAddress(url);
       urlLabel.title = url;
-      state.textContent = "Cuộn trang để tải thêm video rồi bấm “Thu thập video trên trang”. Trang đòi đăng nhập thì quét mã QR ngay trong trang.";
+      state.textContent = "Video bạn lướt qua và mở xem trên trang tự vào danh sách kết quả. “Thu thập video trên trang” lấy thêm cả video gợi ý của trang đang mở. Trang đòi đăng nhập thì quét mã QR ngay trong trang.";
       watchAddress();
     } catch (error) {
       if (!had) {
@@ -890,10 +921,11 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     collect.disabled = true;
     state.textContent = "Đang đọc trang…";
     try {
-      const found = parseCollected(await host<unknown>("collect_discovery", { platform: forPlatform }));
+      const found = parseCollected(await host<unknown>("collect_discovery", { platform: forPlatform }))
+        .map(({ current: _current, ...video }) => video);
       if (forPlatform !== platform) return;
       const before = videos.length;
-      videos = mergeVideos(videos, found);
+      videos = mergeVideos(refreshVideos(videos, found), found);
       state.textContent = found.length
         ? `Đã lấy ${videos.length - before} video mới (tổng ${videos.length}). Cuộn thêm rồi thu thập tiếp, hoặc bấm “Xem kết quả”.`
         : "Chưa thấy video trên trang. Đợi trang tải xong hoặc cuộn xuống rồi thử lại.";
