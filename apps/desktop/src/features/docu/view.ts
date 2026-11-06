@@ -388,7 +388,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
 
   function renderProvider(): void {
     const provider = PROVIDERS[session.provider()];
-    $("#docu-provider").textContent = `Khi viết, tiêu đề, ghi chú chủ đề, lời gốc tiếng Trung kèm mốc thời gian, các số liệu đã quy đổi và những phần đã viết được gửi tới ${provider.company} (${provider.name}) bằng khóa trong Cài đặt AI.`;
+    $("#docu-provider").textContent = `Khi viết, tiêu đề, ghi chú chủ đề, lời gốc tiếng Trung kèm mốc thời gian, các số liệu đã quy đổi và những phần đã viết được gửi tới ${provider.company} (${provider.name}) bằng khóa trong Cài đặt › Tài khoản.`;
   }
 
   function reviewHtml(scene: DocuScene, chapterIndex: number, sceneIndex: number): string {
@@ -730,7 +730,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   async function writeAllChapters(): Promise<void> {
     if (!selected) { $("#docu-ai-state").textContent = "Trước hết hãy tạo dự án."; return; }
     renderProvider();
-    if (!session.read()) { $("#docu-ai-state").textContent = `Hãy thêm khóa ${PROVIDERS[session.provider()].name} trong Cài đặt AI.`; return; }
+    if (!session.read()) { $("#docu-ai-state").textContent = `Hãy thêm khóa ${PROVIDERS[session.provider()].name} trong Cài đặt › Tài khoản.`; return; }
     if (currentScript && hasNarration(currentScript.chapters) && !await confirmDialog({ title: "Viết lại toàn bộ kịch bản?",
       message: "AI sẽ viết lại cả 4 phần và thay kịch bản hiện tại, kể cả những chỗ bạn đã sửa.", confirmLabel: "Viết lại", cancelLabel: "Giữ kịch bản", danger: true })) return;
     const button = $("#docu-write") as HTMLButtonElement;

@@ -67,13 +67,15 @@ export function checkMessage(provider: Provider, error: unknown): string {
   return `Chưa kiểm tra được ${name}: ${text.replace(/^[A-Z]+: /, "")}`.slice(0, 300);
 }
 
-/** "Cài đặt AI": the default provider, its key, model and server, subtitle translation and sensitive words. */
-export function mountAiSettings(session: AiSession): { open(): void; prefs(): TranslationPrefs } {
-  const dialog = $("#ai-settings-dialog");
+/**
+ * The AI part of Cài đặt: the default provider, its key, model and server (tab Tài khoản),
+ * subtitle translation and sensitive words (tab Dịch phụ đề). `reveal` shows Cài đặt at Tài khoản.
+ */
+export function mountAiSettings(session: AiSession, reveal: () => void): { open(): void; refresh(): void; prefs(): TranslationPrefs } {
   const state = $("#ai-settings-state");
   const providerSelect = $<HTMLSelectElement>("#ai-settings-provider");
   providerSelect.replaceChildren(...PROVIDER_IDS.map((id) => element("option", { value: id, textContent: PROVIDERS[id].label })));
-  $("#ai-settings-note").textContent = `${KEY_STORAGE_NOTE.replace("; đổi hoặc xóa trong “Cài đặt AI”", "")} Khóa chỉ được dùng để gọi đúng nhà cung cấp đó khi bạn dùng tính năng AI hoặc dịch phụ đề.`;
+  $("#ai-settings-note").textContent = `${KEY_STORAGE_NOTE.replace("; đổi hoặc xóa trong “Cài đặt › Tài khoản”", "")} Khóa chỉ được dùng để gọi đúng nhà cung cấp đó khi bạn dùng tính năng AI hoặc dịch phụ đề.`;
   let prefs = loadPrefs();
 
   function card(provider: Provider): HTMLElement {
@@ -187,7 +189,7 @@ export function mountAiSettings(session: AiSession): { open(): void; prefs(): Tr
       ? `Video mới: ${PROVIDERS[provider].name} dịch cả đoạn hội thoại theo ngữ cảnh (xưng hô, thành ngữ, văn nói). Nếu AI lỗi, phụ đề dùng bản dịch offline như cũ. Lời thoại được gửi tới ${PROVIDERS[provider].company}.`
       : provider === "custom"
         ? "Chưa nhập địa chỉ máy chủ và model: phụ đề đang dùng bộ dịch offline (dịch từng câu)."
-        : `Chưa có khóa ${PROVIDERS[provider].name}: phụ đề đang dùng bộ dịch offline (dịch từng câu). Lưu khóa ở trên để dịch theo ngữ cảnh.`;
+        : `Chưa có khóa ${PROVIDERS[provider].name}: phụ đề đang dùng bộ dịch offline (dịch từng câu). Lưu khóa ở mục Tài khoản để dịch theo ngữ cảnh.`;
   }
   aiToggle.addEventListener("change", () => { prefs = { ...prefs, aiTranslation: aiToggle.checked }; savePrefs(prefs); });
   sensitiveMode.addEventListener("change", () => {
@@ -217,16 +219,15 @@ export function mountAiSettings(session: AiSession): { open(): void; prefs(): Tr
     state.textContent = "";
     render();
   });
-  const close = () => { dialog.hidden = true; };
-  $("#ai-settings-close").addEventListener("click", close);
-  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+  render();
 
   return {
     open() {
       state.textContent = "";
       render();
-      dialog.hidden = false;
+      reveal();
     },
+    refresh: render,
     prefs: () => prefs,
   };
 }
