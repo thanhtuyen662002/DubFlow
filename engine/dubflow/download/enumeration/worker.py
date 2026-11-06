@@ -6,6 +6,7 @@ before its checked SQLite transaction. This process never receives a database.
 """
 from __future__ import annotations
 
+import contextlib
 from hashlib import sha256
 import http.client
 import json
@@ -16,6 +17,7 @@ import re
 import socket
 import ssl
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -430,8 +432,71 @@ def _request(line, validator, job_id=None):
 
 # A dropped or slow connection is a network failure the user can retry, not a broken worker.
 NETWORK_ERRORS = (ConnectionError, TimeoutError, socket.timeout, http.client.HTTPException, urllib.error.URLError, ssl.SSLError)
-ERROR_LOG = "worker-errors.log"
 ERROR_LOG_LIMIT = 256 * 1024
+ERROR_LOG_KEEP = 200
+# Same names as engine/dubflow/support/report.py, which reads one scan's file (Issue #592).
+ERROR_LOG_DIR = "worker-errors"
+_SAFE_SCAN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")
+# Signed media URLs carry tokens in their query; the log keeps scheme, host and path only.
+_URL_QUERY = re.compile(r"(https?://[^\s?#'\"]+)[?#][^\s'\"]*")
+
+
+def source_log_name(scan_id: str) -> str:
+    if _SAFE_SCAN.fullmatch(scan_id) and not scan_id.endswith("."):
+        return scan_id + ".log"
+    return sha256(scan_id.encode("utf-8", "surrogatepass")).hexdigest()[:40] + ".log"
+
+
+_CREDENTIAL = re.compile(r"cookie|authorization|bearer|token|sessdata|bili_jct|passport|password|secret", re.IGNORECASE)
+
+
+def strip_url_queries(text: str) -> str:
+    return _URL_QUERY.sub(r"\1?<query>", text)
+
+
+def redact_credentials(text: str) -> str:
+    """Every line that mentions a credential is replaced; the report repeats this (Issue #592)."""
+    return "".join("<line mentions credentials>\n" if _CREDENTIAL.search(line) else line
+                   for line in text.splitlines(keepends=True))
+
+
+def _linked(path: Path) -> bool:
+    return path.is_symlink() or path.is_junction()
+
+
+@contextlib.contextmanager
+def _scan_lock(path: Path):
+    """Serialize one scan's log writers across threads and processes with an OS file lock."""
+    lock = path.with_name(path.name + ".lock")
+    if _linked(lock):
+        raise OSError("scan log lock is a link")
+    descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def failure_code(error: BaseException, command: str | None) -> tuple[str, bool]:
@@ -445,38 +510,94 @@ def failure_code(error: BaseException, command: str | None) -> tuple[str, bool]:
 
 
 def error_log_dir(args: object) -> Path | None:
-    """``<data root>/source-work``: above the job's work folder or in its data root, else beside the installed versions."""
+    """``<data root>/source-work``: above the job's work folder or in its data root, else beside the installed versions.
+
+    A ``source-work`` reached through a symlink or junction is never used.
+    """
     args = args if isinstance(args, dict) else {}
+    candidates: list[Path] = []
     if isinstance(args.get("work_root"), str) and args["work_root"]:
         work = Path(args["work_root"])
-        for folder in [work, *work.parents]:
-            if folder.name == "source-work" and folder.is_dir():
+        candidates += [folder for folder in [work, *work.parents] if folder.name == "source-work"][:1]
+    if isinstance(args.get("data_root"), str) and args["data_root"]:
+        candidates.append(Path(args["data_root"]) / "source-work")
+    here = Path(__file__).resolve().parents
+    if len(here) > 7:
+        candidates.append(here[7] / "source-work")
+    for folder in candidates:
+        try:
+            if not _linked(folder) and folder.is_dir():
                 return folder
-    if isinstance(args.get("data_root"), str) and args["data_root"] and (Path(args["data_root"]) / "source-work").is_dir():
-        return Path(args["data_root"]) / "source-work"
-    installed = Path(__file__).resolve().parents[7] / "source-work" if len(Path(__file__).resolve().parents) > 7 else None
-    return installed if installed is not None and installed.is_dir() else None
+        except OSError:
+            continue
+    return None
 
 
-def log_failure(error: BaseException, command: str | None, folder: Path | None, *, now: float | None = None) -> Path | None:
-    """Append the error and its traceback; the "Gửi báo cáo lỗi" zip carries the file, paths redacted."""
-    if folder is None:
+def log_failure(error: BaseException, command: str | None, folder: Path | None, *, scan_id: str | None,
+                now: float | None = None) -> Path | None:
+    """Append the error and its traceback to this scan's own log in ``<source-work>/worker-errors``.
+
+    One file per scan: the "Gửi báo cáo lỗi" zip of a link carries only that link's file (Issue #592).
+    URL queries are cut here; the report also redacts local paths.
+    """
+    if folder is None or not scan_id:
         return None
-    path = folder / ERROR_LOG
+    partial = None
     try:
+        # Revalidated at write time: neither the root nor the log folder may be a link.
+        if _linked(folder) or not folder.is_dir():
+            return None
+        logs = folder / ERROR_LOG_DIR
+        if _linked(logs):
+            return None
+        logs.mkdir(exist_ok=True)
+        if _linked(logs) or not logs.is_dir():
+            return None
+        path = logs / source_log_name(scan_id)
+        if _linked(path) or (path.exists() and not path.is_file()):
+            return None
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now if now is not None else time.time()))
-        entry = f"--- {stamp} {command or 'unknown'} {type(error).__name__}: {error}\n{''.join(traceback.format_exception(error))}\n"
-        previous = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-        text = previous + entry
-        if len(text.encode("utf-8")) > ERROR_LOG_LIMIT:
-            text = text[-(ERROR_LOG_LIMIT // 2):]
-            text = text[text.find("--- "):] if "--- " in text else text
-        partial = path.with_name(path.name + ".partial")
-        partial.write_text(text, encoding="utf-8")
-        os.replace(partial, path)
+        entry = redact_credentials(strip_url_queries(f"--- {stamp} {command or 'unknown'} {type(error).__name__}: {error}\n"
+                                                     f"{''.join(traceback.format_exception(error))}\n"))
+        with _scan_lock(path):
+            if _linked(path) or (path.exists() and not path.is_file()):
+                return None
+            previous = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+            text = previous + entry
+            if len(text.encode("utf-8")) > ERROR_LOG_LIMIT:
+                text = text[-(ERROR_LOG_LIMIT // 2):]
+                text = text[text.find("--- "):] if "--- " in text else text
+            # A new, exclusively created temporary file in the checked folder; replace swaps the name only.
+            handle, name = tempfile.mkstemp(dir=logs, prefix=path.name + ".", suffix=".partial")
+            partial = Path(name)
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(text)
+            if _linked(logs) or _linked(path):
+                return None
+            os.replace(partial, path)
+            partial = None
+        _prune(logs, keep=path)
         return path
     except OSError:
         return None
+    finally:
+        if partial is not None:
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _prune(logs: Path, *, keep: Path) -> None:
+    """Keep the newest ``ERROR_LOG_KEEP`` scan logs."""
+    try:
+        files = sorted((entry for entry in logs.iterdir() if entry.suffix == ".log" and entry != keep and entry.is_file()),
+                       key=lambda entry: entry.stat().st_mtime, reverse=True)
+        for stale in files[ERROR_LOG_KEEP - 1:]:
+            stale.unlink(missing_ok=True)
+            stale.with_name(stale.name + ".lock").unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def main() -> int:
@@ -486,6 +607,7 @@ def main() -> int:
     controls = None
     command = None
     args = None
+    first = None
     try:
         first = _request(stdin.readline(MAX_LINE_BYTES + 1), validator)
         if isinstance(first.payload, dict):
@@ -557,8 +679,9 @@ def main() -> int:
         return 0
     except Exception as error:
         code, retryable = failure_code(error, command)
-        if not isinstance(error, SourceError):
-            log_failure(error, command, error_log_dir(args))
+        # Typed link errors too: the user only sees their code, the report needs the cause.
+        if not isinstance(error, SourceError) or command != "source_session":
+            log_failure(error, command, error_log_dir(args), scan_id=first.job_id if first is not None else None)
         if emitter is not None:
             emitter.fail(code, retryable=retryable)
         return 2

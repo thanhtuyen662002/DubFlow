@@ -67,7 +67,7 @@ export function isProvider(value: unknown): value is Provider {
   return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
 }
 
-export const KEY_STORAGE_NOTE = "Khóa được lưu an toàn trên máy này (Windows Credential Manager) nên lần sau không phải nhập lại; đổi hoặc xóa trong “Cài đặt AI”.";
+export const KEY_STORAGE_NOTE = "Khóa được lưu an toàn trên máy này (Windows Credential Manager) nên lần sau không phải nhập lại; đổi hoặc xóa trong “Cài đặt › Tài khoản”.";
 
 /** What the key prompt says: where to get a key, where it is kept, what is sent and who bills. */
 export function keyHint(provider: Provider, sent = "phụ đề tiếng Việt của video"): string {
@@ -375,7 +375,7 @@ export function lacksDiacritics(value: unknown): boolean {
  * diacritics the second time, in about two seconds) and kept if that fails or repeats.
  */
 async function askGemini(key: string, request: JsonRequest, send: typeof fetch, wait: (ms: number) => Promise<void>): Promise<unknown> {
-  if (!key.trim()) throw new Error("Chưa có khóa API Gemini (API key); hãy nhập khóa trong “Cài đặt AI”.");
+  if (!key.trim()) throw new Error("Chưa có khóa API Gemini (API key); hãy nhập khóa trong “Cài đặt › Tài khoản”.");
   const attempts: Array<[string, number]> = [[GEMINI_MODEL, 0], [GEMINI_MODEL, 4000], [GEMINI_FALLBACK_MODEL, 2000]];
   let last: GeminiAttemptError | null = null;
   let unaccented: unknown = undefined;
@@ -430,7 +430,7 @@ function hostError(reply: HostReply): Error {
 
 async function askHost(provider: Provider, key: string, request: JsonRequest): Promise<unknown> {
   if (!host) throw new Error(`${PROVIDERS[provider].name} chỉ dùng được trong ứng dụng DubFlow trên Windows.`);
-  if (!key.trim() && provider !== "custom") throw new Error(`KEY: Chưa có khóa API ${PROVIDERS[provider].name}; hãy nhập khóa trong “Cài đặt AI”.`);
+  if (!key.trim() && provider !== "custom") throw new Error(`KEY: Chưa có khóa API ${PROVIDERS[provider].name}; hãy nhập khóa trong “Cài đặt › Tài khoản”.`);
   if (!PROVIDERS[provider].vision && request.parts.some((part) => "image" in part)) {
     throw new Error(`${PROVIDERS[provider].name} không đọc được ảnh; hãy chọn Claude, Gemini hoặc ChatGPT cho việc này.`);
   }

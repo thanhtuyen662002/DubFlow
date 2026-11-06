@@ -17,7 +17,7 @@ import os
 import sys
 from typing import Any, TextIO
 
-from .client import AiError, Transport, _urllib, ask, list_models, make_route, pick_model
+from .client import _NOT_CHAT, AiError, Transport, _urllib, ask, list_models, make_route, pick_model
 
 MAX_REQUEST_BYTES = 32 * 1024 * 1024
 
@@ -42,7 +42,8 @@ def handle(request: Any, key: str, transport: Transport = _urllib) -> dict[str, 
         raise AiError("INVALID", "Yêu cầu AI không hợp lệ.")
     route = make_route(str(request.get("provider", "")), key, model=request.get("model") or None, base_url=request.get("base_url") or None)
     if request.get("action") == "models":
-        names = list_models(route, transport=transport)
+        # Chat models only: the list is what the user picks from in "Cài đặt AI".
+        names = [name for name in list_models(route, transport=transport) if not _NOT_CHAT.search(name)]
         return {"ok": True, "models": names, "suggested": route.model if route.model in names else pick_model(route.provider, names)}
     if request.get("action") != "ask" or not isinstance(request.get("system"), str) or not isinstance(request.get("schema"), dict):
         raise AiError("INVALID", "Yêu cầu AI không hợp lệ.")

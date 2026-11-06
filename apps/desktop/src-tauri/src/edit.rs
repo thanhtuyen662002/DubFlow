@@ -75,9 +75,13 @@ const ASPECTS: [&str; 4] = ["16:9", "9:16", "1:1", "4:5"];
 const BUSY: &str = "Video này đang được xuất ở cửa sổ DubFlow khác";
 
 struct Running {
-    child: Mutex<Option<Child>>,
+    /// Every FFmpeg of the export: one, or the parts rendered side by side.
+    children: Mutex<Vec<Child>>,
     cancelled: AtomicBool,
 }
+
+#[path = "edit_parts.rs"]
+mod parts;
 
 static RUNNING: LazyLock<Mutex<HashMap<PathBuf, Arc<Running>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -719,6 +723,13 @@ fn run_record(data: &Path, dir: &Path) -> Option<PathBuf> {
 pub(crate) fn record_run(kind: &str, dir: &Path) {
     if let Ok(data) = crate::control_root() {
         let _ = record_run_in(&data, kind, dir);
+    }
+}
+
+/// Drop the record of the run in `dir` (a project being deleted).
+pub(crate) fn forget_run(dir: &Path) {
+    if let Some(path) = crate::control_root().ok().and_then(|data| run_record(&data, dir)) {
+        let _ = fs::remove_file(path);
     }
 }
 
@@ -2837,12 +2848,14 @@ struct ExportJob {
     texts: Vec<TextClip>,
     /// Chỉ âm thanh: an .m4a, kept out of exports.json (it is no edited video).
     audio_only: bool,
+    /// A long export, rendered as parts side by side when it can be (`parts`).
+    parts: Option<parts::Source>,
 }
 
 fn stop(running: &Running) {
     running.cancelled.store(true, Ordering::SeqCst);
-    if let Ok(mut child) = running.child.lock() {
-        if let Some(child) = child.as_mut() {
+    if let Ok(mut children) = running.children.lock() {
+        for child in children.iter_mut() {
             let _ = child.kill();
         }
     }
@@ -2855,27 +2868,11 @@ fn progress_percent(out_time_us: i64, seconds: f64) -> f64 {
 /// One FFmpeg run with `encoder`; Err holds the last line FFmpeg logged.
 fn encode(job: &ExportJob, encoder: &str, running: &Running) -> Result<(), String> {
     let partial = partial_of(&job.target);
-    let log_path = job.work.join("ffmpeg.log");
-    let log = unlinked(&job.work).then(|| fs::File::create(&log_path).ok()).flatten().map_or_else(Stdio::null, Stdio::from);
-    let mut command = Command::new(&job.ffmpeg);
     let args = if job.audio_only { audio_args(&job.inputs, &job.script, &partial) }
         else { ffmpeg_args(&job.inputs, &job.script, job.has_audio, encoder, job.bitrate, &job.fps, &partial) };
-    command.args(args)
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log);
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-    let mut child = command.spawn().map_err(|_| fail("Không chạy được FFmpeg"))?;
-    let stdout = child.stdout.take();
-    if let Ok(mut slot) = running.child.lock() {
-        *slot = Some(child);
-    }
-    if running.cancelled.load(Ordering::SeqCst) {
-        stop(running);
-    }
     let mut percent = 0.0;
     let mut written = Instant::now() - Duration::from_secs(1);
-    let lines = stdout.map(|stdout| BufReader::new(stdout).lines());
-    for line in lines.into_iter().flatten().map_while(Result::ok) {
+    run_tracked(&job.ffmpeg, args, &job.work, &job.work.join("ffmpeg.log"), running, |line| {
         if let Some(value) = line.strip_prefix("out_time_us=") {
             if let Ok(us) = value.trim().parse::<i64>() {
                 percent = progress_percent(us, job.seconds);
@@ -2890,12 +2887,37 @@ fn encode(job: &ExportJob, encoder: &str, running: &Running) -> Result<(), Strin
                 written = Instant::now();
             }
         }
+    })?;
+    if fs::metadata(&partial).is_ok_and(|metadata| metadata.len() > 0) { Ok(()) } else { Err(String::new()) }
+}
+
+/// One FFmpeg run that "Hủy" can stop, `line` seeing each `-progress` line;
+/// Err holds the last line it logged to `log_path`.
+fn run_tracked(ffmpeg: &Path, args: Vec<OsString>, work: &Path, log_path: &Path, running: &Running, mut line: impl FnMut(&str)) -> Result<(), String> {
+    let log = unlinked(work).then(|| fs::File::create(log_path).ok()).flatten().map_or_else(Stdio::null, Stdio::from);
+    let mut command = Command::new(ffmpeg);
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().map_err(|_| fail("Không chạy được FFmpeg"))?;
+    let stdout = child.stdout.take();
+    let id = child.id();
+    if let Ok(mut children) = running.children.lock() {
+        children.push(child);
     }
-    let status = running.child.lock().ok().and_then(|mut slot| slot.take()).map(|mut child| child.wait());
-    if matches!(status, Some(Ok(code)) if code.success()) && fs::metadata(&partial).is_ok_and(|metadata| metadata.len() > 0) {
+    if running.cancelled.load(Ordering::SeqCst) {
+        stop(running);
+    }
+    let lines = stdout.map(|stdout| BufReader::new(stdout).lines());
+    for text in lines.into_iter().flatten().map_while(Result::ok) {
+        line(&text);
+    }
+    let child = running.children.lock().ok()
+        .and_then(|mut children| children.iter().position(|child| child.id() == id).map(|at| children.swap_remove(at)));
+    if matches!(child.map(|mut child| child.wait()), Some(Ok(code)) if code.success()) {
         return Ok(());
     }
-    let last = fs::read_to_string(&log_path).ok()
+    let last = fs::read_to_string(log_path).ok()
         .and_then(|text| text.lines().rev().find(|line| !line.trim().is_empty()).map(|line| line.trim().chars().take(240).collect::<String>()));
     Err(last.unwrap_or_default())
 }
@@ -2904,9 +2926,9 @@ fn encode(job: &ExportJob, encoder: &str, running: &Running) -> Result<(), Strin
 fn run_export(job: &ExportJob, running: &Running) {
     let partial = partial_of(&job.target);
     let mut failure = String::new();
-    let mut done = false;
+    let mut done = job.parts.as_ref().is_some_and(|source| parts::render(job, source, running).is_ok());
     for (attempt, encoder) in crate::gpu::encoders(&job.ffmpeg).iter().enumerate() {
-        if running.cancelled.load(Ordering::SeqCst) {
+        if done || running.cancelled.load(Ordering::SeqCst) {
             break;
         }
         if attempt > 0 {
@@ -3059,6 +3081,18 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         .then(|| reframe_filter(out_width, out_height, request.fill.as_deref() == Some("blur")));
     let finish = Finish { texts: layer, reframe, normalize: request.normalize, audio_only: request.audio_only };
     let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix, &finish);
+    // Xuất song song: the whole sound on its own, for a long export rendered as parts.
+    let long = !request.audio_only && output_seconds(&edit.segments, &edit.transitions) >= parts::PARALLEL_MIN_SECONDS;
+    let sound_script = if long && has_audio {
+        let sound = Finish { normalize: request.normalize, audio_only: true, ..Finish::default() };
+        let (graph, _) = export_script(&edit, &streams, &parts::sound_frame(&frame), "source", &mix, &sound);
+        let file = work.join("filter-sound.txt");
+        guarded(&work)?;
+        fs::write(&file, graph).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
+        Some(file)
+    } else {
+        None
+    };
     if request.audio_only && !has_audio {
         return Err(fail("Bản sửa này không có âm thanh để xuất"));
     }
@@ -3073,7 +3107,10 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         fs::write(&file, body).map_err(|_| fail("Không ghi được phụ đề"))?;
         prefilter.push(subtitles_filter(&display_path(&file)));
     }
-    let text = if prefilter.is_empty() { text } else { with_cover(&text, &prefilter.join(",")) };
+    let prefilter = (!prefilter.is_empty()).then(|| prefilter.join(","));
+    let text = prefilter.as_deref().map_or(text.clone(), |filter| with_cover(&text, filter));
+    let parts = long.then(|| parts::Source { media_count: streams.len(), frame: frame.clone(), texts: finish.texts.clone(), reframe: finish.reframe.clone(),
+        prefilter, sound_script });
     inputs.extend(sound_inputs);
     inputs.extend(stem_inputs.into_iter().map(|(file, _)| file));
     guarded(&work)?;
@@ -3083,10 +3120,10 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         srt: (!request.cues.is_empty() && !request.audio_only).then(|| format_srt(&request.cues)),
         seconds: output_seconds(&edit.segments, &edit.transitions), has_audio, bitrate, fps, ffmpeg, audio_only: request.audio_only,
         quality: request.quality, edit, audio: request.audio, main_volume: request.main_volume, texts: request.texts,
-        main_denoise: request.main_denoise, main_eq: request.main_eq, stems: request.stems,
+        main_denoise: request.main_denoise, main_eq: request.main_eq, stems: request.stems, parts,
     };
     write_status(&work, "RUNNING", 0.0, "Đang bắt đầu xuất video…", Some(&target));
-    let entry = Arc::new(Running { child: Mutex::new(None), cancelled: AtomicBool::new(false) });
+    let entry = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
     running.insert(key.clone(), entry.clone());
     drop(running);
     std::thread::spawn(move || {

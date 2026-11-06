@@ -6,6 +6,7 @@ import {
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { parseVoiceCatalog } from "../voices/model.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
+import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { fileName, shortDate } from "../product/model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -50,6 +51,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
         <div class="queue-scroll">
           <ul id="compilation-runs" class="queue-list" aria-label="Video tổng hợp"></ul>
           <p id="compilation-runs-empty" class="queue-empty">Chưa có video tổng hợp nào. Các lần tạo trước được tìm trong thư mục “DubFlow Output”.</p>
+          <p id="compilation-runs-state" class="queue-state" role="status"></p>
         </div>
         <div class="queue-col-foot"><button id="compilation-new" class="btn block" type="button">Tạo tổng hợp mới</button></div>
       </section>
@@ -180,7 +182,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   const wide = new Set<string>();
   const message = (error: unknown) => String(error).slice(0, 250);
   function showProvider(): void {
-    $("provider").textContent = `Khi bấm AI, chủ đề và tối đa 60 dòng phụ đề tiếng Việt mỗi video được gửi tới ${PROVIDERS[session.provider()].company}. Dùng nhà cung cấp và khóa đã lưu trong Cài đặt AI.`;
+    $("provider").textContent = `Khi bấm AI, chủ đề và tối đa 60 dòng phụ đề tiếng Việt mỗi video được gửi tới ${PROVIDERS[session.provider()].company}. Dùng nhà cung cấp và khóa đã lưu trong Cài đặt › Tài khoản.`;
   }
   // Settings may change while this page stays visible.
   document.querySelector("#ai-settings-provider")?.addEventListener("change", showProvider);
@@ -348,7 +350,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     }
     const provider = session.provider(), key = session.read();
     showProvider();
-    if (!key) { $("ai-state").textContent = "Hãy lưu khóa của nhà cung cấp trong Cài đặt AI trước."; return; }
+    if (!key) { $("ai-state").textContent = "Hãy lưu khóa của nhà cung cấp trong Cài đặt › Tài khoản trước."; return; }
     lock(true); $("ai-state").textContent = `${PROVIDERS[provider].name} đang viết nội dung…`;
     try {
       const items = [];
@@ -412,7 +414,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     $("new").setAttribute("aria-pressed", String(current === NEW));
     $("runs").replaceChildren(...runs.map((run) => {
       const item = document.createElement("li");
-      item.className = `job${run.dir === current ? " selected" : ""}`;
+      item.className = `job project-row${run.dir === current ? " selected" : ""}`;
       item.tabIndex = 0;
       item.setAttribute("role", "button");
       item.setAttribute("aria-current", String(run.dir === current));
@@ -458,12 +460,28 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
         main.append(bar);
       }
       item.append(thumb, main);
+      // A running compilation is cancelled first, so it has no delete button.
+      if (state !== "RUNNING") item.append(deleteProjectButton(run.title, () => void removeRun(run.dir, run.title)));
       item.addEventListener("click", () => select(run.dir));
       item.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(run.dir); }
       });
       return item;
     }));
+  }
+
+  async function removeRun(dir: string, title: string): Promise<void> {
+    const error = await confirmDeleteProject(invoke, "compilation", dir, title);
+    if (error === "") return;
+    const note = $("runs-state");
+    note.textContent = error ?? `Đã chuyển “${title}” vào Thùng rác.`;
+    note.classList.toggle("ok", error === null);
+    if (error !== null) return;
+    runs = runs.filter((run) => run.dir !== dir);
+    if (current === dir) current = NEW;
+    renderRuns();
+    renderSelected();
+    void loadRuns();
   }
 
   function select(dir: string, next?: "setup" | "result"): void {

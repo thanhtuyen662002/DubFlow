@@ -101,6 +101,22 @@ pub fn thread_args(complex_graph: bool) -> Vec<OsString> {
     vec!["-threads".into(), threads.to_string().into(), filter.into(), threads.to_string().into()]
 }
 
+/// Exports rendered side by side (Chỉnh sửa, xuất song song): half the thread
+/// budget, at most 4 on the GPU (NVENC sessions) or 6 on the CPU. Mirrors
+/// engine/dubflow/resources.py `parallel_renders`.
+pub fn parallel_renders(gpu: bool) -> usize {
+    (thread_budget() / 2).clamp(1, if gpu { 4 } else { 6 })
+}
+
+/// Threads one of `workers` side-by-side renders may use.
+pub fn part_threads(workers: usize) -> usize {
+    (thread_budget() / workers.max(1)).max(1)
+}
+
+fn thread_budget() -> usize {
+    configured_threads().unwrap_or_else(machine_threads)
+}
+
 fn machine_threads() -> usize {
     std::thread::available_parallelism().map_or(1, |count| count.get())
 }

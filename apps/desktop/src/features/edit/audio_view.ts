@@ -652,7 +652,7 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
 
   function renderAi(): void {
     const provider = host.ai.provider();
-    $("#au-ai-provider").textContent = `AI sẽ gửi lời thoại tiếng Việt, thời gian và danh sách hiệu ứng tới ${PROVIDERS[provider].label} bằng tài khoản của bạn (Cài đặt AI). AI chỉ chọn hiệu ứng có trong Kho DubFlow; bạn duyệt từng gợi ý trước khi thêm.`;
+    $("#au-ai-provider").textContent = `AI sẽ gửi lời thoại tiếng Việt, thời gian và danh sách hiệu ứng tới ${PROVIDERS[provider].label} bằng tài khoản của bạn (Cài đặt › Tài khoản). AI chỉ chọn hiệu ứng có trong Kho DubFlow; bạn duyệt từng gợi ý trước khi thêm.`;
     aiRun.disabled = aiBusy;
     aiRun.textContent = pending.length ? "Gợi ý lại" : "Gợi ý hiệu ứng";
     $("#au-ai-bulk").hidden = !pending.length;
@@ -686,8 +686,8 @@ export function mountAudio(invoke: Invoke, host: AudioHost, context: AudioContex
     if (aiBusy) return;
     const provider = host.ai.provider(), key = host.ai.read();
     if (!key) {
-      aiState.replaceChildren(`Hãy lưu khóa ${PROVIDERS[provider].name} trong Cài đặt AI. `);
-      const open = element("button", "link", "Mở Cài đặt AI");
+      aiState.replaceChildren(`Hãy lưu khóa ${PROVIDERS[provider].name} trong Cài đặt › Tài khoản. `);
+      const open = element("button", "link", "Mở Cài đặt");
       open.type = "button";
       open.addEventListener("click", () => host.openAiSettings());
       aiState.append(open);

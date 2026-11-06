@@ -13,6 +13,18 @@ from .sessions import validated_session_headers
 from .source_adapter import SourceError, SourceErrorCode
 
 
+
+_SECRET_LINE = re.compile(r"cookie|authorization|token|sessdata|bili_jct", re.IGNORECASE)
+_URL_QUERY = re.compile(r"(https?://[^\s?#'\"]+)[?#][^\s'\"]*")
+
+
+def diagnostic_tail(stderr, limit: int = 1500) -> str:
+    """The extractor's last stderr lines without URL queries or lines that mention credentials."""
+    text = stderr.decode("utf-8", "replace") if isinstance(stderr, (bytes, bytearray)) else str(stderr or "")
+    lines = [_URL_QUERY.sub(r"\1?<query>", line.strip()) for line in text.splitlines()
+             if line.strip() and not _SECRET_LINE.search(line)]
+    return " | ".join(lines)[-limit:]
+
 class AuthenticatedYtDlpTransport:
     def __init__(self, *, runtime_root: str | Path, python: str | Path, helper: str | Path,
                  sdk_archive: str | Path, pins: Mapping[str, str], timeout_s: float = 180,
@@ -126,8 +138,13 @@ class AuthenticatedYtDlpTransport:
             codes = {2: SourceErrorCode.AUTH_REQUIRED, 3: SourceErrorCode.RATE_LIMITED,
                      4: SourceErrorCode.NOT_FOUND, 5: SourceErrorCode.SOURCE_CHANGED, 7: SourceErrorCode.UNSUPPORTED}
             error_code = codes.get(code, SourceErrorCode.NETWORK)
-            raise SourceError(error_code, "authenticated provider inspection failed", provider_id=provider_id,
+            error = SourceError(error_code, "authenticated provider inspection failed", provider_id=provider_id,
                 retryable=code in {3, 6}, action="authenticate" if code == 2 else "retry_with_changed_conditions" if code in {3, 6} else None)
+            detail = diagnostic_tail(stderr)
+            if detail:
+                # Only the worker's local error log (and the user's report) sees this note, never the wire.
+                error.add_note(f"extractor exit {code}: {detail}")
+            raise error
         try:
             value = json.loads(stdout)
             if not isinstance(value, dict):

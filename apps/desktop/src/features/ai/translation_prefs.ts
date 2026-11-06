@@ -1,7 +1,7 @@
 import { PROVIDERS, type AiSession, type Provider } from "./provider.ts";
 
 /**
- * How a new video's subtitles are translated and cleaned (Cài đặt AI):
+ * How a new video's subtitles are translated and cleaned (Cài đặt › Tài khoản):
  * "Dịch theo ngữ cảnh bằng AI" with the default provider's saved key, and the
  * words that platforms' community rules often flag. Not secret: kept in local storage.
  */

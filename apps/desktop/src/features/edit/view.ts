@@ -106,7 +106,7 @@ export type EditorHost = {
   revise: (job: QueueJob, outputDir: string) => Promise<string | null>;
   /** Âm thanh: the sound-effect pack and the user's sound folder. */
   sfx: SfxLibrary;
-  /** The AI account "Gợi ý AI" uses (Cài đặt AI). */
+  /** The AI account "Gợi ý AI" uses (Cài đặt › Tài khoản). */
   ai: AiSession;
   openAiSettings: () => void;
   /** Thu giọng: save recorded bytes with the edit at `outputPath` (`kind`); the saved file's path. */
