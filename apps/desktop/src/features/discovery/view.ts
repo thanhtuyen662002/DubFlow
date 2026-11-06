@@ -1,6 +1,6 @@
 import {
   GLOSS_BATCH, PLATFORMS, TITLE_GLOSS_KEY, TOPICS, bilibiliMid, cleanTitle, parseGlosses, discoveryError, formatCount, formatDuration, loadGlossCache,
-  mergeVideos, needsTitleGloss, pageAddress, parseCollected, parseTrends, parseVideos, previewSource, refreshVideos, rememberGloss, saveGlossCache, seenOnPage,
+  mergeVideos, needsChinese, needsTitleGloss, pageAddress, parseChinese, topicChinese, parseCollected, parseTrends, parseVideos, previewSource, refreshVideos, rememberGloss, saveGlossCache, seenOnPage,
   type DiscoveredVideo, type Platform, type PreviewSource, type Trend,
 } from "./model.ts";
 
@@ -15,6 +15,7 @@ const $ = <T extends HTMLElement>(selector: string): T => {
 
 const NO_TITLE = "(không có tiêu đề)";
 const HOVER_KEY = "dubflow.discoverHover.v1";
+const AUTO_ZH_KEY = "dubflow.discoverAutoZh.v1";
 const HOVER_DELAY_MS = 450;
 const ADDED_NOTE = " Xem tiến độ ở Hàng đợi video.";
 
@@ -78,10 +79,12 @@ function dropPlayer(node: Element | null | undefined): void {
  * Wire the "Khám phá" view. `enqueue` downloads one link (with its title) into the queue;
  * `glossEngine` says which translator may gloss keywords ("hachimi" only once
  * the user accepted its licence warning); `onWindowMoved` reports moves of the
- * app window (the discovery page moves with it).
+ * app window (the discovery page moves with it). `aiChinese`, when given, turns a
+ * Vietnamese phrase into a Chinese keyword with the user's saved AI key (null
+ * without a key); it is the fallback when the web translators fail.
  */
 export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: string) => Promise<void>, glossEngine: () => "argos" | "hachimi",
-  onWindowMoved: (listener: () => void) => void): { show(): void; hide(): void } {
+  onWindowMoved: (listener: () => void) => void, aiChinese?: (text: string) => Promise<string | null>): { show(): void; hide(): void } {
   const tabs = $("#platform-tabs");
   const trendList = $("#trend-list");
   const trendState = $("#trend-state");
@@ -89,6 +92,8 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   const kind = $<HTMLSelectElement>("#discover-kind");
   const query = $<HTMLInputElement>("#discover-query");
   const suggestList = $("#suggest-list");
+  const autoChinese = $<HTMLInputElement>("#discover-auto-zh");
+  const translatedNote = $("#discover-translated");
   const popular = $<HTMLButtonElement>("#discover-popular");
   const main = $("#discover-view .discover-main");
   const panel = $("#discover-panel");
@@ -111,6 +116,9 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   let mode: Mode = null;
   let nextPage: number | null = null;
   let suggestTimer = 0;
+  let searchRequest = 0;
+  // Vietnamese phrase (lower case) -> Chinese keyword, for this app run.
+  const chineseCache = new Map<string, string>();
   let suggestRequest = 0;
   let trendRequest = 0;
   const trendCache = new Map<Platform, { at: number; items: Trend[] }>();
@@ -163,7 +171,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     popular.hidden = platform !== "bilibili";
     query.placeholder = kind.value === "creator"
       ? `Dán link trang kênh ${info().name}`
-      : "Từ khóa tiếng Trung, ví dụ 仙侠 hoặc 美食";
+      : autoChinese.checked ? "Gõ tiếng Việt hoặc tiếng Trung, ví dụ nuôi lợn, 美食" : "Từ khóa tiếng Trung, ví dụ 仙侠 hoặc 美食";
   }
 
   async function loadGlosses(items: Trend[]): Promise<void> {
@@ -811,12 +819,59 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     }
   }
 
+  function showTranslated(original: string, chinese: string | null): void {
+    translatedNote.classList.toggle("warn", chinese === null);
+    if (chinese === null) {
+      translatedNote.textContent = `Chưa dịch được “${original}” sang tiếng Trung (kiểm tra mạng), đang tìm bằng chữ đã gõ. Bạn có thể gõ thẳng tiếng Trung.`;
+      return;
+    }
+    const lead = document.createElement("b");
+    lead.textContent = chinese;
+    translatedNote.replaceChildren(`Đã dịch “${original}” → `, lead);
+  }
+
+  /** The Chinese keyword for a Vietnamese phrase: built-in topic, cache, web translator, then the user's AI key. */
+  async function toChinese(text: string): Promise<string | null> {
+    const key = text.toLowerCase();
+    const known = topicChinese(text) ?? chineseCache.get(key);
+    if (known) return known;
+    let chinese: string | null = null;
+    try {
+      chinese = parseChinese(await invoke<unknown>("translate_query", { text }));
+    } catch {
+      chinese = null;
+    }
+    if (!chinese && aiChinese) {
+      try {
+        chinese = parseChinese({ ok: true, text: await aiChinese(text) });
+      } catch {
+        chinese = null;
+      }
+    }
+    if (chinese) chineseCache.set(key, chinese);
+    return chinese;
+  }
+
   async function search(): Promise<void> {
     hideSuggestions();
-    const text = query.value.trim();
+    let text = query.value.trim();
     if (!text) {
       state.textContent = kind.value === "creator" ? "Hãy dán link trang kênh." : "Hãy nhập từ khóa.";
       return;
+    }
+    const request = ++searchRequest;
+    translatedNote.textContent = "";
+    if (kind.value === "search" && autoChinese.checked && needsChinese(text)) {
+      state.textContent = `Đang dịch “${text}” sang tiếng Trung…`;
+      const chinese = await toChinese(text);
+      // Typed again or switched platform meanwhile: that search wins.
+      if (request !== searchRequest) return;
+      state.textContent = "";
+      showTranslated(text, chinese);
+      if (chinese) {
+        query.value = chinese;
+        text = chinese;
+      }
     }
     resetResults();
     if (platform === "bilibili" && kind.value === "search") return runApi({ kind: "api", action: "search", query: text, page: 1 }, false);
@@ -834,7 +889,8 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
 
   async function suggest(): Promise<void> {
     const text = query.value.trim();
-    if (!text || kind.value !== "search" || !info().suggest) return hideSuggestions();
+    // Platform suggestions only understand Chinese; Vietnamese is translated on "Tìm".
+    if (!text || kind.value !== "search" || !info().suggest || needsChinese(text)) return hideSuggestions();
     const request = ++suggestRequest;
     try {
       const result = parseTrends(await invoke<unknown>("discover", { platform, action: "suggest", query: text }));
@@ -861,6 +917,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     stopPreview();
     platform = next;
     mode = null;
+    searchRequest += 1;
     // The page belongs to the previous platform.
     closePage();
     state.textContent = "";
@@ -975,6 +1032,12 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     void translateTitles();
   });
 
+  autoChinese.checked = readStorage(AUTO_ZH_KEY) !== "0";
+  autoChinese.addEventListener("change", () => {
+    writeStorage(AUTO_ZH_KEY, autoChinese.checked ? "1" : "0");
+    translatedNote.textContent = "";
+    renderTabs();
+  });
   hoverToggle.checked = readStorage(HOVER_KEY) !== "0";
   hoverToggle.addEventListener("change", () => {
     writeStorage(HOVER_KEY, hoverToggle.checked ? "1" : "0");

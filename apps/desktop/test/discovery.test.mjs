@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   TOPICS, bilibiliMid, cleanTitle, discoveryError, formatCount, formatDuration, loadGlossCache, mergeVideos, needsTitleGloss, pageAddress, parseCollected,
-  parseGlosses, parseTrends, parseVideos, previewSource, refreshVideos, rememberGloss, saveGlossCache, seenOnPage,
+  parseGlosses, parseTrends, needsChinese, topicChinese, parseChinese, parseVideos, previewSource, refreshVideos, rememberGloss, saveGlossCache, seenOnPage,
 } from "../src/features/discovery/model.ts";
 
 // Trends: keyword required, unknown heat stays null, ranks default to order.
@@ -157,3 +157,18 @@ const big = loadGlossCache(JSON.stringify(Array.from({ length: 900 }, (_, i) => 
 assert.equal(big.size, 800);
 assert.equal([...big.keys()][0], "t100");
 console.log("desktop discovery preview and title tests passed");
+
+// Vietnamese search phrases are translated first; Chinese, links and empty text are not.
+assert.equal(needsChinese("tháp nuôi lợn"), true);
+assert.equal(needsChinese("am thuc"), true);
+assert.equal(needsChinese("仙侠 剧"), false);
+assert.equal(needsChinese("vlog 美食"), false);
+assert.equal(needsChinese("https://www.douyin.com/user/abc"), false);
+assert.equal(needsChinese("  123 "), false);
+assert.equal(topicChinese("ẩm  THỰC"), "美食");
+assert.equal(topicChinese("tien hiep"), "仙侠剧");
+assert.equal(topicChinese("nuôi lợn"), null);
+assert.equal(parseChinese({ ok: true, text: "  养猪  大楼 ", engine: "google" }), "养猪 大楼");
+assert.equal(parseChinese({ ok: true, text: "tien hiep" }), null);
+assert.equal(parseChinese({ ok: false, code: "NETWORK" }), null);
+assert.equal(parseChinese(null), null);

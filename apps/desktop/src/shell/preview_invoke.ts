@@ -750,6 +750,12 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       if (terms.some((term) => PREVIEW_GLOSS.has(term))) await new Promise((resolve) => setTimeout(resolve, 900));
       return { ok: true, items: terms.map((term) => PREVIEW_GLOSS.get(term) ?? `(nghĩa) ${term}`) } as T;
     }
+    case "translate_query": {
+      const text = String(args.text ?? "").trim();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const known: Record<string, string> = { "nuôi lợn": "养猪", "tháp nuôi lợn": "养猪大楼", "ẩm thực": "美食", "tiên hiệp": "仙侠" };
+      return { ok: true, text: known[text.toLowerCase()] ?? `中文 ${text}`, engine: "preview" } as T;
+    }
     case "collect_discovery": return previewCollected(String(args.platform)) as T;
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
     // No asset protocol in a browser: the player shows its placeholder.
