@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { clamp, describeChoice, describeMachine, firstRun, hostThreads, readPerformance } from "../src/features/performance/model.ts";
+import { suggested, clamp, describeChoice, describeMachine, firstRun, hostThreads, readPerformance } from "../src/features/performance/model.ts";
 
 const PC = { threads: 12, recommended: 10, memory_gb: 16, gpu: "NVIDIA GeForce RTX 3060 (12 GB)" };
 
@@ -26,4 +26,5 @@ assert.equal(describeMachine({ threads: 4, recommended: 3, memory_gb: null, gpu:
 assert.match(describeChoice({ mode: "auto", threads: 1 }, PC), /tối đa 10\/12 luồng/);
 assert.match(describeChoice({ mode: "all", threads: 1 }, PC), /cả 12 luồng/);
 assert.match(describeChoice({ mode: "custom", threads: 6 }, PC), /Tối đa 6\/12 luồng/);
+assert.deepEqual([1, 4, 12, 24].map(suggested), [1, 3, 10, 22]);
 console.log("performance settings ok");

@@ -1,5 +1,5 @@
 /** Cài đặt → Tài nguyên máy: detect the PC once, save its default, and apply the choice to every task. */
-import { PERFORMANCE_KEY, clamp, describeChoice, describeMachine, firstRun, hostThreads, readPerformance,
+import { PERFORMANCE_KEY, clamp, suggested, describeChoice, describeMachine, firstRun, hostThreads, readPerformance,
   type Machine, type Performance, type ThreadMode } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -81,7 +81,14 @@ export function mountPerformanceSettings(invoke: Invoke, cpuOnly: () => boolean,
     render();
     apply();
   }).catch(() => {
-    summary.textContent = "Không đọc được cấu hình máy; DubFlow dùng mặc định của từng tác vụ.";
+    // The browser still knows the processor count; the GPU stays unknown.
+    const threads = Math.max(1, Math.round(navigator.hardwareConcurrency || 1));
+    machine = { threads, recommended: suggested(threads), memory_gb: null, gpu: null };
+    summary.textContent = `Máy này: ${threads} luồng CPU`;
+    choice = load() ?? firstRun(machine);
+    save(choice);
+    render();
+    apply();
   });
   return apply;
 }

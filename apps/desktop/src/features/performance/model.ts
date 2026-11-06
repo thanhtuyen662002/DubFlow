@@ -20,6 +20,11 @@ export function readPerformance(text: string | null): Performance | null {
   }
 }
 
+/** Threads suggested for a PC with `machine` logical processors (mirrors gpu.rs). */
+export function suggested(machine: number): number {
+  return machine <= 3 ? Math.max(1, machine) : machine <= 7 ? machine - 1 : machine - 2;
+}
+
 /** First run: the machine's own suggestion, saved as "Tự động". */
 export function firstRun(machine: Machine): Performance {
   return { mode: "auto", threads: clamp(machine.recommended, machine) };
