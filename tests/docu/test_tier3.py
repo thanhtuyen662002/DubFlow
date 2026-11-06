@@ -361,3 +361,16 @@ class MapCentreTests(unittest.TestCase):
             x, y = mapgen.tile_position(30.3907, 114.8946, zoom)
             x0, y0 = mapgen.origin(30.3907, 114.8946, zoom)
             self.assertTrue(2.5 <= x - x0 <= 3.5 and 2.5 <= y - y0 <= 3.5, (zoom, x - x0, y - y0))
+
+
+class PaceTests(unittest.TestCase):
+    def test_push_runs_at_the_films_rate_not_the_sources(self):
+        from engine.dubflow.docu import roughcut
+        for extra in ({}, {"reused": 1}):
+            graph = roughcut.video_filter(1920, 1080, {"zoom": 1.0, "shift": 0.0, "letterbox": 0.0}, frames=90, ken_burns=True, **extra)
+            self.assertIn(f"fps={roughcut.FPS},scale=3840:2160,zoompan=", graph, "25 fps footage would play 1.2x fast")
+
+    def test_a_short_real_shot_keeps_both_cuts(self):
+        from engine.dubflow.docu import shots
+        text = "lavfi.scd.time=100.08\nlavfi.scd.time=100.44\nlavfi.scd.time=100.5\n"
+        self.assertEqual(shots.parse(text, 200.0), [100.08, 100.44])

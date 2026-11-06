@@ -27,7 +27,7 @@ from .script import CHAPTERS, load_draft
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 ENCODERS = h264.CPU_ENCODERS  # The CLI puts NVENC first when the GPU really encodes (media/encoders.py).
 VIDEO_BITRATE = "8M"
-RECIPE = "docu-roughcut-v6"
+RECIPE = "docu-roughcut-v7"
 # The bundled LGPL FFmpeg has no `eq`: a gentle S-curve for contrast and +8 % saturation, the same on every source.
 LOOK = "curves=all='0/0 0.25/0.235 0.75/0.77 1/1',huesaturation=saturation=0.08"
 KEN_BURNS_SHOT = 6.0
@@ -192,13 +192,15 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
                      f"[front]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,setsar=1[fit];"
                      f"[fill][fit]overlay=(W-w)/2:(H-h)/2[framed]")
     after = [LOOK]
+    # zoompan (d=1) turns each input frame into one output frame: it gets the film's rate first, or 25 fps footage plays
+    # 1.2x fast and runs on into the next shot.
     if pull:
         # The reverse of the first appearance's push: start tight, ease back out.
-        after.append(f"scale={WIDTH * 2}:{HEIGHT * 2},zoompan=z='{1 + pull:.4f}-{pull:.4f}*on/{max(1, frames - 1)}':d=1"
+        after.append(f"fps={FPS},scale={WIDTH * 2}:{HEIGHT * 2},zoompan=z='{1 + pull:.4f}-{pull:.4f}*on/{max(1, frames - 1)}':d=1"
                      f":x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':s={WIDTH}x{HEIGHT}:fps={FPS}")
     elif ken_burns and zoom_push > 0:
         # Upscaled first, so the slow push does not step from pixel to pixel.
-        after.append(f"scale={WIDTH * 2}:{HEIGHT * 2},zoompan=z='1+{zoom_push:g}*on/{max(1, frames - 1)}':d=1"
+        after.append(f"fps={FPS},scale={WIDTH * 2}:{HEIGHT * 2},zoompan=z='1+{zoom_push:g}*on/{max(1, frames - 1)}':d=1"
                      f":x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':s={WIDTH}x{HEIGHT}:fps={FPS}")
     bar = _even(float(framing.get("letterbox") or 0.0) * HEIGHT) if framing.get("letterbox") else 0
     if bar:

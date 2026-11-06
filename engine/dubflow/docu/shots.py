@@ -16,8 +16,10 @@ from .project import DocuError, write_json
 THRESHOLD = 10.0
 ANALYSIS_WIDTH = 320
 # Cuts closer than this to the previous one are one transition (a dissolve flickers several frames).
-MIN_SHOT = 0.4
-RECIPE = "scdet-320-v1"
+# Cuts closer than this are one flicker (a flash, a double detection). A real 0.3 s shot keeps both of its cuts, so
+# no slice is planned across it (Tier-3).
+MIN_SHOT = 0.15
+RECIPE = "scdet-320-v2"
 _TIME = re.compile(r"lavfi\.scd\.time=([0-9]+(?:\.[0-9]+)?)")
 
 Runner = Callable[[list[str], Path, Callable[[], bool]], None]
