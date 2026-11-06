@@ -924,7 +924,7 @@ function renderFetchStage(entry: FetchEntry): void {
     track.hidden = !view.bar;
     track.classList.toggle("indeterminate", view.fraction === null);
     bar.style.width = view.fraction === null ? "" : `${Math.round(view.fraction * 100)}%`;
-    $("#detail-message").textContent = `${view.message}\nLưu vào ${shortPath(entry.outputDir)}`;
+    $("#detail-message").textContent = `${view.message}\nVideo tải về: ${shortPath(downloadDir() ?? defaultDownloadDir)}\nKết quả: ${shortPath(entry.outputDir)}`;
     $("#busy-resume").hidden = true;
     const cancel = $<HTMLButtonElement>("#busy-cancel");
     cancel.hidden = entry.saving || entry.renewing;
@@ -1471,7 +1471,7 @@ function renderFetches(): void {
       item.append(remove);
     }
     // Where the results of this link will be saved, from the moment it is added.
-    item.title = `${fetchName(status)}\n${status.url}\nLưu vào ${outputDir}`;
+    item.title = `${fetchName(status)}\n${status.url}\nVideo tải về: ${downloadDir() ?? defaultDownloadDir}\nKết quả: ${outputDir}`;
     const select = () => {
       selectedFetchId = status.scan_id;
       setListOpen(false);
@@ -1822,7 +1822,8 @@ async function startFetch(url: string, title?: string, authRetried = false): Pro
   }
   let started: { status: FetchStatus; output_dir: string };
   try {
-    started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url", { url, title: title?.trim() || null });
+    started = await invoke<{ status: FetchStatus; output_dir: string }>("fetch_url",
+      { url, title: title?.trim() || null, outputRoot: outputRoot(), downloadDir: downloadDir() });
   } finally {
     if (queueState.textContent === note) showError("");
   }

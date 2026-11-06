@@ -765,11 +765,24 @@ fn session_result(provider: &str, event: &Value) -> Result<(), String> {
     Err(fail(format!("Không lưu được phiên {provider} ({}).", event["code"].as_str().unwrap_or("SESSION_FAILED"))))
 }
 
-/// `Videos\DubFlow Output\<name> - vi\<scan>` so finished link jobs are easy
-/// to find; the name is the video's title when known, else the link's tail.
-pub fn link_output_dir(url: &str, title: Option<&str>, scan: &str) -> Result<PathBuf, String> {
+/// The folder a link's "DubFlow Output" goes in: the results folder the user
+/// chose, else the folder the video is downloaded to (results sit next to the
+/// video, as for local files), else `%USERPROFILE%\Videos`. Relative or empty
+/// choices are ignored.
+pub fn link_output_base(results_root: Option<&str>, download_folder: Option<&str>) -> Result<PathBuf, String> {
+    let chosen = [results_root, download_folder].into_iter().flatten()
+        .map(str::trim).find(|folder| !folder.is_empty() && Path::new(folder).is_absolute());
+    if let Some(folder) = chosen {
+        return Ok(PathBuf::from(folder));
+    }
     let profile = std::env::var_os("USERPROFILE").ok_or_else(|| fail("USERPROFILE is unavailable"))?;
-    Ok(PathBuf::from(profile).join("Videos").join("DubFlow Output").join(format!("{} - vi", link_folder_name(url, title))).join(scan))
+    Ok(PathBuf::from(profile).join("Videos"))
+}
+
+/// `<base>\DubFlow Output\<name> - vi\<scan>` so finished link jobs are easy
+/// to find; the name is the video's title when known, else the link's tail.
+pub fn link_output_dir(base: &Path, url: &str, title: Option<&str>, scan: &str) -> PathBuf {
+    base.join("DubFlow Output").join(format!("{} - vi", link_folder_name(url, title))).join(scan)
 }
 
 /// A Douyin caption worth using as a link's title: not empty, not just the
@@ -788,8 +801,12 @@ pub fn douyin_caption(desc: &str, id: &str) -> Option<String> {
 /// Any other folder (already titled, chosen elsewhere, or with files in it)
 /// stays where it is.
 pub fn retitled_output_dir(current: &Path, url: &str, title: &str, scan: &str) -> Result<PathBuf, String> {
-    let profile = std::env::var_os("USERPROFILE").ok_or_else(|| fail("USERPROFILE is unavailable"))?;
-    retitled_output_in(&PathBuf::from(profile).join("Videos").join("DubFlow Output"), current, url, title, scan)
+    // `<base>\DubFlow Output\<name> - vi\<scan>`: wherever the link's results went.
+    match current.parent().and_then(Path::parent) {
+        Some(output) if output.file_name().is_some_and(|name| name == "DubFlow Output") =>
+            retitled_output_in(output, current, url, title, scan),
+        _ => Ok(current.to_path_buf()),
+    }
 }
 
 fn retitled_output_in(output: &Path, current: &Path, url: &str, title: &str, scan: &str) -> Result<PathBuf, String> {
@@ -1306,14 +1323,47 @@ mod tests {
 
     #[test]
     fn link_output_lives_under_dubflow_output_with_a_safe_name() {
-        let dir = link_output_dir("https://archive.org/download/ElephantsDream/ed_1024_512kb.mp4?x=1", None, "link-1").unwrap();
-        assert!(dir.ends_with(Path::new("DubFlow Output").join("ed_1024_512kb - vi").join("link-1")));
-        let odd = link_output_dir("https://www.bilibili.com/video/", None, "link-2").unwrap();
+        let base = Path::new("/videos");
+        let dir = link_output_dir(base, "https://archive.org/download/ElephantsDream/ed_1024_512kb.mp4?x=1", None, "link-1");
+        assert_eq!(dir, base.join("DubFlow Output").join("ed_1024_512kb - vi").join("link-1"));
+        let odd = link_output_dir(base, "https://www.bilibili.com/video/", None, "link-2");
         assert!(odd.to_string_lossy().contains("video - vi"));
-        assert!(!link_output_dir("https://x.test/..%2f..", None, "s").unwrap().to_string_lossy().contains(".."));
-        let titled = link_output_dir("https://v.douyin.com/abc/", Some("  Tiên hiệp: Linh kiếm  thức tỉnh! "), "link-3").unwrap();
+        assert!(!link_output_dir(base, "https://x.test/..%2f..", None, "s").to_string_lossy().contains(".."));
+        let titled = link_output_dir(base, "https://v.douyin.com/abc/", Some("  Tiên hiệp: Linh kiếm  thức tỉnh! "), "link-3");
         assert!(titled.ends_with(Path::new("DubFlow Output").join("Tiên-hiệp-Linh-kiếm-thức-tỉnh - vi").join("link-3")));
         assert_eq!(link_folder_name("https://x.test/a", Some(&"长".repeat(80))), "长".repeat(60));
         assert_eq!(link_folder_name("https://x.test/clip.mp4", Some(" ?! ")), "video");
+    }
+
+    #[test]
+    fn link_results_follow_the_chosen_folders() {
+        let results = std::env::temp_dir().join("results");
+        let downloads = std::env::temp_dir().join("downloads");
+        let (r, d) = (results.to_string_lossy().into_owned(), downloads.to_string_lossy().into_owned());
+        // A chosen results folder wins, then the download folder the video goes to.
+        assert_eq!(link_output_base(Some(&r), Some(&d)).unwrap(), results);
+        assert_eq!(link_output_base(None, Some(&d)).unwrap(), downloads);
+        assert_eq!(link_output_base(Some("  "), Some(&d)).unwrap(), downloads);
+        assert_eq!(link_output_base(Some("relative"), Some(&d)).unwrap(), downloads);
+        if std::env::var_os("USERPROFILE").is_some() {
+            assert!(link_output_base(None, None).unwrap().ends_with("Videos"));
+        }
+    }
+
+    #[test]
+    fn retitling_stays_in_the_links_own_output_folder() {
+        let root = std::env::temp_dir().join(format!("dubflow-retitle-base-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let url = "https://www.bilibili.com/video/BV121Pkz4EsX/";
+        let untitled = link_output_dir(&root, url, None, "link-9");
+        fs::create_dir_all(&untitled).unwrap();
+        let moved = retitled_output_dir(&untitled, url, "Tôm hùm", "link-9").unwrap();
+        assert_eq!(moved, link_output_dir(&root, url, Some("Tôm hùm"), "link-9"));
+        assert!(moved.is_dir() && !untitled.exists());
+        // A folder outside any "DubFlow Output" is never moved.
+        let elsewhere = root.join("x - vi").join("link-8");
+        fs::create_dir_all(&elsewhere).unwrap();
+        assert_eq!(retitled_output_dir(&elsewhere, url, "Tôm hùm", "link-8").unwrap(), elsewhere);
+        let _ = fs::remove_dir_all(&root);
     }
 }
