@@ -47,10 +47,20 @@ def parallel_renders(*, gpu: bool) -> int:
     return max(1, min(budget // 2, 4 if gpu else 6))
 
 
+def part_thread_args(workers: int) -> list[str]:
+    """``-threads``/``-filter_threads`` for one of ``workers`` FFmpegs running at once.
+
+    Always bounded, also when the user kept the default: each FFmpeg's own
+    automatic choice would take the whole machine, ``workers`` times over.
+    """
+    share = str(max(1, (configured() or machine_threads()) // max(1, workers)))
+    return ["-threads", share, "-filter_threads", share]
+
+
 def ffmpeg_thread_args() -> list[str]:
     """``-threads``/``-filter_threads`` for FFmpeg output; FFmpeg's own auto choice when unset."""
     chosen = configured()
     return [] if chosen is None else ["-threads", str(chosen), "-filter_threads", str(chosen)]
 
 
-__all__ = ["ENV", "configured", "cpu_threads", "ffmpeg_thread_args", "machine_threads", "parallel_renders", "thread_budget"]
+__all__ = ["ENV", "configured", "cpu_threads", "ffmpeg_thread_args", "machine_threads", "parallel_renders", "part_thread_args", "thread_budget"]

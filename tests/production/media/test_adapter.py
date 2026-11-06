@@ -416,6 +416,8 @@ class MediaCommandTests(unittest.TestCase):
             self.assertNotIn("-t", call)  # The trim ends the read.
             self.assertEqual(call[call.index("-c:v") + 1], "h264_nvenc")
             self.assertIn("-an", call)
+            # Eight threads over four parts: two each, for the encoder and the filters.
+            self.assertEqual(list(call[call.index("-threads"):call.index("-threads") + 4]), ["-threads", "2", "-filter_threads", "2"])
         # The join: the single pass's inputs and sound, the parts' picture copied.
         self.assertIn("concat", final)
         self.assertEqual(final[final.index("-c:v") + 1], "copy")
