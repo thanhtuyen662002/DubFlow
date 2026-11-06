@@ -8,7 +8,10 @@ import unittest
 import wave
 
 from engine.dubflow.translation.sensitive import SensitivePolicy
-from engine.dubflow.worker import beep
+from dataclasses import dataclass
+import json
+
+from engine.dubflow.worker import beep, production_job
 
 RATE = 16000
 
@@ -60,6 +63,51 @@ class BeepTests(unittest.TestCase):
     def test_fractions(self):
         self.assertEqual(beep.word_fractions("một hai, ba bốn", [(9, 11, "ba")]), [(0.5, 0.75)])
         self.assertEqual(beep.word_fractions("", [(0, 1, "x")]), [])
+
+
+
+@dataclass(frozen=True)
+class SpokenCue:
+    cue_id: str
+    start_ms: int
+    end_ms: int
+    translated_text: str
+
+
+@dataclass(frozen=True)
+class FakeB2Audio:
+    final_mix_path: Path
+    dialogue_stem_path: Path
+    placement_document_path: Path
+    member_cue_ids: dict
+
+
+def point(seconds: float) -> dict:
+    # As the TTS placement writes it: ticks and the time base are decimal strings.
+    return {"kind": "time_point", "schema_version": 1, "ticks": str(int(seconds * 1000)), "time_base": {"numerator": "1", "denominator": "1000"}}
+
+
+class BeepFlaggedWordsTests(unittest.TestCase):
+    def test_a_real_placement_document_gives_beeped_copies(self):
+        policy = SensitivePolicy.from_mapping({"mode": "beep", "words": [{"from": "máu", "to": "máo"}]})
+        with TemporaryDirectory() as temp:
+            folder = Path(temp)
+            stem, mix, placement = folder / "dialogue_stem.wav", folder / "final_mix.wav", folder / "dubbing_placement.json"
+            write(stem, 3.0, (0.5, 2.0))
+            write(mix, 3.0, (0.5, 2.0))
+            placement.write_text(json.dumps({"windows": [{"cue_id": "phrase-1", "slot_start": point(0.4), "render_window_end": point(2.2)}]}), encoding="utf-8")
+            audio = FakeB2Audio(mix, stem, placement, {"phrase-1": ("c1",)})
+            warnings: list[str] = []
+            result = production_job._beep_flagged_words(audio, [SpokenCue("c1", 400, 2200, "chảy máu mũi rồi")], policy, warnings)
+            self.assertIsNotNone(result, warnings)
+            self.assertTrue(any(warning.startswith("SENSITIVE_WORDS_BEEPED:") for warning in warnings), warnings)
+            self.assertFalse(any("BEEP_SKIPPED" in warning for warning in warnings), warnings)
+            final, beeped_stem = result
+            self.assertNotEqual(read(final), read(mix))
+            self.assertNotEqual(read(beeped_stem), read(stem))
+
+    def test_placement_seconds_reads_string_ticks(self):
+        self.assertAlmostEqual(production_job._placement_seconds(point(8.275)), 8.275)
 
 
 if __name__ == "__main__":
