@@ -86,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     options.add_argument("--captions", choices=("true", "false"))
     options.add_argument("--music", choices=("generated", "file", "none"))
     options.add_argument("--music-path")
+    options.add_argument("--sfx", choices=("true", "false"))
     listen = commands.add_parser("transcribe", help="recognise a plain video's speech into transcript.json")
     listen.add_argument("--video", type=Path, required=True)
     listen.add_argument("--out-dir", type=Path, required=True)
@@ -113,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "options":
             flag = {"true": True, "false": False, None: None}
             chosen = overlays.save_options(args.run_dir, graphics=flag[args.graphics], captions=flag[args.captions],
-                                           music_path=args.music_path, music=args.music)
+                                           music_path=args.music_path, music=args.music, sfx=flag[args.sfx])
             result = {"state": "COMPLETED", "message": "", "options": overlays.describe(chosen)}
         elif args.command == "transcribe":
             path = transcribe.transcribe(args.video, args.out_dir, app_root=args.app_root, model_root=args.model_root,

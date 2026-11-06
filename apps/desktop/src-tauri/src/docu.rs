@@ -571,16 +571,19 @@ pub async fn docu_cover(dir: String, source: String, band: Option<[f64; 2]>, log
     Ok(result)
 }
 
-fn options_args(dir: &Path, graphics: bool, captions: bool, music: &str, music_path: Option<&Path>) -> Vec<OsString> {
+fn options_args(dir: &Path, graphics: bool, captions: bool, music: &str, music_path: Option<&Path>, sfx: Option<bool>) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["-m".into(), "engine.dubflow.docu".into(), "options".into(), "--run-dir".into(), dir.into(),
         "--graphics".into(), graphics.to_string().into(), "--captions".into(), captions.to_string().into(), "--music".into(), music.into()];
     if let Some(path) = music_path { args.extend(["--music-path".into(), path.into()]); }
+    // Left out, the saved choice stays (callers that only move the cards and music, such as the layer split).
+    if let Some(sfx) = sfx { args.extend(["--sfx".into(), sfx.to_string().into()]); }
     args
 }
 
 /// What the next rough cut draws (number cards, captions) and plays (music bed); saved in the project.
 #[tauri::command]
-pub async fn docu_render_options(dir: String, graphics: bool, captions: bool, music: String, music_path: Option<String>) -> Result<Value, String> {
+pub async fn docu_render_options(dir: String, graphics: bool, captions: bool, music: String, music_path: Option<String>,
+                                 sfx: Option<bool>) -> Result<Value, String> {
     let dir = docu_dir(&dir)?;
     if !["generated", "file", "none"].contains(&music.as_str()) { return Err(fail("Lựa chọn nhạc nền không hợp lệ")); }
     let path = match music_path.as_deref().filter(|value| !value.is_empty()) {
@@ -588,7 +591,7 @@ pub async fn docu_render_options(dir: String, graphics: bool, captions: bool, mu
             .map_err(|_| fail("Chọn file nhạc MP3, WAV, M4A, AAC, FLAC, OGG hoặc OPUS"))?),
         None => None,
     };
-    let result = python_json(options_args(&dir, graphics, captions, &music, path.as_deref()), "bộ xử lý phim tài liệu").await?;
+    let result = python_json(options_args(&dir, graphics, captions, &music, path.as_deref(), sfx), "bộ xử lý phim tài liệu").await?;
     if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
     Ok(result["options"].clone())
 }
@@ -622,7 +625,7 @@ pub async fn docu_layers(dir: String) -> Result<Value, String> {
     } else {
         None
     };
-    let result = python_json(options_args(&dir, false, false, "none", None), "bộ xử lý phim tài liệu").await?;
+    let result = python_json(options_args(&dir, false, false, "none", None, None), "bộ xử lý phim tài liệu").await?;
     if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
     let root = version_root()?;
     spawn_job(&dir, &RENDER_JOB, render_args(&dir, &root))?;
@@ -847,10 +850,12 @@ mod tests {
 
     #[test]
     fn options_command_passes_every_choice() {
-        let args = options_args(Path::new(r"C:\run"), true, false, "file", Some(Path::new(r"C:\music.mp3")));
+        let args = options_args(Path::new(r"C:\run"), true, false, "file", Some(Path::new(r"C:\music.mp3")), Some(false));
         let text: Vec<String> = args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(text, ["-m", "engine.dubflow.docu", "options", "--run-dir", r"C:\run", "--graphics", "true", "--captions", "false",
-            "--music", "file", "--music-path", r"C:\music.mp3"]);
+            "--music", "file", "--music-path", r"C:\music.mp3", "--sfx", "false"]);
+        let kept = options_args(Path::new(r"C:\run"), false, false, "none", None, None);
+        assert!(!kept.iter().any(|arg| arg == "--sfx"));
     }
 
     #[test]

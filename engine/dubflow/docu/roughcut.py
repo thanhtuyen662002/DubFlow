@@ -32,6 +32,11 @@ RECIPE = "docu-roughcut-v5"
 LOOK = "curves=all='0/0 0.25/0.235 0.75/0.77 1/1',huesaturation=saturation=0.08"
 KEN_BURNS_SHOT = 6.0
 KEN_BURNS_ZOOM = 0.04
+# Footage shown earlier in the film ("reused" in the plan): a tighter, off-centre crop and the push reversed into a
+# slow pull-out, 1.10x down to 1.04x of the planned framing, so the repeat does not read as the same shot. Never a
+# mirror: signs and text in the picture would read backwards.
+REUSED_PULL = (1.10, 1.04)
+REUSED_STILL = 1.09
 # Sources narrower than this are fitted over a blurred fill instead of cropped to 16:9.
 WIDE = 1.5
 END_CARD = 6.0
@@ -80,8 +85,19 @@ def _even(value: float) -> int:
     return max(2, int(round(value / 2)) * 2)
 
 
+def _alt_crop(x: int, y: int, crop_w: int, crop_h: int, zoom: float, side: int) -> tuple[int, int, int, int]:
+    """A crop ``zoom`` times tighter inside the planned one: nudged up (away from a caption band) and to one side.
+
+    It stays inside the planned crop, so what the safe framing left out (captions, a cut-off logo) stays out.
+    """
+    inner_w, inner_h = _even(crop_w / zoom), _even(crop_h / zoom)
+    spare_w, spare_h = crop_w - inner_w, crop_h - inner_h
+    return x + int(round(spare_w * (0.5 + 0.3 * side))), y + int(round(spare_h * 0.25)), inner_w, inner_h
+
+
 def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: int, ken_burns: bool,
-                 zoom_push: float = KEN_BURNS_ZOOM, labels: str | None = None) -> str:
+                 zoom_push: float = KEN_BURNS_ZOOM, labels: str | None = None, reused: int = 0) -> str:
+    """``reused``: 0 for fresh footage; 1 or -1 for a repeat, framed with ``_alt_crop`` to that side."""
     """One slice's picture: cover the caption band if framing cannot clear it, frame, fill 1080p, look, motion, bars."""
     steps: list[str] = []
     graph: list[str] = []
@@ -130,6 +146,13 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
     crop_w, crop_h = _even(width / zoom), _even(height / zoom)
     x = (width - crop_w) // 2
     y = max(0, min(height - crop_h, int(round((height - crop_h) / 2 - shift * height))))
+    pull = 0.0
+    if reused:
+        # With motion (a long enough shot and Ken Burns on): the extra crop is the pull-out's end point and zoompan
+        # supplies the rest; without, a still crop.
+        start_zoom, end_zoom = REUSED_PULL
+        pull = start_zoom / end_zoom - 1 if ken_burns and zoom_push > 0 else 0.0
+        x, y, crop_w, crop_h = _alt_crop(x, y, crop_w, crop_h, end_zoom if pull else REUSED_STILL, reused)
     steps.append(f"crop={crop_w}:{crop_h}:{x}:{y}")
     if crop_w / crop_h >= WIDE:
         steps.append(f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},setsar=1")
@@ -141,7 +164,11 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
                      f"[front]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,setsar=1[fit];"
                      f"[fill][fit]overlay=(W-w)/2:(H-h)/2[framed]")
     after = [LOOK]
-    if ken_burns and zoom_push > 0:
+    if pull:
+        # The reverse of the first appearance's push: start tight, ease back out.
+        after.append(f"scale={WIDTH * 2}:{HEIGHT * 2},zoompan=z='{1 + pull:.4f}-{pull:.4f}*on/{max(1, frames - 1)}':d=1"
+                     f":x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':s={WIDTH}x{HEIGHT}:fps={FPS}")
+    elif ken_burns and zoom_push > 0:
         # Upscaled first, so the slow push does not step from pixel to pixel.
         after.append(f"scale={WIDTH * 2}:{HEIGHT * 2},zoompan=z='1+{zoom_push:g}*on/{max(1, frames - 1)}':d=1"
                      f":x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':s={WIDTH}x{HEIGHT}:fps={FPS}")
@@ -345,11 +372,15 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
                 ass = f"slice-{index:04d}.ass"
                 (work / ass).write_text(labels_ass(shown, count / FPS, overlay, bar), encoding="utf-8")
             graph = video_filter(*sizes[source_id], framings.get(source_id, {}), frames=count,
-                                 ken_burns=shot_end - shot_start >= KEN_BURNS_SHOT, zoom_push=push, labels=ass)
+                                 ken_burns=shot_end - shot_start >= KEN_BURNS_SHOT, zoom_push=push, labels=ass,
+                                 reused=(1 if index % 2 else -1) if piece.get("reused") else 0)
             stat = video.stat()
             output = work / name
             key = {"recipe": RECIPE, "video": [str(video), stat.st_size, stat.st_mtime_ns], "start": round(start, 3),
                    "frames": count, "graph": graph, "labels": shown, "overlay": overlay}
+            if piece.get("reused"):
+                # Only repeats carry it, so the slices of a 1.1.75 plan keep their receipts and are not rendered again.
+                key["variation"] = "alt_crop"
             receipt = work / f"slice-{index:04d}.json"
             saved = _receipt(receipt)
             make = (lambda chosen, video=video, start=start, count=count, graph=graph, name=name:

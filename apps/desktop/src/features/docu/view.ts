@@ -3,7 +3,7 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES, SFX_NAMES, readable, sceneName, sourceName, sourceNames,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
-  hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
+  hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, renderOptionsChanged, parseVisual, parseVoices, planStale,
   calloutTexts, midrollHint, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type McpActivity, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
@@ -171,6 +171,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
                 <label><input id="docu-opt-captions" type="checkbox" /> In phụ đề tiếng Anh lên hình</label>
                 <label>Nhạc nền<select id="docu-opt-music"><option value="generated">Tự tạo theo không khí từng chương</option><option value="none">Không có</option><option value="file" hidden>File nhạc đã chọn</option></select></label>
                 <button id="docu-opt-music-file" class="btn" type="button">Chọn file nhạc…</button>
+                <label title="Tiếng gió, máy móc, nước… theo thẻ âm thanh của từng cảnh, và tiếng nhấn khi sang hồi mới"><input id="docu-opt-sfx" type="checkbox" checked /> Âm thanh môi trường theo cảnh</label>
               </div>
               <button id="docu-render" class="btn primary block" type="button">Dựng bản nháp</button>
               <div id="docu-render-progress" class="docu-narration-progress" hidden>
@@ -445,7 +446,10 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   const BADGES = { todo: "Chưa làm", optional: "Chưa làm · tùy chọn", busy: "Đang chạy", stale: "Cần làm lại", done: "Xong" } as const;
   /** A rough cut on disk whose script, narration or plan has changed since (no matching plan to have rendered from). */
   function renderStale(): boolean {
-    return Boolean(render.video) && (!visual.plan || planStale(currentScript, narration.timeline, visual.plan));
+    return Boolean(render.video) && (!visual.plan || planStale(currentScript, narration.timeline, visual.plan) || optionsChanged());
+  }
+  function optionsChanged(): boolean {
+    return renderOptionsChanged(render.status?.state === "COMPLETED" ? render.status.overlays : undefined, render.options);
   }
   function badge(selector: string, state: keyof typeof BADGES): void {
     const element = $(selector);
@@ -474,12 +478,13 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     const options = render.options;
     $<HTMLInputElement>("#docu-opt-graphics").checked = options.graphics;
     $<HTMLInputElement>("#docu-opt-captions").checked = options.captions;
+    $<HTMLInputElement>("#docu-opt-sfx").checked = options.sfx;
     const music = $<HTMLSelectElement>("#docu-opt-music");
     const fileOption = music.querySelector("option[value=file]") as HTMLOptionElement;
     fileOption.hidden = !options.music_path;
     fileOption.textContent = options.music_path ? `File: ${options.music_path.split(/[\\/]/).pop()}` : "File nhạc đã chọn";
     music.value = options.music;
-    for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music", "#docu-opt-music-file"]) $<HTMLInputElement>(id).disabled = running || !selected;
+    for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music", "#docu-opt-music-file", "#docu-opt-sfx"]) $<HTMLInputElement>(id).disabled = running || !selected;
   }
 
   /** What the next render draws and plays; saved in the project, applied on "Dựng lại bản nháp". */
@@ -489,7 +494,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     try {
       const saved = await invoke("docu_render_options", { dir, graphics: $<HTMLInputElement>("#docu-opt-graphics").checked,
         captions: $<HTMLInputElement>("#docu-opt-captions").checked, music: musicPath ? "file" : $<HTMLSelectElement>("#docu-opt-music").value,
-        musicPath: musicPath ?? null });
+        musicPath: musicPath ?? null, sfx: $<HTMLInputElement>("#docu-opt-sfx").checked });
       if (selected?.dir !== dir) return;
       render = { ...render, options: parseRenderOptions(saved) };
       renderRough();
@@ -872,7 +877,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-narrate").addEventListener("click", () => void narrate());
   $("#docu-plan").addEventListener("click", () => void makePlan());
   $("#docu-render").addEventListener("click", () => void makeRoughCut());
-  for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music"]) $(id).addEventListener("change", () => void saveRenderOptions());
+  for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music", "#docu-opt-sfx"]) $(id).addEventListener("change", () => void saveRenderOptions());
   $("#docu-opt-music-file").addEventListener("click", async () => {
     const path = await invoke("docu_pick_file", { kind: "music" }).catch(() => null) as string | null;
     if (path) void saveRenderOptions(path);
