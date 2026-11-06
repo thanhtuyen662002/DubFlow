@@ -21,7 +21,7 @@ import { mountUpdates } from "./features/update/view.ts";
 import { mountStorage } from "./features/storage/view.ts";
 import { queueOutputs } from "./features/storage/model.ts";
 import { DEFAULT_REGION, describeRegions, dragRegion, type BlurRegion, type DragHandle } from "./features/blur/region.ts";
-import { mountPostSuggestions } from "./features/seo/view.ts";
+import { mountPostContent } from "./features/seo/posts.ts";
 import { mountSourceCredit } from "./features/credit/view.ts";
 import { mountPackage } from "./features/package/view.ts";
 import { mountShorts } from "./features/shorts/view.ts";
@@ -118,6 +118,7 @@ const claudeKey = createAiSession(hostKeyStore(invoke));
 // The sound-effect pack and the user's sound folder (editor Âm thanh, Cài đặt).
 const sfxLibrary = createSfxLibrary(invoke);
 const shorts = mountShorts(invoke, claudeKey);
+const postContent = mountPostContent(invoke, claudeKey);
 const reframe = mountReframe(invoke, claudeKey);
 const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
@@ -472,6 +473,7 @@ function renderInspector(job: QueueJob | null): void {
   sourceCredit.select(job);
   packageVideo.select(job);
   shorts.select(job);
+  postContent.select(job);
   reframe.select(job);
   if (!job) return;
   const { status } = job;
@@ -2220,11 +2222,13 @@ $("#review-narrate").addEventListener("click", async () => {
     button.disabled = false;
   }
 });
-const postSuggestions = mountPostSuggestions(invoke, claudeKey);
-$("#open-post").addEventListener("click", () => {
-  const job = selectedJob();
-  if (job?.outputPath) postSuggestions.open(job.outputPath, job.displayName, job.originUrl);
-});
+// "Gợi ý đăng bài" opens Chỉnh sửa → Tạo thêm → Nội dung đăng bài (YouTube, Facebook, TikTok).
+$("#open-post").addEventListener("click", () => void editJobAt("more").then(() => {
+  const posts = $<HTMLDetailsElement>("#posts-section");
+  if (posts.hidden) return;
+  posts.open = true;
+  posts.scrollIntoView({ block: "start" });
+}));
 $("#review-close").addEventListener("click", () => void closeReview());
 $("#review-cancel").addEventListener("click", () => void closeReview());
 reviewUndo.addEventListener("click", undoReview);
