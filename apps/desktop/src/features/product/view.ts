@@ -10,7 +10,7 @@ import {
   backgroundFit, backgroundHint, backgroundItems, captionAt, createImages, mountPreviewCard, PREVIEW_SIDE, templateNote, THUMB_SIDE, wireTemplates,
 } from "./look.ts";
 import { KEY_CLEARED, type SessionKey } from "../seo/view.ts";
-import { isKeyError, isProvider, keyHint, PROVIDERS } from "../ai/provider.ts";
+import { isKeyError, isProvider, keyHint, PROVIDER_IDS, PROVIDERS } from "../ai/provider.ts";
 import { parseVoiceCatalog } from "../voices/model.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 
@@ -87,6 +87,13 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   const player = $<HTMLVideoElement>("#product-player");
   let playStarted = performance.now();
 
+  // Product photos need a provider that reads images.
+  providerSelect.replaceChildren(...PROVIDER_IDS.filter((id) => PROVIDERS[id].vision).map((id) => {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = PROVIDERS[id].label;
+    return option;
+  }));
   function showProvider(): void {
     const { name, placeholder } = PROVIDERS[apiKey.provider()];
     providerSelect.value = apiKey.provider();

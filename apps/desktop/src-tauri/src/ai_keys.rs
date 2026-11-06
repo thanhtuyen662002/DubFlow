@@ -1,13 +1,29 @@
-//! The user's own AI keys (Claude, Gemini), saved once in Windows Credential
-//! Manager (ADR-0043): encrypted by Windows for this Windows user, never in
-//! WebView storage or a plain file. The webview asks for a key when it calls
-//! that provider.
+//! The user's own AI keys (Claude, Gemini, ChatGPT, DeepSeek, ...), saved once
+//! in Windows Credential Manager (ADR-0043): encrypted by Windows for this
+//! Windows user, never in WebView storage or a plain file. The webview asks for
+//! a key when it calls that provider; a video job gets it through its
+//! supervisor's environment (see `job_key`), never on a command line.
+//!
+//! Every provider except Claude and Gemini is called from the host through
+//! `engine.dubflow.ai` (`ai_ask`), so the webview's network policy stays closed.
+
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use serde_json::{json, Value};
 
-use crate::fail;
+use crate::{fail, version_root};
 
-const PROVIDERS: [&str; 2] = ["claude", "gemini"];
+/// Same ids as engine/dubflow/ai/client.py PRESETS and apps/desktop/src/features/ai/provider.ts.
+pub(crate) const PROVIDERS: [&str; 12] = [
+    "claude", "gemini", "openai", "deepseek", "qwen", "kimi", "glm", "grok", "openrouter", "groq", "mistral", "custom",
+];
+/// The environment variable the worker reads (and removes) for the job's AI key.
+pub(crate) const JOB_KEY_ENV: &str = "DUBFLOW_AI_KEY";
+const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_KEY_CHARS: usize = 512;
 
 fn target(provider: &str) -> Result<String, String> {
@@ -147,6 +163,54 @@ pub fn ai_key_delete(provider: String) -> Result<(), String> {
     store::delete(&target(&provider)?)
 }
 
+/// The saved key for a video job's AI translation, if any.
+pub(crate) fn job_key(provider: &str) -> Result<Option<String>, String> {
+    store::read(&target(provider)?)
+}
+
+/// One request to an OpenAI-compatible provider (or a model list), answered by
+/// `python -m engine.dubflow.ai`: `{ok, value, model}`, `{ok, models, suggested}`
+/// or `{ok: false, code, message}`. The key goes through the environment.
+#[tauri::command]
+pub async fn ai_ask(request: Value, key: Option<String>) -> Result<Value, String> {
+    let provider = request.get("provider").and_then(Value::as_str).unwrap_or_default().to_owned();
+    target(&provider)?;
+    if !matches!(request.get("action").and_then(Value::as_str), Some("ask" | "models")) {
+        return Err(fail("Yêu cầu AI không hợp lệ"));
+    }
+    let key = match key.map(|key| key.trim().to_owned()).filter(|key| !key.is_empty()) {
+        Some(key) => Some(checked_key(&key)?),
+        None => None,
+    };
+    let body = serde_json::to_vec(&request).map_err(|error| fail(error.to_string()))?;
+    if body.len() > MAX_REQUEST_BYTES {
+        return Err(fail("Yêu cầu AI quá lớn"));
+    }
+    let root = version_root()?;
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app")).args(["-B", "-m", "engine.dubflow.ai"])
+        .env("PYTHONUTF8", "1").env("PYTHONNOUSERSITE", "1");
+    if let Some(key) = &key {
+        command.env(JOB_KEY_ENV, key);
+    }
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(crate::CREATE_NO_WINDOW);
+    let output = tauri::async_runtime::spawn_blocking(move || -> std::io::Result<std::process::Output> {
+        let mut child = command.spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(&body)?;
+        }
+        child.wait_with_output()
+    })
+    .await.map_err(|error| fail(error.to_string()))?
+    .map_err(|error| fail(format!("Không chạy được bộ gọi AI: {error}")))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(text.lines().last().unwrap_or_default())
+        .ok().filter(Value::is_object)
+        .ok_or_else(|| fail("Bộ gọi AI không trả về dữ liệu"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,7 +218,9 @@ mod tests {
     #[test]
     fn only_known_providers_and_well_formed_keys_are_accepted() {
         assert_eq!(target("gemini").unwrap(), "DubFlow/ai-key/gemini");
-        assert!(target("openai").is_err());
+        assert_eq!(target("deepseek").unwrap(), "DubFlow/ai-key/deepseek");
+        assert!(target("unknown").is_err());
+        assert!(target("../claude").is_err());
         assert_eq!(checked_key("  sk-ant-api03-abcdef \n").unwrap(), "sk-ant-api03-abcdef");
         assert!(checked_key("short").is_err());
         assert!(checked_key("has a space inside").is_err());

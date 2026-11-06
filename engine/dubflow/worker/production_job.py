@@ -77,6 +77,11 @@ from engine.dubflow.subtitle.style import SubtitleStyle, SubtitleStyleError, ass
 from engine.dubflow.translation.adapter import SourceSegment, TranslationError, resolve_source_language
 from engine.dubflow.translation.argos_runtime import ArgosRuntime
 from engine.dubflow.translation.hachimi_runtime import ENGINES as TRANSLATION_ENGINES, create_runtime as create_translation_runtime
+from engine.dubflow.ai.client import AiError, Route, make_route
+from engine.dubflow.translation import context_ai
+from engine.dubflow.worker import beep
+from engine.dubflow.worker.b2_audio import _joined_text as _joined_phrase_text
+from engine.dubflow.translation.sensitive import SensitivePolicy, SensitiveWordsError, apply_to_cues as apply_sensitive
 from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, MEASURED_GAP_EVIDENCE, run_b2_audio
 from engine.dubflow.worker import export_publication
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
@@ -821,6 +826,107 @@ def _subtitle_style(config: WorkerConfig) -> SubtitleStyle | None:
         return SubtitleStyle.from_mapping(document["style"])
     except (OSError, ValueError) as error:
         raise ProductionJobError("SUBTITLE_STYLE_INVALID", f"{path.name}: {error}") from error
+
+
+TRANSLATION_SETTINGS_FILE = "translation_settings.json"
+# The desktop puts the user's saved key here for this job only; it is read once and
+# removed from the environment so no child process (FFmpeg, models) inherits it.
+AI_KEY_ENV = "DUBFLOW_AI_KEY"
+_AI_KEY: str | None = None
+
+
+def _take_ai_key() -> str:
+    global _AI_KEY
+    if _AI_KEY is None:
+        _AI_KEY = os.environ.pop(AI_KEY_ENV, "") or ""
+    return _AI_KEY
+
+
+@dataclass(frozen=True)
+class TranslationSettings:
+    route: Route | None = None
+    sensitive: SensitivePolicy | None = None
+    title: str = ""
+
+
+def _translation_settings(config: WorkerConfig, warnings: list[str]) -> TranslationSettings:
+    """translation_settings.json beside the outputs (the desktop writes it): AI provider and sensitive words.
+
+    A missing key or a bad entry never fails the job: it keeps the offline translation.
+    """
+    path = config.output_dir / TRANSLATION_SETTINGS_FILE
+    key = _take_ai_key()
+    if not path.is_file():
+        return TranslationSettings()
+    try:
+        if path.stat().st_size > 256 * 1024:
+            raise ValueError("file is too large")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("schema_version") != 1:
+            raise ValueError("schema_version 1 is required")
+    except (OSError, ValueError) as error:
+        warnings.append(f"TRANSLATION_SETTINGS_INVALID: {path.name}: {error}")
+        return TranslationSettings()
+    route = None
+    ai = document.get("ai")
+    if isinstance(ai, dict):
+        try:
+            route = make_route(str(ai.get("provider", "")), key, model=ai.get("model") or None, base_url=ai.get("base_url") or None)
+        except AiError as error:
+            warnings.append(f"AI_TRANSLATION_SKIPPED: {error.message} Phụ đề dùng bản dịch offline.")
+    sensitive = None
+    if document.get("sensitive") is not None:
+        try:
+            sensitive = SensitivePolicy.from_mapping(document["sensitive"])
+        except SensitiveWordsError as error:
+            warnings.append(f"SENSITIVE_WORDS_INVALID: {error}")
+    title = document.get("title") if isinstance(document.get("title"), str) else ""
+    return TranslationSettings(route, sensitive, " ".join(title.split())[:200])
+
+
+def _beep_flagged_words(b2_audio: Any, spoken: Sequence[TextCue], policy: SensitivePolicy | None,
+                        warnings: list[str]) -> tuple[Path, Path] | None:
+    """Beeped copies of the final mix and the dialogue stem, or None when nothing is beeped."""
+    if policy is None or policy.mode != "beep":
+        return None
+    members = getattr(b2_audio, "member_cue_ids", None) or {cue.cue_id: (cue.cue_id,) for cue in spoken}
+    by_id = {cue.cue_id: cue for cue in spoken}
+    texts: dict[str, str] = {}
+    flagged: dict[str, list[tuple[int, int, str]]] = {}
+    for phrase, cue_ids in members.items():
+        parts = [by_id[cue_id].translated_text or "" for cue_id in cue_ids if cue_id in by_id]
+        text = ""
+        for part in parts:
+            text = _joined_phrase_text(text, part) if text else part
+        texts[phrase] = text
+        spans = policy.matches(text)
+        if spans:
+            flagged[phrase] = spans
+    if not flagged:
+        return None
+    windows = []
+    placement = getattr(b2_audio, "placement_document_path", None)
+    try:
+        if placement is not None and Path(placement).is_file():
+            for window in json.loads(Path(placement).read_text(encoding="utf-8")).get("windows", []):
+                start, end = window["slot_start"], window["render_window_end"]
+                windows.append({"id": window["cue_id"], "start": start["ticks"] * start["time_base"]["numerator"] / start["time_base"]["denominator"],
+                                "end": end["ticks"] * end["time_base"]["numerator"] / end["time_base"]["denominator"]})
+        else:
+            for phrase, cue_ids in members.items():
+                cues = [by_id[cue_id] for cue_id in cue_ids if cue_id in by_id]
+                if cues:
+                    windows.append({"id": phrase, "start": cues[0].start_ms / 1000, "end": cues[-1].end_ms / 1000 + 0.5})
+        spans = beep.beep_spans([window for window in windows if window["id"] in texts], texts, flagged, Path(b2_audio.dialogue_stem_path))
+        if not spans:
+            return None
+        final = beep.write_beeped(Path(b2_audio.final_mix_path), Path(b2_audio.final_mix_path).with_name("final_mix_beeped.wav"), spans)
+        stem = beep.write_beeped(Path(b2_audio.dialogue_stem_path), Path(b2_audio.dialogue_stem_path).with_name("dialogue_stem_beeped.wav"), spans)
+    except (OSError, ValueError, KeyError, TypeError, EOFError, wave.Error) as error:
+        warnings.append(f"SENSITIVE_BEEP_SKIPPED: {type(error).__name__}: {str(error)[:200]}; giọng đọc dùng từ đã đổi cách viết.")
+        return None
+    warnings.append(f"SENSITIVE_WORDS_BEEPED: {len(spans)} chỗ trong giọng đọc đã được bíp.")
+    return final, stem
 
 
 COVER_FILE = "cover.json"
@@ -1757,6 +1863,12 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         translation_provenance = translation_runtime.provenance()
     except TranslationError as error:
         raise ProductionJobError(error.code, error.condition) from error
+    offline_provenance = translation_provenance
+    settings = _translation_settings(config, warnings)
+    if settings.route is not None:
+        # The AI pass is part of the translation's identity: turning it on, off or
+        # changing model re-translates (offline lines and AI windows stay cached).
+        translation_provenance = dict(translation_provenance, context_ai=context_ai.identity(settings.route, dubbing=config.enable_dubbing))
     translation_input = _translation_identity(cues, transcript.source_language, translation_provenance)
     translation_changed = True
     if _stage_ready(checkpoint, "translation", (translation_path,)):
@@ -1767,19 +1879,54 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     if translation_changed:
         emitter.progress(0.44, "Đang dịch bằng HachimiMT-60 (thử nghiệm)" if translation_provenance.get("backend", "").startswith("hachimi") else "Đang dịch cục bộ sang tiếng Việt")
         translated, _ = _without_repeat_loops(_translate_with_argos(cues, config.model_root, transcript.source_language, runtime=translation_runtime, chunks_dir=work_dir / "translation-chunks"))
-        _atomic_json(translation_path, {"schema_version": 2, "source_language": transcript.source_language, "target_language": "vi", "provenance": translation_provenance, "input_hash": translation_input, "cues": [cue.to_dict() for cue in translated]})
+        stored_input = translation_input
+        if settings.route is not None:
+            label = settings.route.preset.label
+
+            def ai_progress(done: int, total: int) -> None:
+                emitter.progress(0.47 + 0.10 * done / max(1, total), f"Đang dịch theo ngữ cảnh bằng {label} ({done}/{total} đoạn)",
+                                 units_done=done, units_total=total)
+
+            ai_progress(0, 1)
+            result = context_ai.translate_in_context(translated, settings.route, dubbing=config.enable_dubbing,
+                cache_dir=work_dir / "ai-translation", title=settings.title, on_progress=ai_progress)
+            translated, _ = _without_repeat_loops(result.cues)
+            translation_provenance = dict(translation_provenance, context_ai=dict(translation_provenance["context_ai"], model=result.model,
+                windows=result.windows_total, windows_done=result.windows_done, cues_from_ai=result.cues_from_ai))
+            if not result.complete:
+                # Not marked done: the next run retries the failed windows (the rest are cached).
+                stored_input = translation_input + ":partial"
+                if result.windows_done:
+                    warnings.append(f"{context_ai.WARNING}{result.windows_done}/{result.windows_total} đoạn dịch bằng {label}; "
+                                    f"phần còn lại dùng bản dịch offline: {result.error or 'lỗi không rõ'}")
+                else:
+                    warnings.append(f"AI_TRANSLATION_SKIPPED: {result.error or 'lỗi không rõ'} Phụ đề dùng bản dịch offline.")
+        _atomic_json(translation_path, {"schema_version": 2, "source_language": transcript.source_language, "target_language": "vi", "provenance": translation_provenance, "input_hash": stored_input, "cues": [cue.to_dict() for cue in translated]})
         _write_stage(checkpoint, checkpoint_path, "translation", {"path": str(translation_path), "sha256": _sha256(translation_path)})
+    else:
+        translation_provenance = json.loads(translation_path.read_text(encoding="utf-8")).get("provenance", translation_provenance)
     translated, overrides_identity = _apply_translation_overrides(translated, config.output_dir)
     spoken, revoice, voice_identity = _review_voice(translated, config.output_dir)
+    # Words the platforms flag: replaced on screen and in the voice; never in the editable translation.
+    shown, flagged = apply_sensitive(translated, settings.sensitive, spoken=False)
+    unmasked_spoken = spoken
+    spoken, _ = apply_sensitive(spoken, settings.sensitive, spoken=True)
+    if settings.sensitive is not None:
+        sensitive_identity = json.dumps({"mode": settings.sensitive.mode, "words": settings.sensitive.words}, ensure_ascii=False)
+        voice_identity = (voice_identity or "") + "|sensitive:" + sha256(sensitive_identity.encode("utf-8")).hexdigest()
+        if flagged:
+            warnings.append(f"SENSITIVE_WORDS_REPLACED: {flagged} câu có từ nhạy cảm đã được "
+                            + ("che và bíp." if settings.sensitive.mode == "beep" else "đổi cách viết."))
     emitter.progress(0.58, "Đã dịch lời thoại", units_done=len(translated), units_total=len(translated))
     emitter.checkpoint("translation", _sha256(work_dir / "translation.json"))
 
-    srt_path, ass_path = _write_subtitles(export_dir, translated, box=getattr(config, "subtitle_box", False), style=_subtitle_style(config))
+    srt_path, ass_path = _write_subtitles(export_dir, shown, box=getattr(config, "subtitle_box", False), style=_subtitle_style(config))
     _write_stage(checkpoint, checkpoint_path, "subtitles", {"srt": str(srt_path), "ass": str(ass_path), "srt_sha256": _sha256(srt_path), "ass_sha256": _sha256(ass_path)})
     emitter.progress(0.66, "Đã tạo subtitle SRT/ASS")
     emitter.checkpoint("subtitles", _sha256(srt_path))
 
     b2_audio: B2AudioResult | None = None
+    beeped: tuple[Path, Path] | None = None
     audio_path: Path | None = None
     audio_metadata: dict[str, Any] = {"mode": "original", "backend": "source-audio"}
     background_path, background_summary = None, {"mode": "original"}
@@ -1863,6 +2010,9 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             tts_documents = getattr(b2_audio, "tts_documents", (b2_audio.tts_document,))
             members = getattr(b2_audio, "member_cue_ids", None) or {}
             audio_path = b2_audio.final_mix_path
+            beeped = _beep_flagged_words(b2_audio, unmasked_spoken, settings.sensitive, warnings)
+            if beeped is not None:
+                audio_path = beeped[0]
             audio_metadata = {
                 "mode": "dubbed",
                 "source_audio_origin": "decoded-source" if probe.has_audio else "generated-silence",
@@ -2073,7 +2223,10 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     if b2_audio is not None:
         editable_audio = [
             (b2_audio.original_audio_path, "source_audio.wav", _sha256(b2_audio.original_audio_path) if background_path is not None else b2_audio.mix_document.original_audio.content_hash),
+            # Beeped copies (Từ nhạy cảm → Beep) replace the mixer's tracks, so the editor keeps the beeps.
+            (beeped[1], "dialogue_stem.wav", _sha256(beeped[1])) if beeped is not None else
             (b2_audio.dialogue_stem_path, "dialogue_stem.wav", b2_audio.mix_document.dialogue_stem.content_hash),
+            (beeped[0], "final_mix.wav", _sha256(beeped[0])) if beeped is not None else
             (b2_audio.final_mix_path, "final_mix.wav", b2_audio.mix_document.final_mix.content_hash),
         ]
         if getattr(b2_audio, "background_stem_path", None) is not None:
@@ -2151,6 +2304,7 @@ def _read_command() -> Envelope:
 def main() -> int:
     command: Envelope | None = None
     emitter: _Emitter | None = None
+    _take_ai_key()  # Out of the environment before any child process starts.
     try:
         command = _read_command()
         raw_args = command.payload.get("args")
