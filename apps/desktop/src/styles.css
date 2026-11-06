@@ -476,6 +476,8 @@ button.job.selected { background: var(--select); }
 #output-root-label { color: var(--text); }
 .settings-row > .btn, .settings-row > .switch { flex: none; }
 .settings-actions { display: flex; flex: none; gap: 8px; }
+.settings-actions select, .settings-actions .thread-count { height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--canvas); color: var(--text); }
+.settings-actions .thread-count { width: 72px; }
 .settings-path { display: block; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .douyin-panel { width: min(1040px, 100%); height: min(820px, 100%); }
 .douyin-panel .review-head { flex-wrap: nowrap; }

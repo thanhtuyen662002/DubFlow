@@ -1472,9 +1472,24 @@
           <div class="settings-row">
             <div class="settings-text">
               <dt><label for="cpu-only">Chỉ dùng CPU</label></dt>
-              <dd>Tắt thì DubFlow tự dùng card đồ họa NVIDIA phù hợp để nhận dạng lời thoại nhanh hơn. Thiết bị đang dùng hiện trong trạng thái xử lý.</dd>
+              <dd>Tắt thì DubFlow tự dùng card đồ họa NVIDIA phù hợp để nhận dạng lời thoại, lồng tiếng và render video nhanh hơn. Thiết bị đang dùng hiện trong trạng thái xử lý.</dd>
             </div>
             <input id="cpu-only" class="switch" type="checkbox" role="switch" />
+          </div>
+          <div class="settings-row">
+            <div class="settings-text">
+              <dt><label for="thread-mode">Tài nguyên máy</label></dt>
+              <dd id="machine-summary">Đang kiểm tra cấu hình máy…</dd>
+              <dd id="thread-detail">Số luồng CPU tối đa mỗi tác vụ (render, nhận dạng lời thoại, quét chữ) được dùng.</dd>
+            </div>
+            <div class="settings-actions">
+              <select id="thread-mode" aria-describedby="thread-detail">
+                <option value="auto">Tự động theo máy</option>
+                <option value="all">Dùng toàn bộ tài nguyên</option>
+                <option value="custom">Tùy chỉnh số luồng</option>
+              </select>
+              <input id="thread-count" class="thread-count" type="number" min="1" step="1" inputmode="numeric" aria-label="Số luồng tối đa" hidden />
+            </div>
           </div>
           <div class="settings-group" role="presentation"><h3>Tài khoản</h3></div>
           <div class="settings-row">

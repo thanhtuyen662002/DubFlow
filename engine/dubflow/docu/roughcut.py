@@ -16,6 +16,8 @@ import subprocess
 import traceback
 from typing import Any, Callable, Sequence
 
+from engine.dubflow import resources
+from engine.dubflow.media import encoders as h264
 from engine.dubflow.product.job import Cancelled, ProductError, run_ffmpeg
 from . import overlays, safezone, soundscape
 from .narration import _Status
@@ -23,7 +25,7 @@ from .project import DocuError, Spec, replace, script_path, work_dir, write_json
 from .script import CHAPTERS, load_draft
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
-ENCODERS = ("h264_mf", "libopenh264")
+ENCODERS = h264.CPU_ENCODERS  # The CLI puts NVENC first when the GPU really encodes (media/encoders.py).
 VIDEO_BITRATE = "8M"
 RECIPE = "docu-roughcut-v5"
 # The bundled LGPL FFmpeg has no `eq`: a gentle S-curve for contrast and +8 % saturation, the same on every source.
@@ -155,16 +157,16 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
 
 
 def slice_argv(ffmpeg: Path, video: Path, start: float, frames: int, graph: str, encoder: str, output: Path) -> list[str]:
-    return [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", "-ss", f"{start:.3f}", "-i", str(video),
+    return [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", *h264.decode_args(encoder), "-ss", f"{start:.3f}", "-i", str(video),
             "-filter_complex", graph, "-map", "[video]", "-an", "-frames:v", str(frames),
-            "-c:v", encoder, "-b:v", VIDEO_BITRATE, "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "15360",
+            *h264.rate_args(encoder, VIDEO_BITRATE), *resources.ffmpeg_thread_args(), "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "15360",
             "-movflags", "+faststart", "-f", "mp4", str(output)]
 
 
 def card_argv(ffmpeg: Path, ass: str, frames: int, encoder: str, output: Path) -> list[str]:
     return [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black:s={WIDTH}x{HEIGHT}:r={FPS}",
             "-vf", f"subtitles={ass},format=yuv420p,setsar=1", "-frames:v", str(frames), "-an",
-            "-c:v", encoder, "-b:v", VIDEO_BITRATE, "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "15360",
+            *h264.rate_args(encoder, VIDEO_BITRATE), *resources.ffmpeg_thread_args(), "-pix_fmt", "yuv420p", "-r", str(FPS), "-video_track_timescale", "15360",
             "-f", "mp4", str(output)]
 
 
@@ -319,6 +321,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
         scene_of = {id(piece): (scene["scene_id"], index) for scene in plan["scenes"] for index, piece in enumerate(scene["slices"])}
         encoder = encoders[0]
         parts: list[str] = []
+        made: list[tuple[str, Callable[[str], list[str]], Path, dict[str, Any], str]] = []
         for index, (piece, count) in enumerate(zip(slices, frames), 1):
             if cancel.exists():
                 raise Cancelled()
@@ -349,13 +352,22 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
                    "frames": count, "graph": graph, "labels": shown, "overlay": overlay}
             receipt = work / f"slice-{index:04d}.json"
             saved = _receipt(receipt)
-            if not (output.is_file() and saved and saved.get("key") == key):
-                encoder = _encode(ffmpeg_runner, encoders, encoder, work, cancel.exists,
-                                  lambda chosen: slice_argv(ffmpeg, video, start, count, graph, chosen, work / f"{name}.partial.mp4"),
-                                  work / f"{name}.partial.mp4", output)
+            make = (lambda chosen, video=video, start=start, count=count, graph=graph, name=name:
+                    slice_argv(ffmpeg, video, start, count, graph, chosen, work / f"{name}.partial.mp4"))
+            # Slices are joined without re-encoding, so they must all come from one encoder.
+            if not (output.is_file() and saved and saved.get("key") == key and saved.get("encoder") == encoder):
+                encoder = _encode(ffmpeg_runner, encoders, encoder, work, cancel.exists, make, work / f"{name}.partial.mp4", output)
                 write_json(receipt, {"key": key, "encoder": encoder})
+            made.append((name, make, receipt, key, encoder))
             parts.append(name)
             status.write(done=index, message=f"Đang dựng lát cắt {index}/{len(slices)}")
+        for name, make, receipt, key, used in made:
+            # A GPU that failed part-way: redo the slices it made on the encoder that finished.
+            if used != encoder:
+                if cancel.exists():
+                    raise Cancelled()
+                encoder = _encode(ffmpeg_runner, encoders, encoder, work, cancel.exists, make, work / f"{name}.partial.mp4", work / name)
+                write_json(receipt, {"key": key, "encoder": encoder})
         seconds = total
         if card:
             (work / "credits.ass").write_text(end_card(spec), encoding="utf-8")

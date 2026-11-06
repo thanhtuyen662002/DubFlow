@@ -70,6 +70,8 @@ def _prepare_worker_import_path() -> None:
 _prepare_worker_import_path()
 
 from engine.dubflow.media import CANONICAL_TIME_BASE, FfmpegMediaAdapter, MediaAdapterError, MediaProbe, MediaProbeResult, MediaTimeline
+from engine.dubflow.media import encoders
+from engine.dubflow import resources
 from engine.dubflow.media.adapter import AUDIO_DECODE_RECIPE, MAX_BLUR_REGIONS, BlurRegion, CoverStyle, audio_origin_samples
 from engine.dubflow.models import ModelBootstrapError, ensure_model_profile
 from engine.dubflow.asr import TimeBase, TimePoint
@@ -988,6 +990,38 @@ def _whisper_language(requested: str) -> str | None:
     return "zh" if requested.lower() in {"zh", "zh-cn", "zh-tw"} else requested.lower()
 
 
+def _render_device(media: Any) -> str:
+    """The progress suffix naming the GPU when the render starts on NVENC; empty for the CPU encoders."""
+    chain = getattr(media, "video_encoders", None)
+    chosen = chain() if callable(chain) else ()
+    return " bằng GPU NVIDIA" if isinstance(chosen, tuple) and chosen[:1] == (encoders.NVENC,) else ""
+
+
+def _render_reporter(emitter: Any, detail: str, probe: MediaProbeResult) -> Any:
+    """Turn FFmpeg's encoded position into "… 42%" at most every two seconds while the render runs."""
+    total_us = (probe.duration_ticks or 0) * 1000
+    last = [0.0]
+
+    def report(position_us: int) -> None:
+        now = time.monotonic()
+        if total_us <= 0 or now - last[0] < 2.0:
+            return
+        last[0] = now
+        done = min(1.0, position_us / total_us)
+        emitter.progress(0.86 + 0.02 * done, f"{detail} {int(done * 100)}%")
+    return report
+
+
+def _media_timeout(probe: MediaProbeResult) -> float:
+    """A hang guard for one FFmpeg command that a 7-20 hour source cannot reach.
+
+    The adapter's 15-minute default is far shorter than a CPU render of a long
+    video; six times its duration covers a slow CPU burning subtitles and blur.
+    """
+    milliseconds = probe.duration_ticks or 0
+    return 15 * 60 + 6 * milliseconds / 1000
+
+
 def _asr_device(config: WorkerConfig, emitter: Any, warnings: list[str]) -> Any:
     """Pick CUDA or the CPU for ASR; any GPU problem becomes a CPU choice and a warning."""
     from engine.dubflow.accelerator import nvidia
@@ -1051,7 +1085,7 @@ def _transcribe_with_faster_whisper(audio_path: Path, model_root: Path, source_l
                 return _asr_word_evidence_matches(to_cues(aligned), {**base_evidence, "cue_quality": {item.cue_id: item.evidence for item in aligned}})
             except (TypeError, ValueError):
                 return False
-        cpu_model = lambda: WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=max(1, min(8, os.cpu_count() or 1)), local_files_only=True)
+        cpu_model = lambda: WhisperModel(str(model_path), device="cpu", compute_type="int8", cpu_threads=resources.cpu_threads(8), local_files_only=True)
         on_gpu = device is not None and device.device == "cuda"
         bounded = transcribe_bounded(
             audio_path, total_samples=total_samples, audio_hash=audio_hash, language=_whisper_language(source_language),
@@ -1095,7 +1129,7 @@ def _sidecar_language(cues: tuple[TextCue, ...], config: WorkerConfig, audio_pat
             if reader.getframerate() != 16000 or reader.getnchannels() != 1 or reader.getsampwidth() != 2:
                 raise ProductionJobError("LANGUAGE_AUDIO_INVALID", "language detection needs 16 kHz mono signed-16 analysis audio")
             audio = np.frombuffer(reader.readframes(60 * 16000), dtype="<i2").astype(np.float32) / 32768
-        model = WhisperModel(str(config.model_root / "asr/faster-whisper-small"), device="cpu", compute_type="int8", cpu_threads=4)
+        model = WhisperModel(str(config.model_root / "asr/faster-whisper-small"), device="cpu", compute_type="int8", cpu_threads=resources.cpu_threads(4))
         observed, probability, _all = model.detect_language(audio=audio, vad_filter=True)
         resolved = _resolved_language(cues, "auto", observed)
         probability = float(probability) if 0 <= float(probability) <= 1 else None
@@ -1452,7 +1486,7 @@ def _auto_blur_regions(config: WorkerConfig, source_hash: str, duration_ms: int 
         ensure_model_profile(profile_path, config.model_root)
         model_path = config.model_root / json.loads(profile_path.read_text(encoding="utf-8"))["model_path"]
         emitter.progress(0.84, "Đang dò phụ đề gốc để làm mờ")
-        scanner = caption_scan.CaptionScanner(model_path, config.ffmpeg_path)
+        scanner = caption_scan.CaptionScanner(model_path, config.ffmpeg_path, threads=resources.cpu_threads(4))
         result = scanner.scan(config.source_path, duration_s=(duration_ms or 0) / 1000, speech_ms=speech,
                               progress=lambda fraction: emitter.progress(0.84 + 0.02 * fraction, "Đang dò phụ đề gốc để làm mờ"))
         summary = result.summary()
@@ -1677,7 +1711,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
 
     audio_path = work_dir / "analysis.wav"
     audio_identity = _audio_decode_identity(source_hash, probe)
-    media = FfmpegMediaAdapter(config.ffmpeg_path, trusted_root=config.media_runtime_root)
+    media = FfmpegMediaAdapter(config.ffmpeg_path, trusted_root=config.media_runtime_root, timeout_seconds=_media_timeout(probe),
+                               accelerator=getattr(config, "accelerator", "auto"))
     sidecar = _load_sidecar(config.source_path)
     if sidecar is None or config.source_language == "auto":
         if not probe.has_audio:
@@ -1959,8 +1994,10 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                     final_path.unlink(missing_ok=True)
                 final_path, render_ready = candidate, True
                 break
+    render_detail = "Đang render video H.264/AAC" + _render_device(media)
+    render_progress = _render_reporter(emitter, render_detail, probe)
     if not render_ready:
-        emitter.progress(0.86, "Đang render video H.264/AAC")
+        emitter.progress(0.86, render_detail)
         try:
             media.render(
                 config.source_path,
@@ -1974,6 +2011,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 blur_regions=blur_regions,
                 **cover_args,
                 overwrite=True,
+                progress=render_progress,
             )
         except MediaAdapterError as error:
             if audio_path is None:
@@ -1997,6 +2035,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 blur_regions=blur_regions,
                 **cover_args,
                 overwrite=True,
+                progress=render_progress,
             )
         _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"], "input_hash": render_input})
     emitter.checkpoint(render_stage, _sha256(final_path))
@@ -2035,6 +2074,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             blur_regions=blur_regions,
             **cover_args,
             overwrite=True,
+            progress=render_progress,
         )
         output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
         validate_output(output_probe)

@@ -32,10 +32,13 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import wave
 from typing import Any, Callable, Mapping, Sequence
 
 from engine.dubflow.security import SecurityBoundaryError, build_subprocess_plan, redact_diagnostics
+from engine.dubflow.media import encoders
+from engine.dubflow import resources
 
 
 _U64_MAX = (1 << 64) - 1
@@ -954,12 +957,26 @@ class FfmpegMediaAdapter:
         trusted_root: str | Path | None = None,
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         runner: CommandRunner | None = None,
+        accelerator: str = "auto",
+        video_encoders: Sequence[str] | None = None,
     ) -> None:
         if not isinstance(timeout_seconds, (int, float)) or not math.isfinite(float(timeout_seconds)) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
         self.ffmpeg_path = _validate_executable(ffmpeg_path, "ffmpeg_path", trusted_root=trusted_root)
         self.timeout_seconds = float(timeout_seconds)
         self.runner = runner
+        if accelerator not in {"auto", "cpu"}:
+            raise ValueError("accelerator must be auto or cpu")
+        self.accelerator = accelerator
+        self._encoders: tuple[str, ...] | None = tuple(video_encoders) if video_encoders else None
+
+    def video_encoders(self) -> tuple[str, ...]:
+        """H.264 encoders in the order render tries them (NVENC only when it really works here)."""
+        if self._encoders is None:
+            # An injected runner is a test double: never probe a real GPU behind it.
+            self._encoders = (encoders.CPU_ENCODERS if self.runner is not None
+                              else encoders.h264_encoders(self.ffmpeg_path, self.accelerator))
+        return self._encoders
 
     def extract_audio(
         self,
@@ -1090,7 +1107,9 @@ class FfmpegMediaAdapter:
         blur_regions: Sequence[BlurRegion] = (),
         cover_style: CoverStyle | None = None,
         overwrite: bool = False,
+        progress: Callable[[int], None] | None = None,
     ) -> Path:
+        """Render H.264/AAC; ``progress`` receives the encoded position in microseconds."""
         source = _validate_input_file(source_path, "source_path")
         if not all(isinstance(region, BlurRegion) for region in blur_regions):
             raise MediaAdapterError("MEDIA_BLUR_INVALID", "blur_regions must contain BlurRegion values")
@@ -1119,6 +1138,7 @@ class FfmpegMediaAdapter:
                 audio_origin_samples(source_probe.video, 48_000)  # Require known source origin even for silent video.
                 args.append("-copyts")
                 video_filters.append("setpts=PTS-STARTPTS")
+            decode_at = len(args)
             args.extend(("-i", os.fspath(source)))
             if audio is not None:
                 args.extend(("-i", os.fspath(audio)))
@@ -1199,7 +1219,7 @@ class FfmpegMediaAdapter:
                 args.append("-sn")
             encoder_at = len(args)
             bitrate = video_bitrate(source_probe.video if source_probe is not None else None)
-            args.extend(("-c:v", _WINDOWS_H264_ENCODER, "-b:v", str(bitrate), "-pix_fmt", "yuv420p"))
+            args.extend(("-pix_fmt", "yuv420p"))
             if audio is not None or preserve_original_audio:
                 args.extend(("-c:a", "aac", "-b:a", "192k"))
             if video_duration is not None:
@@ -1214,17 +1234,20 @@ class FfmpegMediaAdapter:
                 args.append("-shortest")
             args.extend(("-movflags", "+faststart"))
             cwd = output.parent if subtitle_staging else None
-            try:
-                return self._write_atomic(output, tuple(args), output_format="mp4", cwd=cwd)
-            except MediaAdapterError as error:
-                if error.code != "MEDIA_COMMAND_FAILED":
-                    raise
-                fallback = [*args[:encoder_at], "-c:v", _FALLBACK_H264_ENCODER, "-b:v", str(bitrate), "-maxrate", str(bitrate * 3 // 2),
-                            "-bufsize", str(bitrate * 2), "-pix_fmt", "yuv420p", *args[encoder_at + 6:]]
+            first: MediaAdapterError | None = None
+            # NVENC (GPU decode + encode) when it works, then Media Foundation,
+            # then OpenH264: a failed encoder never fails the export by itself.
+            for encoder in self.video_encoders():
+                argv = [*args[:decode_at], *encoders.decode_args(encoder), *args[decode_at:encoder_at],
+                        *encoders.rate_args(encoder, bitrate), *resources.ffmpeg_thread_args(), *args[encoder_at:]]
                 try:
-                    return self._write_atomic(output, tuple(fallback), output_format="mp4", cwd=cwd)
-                except MediaAdapterError:
-                    raise error from None
+                    return self._write_atomic(output, tuple(argv), output_format="mp4", cwd=cwd, progress=progress)
+                except MediaAdapterError as error:
+                    if error.code != "MEDIA_COMMAND_FAILED":
+                        raise
+                    first = first or error
+            assert first is not None
+            raise first
         finally:
             if subtitle_staging is not None:
                 subtitle_staging.unlink(missing_ok=True)
@@ -1256,6 +1279,7 @@ class FfmpegMediaAdapter:
         missing_code: str = "MEDIA_COMMAND_FAILED",
         output_format: str,
         cwd: Path | None = None,
+        progress: Callable[[int], None] | None = None,
     ) -> Path:
         temporary: Path | None = None
         try:
@@ -1273,7 +1297,8 @@ class FfmpegMediaAdapter:
                 plan = build_subprocess_plan(argv[0], argv[1:])
             except SecurityBoundaryError as error:
                 raise MediaAdapterError("MEDIA_COMMAND_INVALID", str(error)) from error
-            completed = self._run(plan.argv, cwd=cwd)
+            completed = (self._run_reporting(plan.argv, cwd=cwd, progress=progress)
+                         if progress is not None and self.runner is None else self._run(plan.argv, cwd=cwd))
             if completed.returncode != 0:
                 condition = _diagnostic(completed.stderr)
                 if "matches no streams" in condition.casefold() or "stream map" in condition.casefold():
@@ -1291,6 +1316,44 @@ class FfmpegMediaAdapter:
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
+    def _run_reporting(self, argv: tuple[str, ...], *, cwd: Path | None, progress: Callable[[int], None]) -> subprocess.CompletedProcess[str]:
+        """Like ``_run`` and reports each encoded microsecond, so a 20-hour render shows it is moving."""
+        command = (argv[0], "-progress", "pipe:1", "-nostats", *argv[1:])
+        try:
+            child = subprocess.Popen(command, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     text=True, encoding="utf-8", errors="replace", cwd=os.fspath(cwd) if cwd is not None else None,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError as error:
+            raise MediaAdapterError("MEDIA_COMMAND_START_FAILED", _diagnostic(str(error)), retryable=True) from error
+        errors: list[str] = []
+        reader = threading.Thread(target=lambda: errors.append(child.stderr.read() if child.stderr else ""), daemon=True)
+        reader.start()
+        expired = threading.Event()
+        def expire() -> None:
+            expired.set()
+            child.kill()
+        watchdog = threading.Timer(self.timeout_seconds, expire)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            for line in child.stdout or ():
+                key, _, value = line.strip().partition("=")
+                if key == "out_time_us" and value.lstrip("-").isdigit() and int(value) >= 0:
+                    try:
+                        progress(int(value))
+                    except Exception:  # An observer never fails the render.
+                        pass
+            child.wait()
+        finally:
+            watchdog.cancel()
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+            reader.join(timeout=5)
+        if expired.is_set():
+            raise MediaAdapterError("MEDIA_COMMAND_TIMEOUT", f"media command exceeded {self.timeout_seconds:g}s", retryable=True)
+        return subprocess.CompletedProcess(command, child.returncode, "", "".join(errors))
 
     def _run(self, argv: tuple[str, ...], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         try:
