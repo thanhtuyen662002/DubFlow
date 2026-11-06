@@ -1,5 +1,6 @@
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
+import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES, SFX_NAMES, readable, sceneName, sourceName, sourceNames,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
@@ -56,7 +57,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       <section class="queue-col docu-col" aria-labelledby="docu-list-title">
         <div class="queue-col-head"><h2 id="docu-list-title">Dự án</h2><button id="docu-refresh" class="quiet-btn" type="button">Làm mới</button></div>
         <button id="docu-mcp-chip" class="docu-mcp-chip" type="button" hidden><span id="docu-mcp-chip-text"></span></button>
-        <div class="queue-scroll"><ul id="docu-runs" class="queue-list" aria-label="Dự án phim tài liệu"></ul><p id="docu-runs-empty" class="queue-empty">Chưa có dự án phim tài liệu nào.</p></div>
+        <div class="queue-scroll"><ul id="docu-runs" class="queue-list" aria-label="Dự án phim tài liệu"></ul><p id="docu-runs-empty" class="queue-empty">Chưa có dự án phim tài liệu nào.</p><p id="docu-runs-state" class="queue-state" role="status"></p></div>
         <div class="queue-col-foot"><button id="docu-new" class="btn block" type="button">Tạo dự án mới</button></div>
       </section>
       <section class="player-col docu-player-col" aria-label="Xem trước và kịch bản">
@@ -250,9 +251,25 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
 
   function renderRuns(): void {
     const list = $("#docu-runs");
-    list.innerHTML = runs.map(run => `<li><button type="button" class="job ${selected?.dir === run.dir ? "selected" : ""}" data-run="${escapeHtml(run.dir)}" aria-current="${selected?.dir === run.dir ? "true" : "false"}">
+    list.innerHTML = runs.map(run => `<li class="project-row"><button type="button" class="job ${selected?.dir === run.dir ? "selected" : ""}" data-run="${escapeHtml(run.dir)}" aria-current="${selected?.dir === run.dir ? "true" : "false"}">
       <span class="dot ${run.script ? "ok" : ""}"></span><span class="job-main"><strong class="job-title">${escapeHtml(run.spec.title)}</strong><span class="job-meta"><span class="msg">${run.spec.sources.length} nguồn · ${run.spec.target_minutes} phút</span></span></span></button></li>`).join("");
+    list.querySelectorAll("li").forEach((item, index) => {
+      const run = runs[index];
+      item.append(deleteProjectButton(run.spec.title, () => void removeRun(run.dir, run.spec.title)));
+    });
     $("#docu-runs-empty").hidden = runs.length > 0;
+  }
+
+  async function removeRun(dir: string, title: string): Promise<void> {
+    const error = await confirmDeleteProject(invoke, "docu", dir, title);
+    if (error === "") return;
+    const state = $("#docu-runs-state");
+    state.textContent = error ?? `Đã chuyển “${title}” vào Thùng rác.`;
+    state.classList.toggle("ok", error === null);
+    if (error !== null) return;
+    runs = runs.filter(run => !sameDir(run.dir, dir));
+    if (sameDir(selected?.dir, dir)) newProject(); else renderRuns();
+    void refreshRuns();
   }
 
   function renderSourcePicker(): void {
