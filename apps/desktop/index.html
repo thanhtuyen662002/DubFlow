@@ -484,7 +484,7 @@
                     <div class="result-edit">
                       <button id="open-review" class="btn block review-btn" type="button" title="Mở Chỉnh sửa ở thẻ Phụ đề: sửa câu dịch, đọc lại giọng, kiểu chữ">Sửa phụ đề &amp; giọng đọc</button>
                       <button id="open-more" class="btn block" type="button" title="Mở Chỉnh sửa ở thẻ Tạo thêm">Đóng gói, Shorts, đổi khung</button>
-                      <button id="open-post" class="btn block" type="button" hidden>Gợi ý đăng bài</button>
+                      <button id="open-post" class="btn block" type="button" title="Tiêu đề, mô tả SEO, hashtag cho YouTube, Facebook, TikTok (Chỉnh sửa → Tạo thêm)" hidden>Nội dung đăng bài</button>
                     </div>
                   </section>
 
@@ -1156,8 +1156,29 @@
                   </div>
                 </section>
                 <section id="edit-more" class="edit-more" aria-label="Tạo thêm" hidden>
-                  <p class="edit-note">Tạo thêm từ video lồng tiếng này: bản đóng gói có mở đầu, kết thúc và nhạc; Shorts; bản đổi khung 16:9. Mỗi bản ra file mới, video gốc giữ nguyên.</p>
+                  <p class="edit-note">Tạo thêm từ video lồng tiếng này: nội dung đăng bài; bản đóng gói có mở đầu, kết thúc và nhạc; Shorts; bản đổi khung 16:9. Mỗi bản ra file mới, video gốc giữ nguyên.</p>
                   <div class="more-list">
+                    <details id="posts-section" class="more-item" hidden>
+                      <summary>
+                        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 5h16M4 10h10M4 15h16M4 20h7M17 17l2 2 3-4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                        <span><b>Nội dung đăng bài</b><small>Tiêu đề hot, mô tả chuẩn SEO, hashtag cho YouTube, Facebook, TikTok</small></span>
+                      </summary>
+                      <div class="posts-body">
+                        <div id="posts-tabs" class="seg posts-tabs" role="tablist" aria-label="Nền tảng">
+                          <button type="button" role="tab" data-platform="youtube" aria-selected="true" aria-controls="posts-content">YouTube</button>
+                          <button type="button" role="tab" data-platform="facebook" aria-selected="false" aria-controls="posts-content">Facebook</button>
+                          <button type="button" role="tab" data-platform="tiktok" aria-selected="false" aria-controls="posts-content">TikTok</button>
+                        </div>
+                        <div class="posts-actions">
+                          <button id="posts-ai" class="btn primary" type="button">Viết bằng AI</button>
+                          <button id="posts-offline" class="link" type="button">Tạo nhanh không cần AI</button>
+                        </div>
+                        <p id="posts-provider" class="hint"></p>
+                        <p id="posts-state" class="hint posts-state" role="status" aria-live="polite"></p>
+                        <p id="posts-credit" class="hint posts-credit" role="status" hidden></p>
+                        <div id="posts-content" class="posts-content" role="tabpanel"></div>
+                      </div>
+                    </details>
                     <details id="package-section" class="more-item" hidden>
                       <summary>
                         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
@@ -1631,34 +1652,6 @@
       </div>
     </div>
 
-    <div id="post-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="post-title" hidden>
-      <div class="review-panel post-panel">
-        <header class="review-head">
-          <div>
-            <h2 id="post-title">Gợi ý đăng bài</h2>
-            <p class="subtitle">Tiêu đề, mô tả và hashtag tiếng Việt cho video đã Việt hóa</p>
-          </div>
-          <label class="ai-provider">AI
-            <select id="post-provider"><option value="claude">Claude (Anthropic)</option><option value="gemini">Gemini (Google)</option></select>
-          </label>
-          <button id="post-ai" class="btn" type="button">Viết bằng AI</button>
-          <button id="post-close" class="icon-btn" type="button" aria-label="Đóng">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          </button>
-        </header>
-        <div id="post-key-row" class="post-key-row" hidden>
-          <p class="hint"></p>
-          <div class="post-key-actions">
-            <input id="post-key" type="password" placeholder="sk-ant-…" autocomplete="off" aria-label="Khóa API" />
-            <button id="post-key-save" class="btn primary" type="button">Lưu &amp; viết</button>
-            <button id="post-key-clear" class="link" type="button">Xóa khóa đã lưu</button>
-          </div>
-        </div>
-        <p id="post-state" class="discover-state post-state" role="status"></p>
-        <p id="post-credit-hint" class="hint post-credit-hint" role="status" hidden></p>
-        <div id="post-body" class="post-body"></div>
-      </div>
-    </div>
     <div id="blur-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="blur-title" hidden>
       <div class="review-panel blur-panel">
         <header class="review-head">
