@@ -430,10 +430,23 @@ def _request(line, validator, job_id=None):
 
 # A dropped or slow connection is a network failure the user can retry, not a broken worker.
 NETWORK_ERRORS = (ConnectionError, TimeoutError, socket.timeout, http.client.HTTPException, urllib.error.URLError, ssl.SSLError)
-ERROR_LOG = "worker-errors.log"
 ERROR_LOG_LIMIT = 256 * 1024
+ERROR_LOG_KEEP = 200
+# Same names as engine/dubflow/support/report.py, which reads one scan's file (Issue #592).
+ERROR_LOG_DIR = "worker-errors"
+_SAFE_SCAN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")
 # Signed media URLs carry tokens in their query; the log keeps scheme, host and path only.
 _URL_QUERY = re.compile(r"(https?://[^\s?#'\"]+)[?#][^\s'\"]*")
+
+
+def source_log_name(scan_id: str) -> str:
+    if _SAFE_SCAN.fullmatch(scan_id) and not scan_id.endswith("."):
+        return scan_id + ".log"
+    return sha256(scan_id.encode("utf-8", "surrogatepass")).hexdigest()[:40] + ".log"
+
+
+def strip_url_queries(text: str) -> str:
+    return _URL_QUERY.sub(r"\1?<query>", text)
 
 
 def failure_code(error: BaseException, command: str | None) -> tuple[str, bool]:
@@ -460,26 +473,49 @@ def error_log_dir(args: object) -> Path | None:
     return installed if installed is not None and installed.is_dir() else None
 
 
-def log_failure(error: BaseException, command: str | None, folder: Path | None, *, now: float | None = None) -> Path | None:
-    """Append the error and its traceback; the "Gửi báo cáo lỗi" zip carries the file, paths redacted."""
-    if folder is None:
+def log_failure(error: BaseException, command: str | None, folder: Path | None, *, scan_id: str | None,
+                now: float | None = None) -> Path | None:
+    """Append the error and its traceback to this scan's own log in ``<source-work>/worker-errors``.
+
+    One file per scan: the "Gửi báo cáo lỗi" zip of a link carries only that link's file (Issue #592).
+    URL queries are cut here; the report also redacts local paths.
+    """
+    if folder is None or not scan_id:
         return None
-    path = folder / ERROR_LOG
     try:
+        logs = folder / ERROR_LOG_DIR
+        if logs.is_symlink() or (logs.exists() and logs.is_junction()):
+            return None
+        logs.mkdir(exist_ok=True)
+        path = logs / source_log_name(scan_id)
+        if path.is_symlink() or path.is_junction():
+            return None
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now if now is not None else time.time()))
-        entry = f"--- {stamp} {command or 'unknown'} {type(error).__name__}: {error}\n{''.join(traceback.format_exception(error))}\n"
-        entry = _URL_QUERY.sub(r"\1?<query>", entry)
+        entry = strip_url_queries(f"--- {stamp} {command or 'unknown'} {type(error).__name__}: {error}\n"
+                                  f"{''.join(traceback.format_exception(error))}\n")
         previous = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
         text = previous + entry
         if len(text.encode("utf-8")) > ERROR_LOG_LIMIT:
             text = text[-(ERROR_LOG_LIMIT // 2):]
             text = text[text.find("--- "):] if "--- " in text else text
-        partial = path.with_name(path.name + ".partial")
+        partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
         partial.write_text(text, encoding="utf-8")
         os.replace(partial, path)
+        _prune(logs, keep=path)
         return path
     except OSError:
         return None
+
+
+def _prune(logs: Path, *, keep: Path) -> None:
+    """Keep the newest ``ERROR_LOG_KEEP`` scan logs."""
+    try:
+        files = sorted((entry for entry in logs.iterdir() if entry.suffix == ".log" and entry != keep and entry.is_file()),
+                       key=lambda entry: entry.stat().st_mtime, reverse=True)
+        for stale in files[ERROR_LOG_KEEP - 1:]:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def main() -> int:
@@ -489,6 +525,7 @@ def main() -> int:
     controls = None
     command = None
     args = None
+    first = None
     try:
         first = _request(stdin.readline(MAX_LINE_BYTES + 1), validator)
         if isinstance(first.payload, dict):
@@ -562,7 +599,7 @@ def main() -> int:
         code, retryable = failure_code(error, command)
         # Typed link errors too: the user only sees their code, the report needs the cause.
         if not isinstance(error, SourceError) or command != "source_session":
-            log_failure(error, command, error_log_dir(args))
+            log_failure(error, command, error_log_dir(args), scan_id=first.job_id if first is not None else None)
         if emitter is not None:
             emitter.fail(code, retryable=retryable)
         return 2

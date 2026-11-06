@@ -395,19 +395,9 @@ pub(crate) async fn python_json(args: Vec<std::ffi::OsString>, what: &'static st
 async fn create_report(job_id: String, output_dir: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<String, String> {
     validate_id(&job_id)?;
     let root = data_root()?;
-    // A link has no job status file: hand over what the desktop knows about it.
-    let link_status = sources.status(&job_id).and_then(|mut status| {
-        // Share links carry tracking ids in their query; keep the video address and its part.
-        if let Some((base, query)) = status.url.clone().split_once('?') {
-            let part = query.split('&').find(|pair| pair.starts_with("p="));
-            status.url = part.map_or_else(|| base.to_owned(), |part| format!("{base}?{part}"));
-        }
-        let folder = root.join("source-work");
-        fs::create_dir_all(&folder).ok()?;
-        let path = folder.join("report-link-status.json");
-        fs::write(&path, serde_json::to_vec_pretty(&status).ok()?).ok()?;
-        Some(path)
-    });
+    // A link has no job status file: hand its status over as an argument, never a staged
+    // file. The report trims the link's query and reads only this scan's worker log (Issue #592).
+    let link_status = sources.status(&job_id).and_then(|status| serde_json::to_string(&status).ok());
     let mut args: Vec<std::ffi::OsString> = vec!["-m".into(), "engine.dubflow.support.report".into(),
         "--job-status".into(), status_path(&root, &job_id)?.into_os_string(),
         "--app-version".into(), release_info().version.into()];
@@ -418,19 +408,10 @@ async fn create_report(job_id: String, output_dir: Option<String>, sources: taur
         }
         args.extend(["--output-dir".into(), dir.into_os_string()]);
     }
-    // The source worker's traceback log (SOURCE_WORKER_FAILED): link jobs have no results folder.
-    let source_log = root.join("source-work").join("worker-errors.log");
-    if source_log.is_file() {
-        args.extend(["--source-log".into(), source_log.into_os_string()]);
+    if let Some(status) = link_status {
+        args.extend(["--link-status-json".into(), status.into(), "--source-work".into(), root.join("source-work").into_os_string()]);
     }
-    if let Some(path) = &link_status {
-        args.extend(["--link-status".into(), path.clone().into_os_string()]);
-    }
-    let result = python_json(args, "bộ tạo báo cáo").await;
-    if let Some(path) = &link_status {
-        let _ = fs::remove_file(path);
-    }
-    let result = result?;
+    let result = python_json(args, "bộ tạo báo cáo").await?;
     let path = result.get("path").and_then(Value::as_str)
         .ok_or_else(|| fail(result.get("message").and_then(Value::as_str).unwrap_or("Không tạo được báo cáo")))?
         .to_owned();

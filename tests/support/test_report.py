@@ -107,40 +107,87 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(manifest["source"]["path"], "<path>/clip.mp4")
             self.assertNotIn("output_dir", summary)
 
-    def test_source_worker_log_is_included_without_local_paths(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            log = root / "source-work" / "worker-errors.log"
-            log.parent.mkdir()
-            worker_file = root / "app" / "worker.py"
-            log.write_text(f'--- 2026-11-03T00:00:00Z source_download KeyError: x\n  File "{worker_file}", line 9\n', encoding="utf-8")
-            path = report.create_report(output_dir=None, job_status=None, destination=root / "desktop", now=0, source_log=log)
-            with zipfile.ZipFile(path) as archive:
-                text = archive.read("source-worker-errors.log").decode("utf-8")
-                summary = json.loads(archive.read("summary.json"))
-            self.assertIn("source_download KeyError", text)
-            self.assertNotIn(str(root), text)
-            self.assertIn("source-worker-errors.log", summary["included"])
-            missing = report.create_report(output_dir=None, job_status=None, destination=root / "desktop", now=1, source_log=root / "none.log")
-            with zipfile.ZipFile(missing) as archive:
-                self.assertNotIn("source-worker-errors.log", archive.namelist())
+    def _link_report(self, root: Path, status: dict, *, now: float = 0) -> tuple[dict, dict, str | None]:
+        path = report.create_report(output_dir=None, job_status=None, destination=root / "desktop", now=now,
+                                    source_work=root / "source-work", link_status=json.dumps(status), app_version="1.1.76")
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            link = json.loads(archive.read("link-status.json")) if "link-status.json" in names else {}
+            log = archive.read("source-worker-errors.log").decode("utf-8") if "source-worker-errors.log" in names else None
+            return link, json.loads(archive.read("summary.json")), log
 
-    def test_link_status_is_included_without_local_paths(self):
+    def test_link_report_holds_its_status_version_and_own_log_only(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            status = root / "source-work" / "report-link-status.json"
-            status.parent.mkdir()
-            media = root / "Videos" / "clip.mp4"
-            status.write_text(json.dumps({"url": "https://www.bilibili.com/video/BV1xx411c7mD", "state": "failed",
-                                          "error_code": "NETWORK", "media_path": str(media)}), encoding="utf-8")
-            path = report.create_report(output_dir=None, job_status=None, destination=root / "desktop", now=0, link_status=status,
-                                        app_version="1.1.76")
-            with zipfile.ZipFile(path) as archive:
-                link = json.loads(archive.read("link-status.json"))
-                summary = json.loads(archive.read("summary.json"))
-            self.assertEqual((link["state"], link["error_code"], link["media_path"]), ("failed", "NETWORK", "<path>/clip.mp4"))
-            self.assertIn("link-status.json", summary["included"])
+            logs = root / "source-work" / "worker-errors"
+            logs.mkdir(parents=True)
+            worker_file = root / "app" / "worker.py"
+            (logs / "link-a.log").write_text(f'--- source_download SourceError: NETWORK: A failed\n  File "{worker_file}", line 9\n'
+                                             "at https://upos.example/a.m4s?upsig=SECRET\n", encoding="utf-8")
+            (logs / "link-b.log").write_text("--- source_download SourceError: NOT_FOUND: B failed BV1bbbbbbbbb\n", encoding="utf-8")
+            (root / "source-work" / "worker-errors.log").write_text("--- legacy shared log of link B\n", encoding="utf-8")
+            status = {"scan_id": "link-a", "url": "https://www.bilibili.com/video/BV1aaaaaaaaa?p=2&vd_source=TRACK&spm_id_from=x",
+                      "provider": "bilibili", "title": "Video A", "state": "failed", "error": "Mất kết nối",
+                      "error_code": "NETWORK", "media_path": str(root / "Videos" / "a.mp4"), "queue_position": None,
+                      "downloaded_bytes": 0, "total_bytes": None}
+            link, summary, log = self._link_report(root, status)
+            self.assertEqual(link["url"], "https://www.bilibili.com/video/BV1aaaaaaaaa?p=2")
+            self.assertEqual((link["state"], link["error_code"], link["title"]), ("failed", "NETWORK", "Video A"))
+            self.assertNotIn("media_path", link)
             self.assertEqual(summary["app_version"], "1.1.76")
+            self.assertEqual(summary["included"], ["link-status.json", "source-worker-errors.log"])
+            self.assertIn("A failed", log)
+            for leaked in ("B failed", "BV1bbbbbbbbb", "legacy", "SECRET", str(root)):
+                self.assertNotIn(leaked, log)
+            self.assertIn("https://upos.example/a.m4s?<query>", log)
+
+    def test_concurrent_link_reports_stay_separate(self):
+        from concurrent.futures import ThreadPoolExecutor
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            logs = root / "source-work" / "worker-errors"
+            logs.mkdir(parents=True)
+            scans = [f"link-{index}" for index in range(8)]
+            for scan in scans:
+                (logs / f"{scan}.log").write_text(f"--- error of {scan}\n", encoding="utf-8")
+
+            def one(index: int):
+                scan = scans[index]
+                return scan, self._link_report(root, {"scan_id": scan, "title": f"title {scan}", "state": "failed"},
+                                               now=index * 1000)
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(one, range(len(scans))))
+            for scan, (link, _, log) in results:
+                self.assertEqual(link["title"], f"title {scan}")
+                self.assertEqual(log, f"--- error of {scan}\n")
+
+    def test_a_linked_log_folder_is_not_read_and_a_job_report_has_no_source_log(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "link-a.log").write_text("outside secret", encoding="utf-8")
+            (root / "source-work").mkdir()
+            try:
+                _link_folder(root / "source-work" / "worker-errors", outside)
+            except OSError:
+                self.skipTest("folder links unavailable")
+            _, summary, log = self._link_report(root, {"scan_id": "link-a", "state": "failed"})
+            self.assertIsNone(log)
+            self.assertEqual(summary["included"], ["link-status.json"])
+            path = report.create_report(output_dir=None, job_status=None, destination=root / "desktop", now=5,
+                                        source_work=root / "source-work")
+            with zipfile.ZipFile(path) as archive:
+                self.assertEqual(archive.namelist(), ["summary.json"])
+
+    def test_malformed_link_status_is_left_out(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, raw in enumerate(("not json", "[1]")):
+                path = report.create_report(output_dir=None, job_status=None, destination=root / "d", now=index, link_status=raw)
+                with zipfile.ZipFile(path) as archive:
+                    self.assertEqual(archive.namelist(), ["summary.json"])
 
     def test_files_behind_a_linked_folder_are_not_read(self):
         with TemporaryDirectory() as directory:
