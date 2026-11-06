@@ -1325,7 +1325,7 @@ def _write_manifest(
 
 
 OCR_PROFILE_PATH = "models/manifests/production-ocr-det-v1.json"
-SEPARATION_PROFILE_PATH = "models/manifests/production-separation-spleeter-v1.json"
+SEPARATION_PROFILE_PATH = "models/manifests/production-separation-mdx-v1.json"
 SPEAKER_PROFILE_PATH = "models/manifests/production-speaker-campplus-v1.json"
 SPEAKER_THRESHOLD = 0.3
 
@@ -1339,7 +1339,7 @@ def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: Me
     process first; any GPU failure separates on the CPU here, as before.
     """
     try:
-        from engine.dubflow.separation import spleeter
+        from engine.dubflow.separation import mdx, spleeter
         from engine.dubflow.tts.neural_vits import _child, _read_json
 
         profile_path = config.app_root / SEPARATION_PROFILE_PATH
@@ -1352,7 +1352,7 @@ def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: Me
         identity = "sha256:" + sha256(json.dumps({"source": source_hash,
             "audio": _audio_decode_identity(source_hash, probe), "sample_rate": rate, "channels": 2,
             "ffmpeg": _sha256(config.ffmpeg_path), "profile": _sha256(profile_path),
-            "adapter": _sha256(Path(spleeter.__file__))}, sort_keys=True).encode()).hexdigest()
+            "adapter": _sha256(Path(mdx.__file__)), "limiter": spleeter.LIMITER}, sort_keys=True).encode()).hexdigest()
         directory = work_dir / "separation"
         background_path = directory / "background.wav"
         source_audio = directory / "source_audio.wav"
@@ -1360,7 +1360,7 @@ def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: Me
         stage = checkpoint.get("stages", {}).get("separation", {})
         if _stage_ready(checkpoint, "separation", (background_path,)) and stage.get("input_hash") == identity:
             metrics = dict(stage["metrics"])
-            if metrics.get("backend") != spleeter.BACKEND or any(
+            if metrics.get("backend") != mdx.BACKEND or any(
                 type(metrics.get(key)) not in (int, float) or not math.isfinite(metrics[key])
                 for key in ("seconds", "source_rms_db", "background_rms_db", "removed_db", "peak")
             ) or not 0 <= metrics["peak"] <= .999:
@@ -1378,24 +1378,24 @@ def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: Me
             if getattr(device, "device", "cpu") == "cuda":
                 try:
                     metrics = spleeter.separate_background_on_gpu(source_audio, background_path, **options,
-                        accelerator=device.runtime, app_root=config.app_root,
+                        accelerator=device.runtime, app_root=config.app_root, backend="mdx",
                         progress=lambda fraction: emitter.progress(0.68 + .01 * fraction, "Đang tách nhạc nền bằng GPU (thử nghiệm)"))
                 except Exception as error:  # noqa: BLE001 - the CPU path below is always available.
                     code = getattr(error, "code", type(error).__name__)
                     detail = " ".join(str(getattr(error, "condition", error)).split())[:300]
                     warnings.append(f"ACCELERATOR_FALLBACK: separation ran on the CPU after a GPU failure: {code}: {detail}")
             if metrics is None:
-                metrics = spleeter.separate_background(source_audio, background_path, **options,
+                metrics = mdx.separate_background(source_audio, background_path, **options,
                     progress=lambda fraction: emitter.progress(0.68 + .01 * fraction,
                         "Đang tách nhạc nền khỏi giọng gốc (thử nghiệm)"))
             _write_stage(checkpoint, checkpoint_path, "separation", {"path": str(background_path),
                 "sha256": _sha256(background_path), "input_hash": identity, "metrics": metrics,
-                "profile_sha256": _sha256(profile_path), "adapter_sha256": _sha256(Path(spleeter.__file__))})
+                "profile_sha256": _sha256(profile_path), "adapter_sha256": _sha256(Path(mdx.__file__))})
         # The committed stem is all a resume reads; the decoded input and the
         # model's batch checkpoints are regenerable scratch.
         _remove_scratch(work_dir, source_audio, directory / ".spleeter-chunks")
         emitter.checkpoint("separation", _sha256(background_path))
-        return background_path, {"mode": "spleeter-2stems", **metrics, "input_hash": identity,
+        return background_path, {"mode": "uvr-mdx", **metrics, "input_hash": identity,
                                  "profile_sha256": _sha256(profile_path)}
     except Exception as error:
         code = getattr(error, "code", type(error).__name__)
@@ -1913,7 +1913,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                 "mix_failures": len({cue for failure in b2_audio.mix_document.failures
                                      for cue in members.get(failure.segment_id, (failure.segment_id,))}),
                 "mix_warnings": list(b2_audio.mix_document.warnings),
-                "bed": "spleeter-2stems" if background_path is not None else "source",
+                "bed": "uvr-mdx" if background_path is not None else "source",
                 "undubbed": _undubbed_summary(translated, members, (*(failure.segment_id for document in tts_documents
                     for failure in document.failures), *(failure.segment_id for failure in b2_audio.mix_document.failures))),
             }

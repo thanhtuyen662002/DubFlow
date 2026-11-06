@@ -12,7 +12,8 @@ import { defaultStems, setStems, STEM_KEYS, stemWeights, type Edit, type StemKey
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 type Separation = { state: string; progress?: number; message?: string };
-type StemsResponse = { voice: string | null; source: string | null; background: string | null; separation: Separation | null };
+/** `outdated`: the accompaniment came from an older model; Tách giọng may run again. */
+type StemsResponse = { voice: string | null; source: string | null; background: string | null; separation: Separation | null; outdated?: boolean };
 type FileKey = "voice" | "source" | "background";
 
 export type StemsContext = {
@@ -41,7 +42,7 @@ export type StemsMode = {
 type Preset = { label: string; title: string; levels: StemLevels };
 
 const POLL_MS = 1000;
-const SEPARATE_NOTE = "Lần đầu tải bộ tách giọng khoảng 80 MB; video dài có thể mất vài phút. Bạn vẫn chỉnh sửa được trong lúc chờ.";
+const SEPARATE_NOTE = "Lần đầu tải bộ tách giọng khoảng 67 MB; video dài có thể mất vài phút. Bạn vẫn chỉnh sửa được trong lúc chờ.";
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const node = document.querySelector<T>(selector);
@@ -67,6 +68,8 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
   let loading = false;
   let token = 0;
   let poll = 0;
+  /** Bumped when Tách giọng rewrote the same files: their URLs change so nothing cached plays. */
+  let revision = 0;
   let shown = false;
   /** Nghe riêng: one part alone in the preview (not saved). */
   let solo: StemKey | null = null;
@@ -125,8 +128,16 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
       const next = await invoke<StemsResponse>("edit_stems", { outputPath, kind });
       if (mine !== token) return;
       const wasSeparated = separated();
+      const wasOutdated = !!files?.outdated && files.separation?.state === "RUNNING";
       files = next;
       if (!wasSeparated && separated()) afterSeparation();
+      else if (wasOutdated && separated() && !next.outdated) {
+        // Same file names, new sound: the players read it again.
+        revision += 1;
+        for (const player of players.values()) release(player.element);
+        players.clear();
+        context.note("Đã lọc lại giọng gốc bằng bộ lọc mới: nhạc nền sạch hơn.");
+      }
     } catch (error) {
       if (mine !== token) return;
       files = { voice: null, source: null, background: null, separation: { state: "FAILED", message: String(error).slice(0, 200) } };
@@ -246,7 +257,7 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
       }
       body.push(chipRow);
     }
-    if (!separated() && hasAudio) {
+    if ((!separated() || files?.outdated) && hasAudio) {
       const box = element("div", "au-stems-separate");
       const status = files?.separation;
       if (running) {
@@ -260,6 +271,14 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
         cancel.addEventListener("click", () => void invoke("edit_separate_cancel", { outputPath, kind }).catch(() => undefined));
         progressText = element("small", "edit-note", status?.message || "Đang tách giọng…");
         box.append(progressText, bar, cancel);
+      } else if (separated()) {
+        const button = element("button", "btn", "Lọc lại giọng gốc (bộ lọc mới)");
+        button.type = "button";
+        button.disabled = loading;
+        button.addEventListener("click", () => void separate());
+        box.append(button, element("small", "edit-note",
+          `Nhạc nền của video này được tách bằng bộ lọc cũ nên còn sót giọng gốc và tiếng rè. Lọc lại để nhạc nền sạch hơn. ${SEPARATE_NOTE}`));
+        if (status?.state === "FAILED" && status.message) box.append(element("small", "edit-note error", status.message));
       } else {
         const button = element("button", "btn", hasVoice() ? "Tách giọng gốc khỏi nhạc nền" : "Tách giọng nói và nhạc nền");
         button.type = "button";
@@ -358,6 +377,7 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     players.set(key, player);
     const load = (target: HTMLAudioElement): void => {
       void context.mediaUrl(path).then((url) => {
+        if (url && revision) url += `${url.includes("?") ? "&" : "?"}r=${revision}`;
         if (url && players.get(key) === player && player.element === target) target.src = url;
       }).catch(() => undefined);
     };

@@ -38,13 +38,15 @@ def main() -> int:
         module_spec.loader.exec_module(loader)
         loader.activate(request["accelerator"])
         sys.path.insert(0, str(app_root))  # Isolated mode: the app package is added explicitly.
-        from engine.dubflow.separation import spleeter
+        from engine.dubflow.separation import mdx, spleeter
         from engine.dubflow.separation.production import SeparationError
+        backends = {"spleeter": spleeter, "mdx": mdx}
+        adapter = backends[request.get("backend", "spleeter")]
     except Exception as error:  # noqa: BLE001 - every setup failure is a CPU fallback in the worker.
         _reply({"ok": False, "code": "SEPARATION_GPU_UNAVAILABLE", "condition": f"{type(error).__name__}: {error}"[:1024]})
         return 2
     try:
-        metrics = spleeter.separate_background(Path(request["source"]), Path(request["background"]),
+        metrics = adapter.separate_background(Path(request["source"]), Path(request["background"]),
             model_dir=Path(request["model_dir"]), ffmpeg_path=Path(request["ffmpeg"]), device="cuda",
             progress=lambda fraction: _reply({"progress": float(fraction)}))
         _reply({"ok": True, "metrics": metrics})

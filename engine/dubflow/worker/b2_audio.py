@@ -155,7 +155,7 @@ class B2AudioResult:
 
     @property
     def bed(self) -> str:
-        return "spleeter-2stems" if self.background_stem_path is not None else "source"
+        return "uvr-mdx" if self.background_stem_path is not None else "source"
 
 
 def _mix_input_hash(documents: Sequence[TtsDocument]) -> str:

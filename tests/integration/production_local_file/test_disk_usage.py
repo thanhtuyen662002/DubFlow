@@ -15,7 +15,7 @@ import wave
 
 from engine.dubflow.media import parse_ffprobe_json
 from engine.dubflow.mix import streaming
-from engine.dubflow.separation import spleeter
+from engine.dubflow.separation import mdx
 from engine.dubflow.tts import DeterministicFixtureEngine, approved_default_voice
 from engine.dubflow.worker import export_publication
 from engine.dubflow.worker import production_job as worker
@@ -23,7 +23,7 @@ from engine.dubflow.worker import production_job as worker
 ROOT = Path(__file__).resolve().parents[3]
 SECONDS = 60
 CUES = tuple(worker.TextCue(f"cue-{index}", index * 10_000, index * 10_000 + 1000, "你好") for index in range(6))
-METRICS = {"backend": spleeter.BACKEND, "seconds": .1, "source_rms_db": -20.,
+METRICS = {"backend": mdx.BACKEND, "seconds": .1, "source_rms_db": -20.,
            "background_rms_db": -25., "removed_db": -22., "peak": .1}
 
 
@@ -94,7 +94,7 @@ class DubbedJobStorageTests(unittest.TestCase):
                 return_value=(SimpleNamespace(sample_rate=rate, channels=1), approved_default_voice())))
             stack.enter_context(patch("engine.dubflow.worker.b2_audio.vieneu.VieNeuVietnameseTtsEngine",
                 side_effect=lambda *a, **kw: DeterministicFixtureEngine()))
-            separation = stack.enter_context(patch.object(spleeter, "separate_background", side_effect=separate_background))
+            separation = stack.enter_context(patch.object(mdx, "separate_background", side_effect=separate_background))
             computes = stack.enter_context(patch.object(streaming.StreamingAudioMixer, "_compute",
                 autospec=True, side_effect=streaming.StreamingAudioMixer._compute))
             yield SimpleNamespace(root=root, config=config, media=media, separation=separation, computes=computes,

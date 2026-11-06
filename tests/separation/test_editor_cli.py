@@ -37,7 +37,7 @@ class EditorSeparationTest(unittest.TestCase):
             self.assertEqual(_status(out)["progress"], 100)
             self.assertEqual(calls[0][0], source)
             self.assertEqual(calls[0][1], out / "background.wav")
-            self.assertTrue(str(calls[0][2]).endswith("spleeter-2stems-v1"))
+            self.assertTrue(str(calls[0][2]).endswith("uvr-mdx-kim-vocal-2-v1"))
 
     def test_video_source_is_extracted_first(self):
         with TemporaryDirectory() as temp:

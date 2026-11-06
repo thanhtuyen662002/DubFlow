@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import wave
 
 from engine.dubflow.media import MediaAdapterError, parse_ffprobe_json
-from engine.dubflow.separation import spleeter
+from engine.dubflow.separation import mdx, spleeter
 from engine.dubflow.separation.production import SeparationError
 from engine.dubflow.tts import approved_default_voice
 from engine.dubflow.worker import production_job as worker
@@ -21,7 +21,7 @@ from engine.dubflow.worker.b2_audio import _restore_source_windows, B2AudioError
 
 ROOT = Path(__file__).resolve().parents[3]
 CUES = (worker.TextCue("a", 0, 1000, "你好"),)
-METRICS = {"backend": spleeter.BACKEND, "seconds": .1, "source_rms_db": -20.,
+METRICS = {"backend": mdx.BACKEND, "seconds": .1, "source_rms_db": -20.,
            "background_rms_db": -25., "removed_db": -22., "peak": .1}
 
 
@@ -92,22 +92,22 @@ class SeparationWorkerTests(unittest.TestCase):
 
     def test_stage_reuses_hash_verified_checkpoint_and_recipe_changes_invalidate(self):
         with self.fixture() as (root, config, probe, media), patch.object(worker, "ensure_model_profile") as download, \
-             patch.object(spleeter, "separate_background", side_effect=self.infer) as infer:
+             patch.object(mdx, "separate_background", side_effect=self.infer) as infer:
             work, checkpoint, warnings = root / "work", {"stages": {}}, []
             path, summary = self.stage(config, probe, media, work, checkpoint, warnings)
             self.assertEqual(path, work / "separation/background.wav")
-            self.assertEqual(summary["mode"], "spleeter-2stems")
-            self.assertEqual(summary["backend"], spleeter.BACKEND)
+            self.assertEqual(summary["mode"], "uvr-mdx")
+            self.assertEqual(summary["backend"], mdx.BACKEND)
             self.assertEqual(media.extract_audio.call_args.kwargs,
                 dict(sample_rate=48000, channels=2, video_stream=probe.video, overwrite=True))
-            self.assertEqual(infer.call_args.kwargs["model_dir"], config.model_root / "separation/spleeter-2stems-v1")
+            self.assertEqual(infer.call_args.kwargs["model_dir"], config.model_root / "separation/uvr-mdx-kim-vocal-2-v1")
             self.assertEqual(self.stage(config, probe, media, work, checkpoint, warnings), (path, summary))
             self.assertEqual(infer.call_count, 1)
             self.assertEqual(download.call_count, 1)
             self.assertEqual(media.extract_audio.call_count, 1)
             identity = checkpoint["stages"]["separation"]["input_hash"]
             actual_hash = worker._sha256
-            for changed in (config.app_root / worker.SEPARATION_PROFILE_PATH, Path(spleeter.__file__), config.ffmpeg_path):
+            for changed in (config.app_root / worker.SEPARATION_PROFILE_PATH, Path(mdx.__file__), config.ffmpeg_path):
                 with patch.object(worker, "_sha256", side_effect=lambda p: "sha256:" + "f" * 64 if Path(p) == changed else actual_hash(p)):
                     self.stage(config, probe, media, work, checkpoint, warnings)
                     self.assertNotEqual(checkpoint["stages"]["separation"]["input_hash"], identity)
@@ -124,7 +124,7 @@ class SeparationWorkerTests(unittest.TestCase):
         for failure in (None, SeparationError("SEPARATION_GPU_FAILED", "CUDA out of memory")):
             with self.subTest(failure=failure), self.fixture() as (root, config, probe, media), \
                  patch.object(worker, "ensure_model_profile"), \
-                 patch.object(spleeter, "separate_background", side_effect=self.infer) as cpu, \
+                 patch.object(mdx, "separate_background", side_effect=self.infer) as cpu, \
                  patch.object(spleeter, "separate_background_on_gpu", side_effect=failure or gpu) as on_gpu:
                 work, warnings = root / "work", []
                 path, summary = worker._separate_background_stage(config, "source-hash", probe, media, work, {"stages": {}},
@@ -139,7 +139,7 @@ class SeparationWorkerTests(unittest.TestCase):
                     self.assertEqual(len(warnings), 1)
                     self.assertTrue(warnings[0].startswith("ACCELERATOR_FALLBACK: separation ran on the CPU"), warnings)
         with self.fixture() as (root, config, probe, media), patch.object(worker, "ensure_model_profile"), \
-             patch.object(spleeter, "separate_background", side_effect=self.infer), \
+             patch.object(mdx, "separate_background", side_effect=self.infer), \
              patch.object(spleeter, "separate_background_on_gpu") as on_gpu:
             self.stage(config, probe, media, root / "work", {"stages": {}}, [])
             on_gpu.assert_not_called()  # No CUDA device: the CPU path exactly as before.
@@ -148,7 +148,7 @@ class SeparationWorkerTests(unittest.TestCase):
         for failing in ("download", "decode", "model", "gate", "checkpoint"):
             with self.subTest(failing=failing), self.fixture() as (root, config, probe, media), \
                  patch.object(worker, "ensure_model_profile") as download, \
-                 patch.object(spleeter, "separate_background", side_effect=self.infer) as infer:
+                 patch.object(mdx, "separate_background", side_effect=self.infer) as infer:
                 work, warnings = root / "work", []
                 work.mkdir()
                 if failing == "download":
@@ -204,13 +204,13 @@ class SeparationWorkerTests(unittest.TestCase):
 
     def test_pipeline_exports_background_original_and_hashes_and_toggle_remixes(self):
         with self.fixture() as (root, config, probe, media), self.pipeline(probe, media) as (dub, translate), \
-             patch.object(spleeter, "separate_background", side_effect=self.infer) as infer:
+             patch.object(mdx, "separate_background", side_effect=self.infer) as infer:
             result = worker.run_local_file(config, Mock())
             manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
             qc = json.loads(Path(result["qc"]).read_text(encoding="utf-8"))
             self.assertEqual(manifest["background"], qc["background"])
-            self.assertEqual(manifest["background"]["mode"], "spleeter-2stems")
-            self.assertEqual(manifest["audio"]["bed"], "spleeter-2stems")
+            self.assertEqual(manifest["background"]["mode"], "uvr-mdx")
+            self.assertEqual(manifest["audio"]["bed"], "uvr-mdx")
             for name in ("source_audio", "background_stem", "editable_source_audio", "editable_background_stem"):
                 item = manifest["artifacts"][name]
                 self.assertEqual(item["sha256"], worker._sha256(Path(item["path"])))
@@ -231,7 +231,7 @@ class SeparationWorkerTests(unittest.TestCase):
         advisories = ("TTS_RENDER_WINDOW_WIDENED: a; end 3000", "TTS_FAST_FIT: a; speed 1400")
         restored = "SEPARATION_SOURCE_RESTORED: b"
         with self.fixture() as (root, config, probe, media), self.pipeline(probe, media) as (dub, _), \
-             patch.object(spleeter, "separate_background", side_effect=self.infer):
+             patch.object(mdx, "separate_background", side_effect=self.infer):
             def warned(**kwargs):
                 audio = self.fake_b2(**kwargs)
                 audio.tts_document.warnings = advisories
@@ -259,7 +259,7 @@ class SeparationWorkerTests(unittest.TestCase):
     def test_pipeline_failure_keeps_aud0_and_retries_bad_bed_once(self):
         for failure in ("separation", "bed", "vanished", "b2", "render"):
             with self.subTest(failure=failure), self.fixture() as (root, config, probe, media), \
-                 self.pipeline(probe, media) as (dub, translate), patch.object(spleeter, "separate_background", side_effect=self.infer) as infer:
+                 self.pipeline(probe, media) as (dub, translate), patch.object(mdx, "separate_background", side_effect=self.infer) as infer:
                 if failure == "separation":
                     infer.side_effect = SeparationError("SEPARATION_REJECTED", "duration mismatch")
                 elif failure == "bed":

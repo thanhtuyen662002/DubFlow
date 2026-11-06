@@ -195,8 +195,10 @@ def _separated_blocks(read, length, session_factory, *, batch_splits=BATCH_SPLIT
 
 # Ratio masks on loud, already-limited sources can push the float accompaniment
 # past full scale; a lookahead limiter keeps it below the clipping gate instead
-# of rejecting separation for exactly the loud videos users dub most.
-LIMITER = "alimiter=limit=0.95:attack=5:release=50:level=0"
+# of rejecting separation for exactly the loud videos users dub most. `latency=1`
+# removes its 5 ms lookahead delay: the editor subtracts this file from the
+# source, and a delayed copy left the original voice audible as a comb echo.
+LIMITER = "alimiter=limit=0.95:attack=5:release=50:level=0:latency=1"
 
 
 def _validate_background(source, background):
@@ -326,8 +328,11 @@ def separate_background(source_wav: Path, background_wav: Path, *, model_dir: Pa
 
 
 def separate_background_on_gpu(source_wav: Path, background_wav: Path, *, model_dir: Path, ffmpeg_path: Path,
-                               accelerator, app_root: Path, progress=None, python: str | None = None) -> dict:
+                               accelerator, app_root: Path, progress=None, python: str | None = None,
+                               backend: str = "spleeter") -> dict:
     """Separate on CUDA in ``spleeter_native.py``; any failure raises for a CPU fallback.
+
+    ``backend`` names the adapter the child runs: ``spleeter`` or ``mdx``.
 
     ``accelerator`` is the verified ONNX Runtime CUDA pack (``select_tts_device``).
     The child is contained in a Windows Job, so it ends with the worker.
@@ -337,7 +342,8 @@ def separate_background_on_gpu(source_wav: Path, background_wav: Path, *, model_
 
     command = [python or sys.executable, "-I", "-B", str(Path(__file__).with_name("spleeter_native.py"))]
     request = json.dumps({"app_root": str(app_root), "accelerator": dict(accelerator), "source": str(source_wav),
-                          "background": str(background_wav), "model_dir": str(model_dir), "ffmpeg": str(ffmpeg_path)})
+                          "background": str(background_wav), "model_dir": str(model_dir), "ffmpeg": str(ffmpeg_path),
+                          "backend": backend})
     job = None
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
