@@ -76,6 +76,28 @@ export function colorPresetOf(color: ColorLook | null): string | null {
   return COLOR_PRESETS.find((preset) => sameColor(preset.color, color))?.id ?? null;
 }
 
+/** Which part of the crop frame is dragged on the preview: its body, a side or a corner. */
+export type CropHandle = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+/**
+ * The crop after dragging `handle` by (dx, dy), fractions of the source
+ * picture: moving keeps the size, a side or corner moves only its edges and
+ * stops MIN_CROP before the opposite one. Null when it is the whole picture.
+ */
+export function dragCrop(start: Crop | null, handle: CropHandle, dx: number, dy: number): Crop | null {
+  const from = start ?? { x: 0, y: 0, w: 1, h: 1 };
+  let left = from.x, top = from.y, right = from.x + from.w, bottom = from.y + from.h;
+  if (handle === "move") {
+    const x = clamp(left + dx, 0, 1 - from.w), y = clamp(top + dy, 0, 1 - from.h);
+    return cleanCrop({ x, y, w: from.w, h: from.h });
+  }
+  if (handle.includes("w")) left = clamp(left + dx, 0, right - MIN_CROP);
+  if (handle.includes("e")) right = clamp(right + dx, left + MIN_CROP, 1);
+  if (handle.includes("n")) top = clamp(top + dy, 0, bottom - MIN_CROP);
+  if (handle.includes("s")) bottom = clamp(bottom + dy, top + MIN_CROP, 1);
+  return cleanCrop({ x: left, y: top, w: right - left, h: bottom - top });
+}
+
 function cleanCrop(raw: unknown): Crop | null {
   if (!raw || typeof raw !== "object") return null;
   const { x, y, w, h } = raw as Record<string, unknown>;

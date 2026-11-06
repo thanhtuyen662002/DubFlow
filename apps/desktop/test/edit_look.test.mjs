@@ -3,7 +3,7 @@ import {
   createEdit, exportPlan, freezeFrame, isUnchanged, matchesExport, outputDuration, outputToSource, parseProject, remapCues, serializeProject,
   setLook, setSpeed, split, sourceToOutput, copySegment, pasteSegment, trim, MAX_SPEED, MIN_SPEED,
 } from "../src/features/edit/model.ts";
-import { colorPresetOf, COLOR_PRESETS, cropForRatio, cropRatioOf, cssFilter, normalizeLook, planLook } from "../src/features/edit/look.ts";
+import { colorPresetOf, COLOR_PRESETS, cropForRatio, cropRatioOf, cssFilter, dragCrop, normalizeLook, planLook } from "../src/features/edit/look.ts";
 
 const close = (actual, expected, message, tolerance = 1e-6) => assert.ok(Math.abs(actual - expected) < tolerance, `${message ?? ""} ${actual} != ${expected}`);
 const base = createEdit(100, { path: "D:\\a.mp4", width: 1920, height: 1080 });
@@ -79,4 +79,10 @@ close(portrait.w, (9 / 16) / (16 / 9), "9:16 from 16:9", 1e-3);
 assert.equal(portrait.h, 1);
 assert.equal(cropRatioOf(portrait, 1920, 1080), "9:16");
 assert.deepEqual(planLook(null), {});
+// Cắt khung dragged on the preview: sides and corners move only their edges, the body keeps its size, never below 10 %.
+assert.deepEqual(dragCrop(null, "w", 0.2, 0), { x: 0.2, y: 0, w: 0.8, h: 1 });
+assert.deepEqual(dragCrop(null, "se", -0.25, -0.5), { x: 0, y: 0, w: 0.75, h: 0.5 });
+assert.deepEqual(dragCrop({ x: 0.1, y: 0.1, w: 0.5, h: 0.5 }, "move", 0.9, -0.3), { x: 0.5, y: 0, w: 0.5, h: 0.5 });
+assert.deepEqual(dragCrop({ x: 0.1, y: 0.1, w: 0.5, h: 0.5 }, "n", 0, 0.9), { x: 0.1, y: 0.5, w: 0.5, h: 0.1 });
+assert.equal(dragCrop({ x: 0.2, y: 0, w: 0.8, h: 1 }, "w", -0.5, 0), null, "back to the whole picture is no crop");
 console.log("edit look tests passed");

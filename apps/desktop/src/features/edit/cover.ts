@@ -217,6 +217,26 @@ export function groupAuto(regions: readonly AutoRegion[]): AutoGroup[] {
   }).sort((a, b) => a.first - b.first);
 }
 
+/**
+ * A detected caption line made editable (Issue: chỉnh vùng tự phát hiện): its
+ * appearances are switched off and one drawn region takes their place, over
+ * the line's rectangle from its first appearance to the end of its last (the
+ * whole video when an appearance has no times). Null when no more regions fit.
+ */
+export function detachGroup(state: CoverState, group: AutoGroup, auto: readonly AutoRegion[], makeId: () => string): ManualRegion | null {
+  if (state.manual.length >= MAX_MANUAL) return null;
+  const members = auto.filter((region) => group.indices.includes(region.index));
+  const timed = members.length > 0 && members.every((region) => region.start_ms !== undefined && region.end_ms !== undefined);
+  const times = timed ? {
+    start_ms: Math.round(Math.min(...members.map((region) => region.start_ms!))),
+    end_ms: Math.min(86_400_000, Math.round(Math.max(...members.map((region) => region.end_ms!)))),
+  } : null;
+  const region: ManualRegion = { ...clampRegion(group.rect), ...(times && times.end_ms > times.start_ms ? times : {}), id: makeId() };
+  for (const index of group.indices) (state.disabled as Set<number>).add(index);
+  state.manual.push(region);
+  return region;
+}
+
 function contains(outer: Rect, inner: Rect, slack = 0.002): boolean {
   return outer.x <= inner.x + slack && outer.y <= inner.y + slack && outer.x + outer.w >= inner.x + inner.w - slack
     && outer.y + outer.h >= inner.y + inner.h - slack;

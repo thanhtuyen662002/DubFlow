@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createEdit, remove, split } from "../src/features/edit/model.ts";
 import {
-  activeRegions, COVER_MODES, coverDocument, coverSummary, DEFAULT_COVER_STYLE, describeCoverStyle, groupAuto, LEGACY_COVER_STYLE, loadCover,
+  activeRegions, COVER_MODES, coverDocument, coverSummary, DEFAULT_COVER_STYLE, describeCoverStyle, detachGroup, groupAuto, MAX_MANUAL, LEGACY_COVER_STYLE, loadCover,
   mosaicCells, nextMoment, normalizeCoverStyle, parseCoverStyle, rectBetween, regionOn, sameCover, sameCoverStyle, storedCoverStyle,
   stretchDraws, uncoveredMoments, plainCover,
 } from "../src/features/edit/cover.ts";
@@ -69,6 +69,24 @@ assert.deepEqual(groups[0].indices, [0, 1, 2, 3, 4, 5]);
 assert.deepEqual(groups[0].rect, { x: 0.22, y: 0.84, w: 0.56, h: 0.085 }, "the union of the line's widths");
 assert.deepEqual(groups[0].spans[0], [1000, 3000]);
 assert.equal(groups[1].first, 9000);
+
+// A detected line is made editable: its appearances switch off and one drawn region takes its rectangle and time span.
+{
+  const editing = { style: DEFAULT_COVER_STYLE, manual: [], fixed: null, disabled: new Set() };
+  const region = detachGroup(editing, groups[0], detected, () => "d1");
+  assert.deepEqual(region, { x: 0.22, y: 0.84, w: 0.56, h: 0.085, start_ms: 1000, end_ms: 23000, id: "d1" });
+  assert.deepEqual([...editing.disabled].sort(), [0, 1, 2, 3, 4, 5]);
+  assert.equal(editing.manual.length, 1);
+  const document = coverDocument(editing);
+  assert.deepEqual(document.disabled_auto, [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(document.regions, [{ x: 0.22, y: 0.84, w: 0.56, h: 0.085, start_ms: 1000, end_ms: 23000 }]);
+  // Untimed detections become a whole-video region; a full list takes no more.
+  const untimed = groupAuto([{ x: 0.1, y: 0.8, w: 0.8, h: 0.1, index: 0 }]);
+  assert.equal(detachGroup({ ...editing, manual: [] }, untimed[0], [{ x: 0.1, y: 0.8, w: 0.8, h: 0.1, index: 0 }], () => "d2").start_ms, undefined);
+  const full = { ...editing, manual: Array.from({ length: MAX_MANUAL }, (_, i) => ({ id: `f${i}`, x: 0, y: 0, w: 0.1, h: 0.1 })), disabled: new Set() };
+  assert.equal(detachGroup(full, groups[1], detected, () => "x"), null);
+  assert.equal(full.disabled.size, 0, "nothing switches off when the region does not fit");
+}
 
 // The render covers the job's regions, drawn ones, the fixed one and the detections left on.
 const state = { style: DEFAULT_COVER_STYLE, manual: [{ id: "a", x: 0.1, y: 0.1, w: 0.2, h: 0.1, start_ms: 0, end_ms: 500 }], fixed: null, disabled: new Set([1, 6]) };

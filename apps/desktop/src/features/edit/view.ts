@@ -834,9 +834,14 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       image.alt = "";
       image.draggable = false;
       image.hidden = true;
-      const handle = element("span", "edit-ov-handle");
-      handle.title = "Kéo để đổi cỡ";
-      box_.append(player, image, handle);
+      // Every corner resizes (the picture keeps its shape); the opposite corner stays put.
+      const handles = (["nw", "ne", "sw", "se"] as const).map((corner) => {
+        const handle = element("span", `edit-ov-handle ${corner}`);
+        handle.dataset.corner = corner;
+        handle.title = "Kéo để đổi cỡ";
+        return handle;
+      });
+      box_.append(player, image, ...handles);
       overlayLayer.append(box_);
       box = { element: box_, video: player, image, path: "" };
       boxes.set(overlay.id, box);
@@ -1171,6 +1176,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       renderTimeline();
       renderEffects();
     },
+    redraw: () => { if (session) render(); },
     selected: () => selectedSegment(),
     outputTime: () => session?.outputTime ?? 0,
     note,
@@ -2597,7 +2603,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   // ---------- Overlay boxes on the player: drag to move, corner to resize ----------
 
-  type BoxDrag = { id: string; resize: boolean; x: number; y: number; base: Edit; moved: boolean; pointer: number };
+  type BoxDrag = { id: string; corner: "nw" | "ne" | "sw" | "se" | null; x: number; y: number; base: Edit; moved: boolean; pointer: number };
   let boxDrag: BoxDrag | null = null;
 
   overlayLayer.addEventListener("pointerdown", (event) => {
@@ -2608,7 +2614,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     event.stopPropagation();
     box.setPointerCapture(event.pointerId);
     pickOverlay(box.dataset.id!);
-    boxDrag = { id: box.dataset.id!, resize: !!target.closest(".edit-ov-handle"), x: event.clientX, y: event.clientY, base: session.history.current, moved: false, pointer: event.pointerId };
+    const corner = (target.closest<HTMLElement>(".edit-ov-handle")?.dataset.corner ?? null) as BoxDrag["corner"];
+    boxDrag = { id: box.dataset.id!, corner, x: event.clientX, y: event.clientY, base: session.history.current, moved: false, pointer: event.pointerId };
     render();
   });
   overlayLayer.addEventListener("pointermove", (event) => {
@@ -2621,8 +2628,18 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!dragging.moved && Math.abs(event.clientX - dragging.x) + Math.abs(event.clientY - dragging.y) < 3) return;
     dragging.moved = true;
     const key = keyOf(overlay), place = placementOf(overlay, key);
-    session.draft = dragging.resize ? resizeOverlay(dragging.base, dragging.id, place.w + dx, key)
-      : moveOverlay(dragging.base, dragging.id, place.x + dx, place.y + dy, key);
+    if (dragging.corner) {
+      const corner = dragging.corner;
+      const resized = resizeOverlay(dragging.base, dragging.id, place.w + (corner.endsWith("e") ? dx : -dx), key);
+      const after = resized.overlays.find((candidate) => candidate.id === dragging.id);
+      const placed = after ? placementOf(after, key) : place;
+      const before = overlayHeight(dragging.base, { mediaId: overlay.mediaId, w: place.w });
+      const now = overlayHeight(resized, { mediaId: overlay.mediaId, w: placed.w });
+      session.draft = moveOverlay(resized, dragging.id, corner.endsWith("w") ? place.x + place.w - placed.w : place.x,
+        corner.startsWith("n") ? place.y + before - now : place.y, key);
+    } else {
+      session.draft = moveOverlay(dragging.base, dragging.id, place.x + dx, place.y + dy, key);
+    }
     renderEffects();
     renderPanel();
   });
