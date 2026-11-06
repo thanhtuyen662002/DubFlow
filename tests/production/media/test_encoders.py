@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,32 +14,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from engine.dubflow.media import encoders  # noqa: E402
 
 
-def _fake_ffmpeg(directory: Path, exit_code: int) -> Path:
-    script = directory / f"ffmpeg-{exit_code}"
-    script.write_text(f"#!/bin/sh\nexit {exit_code}\n", encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    return script
+def _exits(code: int):
+    """A stand-in for FFmpeg's test encode that exits with ``code``."""
+    return mock.patch.object(encoders.subprocess, "run", return_value=subprocess.CompletedProcess([], code, b"", b""))
 
 
-@unittest.skipIf(os.name == "nt", "uses a POSIX shell script as a stand-in FFmpeg")
 class ChoiceTests(unittest.TestCase):
     def setUp(self) -> None:
         encoders._CACHE.clear()
-        self.root = Path(tempfile.mkdtemp())
+        self.ffmpeg = Path(tempfile.mkdtemp()) / "ffmpeg.exe"
 
     def test_a_working_test_encode_puts_nvenc_first(self):
-        self.assertEqual(encoders.h264_encoders(_fake_ffmpeg(self.root, 0)), ("h264_nvenc", "h264_mf", "libopenh264"))
+        with _exits(0) as run:
+            self.assertEqual(encoders.h264_encoders(self.ffmpeg), ("h264_nvenc", "h264_mf", "libopenh264"))
+            self.assertEqual(encoders.h264_encoders(self.ffmpeg), ("h264_nvenc", "h264_mf", "libopenh264"))
+        self.assertEqual(run.call_count, 1)  # Cached per executable.
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("-hwaccel") + 1], "cuda")
+        self.assertEqual(argv[argv.index("-c:v") + 1], "h264_nvenc")
 
     def test_a_failed_test_encode_or_missing_ffmpeg_keeps_the_cpu_encoders(self):
-        self.assertEqual(encoders.h264_encoders(_fake_ffmpeg(self.root, 1)), ("h264_mf", "libopenh264"))
-        self.assertEqual(encoders.h264_encoders(self.root / "absent.exe"), ("h264_mf", "libopenh264"))
+        with _exits(1):
+            self.assertEqual(encoders.h264_encoders(self.ffmpeg), ("h264_mf", "libopenh264"))
+        encoders._CACHE.clear()
+        self.assertEqual(encoders.h264_encoders(self.ffmpeg), ("h264_mf", "libopenh264"))  # Real call: no such file.
 
     def test_cpu_choice_skips_the_probe(self):
-        working = _fake_ffmpeg(self.root, 0)
-        self.assertEqual(encoders.h264_encoders(working, "cpu"), encoders.CPU_ENCODERS)
-        with mock.patch.dict(os.environ, {"DUBFLOW_ACCELERATOR": "cpu"}):
-            self.assertEqual(encoders.h264_encoders(working), encoders.CPU_ENCODERS)
-        self.assertNotIn(os.fspath(working), encoders._CACHE)
+        with _exits(0) as run:
+            self.assertEqual(encoders.h264_encoders(self.ffmpeg, "cpu"), encoders.CPU_ENCODERS)
+            with mock.patch.dict(os.environ, {"DUBFLOW_ACCELERATOR": "cpu"}):
+                self.assertEqual(encoders.h264_encoders(self.ffmpeg), encoders.CPU_ENCODERS)
+        run.assert_not_called()
 
 
 class ArgumentTests(unittest.TestCase):
