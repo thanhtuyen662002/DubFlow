@@ -102,7 +102,10 @@ export function mountAiSettings(session: AiSession): { open(): void; prefs(): Tr
       base.setAttribute("aria-label", `Địa chỉ máy chủ ${info.name}`);
       fields.append(element("label", { className: "ai-field" }, "Địa chỉ máy chủ (Base URL)", base));
     }
-    const remember = () => session.setOptions(provider, { model: model.value, baseUrl: base?.value });
+    const remember = () => {
+      session.setOptions(provider, { model: model.value, baseUrl: base?.value });
+      renderPrefs();
+    };
     model.addEventListener("change", remember);
     base?.addEventListener("change", remember);
 
@@ -179,10 +182,12 @@ export function mountAiSettings(session: AiSession): { open(): void; prefs(): Tr
     sensitiveWords.value = formatWordList(prefs.words);
     $("#sensitive-words-box").hidden = prefs.sensitiveMode === "off";
     const provider = session.provider();
-    const ready = provider === "custom" ? Boolean(session.options(provider).baseUrl) : session.saved(provider) !== null;
+    const ready = provider === "custom" ? Boolean(session.options(provider).baseUrl && session.options(provider).model) : session.saved(provider) !== null;
     $("#ai-translate-hint").textContent = ready
       ? `Video mới: ${PROVIDERS[provider].name} dịch cả đoạn hội thoại theo ngữ cảnh (xưng hô, thành ngữ, văn nói). Nếu AI lỗi, phụ đề dùng bản dịch offline như cũ. Lời thoại được gửi tới ${PROVIDERS[provider].company}.`
-      : `Chưa có khóa ${PROVIDERS[provider].name}: phụ đề đang dùng bộ dịch offline (dịch từng câu). Lưu khóa ở trên để dịch theo ngữ cảnh.`;
+      : provider === "custom"
+        ? "Chưa nhập địa chỉ máy chủ và model: phụ đề đang dùng bộ dịch offline (dịch từng câu)."
+        : `Chưa có khóa ${PROVIDERS[provider].name}: phụ đề đang dùng bộ dịch offline (dịch từng câu). Lưu khóa ở trên để dịch theo ngữ cảnh.`;
   }
   aiToggle.addEventListener("change", () => { prefs = { ...prefs, aiTranslation: aiToggle.checked }; savePrefs(prefs); });
   sensitiveMode.addEventListener("change", () => {
