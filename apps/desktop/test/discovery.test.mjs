@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   TOPICS, bilibiliMid, cleanTitle, discoveryError, formatCount, formatDuration, loadGlossCache, mergeVideos, needsTitleGloss, pageAddress, parseCollected,
-  parseGlosses, parseTrends, parseVideos, previewSource, rememberGloss, saveGlossCache,
+  parseGlosses, parseTrends, parseVideos, previewSource, refreshVideos, rememberGloss, saveGlossCache, seenOnPage,
 } from "../src/features/discovery/model.ts";
 
 // Trends: keyword required, unknown heat stays null, ranks default to order.
@@ -40,6 +40,26 @@ assert.deepEqual(parseCollected({ items: [] }), []);
 // Merging keeps order and drops pages already listed.
 const merged = mergeVideos(videos.items, [collected[0], videos.items[0]]);
 assert.deepEqual(merged.map((video) => video.pageUrl), ["https://www.bilibili.com/video/BV1", "https://www.bilibili.com/video/BV3", "https://www.kuaishou.com/short-video/3x1"]);
+
+// While browsing, a video page adds only the video being watched; a list page adds every card.
+const onVideoPage = parseCollected([
+  { page_url: "https://www.bilibili.com/video/BV1VKyxQ6xE9", fetch_url: "https://www.bilibili.com/video/BV1VKyxQ6xE9", title: "Đang xem", current: true },
+  { page_url: "https://www.bilibili.com/video/BV1aaaaaaaaa", fetch_url: "https://www.bilibili.com/video/BV1aaaaaaaaa", title: "Gợi ý" },
+]);
+assert.deepEqual(onVideoPage.map((video) => video.current), [true, false]);
+assert.deepEqual(seenOnPage(onVideoPage).map((video) => video.title), ["Đang xem"]);
+assert.equal("current" in seenOnPage(onVideoPage)[0], false);
+assert.equal(seenOnPage(onVideoPage.slice(1)).length, 1);
+assert.equal(parseCollected([{ page_url: "https://a.example/x", fetch_url: "https://a.example/x", current: "yes" }])[0].current, false);
+
+// A card first read without a title takes the page's title later; known titles stay.
+const untitled = { ...videos.items[1], cover: null };
+const better = { ...videos.items[1], title: "Có tiêu đề", cover: "https://i0.hdslb.com/x.jpg" };
+const refreshed = refreshVideos([videos.items[0], untitled], [better]);
+assert.equal(refreshed[0], videos.items[0]);
+assert.equal(refreshed[1].title, "Có tiêu đề");
+assert.equal(refreshed[1].cover, "https://i0.hdslb.com/x.jpg");
+assert.equal(refreshVideos([better], [{ ...better, title: "Khác" }])[0], better);
 
 assert.equal(bilibiliMid("https://space.bilibili.com/546195/video"), "546195");
 assert.equal(bilibiliMid("https://space.bilibili.com/546195"), "546195");

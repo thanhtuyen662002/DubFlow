@@ -95,7 +95,12 @@ pub const CAPTURE_SCRIPT: &str = r##"(() => {
   window.__dubflowCapture = found;
   const first = (value) => Array.isArray(value) ? value[0] : value;
   const text = (value) => typeof value === "string" ? value : "";
-  const remember = (key, item) => { if (found.size < 1000 && !found.has(key)) found.set(key, item); };
+  // Newest last, with the address the page showed when it fetched the video.
+  const remember = (key, item) => {
+    found.delete(key);
+    found.set(key, { ...item, at: location.href });
+    if (found.size > 1000) found.delete(found.keys().next().value);
+  };
   const walk = (node, depth, budget) => {
     if (!node || typeof node !== "object" || depth > 14 || budget.left-- <= 0) return;
     if (Array.isArray(node)) { for (const child of node) walk(child, depth + 1, budget); return; }
@@ -134,52 +139,116 @@ pub const CAPTURE_SCRIPT: &str = r##"(() => {
   };
 })();"##;
 
-/// Runs inside the platform page and returns a JSON string of the video
-/// cards currently in the DOM (and, on Kuaishou, its Apollo cache, which
-/// also carries the direct media URL).
+/// Runs inside the platform page and returns a JSON string of the videos the
+/// page shows: first the video it is playing (on a video page, flagged
+/// `current`), then the video cards that are rendered, in page order, each
+/// titled from its own card. The JSON the page fetched (`CAPTURE_SCRIPT`,
+/// Kuaishou's Apollo cache) only fills in details of those cards; it lists
+/// videos by itself only when the page draws its list without links, and
+/// then only what was fetched at the current address. Hidden menus and
+/// pages visited earlier never add videos.
 pub const COLLECT_SCRIPT: &str = r##"(() => {
-  const items = new Map();
   const clean = (value) => String(value || "").replace(/\s+/g, " ").trim().slice(0, 200);
   const abs = (value) => { try { return new URL(value, location.href).href; } catch (e) { return ""; } };
-  const add = (page, title, cover, author, media) => {
-    page = abs(page).split("?")[0].split("#")[0];
-    if (!page || items.has(page)) return;
-    items.set(page, { page_url: page, title: clean(title), cover_url: abs(cover || ""), author: clean(author), media_url: media ? abs(media) : "" });
-  };
-  const cardOf = (a) => a.closest("li, [class*='card'], [class*='item'], [class*='video']") || a;
-  const coverOf = (el) => { const img = el.querySelector("img"); return img ? (img.currentSrc || img.src || img.getAttribute("data-src") || "") : ""; };
   const host = location.hostname;
+  const site = host.endsWith("kuaishou.com") ? "kuaishou" : host.endsWith("bilibili.com") ? "bilibili" : host.endsWith("douyin.com") ? "douyin" : "";
+  const idOf = (href) => {
+    const link = String(href || "");
+    let match = null;
+    if (site === "bilibili") match = link.match(/\/video\/(BV[0-9A-Za-z]{10})/);
+    else if (site === "douyin") match = link.match(/\/video\/(\d{8,24})/) || link.match(/[?&]modal_id=(\d{8,24})/);
+    else if (site === "kuaishou") match = link.match(/\/short-video\/([0-9A-Za-z_-]{4,40})/);
+    return match ? match[1] : "";
+  };
+  const pageOf = (id) => site === "bilibili" ? "https://www.bilibili.com/video/" + id
+    : site === "douyin" ? "https://www.douyin.com/video/" + id : "https://www.kuaishou.com/short-video/" + id;
+  // A title is text, not a duration, a count or a date.
+  const titled = (value) => { const text = clean(value); return text.length >= 2 && !/^[\d\s:.,·万亿wW+\-/年月日前小时分钟天]*$/.test(text) ? text : ""; };
+  const shown = (el) => {
+    if (!el.getClientRects().length) return false;
+    const box = el.getBoundingClientRect();
+    if (box.width < 4 || box.height < 4) return false;
+    const style = getComputedStyle(el);
+    return style.visibility !== "hidden" && style.display !== "none";
+  };
+  const links = (root) => Array.from(root.querySelectorAll("a[href]")).filter((a) => idOf(a.href));
+  // The card of a link: its largest ancestor that links to no other video.
+  const cardOf = (a, id) => {
+    let card = a;
+    for (let depth = 0; depth < 8; depth++) {
+      const parent = card.parentElement;
+      if (!parent || parent === document.body || links(parent).some((other) => idOf(other.href) !== id)) break;
+      card = parent;
+    }
+    return card;
+  };
+  const coverOf = (el) => { const img = el.querySelector("img"); return img ? (img.currentSrc || img.src || img.getAttribute("data-src") || "") : ""; };
+  const titleOf = (a, card) => {
+    const tries = [a.getAttribute("title")];
+    for (const el of card.querySelectorAll("[title]")) tries.push(el.getAttribute("title"));
+    for (const el of card.querySelectorAll("h1, h2, h3, h4, [class*='title'], [class*='desc'], [class*='caption']")) tries.push(el.innerText);
+    for (const img of card.querySelectorAll("img[alt]")) tries.push(img.getAttribute("alt"));
+    tries.push(a.innerText);
+    for (const line of String(card.innerText || "").split("\n")) tries.push(line);
+    for (const value of tries) { const text = titled(value); if (text) return text; }
+    return "";
+  };
+  const authorOf = (card) => clean((card.querySelector("[class*='author'], [class*='owner'], [class*='up-name'], [class*='upname'], [class*='nickname']") || {}).innerText);
+  const meta = (name) => (document.querySelector(`meta[property='${name}'], meta[name='${name}'], meta[itemprop='${name}']`) || {}).content || "";
+
+  const items = new Map();
+  const add = (id, data, current) => {
+    if (!id) return;
+    const item = items.get(id) || { page_url: pageOf(id), title: "", cover_url: "", author: "", media_url: "", current: false };
+    item.title = item.title || clean(data.title);
+    item.cover_url = item.cover_url || (data.cover ? abs(data.cover) : "");
+    item.author = item.author || clean(data.author);
+    item.media_url = item.media_url || (data.media ? abs(data.media) : "");
+    item.current = item.current || Boolean(current);
+    items.set(id, item);
+  };
+  // What the page's own JSON said about each video, by id.
+  const captured = new Map();
   try {
     for (const item of (window.__dubflowCapture || new Map()).values()) {
-      if (host.endsWith("kuaishou.com") ? item.page_url.includes("kuaishou.com") : item.page_url.includes("douyin.com")) {
-        add(item.page_url, item.title, item.cover_url, item.author, item.media_url);
-      }
+      const id = idOf(item.page_url);
+      if (id) captured.set(id, item);
     }
-    if (host.endsWith("kuaishou.com")) {
+    if (site === "kuaishou") {
       const state = (window.__APOLLO_STATE__ || {}).defaultClient || {};
       for (const value of Object.values(state)) {
-        if (value && value.id && (value.photoUrl || value.coverUrl) && (value.caption !== undefined)) {
-          add("https://www.kuaishou.com/short-video/" + value.id, value.caption, value.coverUrl, "", value.photoUrl);
+        if (value && value.id && (value.photoUrl || value.coverUrl) && value.caption !== undefined && !captured.has(String(value.id))) {
+          captured.set(String(value.id), { page_url: pageOf(value.id), title: value.caption, cover_url: value.coverUrl, author: "", media_url: value.photoUrl || "" });
         }
       }
-      document.querySelectorAll("a[href*='/short-video/']").forEach((a) => { const card = cardOf(a); add(a.href, a.title || card.innerText, coverOf(card), "", ""); });
-    } else if (host.endsWith("bilibili.com")) {
-      document.querySelectorAll("a[href*='/video/BV']").forEach((a) => {
-        const match = a.href.match(/\/video\/(BV[0-9A-Za-z]{10})/);
-        if (!match) return;
-        const card = cardOf(a);
-        const title = a.getAttribute("title") || (card.querySelector("h3") || {}).title || (card.querySelector("h3") || a).innerText;
-        const author = (card.querySelector("[class*='author'], [class*='owner'], [class*='up-name']") || {}).innerText;
-        add("https://www.bilibili.com/video/" + match[1], title, coverOf(card), author, "");
-      });
-    } else if (host.endsWith("douyin.com")) {
-      document.querySelectorAll("a[href*='/video/']").forEach((a) => {
-        const match = a.href.match(/\/video\/(\d{8,24})/);
-        if (!match) return;
-        const card = cardOf(a);
-        const author = (card.querySelector("[class*='author'], [class*='nickname']") || {}).innerText;
-        add("https://www.douyin.com/video/" + match[1], card.innerText || a.innerText, coverOf(card), author, "");
-      });
+    }
+  } catch (error) {}
+  const fromCapture = (id) => { const item = captured.get(id); return item ? { title: titled(item.title), cover: item.cover_url, author: item.author, media: item.media_url } : {}; };
+
+  try {
+    if (!site) return JSON.stringify({ items: [], url: location.href });
+    // 1. The video the page is playing, first.
+    const playing = idOf(location.href);
+    if (playing) {
+      const heading = document.querySelector("h1");
+      const title = fromCapture(playing).title || titled(heading && (heading.getAttribute("title") || heading.innerText))
+        || titled(meta("og:title").replace(/_哔哩哔哩_bilibili$/, "")) || titled(document.title.replace(/(_哔哩哔哩_bilibili| - 抖音| - 快手)$/, ""));
+      add(playing, { ...fromCapture(playing), title, cover: fromCapture(playing).cover || meta("og:image") || meta("image"),
+        author: fromCapture(playing).author || clean((document.querySelector("[class*='up-name'], [class*='author-name'], [data-e2e='video-author'] [class*='name']") || {}).innerText) }, true);
+    }
+    // 2. Video cards the page shows, in page order.
+    for (const a of links(document)) {
+      if (!shown(a)) continue;
+      const id = idOf(a.href);
+      const card = cardOf(a, id);
+      const known = fromCapture(id);
+      add(id, { title: known.title || titleOf(a, card), cover: known.cover || coverOf(card), author: known.author || authorOf(card), media: known.media }, false);
+    }
+    // 3. Lists drawn without links (Douyin/Kuaishou players): what the page fetched for this address.
+    if (items.size <= (playing ? 1 : 0)) {
+      for (const [id, item] of captured) {
+        if (!item.at || item.at === location.href) add(id, fromCapture(id), false);
+      }
     }
   } catch (error) {
     return JSON.stringify({ error: String(error).slice(0, 200) });
@@ -207,6 +276,8 @@ struct RawItem {
     author: String,
     #[serde(default)]
     media_url: String,
+    #[serde(default)]
+    current: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,6 +295,8 @@ pub struct DiscoveredVideo {
     pub author: String,
     /// What to download: the page itself, or (Kuaishou) the media file the page plays.
     pub fetch_url: String,
+    /// The video the page is playing (a video page), not a card on it.
+    pub current: bool,
 }
 
 fn https_on(value: &str, domains: &[&str]) -> Option<tauri::Url> {
@@ -261,7 +334,7 @@ pub fn parse_collection(platform: Platform, json_text: &str) -> Result<Vec<Disco
         };
         let title = short(&item.title);
         items.push(DiscoveredVideo { page_url, title: if title.is_empty() { "(không có tiêu đề)".into() } else { title },
-            cover_url: cover.map(|url| url.to_string()), author: short(&item.author), fetch_url });
+            cover_url: cover.map(|url| url.to_string()), author: short(&item.author), fetch_url, current: item.current });
     }
     Ok(items)
 }
@@ -312,6 +385,16 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].fetch_url, "https://v2.kwaicdn.com/a.mp4?x=1");
         assert_eq!(items[0].page_url, "https://www.kuaishou.com/short-video/3x1");
+    }
+
+    #[test]
+    fn the_playing_video_stays_flagged() {
+        let page = collected(serde_json::json!([
+            {"page_url": "https://www.bilibili.com/video/BV1VKyxQ6xE9", "title": "playing", "current": true},
+            {"page_url": "https://www.bilibili.com/video/BV1iqpt6cEMU", "title": "suggested"}
+        ]));
+        let items = parse_collection(Platform::Bilibili, &page).unwrap();
+        assert_eq!(items.iter().map(|item| item.current).collect::<Vec<_>>(), [true, false]);
     }
 
     #[test]
