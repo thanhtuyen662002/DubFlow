@@ -432,6 +432,8 @@ def _request(line, validator, job_id=None):
 NETWORK_ERRORS = (ConnectionError, TimeoutError, socket.timeout, http.client.HTTPException, urllib.error.URLError, ssl.SSLError)
 ERROR_LOG = "worker-errors.log"
 ERROR_LOG_LIMIT = 256 * 1024
+# Signed media URLs carry tokens in their query; the log keeps scheme, host and path only.
+_URL_QUERY = re.compile(r"(https?://[^\s?#'\"]+)[?#][^\s'\"]*")
 
 
 def failure_code(error: BaseException, command: str | None) -> tuple[str, bool]:
@@ -466,6 +468,7 @@ def log_failure(error: BaseException, command: str | None, folder: Path | None, 
     try:
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now if now is not None else time.time()))
         entry = f"--- {stamp} {command or 'unknown'} {type(error).__name__}: {error}\n{''.join(traceback.format_exception(error))}\n"
+        entry = _URL_QUERY.sub(r"\1?<query>", entry)
         previous = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
         text = previous + entry
         if len(text.encode("utf-8")) > ERROR_LOG_LIMIT:
@@ -557,7 +560,8 @@ def main() -> int:
         return 0
     except Exception as error:
         code, retryable = failure_code(error, command)
-        if not isinstance(error, SourceError):
+        # Typed link errors too: the user only sees their code, the report needs the cause.
+        if not isinstance(error, SourceError) or command != "source_session":
             log_failure(error, command, error_log_dir(args))
         if emitter is not None:
             emitter.fail(code, retryable=retryable)

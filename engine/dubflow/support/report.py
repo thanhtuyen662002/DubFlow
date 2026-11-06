@@ -145,7 +145,7 @@ def _add(archive: zipfile.ZipFile, path: Path | None, name: str) -> bool:
 
 
 def create_report(*, output_dir: Path | None, job_status: Path | None, destination: Path, now: float | None = None,
-                  source_log: Path | None = None) -> Path:
+                  source_log: Path | None = None, link_status: Path | None = None, app_version: str | None = None) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / f"DubFlow-report-{stamp}.zip"
@@ -155,6 +155,8 @@ def create_report(*, output_dir: Path | None, job_status: Path | None, destinati
         root = output_dir.resolve(strict=True)
     summary: dict = {"schema_version": 1, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now)),
                      "machine": _machine(root), "included": []}
+    if app_version:
+        summary["app_version"] = app_version[:64]
     with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         if root is not None:
             candidates = [Path(relative) for relative in REPORTS]
@@ -172,7 +174,10 @@ def create_report(*, output_dir: Path | None, job_status: Path | None, destinati
             archive.writestr("file-sizes.json", json.dumps(rows, ensure_ascii=False, indent=1))
         if job_status is not None and not _linked(job_status) and job_status.is_file() and _add(archive, job_status, "job-status.json"):
             summary["included"].append("job-status.json")
-        # Tracebacks of unexpected source-worker failures (SOURCE_WORKER_FAILED), shared by every link job.
+        # A failed link's state, error and failure code as the desktop saw them (links have no job status).
+        if link_status is not None and not _linked(link_status) and link_status.is_file() and _add(archive, link_status, "link-status.json"):
+            summary["included"].append("link-status.json")
+        # Tracebacks of source-worker failures (SOURCE_WORKER_FAILED), shared by every link job.
         if source_log is not None and not _linked(source_log) and source_log.is_file() and _add(archive, source_log, "source-worker-errors.log"):
             summary["included"].append("source-worker-errors.log")
         archive.writestr("summary.json", json.dumps(summary, ensure_ascii=False, indent=2))
@@ -186,10 +191,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--job-status", type=Path)
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--source-log", type=Path)
+    parser.add_argument("--link-status", type=Path)
+    parser.add_argument("--app-version")
     args = parser.parse_args(argv)
     try:
         path = create_report(output_dir=args.output_dir, job_status=args.job_status, destination=args.destination or _desktop(),
-                             source_log=args.source_log)
+                             source_log=args.source_log, link_status=args.link_status, app_version=args.app_version)
         print(json.dumps({"ok": True, "path": str(path), "bytes": path.stat().st_size}, ensure_ascii=True))
         return 0
     except OSError as error:

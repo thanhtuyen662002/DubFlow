@@ -54,6 +54,19 @@ class ErrorLogTests(unittest.TestCase):
         self.assertTrue(text.startswith("--- "))
         self.assertFalse(path.with_name(path.name + ".partial").exists())
 
+    def test_typed_source_error_logs_its_code_cause_and_no_signed_query(self):
+        try:
+            try:
+                raise ConnectionResetError("reset by https://upos-sz.bilivideo.com/a/b.m4s?deadline=1&upsig=SECRET")
+            except ConnectionResetError as cause:
+                raise SourceError(SourceErrorCode.NETWORK, "Bilibili media download failed", retryable=True) from cause
+        except SourceError as error:
+            path = worker.log_failure(error, "source_download", self.log_dir, now=0)
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("source_download SourceError: NETWORK: Bilibili media download failed", text)
+        self.assertIn("ConnectionResetError: reset by https://upos-sz.bilivideo.com/a/b.m4s?<query>", text)
+        self.assertNotIn("SECRET", text)
+
     def test_missing_folder_logs_nothing(self):
         self.assertIsNone(worker.log_failure(RuntimeError("x"), None, None))
 

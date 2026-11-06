@@ -125,6 +125,23 @@ class ReportTests(unittest.TestCase):
             with zipfile.ZipFile(missing) as archive:
                 self.assertNotIn("source-worker-errors.log", archive.namelist())
 
+    def test_link_status_is_included_without_local_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = root / "source-work" / "report-link-status.json"
+            status.parent.mkdir()
+            media = root / "Videos" / "clip.mp4"
+            status.write_text(json.dumps({"url": "https://www.bilibili.com/video/BV1xx411c7mD", "state": "failed",
+                                          "error_code": "NETWORK", "media_path": str(media)}), encoding="utf-8")
+            path = report.create_report(output_dir=None, job_status=None, destination=root / "desktop", now=0, link_status=status,
+                                        app_version="1.1.76")
+            with zipfile.ZipFile(path) as archive:
+                link = json.loads(archive.read("link-status.json"))
+                summary = json.loads(archive.read("summary.json"))
+            self.assertEqual((link["state"], link["error_code"], link["media_path"]), ("failed", "NETWORK", "<path>/clip.mp4"))
+            self.assertIn("link-status.json", summary["included"])
+            self.assertEqual(summary["app_version"], "1.1.76")
+
     def test_files_behind_a_linked_folder_are_not_read(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
