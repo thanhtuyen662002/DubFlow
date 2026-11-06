@@ -122,8 +122,10 @@ def main(argv: list[str] | None = None) -> int:
             exported = capcut_draft.export(args.run_dir, load_spec(spec_path(args.run_dir)), root=args.root or capcut_draft.default_root())
             result = {"state": "COMPLETED", "message": "", **exported}
         elif args.command == "render":
+            from engine.dubflow.media import encoders as h264
             result = roughcut.run(args.run_dir, load_spec(spec_path(args.run_dir)), ffmpeg=args.ffmpeg,
-                                  probe=lambda video: roughcut.probe_display(args.ffprobe, video))
+                                  probe=lambda video: roughcut.probe_display(args.ffprobe, video),
+                                  encoders=h264.h264_encoders(args.ffmpeg))
             print(json.dumps(result, ensure_ascii=True))
             return 0 if result.get("state") == "COMPLETED" else 1
         elif args.command in ("narrate", "plan"):

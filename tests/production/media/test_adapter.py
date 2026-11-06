@@ -272,6 +272,32 @@ class MediaCommandTests(unittest.TestCase):
         self.assertEqual(video_bitrate(stream(1280, 720, None)), 3_317_760)
         self.assertEqual(video_bitrate(None), 8_000_000)
 
+    def test_render_uses_nvenc_with_gpu_decode_then_falls_back_to_the_cpu(self):
+        trusted_root = Path(sys.executable).resolve().parent
+
+        class NoDriver(RecordingRunner):
+            def __call__(self, argv, timeout):
+                if "h264_nvenc" in argv:
+                    self.calls.append(argv)
+                    return subprocess.CompletedProcess(argv, 1, "", "Cannot load nvcuda.dll")
+                return super().__call__(argv, timeout)
+
+        runner = NoDriver()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=trusted_root, runner=runner,
+                                     video_encoders=("h264_nvenc", "h264_mf", "libopenh264"))
+        rendered = adapter.render(self.source, self.root / "gpu.mp4", subtitle_path=self.subtitle, burn_in_subtitles=True)
+        self.assertTrue(rendered.is_file())
+        gpu, cpu = runner.calls[-2], runner.calls[-1]
+        # GPU decode sits right before the source input; the CPU retry has none.
+        self.assertEqual(list(gpu[gpu.index("-i") - 2:gpu.index("-i")]), ["-hwaccel", "cuda"])
+        self.assertNotIn("-hwaccel", cpu)
+        self.assertEqual(gpu[gpu.index("-c:v") + 1], "h264_nvenc")
+        self.assertIn("p4", gpu)
+        self.assertEqual(gpu[gpu.index("-maxrate") + 1], "12000000")
+        self.assertEqual(cpu[cpu.index("-c:v") + 1], "h264_mf")
+        self.assertEqual(gpu[gpu.index("-vf") + 1], cpu[cpu.index("-vf") + 1])
+        self.assertEqual(list(gpu[-6:-1]), list(cpu[-6:-1]))
+
     def test_render_retries_once_with_openh264_when_media_foundation_fails(self):
         trusted_root = Path(sys.executable).resolve().parent
 

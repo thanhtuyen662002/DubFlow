@@ -1,0 +1,127 @@
+//! H.264 encoder choice for exports and light copies: NVIDIA NVENC first when it
+//! really works on this PC, then Media Foundation, then the bundled OpenH264.
+//!
+//! A GPU is an accelerator, never a requirement (AGENTS.md). The shipped LGPL
+//! FFmpeg contains `h264_nvenc`, but it only runs with an NVIDIA driver, so one
+//! tiny test encode (with CUDA decoding) decides, once per FFmpeg executable.
+//! Every caller keeps its CPU fallback. `DUBFLOW_ACCELERATOR=cpu` skips the GPU.
+//! Mirrors engine/dubflow/media/encoders.py.
+
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+pub const NVENC: &str = "h264_nvenc";
+pub const CPU_ENCODERS: [&str; 2] = ["h264_mf", "libopenh264"];
+const PROBE_LIMIT: Duration = Duration::from_secs(30);
+
+static PROBED: LazyLock<Mutex<HashMap<PathBuf, bool>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cpu_only() -> bool {
+    std::env::var("DUBFLOW_ACCELERATOR").is_ok_and(|value| value.trim().eq_ignore_ascii_case("cpu"))
+}
+
+/// Encoders to try, in order.
+pub fn encoders(ffmpeg: &Path) -> Vec<&'static str> {
+    let mut chain = Vec::with_capacity(3);
+    if !cpu_only() && nvenc_available(ffmpeg) {
+        chain.push(NVENC);
+    }
+    chain.extend(CPU_ENCODERS);
+    chain
+}
+
+/// Whether this FFmpeg encodes H.264 on an NVIDIA GPU right now (cached).
+pub fn nvenc_available(ffmpeg: &Path) -> bool {
+    let Ok(mut probed) = PROBED.lock() else { return false };
+    if let Some(&usable) = probed.get(ffmpeg) {
+        return usable;
+    }
+    let usable = test_encode(ffmpeg);
+    probed.insert(ffmpeg.to_path_buf(), usable);
+    usable
+}
+
+fn test_encode(ffmpeg: &Path) -> bool {
+    let mut command = Command::new(ffmpeg);
+    // 256x256: NVENC refuses frames below its minimum size. "-hwaccel cuda"
+    // proves the CUDA device opens, since a render fails outright if it cannot.
+    command.args(["-hide_banner", "-v", "error", "-nostdin", "-hwaccel", "cuda", "-f", "lavfi",
+            "-i", "color=c=black:s=256x256:r=25:d=0.2", "-c:v", NVENC, "-pix_fmt", "yuv420p", "-f", "null", "-"])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(crate::CREATE_NO_WINDOW);
+    let Ok(mut child) = command.spawn() else { return false };
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() < PROBE_LIMIT => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+/// Input options for a video input: decode on the GPU alongside NVENC. Frames
+/// return to system memory, so every CPU filter still applies.
+pub fn decode_args(encoder: &str) -> Vec<OsString> {
+    if encoder == NVENC { vec!["-hwaccel".into(), "cuda".into()] } else { Vec::new() }
+}
+
+/// `-c:v` and rate control for `encoder` at an average `bitrate` in bits/s.
+pub fn rate_args(encoder: &str, bitrate: u64) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec!["-c:v".into(), encoder.into(), "-b:v".into(), bitrate.to_string().into()];
+    let peak = [OsString::from("-maxrate"), (bitrate * 3 / 2).to_string().into(), "-bufsize".into(), (bitrate * 2).to_string().into()];
+    if encoder == NVENC {
+        // p4: NVENC's balanced preset, several times real time on an RTX 3060.
+        args.extend(["-preset", "p4", "-tune", "hq", "-rc", "vbr"].map(OsString::from));
+        args.extend(peak);
+        args.extend(["-spatial-aq", "1", "-bf", "3"].map(OsString::from));
+    } else if encoder == "libopenh264" {
+        args.extend(peak);
+    }
+    args
+}
+
+/// How the progress text names the encoder.
+pub fn label(encoder: &str) -> &'static str {
+    if encoder == NVENC { " bằng GPU NVIDIA" } else { "" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(args: Vec<OsString>) -> String {
+        args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn nvenc_gets_gpu_decode_and_peak_limited_vbr() {
+        assert_eq!(text(decode_args(NVENC)), "-hwaccel cuda");
+        assert_eq!(text(rate_args(NVENC, 3_000_000)),
+            "-c:v h264_nvenc -b:v 3000000 -preset p4 -tune hq -rc vbr -maxrate 4500000 -bufsize 6000000 -spatial-aq 1 -bf 3");
+    }
+
+    #[test]
+    fn cpu_encoders_keep_their_arguments() {
+        assert!(decode_args("h264_mf").is_empty());
+        assert_eq!(text(rate_args("h264_mf", 3_000_000)), "-c:v h264_mf -b:v 3000000");
+        assert_eq!(text(rate_args("libopenh264", 2_000_000)), "-c:v libopenh264 -b:v 2000000 -maxrate 3000000 -bufsize 4000000");
+    }
+
+    #[test]
+    fn a_missing_ffmpeg_keeps_the_cpu_encoders() {
+        assert_eq!(encoders(Path::new("/definitely/not/ffmpeg.exe")), CPU_ENCODERS.to_vec());
+    }
+}

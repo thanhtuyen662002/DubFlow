@@ -9,6 +9,7 @@ mod cover_graph;
 mod discovery;
 mod docu;
 mod edit;
+mod gpu;
 mod package;
 mod shorts;
 mod single_instance;
