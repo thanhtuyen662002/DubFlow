@@ -13,6 +13,7 @@ reached without links, are read (Issue #351).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,6 +37,13 @@ _COMPONENT = r"[^\\/\"'\r\n:*?<>|]+"
 _LOCAL_PATH = re.compile(
     r"(?:\b[A-Za-z]:" + _SEPARATOR + r"|(?<![\w.])(?:\\\\\\\\|\\\\)[^\\/\"'\r\n]+" + _SEPARATOR
     + r"|(?<![\w.:/\\])/(?=" + _COMPONENT + r"/))(?:" + _COMPONENT + _SEPARATOR + r")*")
+# Per-scan source-worker logs inside ``<data root>/source-work`` (Issue #592).
+ERROR_LOG_DIR = "worker-errors"
+_SAFE_SCAN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")
+# Signed URLs carry tokens in their query; reports keep scheme, host and path only.
+_URL_QUERY = re.compile(r"(https?://[^\s?#'\"]+)[?#][^\s'\"]*")
+LINK_FIELDS = ("scan_id", "url", "provider", "title", "state", "detail", "error", "error_code",
+               "downloaded_bytes", "total_bytes", "started_at_ms")
 MEDIA_SUFFIXES = {".mp4", ".mkv", ".mov", ".webm", ".wav", ".pcm", ".mp3", ".m4a", ".aac", ".flac", ".png", ".jpg", ".jpeg",
                   ".onnx", ".bin", ".npz", ".exe", ".dll"}
 
@@ -53,6 +61,51 @@ def _desktop() -> Path:
             finally:
                 ctypes.windll.ole32.CoTaskMemFree(pointer)
     return Path.home() / "Desktop"
+
+
+def source_log_name(scan_id: str) -> str:
+    """The file name of one scan's worker log: the id itself when it is a plain name, else its digest."""
+    if _SAFE_SCAN.fullmatch(scan_id) and not scan_id.endswith("."):
+        return scan_id + ".log"
+    return hashlib.sha256(scan_id.encode("utf-8", "surrogatepass")).hexdigest()[:40] + ".log"
+
+
+_CREDENTIAL = re.compile(r"cookie|authorization|bearer|token|sessdata|bili_jct|passport|password|secret", re.IGNORECASE)
+
+
+def strip_url_queries(text: str) -> str:
+    return _URL_QUERY.sub(r"\1?<query>", text)
+
+
+def redact_credentials(text: str) -> str:
+    """Every line that mentions a credential is replaced (the worker already does this when it writes)."""
+    return "".join("<line mentions credentials>\n" if _CREDENTIAL.search(line) else line
+                   for line in text.splitlines(keepends=True))
+
+
+def _link_url(url: str) -> str:
+    """A pasted link without its query (tracking ids), keeping Bilibili's ``p=`` part number."""
+    base, _, query = url.partition("?")
+    base = base.split("#", 1)[0]
+    part = next((pair for pair in query.split("#", 1)[0].split("&") if re.fullmatch(r"p=[0-9]{1,5}", pair)), None)
+    return base + ("?" + part if part else "")
+
+
+def _link_document(raw: str) -> str | None:
+    """The selected link's own status, reduced to known fields; queries cut, paths redacted later."""
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    document = {key: value[key] for key in LINK_FIELDS if key in value}
+    for key, item in list(document.items()):
+        if isinstance(item, str):
+            document[key] = _link_url(item) if key == "url" else redact_credentials(strip_url_queries(item))[:4096].rstrip("\n")
+        elif not (item is None or type(item) is int):
+            del document[key]
+    return json.dumps(document, ensure_ascii=False, indent=1)
 
 
 def redact(text: str) -> str:
@@ -132,20 +185,22 @@ def _machine(output_dir: Path | None) -> dict:
     return info
 
 
-def _add(archive: zipfile.ZipFile, path: Path | None, name: str) -> bool:
-    """Store a small text report under ``name`` with local paths redacted."""
+def _add(archive: zipfile.ZipFile, path: Path | None, name: str, *, queries: bool = False) -> bool:
+    """Store a small text report under ``name`` with local paths (and, if asked, URL queries) redacted."""
     try:
         if path is None or path.suffix.casefold() in MEDIA_SUFFIXES or path.stat().st_size > MAX_FILE_BYTES:
             return False
         text = path.read_bytes().decode("utf-8", "replace")
     except OSError:
         return False
-    archive.writestr(name, redact(text))
+    archive.writestr(name, redact(redact_credentials(strip_url_queries(text)) if queries else text))
     return True
 
 
 def create_report(*, output_dir: Path | None, job_status: Path | None, destination: Path, now: float | None = None,
-                  source_log: Path | None = None) -> Path:
+                  source_work: Path | None = None, link_status: str | None = None, app_version: str | None = None) -> Path:
+    """Write the zip. ``link_status`` is the selected link's status JSON (text, never a staged file);
+    its ``scan_id`` selects the only worker log read from ``source_work``."""
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / f"DubFlow-report-{stamp}.zip"
@@ -155,6 +210,8 @@ def create_report(*, output_dir: Path | None, job_status: Path | None, destinati
         root = output_dir.resolve(strict=True)
     summary: dict = {"schema_version": 1, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now)),
                      "machine": _machine(root), "included": []}
+    if app_version:
+        summary["app_version"] = app_version[:64]
     with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         if root is not None:
             candidates = [Path(relative) for relative in REPORTS]
@@ -172,9 +229,18 @@ def create_report(*, output_dir: Path | None, job_status: Path | None, destinati
             archive.writestr("file-sizes.json", json.dumps(rows, ensure_ascii=False, indent=1))
         if job_status is not None and not _linked(job_status) and job_status.is_file() and _add(archive, job_status, "job-status.json"):
             summary["included"].append("job-status.json")
-        # Tracebacks of unexpected source-worker failures (SOURCE_WORKER_FAILED), shared by every link job.
-        if source_log is not None and not _linked(source_log) and source_log.is_file() and _add(archive, source_log, "source-worker-errors.log"):
-            summary["included"].append("source-worker-errors.log")
+        # A failed link's state, error and failure code as the desktop saw them (links have no job status).
+        document = _link_document(link_status) if link_status else None
+        if document is not None:
+            archive.writestr("link-status.json", redact(document))
+            summary["included"].append("link-status.json")
+            scan_id = json.loads(document).get("scan_id")
+            # That link's own worker log only: never another scan's (Issue #592).
+            if (isinstance(scan_id, str) and scan_id and source_work is not None and source_work.is_dir()
+                    and not _linked(source_work)):
+                log = _inside(source_work.resolve(strict=True), Path(ERROR_LOG_DIR) / source_log_name(scan_id))
+                if _add(archive, log, "source-worker-errors.log", queries=True):
+                    summary["included"].append("source-worker-errors.log")
         archive.writestr("summary.json", json.dumps(summary, ensure_ascii=False, indent=2))
     os.replace(temporary, target)
     return target
@@ -185,11 +251,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--job-status", type=Path)
     parser.add_argument("--destination", type=Path)
-    parser.add_argument("--source-log", type=Path)
+    parser.add_argument("--source-work", type=Path)
+    parser.add_argument("--link-status-json")
+    parser.add_argument("--app-version")
     args = parser.parse_args(argv)
     try:
         path = create_report(output_dir=args.output_dir, job_status=args.job_status, destination=args.destination or _desktop(),
-                             source_log=args.source_log)
+                             source_work=args.source_work, link_status=args.link_status_json, app_version=args.app_version)
         print(json.dumps({"ok": True, "path": str(path), "bytes": path.stat().st_size}, ensure_ascii=True))
         return 0
     except OSError as error:

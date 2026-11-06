@@ -469,7 +469,32 @@ def main():
         sys.stdout.write(json.dumps(result, ensure_ascii=True))
         return 0
     except Exception as error:
-        return failure_exit_code(error)
+        code = failure_exit_code(error)
+        _describe_failure(error)
+        return code
+
+
+def _describe_failure(error):
+    """One bounded stderr line per chained error for the parent's local error log.
+
+    URL queries are cut and messages that mention credentials are dropped; stdout stays metadata only.
+    """
+    try:
+        seen, current = set(), error
+        for _ in range(6):
+            if not isinstance(current, BaseException) or id(current) in seen:
+                break
+            seen.add(id(current))
+            message = re.sub(r"(https?://[^\s?#'\"]+)[?#][^\s'\"]*", r"\1?<query>", str(current))[:400]
+            if re.search(r"cookie|authorization|token|sessdata|bili_jct", message, re.IGNORECASE):
+                message = "<message mentions credentials>"
+            sys.stderr.write(f"{type(current).__name__}: {' '.join(message.split())}\n")
+            exc_info = getattr(current, "exc_info", None)
+            current = (current.__cause__ or getattr(current, "cause", None)
+                       or (exc_info[1] if isinstance(exc_info, tuple) and len(exc_info) == 3 else None) or current.__context__)
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

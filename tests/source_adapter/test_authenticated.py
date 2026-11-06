@@ -129,7 +129,9 @@ class YoutubeDL:
                         with self.assertRaises(SourceError) as context:
                             transport.inspect_url(f"https://example.test/{index}", provider_id="generic")
                         self.assertEqual(len(results), before + 1)  # No hidden transport retry.
-                        self.assertEqual(results[-1], (code, "", ""))
+                        # stdout stays empty; stderr is a redacted error-log line, never the token.
+                        self.assertEqual(results[-1][:2], (code, ""))
+                        self.assertNotIn("synthetic-secret", results[-1][2])
                         self.assertEqual(context.exception.code, codes[code])
                         self.assertEqual(context.exception.retryable, code in {3, 6})
                         self.assertNotIn("synthetic-secret", json.dumps(context.exception.to_dict()))

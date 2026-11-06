@@ -393,11 +393,15 @@ pub(crate) async fn python_json(args: Vec<std::ffi::OsString>, what: &'static st
 /// Explorer: the job's reports and metadata, never its video or audio, other
 /// jobs (the job database) or local paths (Issue #351).
 #[tauri::command]
-async fn create_report(job_id: String, output_dir: Option<String>) -> Result<String, String> {
+async fn create_report(job_id: String, output_dir: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<String, String> {
     validate_id(&job_id)?;
     let root = data_root()?;
+    // A link has no job status file: hand its status over as an argument, never a staged
+    // file. The report trims the link's query and reads only this scan's worker log (Issue #592).
+    let link_status = sources.status(&job_id).and_then(|status| serde_json::to_string(&status).ok());
     let mut args: Vec<std::ffi::OsString> = vec!["-m".into(), "engine.dubflow.support.report".into(),
-        "--job-status".into(), status_path(&root, &job_id)?.into_os_string()];
+        "--job-status".into(), status_path(&root, &job_id)?.into_os_string(),
+        "--app-version".into(), release_info().version.into()];
     if let Some(dir) = output_dir.map(PathBuf::from) {
         // Only a DubFlow results folder: the report reads files inside it.
         if !dir.is_absolute() || !dir.is_dir() || !dir.components().any(|part| part.as_os_str() == "DubFlow Output") {
@@ -405,10 +409,8 @@ async fn create_report(job_id: String, output_dir: Option<String>) -> Result<Str
         }
         args.extend(["--output-dir".into(), dir.into_os_string()]);
     }
-    // The source worker's traceback log (SOURCE_WORKER_FAILED): link jobs have no results folder.
-    let source_log = root.join("source-work").join("worker-errors.log");
-    if source_log.is_file() {
-        args.extend(["--source-log".into(), source_log.into_os_string()]);
+    if let Some(status) = link_status {
+        args.extend(["--link-status-json".into(), status.into(), "--source-work".into(), root.join("source-work").into_os_string()]);
     }
     let result = python_json(args, "bộ tạo báo cáo").await?;
     let path = result.get("path").and_then(Value::as_str)
