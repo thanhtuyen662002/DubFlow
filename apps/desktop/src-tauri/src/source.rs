@@ -1352,7 +1352,8 @@ mod tests {
 
     #[test]
     fn retitling_stays_in_the_links_own_output_folder() {
-        let root = std::env::temp_dir().join(format!("dubflow-retitle-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("dubflow-retitle-base-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
         let url = "https://www.bilibili.com/video/BV121Pkz4EsX/";
         let untitled = link_output_dir(&root, url, None, "link-9");
         fs::create_dir_all(&untitled).unwrap();
