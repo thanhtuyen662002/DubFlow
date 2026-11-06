@@ -1928,8 +1928,14 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                                  units_done=done, units_total=total)
 
             ai_progress(0, 1)
-            result = context_ai.translate_in_context(translated, settings.route, dubbing=config.enable_dubbing,
-                cache_dir=work_dir / "ai-translation", title=settings.title, on_progress=ai_progress)
+            try:
+                result = context_ai.translate_in_context(translated, settings.route, dubbing=config.enable_dubbing,
+                    cache_dir=work_dir / "ai-translation", title=settings.title, on_progress=ai_progress)
+            except Exception as failure:  # noqa: BLE001 - the AI pass is optional; the offline lines stand
+                # Never fail the video over the optional AI pass: finished windows stay cached for the next run.
+                message = f"{type(failure).__name__}: {str(failure)[:200]}"
+                total = max(1, -(-len(translated) // context_ai.WINDOW_CUES))
+                result = context_ai.ContextResult(tuple(translated), total, 0, 0, settings.route.model, message)
             translated, _ = _without_repeat_loops(result.cues)
             translation_provenance = dict(translation_provenance, context_ai=dict(translation_provenance["context_ai"], model=result.model,
                 windows=result.windows_total, windows_done=result.windows_done, cues_from_ai=result.cues_from_ai))
